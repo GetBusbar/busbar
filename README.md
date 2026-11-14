@@ -51,10 +51,7 @@ evidence in one enforcement point.
 > budgets, resilience, and audit evidence. MCP tool governance and A2A
 > agent trust use the same execution-boundary model.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/readme/matrix-dark.svg">
-  <img src="assets/readme/matrix-light.svg" alt="Six by six matrix of ingress protocol against upstream protocol. All 36 pairs served. The same-protocol diagonal is forwarded byte for byte.">
-</picture>
+All 36 ingress-to-upstream protocol pairs are served: [protocol matrix](https://getbusbar.com/docs/protocols/).
 
 Six model wire protocols, first class on both sides: OpenAI, OpenAI
 Responses, Anthropic, Gemini, Cohere, and Bedrock Converse.
@@ -76,15 +73,9 @@ An enforcement boundary only works if teams can deploy it on every
 governed request path. Busbar is designed to make the decision in the
 path without becoming the bottleneck.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/readme/perf-dark.svg">
-  <img src="assets/readme/perf-light.svg" alt="73 microseconds added latency p50, 65.1 microseconds of gateway CPU per request, 67,837 requests per second sustained with zero failures.">
-</picture>
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/readme/memory-dark.svg">
-  <img src="assets/readme/memory-light.svg" alt="Resident set size flat at 7.3 MiB idle, 22.4 MiB under sustained load, returning to 16.1 MiB when the load stops.">
-</picture>
+73 µs added latency p50, 65.1 µs of gateway CPU per request and 67,837 requests per second
+sustained with zero failures; resident memory 7.3 MiB idle and 22.4 MiB under sustained load.
+Figures: [getbusbar.com/performance](https://getbusbar.com/performance/).
 
 *Busbar 1.5.1, AWS m7g.4xlarge (Graviton3), 4-core pin, measured 2026-08-03. Same-protocol OpenAI cell. Across all 36 cells idle stayed between 7.32 and 7.42 MiB.*
 
@@ -92,10 +83,7 @@ path without becoming the bottleneck.
 
 ## A boundary, not just a proxy
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/readme/field-dark.svg">
-  <img src="assets/readme/field-light.svg" alt="Wire protocol pairs served, idle resident memory and container image size, comparing Busbar with LiteLLM, Kong and Portkey.">
-</picture>
+Comparison figures: [getbusbar.com/performance](https://getbusbar.com/performance/).
 
 | | Busbar | LiteLLM&nbsp;Py | LiteLLM&nbsp;Rust | Kong | Portkey |
 |---|---|---|---|---|---|
