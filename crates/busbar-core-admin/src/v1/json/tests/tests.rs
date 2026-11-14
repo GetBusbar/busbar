@@ -746,3 +746,371 @@ fn openapi_existing_sdk_routes_money_describes_each_wire_representation() {
     assert!(money.contains("Amount values are decimal-integer JSON strings"));
     assert!(money.contains("spend_micros are JSON integers"));
 }
+
+/// The message of a refused admin body decode, after checking it is the 400 `invalid_request`
+/// envelope.
+async fn bad_body_message<T: serde::de::DeserializeOwned>(body: &[u8], what: &str) -> String {
+    let Err(err) = json_body::<T>(body, what) else {
+        panic!("a malformed {what} body must be refused");
+    };
+    let (status, _, body) = parts(*err).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_request");
+    body["error"]["message"]
+        .as_str()
+        .expect("the refusal carries a message")
+        .to_string()
+}
+
+#[tokio::test]
+async fn bad_body_refusal_names_the_missing_field_and_position() {
+    let message =
+        bad_body_message::<super::handlers::RegisterGroupReq>(br#"{"name":"oracle-bad"}"#, "group")
+            .await;
+    assert_eq!(
+        message,
+        "malformed group body: missing field `config` at line 1 column 21"
+    );
+}
+
+#[tokio::test]
+async fn bad_body_refusal_keeps_the_type_and_drops_the_value() {
+    let message =
+        bad_body_message::<super::handlers::RollbackReq>(br#"{"version":"zero"}"#, "rollback")
+            .await;
+    assert_eq!(
+        message,
+        "malformed rollback body: invalid type: string (values not echoed), expected u64 at line 1 \
+         column 17"
+    );
+    assert!(
+        !message.contains("zero"),
+        "the value is not echoed: {message}"
+    );
+}
+
+/// A data error built the way a `Deserialize` impl raises it (no position: line 0).
+fn custom_error(message: &str) -> serde_json::Error {
+    <serde_json::Error as serde::de::Error>::custom(message)
+}
+
+#[test]
+fn describe_body_error_renders_every_serde_form() {
+    use serde::de::{Error as _, Unexpected};
+
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    #[allow(dead_code)]
+    struct Need {
+        a: u64,
+    }
+    #[derive(Debug, serde::Deserialize)]
+    #[allow(dead_code)]
+    enum Mode {
+        Own,
+        Passthrough,
+    }
+    let long = "k".repeat(100);
+    let over_cap = "k".repeat(65);
+    let at_cap = "k".repeat(64);
+
+    // Kept verbatim, with the position: missing field, duplicate field, short unknown field,
+    // invalid length, syntax and EOF.
+    for (body, head) in [
+        (r#"{}"#.to_string(), "missing field `a`"),
+        (r#"{"a":1,"a":2}"#.to_string(), "duplicate field `a`"),
+        (
+            r#"{"zz":1}"#.to_string(),
+            "unknown field `zz`, expected `a`",
+        ),
+        (r#"{"a":1"#.to_string(), "EOF while parsing an object"),
+        (r#"{"a":1}x"#.to_string(), "trailing characters"),
+        (r#"{"a":}"#.to_string(), "expected value"),
+    ] {
+        let e = serde_json::from_slice::<Need>(body.as_bytes()).unwrap_err();
+        assert!(e.to_string().starts_with(head), "{body}: {e}");
+        assert!(e.to_string().contains(" at line 1 column "), "{body}: {e}");
+        assert_eq!(describe_body_error(&e), e.to_string(), "{body}");
+    }
+    let e = serde_json::from_slice::<(u8, u8)>(b"[1]").unwrap_err();
+    assert!(
+        e.to_string().starts_with("invalid length 1, expected"),
+        "{e}"
+    );
+    assert_eq!(describe_body_error(&e), e.to_string());
+
+    // Unknown field over 64 bytes: the name is dropped, the expected list and position kept.
+    let body = format!(r#"{{"{long}":1}}"#);
+    let e = serde_json::from_slice::<Need>(body.as_bytes()).unwrap_err();
+    let rendered = describe_body_error(&e);
+    assert!(
+        rendered.starts_with(
+            "unknown field (name over 64 bytes, not echoed), expected `a` at line 1 column "
+        ),
+        "{rendered}"
+    );
+    assert!(!rendered.contains(&over_cap), "{rendered}");
+
+    // Key-name forms at and over the cap, from the authored copies (no position).
+    for (message, want) in [
+        (
+            format!("unknown field `{long}`, there are no fields"),
+            "unknown field (name over 64 bytes, not echoed), there are no fields".to_string(),
+        ),
+        (
+            format!("unknown field `{at_cap}`, there are no fields"),
+            format!("unknown field `{at_cap}`, there are no fields"),
+        ),
+        (
+            format!("duplicate field `{long}`"),
+            "duplicate field (name over 64 bytes, not echoed)".to_string(),
+        ),
+        (
+            format!("duplicate field `{at_cap}`"),
+            format!("duplicate field `{at_cap}`"),
+        ),
+        (
+            format!("duplicate entry with key \"{long}\""),
+            "duplicate entry with key (name over 64 bytes, not echoed)".to_string(),
+        ),
+        (
+            format!("duplicate entry with key \"{at_cap}\""),
+            format!("duplicate entry with key \"{at_cap}\""),
+        ),
+    ] {
+        assert_eq!(describe_body_error(&custom_error(&message)), want);
+    }
+
+    // Unknown variant: the variant is a value.
+    let e = serde_json::from_slice::<Mode>(br#""sk-secret""#).unwrap_err();
+    let rendered = describe_body_error(&e);
+    assert!(
+        rendered.starts_with(
+            "unknown variant (values not echoed), expected `Own` or `Passthrough` at line 1 column "
+        ),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("sk-secret"), "{rendered}");
+    assert_eq!(
+        describe_body_error(&serde_json::Error::unknown_variant("sk-x", &[])),
+        "unknown variant (values not echoed), there are no variants"
+    );
+
+    // Invalid type and invalid value: every value kind keeps only its kind word, every value-free
+    // kind is kept, anything else is fully redacted.
+    let value_kinds = [
+        (
+            Unexpected::Str("sk-x, expected y"),
+            "string (values not echoed)",
+        ),
+        (Unexpected::Unsigned(7), "integer (values not echoed)"),
+        (Unexpected::Signed(-7), "integer (values not echoed)"),
+        (Unexpected::Float(1.5), "floating point (values not echoed)"),
+        (Unexpected::Bool(true), "boolean (values not echoed)"),
+        (Unexpected::Char('q'), "character (values not echoed)"),
+        (Unexpected::Other("sk-other"), "(values not echoed)"),
+        (Unexpected::Bytes(b"sk"), "byte array"),
+        (Unexpected::Unit, "unit value"),
+        (Unexpected::Option, "Option value"),
+        (Unexpected::NewtypeStruct, "newtype struct"),
+        (Unexpected::Seq, "sequence"),
+        (Unexpected::Map, "map"),
+        (Unexpected::Enum, "enum"),
+        (Unexpected::UnitVariant, "unit variant"),
+        (Unexpected::NewtypeVariant, "newtype variant"),
+        (Unexpected::TupleVariant, "tuple variant"),
+        (Unexpected::StructVariant, "struct variant"),
+        (Unexpected::Other("null"), "null"),
+    ];
+    for (unexpected, want) in value_kinds {
+        let e = serde_json::Error::invalid_type(unexpected, &"a map");
+        assert_eq!(
+            describe_body_error(&e),
+            format!("invalid type: {want}, expected a map")
+        );
+        let e = serde_json::Error::invalid_value(unexpected, &"a map");
+        assert_eq!(
+            describe_body_error(&e),
+            format!("invalid value: {want}, expected a map")
+        );
+    }
+    // No `, expected ` after the marker: the whole rest is dropped.
+    assert_eq!(
+        describe_body_error(&custom_error("invalid type: sk-secret")),
+        "invalid type: (values not echoed)"
+    );
+
+    // Real admin bodies at the formerly raw sites: the value goes, the type and position stay.
+    for (e, expected, value) in [
+        (
+            serde_json::from_slice::<super::handlers::RestartReq>(br#"{"confirm":"yes"}"#)
+                .err()
+                .expect("a string confirm is refused"),
+            "expected a boolean",
+            "yes",
+        ),
+        (
+            serde_json::from_slice::<super::handlers::PutAuthBody>(
+                br#"{"admin_auth":"admin-tokens"}"#,
+            )
+            .err()
+            .expect("a string admin_auth is refused"),
+            "expected a sequence",
+            "admin-tokens",
+        ),
+    ] {
+        let rendered = describe_body_error(&e);
+        assert!(
+            rendered.starts_with("invalid type: string (values not echoed), "),
+            "{rendered}"
+        );
+        assert!(rendered.contains(expected), "{rendered}");
+        assert!(rendered.contains(" at line 1 column "), "{rendered}");
+        assert!(!rendered.contains(value), "{rendered}");
+    }
+
+    // Authored custom text passes as written.
+    let authored = "plugin settings must be an object (values not echoed)";
+    assert_eq!(describe_body_error(&custom_error(authored)), authored);
+
+    // Trust boundary (i): a nested serde error behind an authored `<path>: ` prefix keeps the
+    // prefix and drops the value, even when the value contains `, expected `.
+    let rendered = describe_body_error(&custom_error(
+        "plane.rate_card: invalid type: string \"sk-x, expected y\", expected a map",
+    ));
+    assert_eq!(
+        rendered,
+        "plane.rate_card: invalid type: string (values not echoed), expected a map"
+    );
+    assert!(!rendered.contains("sk-x"), "{rendered}");
+    let rendered = describe_body_error(&custom_error(
+        "the reserved `x.hooks:` all-x attach must be a list of hook names: invalid type: string \
+         \"sk-x\", expected a sequence",
+    ));
+    assert_eq!(
+        rendered,
+        "the reserved `x.hooks:` all-x attach must be a list of hook names: invalid type: string \
+         (values not echoed), expected a sequence"
+    );
+    assert!(!rendered.contains("sk-x"), "{rendered}");
+
+    // Trust boundary (ii): authored text that names a caller word passes byte for byte.
+    let e = custom_error(
+        "on_error keyword 'zzz-word' is not one of the reserved terminals (nothing | weighted | \
+         reject | first)",
+    );
+    assert_eq!(describe_body_error(&e), e.to_string());
+
+    // Trust boundary (iii): the real config-apply decode of a named hook leaves today's text.
+    let e = serde_json::from_value::<busbar_kernel::config::HookDefCfg>(
+        serde_json::json!({"module":"m","on_error":"zzz-word"}),
+    )
+    .unwrap_err();
+    assert_eq!(describe_body_error(&e), e.to_string());
+    assert!(
+        e.to_string()
+            .starts_with("on_error keyword 'zzz-word' is not one of the reserved terminals"),
+        "{e}"
+    );
+}
+
+#[tokio::test]
+async fn admin_body_refusals_from_hooks_and_groups_do_not_reach_keyword_deserializers() {
+    assert!(
+        json_body::<super::handlers::RegisterHookReq>(
+            br#"{"name":"h","config":{"kind":"gate","module":"m","on_error":"zzz-word"}}"#,
+            "hook",
+        )
+        .is_ok(),
+        "a hook's on_error is a plain name at this site; validation checks it later"
+    );
+    let message = bad_body_message::<super::handlers::RegisterGroupReq>(
+        br#"{"name":"g","config":{"on_exhausted":"zzz-word"}}"#,
+        "group",
+    )
+    .await;
+    assert!(
+        message.starts_with("malformed group body: unknown field `on_exhausted`, expected"),
+        "{message}"
+    );
+    assert!(!message.contains("zzz-word"), "{message}");
+}
+
+#[tokio::test]
+async fn config_body_provider_key_echoes_are_capped() {
+    let p = r#"{"protocol":"openai","base_url":"https://x"}"#;
+    let long = "k".repeat(100);
+    let over_cap = "k".repeat(65);
+    for (body, head, capped) in [
+        (
+            format!(r#"{{"config":{{}},"providers":{{"k1":{p},"k1":{p}}}}}"#),
+            "malformed config body: duplicate entry with key \"k1\" at line 1 column ",
+            false,
+        ),
+        (
+            format!(r#"{{"config":{{}},"providers":{{"{long}":{p},"{long}":{p}}}}}"#),
+            "malformed config body: duplicate entry with key (name over 64 bytes, not echoed) at \
+             line 1 column ",
+            true,
+        ),
+        (
+            r#"{"config":{},"providers":{"p":{"k1":1,"k1":2}}}"#.to_string(),
+            "malformed config body: duplicate field `k1` at line 1 column ",
+            false,
+        ),
+        (
+            format!(r#"{{"config":{{}},"providers":{{"p":{{"{long}":1,"{long}":2}}}}}}"#),
+            "malformed config body: duplicate field (name over 64 bytes, not echoed) at line 1 \
+             column ",
+            true,
+        ),
+    ] {
+        let message =
+            bad_body_message::<super::handlers::ValidateConfigReq>(body.as_bytes(), "config").await;
+        assert!(message.starts_with(head), "{body}: {message}");
+        if capped {
+            assert!(!message.contains(&over_cap), "{message}");
+        }
+    }
+}
+
+#[test]
+fn admin_decode_errors_go_through_the_renderer() {
+    const RAW_FORMS: &[&str] = &[
+        "body: {e}",
+        "patch: {e}",
+        "invalid body: {e}",
+        "definition body: {e}",
+    ];
+    for (file, text) in [
+        ("handlers.rs", include_str!("../handlers.rs")),
+        ("named_map.rs", include_str!("../named_map.rs")),
+        ("mod.rs", include_str!("../mod.rs")),
+    ] {
+        for (n, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            for form in RAW_FORMS {
+                assert!(
+                    !line.contains(form),
+                    "{file}:{}: a decode refusal formats the raw serde error; route it through \
+                     describe_body_error: {line}",
+                    n + 1
+                );
+            }
+        }
+    }
+    let mod_rs = include_str!("../mod.rs");
+    let start = mod_rs
+        .find("fn json_body<")
+        .expect("json_body is defined in json/mod.rs");
+    let end = mod_rs[start..]
+        .find("\n}\n")
+        .map(|i| start + i)
+        .expect("json_body has a body");
+    assert!(
+        mod_rs[start..end].contains("describe_body_error(&e)"),
+        "json_body must render its decode error through describe_body_error"
+    );
+}
