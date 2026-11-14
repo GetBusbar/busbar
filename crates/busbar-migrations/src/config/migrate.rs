@@ -174,6 +174,28 @@ pub struct MigrateOutput {
     pub warnings: Vec<String>,
 }
 
+/// What [`MigrateOutput::decision_paths`] names a TODO that states no `<path>: ` prefix.
+pub const UNNAMED_DECISION: &str = "(unnamed decision)";
+
+impl MigrateOutput {
+    /// The configuration path each unresolved decision is about, in order and without
+    /// duplicates. Every TODO is written `<path>: <reason>`; only the path is returned, so a
+    /// refusal can name where the decisions are without repeating any reason or value.
+    #[must_use]
+    pub fn decision_paths(&self) -> Vec<&str> {
+        let mut paths: Vec<&str> = Vec::new();
+        for todo in &self.todos {
+            let path = todo
+                .split_once(": ")
+                .map_or(UNNAMED_DECISION, |(path, _)| path);
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+        paths
+    }
+}
+
 #[cold]
 #[inline(never)]
 pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
@@ -2513,5 +2535,37 @@ auth: {chain: [keys], admin_auth: [oidc], role_bindings: {oidc: {reader: {admin_
             Some("https://admin.example")
         );
         assert_eq!(root["auth"]["role_bindings"], bindings);
+    }
+}
+
+#[cfg(test)]
+mod decision_path_tests {
+    use super::*;
+
+    #[test]
+    fn decision_paths_name_each_decision_once_without_its_reason() {
+        let output = MigrateOutput {
+            yaml: String::new(),
+            changes: Vec::new(),
+            todos: vec![
+                "export.hook.settings: current settings were refused (Bearer secret-ish)".into(),
+                "export.trace.settings: current settings were refused".into(),
+                "export.hook.settings: a second reason".into(),
+                "a decision without a path prefix".into(),
+            ],
+            warnings: Vec::new(),
+        };
+        assert_eq!(
+            output.decision_paths(),
+            vec![
+                "export.hook.settings",
+                "export.trace.settings",
+                UNNAMED_DECISION
+            ],
+        );
+        assert!(output
+            .decision_paths()
+            .iter()
+            .all(|path| !path.contains("Bearer") && !path.contains("prefix")));
     }
 }

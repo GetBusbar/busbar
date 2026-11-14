@@ -550,7 +550,10 @@ impl Zeroize for ResolvedSettings {
 }
 impl ZeroizeOnDrop for ResolvedSettings {}
 
-fn canonicalize(tree: &mut Value, sources: &crate::secret_ref::Sugars) -> Result<(), String> {
+/// Rewrite every admitted source shorthand (`{ <sugar>: … }`) in `tree` to its canonical
+/// `{module, settings}` reference, in place, as settings resolution does before it classifies a
+/// position as a reference. `{literal: …}` objects and canonical references are left untouched.
+pub fn canonicalize(tree: &mut Value, sources: &crate::secret_ref::Sugars) -> Result<(), String> {
     match tree {
         Value::Object(object) => {
             if object.len() == 1 && object.contains_key(crate::secret_fields::LITERAL_KEY) {
