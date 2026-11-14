@@ -140,11 +140,11 @@ pub(crate) unsafe fn prepare(
     };
 
     let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(len));
-    bytes.extend_from_slice(prior);
+    busbar_contract::secure::append(&mut bytes, prior);
     #[cfg(test)]
     tests::watch_input_copy(&bytes);
-    bytes.extend_from_slice(&capability_bytes);
-    bytes.extend_from_slice(receipt_bytes);
+    busbar_contract::secure::append(&mut bytes, &capability_bytes);
+    busbar_contract::secure::append(&mut bytes, receipt_bytes);
     #[cfg(test)]
     tests::watch_input_copy(&bytes);
     let bytes = Arc::new(bytes);

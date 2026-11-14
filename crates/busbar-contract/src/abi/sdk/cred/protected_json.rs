@@ -582,14 +582,10 @@ impl<C: Custody> Guarded<C> {
     fn push(&mut self, bytes: &[u8]) {
         let needed = self.0.len().saturating_add(bytes.len());
         if needed > self.0.capacity() {
-            let mut grown = Zeroizing::new(Vec::with_capacity(
-                needed.max(self.0.capacity().saturating_mul(2)),
-            ));
-            grown.extend_from_slice(&self.0);
+            // The block `append` is about to retire, recorded while it still holds the value.
             self.1.held(Held::Value, &self.0);
-            self.0 = grown;
         }
-        self.0.extend_from_slice(bytes);
+        crate::secure::append(&mut self.0, bytes);
     }
 
     /// Write `value` as `serde_json` writes it.
