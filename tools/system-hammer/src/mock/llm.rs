@@ -529,6 +529,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn memfind_matches_driver_semantics() {
+        assert!(memfind(b"abc", b"")); // red today: windows(0) panics
+        assert!(memfind(b"", b""));
+        assert!(memfind(b"xx\"tools\"", b"\"tools\""));
+        assert!(!memfind(b"ab", b"abc"));
+    }
+
+    #[test]
     fn every_dialect_is_parseable_json_and_carries_the_marker() {
         let b = Bodies::build(100, 4);
         for d in Dialect::ALL {
