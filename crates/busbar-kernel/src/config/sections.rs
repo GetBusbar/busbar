@@ -200,6 +200,22 @@ pub struct AdvancedCfg {
     /// `forwarded`. BOOT-TIME.
     #[serde(default)]
     pub forwarded_header: Option<String>,
+    /// The outbound TLS trust store (`advanced.tls`): base roots, global trust anchors and
+    /// per-destination entries, selected by the guard-judged dial host. BOOT-TIME.
+    #[serde(
+        default,
+        skip_serializing_if = "super::tls::OutboundTlsCfg::is_default"
+    )]
+    pub tls: super::tls::OutboundTlsCfg,
+    /// `advanced.proxy_resolution`: `local` (default: the guard judges a proxied target by
+    /// address and the CONNECT names the judged address) or `proxy` (CONNECT by name; a name that
+    /// does not resolve here is the proxy's to check). BOOT-TIME.
+    #[serde(default, skip_serializing_if = "is_local_resolution")]
+    pub proxy_resolution: super::tls::ProxyResolution,
+}
+
+fn is_local_resolution(r: &super::tls::ProxyResolution) -> bool {
+    *r == super::tls::ProxyResolution::Local
 }
 
 pub const DEFAULT_BLOCK_PRIVATE_ADDRESSES: bool = true;
@@ -246,6 +262,8 @@ impl Default for AdvancedCfg {
             response_headers: ResponseHeadersCfg::default(),
             block_private_addresses: DEFAULT_BLOCK_PRIVATE_ADDRESSES,
             allow_destinations: Vec::new(),
+            tls: super::tls::OutboundTlsCfg::default(),
+            proxy_resolution: super::tls::ProxyResolution::Local,
             trusted_proxies: Vec::new(),
             forwarded_header: None,
         }

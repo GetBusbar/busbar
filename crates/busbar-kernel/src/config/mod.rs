@@ -466,6 +466,11 @@ pub struct RootCfg {
     pub allow_all_metadata: bool,
     /// The `advanced` destination-guard keys, as written ([`RootCfg::destinations`] adds the rest).
     pub guard: Destinations,
+    /// `advanced.tls`, the outbound TLS trust store, as written (the connector validates and
+    /// builds it at boot).
+    pub outbound_tls: tls::OutboundTlsCfg,
+    /// `advanced.proxy_resolution`.
+    pub proxy_resolution: tls::ProxyResolution,
     /// The credential sign-in attempt limiter's resolved policy (`auth.login_limits`, the
     /// providers' `browser_login` overrides, `advanced.trusted_proxies`/`forwarded_header`).
     pub login_limits: crate::auth::login_limits::LoginLimitsPolicy,
@@ -2049,6 +2054,8 @@ pub fn resolve(
                 allow: deploy.advanced.allow_destinations.clone(),
                 ..Destinations::default()
             },
+            outbound_tls: deploy.advanced.tls.clone(),
+            proxy_resolution: deploy.advanced.proxy_resolution,
             login_limits,
 
             limits: LimitsResolved::from_sections(
