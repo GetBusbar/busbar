@@ -25,47 +25,18 @@ fn bucket_monotonic_and_percentiles_separate_scales() {
 }
 
 #[test]
-fn bucket_of_is_log2() {
-    assert_eq!(bucket_of(0), 0);
-    assert_eq!(bucket_of(1), 1);
-    assert_eq!(bucket_of(2), 2);
-    assert_eq!(bucket_of(3), 2);
-    assert_eq!(bucket_of(4), 3);
-    assert_eq!(bucket_of(1023), 10);
-    assert_eq!(bucket_of(1024), 11);
-}
-
-#[test]
-fn a_bucket_keeps_counting_past_the_32_bit_ceiling() {
-    let ceiling = u64::from(u32::MAX);
-    let idx = bucket_of(500);
-
-    let saturated = || {
-        let mut s = MethodStat {
-            count: ceiling,
-            ..Default::default()
-        };
-        s.buckets[idx] = ceiling;
-        s
-    };
-
-    let mut a = saturated();
-    a.record(500);
-    assert_eq!(
-        a.buckets[idx],
-        ceiling + 1,
-        "the bucket wrapped instead of counting past 2^32"
-    );
-
-    a.merge(&saturated());
-    assert_eq!(
-        a.buckets[idx],
-        2 * ceiling + 1,
-        "merging two saturated per-thread histograms wrapped the fold"
-    );
-
-    a.max_ns = 9_999_999;
-    assert_eq!(a.percentile(0.50), bucket_floor(idx));
+fn merging_per_thread_stats_keeps_the_percentiles_of_the_union() {
+    let mut a = MethodStat::default();
+    let mut b = MethodStat::default();
+    for v in 1..=500u64 {
+        a.record(v * 1_000);
+        b.record((v + 500) * 1_000);
+    }
+    a.merge(&b);
+    assert_eq!(a.count, 1000);
+    let p50 = a.percentile(0.50);
+    assert!(p50.abs_diff(500_000) * 100 <= 500_000, "p50 {p50}");
+    assert_eq!(MethodStat::default().percentile(0.50), 0, "empty reads 0");
 }
 
 #[test]

@@ -49,8 +49,6 @@ impl Stage {
     }
 }
 
-const BUCKET_CAP: usize = 4096;
-
 fn enabled_cell() -> &'static AtomicBool {
     static ENABLED: OnceLock<AtomicBool> = OnceLock::new();
     ENABLED.get_or_init(|| AtomicBool::new(std::env::var_os("BUSBAR_PROFILE").is_some()))
@@ -60,50 +58,47 @@ fn enabled_cell() -> &'static AtomicBool {
 pub fn enabled() -> bool {
     enabled_cell().load(Ordering::Relaxed)
 }
-
-/// One stage's bounded sample store: up to [`BUCKET_CAP`] retained nanosecond durations plus a count
-/// of ALL observations ever offered (`seen`). A `u32` holds up to ~4.29 s, far beyond any per-stage
-/// in-process span. Bounding the retained `Vec` keeps memory and the per-[`dump`] sort cost fixed no
-/// matter how long the (enabled) binary runs; `seen` drives the reservoir admission below.
-#[derive(Default)]
+/// One stage's samples: a metrics-util `Summary` (DDSketch, 1% relative error, at most 16 KiB) over
+/// every observation, plus the exact count and sum. Memory and the [`dump`] cost stay bounded no
+/// matter how long the (enabled) binary runs, and every sample counts (no reservoir).
 struct Bucket {
-    samples: Vec<u32>,
-    /// Total number of samples ever offered to this bucket (NOT the retained length). Reported by
-    /// [`dump`] as `n=` so the report still reflects the true observation count, and used as the
-    /// running index for Algorithm-R reservoir replacement once the bucket is full.
+    sketch: metrics_util::storage::Summary,
     seen: u64,
+    sum_ns: u64,
+}
+
+impl Default for Bucket {
+    fn default() -> Self {
+        Bucket {
+            sketch: metrics_util::storage::Summary::new(0.01, 2048, 1.0),
+            seen: 0,
+            sum_ns: 0,
+        }
+    }
 }
 
 impl Bucket {
     fn record(&mut self, n: u32) {
         self.seen += 1;
-        if self.samples.len() < BUCKET_CAP {
-            self.samples.push(n);
-            return;
-        }
-
-        let j = next_rand() % self.seen;
-        if let Some(slot) = usize::try_from(j)
-            .ok()
-            .and_then(|j| self.samples.get_mut(j))
-        {
-            *slot = n;
-        }
+        self.sum_ns += u64::from(n);
+        self.sketch.add(f64::from(n));
     }
-}
 
-fn next_rand() -> u64 {
-    static STATE: OnceLock<Mutex<u64>> = OnceLock::new();
-    let mut s = STATE
-        .get_or_init(|| Mutex::new(0x9E37_79B9_7F4A_7C15))
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let mut x = *s;
-    x ^= x >> 12;
-    x ^= x << 25;
-    x ^= x >> 27;
-    *s = x;
-    x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    /// The `dump` line for this stage, or `None` when it recorded nothing.
+    fn line(&self, stage: Stage) -> Option<String> {
+        if self.seen == 0 {
+            return None;
+        }
+        let pct = |p: f64| self.sketch.quantile(p).unwrap_or(0.0) / 1000.0;
+        Some(format!(
+            "BUSBAR_PROFILE stage={} n={} mean={:.3} p50={:.3} p99={:.3}",
+            stage.name(),
+            self.seen,
+            (self.sum_ns as f64 / self.seen as f64) / 1000.0,
+            pct(0.50),
+            pct(0.99),
+        ))
+    }
 }
 
 fn buckets() -> &'static Mutex<Vec<(Stage, Bucket)>> {
@@ -158,29 +153,8 @@ pub fn dump() {
 
     let order = [Stage::MwAuth, Stage::Finish];
     b.sort_by_key(|(stage, _)| order.iter().position(|s| s == stage).unwrap_or(usize::MAX));
-    for (stage, bucket) in b.iter_mut() {
-        let samples = &mut bucket.samples;
-        if samples.is_empty() {
-            continue;
-        }
-        samples.sort_unstable();
-
-        let retained = samples.len();
-        let seen = bucket.seen;
-        let sum: u64 = samples.iter().map(|&x| x as u64).sum();
-        let mean_us = (sum as f64 / retained as f64) / 1000.0;
-        let pct = |p: f64| -> f64 {
-            let i = (((retained - 1) as f64) * p).round() as usize;
-            samples[i] as f64 / 1000.0
-        };
-        eprintln!(
-            "BUSBAR_PROFILE stage={} n={} mean={:.3} p50={:.3} p99={:.3}",
-            stage.name(),
-            seen,
-            mean_us,
-            pct(0.50),
-            pct(0.99),
-        );
+    for line in b.iter().filter_map(|(stage, bucket)| bucket.line(*stage)) {
+        eprintln!("{line}");
     }
 }
 

@@ -114,45 +114,21 @@ mod imp {
     use std::sync::{Arc, Mutex, OnceLock, Weak};
     use std::time::Instant;
 
-    const N_BUCKETS: usize = 65;
-
-    #[inline(always)]
-    fn bucket_of(ns: u64) -> usize {
-        if ns == 0 {
-            0
-        } else {
-            (64 - ns.leading_zeros()) as usize
-        }
-    }
-
-    #[inline]
-    fn bucket_floor(idx: usize) -> u64 {
-        if idx == 0 {
-            0
-        } else {
-            1u64 << (idx - 1)
-        }
-    }
-
-    /// One method's accumulated stats. `count`/`total_ns`/`min_ns`/`max_ns` are exact; the histogram
-    /// gives coarse p50/p99. No heap per sample — a fixed `[u64; 65]` of bucket hit counts.
-    ///
-    /// The buckets are `u64`, the same width as `count`, and that is not spare capacity. They were
-    /// `u32` while `count` was already `u64`, so a hot method whose samples cluster in one bucket
-    /// overflows a bucket long before it overflows the count — at roughly a million samples a second
-    /// on one thread, in about seventy minutes. This crate is debug-only by design, and in a debug
-    /// build that overflow is an arithmetic PANIC inside `record`, i.e. the measurement kills the
-    /// request it was measuring. In release it silently wraps, and `percentile` then walks the whole
-    /// histogram without its cumulative sum ever reaching a `target` derived from the exact `u64`
-    /// count, so p50 and p99 both collapse to `max_ns` with nothing saying they are wrong. `merge`
-    /// folds the per-thread histograms with the same `+=` and had the same exposure.
+    /// One method's accumulated stats. `count`/`total_ns`/`min_ns`/`max_ns` are exact; p50/p99
+    /// come from a metrics-util `Summary` (DDSketch, 1% relative error), which merges across threads
+    /// without losing accuracy and counts in `u64`, so a hot method cannot wrap its histogram.
     #[derive(Clone)]
     struct MethodStat {
         count: u64,
         total_ns: u64,
         min_ns: u64,
         max_ns: u64,
-        buckets: [u64; N_BUCKETS],
+        sketch: metrics_util::storage::Summary,
+    }
+
+    /// 1% relative error; 2048 bins (at most 16 KiB per method) covers 1 ns to well past an hour.
+    fn sketch() -> metrics_util::storage::Summary {
+        metrics_util::storage::Summary::new(0.01, 2048, 1.0)
     }
 
     impl Default for MethodStat {
@@ -162,7 +138,7 @@ mod imp {
                 total_ns: 0,
                 min_ns: u64::MAX,
                 max_ns: 0,
-                buckets: [0; N_BUCKETS],
+                sketch: sketch(),
             }
         }
     }
@@ -178,7 +154,7 @@ mod imp {
             if ns > self.max_ns {
                 self.max_ns = ns;
             }
-            self.buckets[bucket_of(ns)] += 1;
+            self.sketch.add(ns as f64);
         }
 
         fn merge(&mut self, other: &MethodStat) {
@@ -186,24 +162,15 @@ mod imp {
             self.total_ns += other.total_ns;
             self.min_ns = self.min_ns.min(other.min_ns);
             self.max_ns = self.max_ns.max(other.max_ns);
-            for (a, b) in self.buckets.iter_mut().zip(other.buckets.iter()) {
-                *a += *b;
-            }
+            // Every sketch is built by `sketch()`, so the configurations always match.
+            let _ = self.sketch.merge(&other.sketch);
         }
 
+        /// A recorded quantile, held inside the exact extents; 0 when nothing was recorded.
         fn percentile(&self, p: f64) -> u64 {
-            if self.count == 0 {
-                return 0;
-            }
-            let target = ((self.count as f64) * p).ceil().max(1.0) as u64;
-            let mut cum = 0u64;
-            for (idx, &c) in self.buckets.iter().enumerate() {
-                cum += c;
-                if cum >= target {
-                    return bucket_floor(idx);
-                }
-            }
-            self.max_ns
+            self.sketch
+                .quantile(p)
+                .map_or(0, |v| (v.max(0.0) as u64).clamp(self.min_ns, self.max_ns))
         }
     }
 
