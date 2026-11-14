@@ -352,6 +352,12 @@ pub const UNRESERVED_KEPT: &percent_encoding::AsciiSet = &percent_encoding::NON_
     .remove(b'_')
     .remove(b'~');
 
+/// `s` percent-encoded over [`UNRESERVED_KEPT`], appended to `out` piece by piece (no buffer of
+/// its own).
+pub fn push_percent_encoded(out: &mut String, s: &str) {
+    out.extend(percent_encoding::utf8_percent_encode(s, UNRESERVED_KEPT));
+}
+
 /// `s` with every `%XX` escape decoded by percent-encoding; a `%` not followed by two hex digits
 /// stays. The bytes land in one buffer of `s`'s length that never regrows, so decoded credential
 /// bytes leave no stray copy behind.

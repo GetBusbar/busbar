@@ -2107,7 +2107,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         }
         if all.len() != members {
             let mut kept: Vec<usize> = all.iter().map(|c| c.idx).collect();
-            kept.sort_unstable();
+            kept.sort();
             constraint.keep = Some(kept);
         }
         self.lock().route_policy.clone_from(&constraint.policy);
