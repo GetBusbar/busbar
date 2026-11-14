@@ -106,8 +106,9 @@ Naming a server `hooks` or `upstream_credentials` is refused at parse with a mes
 | Key | Type | Required | Default | Notes |
 |---|---|---|---|---|
 | `pin` | object | **yes** | — | The out-of-band trust root. Required even when it is `unpinned`. |
-| `pin.mechanism` | `pinned_pubkey` \| `cert_spki` \| `mtls` \| `unpinned` | **yes** | — | A pin whose mechanism is inferred is a pin whose meaning changes when the inference changes. |
-| `pin.key` | string | required for the three rooted mechanisms; **refused** for `unpinned` | — | Issuer public key, or certificate SPKI hash. For `cert_spki` and `mtls` the key is the SHA-256 of the server certificate's whole SubjectPublicKeyInfo, written `sha256/<base64>` (canonical, standard base64 with padding); the plain `<base64>` is accepted as an alias. Anything that is not one 32-byte digest in either spelling is refused when the registration is sealed (the configuration is not loaded). |
+| `pin.mechanism` | `cert_spki` \| `mtls` \| `local_program` \| `unpinned` | **yes** | — | A pin whose mechanism is inferred is a pin whose meaning changes when the inference changes. `cert_spki` and `mtls` are checked **on top of** certificate chain validation, never instead of it: the server's certificate must still chain to a root Busbar trusts for it (the bundled public roots plus this registration's `tls.ca_cert_pem`), and the pin then narrows that chain to one key. `local_program` authenticates a host-launched `transport: stdio` program only. `pinned_pubkey` is refused until MCP manifest signatures are verified (`tools_config.rs`, BUSBAR-9007). |
+| `pin.key` | string | required for the rooted mechanisms (`cert_spki`, `mtls`, `local_program`); **refused** for `unpinned` | — | Certificate SPKI hash, or for `local_program` the exact absolute `command:` path. For `cert_spki` and `mtls` the key is the SHA-256 of the server certificate's whole SubjectPublicKeyInfo, written `sha256/<base64>` (canonical, standard base64 with padding); the plain `<base64>` is accepted as an alias. Anything that is not one 32-byte digest in either spelling is refused when the registration is sealed (the configuration is not loaded). |
+| `tls.ca_cert_pem` | string (PEM certificate bundle) | no; HTTPS members only | absent | Extra public trust roots for this server alone, added to the bundled public roots. The chain, name and validity are still verified, and any `cert_spki`/`mtls` pin is still checked on top. Public certificates only, never a private key or a secret reference. See [A self-signed upstream](#a-self-signed-upstream). |
 | `transport` | `streamable_http` \| `stdio` | no | `streamable_http` | See [Transports](#transports). |
 | `url` | string | **yes** for `streamable_http`; **refused** for `stdio` | `""` | `http://` or `https://`. |
 | `command` | string | **yes** for `stdio`; **refused** otherwise | — | ABSOLUTE path of the binary Busbar spawns. |
@@ -174,6 +175,31 @@ tools:
         description: Search the code index.
       send_email: {}                       # allowed, nothing approved: pending, does NOT serve
     hooks: [acme-audit]                    # ADDS to tools.hooks
+```
+
+#### A self-signed upstream
+
+A `cert_spki` pin does not stand in for a chain: a server whose certificate chains to no root Busbar trusts is refused at the handshake, before the pin is looked at, with `invalid peer certificate: UnknownIssuer: the server's certificate does not chain to a root busbar trusts for this destination ...`. To pin a self-signed server, make its certificate a leaf (`CA:FALSE`; a `CA:TRUE` certificate served as the leaf is refused with `CaUsedAsEndEntity`), configure that certificate as the server's own root in `tls.ca_cert_pem`, and pin its key:
+
+```sh
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 365 \
+  -keyout server.key -out server.crt -subj "/CN=tools.internal" \
+  -addext basicConstraints=critical,CA:FALSE -addext subjectAltName=DNS:tools.internal
+# pin.key: the SHA-256 of the certificate's SubjectPublicKeyInfo
+echo "sha256/$(openssl x509 -in server.crt -pubkey -noout | openssl pkey -pubin -outform der \
+  | openssl dgst -sha256 -binary | base64)"
+```
+
+```yaml
+tools:
+  internal:
+    url: https://tools.internal/mcp
+    tls:
+      ca_cert_pem: |
+        -----BEGIN CERTIFICATE-----
+        ...                                  # server.crt
+        -----END CERTIFICATE-----
+    pin: { mechanism: cert_spki, key: "sha256/…" }   # the line printed above
 ```
 
 ### Boot refusals: the `tools:` section

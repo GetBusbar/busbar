@@ -566,12 +566,12 @@ fn a_failed_connection_names_its_stage_and_the_underlying_error() {
         let mut c = Connection::dial(door.clone(), &crate::support::via(), secure(&far)).unwrap();
         assert!(matches!(next(&mut c).await, Err(Failure::Refused(_))));
         let unknown = rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer);
-        assert_eq!(
-            c.cause(),
-            Some(&ConnCause {
-                stage: CAUSE_SECURITY,
-                text: unknown.to_string()
-            })
+        let cause = c.cause().expect("a cause");
+        assert_eq!(cause.stage, CAUSE_SECURITY);
+        assert!(
+            cause.text.starts_with(&unknown.to_string()) && cause.text.contains("does not chain"),
+            "the stack's own words, explained: {}",
+            cause.text
         );
 
         let mut d = secure(&silent().await);

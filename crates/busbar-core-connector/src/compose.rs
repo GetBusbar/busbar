@@ -1969,11 +1969,18 @@ impl Connection {
                 break;
             }
             if let Err(e) = tls.process_new_packets() {
-                self.security_error = Some(e.to_string());
+                // A dialled refusal is explained; an accepted one (an mTLS client under the
+                // listener's `client_ca`, no pin) keeps the stack's words exactly.
+                let text = if matches!(tls, rustls::Connection::Client(_)) {
+                    crate::tls::explain::handshake_refusal(&e)
+                } else {
+                    e.to_string()
+                };
+                self.security_error = Some(text.clone());
                 // Flush the fatal alert that rustls queued (RFC 8446 §6.2) so the
                 // peer sees it before the TCP close.
                 let _ = self.tls_out();
-                return Err(Failure::Refused(format!("tls: {e}")));
+                return Err(Failure::Refused(format!("tls: {text}")));
             }
         }
         if end {
