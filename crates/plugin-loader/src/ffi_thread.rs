@@ -61,7 +61,8 @@
 //! | `dlclose` (runs `.fini_array`) | per unload | yes |
 //! | `busbar_plugin_door` (the memory-ABI entry, every kind, linked or dropped) | per load | yes |
 //! | a door table's `validate`, `open`, `refresh`, `retire`, `close`, `ready` | per load / reload / unload | yes |
-//! | a door table's request ops, `tick`, `drive`, `cancel` | **per request** | no — inline |
+//! | a secret's `check`, an export's `check`, a transport's `locate` before open | per load / configuration check | yes |
+//! | a door table's other request ops, `tick`, `drive`, `cancel` | **per request** | no — inline |
 //!
 //! Every routed crossing asserts, in debug builds, that it is on a permanent worker
 //! ([`debug_assert_permanent`]) at the point it enters plugin code. The door table's lifecycle

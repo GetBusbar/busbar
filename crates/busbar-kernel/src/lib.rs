@@ -170,6 +170,10 @@ pub mod host_record_bootstrap;
 pub mod host_services;
 pub mod json;
 pub mod limits;
+// jemalloc control for the binary (feature `mallctl`) and the allocation tests.
+#[cfg(all(not(target_env = "msvc"), any(test, feature = "mallctl")))]
+#[allow(unsafe_code)]
+pub mod mallctl;
 pub mod oauth_as;
 pub mod observability;
 pub mod snapshot;
