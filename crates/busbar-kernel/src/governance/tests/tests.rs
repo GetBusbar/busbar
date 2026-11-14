@@ -6351,3 +6351,172 @@ async fn credential_precommit_write_failure_is_not_typed_applied() {
         key
     );
 }
+
+/// UPG-A04c: the card names only this lane. An exhausted pool unit is served by no member, so its
+/// checkpoint carries the empty lane and no counts.
+const A04C_CARD_LANE: &str = "m-openai-chat";
+
+fn exhausted_unit(
+    key: &VirtualKey,
+    era: RawRateEra,
+    arrived: u64,
+    id: u8,
+) -> super::unit_checkpoint::UnitCheckpoint {
+    super::unit_checkpoint::UnitCheckpoint {
+        id: [id; 16],
+        revision: 0,
+        unit: u64::from(id),
+        principal: key.id.clone(),
+        group: String::new(),
+        arrived,
+        lane: String::new(),
+        provider: None,
+        era_at: era.effective_from,
+        era_entry: era.entry_id.map(|entry| entry.0),
+        units: std::collections::BTreeMap::new(),
+        targets: vec![super::unit_checkpoint::UnitTarget {
+            bucket: key.id.clone(),
+            window: 0,
+            group: None,
+        }],
+        metered: true,
+        ended: false,
+        terminal: None,
+        audit: None,
+        measurement: None,
+    }
+}
+
+/// Keeps every terminal snapshot it is asked to persist and refuses it, so the snapshot stays in
+/// pending custody for inspection.
+#[derive(Default)]
+struct HeldUnitSink(std::sync::Mutex<Vec<super::unit_checkpoint::UnitCheckpoint>>);
+
+#[async_trait::async_trait]
+impl super::unit_checkpoint::UnitCheckpointSink for HeldUnitSink {
+    async fn persist(
+        &self,
+        snapshot: &super::unit_checkpoint::UnitCheckpoint,
+    ) -> RecordStoreResult<()> {
+        self.0.lock().unwrap().push(snapshot.clone());
+        Err(RecordStoreError("held for inspection".into()))
+    }
+    async fn remove(
+        &self,
+        _snapshot: &super::unit_checkpoint::UnitCheckpoint,
+    ) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    async fn replay(&self) -> RecordStoreResult<Vec<super::unit_checkpoint::UnitCheckpoint>> {
+        Ok(Vec::new())
+    }
+}
+
+#[tokio::test]
+async fn exhausted_unit_checkpoint_adds_no_lane_row() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.clone().core(), None, None)
+        .await
+        .unwrap();
+    let key = sample_key("vk_a04c_exhausted", "a04c-exhausted");
+    store.identity().put_key(&key).await.unwrap();
+    let cost = card_cost(A04C_CARD_LANE, 500.0);
+    let at = 1_700_000_000u64;
+    let grant = gov.try_admit(&cost, &key, "", at).expect("admitted");
+    gov.apply_unit_checkpoint_live(&exhausted_unit(&key, grant.charge().raw_era(), at, 1))
+        .expect("an exhausted unit's checkpoint applies");
+
+    let usage = gov
+        .viewed_usage_for_async(&cost, &key.id, at)
+        .await
+        .expect("an exhausted unit must not make the key's money unreadable")
+        .expect("the key exists");
+    assert_eq!(
+        (usage.requests, usage.spend_cents),
+        (1, 0),
+        "an exhausted unit is one admission at the fee, with no lane traffic"
+    );
+    let cell = gov
+        .budget
+        .read(&key.id)
+        .get(&key.id)
+        .cloned()
+        .expect("the admitted cell");
+    assert!(
+        cell.models.iter().all(|m| !m.model.is_empty()),
+        "a unit no lane served and that reported no counts adds no lane row"
+    );
+
+    // #42 holds: an unnamed lane that carries counts is still refused, never priced as 0.
+    let mut unnamed = BudgetCell::fresh(0);
+    unnamed
+        .accrue_raw("", RawRateEra::legacy(0), &whole_counts(&tt(1)))
+        .unwrap();
+    assert!(matches!(
+        unnamed.spend(&cost, true),
+        Err(busbar_kernel_ledger::cost::MoneyError::LaneUnpriced { .. })
+    ));
+}
+
+#[tokio::test]
+async fn exhausted_terminal_checkpoint_records_custody() {
+    for (id, correction_open) in [(1u8, false), (2u8, true)] {
+        let store = crate::real_store::core().await;
+        let gov = GovState::new_with_core(store.clone().core(), None, None)
+            .await
+            .unwrap();
+        gov.attach_recovery_sink(Arc::new(super::recovery::tests::Journal::default()))
+            .await
+            .unwrap();
+        let sink = Arc::new(HeldUnitSink::default());
+        gov.attach_unit_checkpoint_sink(sink.clone()).await.unwrap();
+        let key = sample_key(&format!("vk_a04c_terminal_{id}"), "a04c-terminal");
+        store.identity().put_key(&key).await.unwrap();
+        let cost = card_cost(A04C_CARD_LANE, 500.0);
+        let at = 1_700_000_000u64;
+        let grant = gov.try_admit(&cost, &key, "", at).expect("admitted");
+        if correction_open {
+            let mut cells = gov.budget.write(&key.id);
+            let cell = cells.get_mut(&key.id).expect("the admitted cell");
+            let mut accepted = cell.clone();
+            accepted.correction = None;
+            cell.correction = Some(Box::new(CorrectionBranch {
+                op_id: crate::door::op_id(),
+                window: 0,
+                accepted,
+            }));
+        }
+        let snapshot = exhausted_unit(&key, grant.charge().raw_era(), at + 1, id);
+        assert!(
+            gov.finish_unit_checkpoint(snapshot.clone()),
+            "durable unit custody owns the exhausted unit"
+        );
+
+        let cell = gov
+            .budget
+            .read(&key.id)
+            .get(&key.id)
+            .cloned()
+            .expect("the admitted cell");
+        assert_eq!(cell.requests, 1);
+        assert_eq!(cell.last_touch, snapshot.arrived);
+        assert!(cell.models.iter().all(|m| !m.model.is_empty()));
+        if correction_open {
+            let branch = cell.correction.as_ref().expect("correction stays open");
+            assert!(branch.accepted.models.iter().all(|m| !m.model.is_empty()));
+        }
+        assert!(gov.unit_checkpoint_pending(&snapshot.id));
+        assert!(
+            !gov.unresolved_unit_target(&key.id, 0),
+            "terminal hot accounting succeeded, so custody is not marked recovered"
+        );
+        assert!(gov.flush_unit_checkpoints().await.is_err());
+        assert!(gov.unit_checkpoint_pending(&snapshot.id));
+        assert!(sink
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|held| held.id == snapshot.id && held.ended));
+    }
+}
