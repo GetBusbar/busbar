@@ -225,6 +225,8 @@ pub(crate) enum AsBuildError {
     /// not under the issuer, which cannot happen with endpoints this module derives — it is carried
     /// rather than unwrapped because "cannot happen" is not a thing a boot path should assert.
     Service(oauth_as::http::ServiceError),
+    /// The crypto backend refused what the server needs (an algorithm, or its self-test).
+    Crypto(oauth_as::crypto::CryptoError),
 }
 
 impl std::fmt::Display for AsBuildError {
@@ -238,6 +240,7 @@ impl std::fmt::Display for AsBuildError {
                  -outform DER | base64` produces."
             ),
             AsBuildError::Service(e) => write!(f, "oauth_as: {e}"),
+            AsBuildError::Crypto(e) => write!(f, "oauth_as.crypto: {e}"),
         }
     }
 }
@@ -374,14 +377,19 @@ impl AsPlane {
             provisioned_clients(&identity),
         );
         let server = Arc::new(
-            AuthorizationServer::new(config, store)
-                .with_jws_verifier(Arc::new(Es256Verifier))
-                .with_jws_verifier(Arc::new(Ps256Verifier))
-                .with_registration_policy(Box::new(super::policy::OpenRegistration))
-                .with_rate_limiter(Box::new(Throttle {
-                    limiter: Arc::clone(&carried.limiter),
-                    registrations: Arc::clone(&carried.registrations),
-                })),
+            AuthorizationServer::new_with_crypto(
+                config,
+                store,
+                Arc::new(super::crypto_provider::FacadeCrypto),
+            )
+            .map_err(AsBuildError::Crypto)?
+            .with_jws_verifier(Arc::new(Es256Verifier))
+            .with_jws_verifier(Arc::new(Ps256Verifier))
+            .with_registration_policy(Box::new(super::policy::OpenRegistration))
+            .with_rate_limiter(Box::new(Throttle {
+                limiter: Arc::clone(&carried.limiter),
+                registrations: Arc::clone(&carried.registrations),
+            })),
         );
 
         let sessions = Arc::clone(&carried.sessions);
@@ -432,7 +440,8 @@ impl AsPlane {
         use base64::Engine as _;
         use oauth_as::store::Storage as _;
         let htu = format!("{}{}", self.identity.origin(), presented.path);
-        let Ok(proof) = oauth_as::dpop::verify_proof(
+        let Ok(proof) = oauth_as::dpop::verify_proof_with_crypto(
+            &super::crypto_provider::FacadeCrypto,
             &self.dpop_verifiers,
             &presented.proof,
             &presented.method,

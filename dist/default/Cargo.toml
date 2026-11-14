@@ -1132,7 +1132,7 @@ metrics-util = { version = "0.20.4", default-features = false }
 # The plain posture's RFC 8414 document stays the bytes it was: the plane serves it with the
 # members these three add removed (`busbar_core_oauth2::plane`), so a deployment that did not ask
 # for the profile advertises none of it.
-oauth-as = { version = "1.0.1", features = [
+oauth-as = { version = "1.1", default-features = false, features = [
     "http",
     "jwt",
     "consent",
