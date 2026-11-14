@@ -6,7 +6,8 @@
 mod ring;
 pub mod stun;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -73,7 +74,7 @@ pub struct SessionCert {
 impl std::fmt::Debug for SessionCert {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SessionCert")
-            .field("fingerprint", &hex(&self.fingerprint))
+            .field("fingerprint", &Hex(&self.fingerprint))
             .finish_non_exhaustive()
     }
 }
@@ -88,17 +89,25 @@ impl SessionCert {
     /// Mint a fresh self-signed ECDSA P-256 certificate: ring generates the key, rcgen (on ring)
     pub fn mint() -> Result<Self, Failure> {
         use ::ring::signature::{EcdsaKeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the minting failure's text"
+        )]
         let failed = |e: &dyn std::fmt::Display| Failure::Certificate(e.to_string());
         let rng = SystemRandom::new();
         let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
             .map_err(|e| failed(&e))?;
-        let pkcs8 = Zeroizing::new(pkcs8.as_ref().to_vec());
-        let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &pkcs8, &rng)
+        let pkcs8 = pkcs8.as_ref();
+        let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8, &rng)
             .map_err(|e| failed(&e))?;
-        let signer = rcgen::KeyPair::try_from(pkcs8.as_slice()).map_err(|e| failed(&e))?;
+        let signer = rcgen::KeyPair::try_from(pkcs8).map_err(|e| failed(&e))?;
         let cert = rcgen::CertificateParams::new(Vec::<String>::new())
             .and_then(|p| p.self_signed(&signer))
             .map_err(|e| failed(&e))?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the session certificate's DER is kept owned, once per minted session"
+        )]
         let der = cert.der().to_vec();
         let handle = ring::register_key(Arc::new(pair)).map_err(|e| failed(&e))?;
         Ok(SessionCert {
@@ -121,8 +130,10 @@ impl SessionCert {
     }
 
     fn dimpl(&self) -> dimpl::DtlsCertificate {
+        // busbar:expect(bp::clone_alloc, reason = "boot: dimpl takes the certificate owned, once per association handshake")
+        let certificate = self.der.clone();
         dimpl::DtlsCertificate {
-            certificate: self.der.clone(),
+            certificate,
             private_key: self.handle.clone(),
         }
     }
@@ -254,7 +265,10 @@ pub struct Association {
     bound: Option<SocketAddr>,
     wanted: Option<SocketAddr>,
     next_consent: Option<Instant>,
-    early: Vec<(SocketAddr, Vec<u8>)>,
+    /// DTLS datagrams from a heard-but-unbound path: each one's path and its span of
+    /// `early_bytes`, the one buffer they are all held in (cleared, never shrunk, on replay).
+    early: Vec<(SocketAddr, std::ops::Range<usize>)>,
+    early_bytes: Vec<u8>,
     up: VecDeque<Up>,
     wire: VecDeque<(SocketAddr, Vec<u8>)>,
     record: Vec<u8>,
@@ -304,6 +318,7 @@ impl Association {
             wanted: None,
             next_consent: None,
             early: Vec::new(),
+            early_bytes: Vec::new(),
             up: VecDeque::new(),
             wire: VecDeque::new(),
             record: vec![0_u8; RECORD_BUF],
@@ -350,7 +365,7 @@ impl Association {
                 if self.bound == Some(path) {
                     if let Some(dtls) = self.dtls.as_mut() {
                         if let Err(e) = dtls.handle_packet(datagram) {
-                            self.fail(Failure::Dtls(e.to_string()));
+                            self.fail(dtls_failed(&e));
                             return Verdict::Kept;
                         }
                     }
@@ -358,7 +373,9 @@ impl Association {
                 } else if (self.heard.contains_key(&path) || self.candidates.contains(&path))
                     && self.early.len() < MAX_EARLY
                 {
-                    self.early.push((path, datagram.to_vec()));
+                    let at = self.early_bytes.len();
+                    self.early_bytes.extend_from_slice(datagram);
+                    self.early.push((path, at..self.early_bytes.len()));
                 }
                 Verdict::Kept
             }
@@ -481,7 +498,7 @@ impl Association {
             return Err(Failure::Dtls("no handshake yet".into()));
         };
         if let Err(e) = dtls.send_application_data(plaintext) {
-            return Err(Failure::Dtls(e.to_string()));
+            return Err(dtls_failed(&e));
         }
         self.drive();
         Ok(())
@@ -525,7 +542,7 @@ impl Association {
             self.timeout = None;
             if let Some(dtls) = self.dtls.as_mut() {
                 if let Err(e) = dtls.handle_timeout(now) {
-                    self.fail(Failure::Dtls(e.to_string()));
+                    self.fail(dtls_failed(&e));
                     return;
                 }
             }
@@ -674,19 +691,30 @@ impl Association {
                 .build()
             {
                 Ok(c) => c,
-                Err(e) => return self.fail(Failure::Dtls(e.to_string())),
+                Err(e) => return self.fail(dtls_failed(&e)),
             };
             let mut dtls = dimpl::Dtls::new_12(Arc::new(config), self.cert.dimpl(), now);
             dtls.set_active(self.role == Role::Client);
             if let Err(e) = dtls.handle_timeout(now) {
-                return self.fail(Failure::Dtls(e.to_string()));
+                return self.fail(dtls_failed(&e));
             }
             self.dtls = Some(dtls);
         }
-        for (from, datagram) in std::mem::take(&mut self.early) {
+        let mut early = std::mem::take(&mut self.early);
+        let mut bytes = std::mem::take(&mut self.early_bytes);
+        for (from, span) in early.drain(..) {
             if from == path {
-                self.ingest(from, &datagram, now);
+                if let Some(datagram) = bytes.get(span) {
+                    self.ingest(from, datagram, now);
+                }
             }
+        }
+        bytes.clear();
+        if self.early.is_empty() {
+            self.early = early;
+        }
+        if self.early_bytes.is_empty() {
+            self.early_bytes = bytes;
         }
         self.drive();
     }
@@ -695,6 +723,7 @@ impl Association {
         self.failed = Some(failure);
         self.dtls = None;
         self.early.clear();
+        self.early_bytes.clear();
         self.wire.clear();
         self.up.clear();
     }
@@ -705,14 +734,22 @@ impl Association {
             dimpl::SrtpProfile::AEAD_AES_128_GCM => SrtpProfile::AeadAes128Gcm,
             dimpl::SrtpProfile::AEAD_AES_256_GCM => SrtpProfile::AeadAes256Gcm,
             other => {
-                self.fail(Failure::Profile(other.to_string()));
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: a refused profile fails the association, naming it"
+                )]
+                let named = other.to_string();
+                self.fail(Failure::Profile(named));
                 return;
             }
         };
-        self.up.push_back(Up::Keyed(SrtpKeying {
-            profile,
-            material: Zeroizing::new(material.to_vec()),
-        }));
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the SRTP keying is exported once per association, zeroed on drop"
+        )]
+        let material = Zeroizing::new(material.to_vec());
+        self.up
+            .push_back(Up::Keyed(SrtpKeying { profile, material }));
     }
 
     fn drive(&mut self) {
@@ -733,7 +770,6 @@ impl Association {
                 }
 
                 dimpl::Output::KeyingMaterial(km, profile) => {
-                    let km = Zeroizing::new(km.to_vec());
                     if !self.peer_verified {
                         self.fail(Failure::Fingerprint);
                         break;
@@ -763,6 +799,10 @@ impl Association {
                     break;
                 }
                 other => {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "error: an output the engine never owes fails the association, naming it"
+                    )]
                     let reason = format!("{other:?}");
                     self.fail(Failure::Dtls(reason));
                     break;
@@ -779,12 +819,30 @@ fn sha256(bytes: &[u8]) -> [u8; 32] {
     out
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|b| format!("{b:02X}"))
-        .collect::<Vec<_>>()
-        .join(":")
+/// `bytes` as colon-separated upper-case hex pairs, written straight into the formatter.
+struct Hex<'a>(&'a [u8]);
+
+impl std::fmt::Debug for Hex<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("\"")?;
+        for (i, b) in self.0.iter().enumerate() {
+            if i > 0 {
+                f.write_str(":")?;
+            }
+            write!(f, "{b:02X}")?;
+        }
+        f.write_str("\"")
+    }
+}
+
+/// A failure of the DTLS layer itself, with its text.
+fn dtls_failed(e: &dyn std::fmt::Display) -> Failure {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a failed association keeps the DTLS layer's failure text"
+    )]
+    let text = e.to_string();
+    Failure::Dtls(text)
 }
 
 #[cfg(test)]

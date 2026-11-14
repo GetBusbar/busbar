@@ -1473,7 +1473,7 @@ fn a_request_bound_past_the_clock_is_no_bound_of_its_own() {
     assert_eq!(due_at(last, u64::MAX), None, "past the clock: no bound");
     assert_eq!(due_at(last, 1_000), None);
 
-    let held = Held::over(None, None, None).bounded(u64::MAX);
+    let held = Held::over(None, None, None).bounded(std::time::Instant::now(), u64::MAX);
     let due = held.due.lock().expect("due");
     assert!(
         due.as_ref().is_none_or(|d| d.at > now),
@@ -3170,12 +3170,7 @@ mod transport_pin {
         {
             held.push("sealed destinations");
         }
-        if c.member_anchored
-            .lock()
-            .unwrap()
-            .keys()
-            .any(|(o, _, _)| *o == owner)
-        {
+        if c.member_anchored.lock().unwrap().0.contains_key(&owner) {
             held.push("sealed registrations");
         }
         if c.registered
@@ -3186,20 +3181,10 @@ mod transport_pin {
         {
             held.push("registrations at a destination");
         }
-        if c.reaching
-            .lock()
-            .unwrap()
-            .keys()
-            .any(|(o, _, _)| *o == owner)
-        {
+        if c.reaching.lock().unwrap().0.contains_key(&owner) {
             held.push("private reaches");
         }
-        if c.auths
-            .lock()
-            .unwrap()
-            .keys()
-            .any(|(o, _, _, _)| *o == owner)
-        {
+        if c.auths.lock().unwrap().contains_key(&owner) {
             held.push("auth bindings");
         }
         if c.authority_held.lock().unwrap().contains(&owner) {

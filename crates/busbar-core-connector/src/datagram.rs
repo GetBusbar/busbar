@@ -3,7 +3,8 @@
 
 //! THE DATAGRAM DRIVER: one association's datagram framer, driven host-side over the host's port
 
-use std::collections::{HashMap, VecDeque};
+use foldhash::HashMap;
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
@@ -35,6 +36,25 @@ const NO_TEXT: AbiStr = AbiStr {
     ptr: std::ptr::null(),
     len: 0,
 };
+
+/// The untold paths, each with its address's text rendered on the stack (a few inline).
+type PathTexts = smallvec::SmallVec<[(u32, crate::StackText<{ crate::SOCKET_TEXT }>); 4]>;
+
+/// The untold paths as a crossing lends them, borrowing their [`PathTexts`].
+type LentPaths = smallvec::SmallVec<[DatagramPath; 4]>;
+
+fn lent_paths(texts: &PathTexts) -> LentPaths {
+    let mut paths = LentPaths::new();
+    paths.extend(texts.iter().map(|(path, addr)| DatagramPath {
+        path: *path,
+        _reserved: 0,
+        addr: text(addr.as_str().as_bytes()),
+    }));
+    paths
+}
+
+/// How many lent fields an opening holds on the stack before it spills to the heap.
+const FIELDS_INLINE: usize = crate::framer::FIELDS_INLINE;
 
 fn text(b: &[u8]) -> AbiStr {
     if b.is_empty() {
@@ -94,17 +114,36 @@ impl PathBook {
         self.by_path.get(&path).copied()
     }
 
+    /// Every untold path with its address's text, to tell the framer.
+    fn untold_texts(&self) -> PathTexts {
+        let mut texts = PathTexts::new();
+        for path in &self.untold {
+            if let Some(addr) = self.addr(*path) {
+                texts.push((*path, crate::StackText::of(&addr)));
+            }
+        }
+        texts
+    }
+
     /// `addr`'s number, numbering it now if it has none. At the cap the numbers of addresses the
     fn number(&mut self, addr: SocketAddr, keep: impl Fn(SocketAddr) -> bool) -> Option<u32> {
         if let Some(p) = self.by_addr.get(&addr) {
             return Some(*p);
         }
         if self.by_addr.len() >= MAX_PATHS {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: at the path cap (a flood of far-end addresses) the paths no one keeps are let go"
+            )]
             let gone: Vec<SocketAddr> =
                 self.by_addr.keys().copied().filter(|a| !keep(*a)).collect();
             for a in gone {
                 if let Some(p) = self.by_addr.remove(&a) {
                     self.by_path.remove(&p);
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "error: at the path cap (a flood of far-end addresses) the paths no one keeps are let go"
+                    )]
                     self.untold.retain(|u| *u != p);
                 }
             }
@@ -298,6 +337,10 @@ impl<'f> DatagramTurn<'f> {
 
     fn security_valid(&self) -> Result<(), Refused> {
         if let Some(failure) = self.framing.secure.as_ref().and_then(Association::failure) {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a failed association's refusal names its failure"
+            )]
             return Err(Refused {
                 outcome: Outcome::Failed,
                 error: format!("the secure layer failed the association: {failure:?}"),
@@ -488,7 +531,8 @@ pub struct DatagramFraming {
     routes: Vec<DatagramRoute>,
     cert: Arc<SessionCert>,
     /// The host port's address, as text: the one candidate the framer advertises.
-    local: String,
+    /// The local address's text, as every crossing lends it.
+    local: crate::StackText<{ crate::SOCKET_TEXT }>,
     secure: Option<Association>,
     book: PathBook,
     /// Exported by the secure layer, not yet presented.
@@ -751,6 +795,10 @@ impl DatagramFraming {
         door: Arc<dyn FramerDoor>,
         local: SocketAddr,
     ) -> Result<(Self, Yielded), Refused> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a certificate that would not mint faults with its reason"
+        )]
         let cert = SessionCert::mint().map_err(|e| fault(format!("{e:?}")))?;
         Self::accept(door, Arc::new(cert), local)
     }
@@ -779,6 +827,10 @@ impl DatagramFraming {
             door.facts().require_dial()?;
         }
         if !door.facts().datagram {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the refusal names the door that is no datagram framer"
+            )]
             return Err(Refused {
                 outcome: Outcome::Refused,
                 error: format!(
@@ -796,7 +848,7 @@ impl DatagramFraming {
             bufs,
             routes: vec![DatagramRoute::default(); ROUTES_CAP],
             cert,
-            local: local.to_string(),
+            local: crate::StackText::of(&local),
             secure: None,
             book: PathBook::default(),
             keying: None,
@@ -818,7 +870,7 @@ impl DatagramFraming {
             continuation: None,
             retirement: None,
         };
-        let y = f.run(Op::Begin(opening), Instant::now())?;
+        let y = f.run(Op::Begin(opening), crate::framer::now())?;
         Ok((f, y))
     }
 
@@ -1040,20 +1092,8 @@ impl DatagramFraming {
             return Err(fault("the association's framing is closed"));
         }
 
-        let untold: Vec<(u32, String)> = self
-            .book
-            .untold
-            .iter()
-            .filter_map(|p| Some((*p, self.book.addr(*p)?.to_string())))
-            .collect();
-        let paths: Vec<DatagramPath> = untold
-            .iter()
-            .map(|(p, a)| DatagramPath {
-                path: *p,
-                _reserved: 0,
-                addr: text(a.as_bytes()),
-            })
-            .collect();
+        let untold = self.book.untold_texts();
+        let paths = lent_paths(&untold);
         let verified = self.verified();
         let keying = self
             .keying
@@ -1069,15 +1109,19 @@ impl DatagramFraming {
             Op::Ingest { lane, from, .. } => (lane, from),
             _ => (0, None),
         };
-        let from_text = from.map(|a| a.to_string()).unwrap_or_default();
+        let from_text = from.map(|a| crate::StackText::<{ crate::SOCKET_TEXT }>::of(&a));
         let bound = self.bound_path();
         let lane = DatagramLane {
             size: u32::try_from(std::mem::size_of::<DatagramLane>()).unwrap_or(u32::MAX),
             lane: lane_code,
             path: from.map_or(0, |a| self.book.path(a)),
             bound,
-            path_addr: text(from_text.as_bytes()),
-            local_addr: text(self.local.as_bytes()),
+            path_addr: text(
+                from_text
+                    .as_ref()
+                    .map_or(&[][..], |t| t.as_str().as_bytes()),
+            ),
+            local_addr: text(self.local.as_str().as_bytes()),
             verified: u32::from(verified),
             _reserved: 0,
             keying: keying
@@ -1095,13 +1139,12 @@ impl DatagramFraming {
         let mut o: FramerOut = blank_out();
         let c: Crossed = match op {
             Op::Begin(opening) => {
-                let fields: Vec<Field> = opening
-                    .iter()
-                    .map(|(n, v)| Field {
-                        name: text(n.as_bytes()),
-                        value: text(v),
-                    })
-                    .collect();
+                let mut fields: smallvec::SmallVec<[Field; FIELDS_INLINE]> =
+                    smallvec::SmallVec::new();
+                fields.extend(opening.iter().map(|(n, v)| Field {
+                    name: text(n.as_bytes()),
+                    value: text(v),
+                }));
                 let facts = ConnFacts {
                     size: u32::try_from(std::mem::size_of::<ConnFacts>()).unwrap_or(u32::MAX),
                     _reserved: 0,
@@ -1162,6 +1205,10 @@ impl DatagramFraming {
             }
         };
         if let Err(f) = check_datagram(c.outcome, &o, &self.routes, self.routes.len() as u64) {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a broken datagram answer's fault text names the rule and field"
+            )]
             return Err(fault(format!(
                 "the framer's datagram answer breaks {:?} at {}",
                 f.rule, f.field
@@ -1216,7 +1263,6 @@ impl DatagramFraming {
             if self.secure.is_some() {
                 return Err(fault("the framer answered terms twice"));
             }
-            self.user = Some(t.local.ufrag.clone());
             let mut secure = Association::new(
                 Arc::clone(&self.cert),
                 t.role,
@@ -1231,6 +1277,8 @@ impl DatagramFraming {
             if self.side == SIDE_DIAL {
                 self.admit(&t.candidates, now);
             }
+            // The association's keys are built; its user name moves to the framing.
+            self.user = Some(t.local.ufrag);
         }
         for (path, lane, bytes) in asked.routes {
             self.send_answered(path, lane, bytes);
@@ -1275,7 +1323,7 @@ impl DatagramFraming {
         matches!(
             judge.judge_target_all(
                 busbar_kernel::host_services::Destination {
-                    authority: &addr.to_string(),
+                    authority: crate::StackText::<{ crate::SOCKET_TEXT }>::of(&addr).as_str(),
                     // The host owns DTLS for this association, independently of its claim.
                     secure: true,
                     egress_class: *class,
@@ -1349,16 +1397,25 @@ fn read_terms(t: &RendezvousTerms, frame: &[u8]) -> Result<Terms, Refused> {
             .get(at..at.saturating_add(len))
             .ok_or_else(|| fault("the framer's terms are out of bounds"))
     };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: an association's check credentials are kept owned, read once from its terms"
+    )]
     let utf8 = |s| -> Result<String, Refused> {
-        String::from_utf8(span(s)?.to_vec())
-            .map_err(|_| fault("the framer's check credentials are not text"))
+        let text = std::str::from_utf8(span(s)?)
+            .map_err(|_| fault("the framer's check credentials are not text"))?;
+        Ok(text.to_owned())
     };
     let role = match t.role {
         HANDSHAKE_INITIATES => Role::Client,
         HANDSHAKE_ANSWERS => Role::Server,
         _ => return Err(fault("the framer's terms name no handshake role")),
     };
-    let candidates = String::from_utf8(span(t.candidates)?.to_vec())
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: an association's far-end candidates are kept owned, read once from its terms"
+    )]
+    let candidates = std::str::from_utf8(span(t.candidates)?)
         .map_err(|_| fault("the far end's candidates are not text"))?
         .lines()
         .map(str::trim)
@@ -1502,6 +1559,10 @@ impl Associations {
 
     /// Whether `framing` may be carried: the user name it is found by.
     fn admits(&self, framing: &DatagramFraming) -> Result<String, NotAdded> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the port finds an association by its user name, kept once as it is added"
+        )]
         let user = framing.user().ok_or(NotAdded::NoTerms)?.to_owned();
         if self.by_user.contains_key(&user) {
             return Err(NotAdded::UserTaken);
@@ -2269,7 +2330,10 @@ impl PortAssociations {
     }
 
     /// One message's bytes for `stream` on association `id`: whether it was taken (`false` = no
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "an emit carries the message's every flag and the port's two sinks"
+    )]
     pub fn emit(
         &self,
         id: u64,
@@ -2291,7 +2355,10 @@ impl PortAssociations {
     }
 
     /// Wait for this association's emission turn without accepting or copying a busy write.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "an emit carries the message's every flag and the port's two sinks"
+    )]
     pub async fn emit_ready(
         &self,
         id: u64,
@@ -2313,7 +2380,7 @@ impl PortAssociations {
             let ready = emission.ready.notified();
             tokio::pin!(ready);
             ready.as_mut().enable();
-            let result = self.try_turn(
+            let result = self.try_turn_now(
                 id,
                 Owed::Emit {
                     stream,
@@ -2321,9 +2388,7 @@ impl PortAssociations {
                     end_of_frame,
                     text,
                 },
-                Instant::now(),
                 send,
-                WhileBusy::Wait,
             );
             if let std::task::Poll::Ready((ok, answered)) = result {
                 answer(answered);
@@ -2345,6 +2410,16 @@ impl PortAssociations {
             std::task::Poll::Ready(answer) => answer,
             std::task::Poll::Pending => unreachable!("queued turns never wait"),
         }
+    }
+
+    /// One waiting attempt at a turn: its own op, so it takes its own clock reading.
+    fn try_turn_now(
+        &self,
+        id: u64,
+        first: Owed<'_>,
+        send: &dyn Fn(SocketAddr, &[u8]),
+    ) -> std::task::Poll<(Option<bool>, Answered)> {
+        self.try_turn(id, first, crate::framer::now(), send, WhileBusy::Wait)
     }
 
     fn try_turn(
@@ -2510,14 +2585,31 @@ pub fn stream_head(block: &[u8]) -> Option<StreamHead> {
     let mut label = None;
     for line in text.split("\r\n").filter(|l| !l.is_empty()) {
         let (name, value) = line.split_once(':')?;
-        let value = value.trim().to_owned();
+        // Only the value the head is named by is kept (a `kind` answers at once; the last
+        // `label` otherwise).
         match name.trim() {
-            "kind" => return Some(StreamHead::Line { kind: value }),
+            "kind" => {
+                return Some(StreamHead::Line {
+                    kind: head_value(value),
+                })
+            }
             "label" => label = Some(value),
             _ => {}
         }
     }
-    label.map(|label| StreamHead::Channel { label })
+    label.map(|label| StreamHead::Channel {
+        label: head_value(label),
+    })
+}
+
+/// A stream head's named value, trimmed and kept.
+fn head_value(value: &str) -> String {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a session stream's head is read once, as the stream opens"
+    )]
+    let value = value.trim().to_owned();
+    value
 }
 
 /// One frame a leg yielded on a line, for the paired line of the other leg.
@@ -2566,7 +2658,12 @@ impl Bridge {
     /// The upstream dial's opening fields: one `media` field per caller line, its kind, in order,
     #[must_use]
     pub fn opening(&self, channels: &[&str]) -> Vec<(String, Vec<u8>)> {
-        self.caller
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a session's upstream dial is opened once, its opening fields owned"
+        )]
+        let fields = self
+            .caller
             .iter()
             .map(|(_, kind)| ("media".to_owned(), kind.clone().into_bytes()))
             .chain(
@@ -2574,12 +2671,17 @@ impl Bridge {
                     .iter()
                     .map(|l| ("channel".to_owned(), l.as_bytes().to_vec())),
             )
-            .collect()
+            .collect();
+        fields
     }
 
     /// Whether the two legs' lines mirror: the same count, and the same kind at every position.
     pub fn mirrored(&self) -> Result<(), String> {
         if self.caller.len() != self.upstream.len() {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the refusal names how the legs' lines differ"
+            )]
             return Err(format!(
                 "the upstream leg carries {} line(s), the caller's {}",
                 self.upstream.len(),
@@ -2588,6 +2690,10 @@ impl Bridge {
         }
         for (i, ((_, a), (_, b))) in self.caller.iter().zip(&self.upstream).enumerate() {
             if a != b {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: the refusal names how the legs' lines differ"
+                )]
                 return Err(format!(
                     "line {i} is `{a}` on the caller's leg and `{b}` upstream"
                 ));
@@ -2599,7 +2705,12 @@ impl Bridge {
     /// The caller's channels' labels, in the order it opened them: what the upstream dial names.
     #[must_use]
     pub fn caller_channels(&self) -> Vec<&str> {
-        self.channels.iter().map(String::as_str).collect()
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a session's upstream dial names the caller's channels once"
+        )]
+        let labels = self.channels.iter().map(String::as_str).collect();
+        labels
     }
 
     /// Stop the bridge: no frame crosses again, in either direction.
@@ -2954,20 +3065,8 @@ impl DatagramFraming {
     }
 
     fn drain_finish(&mut self, token: u64, send: RetirementSender<'_>) -> Result<(), Refused> {
-        let untold: Vec<(u32, String)> = self
-            .book
-            .untold
-            .iter()
-            .filter_map(|path| Some((*path, self.book.addr(*path)?.to_string())))
-            .collect();
-        let paths: Vec<DatagramPath> = untold
-            .iter()
-            .map(|(path, addr)| DatagramPath {
-                path: *path,
-                _reserved: 0,
-                addr: text(addr.as_bytes()),
-            })
-            .collect();
+        let untold = self.book.untold_texts();
+        let paths = lent_paths(&untold);
         let verified = self.verified();
         // FINISH recalls all borrow the same keying owner and lane metadata. Keep them local
         // while output routing mutates the association.
@@ -2981,14 +3080,14 @@ impl DatagramFraming {
                 bytes: keying.material().as_ptr(),
                 len: keying.material().len(),
             });
-        let local = self.local.clone();
+        let local = self.local;
         let lane = DatagramLane {
             size: u32::try_from(std::mem::size_of::<DatagramLane>()).unwrap_or(u32::MAX),
             lane: 0,
             path: 0,
             bound: self.bound_path(),
             path_addr: NO_TEXT,
-            local_addr: text(local.as_bytes()),
+            local_addr: text(local.as_str().as_bytes()),
             verified: u32::from(verified),
             _reserved: 0,
             keying: keying
@@ -3019,6 +3118,10 @@ impl DatagramFraming {
             let mut o: FramerOut = blank_out();
             let crossed = self.door.cross(Call::Finish(&mut i, &mut o));
             self.bufs.validate(crossed.outcome, &o)?;
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a broken FINISH answer's fault text names the rule and field"
+            )]
             check_datagram(crossed.outcome, &o, &self.routes, self.routes.len() as u64).map_err(
                 |f| {
                     fault(format!(

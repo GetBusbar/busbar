@@ -59,13 +59,19 @@ pub(crate) struct Keys {
 
 impl Keys {
     pub(crate) fn new(local: &IceCredentials, remote: &IceCredentials) -> Self {
-        let mut local_ufrag_prefix = local.ufrag.clone().into_bytes();
-        local_ufrag_prefix.push(b':');
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: an association's ICE names are built once, when the association starts"
+        )]
+        let (local_ufrag_prefix, probe_username) = (
+            format!("{}:", local.ufrag).into_bytes(),
+            format!("{}:{}", remote.ufrag, local.ufrag).into_bytes(),
+        );
         Keys {
             local_ufrag_prefix,
             local: hmac::Key::new(hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, local.pwd.as_bytes()),
             remote: hmac::Key::new(hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, remote.pwd.as_bytes()),
-            probe_username: format!("{}:{}", remote.ufrag, local.ufrag).into_bytes(),
+            probe_username,
         }
     }
 }
