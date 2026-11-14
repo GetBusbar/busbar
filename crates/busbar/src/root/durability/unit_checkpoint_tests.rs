@@ -568,7 +568,7 @@ async fn actual_store_rejects_checkpoint_head_whose_evidence_was_changed() {
     })
     .unwrap();
     assert!(matches!(
-        backend.commit(candidate).await,
+        backend.commit(candidate, test_commit_key()).await,
         Ok(Decision::Applied(_))
     ));
     assert!(
@@ -1450,4 +1450,14 @@ async fn measurement_root_loader_callback_preserves_early_and_admitted_attributi
         .await
         .unwrap()
         .is_empty());
+}
+
+/// A direct test commit: a slotted key minted with the test-only seal.
+fn test_commit_key() -> busbar_contract::persistence::CommitKey {
+    busbar_contract::persistence::CommitKey::slotted(
+        0,
+        1,
+        &busbar_contract::caps::SlotSeal::acquire_for_tests(),
+    )
+    .expect("slot 0, seq 1 is a valid key")
 }

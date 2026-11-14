@@ -347,6 +347,11 @@ impl Startup {
                 if values[2].is_some() {
                     return Err(Error::Corrupt);
                 }
+                // A FENCED Initialize that left no dataset root was not a peer's win: the
+                // dataset holds foreign rows, which the store refuses to initialize.
+                if self.lost > 0 {
+                    return Err(Error::Backend(Failure::Refused));
+                }
                 if !self.initialize_empty {
                     return Err(Error::InitializationNotAllowed);
                 }
