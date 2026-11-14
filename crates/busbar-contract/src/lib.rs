@@ -34,10 +34,8 @@ pub mod civil;
 pub mod codec;
 pub mod config;
 pub mod config_time;
+pub mod confined_path;
 pub mod conn;
-#[cfg(test)]
-#[path = "tests/confined_path_tests.rs"]
-mod confined_path_tests;
 pub mod count;
 pub mod dest;
 

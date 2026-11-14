@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::v1::contract::ObservationUsageView;
+use busbar_contract::confined_path::{ConfinedPathError, ConfinedRoot};
 use busbar_kernel::admission::{Judged, PluginAdmission, Refusal, Stated};
 use busbar_kernel::config::groups::LimitMetric;
 
@@ -750,8 +751,7 @@ impl AdminService {
             return rows;
         };
         for row in inventory {
-            let bytes =
-                read_archive_bounded(&dir.join(&row.file), admission.max_tarball_bytes()).ok();
+            let bytes = read_archive_bounded(dir, &row.file, admission.max_tarball_bytes()).ok();
             let archive_sha256 = bytes
                 .as_ref()
                 .map(|bytes| busbar_contract::redacted::sha256_hex(bytes));
@@ -856,7 +856,7 @@ impl AdminService {
         let dir = &self.app.plugins_dir;
         busbar_kernel::durable::create_dir_all(dir)
             .map_err(|e| plugin_io_failed("plugins.install.create_dir", e))?;
-        let final_path = dir.join(&file);
+        let final_path = confined_plugin_path(dir, &file)?;
         busbar_kernel::durable::write(&final_path, tarball)
             .map_err(|e| plugin_io_failed("plugins.install.publish", e))?;
 
@@ -932,7 +932,7 @@ impl AdminService {
         let file = validate_plugin_filename(&self.app, file)?;
         let admission = admission(&self.app).map_err(AdminError::Validation)?;
         let bytes = read_guarded_archive(
-            &self.app.plugins_dir.join(&file),
+            &self.app.plugins_dir,
             &file,
             expected,
             admission.max_tarball_bytes(),
@@ -971,10 +971,9 @@ impl AdminService {
         expected: Option<&str>,
     ) -> Result<crate::v1::contract::PluginRemoveView, AdminError> {
         let file = validate_plugin_filename(&self.app, file)?;
-        let lib_path = self.app.plugins_dir.join(&file);
         if expected.is_some() {
             let bytes = read_guarded_archive(
-                &lib_path,
+                &self.app.plugins_dir,
                 &file,
                 expected,
                 admission(&self.app)
@@ -982,7 +981,10 @@ impl AdminService {
                     .max_tarball_bytes(),
             )?;
             check_archive_preimage(expected, &bytes)?;
-        } else if !lib_path.is_file() {
+        }
+        // Confined: never a link, so `is_file` below and the unlink act on the plugins dir entry.
+        let lib_path = confined_plugin_path(&self.app.plugins_dir, &file)?;
+        if expected.is_none() && !lib_path.is_file() {
             return Err(AdminError::not_found(format!("plugin `{file}`")));
         }
         busbar_kernel::durable::remove(&lib_path)
@@ -1018,9 +1020,8 @@ impl AdminService {
         expected: Option<&str>,
     ) -> Result<(Stated, std::collections::BTreeMap<String, String>), AdminError> {
         let file = validate_plugin_filename(&self.app, file)?;
-        let lib_path = self.app.plugins_dir.join(&file);
         let bytes = read_guarded_archive(
-            &lib_path,
+            &self.app.plugins_dir,
             &file,
             expected,
             admission(&self.app)
@@ -1846,35 +1847,47 @@ fn validate_config_blocking(
 }
 
 fn read_guarded_archive(
-    path: &Path,
+    dir: &Path,
     file: &str,
     expected: Option<&str>,
     cap: u64,
 ) -> Result<Vec<u8>, AdminError> {
-    if !path.is_file() {
-        return if expected.is_some() {
-            Err(AdminError::Conflict(
-                "plugin archive preimage changed or is missing".into(),
-            ))
+    let missing = || {
+        if expected.is_some() {
+            AdminError::Conflict("plugin archive preimage changed or is missing".into())
         } else {
-            Err(AdminError::not_found(format!("plugin `{file}`")))
-        };
-    }
-    match read_archive_bounded(path, cap) {
-        Ok(bytes) => Ok(bytes),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            if expected.is_some() {
-                Err(AdminError::Conflict(
-                    "plugin archive preimage changed or is missing".into(),
-                ))
-            } else {
-                Err(AdminError::not_found(format!("plugin `{file}`")))
-            }
+            AdminError::not_found(format!("plugin `{file}`"))
         }
-        Err(error) => Err(AdminError::Validation(format!(
-            "cannot read plugin `{file}`: {error}"
-        ))),
+    };
+    // `file` is admin-API input (a validated bare name); it opens only as a regular file inside
+    // the operator-configured plugins dir, never through a link.
+    let archive = match ConfinedRoot::new(dir).and_then(|root| root.open(file)) {
+        Ok(archive) => archive,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(missing()),
+        Err(error) => return Err(plugin_path_refused(file, error)),
+    };
+    if !archive.metadata().is_ok_and(|meta| meta.is_file()) {
+        return Err(missing());
     }
+    read_bounded(archive, cap)
+        .map_err(|error| AdminError::Validation(format!("cannot read plugin `{file}`: {error}")))
+}
+
+/// `file` (admin-API input, already a validated bare name) confined to the operator-configured
+/// plugins dir: refused when it resolves through or to a link.
+fn confined_plugin_path(dir: &Path, file: &str) -> Result<PathBuf, AdminError> {
+    ConfinedRoot::new(dir)
+        .and_then(|root| root.resolve(file))
+        .map_err(|error| plugin_path_refused(file, error))
+}
+
+fn plugin_path_refused(file: &str, error: ConfinedPathError) -> AdminError {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        return AdminError::not_found(format!("plugin `{file}`"));
+    }
+    AdminError::Validation(format!(
+        "plugin `{file}` must be a regular file inside the plugins directory: {error}"
+    ))
 }
 
 fn check_archive_preimage(expected: Option<&str>, bytes: &[u8]) -> Result<(), AdminError> {
@@ -1892,12 +1905,19 @@ thread_local! {
     pub(super) static ARCHIVE_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-pub(super) fn read_archive_bounded(path: &Path, cap: u64) -> std::io::Result<Vec<u8>> {
+/// Read `file` from `dir` (an archive name the admission inventory listed there), confined to
+/// `dir` and bounded by `cap`.
+pub(super) fn read_archive_bounded(dir: &Path, file: &str, cap: u64) -> std::io::Result<Vec<u8>> {
+    read_bounded(ConfinedRoot::new(dir)?.open(file)?, cap)
+}
+
+/// Read an already-opened (confined) archive handle, bounded by `cap`.
+pub(super) fn read_bounded(archive: std::fs::File, cap: u64) -> std::io::Result<Vec<u8>> {
     use std::io::Read as _;
     #[cfg(test)]
     ARCHIVE_READS.with(|reads| reads.set(reads.get() + 1));
     let mut bytes = Vec::new();
-    std::fs::File::open(path)?
+    archive
         .take(cap.saturating_add(1))
         .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > cap {
