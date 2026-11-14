@@ -236,8 +236,13 @@ else
   case "$SPEC_TRIPLE" in
     *-windows-msvc) CRT_FLAG="-Ctarget-feature=+crt-static" ;;
   esac
+  # The capture brackets the build (locked metadata and Cargo.lock before, unchanged after); the
+  # build itself stays one plain cargo line whose JSON message stream is the build-closure input.
+  scripts/release/cargo-capture.sh begin "$EVIDENCE_DIR/cargo-core" dist/default/Cargo.toml "$SPEC_TRIPLE"
   BUSBAR_PROVENANCE_SOURCE="$RECEIPT_SOURCE" BUSBAR_PROVENANCE_WRAPPER=1 RUSTC_WRAPPER="$RECEIPT_WRAPPER" \
-  RUSTFLAGS="${EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}${CRT_FLAG:+ $CRT_FLAG}" "$PY" scripts/release/cargo_capture.py --directory "$EVIDENCE_DIR/cargo-core" -- build --release --locked --manifest-path dist/default/Cargo.toml --bin busbar --target-dir target --target "$SPEC_TRIPLE"
+  RUSTFLAGS="${EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}${CRT_FLAG:+ $CRT_FLAG}" \
+  cargo build --release --locked --manifest-path dist/default/Cargo.toml --bin busbar --target-dir target --target "$SPEC_TRIPLE" --message-format=json >"$EVIDENCE_DIR/cargo-core/cargo-messages.jsonl"
+  scripts/release/cargo-capture.sh end "$EVIDENCE_DIR/cargo-core" dist/default/Cargo.toml "$SPEC_TRIPLE"
   BIN="target/${SPEC_TRIPLE}/release/${SPEC_EXE}"
   scripts/build-provenance-gate.sh "$BIN" release false
 fi
@@ -251,7 +256,10 @@ case "$SPEC_EXE" in *.exe) VERIFIER_EXE="$VERIFIER_EXE.exe" ;; esac
 VERIFIER_FLAGS=""
 case "$SPEC_TRIPLE" in *-windows-msvc) VERIFIER_FLAGS="-Ctarget-feature=+crt-static" ;; esac
 # This independent offline tool does not consume the server's PGO profile.
-env -u CARGO_ENCODED_RUSTFLAGS RUSTFLAGS="$VERIFIER_FLAGS"   "$PY" scripts/release/cargo_capture.py --directory "$EVIDENCE_DIR/cargo-audit" -- build --release --locked --package busbar-kernel-audit --bin busbar-audit-verify   --target-dir target/audit-verifier --target "$SPEC_TRIPLE"
+scripts/release/cargo-capture.sh begin "$EVIDENCE_DIR/cargo-audit" Cargo.toml "$SPEC_TRIPLE"
+env -u CARGO_ENCODED_RUSTFLAGS RUSTFLAGS="$VERIFIER_FLAGS" \
+  cargo build --release --locked --package busbar-kernel-audit --bin busbar-audit-verify --target-dir target/audit-verifier --target "$SPEC_TRIPLE" --message-format=json >"$EVIDENCE_DIR/cargo-audit/cargo-messages.jsonl"
+scripts/release/cargo-capture.sh end "$EVIDENCE_DIR/cargo-audit" Cargo.toml "$SPEC_TRIPLE"
 VERIFIER_BIN="target/audit-verifier/${SPEC_TRIPLE}/release/$VERIFIER_EXE"
 [ -f "$VERIFIER_BIN" ] || { echo "[release-build] verifier binary missing" >&2; exit 1; }
 [ -f docs/audit-verify.md ] || { echo "[release-build] verifier instructions missing" >&2; exit 1; }
