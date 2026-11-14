@@ -4240,6 +4240,10 @@ impl Conns for Connector {
 }
 
 impl PollConns for Connector {
+    fn failure_cause(&self, caller: InstanceId, conn: ConnId) -> Option<ConnCause> {
+        DeclaredConns::cause(self, caller, conn)
+    }
+
     /// The framer the need rides, located at `target`: its own head lines, and whether its head
     fn head_defaults(
         &self,
