@@ -95,8 +95,7 @@ const _: () = {
     let _: fn(&[u8; 16], &[u8; 16]) -> R<[u8; 16]> = b::aes_block_encrypt;
     let _: fn() -> R<b::ed25519::SigningKey> = b::ed25519::SigningKey::generate;
     let _: fn(&[u8; 32]) -> R<b::ed25519::SigningKey> = b::ed25519::SigningKey::from_seed;
-    let _: fn(&b::ed25519::SigningKey) -> zeroize::Zeroizing<[u8; 32]> =
-        b::ed25519::SigningKey::to_seed;
+    let _: fn(&b::ed25519::SigningKey) -> &[u8; 32] = b::ed25519::SigningKey::seed;
     let _: fn(&b::ed25519::SigningKey, &[u8]) -> [u8; 64] = b::ed25519::SigningKey::sign;
     let _: fn(&b::ed25519::SigningKey) -> b::ed25519::VerifyingKey =
         b::ed25519::SigningKey::verifying_key;

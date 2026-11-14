@@ -5,25 +5,30 @@
 //! heads with the injected `Authorization`, reply heads and bodies) in buffers that must not keep
 //! what they release. [`SecureVec`] is a byte queue whose consumed prefix is wiped as it is
 //! consumed, whose growth never reallocates live bytes in place, and whose allocation is
-//! volatile-wiped before it is freed (`Zeroizing`).
+//! volatile-wiped before it is freed.
 //!
 //! Rules: (1) [`SecureVec::consume`] wipes `[head, head + n)` and advances `head`; nothing moves.
 //! (2) Compaction only when new bytes do not fit after `end` and at least half the used span is
 //! consumed; growth copies only `[head, end)` into a fresh zeroed block. (3) The read surface is
-//! `[head, end)` only ([`SecureVec::as_slice`]); no `Deref`, `Clone` or `PartialEq`, and `Debug`
-//! prints the length. (4) No `realloc` of live bytes. (5) Hot wipes are a plain fill; the
+//! `[head, end)` only ([`SecureVec::as_slice`], `Deref` to `[u8]`); `Clone` copies the live bytes into a new
+//! `SecureVec`; no `PartialEq`, and `Debug` prints the length. (4) No `realloc` of live bytes. (5) Hot wipes are a plain fill; the
 //! volatile wipe runs only on the free path.
 //!
-//! This is the one place a `Zeroizing<Vec<u8>>` grows (busbar-release bad-patterns BP12 owner,
-//! LINT-RULES LR-117): every other wiping buffer that grows is a [`SecureVec`]. The connector's
-//! per-thread scratch slots over it live in `busbar_core_connector::secure_vec`.
+//! SECURE-TYPES (core #164): `zeroize::Zeroizing` is banned in our code (LR-094). Secret memory
+//! lives in one of three types, each built on the `zeroize` crate (`Zeroize` does the volatile
+//! wipe; `ZeroizeOnDrop` marks that drop runs it) and none of which hands out a growable
+//! `&mut Vec` or `&mut String`: [`SecureVec`] (secret bytes, fixed or growing), [`SecureString`]
+//! (secret text) and [`SecureArray`] (fixed keys, seeds, digests). Growth always moves the live
+//! bytes into a fresh block and wipes the old one. `Debug` prints the length only. The
+//! connector's per-thread scratch slots over [`SecureVec`] live in
+//! `busbar_core_connector::secure_vec`.
 
 #![forbid(unsafe_code)]
 
 use std::fmt;
 use std::io;
 
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// The smallest allocation a growing [`SecureVec`] makes.
 const MIN_CAP: usize = 1024;
@@ -31,10 +36,10 @@ const MIN_CAP: usize = 1024;
 /// A byte queue that wipes what it releases.
 ///
 /// Live bytes are `v[head..end]`. `v[..head]` and `v[end..v.len()]` are zero. `v.len()` is the
-/// zero-initialised extent (allocated and zeroed once, at growth). Dropping the `Zeroizing` wipes
-/// all of `v` with volatile writes before the free.
+/// zero-initialised extent (allocated and zeroed once, at growth or adoption). Drop volatile-wipes
+/// the live bytes before the free; the rest is zero already.
 pub struct SecureVec {
-    v: Zeroizing<Vec<u8>>,
+    v: Vec<u8>,
     head: usize,
     end: usize,
 }
@@ -60,7 +65,7 @@ impl SecureVec {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            v: Zeroizing::new(Vec::new()),
+            v: Vec::new(),
             head: 0,
             end: 0,
         }
@@ -75,11 +80,7 @@ impl SecureVec {
         let mut v: Vec<u8> = Vec::new();
         v.try_reserve_exact(cap).map_err(|_| Overflow)?;
         v.resize(cap, 0);
-        Ok(Self {
-            v: Zeroizing::new(v),
-            head: 0,
-            end: 0,
-        })
+        Ok(Self { v, head: 0, end: 0 })
     }
 
     /// Append one byte.
@@ -90,18 +91,64 @@ impl SecureVec {
         self.extend(&[b])
     }
 
-    /// The live bytes as a wiping `Vec`, without a copy when nothing was consumed. The zeroed
-    /// room past them is truncated (no reallocation).
+    /// `n` zero bytes, all live: the buffer a reader fills in place and then [`truncate`]s to what
+    /// it wrote.
+    ///
+    /// [`truncate`]: SecureVec::truncate
     #[must_use]
-    pub fn into_zeroizing(mut self) -> Zeroizing<Vec<u8>> {
+    pub fn zeroed(n: usize) -> Self {
+        Self {
+            v: vec![0; n],
+            head: 0,
+            end: n,
+        }
+    }
+
+    /// Append `b`, aborting on allocation failure as `Vec` does: the infallible form of
+    /// [`SecureVec::extend`] for buffers off the carrier path.
+    ///
+    /// # Panics
+    /// When the memory for `b` cannot be allocated.
+    pub fn extend_from_slice(&mut self, b: &[u8]) {
+        self.extend(b).expect("secure buffer allocation");
+    }
+
+    /// Keep the first `n` live bytes; the cut tail is wiped.
+    pub fn truncate(&mut self, n: usize) {
+        if n < self.len() {
+            let cut = self.head + n;
+            wipe(&mut self.v[cut..self.end]);
+            self.end = cut;
+            if self.head == self.end {
+                self.head = 0;
+                self.end = 0;
+            }
+        }
+    }
+
+    /// The live bytes as a plain `Vec`, without a copy when nothing was consumed (the zeroed room
+    /// past them stays as spare capacity, all zero). ONLY to hand the bytes to another owner that
+    /// wipes them (`Secret`, `Held`): the `Vec` itself wipes nothing.
+    #[must_use]
+    /// Interim (#164): the live bytes as a `Zeroizing` `Vec`; removed with the last caller.
+    #[must_use]
+    pub fn into_zeroizing(self) -> zeroize::Zeroizing<Vec<u8>> {
+        zeroize::Zeroizing::new(self.into_vec())
+    }
+
+    pub fn into_vec(mut self) -> Vec<u8> {
         if self.head != 0 {
             let live = self.len();
             self.v.copy_within(self.head..self.end, 0);
             wipe(&mut self.v[live..self.end]);
+            self.head = 0;
             self.end = live;
         }
-        self.v.truncate(self.end);
-        self.v
+        let mut v = std::mem::take(&mut self.v);
+        v.truncate(self.end);
+        self.head = 0;
+        self.end = 0;
+        v
     }
 
     /// The live bytes held.
@@ -223,8 +270,9 @@ impl SecureVec {
         n.resize(cap, 0); // the one zero-fill, at growth only
         n[..live].copy_from_slice(&self.v[self.head..self.end]);
         moved(live);
-        // The old block is volatile-wiped by its `Zeroizing`, then freed.
-        self.v = Zeroizing::new(n);
+        // The old block's live span (the rest is zero) is volatile-wiped, then freed.
+        let mut old = std::mem::replace(&mut self.v, n);
+        old[self.head..self.end].zeroize();
         self.head = 0;
         self.end = live;
         Ok(())
@@ -238,69 +286,6 @@ impl SecureVec {
     pub fn allocation(&self) -> &[u8] {
         &self.v
     }
-}
-
-/// Append `bytes` to a wiping `Vec`, never reallocating its live bytes in place: when it is
-/// full, they move into a fresh block of at least twice the capacity and the old block is
-/// volatile-wiped as its `Zeroizing` drops. The one growth path for a `Zeroizing<Vec<u8>>`
-/// outside [`SecureVec`] (LINT-RULES LR-117); a buffer reserved to its final size never moves.
-///
-/// # Panics
-/// When the length overflows `usize` (as `Vec` growth does).
-pub fn append(v: &mut Zeroizing<Vec<u8>>, bytes: &[u8]) {
-    let len = v
-        .len()
-        .checked_add(bytes.len())
-        .expect("wiping buffer length");
-    if len > v.capacity() {
-        let mut next = Vec::with_capacity(len.max(v.capacity().saturating_mul(2)));
-        next.extend_from_slice(&v[..]);
-        *v = Zeroizing::new(next);
-    }
-    v.extend_from_slice(bytes);
-}
-
-/// [`append`] that reports an allocation failure instead of aborting; on [`Overflow`] nothing
-/// is appended and the held bytes are unchanged.
-///
-/// # Errors
-/// [`Overflow`] when the length overflows or the larger block cannot be allocated.
-pub fn try_append(v: &mut Zeroizing<Vec<u8>>, bytes: &[u8]) -> Result<(), Overflow> {
-    let len = v.len().checked_add(bytes.len()).ok_or(Overflow)?;
-    if len > v.capacity() {
-        let mut next = Vec::new();
-        next.try_reserve_exact(len.max(v.capacity().saturating_mul(2)))
-            .map_err(|_| Overflow)?;
-        next.extend_from_slice(&v[..]);
-        *v = Zeroizing::new(next);
-    }
-    v.extend_from_slice(bytes);
-    Ok(())
-}
-
-/// [`append`] for a wiping `String`.
-///
-/// # Panics
-/// When the length overflows `usize`.
-pub fn append_str(s: &mut Zeroizing<String>, text: &str) {
-    let len = s.len().checked_add(text.len()).expect("wiping text length");
-    if len > s.capacity() {
-        let mut next = String::with_capacity(len.max(s.capacity().saturating_mul(2)));
-        next.push_str(s.as_str());
-        *s = Zeroizing::new(next);
-    }
-    s.push_str(text);
-}
-
-/// [`append`] for a wiping list: one item, moved into a fresh block when full; the old block's
-/// spare capacity, where the moved items lay, is wiped as its `Zeroizing` drops.
-pub fn push<T: zeroize::Zeroize>(v: &mut Zeroizing<Vec<T>>, item: T) {
-    if v.len() == v.capacity() {
-        let mut next = Vec::with_capacity(v.capacity().saturating_mul(2).max(4));
-        next.extend(v.drain(..));
-        *v = Zeroizing::new(next);
-    }
-    v.push(item);
 }
 
 /// Encoders (`serde_json::to_writer`, `write!`) append through [`SecureVec::extend`].
@@ -324,6 +309,378 @@ impl fmt::Debug for SecureVec {
     }
 }
 
+impl Zeroize for SecureVec {
+    /// Volatile-wipe the live bytes (everything outside them is already zero) and hold nothing;
+    /// the allocation is kept, all zero.
+    fn zeroize(&mut self) {
+        self.v[self.head..self.end].zeroize();
+        self.head = 0;
+        self.end = 0;
+    }
+}
+
+/// Only the live bytes need the volatile wipe: outside `[head, end)` is zero by construction.
+impl Drop for SecureVec {
+    fn drop(&mut self) {
+        self.v[self.head..self.end].zeroize();
+    }
+}
+
+/// The live bytes only, exact size, in a new [`SecureVec`]: no copy leaves custody.
+impl Clone for SecureVec {
+    fn clone(&self) -> Self {
+        Self::from(self.as_slice())
+    }
+}
+
+impl ZeroizeOnDrop for SecureVec {}
+
+/// Adopt `v` without a copy: its bytes are the live bytes. The spare capacity is zero-filled once
+/// (no reallocation), so bytes a caller truncated away are scrubbed and the "outside live is zero"
+/// rule holds.
+impl From<Vec<u8>> for SecureVec {
+    fn from(mut v: Vec<u8>) -> Self {
+        let end = v.len();
+        v.resize(v.capacity(), 0);
+        Self { v, head: 0, end }
+    }
+}
+
+/// One exact copy of `b`.
+impl From<&[u8]> for SecureVec {
+    fn from(b: &[u8]) -> Self {
+        Self::from(b.to_vec())
+    }
+}
+
+/// The live bytes; a slice cannot grow, so nothing reallocates through it.
+impl std::ops::Deref for SecureVec {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl std::ops::DerefMut for SecureVec {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        &mut self.v[self.head..self.end]
+    }
+}
+
+impl AsRef<[u8]> for SecureVec {
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+/// Secret text: a `String` that never hands out `&mut String`, so it grows only through
+/// [`SecureString::push_str`], which moves the text into a fresh block and wipes the old one.
+/// Drop wipes the live text (adoption scrubbed the spare). `Debug` prints the length; there is no `Display`. Equality is
+/// constant-time. `Clone` makes another `SecureString` (exact capacity), so no copy escapes custody.
+#[derive(Default)]
+pub struct SecureString(String);
+
+impl SecureString {
+    /// Empty; allocates nothing.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(String::new())
+    }
+
+    /// Empty, with room for `n` bytes before the first growth.
+    #[must_use]
+    pub fn with_capacity(n: usize) -> Self {
+        Self(String::with_capacity(n))
+    }
+
+    /// The text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Append `text`. When it does not fit, the held text moves into a fresh block of at least
+    /// twice the capacity and the old block is wiped before it is freed.
+    ///
+    /// # Panics
+    /// When the length overflows `usize` (as `String` growth does).
+    pub fn push_str(&mut self, text: &str) {
+        let len = self
+            .0
+            .len()
+            .checked_add(text.len())
+            .expect("secure text length");
+        if len > self.0.capacity() {
+            let mut next = String::with_capacity(len.max(self.0.capacity().saturating_mul(2)));
+            next.push_str(&self.0);
+            // Only `len` was ever written in the old block (adoption scrubbed its spare).
+            let mut old = std::mem::replace(&mut self.0, next);
+            old.as_mut_str().zeroize();
+        }
+        self.0.push_str(text);
+    }
+
+    /// Append one character.
+    pub fn push(&mut self, c: char) {
+        self.push_str(c.encode_utf8(&mut [0; 4]));
+    }
+
+    /// Text formatted straight into custody (the `format!` replacement): every growth on the way
+    /// wipes the block it leaves.
+    #[must_use]
+    pub fn from_args(args: fmt::Arguments<'_>) -> Self {
+        let mut s = Self::new();
+        if let Some(text) = args.as_str() {
+            s.push_str(text);
+        } else {
+            let _ = fmt::Write::write_fmt(&mut s, args);
+        }
+        s
+    }
+
+    /// The text as a plain `String`, without a copy. ONLY to hand it to another owner that wipes
+    /// it (a field of a self-wiping struct): the `String` itself wipes nothing.
+    #[must_use]
+    pub fn into_string(mut self) -> String {
+        std::mem::take(&mut self.0)
+    }
+
+    /// The text's bytes, without a copy, still in custody.
+    #[must_use]
+    pub fn into_bytes(mut self) -> SecureVec {
+        SecureVec::from(std::mem::take(&mut self.0).into_bytes())
+    }
+}
+
+/// Adopt `s` without a copy. Its spare capacity is volatile-wiped once (bytes a caller truncated
+/// away), so drop and growth need wipe only `len`. Adopt only text built at its final size: a
+/// `String` that grew before adoption already freed its old blocks unwiped (build it with
+/// [`SecureString::from_args`] or `push_str` instead).
+impl From<String> for SecureString {
+    fn from(s: String) -> Self {
+        if s.len() == s.capacity() {
+            return Self(s);
+        }
+        let mut v = s.into_bytes();
+        v.spare_capacity_mut().zeroize();
+        Self(String::from_utf8(v).expect("adopted text stays UTF-8"))
+    }
+}
+
+/// One exact copy of `s`.
+impl From<&str> for SecureString {
+    fn from(s: &str) -> Self {
+        Self(s.to_owned())
+    }
+}
+
+impl Clone for SecureString {
+    fn clone(&self) -> Self {
+        Self::from(self.as_str())
+    }
+}
+
+impl std::ops::Deref for SecureString {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AsRef<str> for SecureString {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl PartialEq for SecureString {
+    fn eq(&self, other: &Self) -> bool {
+        crate::constant_time_eq(self.0.as_bytes(), other.0.as_bytes())
+    }
+}
+
+impl Eq for SecureString {}
+
+impl fmt::Write for SecureString {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.push_str(s);
+        Ok(())
+    }
+}
+
+impl fmt::Debug for SecureString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SecureString")
+            .field("len", &self.0.len())
+            .finish()
+    }
+}
+
+/// As a plain string (records that persist a secret today keep their shape).
+impl serde::Serialize for SecureString {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.0)
+    }
+}
+
+/// A plain string, adopted without a copy.
+impl<'de> serde::Deserialize<'de> for SecureString {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        <String as serde::Deserialize>::deserialize(d).map(Self::from)
+    }
+}
+
+impl Zeroize for SecureString {
+    /// Volatile-wipe the text (only `len` was ever written) and hold none; the block is kept.
+    fn zeroize(&mut self) {
+        self.0.as_mut_str().zeroize();
+        self.0.clear();
+    }
+}
+
+impl Drop for SecureString {
+    fn drop(&mut self) {
+        self.0.as_mut_str().zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for SecureString {}
+
+/// A fixed-size secret (a key, a seed, a digest, a MAC). It never grows and is wiped on drop. No
+/// `Clone`, no `Copy`: `*a` copies the array out, and only where the code means to.
+#[repr(transparent)]
+pub struct SecureArray<const N: usize>([u8; N]);
+
+impl<const N: usize> SecureArray<N> {
+    /// All zero.
+    #[must_use]
+    pub const fn zeroed() -> Self {
+        Self([0; N])
+    }
+}
+
+impl<const N: usize> Default for SecureArray<N> {
+    fn default() -> Self {
+        Self::zeroed()
+    }
+}
+
+impl<const N: usize> From<[u8; N]> for SecureArray<N> {
+    fn from(a: [u8; N]) -> Self {
+        Self(a)
+    }
+}
+
+impl<const N: usize> std::ops::Deref for SecureArray<N> {
+    type Target = [u8; N];
+    fn deref(&self) -> &[u8; N] {
+        &self.0
+    }
+}
+
+impl<const N: usize> std::ops::DerefMut for SecureArray<N> {
+    fn deref_mut(&mut self) -> &mut [u8; N] {
+        &mut self.0
+    }
+}
+
+impl<const N: usize> AsRef<[u8]> for SecureArray<N> {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl<const N: usize> PartialEq for SecureArray<N> {
+    fn eq(&self, other: &Self) -> bool {
+        crate::constant_time_eq(&self.0, &other.0)
+    }
+}
+
+impl<const N: usize> Eq for SecureArray<N> {}
+
+impl<const N: usize> fmt::Debug for SecureArray<N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SecureArray").field("len", &N).finish()
+    }
+}
+
+impl<const N: usize> Zeroize for SecureArray<N> {
+    fn zeroize(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl<const N: usize> Drop for SecureArray<N> {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl<const N: usize> ZeroizeOnDrop for SecureArray<N> {}
+
+/// Append `bytes` to a wiping `Vec`, never reallocating its live bytes in place: when it is
+/// full, they move into a fresh block of at least twice the capacity and the old block is
+/// volatile-wiped as its `Zeroizing` drops. The one growth path for a `zeroize::Zeroizing<Vec<u8>>`
+/// outside [`SecureVec`] (LINT-RULES LR-117); a buffer reserved to its final size never moves.
+///
+/// # Panics
+/// When the length overflows `usize` (as `Vec` growth does).
+pub fn append(v: &mut zeroize::Zeroizing<Vec<u8>>, bytes: &[u8]) {
+    let len = v
+        .len()
+        .checked_add(bytes.len())
+        .expect("wiping buffer length");
+    if len > v.capacity() {
+        let mut next = Vec::with_capacity(len.max(v.capacity().saturating_mul(2)));
+        next.extend_from_slice(&v[..]);
+        *v = zeroize::Zeroizing::new(next);
+    }
+    v.extend_from_slice(bytes);
+}
+
+/// [`append`] that reports an allocation failure instead of aborting; on [`Overflow`] nothing
+/// is appended and the held bytes are unchanged.
+///
+/// # Errors
+/// [`Overflow`] when the length overflows or the larger block cannot be allocated.
+pub fn try_append(v: &mut zeroize::Zeroizing<Vec<u8>>, bytes: &[u8]) -> Result<(), Overflow> {
+    let len = v.len().checked_add(bytes.len()).ok_or(Overflow)?;
+    if len > v.capacity() {
+        let mut next = Vec::new();
+        next.try_reserve_exact(len.max(v.capacity().saturating_mul(2)))
+            .map_err(|_| Overflow)?;
+        next.extend_from_slice(&v[..]);
+        *v = zeroize::Zeroizing::new(next);
+    }
+    v.extend_from_slice(bytes);
+    Ok(())
+}
+
+/// [`append`] for a wiping `String`.
+///
+/// # Panics
+/// When the length overflows `usize`.
+pub fn append_str(s: &mut zeroize::Zeroizing<String>, text: &str) {
+    let len = s.len().checked_add(text.len()).expect("wiping text length");
+    if len > s.capacity() {
+        let mut next = String::with_capacity(len.max(s.capacity().saturating_mul(2)));
+        next.push_str(s.as_str());
+        *s = zeroize::Zeroizing::new(next);
+    }
+    s.push_str(text);
+}
+
+/// [`append`] for a wiping list: one item, moved into a fresh block when full; the old block's
+/// spare capacity, where the moved items lay, is wiped as its `Zeroizing` drops.
+pub fn push<T: zeroize::Zeroize>(v: &mut zeroize::Zeroizing<Vec<T>>, item: T) {
+    if v.len() == v.capacity() {
+        let mut next = Vec::with_capacity(v.capacity().saturating_mul(2).max(4));
+        next.extend(v.drain(..));
+        *v = zeroize::Zeroizing::new(next);
+    }
+    v.push(item);
+}
+
 /// Whether a reader lent a region by [`SecureVec::read_into`] is trusted to have written nothing
 /// past the count it reports. Every carrier read on dev is [`Tail::Wipe`]: the carrier is a plugin
 /// door, and core never names a plugin as trusted (TRANSPORT-TLS §2.0 rule 6).
@@ -338,7 +695,7 @@ pub enum Tail {
 
 /// Wipe bytes the buffer still owns and will reuse. These are not dead stores: the allocation is
 /// read again through `as_slice`/`copy_within`, and the final wipe before the free is
-/// `Zeroizing`'s.
+/// `Zeroize`'s, at drop.
 fn wipe(s: &mut [u8]) {
     s.fill(0);
     std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);

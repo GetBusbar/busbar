@@ -20,7 +20,6 @@ use dimpl::crypto::{
     SupportedDtls13CipherSuite, SupportedKxGroup, TmpBuf,
 };
 use dimpl::{CryptoError, CryptoOperation};
-use zeroize::Zeroizing;
 
 use crate::Error;
 
@@ -107,10 +106,9 @@ pub fn dtls_self_signed() -> Result<DtlsCert, Error> {
     let rng = SystemRandom::new();
     let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
         .map_err(|_| Error::Rng)?;
-    let pkcs8 = Zeroizing::new(pkcs8.as_ref().to_vec());
-    let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &pkcs8)
+    let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref())
         .map_err(|_| Error::Invalid("DTLS session key"))?;
-    let signer = rcgen::KeyPair::try_from(pkcs8.as_slice())
+    let signer = rcgen::KeyPair::try_from(pkcs8.as_ref())
         .map_err(|_| Error::Invalid("DTLS session key for the certificate"))?;
     let cert = rcgen::CertificateParams::new(Vec::<String>::new())
         .and_then(|p| p.self_signed(&signer))

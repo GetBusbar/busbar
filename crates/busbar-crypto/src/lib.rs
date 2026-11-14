@@ -440,7 +440,6 @@ pub fn aes_block_encrypt(key: &[u8; 16], block: &[u8; 16]) -> Result<[u8; 16], E
 pub mod ed25519 {
     use super::{map, Error};
     use busbar_crypto_backend as b;
-    use zeroize::Zeroizing;
 
     /// An Ed25519 private key.
     #[derive(Debug)]
@@ -459,10 +458,10 @@ pub mod ed25519 {
                 .map_err(map)
         }
 
-        /// The 32-byte seed, wiped on drop.
+        /// The 32-byte seed, borrowed from the key (wiped when the key drops; no copy is made).
         #[must_use]
-        pub fn to_seed(&self) -> Zeroizing<[u8; 32]> {
-            self.0.to_seed()
+        pub fn seed(&self) -> &[u8; 32] {
+            self.0.seed()
         }
 
         /// The signature of `msg`.

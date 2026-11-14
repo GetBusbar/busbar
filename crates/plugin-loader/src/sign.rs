@@ -60,7 +60,7 @@ impl SigningKey {
     /// The 32-byte seed.
     #[must_use]
     pub fn to_bytes(&self) -> [u8; 32] {
-        *self.0.to_seed()
+        *self.0.seed()
     }
 
     /// The public key.
