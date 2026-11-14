@@ -135,10 +135,10 @@ pub fn merged_boot_plane_decls(
         decls.push(d);
     }
 
-    // Every key is distinct (deduplicated above) and has a distinct canonical position, so the
-    // unstable sort orders exactly as a stable one would.
+    // Every key is distinct (deduplicated above) and has a distinct canonical position, so a
+    // stable sort orders them exactly as one without ties would.
     let canonical = canonical_key_order(installed, builtins);
-    decls.sort_unstable_by_key(|d| {
+    decls.sort_by_key(|d| {
         canonical
             .iter()
             .position(|k| *k == d.key)

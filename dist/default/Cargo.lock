@@ -621,7 +621,6 @@ dependencies = [
  "hyper-util",
  "idna_adapter",
  "lexopt",
- "libloading",
  "metrics",
  "opentelemetry-proto",
  "proc-macro2",

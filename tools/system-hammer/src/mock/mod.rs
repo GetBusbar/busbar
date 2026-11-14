@@ -634,8 +634,8 @@ mod tests {
         );
     }
 
-    fn parse(b: &[u8]) -> serde_json::Value {
-        serde_json::from_slice(b).expect("valid JSON")
+    fn parse(b: &[u8]) -> sonic_rs::Value {
+        sonic_rs::from_slice(b).expect("valid JSON")
     }
 
     #[test]
@@ -658,9 +658,9 @@ mod tests {
         let v = parse(&super::mcp_body("initialize", &sonic_rs::json!(1)).unwrap());
         assert_eq!(v["result"]["serverInfo"]["name"], "hammer-mcp");
         let v = parse(&super::mcp_body("ping", &sonic_rs::json!(2)).unwrap());
-        assert_eq!(v["result"], serde_json::json!({}));
+        assert_eq!(v["result"], sonic_rs::json!({}));
         let v = parse(&super::mcp_body("other", &sonic_rs::json!(3)).unwrap());
-        assert_eq!(v["result"], serde_json::json!({}));
+        assert_eq!(v["result"], sonic_rs::json!({}));
         assert!(super::mcp_body("notifications/initialized", &Value::default()).is_none());
     }
 

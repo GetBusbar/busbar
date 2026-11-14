@@ -539,7 +539,7 @@ pub fn memfind(hay: &[u8], needle: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::Value;
+    use sonic_rs::{JsonValueTrait as _, Value};
 
     #[test]
     fn memfind_matches_driver_semantics() {
@@ -554,7 +554,7 @@ mod tests {
         let b = Bodies::build(100, 4);
         for d in Dialect::ALL {
             let x = b.of(d);
-            let v: Value = serde_json::from_slice(&x.whole).unwrap();
+            let v: Value = sonic_rs::from_slice(&x.whole).unwrap();
             assert!(v.to_string().contains(MARKER), "{d:?}");
             assert!(
                 String::from_utf8_lossy(&x.tool).contains(TOOL_NAME),

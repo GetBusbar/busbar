@@ -377,9 +377,9 @@ mod tests {
             .expect("this file has a test tail")];
         let literals = busbar_literals(production);
         let mut spelled: Vec<&str> = literals.iter().map(|(text, _)| text.as_str()).collect();
-        spelled.sort_unstable();
+        spelled.sort();
         let mut table: Vec<&str> = RETIRED_LAUNCH_ENV.iter().map(|r| r.name).collect();
-        table.sort_unstable();
+        table.sort();
         assert_eq!(
             spelled, table,
             "every BUSBAR_ literal outside the tests is one RETIRED_LAUNCH_ENV name, each once"

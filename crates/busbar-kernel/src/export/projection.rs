@@ -229,7 +229,7 @@ static MEMBER_ORDER: std::sync::LazyLock<[Member; FIELDS + 1]> = std::sync::Lazy
     for (bit, (slot, field)) in order.iter_mut().zip(ExportField::ALL).enumerate() {
         *slot = Member::Field(*field, bit as u32);
     }
-    order.sort_unstable_by_key(|member| member.name());
+    order.sort_by_key(|member| member.name());
     order
 });
 

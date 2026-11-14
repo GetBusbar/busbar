@@ -550,7 +550,7 @@ impl<'de, C: Custody> Visitor<'de> for Render<'_, '_, C> {
         // The parsed value's map order (byte order of the keys), the last of equal keys winning:
         // equal names stay in document order (their arena offsets), so the last of a run of equal
         // names is the document's last.
-        members.sort_unstable_by(|a, b| {
+        members.sort_by(|a, b| {
             arena
                 .get(&a.name)
                 .cmp(arena.get(&b.name))
