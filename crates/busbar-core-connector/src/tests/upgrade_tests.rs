@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
+use busbar_contract::crypto::testing::rcgen;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::*;
@@ -17,7 +18,7 @@ const OWNER: InstanceId = InstanceId(1);
 
 /// A private CA and a `localhost` leaf it signed: (ca_pem, leaf_der, key_der).
 fn private_ca() -> (String, Vec<u8>, Vec<u8>) {
-    use rcgen::{CertificateParams, IsCa, Issuer, KeyPair};
+    use busbar_contract::crypto::testing::rcgen::{CertificateParams, IsCa, Issuer, KeyPair};
     let ca_kp = KeyPair::generate().unwrap();
     let mut ca_params = CertificateParams::new(Vec::new()).unwrap();
     ca_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
@@ -33,7 +34,7 @@ fn private_ca() -> (String, Vec<u8>, Vec<u8>) {
 
 /// [`private_ca`] whose CA key is P-384, so the leaf it signs is signed `ecdsa-with-SHA384`.
 fn private_p384_ca() -> (String, Vec<u8>, Vec<u8>) {
-    use rcgen::{CertificateParams, IsCa, Issuer, KeyPair};
+    use busbar_contract::crypto::testing::rcgen::{CertificateParams, IsCa, Issuer, KeyPair};
     let ca_kp = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P384_SHA384).unwrap();
     let mut ca_params = CertificateParams::new(Vec::new()).unwrap();
     ca_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
@@ -48,14 +49,15 @@ fn private_p384_ca() -> (String, Vec<u8>, Vec<u8>) {
 }
 
 fn acceptor(leaf: Vec<u8>, key: Vec<u8>) -> tokio_rustls::TlsAcceptor {
-    crate::tls::install_crypto_provider();
-    let server = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![leaf.into()],
-            rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
-        )
-        .unwrap();
+    let server = std::sync::Arc::unwrap_or_clone(
+        busbar_contract::crypto::tls::server_config(|b| {
+            b.with_no_client_auth().with_single_cert(
+                vec![leaf.into()],
+                rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
+            )
+        })
+        .unwrap(),
+    );
     tokio_rustls::TlsAcceptor::from(Arc::new(server))
 }
 
@@ -93,7 +95,6 @@ async fn far_end(leaf: Vec<u8>, key: Vec<u8>, starttls: &'static [u8]) -> String
 
 /// The process's connector shape over a RAW byte-stream door (no framing of its own, the plugin
 fn raw_connector() -> Connector {
-    crate::tls::install_crypto_provider();
     let view = Transports::new(vec![Entry {
         door: Arc::new(TestDoor::identity("bytes")),
         alpn: Vec::new(),
@@ -251,9 +252,8 @@ fn a_raw_stream_to_a_tls_far_end_round_trips_only_once_upgraded_at_establish() {
 /// RED: StartTLS. The plugin's own negotiation crosses in the clear, the upgrade secures the same
 #[test]
 fn starttls_upgrades_the_stream_mid_way_and_its_facts_carry_the_peer_cert_hash() {
-    use sha2::Digest as _;
     let (ca, leaf, key) = private_ca();
-    let expected: String = sha2::Sha256::digest(&leaf)
+    let expected: String = busbar_contract::crypto::sha256(&leaf)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
@@ -459,9 +459,8 @@ fn an_upgrade_over_a_piece_parked_on_the_line_is_refused_and_the_stream_fails() 
 /// RED: the channel-binding input is the far end's certificate hashed
 #[test]
 fn a_sha384_signed_far_end_binds_with_sha384() {
-    use sha2::Digest as _;
     let (ca, leaf, key) = private_p384_ca();
-    let expected: String = sha2::Sha384::digest(&leaf)
+    let expected: String = busbar_contract::crypto::sha384(&leaf)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();

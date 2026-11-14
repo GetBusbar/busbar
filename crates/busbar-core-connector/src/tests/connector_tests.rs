@@ -2357,8 +2357,10 @@ fn a_dialled_exchange_relays_empty_messages_and_completes_only_on_the_end_flag()
 mod transport_pin {
     use std::sync::{Arc, Mutex};
 
+    use busbar_contract::crypto::testing::rcgen::{
+        self, CertificateParams, IsCa, Issuer, KeyPair, PublicKeyData as _,
+    };
     use busbar_contract::transport::trust::{key_pin, Anchors, ClientIdentity, EgressTrust};
-    use rcgen::{CertificateParams, IsCa, Issuer, KeyPair, PublicKeyData as _};
 
     use super::*;
     use crate::registry::{Entry, Transports};
@@ -2418,25 +2420,24 @@ mod transport_pin {
 
     /// A TLS far end on loopback serving `leaf` (asking for a client certificate under `pki`'s
     async fn tls_far_end(pki: &Pki, leaf: &Leaf, mutual: bool) -> (String, Seen) {
-        crate::tls::install_crypto_provider();
         let chain = vec![rustls_pki_types::CertificateDer::from(leaf.der.clone())];
         let key = rustls_pki_types::PrivateKeyDer::try_from(leaf.key.clone()).unwrap();
-        let builder = rustls::ServerConfig::builder();
-        let config = if mutual {
+        let verifier = mutual.then(|| {
             let mut roots = rustls::RootCertStore::empty();
             roots
                 .add(rustls_pki_types::CertificateDer::from(pki.ca_der.clone()))
                 .unwrap();
-            let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
-                .build()
-                .unwrap();
-            builder.with_client_cert_verifier(verifier)
-        } else {
-            builder.with_no_client_auth()
-        }
-        .with_single_cert(chain, key)
+            busbar_contract::crypto::tls::client_verifier(Arc::new(roots), |b| b).unwrap()
+        });
+        let config = busbar_contract::crypto::tls::server_config(|builder| {
+            let builder = match verifier {
+                Some(verifier) => builder.with_client_cert_verifier(verifier),
+                None => builder.with_no_client_auth(),
+            };
+            builder.with_single_cert(chain, key)
+        })
         .unwrap();
-        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let acceptor = tokio_rustls::TlsAcceptor::from(config);
         let (l, far) = far_end().await;
         let seen: Seen = Arc::default();
         let saw = Arc::clone(&seen);
@@ -2467,14 +2468,15 @@ mod transport_pin {
                 use tokio::io::AsyncReadExt;
                 let pki = Pki::new();
                 let leaf = pki.leaf("localhost");
-                crate::tls::install_crypto_provider();
-                let config = rustls::ServerConfig::builder()
-                    .with_no_client_auth()
-                    .with_single_cert(
-                        vec![rustls_pki_types::CertificateDer::from(leaf.der)],
-                        rustls_pki_types::PrivateKeyDer::try_from(leaf.key).unwrap(),
-                    )
-                    .unwrap();
+                let config = std::sync::Arc::unwrap_or_clone(
+                    busbar_contract::crypto::tls::server_config(|b| {
+                        b.with_no_client_auth().with_single_cert(
+                            vec![rustls_pki_types::CertificateDer::from(leaf.der)],
+                            rustls_pki_types::PrivateKeyDer::try_from(leaf.key).unwrap(),
+                        )
+                    })
+                    .unwrap(),
+                );
                 let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
                 let (listener, target) = far_end().await;
                 let (silent_tx, silent_rx) = tokio::sync::oneshot::channel();
@@ -2816,13 +2818,14 @@ mod transport_pin {
 
     /// A TLS far end on loopback serving `leaf`, answering every five bytes it reads with one
     async fn keeping_tls_far_end(leaf: &Leaf) -> String {
-        crate::tls::install_crypto_provider();
         let chain = vec![rustls_pki_types::CertificateDer::from(leaf.der.clone())];
         let key = rustls_pki_types::PrivateKeyDer::try_from(leaf.key.clone()).unwrap();
-        let config = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(chain, key)
-            .unwrap();
+        let config = std::sync::Arc::unwrap_or_clone(
+            busbar_contract::crypto::tls::server_config(|b| {
+                b.with_no_client_auth().with_single_cert(chain, key)
+            })
+            .unwrap(),
+        );
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
         let (l, far) = far_end().await;
         tokio::spawn(async move {
@@ -2921,13 +2924,14 @@ mod transport_pin {
 
     /// [`keeping_tls_far_end`], counting the connections it accepted: its address and the count.
     async fn counting_tls_far_end(leaf: &Leaf) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
-        crate::tls::install_crypto_provider();
         let chain = vec![rustls_pki_types::CertificateDer::from(leaf.der.clone())];
         let key = rustls_pki_types::PrivateKeyDer::try_from(leaf.key.clone()).unwrap();
-        let config = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(chain, key)
-            .unwrap();
+        let config = std::sync::Arc::unwrap_or_clone(
+            busbar_contract::crypto::tls::server_config(|b| {
+                b.with_no_client_auth().with_single_cert(chain, key)
+            })
+            .unwrap(),
+        );
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
         let (l, far) = far_end().await;
         let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -3545,13 +3549,14 @@ mod transport_pin {
     async fn reporting_tls_far_end(
         leaf: &Leaf,
     ) -> (String, tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>) {
-        crate::tls::install_crypto_provider();
         let chain = vec![rustls_pki_types::CertificateDer::from(leaf.der.clone())];
         let key = rustls_pki_types::PrivateKeyDer::try_from(leaf.key.clone()).unwrap();
-        let config = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(chain, key)
-            .unwrap();
+        let config = std::sync::Arc::unwrap_or_clone(
+            busbar_contract::crypto::tls::server_config(|b| {
+                b.with_no_client_auth().with_single_cert(chain, key)
+            })
+            .unwrap(),
+        );
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
         let (l, far) = far_end().await;
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -3709,13 +3714,14 @@ mod transport_pin {
 
     /// A TLS far end on loopback serving `leaf`, answering `answer` once it read five bytes. Per
     async fn naming_far_end(leaf: &Leaf) -> (String, Named, Accepted) {
-        crate::tls::install_crypto_provider();
         let chain = vec![rustls_pki_types::CertificateDer::from(leaf.der.clone())];
         let key = rustls_pki_types::PrivateKeyDer::try_from(leaf.key.clone()).unwrap();
-        let config = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(chain, key)
-            .unwrap();
+        let config = std::sync::Arc::unwrap_or_clone(
+            busbar_contract::crypto::tls::server_config(|b| {
+                b.with_no_client_auth().with_single_cert(chain, key)
+            })
+            .unwrap(),
+        );
         let config = Arc::new(config);
         let (l, far) = far_end().await;
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();

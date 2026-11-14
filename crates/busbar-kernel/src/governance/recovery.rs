@@ -1397,7 +1397,7 @@ impl MigratedChildContext {
         child: &mut RecoveryChild,
         ordinal: usize,
     ) -> Result<(), RecoveryError> {
-        use sha2::{Digest, Sha256};
+        use crate::hashing::Sha256;
         let mut hash = Sha256::new();
         hash.update(b"busbar.recovery.imported-unsent-child/1\0");
         hash.update(self.seed);

@@ -3,31 +3,26 @@
 
 use super::*;
 use crate::sign::{parse_release_keys, sha256_hex, FirstPartyKey};
-use ring::rand::SystemRandom;
-use ring::signature::{EcdsaKeyPair, KeyPair as _, ECDSA_P256_SHA256_ASN1_SIGNING};
+use busbar_contract::crypto::ecdsa_p256;
 
 pub(crate) enum TestSigner {
-    P256(EcdsaKeyPair),
-    Ed25519(ed25519_dalek::SigningKey),
+    P256(ecdsa_p256::KeyPair),
+    Ed25519(crate::sign::SigningKey),
 }
 
 impl TestSigner {
     pub(crate) fn p256() -> Self {
-        let rng = SystemRandom::new();
-        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
-        TestSigner::P256(
-            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
-                .unwrap(),
-        )
+        let pkcs8 = ecdsa_p256::generate_pkcs8().unwrap();
+        TestSigner::P256(ecdsa_p256::from_pkcs8(&pkcs8).unwrap())
     }
 
     pub(crate) fn ed25519(seed: u8) -> Self {
-        TestSigner::Ed25519(ed25519_dalek::SigningKey::from_bytes(&[seed; 32]))
+        TestSigner::Ed25519(crate::sign::SigningKey::from_bytes(&[seed; 32]))
     }
 
     pub(crate) fn key(&self) -> ReleaseKey {
         match self {
-            TestSigner::P256(p) => ReleaseKey::P256(p.public_key().as_ref().try_into().unwrap()),
+            TestSigner::P256(p) => ReleaseKey::P256(p.public_key()),
             TestSigner::Ed25519(k) => ReleaseKey::Ed25519(k.verifying_key()),
         }
     }
@@ -38,9 +33,9 @@ impl TestSigner {
 
     pub(crate) fn sign(&self, msg: &[u8]) -> Vec<u8> {
         match self {
-            TestSigner::P256(p) => p.sign(&SystemRandom::new(), msg).unwrap().as_ref().to_vec(),
+            TestSigner::P256(p) => p.sign_asn1(msg).unwrap(),
             TestSigner::Ed25519(k) => {
-                use ed25519_dalek::Signer as _;
+                use crate::sign::Signer as _;
                 k.sign(msg).to_bytes().to_vec()
             }
         }

@@ -12,7 +12,6 @@ use busbar_kernel::persistence::{
     facade::WriterAuthority,
     import_target::{candidate_codec, target},
 };
-use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use crate::{
@@ -174,7 +173,9 @@ impl StoreCheckpoints {
         .ok_or(Error::Corrupt)?;
         if stored.complete
             || stored.revision != revision
-            || Sha256::digest(stored.protected.expose(&crate::seal::lend())).as_slice() != digest
+            || busbar_contract::crypto::sha256(stored.protected.expose(&crate::seal::lend()))
+                .as_slice()
+                != digest
         {
             return Err(Error::Corrupt);
         }
@@ -281,7 +282,7 @@ impl StoreCheckpoints {
             .ok_or(Error::Bounds)?;
         let marker = marker(self.info.dataset, migration, revision, protected, complete);
         let mut operation = [0; 16];
-        getrandom::fill(&mut operation).map_err(|_| Error::Entropy)?;
+        busbar_contract::crypto::fill(&mut operation).map_err(|_| Error::Entropy)?;
         if operation == [0; 16] {
             return Err(Error::Entropy);
         }
@@ -523,7 +524,8 @@ impl StoreCheckpoints {
                 let held = stored.as_ref().ok_or(Error::Corrupt)?;
                 if held.complete
                     || held.revision != revision
-                    || Sha256::digest(held.protected.expose(&crate::seal::lend())).as_slice()
+                    || busbar_contract::crypto::sha256(held.protected.expose(&crate::seal::lend()))
+                        .as_slice()
                         != digest
                 {
                     return Err(Error::Corrupt);
@@ -669,7 +671,9 @@ fn marker(
     bytes.extend_from_slice(&dataset.0);
     bytes.extend_from_slice(&migration);
     bytes.extend_from_slice(&revision.to_le_bytes());
-    bytes.extend_from_slice(&Sha256::digest(protected.expose(&crate::seal::lend())));
+    bytes.extend_from_slice(&busbar_contract::crypto::sha256(
+        protected.expose(&crate::seal::lend()),
+    ));
     Secret::new(bytes)
 }
 fn locator(
@@ -685,7 +689,9 @@ fn locator(
     bytes.extend_from_slice(&scope);
     bytes.extend_from_slice(&migration);
     bytes.extend_from_slice(&revision.to_le_bytes());
-    bytes.extend_from_slice(&Sha256::digest(protected.expose(&crate::seal::lend())));
+    bytes.extend_from_slice(&busbar_contract::crypto::sha256(
+        protected.expose(&crate::seal::lend()),
+    ));
     Secret::new(bytes)
 }
 fn decode_stored(
@@ -708,7 +714,8 @@ fn decode_stored(
         || bytes[16..32] != dataset.0
         || bytes[32..48] != migration
         || protected.expose(&crate::seal::lend()).len() > budget
-        || Sha256::digest(protected.expose(&crate::seal::lend())).as_slice() != &bytes[56..88]
+        || busbar_contract::crypto::sha256(protected.expose(&crate::seal::lend())).as_slice()
+            != &bytes[56..88]
     {
         return Err(Error::Corrupt);
     }

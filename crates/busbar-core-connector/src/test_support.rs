@@ -103,7 +103,9 @@ pub struct TestCa {
 /// A fresh [`TestCa`].
 #[must_use]
 pub fn private_ca() -> TestCa {
-    use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair};
+    use busbar_contract::crypto::testing::rcgen::{
+        BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair,
+    };
     let ca_kp = KeyPair::generate().expect("a CA key");
     let mut ca_params = CertificateParams::new(Vec::new()).expect("CA params");
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
@@ -177,10 +179,9 @@ impl ServerTls {
         client_ca: Option<&[Vec<u8>]>,
         alpn: &[&[u8]],
     ) -> Result<Self, String> {
-        let _ = crate::tls::installed_crypto();
-        let builder = rustls::ServerConfig::builder();
-        let builder = match client_ca {
-            None => builder.with_no_client_auth(),
+        use busbar_contract::crypto::tls as crypto_tls;
+        let verifier = match client_ca {
+            None => None,
             Some(cas) => {
                 let mut roots = rustls::RootCertStore::empty();
                 for ca in cas {
@@ -188,20 +189,25 @@ impl ServerTls {
                         .add(CertificateDer::from(ca.clone()))
                         .map_err(|e| format!("client CA: {e}"))?;
                 }
-                let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
-                    .build()
+                let verifier = crypto_tls::client_verifier(Arc::new(roots), |b| b)
                     .map_err(|e| format!("client verifier: {e}"))?;
-                builder.with_client_cert_verifier(verifier)
+                Some(verifier)
             }
         };
-        let mut config = builder
-            .with_single_cert(
+        let config = crypto_tls::server_config(|builder| {
+            let builder = match verifier {
+                None => builder.with_no_client_auth(),
+                Some(verifier) => builder.with_client_cert_verifier(verifier),
+            };
+            let mut config = builder.with_single_cert(
                 chain.iter().cloned().map(CertificateDer::from).collect(),
                 key,
-            )
-            .map_err(|e| format!("server certificate: {e}"))?;
-        config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
-        Ok(Self(Arc::new(config)))
+            )?;
+            config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
+            Ok(config)
+        })
+        .map_err(|e| format!("server certificate: {e}"))?;
+        Ok(Self(config))
     }
 
     /// Run the server handshake on a blocking std stream. The handshake may FAIL (a client refusing

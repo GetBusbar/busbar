@@ -2469,24 +2469,24 @@ pub(crate) async fn compose_planes_over(
                 handed.as_slice(),
                 owned.as_slice(),
             ] {
-                hash.update((bytes.len() as u64).to_be_bytes());
-                hash.update(bytes);
+                hash.update(&(bytes.len() as u64).to_be_bytes());
+                hash.update(&bytes[..]);
             }
-            hash.update((dialects.len() as u64).to_be_bytes());
+            hash.update(&(dialects.len() as u64).to_be_bytes());
             for dialect in dialects {
                 for bytes in [
                     dialect.name.as_bytes(),
                     dialect.protocol.as_bytes(),
                     dialect.error_map.as_deref().unwrap_or_default(),
                 ] {
-                    hash.update((bytes.len() as u64).to_be_bytes());
-                    hash.update(bytes);
+                    hash.update(&(bytes.len() as u64).to_be_bytes());
+                    hash.update(&bytes[..]);
                 }
-                hash.update([u8::from(dialect.error_map.is_some())]);
+                hash.update(&[u8::from(dialect.error_map.is_some())]);
             }
             plan.push(busbar_kernel::persistence::first_start::Binding {
                 instance: instance.clone(),
-                digest: hash.finalize().into(),
+                digest: hash.finish(),
             });
         }
         #[expect(

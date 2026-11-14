@@ -4,7 +4,7 @@
 //! Core-owned single-use claims. Expiry is checked at native serialization, not
 //! against a caller's clock before a queued database command executes.
 
-use sha2::{Digest, Sha256};
+use crate::hashing::Sha256;
 use std::sync::Arc;
 
 use busbar_contract::{

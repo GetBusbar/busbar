@@ -5,9 +5,9 @@
 
 use super::*;
 use crate::tls::Tls;
+use busbar_contract::crypto::testing::rcgen;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
-use sha2::Digest as _;
 
 /// The default trust is genuinely nothing decided — the whole basis for the byte-identity claim.
 #[test]
@@ -60,7 +60,7 @@ fn the_key_info_walk_refuses_what_is_not_a_certificate() {
 
 /// A CA and a leaf it signs for `sans`: (ca_der, leaf_chain_der, leaf_key_der).
 fn ca_and_leaf(sans: &[&str]) -> (Vec<u8>, Vec<Vec<u8>>, Vec<u8>) {
-    use rcgen::{CertificateParams, IsCa, Issuer, KeyPair};
+    use busbar_contract::crypto::testing::rcgen::{CertificateParams, IsCa, Issuer, KeyPair};
     let ca_kp = KeyPair::generate().unwrap();
     let mut ca_params = CertificateParams::new(Vec::new()).unwrap();
     ca_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
@@ -80,25 +80,23 @@ fn ca_and_leaf(sans: &[&str]) -> (Vec<u8>, Vec<Vec<u8>>, Vec<u8>) {
 
 /// A server for `chain`/`key`, requiring a client certificate under `client_ca` when one is given.
 fn server(chain: &[Vec<u8>], key: &[u8], client_ca: Option<&[u8]>) -> Tls {
-    install_crypto_provider();
     let certs: Vec<CertificateDer<'static>> =
         chain.iter().cloned().map(CertificateDer::from).collect();
     let key = PrivateKeyDer::try_from(key.to_vec()).unwrap();
-    let builder = rustls::ServerConfig::builder();
-    let config = match client_ca {
-        Some(ca) => {
-            let mut roots = rustls::RootCertStore::empty();
-            roots.add(CertificateDer::from(ca.to_vec())).unwrap();
-            let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
-                .build()
-                .unwrap();
-            builder.with_client_cert_verifier(verifier)
-        }
-        None => builder.with_no_client_auth(),
-    }
-    .with_single_cert(certs, key)
+    let verifier = client_ca.map(|ca| {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(CertificateDer::from(ca.to_vec())).unwrap();
+        crypto_tls::client_verifier(Arc::new(roots), |b| b).unwrap()
+    });
+    let config = crypto_tls::server_config(|builder| {
+        let builder = match verifier {
+            Some(verifier) => builder.with_client_cert_verifier(verifier),
+            None => builder.with_no_client_auth(),
+        };
+        builder.with_single_cert(certs, key)
+    })
     .unwrap();
-    Tls::new(Arc::new(config))
+    Tls::new(config)
 }
 
 /// Dial `server` through a [`TlsDial`] built from `trust`, offering `name`, and exchange one
@@ -155,7 +153,7 @@ async fn dial_config(server: Tls, config: rustls::ClientConfig, name: &str) -> R
 
 /// The SHA-256 of `leaf`'s whole SubjectPublicKeyInfo — the form an SPKI pin is written in.
 fn pin_of(leaf: &[u8]) -> [u8; 32] {
-    sha2::Sha256::digest(subject_public_key_info(leaf).unwrap()).into()
+    busbar_contract::crypto::sha256(subject_public_key_info(leaf).unwrap())
 }
 
 /// An extra trust anchor is what lets a dial reach a peer whose chain the platform roots do not

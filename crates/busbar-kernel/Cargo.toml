@@ -81,7 +81,6 @@ http-body-util = { workspace = true }
 futures = { workspace = true }
 bytes = { workspace = true }
 serde_json = { workspace = true }
-rcgen = { workspace = true, features = ["pem"] }
 criterion = { workspace = true }
 # Member `test-support` features are enabled here, never in a release build.
 busbar-kernel-audit = { path = "../busbar-kernel-audit", features = ["test-support"] }

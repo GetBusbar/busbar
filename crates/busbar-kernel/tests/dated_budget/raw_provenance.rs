@@ -267,8 +267,8 @@ fn malformed_versioned_budget_provenance_refuses_instead_of_repricing_as_legacy(
             },
         )
         .unwrap();
-    let digest = ring::digest::digest(&ring::digest::SHA256, key.id.as_bytes());
-    let dated_bucket = format!("e:{}", hex::encode(&digest.as_ref()[..16]));
+    let digest = busbar_contract::crypto::sha256(key.id.as_bytes());
+    let dated_bucket = format!("e:{}", hex::encode(&digest[..16]));
     store
         .put_usage(
             &dated_bucket,

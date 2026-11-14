@@ -978,7 +978,7 @@ fn signature_does_not_verify_under_a_weak_key() {
     let mut weak = [0u8; 32];
     weak[0] = 1;
 
-    let key = ed25519_dalek::VerifyingKey::from_bytes(&weak)
+    let key = VerifyingKey::from_bytes(&weak)
         .expect("the identity point decompresses; only a weakness check refuses it");
     let artifact = b"attacker-supplied library bytes";
     let mut m = manifest("acme-p", "p", "acme");

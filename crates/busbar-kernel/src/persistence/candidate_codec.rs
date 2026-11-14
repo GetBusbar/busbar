@@ -341,7 +341,7 @@ fn preflight(bytes: &[u8]) -> Result<Layout, CodecError> {
 // contract's normalization of None and Some(unbounded). This definition is pinned
 // to CANDIDATE_VERSION=1; unsupported versions cannot reach it.
 fn semantic_fingerprint(header: &Header, tail: &[u8]) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
+    use crate::hashing::Sha256;
     let mut hash = Sha256::new();
     hash.update(b"busbar.persistence.candidate/1\0");
     hash.update(header.codec.to_le_bytes());

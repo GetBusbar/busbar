@@ -92,11 +92,9 @@ path = "tests/fixtures/neutral_frame_door.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-ring = { workspace = true }
 arc-swap = { workspace = true }
 foldhash = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
-ed25519-dalek = { workspace = true }
 hex = { workspace = true }
 libloading = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time", "sync"] }
@@ -108,7 +106,6 @@ tracing = { workspace = true }
 zeroize = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
-getrandom = { workspace = true }
 # `pack` feature only.
 jsonschema = { workspace = true, optional = true }
 

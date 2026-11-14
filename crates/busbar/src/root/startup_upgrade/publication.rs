@@ -9,13 +9,13 @@ use super::{
     },
     documents::Documents,
 };
+use busbar_contract::crypto::Sha256;
 use busbar_contract::{
     persistence::{axis::OpenedBackend, Durability, Failure},
     Secret,
 };
 use busbar_kernel::{durable::DurableFs, persistence::facade::CoreStore};
 use busbar_migrations::{documents::StoreCheckpoints, Error, StartupUpgrade};
-use sha2::{Digest, Sha256};
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
 const WAIT: Duration = Duration::from_secs(30);
@@ -137,10 +137,10 @@ impl Publication {
                     None => {
                         let mut digest = Sha256::new();
                         digest.update(b"busbar.startup.document-custody.1\0");
-                        digest.update(self.scope.expect("durable document location bound"));
-                        digest.update(self.inputs.backend.info().dataset.0);
-                        digest.update(self.inputs.native_upgrade_id);
-                        let hash: [u8; 32] = digest.finalize().into();
+                        digest.update(&self.scope.expect("durable document location bound")[..]);
+                        digest.update(&self.inputs.backend.info().dataset.0[..]);
+                        digest.update(&self.inputs.native_upgrade_id[..]);
+                        let hash: [u8; 32] = digest.finish();
                         hash[..16]
                             .try_into()
                             .expect("fixed document identity width")

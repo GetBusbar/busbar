@@ -30,8 +30,7 @@ fn red_both_spellings_read_to_the_documented_sha256_form() {
 #[test]
 fn the_pin_is_the_sha256_of_the_key_info_in_standard_base64() {
     use base64::Engine as _;
-    use sha2::Digest as _;
-    let digest = sha2::Sha256::digest(SPKI);
+    let digest = crate::crypto::sha256(SPKI);
     assert_eq!(
         key_pin(SPKI),
         format!(

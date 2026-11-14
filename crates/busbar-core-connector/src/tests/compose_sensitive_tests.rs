@@ -246,18 +246,19 @@ fn query_target_classification_stays_with_initial_and_pooled_pending_openings() 
 
 #[test]
 fn sealed_query_pending_and_completed_streams_keep_independent_credentials() {
-    crate::tls::install_crypto_provider();
     for pending in [1, 3] {
         for broken in [false, true] {
             let (ca, leaf, key) = localhost_cert();
             worker().block_on(async move {
-                let mut server = rustls::ServerConfig::builder()
-                    .with_no_client_auth()
-                    .with_single_cert(
-                        vec![leaf.into()],
-                        rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
-                    )
-                    .unwrap();
+                let mut server = std::sync::Arc::unwrap_or_clone(
+                    busbar_contract::crypto::tls::server_config(|b| {
+                        b.with_no_client_auth().with_single_cert(
+                            vec![leaf.into()],
+                            rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
+                        )
+                    })
+                    .unwrap(),
+                );
                 server.alpn_protocols = vec![b"http/1.1".to_vec()];
                 let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
                 let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

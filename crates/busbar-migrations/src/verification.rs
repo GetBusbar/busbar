@@ -8,8 +8,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use busbar_contract::crypto::Sha256;
 use busbar_contract::{persistence::*, Secret};
-use sha2::{Digest, Sha256};
 
 use super::{
     coordinator::{check_rows, reserved, rolling_digest, rolling_target_digest},
@@ -234,10 +234,10 @@ impl Verifier for ArchiveVerifier {
         partial.target_digest = rolling_target_digest(partial.target_digest, &rows);
         let mut invariants = Sha256::new();
         invariants.update(b"busbar.migration.invariants.v1\0");
-        invariants.update(partial.decoded_invariants_digest);
-        invariants.update(semantics);
-        invariants.update(page.next.to_le_bytes());
-        partial.decoded_invariants_digest = invariants.finalize().into();
+        invariants.update(&partial.decoded_invariants_digest[..]);
+        invariants.update(&semantics[..]);
+        invariants.update(&page.next.to_le_bytes());
+        partial.decoded_invariants_digest = invariants.finish();
         partial.after = page.next;
         if page.complete {
             if partial.after != checkpoint.cursor
@@ -250,10 +250,10 @@ impl Verifier for ArchiveVerifier {
             }
             let mut coverage = Sha256::new();
             coverage.update(b"busbar.migration.family.coverage.v1\0");
-            coverage.update(self.snapshot.coverage_digest);
-            coverage.update(family.id);
-            coverage.update(partial.source_count.to_le_bytes());
-            coverage.update(partial.source_digest);
+            coverage.update(&self.snapshot.coverage_digest[..]);
+            coverage.update(&family.id[..]);
+            coverage.update(&partial.source_count.to_le_bytes());
+            coverage.update(&partial.source_digest[..]);
             verification.families.push(VerifiedFamily {
                 family: family.id,
                 source_count: partial.source_count,
@@ -261,7 +261,7 @@ impl Verifier for ArchiveVerifier {
                 source_digest: partial.source_digest,
                 target_digest: partial.target_digest,
                 decoded_invariants_digest: partial.decoded_invariants_digest,
-                source_coverage_digest: coverage.finalize().into(),
+                source_coverage_digest: coverage.finish(),
             });
         } else {
             verification.partial = Some(partial);
@@ -288,11 +288,11 @@ impl Verifier for ArchiveVerifier {
 fn completion_digest(verification: &Verification, snapshot: &SnapshotEvidence) -> Digest32 {
     let mut hash = Sha256::new();
     hash.update(b"busbar.migration.verified.debt.v1\0");
-    hash.update(snapshot.coverage_digest);
+    hash.update(&snapshot.coverage_digest[..]);
     for family in &verification.families {
-        hash.update(family.family);
-        hash.update(family.decoded_invariants_digest);
-        hash.update(family.source_coverage_digest);
+        hash.update(&family.family[..]);
+        hash.update(&family.decoded_invariants_digest[..]);
+        hash.update(&family.source_coverage_digest[..]);
     }
-    hash.finalize().into()
+    hash.finish()
 }

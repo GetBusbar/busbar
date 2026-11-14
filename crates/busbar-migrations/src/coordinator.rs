@@ -4,12 +4,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use busbar_contract::crypto::Sha256;
 use busbar_contract::persistence::{
     Address, AttemptId, Candidate, DatasetId, Decision, ExpectedValue, Failure, Mutation,
     PersistenceBackend, Predicate, Read, ReadResult, CANDIDATE_VERSION,
 };
 use busbar_contract::Secret;
-use sha2::{Digest, Sha256};
 
 use super::*;
 use busbar_kernel::persistence::{
@@ -745,7 +745,7 @@ impl Coordinator {
             value: Secret::new(bytes),
         });
         let mut operation = [0; 16];
-        getrandom::fill(&mut operation).map_err(|_| Error::Entropy)?;
+        busbar_contract::crypto::fill(&mut operation).map_err(|_| Error::Entropy)?;
         predicates.push(Predicate {
             address: super::intent::guard_address(next.migration),
             expected: ExpectedValue::Exact(Secret::new(super::intent::open_guard(
@@ -868,7 +868,7 @@ impl Coordinator {
                 candidate_fingerprint: pending.attempt.candidate().fingerprint(),
                 original_result: original_result.clone(),
                 checkpoint_address: address(pending.next.migration),
-                checkpoint_value_digest: Sha256::digest(&checkpoint).into(),
+                checkpoint_value_digest: busbar_contract::crypto::sha256(&checkpoint).into(),
                 phase,
             });
             match phase {
@@ -903,7 +903,7 @@ fn completion_marker(
             source: DatasetId(manifest.source.dataset),
             target: DatasetId(manifest.target.dataset),
             checkpoint_address: address(manifest.migration),
-            checkpoint_value_digest: Sha256::digest(checkpoint).into(),
+            checkpoint_value_digest: busbar_contract::crypto::sha256(checkpoint).into(),
         },
         native::Bounds {
             items: 16,
@@ -990,29 +990,29 @@ pub(super) fn rolling_digest<'a>(
 ) -> Digest32 {
     let mut hash = Sha256::new();
     hash.update(b"busbar.migration.page.v1\0");
-    hash.update(previous);
+    hash.update(&previous[..]);
     for (key, value) in rows {
-        hash.update((key.len() as u64).to_le_bytes());
-        hash.update(key);
-        hash.update((value.len() as u64).to_le_bytes());
-        hash.update(value);
+        hash.update(&(key.len() as u64).to_le_bytes());
+        hash.update(&key[..]);
+        hash.update(&(value.len() as u64).to_le_bytes());
+        hash.update(&value[..]);
     }
-    hash.finalize().into()
+    hash.finish()
 }
 
 pub(super) fn rolling_target_digest(previous: Digest32, rows: &[TargetRow]) -> Digest32 {
     let seal = crate::seal::lend();
     let mut hash = Sha256::new();
     hash.update(b"busbar.migration.target.page.v1\0");
-    hash.update(previous);
+    hash.update(&previous[..]);
     for row in rows {
-        hash.update(row.address.namespace);
-        hash.update((row.address.key.len() as u64).to_le_bytes());
+        hash.update(&row.address.namespace[..]);
+        hash.update(&(row.address.key.len() as u64).to_le_bytes());
         hash.update(&row.address.key);
-        hash.update((row.value.expose(&seal).len() as u64).to_le_bytes());
+        hash.update(&(row.value.expose(&seal).len() as u64).to_le_bytes());
         hash.update(row.value.expose(&seal));
     }
-    hash.finalize().into()
+    hash.finish()
 }
 
 fn validate_activation(

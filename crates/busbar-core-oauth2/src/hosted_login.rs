@@ -622,14 +622,13 @@ fn clear_and(mut resp: Response) -> Response {
 
 fn random_b64url(n_bytes: usize) -> String {
     let mut buf = vec![0u8; n_bytes];
-    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut buf)
-        .expect("OS randomness for PKCE/state/nonce");
+    busbar_contract::crypto::fill(&mut buf).expect("OS randomness for PKCE/state/nonce");
     B64.encode(buf)
 }
 
 fn code_challenge_s256(code_verifier: &str) -> String {
-    let digest = ring::digest::digest(&ring::digest::SHA256, code_verifier.as_bytes());
-    B64.encode(digest.as_ref())
+    let digest = busbar_contract::crypto::sha256(code_verifier.as_bytes());
+    B64.encode(digest)
 }
 
 fn parse_query(q: &str) -> Vec<(String, String)> {

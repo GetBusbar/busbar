@@ -339,7 +339,6 @@ fn landing_spends_only_the_dial_bound_and_the_first_reply_spends_the_request_bou
 
 #[test]
 fn a_pended_dns_dial_carries_its_expired_original_bound_into_the_tls_stage() {
-    crate::tls::install_crypto_provider();
     let ca = crate::test_support::private_ca();
     let trust = busbar_contract::transport::trust::EgressTrust {
         extra_anchors: crate::test_support::certs_from_pem(&ca.ca_pem),

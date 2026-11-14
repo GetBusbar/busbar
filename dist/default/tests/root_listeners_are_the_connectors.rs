@@ -196,11 +196,13 @@ fn the_data_door_and_the_admin_surface_are_the_connectors_and_answer_only_their_
 #[test]
 fn a_silent_client_on_the_tls_data_door_is_dropped_at_the_handshake_bound() {
     let dir = fixture_dir("tls");
-    let key = rcgen::KeyPair::generate().unwrap();
-    let cert = rcgen::CertificateParams::new(vec!["localhost".to_owned()])
-        .unwrap()
-        .self_signed(&key)
-        .unwrap();
+    let key = busbar_contract::crypto::testing::rcgen::KeyPair::generate().unwrap();
+    let cert = busbar_contract::crypto::testing::rcgen::CertificateParams::new(vec![
+        "localhost".to_owned()
+    ])
+    .unwrap()
+    .self_signed(&key)
+    .unwrap();
     std::fs::write(dir.join("cert.pem"), cert.pem()).unwrap();
     std::fs::write(dir.join("key.pem"), key.serialize_pem()).unwrap();
     let (data, admin) = (common::boot::free_port(), common::boot::free_port());

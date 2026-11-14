@@ -3,7 +3,6 @@
 
 //! `busbar-core-connector::dtls` — the DTLS engine: transport encryption over a DATAGRAM carrier,
 
-mod ring;
 pub mod stun;
 
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
@@ -12,7 +11,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ::ring::rand::{SecureRandom as _, SystemRandom};
+use busbar_contract::crypto;
 pub use stun::IceCredentials;
 use zeroize::Zeroizing;
 
@@ -64,10 +63,9 @@ pub enum Verdict {
     Kept,
 }
 
-/// A per-session certificate the host mints and owns. Its key is a ring key pair parked behind a
+/// A per-session certificate the host mints and owns. Its key is a backend key pair parked behind a
 pub struct SessionCert {
-    der: Vec<u8>,
-    handle: Vec<u8>,
+    cert: crypto::dtls::DtlsCert,
     fingerprint: [u8; 32],
 }
 
@@ -79,14 +77,9 @@ impl std::fmt::Debug for SessionCert {
     }
 }
 
-impl Drop for SessionCert {
-    fn drop(&mut self) {
-        ring::unregister_key(&self.handle);
-    }
-}
-
 impl SessionCert {
-    /// Mint a fresh self-signed ECDSA P-256 certificate: ring generates the key, rcgen (on ring)
+    /// Mint a fresh self-signed ECDSA P-256 certificate: the crypto backend generates the key and
+    /// keeps it (`busbar_contract::crypto::dtls::dtls_self_signed`); dropping the cert forgets it.
     pub fn mint() -> Result<Self, Failure> {
         use ::ring::signature::{EcdsaKeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
         #[expect(
@@ -111,16 +104,15 @@ impl SessionCert {
         let der = cert.der().to_vec();
         let handle = ring::register_key(Arc::new(pair)).map_err(|e| failed(&e))?;
         Ok(SessionCert {
-            fingerprint: sha256(&der),
-            der,
-            handle,
+            fingerprint: sha256(cert.der()),
+            cert,
         })
     }
 
     /// The certificate, DER — public; the framer's SDP answer carries its fingerprint.
     #[must_use]
     pub fn public_der(&self) -> &[u8] {
-        &self.der
+        self.cert.der()
     }
 
     /// SHA-256 of [`Self::public_der`], the `a=fingerprint:sha-256` value.
@@ -298,7 +290,7 @@ impl Association {
         remote_fingerprint: [u8; 32],
     ) -> Self {
         let mut tie_breaker = [0_u8; 8];
-        let _ = SystemRandom::new().fill(&mut tie_breaker);
+        let _ = crypto::fill(&mut tie_breaker);
         Association {
             #[cfg(test)]
             ingest_calls: 0,
@@ -647,14 +639,14 @@ impl Association {
             }
         }
         let mut txid = [0_u8; 12];
-        if SystemRandom::new().fill(&mut txid).is_err() {
+        if crypto::fill(&mut txid).is_err() {
             return;
         }
+        let Some(probe) = stun::probe(&self.keys, txid, self.tie_breaker, self.controlling) else {
+            return;
+        };
         self.probes.insert(txid, (path, now));
-        self.wire.push_back((
-            path,
-            stun::probe(&self.keys, txid, self.tie_breaker, self.controlling),
-        ));
+        self.wire.push_back((path, probe));
     }
 
     /// A probe to `path` was answered: apply a bind waiting on it.
@@ -686,8 +678,12 @@ impl Association {
         }
         self.next_consent = Some(due);
         if self.dtls.is_none() {
+            let provider = match crypto::dtls::dtls_provider() {
+                Ok(p) => p,
+                Err(e) => return self.fail(Failure::Dtls(e.to_string())),
+            };
             let config = match dimpl::Config::builder()
-                .with_crypto_provider(ring::provider())
+                .with_crypto_provider(provider)
                 .build()
             {
                 Ok(c) => c,
@@ -814,9 +810,7 @@ impl Association {
 }
 
 fn sha256(bytes: &[u8]) -> [u8; 32] {
-    let mut out = [0_u8; 32];
-    out.copy_from_slice(::ring::digest::digest(&::ring::digest::SHA256, bytes).as_ref());
-    out
+    crypto::sha256(bytes)
 }
 
 /// `bytes` as colon-separated upper-case hex pairs, written straight into the formatter.

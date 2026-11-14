@@ -4,6 +4,7 @@
 //! Unit tests for the core-side connection-security seam.
 
 use super::*;
+use busbar_contract::crypto::testing::rcgen;
 use busbar_kernel::config::secret::SecretResolver;
 use busbar_kernel::config::SecretRef;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -234,14 +235,16 @@ async fn tls_wrap_completes_a_real_handshake_and_carries_bytes() {
             .unwrap();
     });
 
-    install_crypto_provider();
     let mut roots = rustls::RootCertStore::empty();
     for cert in rustls::pki_types::CertificateDer::pem_slice_iter(cert_pem.as_bytes()) {
         roots.add(cert.unwrap()).unwrap();
     }
-    let client_config = rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
+    let client_config = std::sync::Arc::unwrap_or_clone(
+        busbar_contract::crypto::tls::client_config(|b| {
+            Ok(b.with_root_certificates(roots).with_no_client_auth())
+        })
+        .unwrap(),
+    );
     let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(client_config));
     let server_name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
     let mut client_stream = connector.connect(server_name, client_io).await.unwrap();
@@ -257,7 +260,7 @@ async fn tls_wrap_completes_a_real_handshake_and_carries_bytes() {
 
 /// Generate a CA and a leaf it signs for `sans`. Returns (ca_pem, leaf_cert_pem, leaf_key_pem).
 fn gen_ca_and_leaf(sans: Vec<String>) -> (String, String, String) {
-    use rcgen::{CertificateParams, IsCa, Issuer, KeyPair};
+    use busbar_contract::crypto::testing::rcgen::{CertificateParams, IsCa, Issuer, KeyPair};
     let ca_kp = KeyPair::generate().unwrap();
     let mut ca_params = CertificateParams::new(Vec::new()).unwrap();
     ca_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
@@ -338,24 +341,23 @@ fn handshake(
 
 /// A client trusting exactly `ca_pem`, presenting no certificate.
 fn anonymous_client(ca_pem: &str) -> Arc<rustls::ClientConfig> {
-    Arc::new(
-        rustls::ClientConfig::builder()
-            .with_root_certificates(roots_of(ca_pem))
-            .with_no_client_auth(),
-    )
+    busbar_contract::crypto::tls::client_config(|b| {
+        Ok(b.with_root_certificates(roots_of(ca_pem))
+            .with_no_client_auth())
+    })
+    .unwrap()
 }
 
 /// The listener has a key because this crate built one from the operator's config, and a real
 #[test]
 fn the_config_built_from_the_tls_block_serves_a_real_handshake_and_carries_bytes() {
-    install_crypto_provider();
     let rcgen::CertifiedKey { cert, signing_key } =
         rcgen::generate_simple_self_signed(vec!["localhost".to_string(), "127.0.0.1".to_string()])
             .unwrap();
     let cert_pem = cert.pem();
     let tls = tls_cfg_from(&cert_pem, &signing_key.serialize_pem(), None);
     let server_cfg =
-        Arc::new(build_server_config(&tls, &fixture_resolver(&tls)).expect("a valid pair builds"));
+        build_server_config(&tls, &fixture_resolver(&tls)).expect("a valid pair builds");
 
     let (mut client, mut server) = handshake(
         server_cfg,
@@ -375,7 +377,6 @@ fn the_config_built_from_the_tls_block_serves_a_real_handshake_and_carries_bytes
 /// The client-cert verifier is the DIFFERENCE a `client_ca` makes, and the only way to see it is to
 #[test]
 fn only_the_mutual_tls_config_refuses_a_client_that_offers_no_certificate() {
-    install_crypto_provider();
     let (server_ca_pem, server_cert_pem, server_key_pem) =
         gen_ca_and_leaf(vec!["localhost".into()]);
     let (client_ca_pem, _client_leaf_pem, _client_key_pem) =
@@ -384,22 +385,14 @@ fn only_the_mutual_tls_config_refuses_a_client_that_offers_no_certificate() {
 
     let tls = tls_cfg_from(&server_cert_pem, &server_key_pem, None);
     let server_only = build_server_config(&tls, &fixture_resolver(&tls)).unwrap();
-    handshake(
-        Arc::new(server_only),
-        anonymous_client(&server_ca_pem),
-        localhost(),
-    )
-    .expect("server-only TLS asks a client for nothing and completes");
+    handshake(server_only, anonymous_client(&server_ca_pem), localhost())
+        .expect("server-only TLS asks a client for nothing and completes");
 
     let tls = tls_cfg_from(&server_cert_pem, &server_key_pem, Some(&client_ca_pem));
     let mutual = build_server_config(&tls, &fixture_resolver(&tls)).unwrap();
-    let err = handshake(
-        Arc::new(mutual),
-        anonymous_client(&server_ca_pem),
-        localhost(),
-    )
-    .map(|_| ())
-    .expect_err("mutual TLS means the client MUST present a certificate");
+    let err = handshake(mutual, anonymous_client(&server_ca_pem), localhost())
+        .map(|_| ())
+        .expect_err("mutual TLS means the client MUST present a certificate");
     assert!(
         matches!(err, rustls::Error::NoCertificatesPresented),
         "the handshake failed for the wrong reason: {err:?}"
@@ -409,7 +402,6 @@ fn only_the_mutual_tls_config_refuses_a_client_that_offers_no_certificate() {
 /// The mutual-TLS listener THROUGH THE WRAP: `prepare` hands back the `Tls` wrap for a `tls:` block
 #[tokio::test]
 async fn the_tls_wrap_serves_a_client_whose_certificate_chains_to_the_client_ca() {
-    install_crypto_provider();
     let (server_ca_pem, server_cert_pem, server_key_pem) =
         gen_ca_and_leaf(vec!["localhost".into()]);
     let (client_ca_pem, client_leaf_pem, client_key_pem) =
@@ -444,10 +436,13 @@ async fn the_tls_wrap_serves_a_client_whose_certificate_chains_to_the_client_ca(
             .collect::<Result<_, _>>()
             .unwrap();
     let key = rustls::pki_types::PrivateKeyDer::from_pem_slice(client_key_pem.as_bytes()).unwrap();
-    let client_config = rustls::ClientConfig::builder()
-        .with_root_certificates(roots_of(&server_ca_pem))
-        .with_client_auth_cert(chain, key)
-        .unwrap();
+    let client_config = std::sync::Arc::unwrap_or_clone(
+        busbar_contract::crypto::tls::client_config(|b| {
+            b.with_root_certificates(roots_of(&server_ca_pem))
+                .with_client_auth_cert(chain, key)
+        })
+        .unwrap(),
+    );
     let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
     let mut client = connector
         .connect(
@@ -542,30 +537,27 @@ impl rustls::client::danger::ServerCertVerifier for AcceptAnyServerCert {
         Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
     }
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        rustls::crypto::ring::default_provider()
-            .signature_verification_algorithms
-            .supported_schemes()
+        busbar_contract::crypto::tls::signature_algorithms().supported_schemes()
     }
 }
 
 fn accept_any_server_cert() -> Arc<rustls::ClientConfig> {
-    Arc::new(
-        rustls::ClientConfig::builder()
-            .dangerous()
+    busbar_contract::crypto::tls::client_config(|b| {
+        Ok(b.dangerous()
             .with_custom_certificate_verifier(Arc::new(AcceptAnyServerCert))
-            .with_no_client_auth(),
-    )
+            .with_no_client_auth())
+    })
+    .unwrap()
 }
 
 /// A client offering no SNI (a dial to a bare address offers none) is served the configured
 #[test]
 fn any_offered_name_or_none_is_served_the_configured_certificate() {
-    install_crypto_provider();
     let rcgen::CertifiedKey { cert, signing_key } =
         rcgen::generate_simple_self_signed(vec!["configured.example".to_string()]).unwrap();
     let cert_pem = cert.pem();
     let tls = tls_cfg_from(&cert_pem, &signing_key.serialize_pem(), None);
-    let server_cfg = Arc::new(build_server_config(&tls, &fixture_resolver(&tls)).unwrap());
+    let server_cfg = build_server_config(&tls, &fixture_resolver(&tls)).unwrap();
     let configured = leaf_der(&cert_pem);
 
     assert_eq!(
@@ -582,9 +574,13 @@ fn any_offered_name_or_none_is_served_the_configured_certificate() {
 
 /// A client offering exactly `protocols` over ALPN, trusting exactly `ca_pem`.
 fn offering(ca_pem: &str, protocols: &[&[u8]]) -> Arc<rustls::ClientConfig> {
-    let mut config = rustls::ClientConfig::builder()
-        .with_root_certificates(roots_of(ca_pem))
-        .with_no_client_auth();
+    let mut config = std::sync::Arc::unwrap_or_clone(
+        busbar_contract::crypto::tls::client_config(|b| {
+            Ok(b.with_root_certificates(roots_of(ca_pem))
+                .with_no_client_auth())
+        })
+        .unwrap(),
+    );
     config.alpn_protocols = protocols.iter().map(|p| p.to_vec()).collect();
     Arc::new(config)
 }
@@ -592,12 +588,11 @@ fn offering(ca_pem: &str, protocols: &[&[u8]]) -> Arc<rustls::ClientConfig> {
 /// The listener's config, built from the `tls:` block, negotiates `h2` with a client that offers it
 #[test]
 fn a_tls_listener_negotiates_h2_when_offered_and_http1_when_only_that_is_offered() {
-    install_crypto_provider();
     let rcgen::CertifiedKey { cert, signing_key } =
         rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
     let cert_pem = cert.pem();
     let tls = tls_cfg_from(&cert_pem, &signing_key.serialize_pem(), None);
-    let server_cfg = Arc::new(build_server_config(&tls, &fixture_resolver(&tls)).unwrap());
+    let server_cfg = build_server_config(&tls, &fixture_resolver(&tls)).unwrap();
     let negotiated = |protocols: &[&[u8]]| {
         let (client, server) = handshake(
             Arc::clone(&server_cfg),
@@ -632,7 +627,6 @@ async fn wrap_and_read(
     sent: &'static [u8],
     want: usize,
 ) -> std::io::Result<Vec<u8>> {
-    install_crypto_provider();
     let (ca_pem, cert_pem, key_pem) = gen_ca_and_leaf(vec!["localhost".into()]);
     let tls = tls_cfg_from(&cert_pem, &key_pem, None);
     let security = prepare("alpn-binding", Some(&tls), &fixture_resolver(&tls), true)
@@ -781,7 +775,6 @@ T2oQ/ubQAiBqi7uw7oUthq1/KJLtHYXa4UfAUmO9ZL2ZlSaJfVniUA==
 /// PKCS#1 (RSA) and SEC1 (EC) keys build a server config, and the config serves the certificate
 #[test]
 fn pkcs1_and_sec1_keys_build_a_server_config() {
-    install_crypto_provider();
     assert!(
         PKCS1_KEY.contains("BEGIN RSA PRIVATE KEY"),
         "fixture is PKCS#1"
@@ -792,10 +785,8 @@ fn pkcs1_and_sec1_keys_build_a_server_config() {
         ("SEC1", SEC1_CERT.trim(), SEC1_KEY.trim()),
     ] {
         let tls = tls_cfg_from(cert, key, None);
-        let server_cfg = Arc::new(
-            build_server_config(&tls, &fixture_resolver(&tls))
-                .unwrap_or_else(|e| panic!("a {what} key must build a server config: {e}")),
-        );
+        let server_cfg = build_server_config(&tls, &fixture_resolver(&tls))
+            .unwrap_or_else(|e| panic!("a {what} key must build a server config: {e}"));
         assert_eq!(
             served_leaf(&server_cfg, "localhost"),
             leaf_der(cert),

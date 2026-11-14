@@ -4,7 +4,7 @@
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine as _;
 use busbar_contract::abi::host::service as svc;
-use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
+use busbar_contract::crypto::ed25519::VerifyingKey;
 use serde_json::{Map, Value};
 
 const KEY_INFO_HEAD: [u8; 12] = [
@@ -65,9 +65,7 @@ pub fn verify(payload: &[u8], signatures: &Value, root: &VerifyingKey) -> Result
             .and_then(|b| <[u8; 64]>::try_from(b).ok())
             .ok_or_else(|| refused(svc::SIGNED_MALFORMED_SIGNATURE))?;
         let input = format!("{protected}.{payload}");
-        verified |= root
-            .verify(input.as_bytes(), &Signature::from_bytes(&raw))
-            .is_ok();
+        verified |= root.verify_strict(input.as_bytes(), &raw).is_ok();
     }
     verified
         .then_some(())

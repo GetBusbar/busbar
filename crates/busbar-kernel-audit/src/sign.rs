@@ -3,7 +3,7 @@
 
 //! The signature over a sealed record's digest, minted in the process that sealed it.
 
-use ed25519_dalek::{Signer as _, SigningKey, VerifyingKey};
+use busbar_contract::crypto::ed25519::{SigningKey, VerifyingKey};
 use zeroize::Zeroize as _;
 
 /// The domain this signature is FOR, and the first bytes of every preimage.
@@ -187,10 +187,9 @@ impl AuditSigningKey {
     /// A 32-BYTE SECRET DERIVED FROM THIS KEY under `label`: HMAC-SHA256 keyed by the seed, over
     #[must_use]
     pub fn derived_secret(&self, label: &[u8]) -> [u8; 32] {
-        let mut seed = self.inner.to_bytes();
+        let seed = self.inner.to_seed();
         // A 32-byte key: no backend refuses it (FIPS's floor is 14 bytes).
-        let out = busbar_contract::crypto::hmac_sha256(&seed, label);
-        seed.zeroize();
+        let out = busbar_contract::crypto::hmac_sha256(&*seed, label);
         match out {
             Ok(mac) => mac,
             Err(e) => panic!("crypto backend refused HMAC-SHA256 under a 32-byte key: {e}"),
@@ -220,10 +219,7 @@ impl AuditSigningKey {
     /// Sign one ledger checkpoint's body: 64 raw ed25519 signature bytes over
     #[must_use]
     pub fn sign_checkpoint_body(&self, body: &[u8]) -> Vec<u8> {
-        self.inner
-            .sign(&checkpoint_preimage(body))
-            .to_bytes()
-            .to_vec()
+        self.inner.sign(&checkpoint_preimage(body)).to_vec()
     }
 }
 
@@ -335,13 +331,12 @@ impl AuditKeySet {
         let raw: [u8; 64] = signature
             .try_into()
             .map_err(|_| KeyError::MalformedSignature)?;
-        let signature = ed25519_dalek::Signature::from_bytes(&raw);
         let preimage = checkpoint_preimage(body);
         // busbar:expect(bp::state_scan, reason = "config: a checkpoint names no key, so each configured verifying key is tried")
         if self
             .keys
             .iter()
-            .any(|k| k.inner.verify_strict(&preimage, &signature).is_ok())
+            .any(|k| k.inner.verify_strict(&preimage, &raw).is_ok())
         {
             Ok(())
         } else {

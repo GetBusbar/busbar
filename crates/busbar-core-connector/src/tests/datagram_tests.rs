@@ -73,11 +73,10 @@ fn answer(req: &[u8], pwd: &str) -> Vec<u8> {
 }
 
 fn sign(mut m: Vec<u8>, key: &str) -> Vec<u8> {
-    let key = ::ring::hmac::Key::new(::ring::hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, key.as_bytes());
-    let tag = ::ring::hmac::sign(&key, &m);
+    let tag = busbar_contract::crypto::legacy::hmac_sha1(key.as_bytes(), &m).unwrap();
     m.extend_from_slice(&0x0008_u16.to_be_bytes());
     m.extend_from_slice(&20_u16.to_be_bytes());
-    m.extend_from_slice(tag.as_ref());
+    m.extend_from_slice(&tag);
     m
 }
 

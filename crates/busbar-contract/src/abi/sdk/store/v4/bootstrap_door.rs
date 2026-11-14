@@ -10,9 +10,9 @@ use crate::abi::mechanism::call::{
 };
 use crate::abi::mechanism::lifecycle::{OpenIn, OpenOut};
 use crate::abi::mechanism::ticket::HostTables;
+use crate::crypto::Sha256;
 use crate::persistence::lifecycle::{self as native, codec, OpenBinding, Request, Response};
 use crate::Secret;
-use sha2::{Digest, Sha256};
 
 #[derive(Debug)]
 pub(super) struct Preparation {
@@ -267,17 +267,17 @@ unsafe fn preflight<'a>(input: &wire::BootstrapIn, allocation_bytes: usize) -> O
     )?;
     let mut hash = Sha256::new();
     hash.update(b"busbar.store.bootstrap.birth/1\0");
-    hash.update(input.generation.to_le_bytes());
-    hash.update((settings.len() as u64).to_le_bytes());
-    hash.update(settings);
+    hash.update(&input.generation.to_le_bytes());
+    hash.update(&(settings.len() as u64).to_le_bytes());
+    hash.update(&settings[..]);
     for blob in secrets {
         let secret = unsafe { bytes(*blob) }?;
         if blob.flags & BLOB_SECRET == 0 || overlap(blob.ptr, blob.len, input.result) {
             return None;
         }
         aggregate = aggregate.checked_add(secret.len())?;
-        hash.update((secret.len() as u64).to_le_bytes());
-        hash.update(secret);
+        hash.update(&(secret.len() as u64).to_le_bytes());
+        hash.update(&secret[..]);
     }
     if aggregate > allocation_bytes
         || overlap(input.settings.ptr, input.settings.len, input.result)
@@ -312,11 +312,11 @@ unsafe fn preflight<'a>(input: &wire::BootstrapIn, allocation_bytes: usize) -> O
         if tables._reserved != 0 || tables.ctx.handle != input.head.host.handle {
             return None;
         }
-        hash.update(tables.ctx.handle.to_le_bytes());
-        hash.update((tables.wake.map_or(0, |f| f as usize) as u64).to_le_bytes());
-        hash.update((tables.conns as usize as u64).to_le_bytes());
-        hash.update((tables.services as usize as u64).to_le_bytes());
-        hash.update((tables.io as usize as u64).to_le_bytes());
+        hash.update(&tables.ctx.handle.to_le_bytes());
+        hash.update(&(tables.wake.map_or(0, |f| f as usize) as u64).to_le_bytes());
+        hash.update(&(tables.conns as usize as u64).to_le_bytes());
+        hash.update(&(tables.services as usize as u64).to_le_bytes());
+        hash.update(&(tables.io as usize as u64).to_le_bytes());
         Some(unsafe { Host::from_raw(&tables) })
     };
     Some(Loan {
@@ -324,7 +324,7 @@ unsafe fn preflight<'a>(input: &wire::BootstrapIn, allocation_bytes: usize) -> O
         secrets,
         request,
         host,
-        birth: hash.finalize().into(),
+        birth: hash.finish(),
     })
 }
 fn bounds<B: Backend>(backend: &B) -> native::Bounds {

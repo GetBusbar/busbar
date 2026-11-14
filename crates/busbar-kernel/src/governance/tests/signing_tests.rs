@@ -35,11 +35,11 @@ fn audience_bound_token_is_rejected_on_the_plain_verify_path() {
         "a": "https://busbar.example.com/ingress"
     }))
     .unwrap();
-    let sig: Signature = s.key.sign(&payload);
+    let sig = s.key.sign(&payload);
     let token = format!(
         "{TOKEN_PREFIX}{}.{}",
         URL_SAFE_NO_PAD.encode(&payload),
-        URL_SAFE_NO_PAD.encode(sig.to_bytes())
+        URL_SAFE_NO_PAD.encode(sig)
     );
     assert!(
         v.verify(&token, 1000, None).is_err(),
@@ -90,11 +90,11 @@ fn legacy_token_without_audience_still_verifies_on_the_data_plane() {
         "kid": DEFAULT_KID
     }))
     .unwrap();
-    let sig: Signature = s.key.sign(&payload);
+    let sig = s.key.sign(&payload);
     let token = format!(
         "{TOKEN_PREFIX}{}.{}",
         URL_SAFE_NO_PAD.encode(&payload),
-        URL_SAFE_NO_PAD.encode(sig.to_bytes())
+        URL_SAFE_NO_PAD.encode(sig)
     );
     let claims = v.verify(&token, 1000, None).expect("legacy token verifies");
     assert_eq!(claims.aud, None);

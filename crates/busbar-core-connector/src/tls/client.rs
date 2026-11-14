@@ -5,11 +5,10 @@
 
 use std::sync::Arc;
 
+use busbar_contract::crypto::tls as crypto_tls;
 use busbar_contract::transport::trust::EgressTrust;
 use busbar_contract::transport::wire::{ConnectionSecurity, RawIo, SecuredIoFut};
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
-
-use crate::tls::install_crypto_provider;
 
 /// The platform trust anchors every outbound connection starts from.
 fn webpki_roots_store() -> rustls::RootCertStore {
@@ -31,13 +30,20 @@ impl std::fmt::Display for BadClientIdentity {
 impl std::error::Error for BadClientIdentity {}
 
 /// The client TLS config an outbound connection is secured with, given the host's outbound trust.
+/// Built through the crypto backend (`busbar_contract::crypto::tls`), which approves it; a
+/// refusal is reported as the identity error the caller already handles.
 pub fn build_client_config(trust: &EgressTrust) -> Result<rustls::ClientConfig, BadClientIdentity> {
-    install_crypto_provider();
+    let refused = |e: crypto_tls::TlsError| BadClientIdentity(e.to_string());
     if trust.is_unset() {
-        return Ok(rustls::ClientConfig::builder()
-            .with_root_certificates(webpki_roots_store())
-            .with_no_client_auth());
+        return crypto_tls::client_config(|builder| {
+            Ok(builder
+                .with_root_certificates(webpki_roots_store())
+                .with_no_client_auth())
+        })
+        .map(Arc::unwrap_or_clone)
+        .map_err(refused);
     }
+    let verifier = pinned_verifier(trust).map_err(refused)?;
     match &trust.client_identity {
         None => Ok(wants_client_cert(trust)?.with_no_client_auth()),
         Some(identity) => {
@@ -128,7 +134,12 @@ fn wants_client_cert(
             .add(rustls_pki_types::CertificateDer::from(der.clone()))
             .map_err(|e| BadClientIdentity(format!("a trust anchor is not usable: {e}")))?;
     }
-    let builder = rustls::ClientConfig::builder();
+    roots
+}
+
+/// The pinning verifier `trust` asks for (`None` when it pins no key), built through the backend
+/// ahead of the config so the config closure cannot fail on it.
+fn pinned_verifier(trust: &EgressTrust) -> Result<Option<PinnedKeyVerifier>, crypto_tls::TlsError> {
     if trust.pinned_public_keys.is_empty() {
         Ok(builder.with_root_certificates(roots))
     } else {
@@ -141,18 +152,20 @@ fn wants_client_cert(
 }
 
 /// THE UNVERIFIED CLIENT CONFIG: the far end's certificate (its chain, its name, its validity) is
-#[must_use]
-pub fn unverified_client_config() -> rustls::ClientConfig {
-    let crypto = crate::tls::installed_crypto();
-    rustls::ClientConfig::builder()
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(AcceptsAnyCertificate(crypto)))
-        .with_no_client_auth()
+/// not checked; built through the crypto backend, which may refuse it.
+pub fn unverified_client_config() -> Result<Arc<rustls::ClientConfig>, crypto_tls::TlsError> {
+    let verifier = Arc::new(AcceptsAnyCertificate(crypto_tls::signature_algorithms()));
+    crypto_tls::client_config(|builder| {
+        Ok(builder
+            .dangerous()
+            .with_custom_certificate_verifier(verifier)
+            .with_no_client_auth())
+    })
 }
 
 /// A verifier that accepts any certificate and checks only the handshake's signature with it.
 #[derive(Debug)]
-struct AcceptsAnyCertificate(Arc<rustls::crypto::CryptoProvider>);
+struct AcceptsAnyCertificate(rustls::crypto::WebPkiSupportedAlgorithms);
 
 impl rustls::client::danger::ServerCertVerifier for AcceptsAnyCertificate {
     fn verify_server_cert(
@@ -172,12 +185,7 @@ impl rustls::client::danger::ServerCertVerifier for AcceptsAnyCertificate {
         cert: &rustls_pki_types::CertificateDer<'_>,
         dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(
-            message,
-            cert,
-            dss,
-            &self.0.signature_verification_algorithms,
-        )
+        crypto_tls::verify_tls12_signature(message, cert, dss)
     }
 
     fn verify_tls13_signature(
@@ -186,16 +194,11 @@ impl rustls::client::danger::ServerCertVerifier for AcceptsAnyCertificate {
         cert: &rustls_pki_types::CertificateDer<'_>,
         dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(
-            message,
-            cert,
-            dss,
-            &self.0.signature_verification_algorithms,
-        )
+        crypto_tls::verify_tls13_signature(message, cert, dss)
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        self.0.signature_verification_algorithms.supported_schemes()
+        self.0.supported_schemes()
     }
 }
 
@@ -512,14 +515,37 @@ fn contents(whole: &[u8]) -> Option<&[u8]> {
     whole.get(header..)
 }
 
+/// A hash RFC 5929 `tls-server-end-point` may pick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DigestAlg {
+    /// SHA-256 (also the stand-in for MD5, SHA-1 and unknown algorithms).
+    Sha256,
+    /// SHA-384.
+    Sha384,
+    /// SHA-512.
+    Sha512,
+}
+
+impl DigestAlg {
+    /// The digest of `data` under this hash.
+    #[must_use]
+    pub fn digest(self, data: &[u8]) -> Vec<u8> {
+        match self {
+            Self::Sha256 => busbar_contract::crypto::sha256(data).to_vec(),
+            Self::Sha384 => busbar_contract::crypto::sha384(data).to_vec(),
+            Self::Sha512 => busbar_contract::crypto::sha512(data).to_vec(),
+        }
+    }
+}
+
 /// THE CHANNEL-BINDING DIGEST of a DER certificate (RFC 5929 section 4.1, `tls-server-end-point`):
 #[must_use]
-pub fn end_point_digest(cert_der: &[u8]) -> &'static ring::digest::Algorithm {
-    signature_hash(cert_der).unwrap_or(&ring::digest::SHA256)
+pub fn end_point_digest(cert_der: &[u8]) -> DigestAlg {
+    signature_hash(cert_der).unwrap_or(DigestAlg::Sha256)
 }
 
 /// The SHA-384 or SHA-512 a certificate's `signatureAlgorithm` names (RSASSA-PSS through its
-fn signature_hash(cert_der: &[u8]) -> Option<&'static ring::digest::Algorithm> {
+fn signature_hash(cert_der: &[u8]) -> Option<DigestAlg> {
     /// ASN.1 OBJECT IDENTIFIER.
     const TAG_OID: u8 = 0x06;
     /// `[0] EXPLICIT`, `RSASSA-PSS-params.hashAlgorithm`.
@@ -537,10 +563,10 @@ fn signature_hash(cert_der: &[u8]) -> Option<&'static ring::digest::Algorithm> {
         let (tag, oid) = element(body)?;
         (tag == TAG_OID).then_some((contents(oid)?, &body[oid.len()..]))
     }
-    fn hash(oid: &[u8]) -> Option<&'static ring::digest::Algorithm> {
+    fn hash(oid: &[u8]) -> Option<DigestAlg> {
         match oid {
-            SHA384_RSA | ECDSA_SHA384 | SHA384 => Some(&ring::digest::SHA384),
-            SHA512_RSA | ECDSA_SHA512 | SHA512 => Some(&ring::digest::SHA512),
+            SHA384_RSA | ECDSA_SHA384 | SHA384 => Some(DigestAlg::Sha384),
+            SHA512_RSA | ECDSA_SHA512 | SHA512 => Some(DigestAlg::Sha512),
             _ => None,
         }
     }

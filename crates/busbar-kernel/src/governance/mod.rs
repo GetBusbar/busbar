@@ -67,7 +67,7 @@ pub fn generation_matches(generation_hash: &str, presented: Option<&str>) -> boo
     }
 }
 
-pub(crate) fn generate_binding_generation() -> Result<String, getrandom::Error> {
+pub(crate) fn generate_binding_generation() -> Result<String, busbar_contract::crypto::RngError> {
     let mut raw = [0u8; 16];
     #[expect(
         clippy::disallowed_methods,
@@ -1314,7 +1314,7 @@ pub use busbar_contract::records::PlaneRequestCtx;
 
 pub type GovCtx = busbar_contract::records::PlaneRequestCtx;
 
-fn draw(alphabet: &str, n: usize) -> Result<String, getrandom::Error> {
+fn draw(alphabet: &str, n: usize) -> Result<String, busbar_contract::crypto::RngError> {
     let symbols = alphabet.as_bytes();
     if symbols.is_empty() {
         return Ok(String::new());
@@ -1338,7 +1338,7 @@ fn draw(alphabet: &str, n: usize) -> Result<String, getrandom::Error> {
 
 pub(crate) fn issue_credential(
     shape: &busbar_contract::auth_calls::IssuedShape,
-) -> Result<(String, String), getrandom::Error> {
+) -> Result<(String, String), busbar_contract::crypto::RngError> {
     let tail = shape.id_len.saturating_sub(shape.id_prefix.len());
     let tail = draw(&shape.id_alphabet, tail)?;
     #[expect(
@@ -1355,7 +1355,7 @@ pub(crate) fn issue_credential(
 #[doc(hidden)]
 pub fn issue_credential_for_test(
     shape: &busbar_contract::auth_calls::IssuedShape,
-) -> Result<(String, String), getrandom::Error> {
+) -> Result<(String, String), busbar_contract::crypto::RngError> {
     issue_credential(shape)
 }
 
@@ -1686,7 +1686,7 @@ impl PendingMetering {
 trait IntoStoreResult<T> {
     fn store(self) -> RecordStoreResult<T>;
 }
-impl<T> IntoStoreResult<T> for Result<T, getrandom::Error> {
+impl<T> IntoStoreResult<T> for Result<T, busbar_contract::crypto::RngError> {
     fn store(self) -> RecordStoreResult<T> {
         self.map_err(|e| {
             rendered_error(

@@ -3,13 +3,13 @@
 
 //! THE CALLER REFERENCE a plane may attribute a request with, in place of the principal.
 
-use ring::{hkdf, hmac};
+use busbar_contract::crypto::{self, HmacSha256Key};
 
 /// The HKDF label the reference key is expanded under.
 pub const LABEL: &[u8] = b"busbar caller-ref v1";
 
 /// The key caller references are computed under. No `Debug`, no `Clone`, no accessor.
-pub struct CallerRefKey(hmac::Key);
+pub struct CallerRefKey(HmacSha256Key);
 
 impl std::fmt::Debug for CallerRefKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -40,6 +40,6 @@ impl CallerRefKey {
     /// The reference for principal `principal_id`: 64 lowercase hex characters.
     #[must_use]
     pub fn caller_ref(&self, principal_id: &str) -> String {
-        hex::encode(hmac::sign(&self.0, principal_id.as_bytes()).as_ref())
+        hex::encode(self.0.sign(principal_id.as_bytes()))
     }
 }

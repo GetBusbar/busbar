@@ -28,10 +28,9 @@ tokio-util = { workspace = true }
 webpki-roots = { workspace = true }
 x509-parser = { workspace = true }
 socket2 = { workspace = true }
+# The DTLS protocol engine only (types and state machine); its crypto provider is the backend's,
+# reached through `busbar_contract::crypto::dtls`.
 dimpl = { workspace = true }
-ring = { workspace = true }
-rcgen = { workspace = true }
-webpki = { workspace = true }
 zeroize = { workspace = true }
 crc32fast = { workspace = true }
 foldhash = { workspace = true }
@@ -45,8 +44,8 @@ base64 = { workspace = true }
 tracing = { workspace = true }
 
 [features]
-# For plugin repos' dev-dependencies only.
-test-support = ["rcgen/pem"]
+# For plugin repos' dev-dependencies only (test certificates through the crypto facade).
+test-support = ["busbar-contract/test-support"]
 
 [dev-dependencies]
 busbar-contract = { path = "../busbar-contract", features = ["test-support", "stage-probe"] }

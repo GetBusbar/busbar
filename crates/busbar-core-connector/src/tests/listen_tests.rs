@@ -353,13 +353,15 @@ fn localhost_cert() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
 }
 
 fn server(leaf: Vec<u8>, key: Vec<u8>) -> Arc<rustls::ServerConfig> {
-    let mut s = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![leaf.into()],
-            rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
-        )
-        .unwrap();
+    let mut s = std::sync::Arc::unwrap_or_clone(
+        busbar_contract::crypto::tls::server_config(|b| {
+            b.with_no_client_auth().with_single_cert(
+                vec![leaf.into()],
+                rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
+            )
+        })
+        .unwrap(),
+    );
 
     s.alpn_protocols = vec![b"x-config".to_vec()];
     Arc::new(s)
@@ -368,7 +370,6 @@ fn server(leaf: Vec<u8>, key: Vec<u8>) -> Arc<rustls::ServerConfig> {
 /// TLS on an inbound need is the connector's server: the client's handshake completes, the
 #[test]
 fn tls_on_a_listener_is_the_connectors_server_with_the_framers_offer() {
-    crate::tls::install_crypto_provider();
     let (ca, leaf, key) = localhost_cert();
     worker().block_on(async move {
         let door = Arc::new(TestDoor::identity("sec"));
@@ -385,9 +386,12 @@ fn tls_on_a_listener_is_the_connectors_server_with_the_framers_offer() {
         let client = tokio::spawn(async move {
             let mut roots = rustls::RootCertStore::empty();
             roots.add(ca.into()).unwrap();
-            let mut cfg = rustls::ClientConfig::builder()
-                .with_root_certificates(roots)
-                .with_no_client_auth();
+            let mut cfg = std::sync::Arc::unwrap_or_clone(
+                busbar_contract::crypto::tls::client_config(|b| {
+                    Ok(b.with_root_certificates(roots).with_no_client_auth())
+                })
+                .unwrap(),
+            );
             cfg.alpn_protocols = vec![b"x-framer".to_vec(), b"x-config".to_vec()];
             let tls = tokio_rustls::TlsConnector::from(Arc::new(cfg));
             let s = Client::connect(addr).await.unwrap();
@@ -488,7 +492,6 @@ fn the_connection_past_the_cap_is_closed_without_a_byte() {
 /// RED: a TLS client that never speaks is dropped at the handshake deadline (1.5.5's handshake
 #[test]
 fn a_silent_tls_client_is_dropped_at_the_handshake_deadline() {
-    crate::tls::install_crypto_provider();
     let (_, leaf, key) = localhost_cert();
     worker().block_on(async move {
         let door = Arc::new(TestDoor::identity("sec"));
@@ -653,7 +656,6 @@ fn a_listener_whose_entry_states_no_accept_offer_offers_the_transports_list() {
 fn agreed_on_the_listener(door: TestDoor, registered: Vec<Vec<u8>>) -> Option<Vec<u8>> {
     use busbar_contract::conn::{ConnError, Conns as _, InstanceId, NeedId};
     const OWNER: InstanceId = InstanceId(1);
-    crate::tls::install_crypto_provider();
     let (ca, leaf, key) = localhost_cert();
     worker().block_on(async move {
         let view = crate::registry::Transports::new(vec![
@@ -687,9 +689,12 @@ fn agreed_on_the_listener(door: TestDoor, registered: Vec<Vec<u8>>) -> Option<Ve
         let client = tokio::spawn(async move {
             let mut roots = rustls::RootCertStore::empty();
             roots.add(ca.into()).unwrap();
-            let mut cfg = rustls::ClientConfig::builder()
-                .with_root_certificates(roots)
-                .with_no_client_auth();
+            let mut cfg = std::sync::Arc::unwrap_or_clone(
+                busbar_contract::crypto::tls::client_config(|b| {
+                    Ok(b.with_root_certificates(roots).with_no_client_auth())
+                })
+                .unwrap(),
+            );
             cfg.alpn_protocols = vec![b"x-two".to_vec(), b"x-one".to_vec()];
             let connector = tokio_rustls::TlsConnector::from(Arc::new(cfg));
             let s = Client::connect(addr).await.unwrap();

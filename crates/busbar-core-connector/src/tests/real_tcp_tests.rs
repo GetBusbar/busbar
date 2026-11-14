@@ -172,7 +172,9 @@ fn accept(listener: &TcpListener) -> std::io::Result<TcpStream> {
 }
 
 fn tls_identity() -> (Vec<u8>, Arc<rustls::ServerConfig>) {
-    use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair};
+    use busbar_contract::crypto::testing::rcgen::{
+        BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair,
+    };
     let ca_key = KeyPair::generate().unwrap();
     let mut parameters = CertificateParams::new(Vec::new()).unwrap();
     parameters.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
@@ -183,14 +185,15 @@ fn tls_identity() -> (Vec<u8>, Arc<rustls::ServerConfig>) {
         .unwrap()
         .signed_by(&key, &issuer)
         .unwrap();
-    let _ = crate::tls::installed_crypto();
-    let server = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![certificate.der().clone()],
-            rustls::pki_types::PrivatePkcs8KeyDer::from(key.serialize_der()).into(),
-        )
-        .unwrap();
+    let server = std::sync::Arc::unwrap_or_clone(
+        busbar_contract::crypto::tls::server_config(|b| {
+            b.with_no_client_auth().with_single_cert(
+                vec![certificate.der().clone()],
+                rustls::pki_types::PrivatePkcs8KeyDer::from(key.serialize_der()).into(),
+            )
+        })
+        .unwrap(),
+    );
     (ca.der().to_vec(), Arc::new(server))
 }
 

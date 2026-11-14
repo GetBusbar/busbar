@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Config grammar evidence is independent of native Store format or product version.
+use busbar_contract::crypto::Sha256;
 use serde_yaml::Value;
-use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HistoricalShape {
@@ -34,7 +34,7 @@ impl HistoricalConfigProof {
         hash.update(bytes.as_slice());
         Ok(Self {
             shape: HistoricalShape::PluginSettings,
-            binding: hash.finalize().into(),
+            binding: hash.finish(),
         })
     }
 }
@@ -68,7 +68,7 @@ pub fn recognize_authored_schema(raw: &str) -> Result<Option<HistoricalConfigPro
     hash.update(raw.as_bytes());
     Ok(Some(HistoricalConfigProof {
         shape: HistoricalShape::RootGrammar,
-        binding: hash.finalize().into(),
+        binding: hash.finish(),
     }))
 }
 

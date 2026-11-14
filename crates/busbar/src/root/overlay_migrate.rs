@@ -739,7 +739,7 @@ mod tests {
     #[test]
     fn captured_store_numbers_remain_yaml_scalars() {
         let mut random = [0; 16];
-        getrandom::fill(&mut random).unwrap();
+        busbar_contract::crypto::fill(&mut random).unwrap();
         let directory =
             std::env::temp_dir().join(format!("busbar-overlay-test-{}", hex::encode(random)));
         std::fs::create_dir(&directory).unwrap();

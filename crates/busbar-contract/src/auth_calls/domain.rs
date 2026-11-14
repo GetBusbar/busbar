@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Auth identity-domain metadata admission.
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 /// Auth schema annotation naming non-secret identity-domain fields.
 pub const DOMAIN_ANNOTATION: &str = "x-busbar-principal-domain-fields";
@@ -86,5 +85,5 @@ pub fn domain_fingerprint(
     );
     value.0.sort_all_objects();
     let bytes = value.encode().map_err(|error| error.to_string())?;
-    Ok(hex::encode(Sha256::digest(&bytes.0)))
+    Ok(hex::encode(crate::crypto::sha256(&bytes.0)))
 }

@@ -11,6 +11,7 @@
 
 use std::{collections::BTreeSet, sync::Arc};
 
+use crate::hashing::Sha256;
 use busbar_contract::{
     host_records::conditional,
     persistence::{
@@ -19,7 +20,6 @@ use busbar_contract::{
     },
     Secret,
 };
-use sha2::{Digest, Sha256};
 
 use super::{
     commit::SubmitResult,

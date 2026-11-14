@@ -12,6 +12,7 @@ use std::{
     time::Duration,
 };
 
+use busbar_contract::crypto::Sha256;
 use busbar_kernel::{
     appbuild::{self, ConfirmedLimits, InstalledLimits, RootRules},
     config::{self, overlay::OverlayStore, DeployCfg, PluginsCfg, ProviderDef, RootCfg},
@@ -22,7 +23,6 @@ use busbar_kernel::{
     state::App,
 };
 use busbar_migrations as migration;
-use sha2::{Digest, Sha256};
 use tokio::{
     sync::{watch, Mutex},
     task::JoinHandle,
@@ -158,9 +158,9 @@ async fn prepare_inner(input: Preparation) -> Result<ReadyCandidate, Box<Prepara
     };
     let mut configuration_binding = Sha256::new();
     configuration_binding.update(b"busbar.startup-configuration.v1\0");
-    configuration_binding.update(source.binding_digest());
-    configuration_binding.update(configuration_fingerprint);
-    let configuration_fingerprint = configuration_binding.finalize().into();
+    configuration_binding.update(&source.binding_digest()[..]);
+    configuration_binding.update(&configuration_fingerprint[..]);
+    let configuration_fingerprint = configuration_binding.finish();
     if *shutdown_rx.borrow() {
         return Err(failed.refused("startup was stopped before application preparation"));
     }
@@ -759,31 +759,31 @@ async fn validate(
                 "candidate target identity does not match the upgrade",
             ));
         }
-        proof.update(binding.upgrade_id);
+        proof.update(&binding.upgrade_id[..]);
         proof.update(
-            serde_json::to_vec(&binding.target)
+            &serde_json::to_vec(&binding.target)
                 .map_err(|_| Permanent("candidate target identity binding refused"))?,
         );
     }
-    proof.update(candidate.core.info().dataset.0);
-    proof.update(candidate.core.info().atomic_domain);
-    proof.update(candidate.core.info().clock_authority);
-    proof.update(candidate.core.info().physical_version.to_le_bytes());
-    proof.update(candidate.configuration_fingerprint);
-    proof.update(authority.writer);
-    proof.update(authority.writer_epoch.to_le_bytes());
-    proof.update(authority.execution_epoch.to_le_bytes());
-    proof.update(identity.revision.to_le_bytes());
+    proof.update(&candidate.core.info().dataset.0[..]);
+    proof.update(&candidate.core.info().atomic_domain[..]);
+    proof.update(&candidate.core.info().clock_authority[..]);
+    proof.update(&candidate.core.info().physical_version.to_le_bytes());
+    proof.update(&candidate.configuration_fingerprint[..]);
+    proof.update(&authority.writer[..]);
+    proof.update(&authority.writer_epoch.to_le_bytes());
+    proof.update(&authority.execution_epoch.to_le_bytes());
+    proof.update(&identity.revision.to_le_bytes());
     if let Some(head) = price_snapshot.head {
         proof.update(head.to_string().as_bytes());
     }
     for record in records {
-        proof.update(record.node.to_le_bytes());
-        proof.update(record.node_seq.to_le_bytes());
-        proof.update(record.hash);
+        proof.update(&record.node.to_le_bytes());
+        proof.update(&record.node_seq.to_le_bytes());
+        proof.update(&record.hash[..]);
     }
     Ok(Readiness {
-        digest: proof.finalize().into(),
+        digest: proof.finish(),
         authority,
     })
 }

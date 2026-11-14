@@ -5,9 +5,9 @@
 //! one guarded core transaction installs a generation and retires its predecessor.
 use std::sync::{Arc, Mutex};
 
+use crate::hashing::Sha256;
 use busbar_contract::Secret;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use super::overlay::{OverlayDoc, OverlayReadState};
 use crate::persistence::{
