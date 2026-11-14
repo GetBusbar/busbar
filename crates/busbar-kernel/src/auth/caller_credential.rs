@@ -123,6 +123,21 @@ impl CallerCredential {
     }
 }
 
+/// The request's caller credential, built once from the token the unit carried (or the plain
+/// request's client token): the one owner of [`CallerCredential::verified`].
+pub(super) fn verified_caller_credential(
+    inbound: Option<Option<&busbar_contract::redacted::Secret<String>>>,
+    client_token: Option<&str>,
+) -> Option<CallerCredential> {
+    let token = match inbound {
+        Some(credential) => {
+            credential.map(|credential| credential.expose(&crate::seal::lend()).as_str())
+        }
+        None => client_token,
+    };
+    token.map(CallerCredential::verified)
+}
+
 impl std::fmt::Debug for CallerCredential {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("CallerCredential(<present>)")
@@ -130,9 +145,5 @@ impl std::fmt::Debug for CallerCredential {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::disallowed_methods,
-    reason = "R23: test input differs: the test builds a credential directly"
-)]
 #[path = "tests/caller_credential_tests.rs"]
 mod caller_credential_tests;

@@ -2396,23 +2396,6 @@ fn consumed_from_carriers(
     consumed
 }
 
-#[expect(
-    clippy::disallowed_methods,
-    reason = "R23: owner of the caller credential buffer"
-)]
-fn verified_caller_credential(
-    inbound: Option<Option<&busbar_contract::redacted::Secret<String>>>,
-    client_token: Option<&str>,
-) -> Option<CallerCredential> {
-    let token = match inbound {
-        Some(credential) => {
-            credential.map(|credential| credential.expose(&crate::seal::lend()).as_str())
-        }
-        None => client_token,
-    };
-    token.map(CallerCredential::verified)
-}
-
 #[cfg(test)]
 async fn ticket_verdict(
     signed: bool,
@@ -2649,10 +2632,6 @@ pub(crate) async fn auth_middleware(
 
     let client_token: Option<String> = match inbound.as_ref() {
         Some(inbound) => inbound.client_token().map(str::to_owned),
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "R23: request differs: a plain HTTP admin request with no inbound unit, so no Derived record"
-        )]
         None => app.auth.extract_client_token(req.headers()),
     };
 
@@ -3175,6 +3154,7 @@ fn signed_request(parts: &axum::http::request::Parts, body: &[u8]) -> VerifyRequ
 pub mod admit;
 
 pub mod caller_credential;
+use caller_credential::verified_caller_credential;
 pub use caller_credential::{CallerCredential, ConsumedCredentials};
 
 pub mod audience;

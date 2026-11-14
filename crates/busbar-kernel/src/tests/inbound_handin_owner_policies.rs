@@ -129,7 +129,7 @@ fn handin_preserves_the_original_sanitized_request_bytes() {
         Some("key=x&keep=1"),
     );
     let strips = [Strip::field("authorization"), Strip::query("key")];
-    let sanitized = original.stripped(&strips).unwrap();
+    let sanitized = original.stripped_for_test(&strips).unwrap();
     assert!(handin_state_matches(
         0,
         3,
