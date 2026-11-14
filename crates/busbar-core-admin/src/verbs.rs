@@ -13,8 +13,8 @@
 //!    surface is a read, everything else in that group is a mutation the calling context must
 //!    already be authorized for by the time it reaches this crate — the admin plane's own auth
 //!    middleware, which this crate does not run).
-//! 2. **Rate limit.** [`crate::rate::MutationClass::for_verb`] then
-//!    [`crate::rate::MutationLimiter::check`] — refused `RateLimited` otherwise. Reads never reach
+//! 2. **Rate limit.** The verb's class (a `ReadOnly` verb is `Forbidden`, anything else `Crud`),
+//!    then [`busbar_kernel::ratelimit::MutationLimiter::check`] — refused `RateLimited` otherwise. Reads never reach
 //!    the limiter at all (their class is `Forbidden`, i.e. never checked). The limiter is the one
 //!    the composition root built for the life of the node and handed to [`Verbs::new`], so the
 //!    window outlives the request; and it spends only the new verbs (see [`Verbs::admit`] for why
@@ -41,15 +41,23 @@
 //! and nothing in the type system would have asked it not to.
 
 use crate::governance::{Governance, GovernanceError};
-use crate::rate::{MutationClass, MutationLimiter, RateCheck};
 use crate::refusal::{store_error_into_refusal, ReasonCode, Refusal, RefusalStep};
 use crate::verb::{KernelVerb, VerbScope, AUDIT_VERBS, LEDGER_VERBS, NEW_VERBS};
 use busbar_contract::caps::{AdminVerb, Grant};
 use busbar_kernel::persistence::recovery_api::Store;
+use busbar_kernel::ratelimit::{MutationClass, MutationLimiter, RateCheck};
 use std::sync::Arc;
 
 pub fn required_scope(verb: KernelVerb) -> VerbScope {
     crate::verb::row_of(verb).map_or(VerbScope::Full, |row| row.scope)
+}
+
+fn class_of(verb: KernelVerb) -> MutationClass {
+    if crate::verb::row_of(verb).is_some_and(|row| row.scope == VerbScope::ReadOnly) {
+        MutationClass::Forbidden
+    } else {
+        MutationClass::Crud
+    }
 }
 
 pub struct Verbs<G: Governance, S: Store + ?Sized> {
@@ -79,7 +87,7 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
         if !granted.allows(required_scope(verb)) {
             return Err(Refusal::new(RefusalStep::Admit, ReasonCode::Unauthorized));
         }
-        let class = MutationClass::for_verb(verb);
+        let class = class_of(verb);
         if class == MutationClass::Forbidden || !NEW_VERBS.contains(&verb) {
             return Ok(class);
         }

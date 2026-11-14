@@ -1619,7 +1619,7 @@ async fn a_new_verb_past_the_nodes_mutation_budget_is_refused() {
             op,
         )
     };
-    let budget = busbar_core_admin::rate::MutationClass::Crud.limit();
+    let budget = busbar_kernel::ratelimit::MutationClass::Crud.limit();
     for i in 0..budget {
         let (status, body) = revoke().await;
         assert_ne!(status, 429, "call {i} is inside the budget: {body}");

@@ -1637,7 +1637,7 @@ pub struct AdminBinding {
 
     pub replays: Arc<std::sync::OnceLock<Arc<bound::ReplayCache>>>,
 
-    pub mutations: Arc<busbar_core_admin::rate::MutationLimiter>,
+    pub mutations: Arc<busbar_kernel::ratelimit::MutationLimiter>,
 }
 
 impl std::fmt::Debug for AdminBinding {
@@ -1664,7 +1664,7 @@ impl AdminBinding {
             records: None,
             trust: no_trust(),
             replays: Arc::new(std::sync::OnceLock::new()),
-            mutations: Arc::new(busbar_core_admin::rate::MutationLimiter::new()),
+            mutations: Arc::new(busbar_kernel::ratelimit::MutationLimiter::new()),
         }
     }
 

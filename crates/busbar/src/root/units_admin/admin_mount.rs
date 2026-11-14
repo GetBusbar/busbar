@@ -213,7 +213,7 @@ pub(crate) fn rate_limited_answer() -> AdminAnswer {
         headers: vec![
             (
                 "retry-after".to_string(),
-                busbar_core_admin::rate::MUTATION_RATE_WINDOW_SECS.to_string(),
+                busbar_kernel::ratelimit::MUTATION_RATE_WINDOW_SECS.to_string(),
             ),
             ("content-type".to_string(), "application/json".to_string()),
         ],
