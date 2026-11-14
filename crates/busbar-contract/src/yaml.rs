@@ -206,6 +206,9 @@ pub mod prelude {
 pub fn options() -> serde_saphyr::Options {
     use serde_saphyr::{DuplicateKeyPolicy, MergeKeyPolicy, NonFiniteFloatPolicy};
     serde_saphyr::options! {
+        null_scalars_as_text: true,
+        lowercase_radix_prefixes_only: true,
+        bom_inside_document_as_content: true,
         // serde_yaml's rule: each repeated entry reaches the reader, which decides (a struct
         // refuses it, a map keeps the last value, an untyped read refuses it; see `untyped`).
         duplicate_keys: DuplicateKeyPolicy::PassThrough,
