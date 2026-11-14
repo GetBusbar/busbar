@@ -550,6 +550,32 @@ fn reads_under(s: &PluginSink, op: &str) -> usize {
         .count()
 }
 
+/// One event delivered to every sink of `sinks`, their access amendments recorded as one set.
+fn deliver_event_to(
+    sinks: &[PluginSink],
+    stream: ExportStream,
+    op: &str,
+    f: &mut impl FnMut(Projection, bool) -> Arc<Value>,
+) {
+    let mut handed = Handed::default();
+    for s in sinks {
+        deliver_one(s, stream, f, &mut handed);
+    }
+    handed.record(op);
+}
+
+/// One event delivered to the single sink `s`, its access amendment recorded as the event's set.
+fn deliver_event(
+    s: &PluginSink,
+    stream: ExportStream,
+    op: &str,
+    f: &mut impl FnMut(Projection, bool) -> Arc<Value>,
+) {
+    let mut handed = Handed::default();
+    deliver_one(s, stream, f, &mut handed);
+    handed.record(op);
+}
+
 fn payload(_: Projection, _: bool) -> Arc<Value> {
     Arc::new(serde_json::json!({ "path": "/v1/x" }))
 }
@@ -559,7 +585,7 @@ async fn a_shed_line_is_not_audited_as_read_and_a_queued_one_is() {
     let shedding = double(Delivered::Shed, None);
     let (s, _) = opened("q128b-u31-36-shed", Arc::clone(&shedding)).await;
     start_one(&s);
-    deliver_one(&s, ExportStream::Logs, "q128b-u31-36-shed", &mut payload);
+    deliver_event(&s, ExportStream::Logs, "q128b-u31-36-shed", &mut payload);
     assert_eq!(
         reads_under(&s, "q128b-u31-36-shed"),
         0,
@@ -570,7 +596,7 @@ async fn a_shed_line_is_not_audited_as_read_and_a_queued_one_is() {
     let queueing = double(Delivered::Queued, None);
     let (s, confirmed) = opened("q128b-u31-36-queued", Arc::clone(&queueing)).await;
     start_one(&s);
-    deliver_one(&s, ExportStream::Logs, "q128b-u31-36-queued", &mut payload);
+    deliver_event(&s, ExportStream::Logs, "q128b-u31-36-queued", &mut payload);
     tokio::time::timeout(std::time::Duration::from_secs(1), confirmed.notified())
         .await
         .unwrap();
@@ -586,7 +612,7 @@ async fn a_shed_line_is_not_audited_as_read_and_a_queued_one_is() {
 async fn a_delivery_before_start_never_overrides_the_sinks_stated_admission() {
     let paused = double(Delivered::Queued, Some((false, 1, String::new())));
     let (s, _) = opened("q128b-u31-37", Arc::clone(&paused)).await;
-    deliver_one(&s, ExportStream::Logs, "q128b-u31-37-early", &mut payload);
+    deliver_event(&s, ExportStream::Logs, "q128b-u31-37-early", &mut payload);
     assert_eq!(
         reads_under(&s, "q128b-u31-37-early"),
         0,
@@ -594,7 +620,7 @@ async fn a_delivery_before_start_never_overrides_the_sinks_stated_admission() {
     );
     assert_eq!(paused.sheds.load(std::sync::atomic::Ordering::Relaxed), 1);
     start_one(&s);
-    deliver_one(&s, ExportStream::Logs, "q128b-u31-37-late", &mut payload);
+    deliver_event(&s, ExportStream::Logs, "q128b-u31-37-late", &mut payload);
     assert_eq!(
         reads_under(&s, "q128b-u31-37-late"),
         0,
@@ -999,18 +1025,6 @@ fn export_restart_metadata_compares_boot_membership_module_and_effective_project
         narrow_boot,
         Some(&narrowed)
     ));
-}
-
-/// One event delivered to every sink of `sinks`.
-fn deliver_event_to(
-    sinks: &[PluginSink],
-    stream: ExportStream,
-    op: &str,
-    f: &mut impl FnMut(Projection, bool) -> Arc<Value>,
-) {
-    for s in sinks {
-        deliver_one(s, stream, op, f);
-    }
 }
 
 /// Seals and confirmations in the order the sink saw them: `S` per staged original, `C` per

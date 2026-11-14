@@ -518,16 +518,63 @@ pub(super) fn deliver_to(
     op: &str,
     mut f: impl FnMut(Projection, bool) -> Arc<Value>,
 ) {
+    let mut handed = Handed::default();
     for s in sinks().filter(|s| s.projection.wants_stream(stream)) {
-        deliver_one(s, stream, op, &mut f);
+        deliver_one(s, stream, &mut f, &mut handed);
+    }
+    handed.record(op);
+}
+
+/// The sinks of one event that queued their line and still owe a durable access amendment.
+/// They are recorded together: one amendment per sink, one durable commit per event.
+#[derive(Default)]
+struct Handed {
+    amendments: Option<Arc<crate::audit::amend::NodeAmendments>>,
+    runtime: Option<tokio::runtime::Handle>,
+    reads: Vec<(String, Arc<Value>)>,
+    sinks: Vec<Arc<dyn ExportCalls>>,
+    permits: Vec<Arc<tokio::sync::OwnedSemaphorePermit>>,
+}
+
+impl Handed {
+    fn record(self, op: &str) {
+        let Handed {
+            amendments,
+            runtime,
+            reads,
+            sinks,
+            permits,
+        } = self;
+        let (Some(amendments), Some(runtime)) = (amendments, runtime) else {
+            return;
+        };
+        if reads.is_empty() {
+            return;
+        }
+        let op = op.to_owned();
+        runtime.spawn(async move {
+            // Retain every sink's admission through its durable access amendment, even if the
+            // sink releases its delivery permit immediately.
+            let _permits = permits;
+            if crate::audit::amend::export_reads(&amendments, &op, &reads)
+                .await
+                .is_err()
+            {
+                // The original access facts remain in the shared native owner's queue; do not
+                // report a durable audit success for any sink of the set.
+                for sink in sinks {
+                    sink.shed();
+                }
+            }
+        });
     }
 }
 
 fn deliver_one(
     s: &PluginSink,
     stream: ExportStream,
-    op: &str,
     f: &mut impl FnMut(Projection, bool) -> Arc<Value>,
+    handed: &mut Handed,
 ) {
     let Some(admission) = s.admission.get() else {
         s.sink.shed();
@@ -543,7 +590,11 @@ fn deliver_one(
     let payload = f(s.projection, s.span_record);
     let amendments = s.reads.get().cloned();
     let runtime = if amendments.is_some() {
-        match tokio::runtime::Handle::try_current() {
+        match handed
+            .runtime
+            .clone()
+            .map_or_else(tokio::runtime::Handle::try_current, Ok)
+        {
             Ok(runtime) => Some(runtime),
             Err(_) => {
                 s.sink.shed();
@@ -562,20 +613,11 @@ fn deliver_one(
             let (Some(amendments), Some(runtime)) = (amendments, runtime) else {
                 return;
             };
-            let op = op.to_owned();
-            let module = s.module.clone();
-            let sink = s.sink.clone();
-            runtime.spawn(async move {
-                let _permit = permit;
-                if crate::audit::amend::export_read(&amendments, &module, &op, &payload)
-                    .await
-                    .is_err()
-                {
-                    // The original access fact remains in the shared native
-                    // owner's queue; do not report a durable audit success.
-                    sink.shed();
-                }
-            });
+            handed.amendments.get_or_insert(amendments);
+            handed.runtime.get_or_insert(runtime);
+            handed.reads.push((s.module.clone(), payload));
+            handed.sinks.push(s.sink.clone());
+            handed.permits.push(permit);
         }
         Delivered::Shed => s.sink.shed(),
     }

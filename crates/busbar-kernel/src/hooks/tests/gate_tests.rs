@@ -39,7 +39,7 @@ fn projected_document_cleanup_clears_nested_members_and_strings() {
 }
 
 fn no_reads<'a>(
-    _: &'a str,
+    _: &'a [&'a str],
     _: Option<&'a str>,
     _: &'a str,
     _: bool,
@@ -1271,13 +1271,14 @@ async fn a_gate_handed_content_leaves_exactly_one_access_amendment() {
         .unwrap();
     let read_journal = journal.clone();
     let reads: crate::plane_driver::hooks::HookRead =
-        Arc::new(move |hook, principal, op, identity| {
+        Arc::new(move |hooks, principal, op, identity| {
             let journal = read_journal.clone();
-            let hook = hook.to_owned();
+            let hooks: Vec<String> = hooks.iter().map(|h| (*h).to_owned()).collect();
             let principal = principal.map(str::to_owned);
             let op = op.to_owned();
             Box::pin(async move {
-                amend::hook_read(&journal, &hook, principal.as_deref(), &op, identity).await
+                let hooks: Vec<&str> = hooks.iter().map(String::as_str).collect();
+                amend::hook_reads(&journal, &hooks, principal.as_deref(), &op, identity).await
             })
         });
     for (op, send_prompt) in [("p2-404-shape-only", false), ("p2-404-hook-read", true)] {

@@ -184,7 +184,7 @@ pub type RewriteChain = Vec<(Duration, Arc<dyn RoutingPolicy>)>;
 
 pub type HookRead = Arc<
     dyn for<'a> Fn(
-            &'a str,
+            &'a [&'a str],
             Option<&'a str>,
             &'a str,
             bool,
@@ -279,6 +279,23 @@ pub trait CallerFacts: Send + Sync {
         identity: bool,
     ) -> crate::audit::amend::ReadConfirmation<'a>;
 
+    /// Record that every hook in `hooks` is handed the content, confirmed before any of them is.
+    /// A host that can commit the set together overrides this; the default records them in order.
+    fn hook_reads<'a>(
+        &'a self,
+        hooks: &'a [&'a str],
+        principal: Option<&'a str>,
+        dialect: &'a str,
+        identity: bool,
+    ) -> crate::audit::amend::ReadConfirmation<'a> {
+        Box::pin(async move {
+            for hook in hooks {
+                self.hook_read(*hook, principal, dialect, identity).await?;
+            }
+            Ok(())
+        })
+    }
+
     fn denied_taps(&self, taps: &[TapEntry], request_id: u64, dialect: &str, status: u16) {
         let shape = StageShape::zeroed(request_id, "", dialect, false);
         fire_stage_taps_where(
@@ -360,9 +377,9 @@ impl Parts {
                 groups_caller.in_groups(principal.as_deref(), groups)
             }),
             reads: Arc::new(
-                move |hook: &str, principal: Option<&str>, dialect: &str, id: bool| {
+                move |hooks: &[&str], principal: Option<&str>, dialect: &str, id: bool| {
                     let caller = reads_caller.clone();
-                    Box::pin(async move { caller.hook_read(hook, principal, dialect, id).await })
+                    Box::pin(async move { caller.hook_reads(hooks, principal, dialect, id).await })
                 },
             ),
             dialect: dialects
@@ -952,7 +969,7 @@ impl Asked<'_> {
         identity: bool,
     ) -> Result<(), busbar_kernel_audit::amend::AmendPersistError> {
         let whose = self.hooks.key.as_ref().map(|k| k.id.as_str());
-        (self.hooks.reads)(hook, whose, &self.view.dialect, identity).await
+        (self.hooks.reads)(&[hook], whose, &self.view.dialect, identity).await
     }
 
     async fn decide(&self, resolved: &ResolvedPolicy) -> (Decided, Option<HookApplied>) {
@@ -1603,7 +1620,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         for (timeout, hook) in &hooks.rewrites {
             let req = view.request(hooks.request_id, &pool, true, None, &hooks.requested);
             if req.prompt.is_some() {
-                (hooks.reads)(hook.name(), None, &view.dialect, false)
+                (hooks.reads)(&[hook.name()], None, &view.dialect, false)
                     .await
                     .map_err(|_| fault_veto())?;
             }
@@ -2050,6 +2067,10 @@ fn fire_request_taps(hooks: &UnitHooks, view: &Projection, pool: &str) {
     };
     let shape_only = firing.iter().any(|t| !t.1).then(|| frame(false));
     let with_prompt = firing.iter().any(|t| t.1).then(|| frame(true));
+    // Taps handed the prompt are recorded together: one access amendment each, one durable commit
+    // for the fan-out, confirmed before any of them is notified. Every one of them fires, so the
+    // recorded set is exact.
+    let mut content = Vec::new();
     for (timeout, send_prompt, hook, _) in firing {
         let tap = if *send_prompt {
             with_prompt.clone()
@@ -2057,19 +2078,35 @@ fn fire_request_taps(hooks: &UnitHooks, view: &Projection, pool: &str) {
             shape_only.clone()
         };
         let Some(tap) = tap else { continue };
-        let reads = hooks.reads.clone();
-        let hook_name = hook.name().to_owned();
-        let dialect = view.dialect.clone();
-        let content = *send_prompt;
         let policy = Arc::clone(hook);
         let budget = *timeout;
-        spawn_bounded_tap(async move {
-            if content && (reads)(&hook_name, None, &dialect, false).await.is_err() {
-                return;
-            }
-            policy.notify(tap, budget).await;
-        });
+        if !*send_prompt {
+            spawn_bounded_tap(async move { policy.notify(tap, budget).await });
+            continue;
+        }
+        let Some(slot) = crate::hooks::taps::tap_slot() else {
+            continue;
+        };
+        content.push((slot, policy, tap, budget));
     }
+    if content.is_empty() {
+        return;
+    }
+    let reads = hooks.reads.clone();
+    let dialect = view.dialect.clone();
+    crate::detached::spawn_detached(async move {
+        let names: Vec<String> = content.iter().map(|t| t.1.name().to_owned()).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        if (reads)(&names, None, &dialect, false).await.is_err() {
+            return;
+        }
+        for (slot, policy, tap, budget) in content {
+            crate::detached::spawn_detached(async move {
+                let _slot = slot;
+                policy.notify(tap, budget).await;
+            });
+        }
+    });
 }
 
 pub const CONTENT_ROLE: &str = "content";
@@ -2243,7 +2280,7 @@ impl SessionStage {
             );
             if req.prompt.is_some()
                 && (hooks.reads)(
-                    policy.name(),
+                    &[policy.name()],
                     self.principal.as_deref(),
                     &view.dialect,
                     req.identity.is_some(),
@@ -2306,7 +2343,7 @@ impl SessionStage {
         {
             let req = view.request(hooks.request_id, &self.pool, true, None, &hooks.requested);
             if req.prompt.is_some()
-                && (hooks.reads)(hook.name(), None, &view.dialect, false)
+                && (hooks.reads)(&[hook.name()], None, &view.dialect, false)
                     .await
                     .is_err()
             {
