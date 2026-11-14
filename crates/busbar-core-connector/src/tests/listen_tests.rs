@@ -442,6 +442,76 @@ fn tls_on_a_listener_is_the_connectors_server_with_the_framers_offer() {
     });
 }
 
+/// AN ACCEPTED CONNECTION'S REFUSAL IS NOT EXPLAINED AS A DIAL'S (design mcp-issuer §3.1, §4): on a
+/// listener that demands a client certificate under its `client_ca`, a client presenting one from
+/// another CA is refused with the security stack's words exactly. The dial-side sentence (the
+/// server's chain, a `cert_spki` pin) is about a far end busbar dialled and would be wrong here.
+#[test]
+fn an_accepted_client_under_an_unknown_ca_is_refused_in_the_stacks_words_exactly() {
+    use busbar_contract::abi::host::conn::connector::CAUSE_SECURITY;
+    crate::tls::install_crypto_provider();
+    let (ca, leaf, key) = localhost_cert();
+    let (_, stranger_leaf, stranger_key) = localhost_cert();
+    worker().block_on(async move {
+        let mut client_roots = rustls::RootCertStore::empty();
+        client_roots.add(ca.clone().into()).unwrap();
+        let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(client_roots))
+            .build()
+            .unwrap();
+        let server = rustls::ServerConfig::builder()
+            .with_client_cert_verifier(verifier)
+            .with_single_cert(
+                vec![leaf.into()],
+                rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
+            )
+            .unwrap();
+        let door = Arc::new(TestDoor::identity("sec"));
+        let mut l = Listening::bind(
+            Some(door.clone()),
+            &crate::support::via(),
+            "127.0.0.1:0",
+            Some(Arc::new(server)),
+            Vec::new(),
+            AcceptLimits::default(),
+        )
+        .unwrap();
+        let addr = l.local_addr();
+        let client = tokio::spawn(async move {
+            let mut roots = rustls::RootCertStore::empty();
+            roots.add(ca.into()).unwrap();
+            let cfg = rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_client_auth_cert(
+                    vec![stranger_leaf.into()],
+                    rustls_pki_types::PrivateKeyDer::try_from(stranger_key).unwrap(),
+                )
+                .unwrap();
+            let tls = tokio_rustls::TlsConnector::from(Arc::new(cfg));
+            let s = Client::connect(addr).await.unwrap();
+            let name = rustls_pki_types::ServerName::try_from("localhost").unwrap();
+            if let Ok(mut s) = tls.connect(name, s).await {
+                let _ = s.write_all(b"hello").await;
+                let mut sink = [0_u8; 8];
+                let _ = s.read(&mut sink).await;
+            }
+        });
+        let mut conn = accept(&mut l).await.conn;
+        assert!(matches!(next(&mut conn).await, Err(Failure::Refused(_))));
+        let unknown = rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer);
+        let cause = conn.cause().expect("a cause");
+        assert_eq!(cause.stage, CAUSE_SECURITY);
+        assert_eq!(cause.text, unknown.to_string(), "the stack's own words");
+        assert!(
+            !cause.text.contains("does not chain") && !cause.text.contains("cert_spki"),
+            "no dial-side sentence on an accepted connection: {}",
+            cause.text
+        );
+        assert_eq!(door.count("begin"), 0, "the framer never saw it");
+        conn.close();
+        client.await.unwrap();
+    });
+}
+
 /// RED: the connection past the cap is accepted and closed at once, no byte written, while the
 #[test]
 fn the_connection_past_the_cap_is_closed_without_a_byte() {
