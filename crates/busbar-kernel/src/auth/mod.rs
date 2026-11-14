@@ -2406,10 +2406,13 @@ async fn ticket_verdict(
     now: u64,
 ) -> Result<Option<(ChainVerdict, Vec<u8>)>, ()> {
     claimed_ticket_verdict(
-        signed,
-        keys_in_chain,
-        prefix,
-        token,
+        PresentedTicket {
+            signed,
+            keys_in_chain,
+            prefix,
+            token,
+            carried: None,
+        },
         gov,
         now,
         &crate::appbuild::AcceptAll,
@@ -2424,23 +2427,46 @@ type ClaimedTicketVerdict = (
     Option<crate::host_services::HostTicketAdmission>,
 );
 
-async fn claimed_ticket_verdict(
+/// What one request presents for door-ticket redemption: whether it arrived signed, whether keys
+/// are in the chain, the door's ticket prefix, the presented token, and the ticket its auth point
+/// already verified (SINGLE-PATH SP-AU3).
+#[derive(Clone, Copy)]
+struct PresentedTicket<'a> {
     signed: bool,
     keys_in_chain: bool,
-    prefix: Option<&str>,
-    token: Option<&str>,
+    prefix: Option<&'a str>,
+    token: Option<&'a str>,
+    carried: Option<&'a crate::governance::VerifiedTicket>,
+}
+
+async fn claimed_ticket_verdict(
+    presented: PresentedTicket<'_>,
     gov: Option<&std::sync::Arc<crate::governance::GovState>>,
     now: u64,
     rules: &dyn crate::appbuild::RootRules,
 ) -> Result<Option<ClaimedTicketVerdict>, ()> {
     use crate::host_services::{HostTicketAdmission, TicketClaimDisposition};
+    let PresentedTicket {
+        signed,
+        keys_in_chain,
+        prefix,
+        token,
+        carried,
+    } = presented;
     match (!signed, prefix, token) {
         (true, Some(prefix), Some(token)) if keys_in_chain && token.starts_with(prefix) => {
             let gov = gov.ok_or(())?;
-            let identity = gov
-                .prepare_ticket_redemption_async(prefix, token, now)
-                .await
-                .ok_or(())?;
+            // The auth point verified this ticket and read its record (SP-AU3); a request whose
+            // auth point verified none, or another credential, verifies it here, once.
+            let verified;
+            let ticket = match carried.filter(|ticket| ticket.presented_as(prefix, token)) {
+                Some(ticket) => ticket,
+                None => {
+                    verified = gov.verify_ticket(prefix, token, now).ok_or(())?.0;
+                    &verified
+                }
+            };
+            let identity = gov.prepare_verified_ticket(ticket, now).await.ok_or(())?;
 
             let reservation = match rules.claim_ticket_admission(&identity) {
                 TicketClaimDisposition::Ordinary => None,
@@ -2452,13 +2478,10 @@ async fn claimed_ticket_verdict(
                 }
                 TicketClaimDisposition::Refused => return Err(()),
             };
-            let (key, record) = if reservation.is_some() {
-                gov.redeem_verified_ticket_async(identity, now).await
-            } else {
-                drop(identity);
-                gov.admit_ticket_async(prefix, token, now).await
-            }
-            .ok_or(())?;
+            let (key, record) = gov
+                .redeem_prepared_ticket(identity, ticket, now)
+                .await
+                .ok_or(())?;
             let admission = match reservation {
                 Some(reservation) => {
                     let spent = crate::plane_driver::SpentTicketReservation::after_redemption(
@@ -3190,6 +3213,10 @@ mod acceptance_1_5_5_tests;
 #[cfg(test)]
 #[path = "tests/ticket_admission_policy.rs"]
 mod ticket_admission_policy;
+
+#[cfg(test)]
+#[path = "tests/ticket_single_path.rs"]
+mod ticket_single_path;
 
 #[cfg(test)]
 #[path = "tests/verified_caller_policy.rs"]
