@@ -242,6 +242,24 @@ pub enum LimitMetric {
 }
 
 impl LimitMetric {
+    /// Every metric, in the order the refusals list them: 1.5.5's four first, then the 1.6.0
+    /// per-class token metrics appended. The parser and every refusal read this one table.
+    pub const ALL: [LimitMetric; 8] = [
+        LimitMetric::Requests,
+        LimitMetric::Tokens,
+        LimitMetric::Budget,
+        LimitMetric::Concurrent,
+        LimitMetric::TokensInput,
+        LimitMetric::TokensOutput,
+        LimitMetric::TokensCacheRead,
+        LimitMetric::TokensCacheWrite,
+    ];
+
+    /// The metric a limit key names, if it names one.
+    pub fn from_key(key: &str) -> Option<LimitMetric> {
+        Self::ALL.iter().copied().find(|m| m.as_str() == key)
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             LimitMetric::Requests => "requests",
@@ -404,16 +422,46 @@ impl AdmissionMode {
     }
 }
 
+/// Every key a limit map accepts, as the unknown-key refusal lists them: 1.5.5's eight in 1.5.5's
+/// order, then the 1.6.0 keys appended.
+const LIMIT_KEYS: &[&str] = &[
+    "requests",
+    "tokens",
+    "budget",
+    "concurrent",
+    "per",
+    "pool",
+    "on_exhaust",
+    "downgrade_to",
+    "tokens_input",
+    "tokens_output",
+    "tokens_cache_read",
+    "tokens_cache_write",
+    "admission",
+    "on_exhaustion",
+];
+
+/// Writes every metric name, 1.5.5's four first, joined by `sep`.
+fn write_metrics(f: &mut impl fmt::Write, sep: &str) -> fmt::Result {
+    for (i, m) in LimitMetric::ALL.iter().enumerate() {
+        if i > 0 {
+            f.write_str(sep)?;
+        }
+        f.write_str(m.as_str())?;
+    }
+    Ok(())
+}
+
 fn once<'de, A: MapAccess<'de>, T: Deserialize<'de>>(
     map: &mut A,
     slot: &mut Option<T>,
     key: &'static str,
-) -> Result<Option<LimitMetric>, A::Error> {
+) -> Result<(), A::Error> {
     if slot.is_some() {
         return Err(de::Error::duplicate_field(key));
     }
     *slot = Some(map.next_value()?);
-    Ok(None)
+    Ok(())
 }
 
 impl<'de> Deserialize<'de> for LimitCfg {
@@ -429,9 +477,12 @@ impl<'de> Deserialize<'de> for LimitCfg {
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str(
                     "a limit map `{ <metric>: <amount>, per: <window>, pool: <name> }` where \
-                     <metric> is one of requests|tokens|budget|concurrent and <window> one of \
-                     minute|hour|day|month|total (omit `per` for concurrent; `pool` is optional \
-                     and scopes the limit to one pool's traffic)",
+                     <metric> is one of ",
+                )?;
+                write_metrics(f, "|")?;
+                f.write_str(
+                    " and <window> one of minute|hour|day|month|total (omit `per` for \
+                     concurrent; `pool` is optional and scopes the limit to one pool's traffic)",
                 )
             }
 
@@ -448,39 +499,7 @@ impl<'de> Deserialize<'de> for LimitCfg {
                 let mut on_exhaustion: Option<ExhaustionMode> = None;
 
                 while let Some(key) = map.next_key::<String>()? {
-                    let named = match key.as_str() {
-                        "requests" => Some(LimitMetric::Requests),
-                        "tokens" => Some(LimitMetric::Tokens),
-                        "tokens_input" => Some(LimitMetric::TokensInput),
-                        "tokens_output" => Some(LimitMetric::TokensOutput),
-                        "tokens_cache_read" => Some(LimitMetric::TokensCacheRead),
-                        "tokens_cache_write" => Some(LimitMetric::TokensCacheWrite),
-                        "budget" => Some(LimitMetric::Budget),
-                        "concurrent" => Some(LimitMetric::Concurrent),
-                        "per" => once(&mut map, &mut per, "per")?,
-                        "pool" => once(&mut map, &mut pool, "pool")?,
-                        "on_exhaust" => once(&mut map, &mut on_exhaust, "on_exhaust")?,
-                        "downgrade_to" => once(&mut map, &mut downgrade_to, "downgrade_to")?,
-
-                        "admission" => once(&mut map, &mut admission, "admission")?,
-                        "on_exhaustion" => once(&mut map, &mut on_exhaustion, "on_exhaustion")?,
-                        other => {
-                            return Err(de::Error::unknown_field(
-                                other,
-                                &[
-                                    "requests",
-                                    "tokens",
-                                    "budget",
-                                    "concurrent",
-                                    "per",
-                                    "pool",
-                                    "on_exhaust",
-                                    "downgrade_to",
-                                ],
-                            ));
-                        }
-                    };
-                    if let Some(m) = named {
+                    if let Some(m) = LimitMetric::from_key(&key) {
                         if let Some((prev, _)) = metric {
                             return Err(de::Error::custom(format!(
                                 "a limit takes exactly ONE metric key; found both '{}' and '{}'",
@@ -489,14 +508,24 @@ impl<'de> Deserialize<'de> for LimitCfg {
                             )));
                         }
                         metric = Some((m, map.next_value()?));
+                        continue;
+                    }
+                    match key.as_str() {
+                        "per" => once(&mut map, &mut per, "per")?,
+                        "pool" => once(&mut map, &mut pool, "pool")?,
+                        "on_exhaust" => once(&mut map, &mut on_exhaust, "on_exhaust")?,
+                        "downgrade_to" => once(&mut map, &mut downgrade_to, "downgrade_to")?,
+                        "admission" => once(&mut map, &mut admission, "admission")?,
+                        "on_exhaustion" => once(&mut map, &mut on_exhaustion, "on_exhaustion")?,
+                        other => return Err(de::Error::unknown_field(other, LIMIT_KEYS)),
                     }
                 }
 
                 let Some((metric, amount)) = metric else {
-                    return Err(de::Error::custom(
-                        "a limit needs exactly one metric key \
-                         (requests | tokens | budget | concurrent)",
-                    ));
+                    let mut msg = String::from("a limit needs exactly one metric key (");
+                    write_metrics(&mut msg, " | ").map_err(de::Error::custom)?;
+                    msg.push(')');
+                    return Err(de::Error::custom(msg));
                 };
 
                 if metric == LimitMetric::Concurrent && pool.is_some() {
@@ -626,4 +655,4 @@ impl Serialize for LimitCfg {
 
 #[cfg(test)]
 #[path = "tests/groups.rs"]
-mod frozen_limit_grammar_tests;
+mod limit_grammar_tests;
