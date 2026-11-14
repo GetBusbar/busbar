@@ -1,6 +1,7 @@
 # Named lists of scenarios. `default` is the per-commit suite (<= 10 min on one CI runner with the
-# short windows); `full` adds the 72-case dialect matrix, the h2c/open-loop LLM shapes and every
-# scenario that needs plugin tarballs (--plugins-dir) or docker.
+# short windows); `full` adds the 72-case dialect matrix, the h2c/open-loop LLM shapes and the
+# webhook export. Both include scenarios with `plugins:` (need --plugins-dir tarballs, else SKIPPED)
+# and `docker:` (need a docker daemon).
 prove: [llm-openai-openai, stub-plugins]
 default:
   - stub-plugins
