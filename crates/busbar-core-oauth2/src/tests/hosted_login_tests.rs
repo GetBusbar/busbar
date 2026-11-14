@@ -451,3 +451,23 @@ fn credential_prompt_uses_declared_label_and_keeps_private_form_transport() {
     assert!(html.contains("type=\"password\""));
     assert!(html.contains("state&quot;value"));
 }
+
+/// DEPENDENCY-LADDER C6 (form_urlencoded) pins the callback query reader before the hand decoder
+/// goes: empty pieces skipped, a bare name kept with an empty value, `+` a space, `%XX` decoded,
+/// a short escape kept, invalid UTF-8 replaced.
+#[test]
+fn the_callback_query_reads_as_a_form() {
+    let pairs = parse_query("code=a%2Fb&&state=x+y%21&bare&bad=%zz%4&lossy=%FF&=v");
+    let expected: Vec<(String, String)> = [
+        ("code", "a/b"),
+        ("state", "x y!"),
+        ("bare", ""),
+        ("bad", "%zz%4"),
+        ("lossy", "\u{fffd}"),
+        ("", "v"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_owned(), v.to_owned()))
+    .collect();
+    assert_eq!(pairs, expected);
+}
