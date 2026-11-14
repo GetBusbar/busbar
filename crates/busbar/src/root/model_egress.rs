@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use busbar_contract::caps::{Pass, Route};
@@ -10,6 +10,7 @@ use busbar_kernel_egress::ports::{
     Admit, Breaker, Classified, Outcome, Unavailable, UpstreamStatus,
 };
 use busbar_kernel_egress::{Failover, Member, OnExhausted, Pool};
+use foldhash::{HashMap, HashSet};
 
 use crate::root::adapters;
 
@@ -115,19 +116,27 @@ pub struct ModelPools {
     passthrough: bool,
     /// Each pool's ladder as the lane store's record calls take it (the previous release's
     /// `resolve_breaker_cfg`: the pool's own, else the default); `""` = the lane-default cell's.
-    records: HashMap<String, busbar_kernel::store::BreakerCfg>,
+    records: Arc<HashMap<Arc<str>, busbar_kernel::store::BreakerCfg>>,
     /// Each model's active health probing (K7): its provider's `health:` over the process-wide
     /// defaults, as 1.5.5's prober resolved it per lane.
     probes: BTreeMap<String, busbar_kernel::probe::ProbeCfg>,
     /// What each pool's members show the ranking hooks, by pool then model: the member's tier and
     /// tags, and its model's cost per million tokens off the rate card (1.5.5's pool member meta).
-    meta: BTreeMap<String, Arc<HashMap<String, busbar_kernel::plane_driver::MemberFacts>>>,
+    meta: Arc<BTreeMap<String, Arc<MemberFactsByModel>>>,
 }
+
+/// The member facts by model, in the map type the kernel's far end takes them as.
+pub type MemberFactsByModel =
+    std::collections::HashMap<String, busbar_kernel::plane_driver::MemberFacts>;
 
 impl ModelPools {
     #[must_use]
     pub fn of(cfg: &busbar_kernel::config::RootCfg) -> Self {
         use busbar_kernel::config::pools::OnExhaustedCfg;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the model bounds are resolved once per configuration"
+        )]
         let mut lanes: BTreeMap<String, ModelLane> = cfg
             .models
             .iter()
@@ -167,6 +176,10 @@ impl ModelPools {
                 Some(OnExhaustedCfg::FallbackPool(p)) => OnExhausted::FallbackPool(p.clone()),
                 Some(OnExhaustedCfg::Queue { max_ms }) => OnExhausted::Queue { max_ms: *max_ms },
             };
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: a pool's members are resolved once per configuration"
+            )]
             pools.insert(
                 name.clone(),
                 ModelPool {
@@ -184,12 +197,17 @@ impl ModelPools {
                 },
             );
         }
-        let mut records: HashMap<String, busbar_kernel::store::BreakerCfg> = cfg
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the breaker ladders are resolved once per configuration"
+        )]
+        let mut records: HashMap<Arc<str>, busbar_kernel::store::BreakerCfg> = cfg
             .pools
             .iter()
             .map(|(name, pool)| {
+                // busbar:expect(bp::into_alloc, reason = "config: the breaker ladders are keyed once per configuration")
                 (
-                    name.clone(),
+                    Arc::from(name.as_str()),
                     pool.breaker
                         .as_ref()
                         .map(busbar_kernel::store::breaker_cfg_to_runtime)
@@ -197,7 +215,12 @@ impl ModelPools {
                 )
             })
             .collect();
-        records.insert(String::new(), busbar_kernel::store::BreakerCfg::default());
+        // busbar:expect(bp::into_alloc, reason = "config: the breaker ladders are keyed once per configuration")
+        records.insert(Arc::from(""), busbar_kernel::store::BreakerCfg::default());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the health probing is resolved once per configuration"
+        )]
         let probes = cfg
             .models
             .iter()
@@ -230,7 +253,11 @@ impl ModelPools {
                 ))
             })
             .collect();
-        let meta = cfg
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the ranking hooks' member facts are resolved once per configuration"
+        )]
+        let meta: BTreeMap<_, _> = cfg
             .pools
             .iter()
             .map(|(name, pool)| {
@@ -257,12 +284,12 @@ impl ModelPools {
             })
             .collect();
         ModelPools {
-            meta,
+            meta: Arc::new(meta),
             pools,
             lanes,
             passthrough: cfg.upstream_credentials
                 == busbar_contract::config::UpstreamCreds::Passthrough,
-            records,
+            records: Arc::new(records),
             probes,
         }
     }
@@ -276,6 +303,11 @@ impl ModelServing {
         usize,
         Vec<(DestinationId, busbar_kernel::probe::ProbeMember)>,
     ) {
+        // busbar:expect(bp::state_scan, reason = "config: the probe roster is read once, when probes are armed for a configuration")
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the probe roster is built once, when probes are armed for a configuration"
+        )]
         let mut members: Vec<(DestinationId, busbar_kernel::probe::ProbeMember)> = self
             .lanes
             .iter()
@@ -291,7 +323,8 @@ impl ModelServing {
                 ))
             })
             .collect();
-        members.sort_by_key(|(_, m)| m.index);
+        members.sort_unstable_by_key(|(_, m)| m.index);
+        // busbar:expect(bp::state_scan, reason = "config: the lane count is read once, when probes are armed for a configuration")
         (self.lanes.values().max().map_or(0, |m| m + 1), members)
     }
 }
@@ -347,7 +380,6 @@ impl LatencyReservoir {
             return;
         }
 
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let us = ((latency_ms * 1000.0).round() as u32).max(1);
         let slot = self.cursor.fetch_add(1, Ordering::Relaxed) % LATENCY_RESERVOIR_LEN;
         self.samples[slot].store(us, Ordering::Relaxed);
@@ -355,7 +387,6 @@ impl LatencyReservoir {
     }
 
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
     pub fn p95_ms(&self) -> Option<u64> {
         use std::sync::atomic::Ordering;
         let generation = self.written.load(Ordering::Acquire);
@@ -430,13 +461,13 @@ impl busbar_kernel::plane_driver::MemberSignals for ModelSignals {
 }
 
 pub struct ModelShown {
-    pub described: BTreeMap<String, Arc<HashMap<String, busbar_kernel::plane_driver::MemberFacts>>>,
+    pub described: Arc<BTreeMap<String, Arc<MemberFactsByModel>>>,
 
     pub signals: Arc<dyn busbar_kernel::plane_driver::MemberSignals>,
 }
 
 struct CellPlan {
-    records: HashMap<String, busbar_kernel::store::BreakerCfg>,
+    records: Arc<HashMap<Arc<str>, busbar_kernel::store::BreakerCfg>>,
     direct: HashSet<String>,
     names: Arc<HashMap<DestinationId, String>>,
 }
@@ -469,7 +500,7 @@ struct WalkCells {
 
 struct HeldProbe {
     unit: Arc<busbar_kernel_breaker::BreakerUnit>,
-    pool: String,
+    pool: Arc<str>,
     destination: DestinationId,
     epoch: u64,
 }
@@ -510,6 +541,16 @@ impl WalkCells {
         }
     }
 
+    /// The cell's name, shared from the plan's ladder keys: no copy per held probe.
+    fn cell_name(&self, pool: &str) -> Arc<str> {
+        let cell = self.cell(pool);
+        // busbar:expect(bp::into_alloc, reason = "error: a pool outside the plan has no breaker ladder; only it is named by a copy")
+        match self.plan.records.get_key_value(cell) {
+            Some((name, _)) => Arc::clone(name),
+            None => Arc::from(cell),
+        }
+    }
+
     fn destination(&self, bound: &Bound, destination: DestinationId) -> Option<DestinationId> {
         model_lane(&bound.app, &self.plan.names, destination)
             .map(|lane| DestinationId::new(lane as u64))
@@ -547,7 +588,7 @@ impl Breaker for WalkCells {
         if let Some(epoch) = admit.probe_epoch {
             let held = HeldProbe {
                 unit: Arc::clone(&bound.unit),
-                pool: self.cell(pool).to_string(),
+                pool: self.cell_name(pool),
                 destination: translated,
                 epoch,
             };
@@ -822,7 +863,10 @@ impl busbar_kernel_egress::ports::Telemetry for ModelTelemetry {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the egress is composed from the door's facts and every port it is given"
+)]
 pub fn compose(
     facts: &crate::root::door_steps::DoorFacts,
     serving: &ModelServing,
@@ -834,19 +878,33 @@ pub fn compose(
     stream_ceiling_secs: u64,
 ) -> Result<(busbar_kernel::plane_driver::Egress, ModelShown), String> {
     let plan = &serving.pools;
-    let mut sealed = HashMap::new();
+    #[expect(
+        clippy::disallowed_types,
+        reason = "config: the routes are sealed once per configuration, in the map the kernel's egress takes"
+    )]
+    let mut sealed = std::collections::HashMap::new();
+    // busbar:expect(bp::fresh_buffer, reason = "config: the member names are gathered once per configuration")
     let mut names = Vec::new();
+    // busbar:expect(bp::fresh_buffer, reason = "config: the member limits are gathered once per configuration")
     let mut limits = Vec::new();
     let mut member_of = |model: &str,
                          weight: u32,
                          attempt: Option<u64>,
                          passthrough: bool|
      -> Result<Member, String> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a model without a lane fails the configuration"
+        )]
         let lane = *serving
             .lanes
             .get(model)
             .ok_or_else(|| format!("model '{model}' has no lane in this generation"))?;
         let destination = DestinationId::new(lane as u64);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a model without a sealed route fails the configuration"
+        )]
         let route = routes
             .get(model)
             .ok_or_else(|| format!("model '{model}' has no sealed route"))?;
@@ -859,6 +917,10 @@ pub fn compose(
                 .cloned()
                 .unwrap_or_default();
             slot.insert(route);
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: each member's name is copied once per configuration"
+            )]
             names.push((destination, model.to_string()));
             if let Some(n) = own.max_concurrent {
                 limits.push((destination, n));
@@ -870,8 +932,16 @@ pub fn compose(
         member.passthrough = passthrough;
         Ok(member)
     };
-    let mut built: HashMap<String, Pool> = HashMap::new();
+    #[expect(
+        clippy::disallowed_types,
+        reason = "config: the pools are built once per configuration, in the map the kernel's egress takes"
+    )]
+    let mut built: std::collections::HashMap<String, Pool> = std::collections::HashMap::new();
     for (name, pool) in &plan.pools {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a pool's members are built once per configuration"
+        )]
         let members = pool
             .members
             .iter()
@@ -885,7 +955,7 @@ pub fn compose(
         p.on_exhausted = pool.on_exhausted.clone();
         built.insert(name.clone(), p);
     }
-    let mut direct = HashSet::new();
+    let mut direct = HashSet::default();
     for model in routes.keys() {
         if built.contains_key(model) || !serving.lanes.contains_key(model) {
             continue;
@@ -901,6 +971,10 @@ pub fn compose(
         direct.insert(model.clone());
     }
     let permits = Arc::new(crate::root::egress_ports::MemberPermits::new(limits));
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the latency reservoirs are made once per configuration"
+    )]
     let reservoirs: Arc<HashMap<usize, LatencyReservoir>> = Arc::new(
         serving
             .lanes
@@ -908,10 +982,14 @@ pub fn compose(
             .map(|lane| (*lane, LatencyReservoir::default()))
             .collect(),
     );
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the member names are indexed once per configuration"
+    )]
     let stable_names: Arc<HashMap<DestinationId, String>> =
         Arc::new(names.iter().cloned().collect());
     let shown = ModelShown {
-        described: plan.meta.clone(),
+        described: Arc::clone(&plan.meta),
         signals: Arc::new(ModelSignals {
             app: serving.app.clone(),
             names: Arc::clone(&stable_names),
@@ -920,7 +998,7 @@ pub fn compose(
         }),
     };
     let cells = Arc::new(CellPlan {
-        records: plan.records.clone(),
+        records: Arc::clone(&plan.records),
         direct,
         names: Arc::clone(&stable_names),
     });

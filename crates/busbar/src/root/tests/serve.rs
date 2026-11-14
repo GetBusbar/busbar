@@ -733,7 +733,7 @@ async fn a_framed_claims_caller_reads_the_deframed_messages() {
         body: bytes::Bytes::from_static(b"\x02ab\x02cd"),
     };
     let messages = vec![b"ab".to_vec(), b"cd".to_vec()];
-    let (arrival, caller, _reply) = deframed_arrival(framed, &messages);
+    let (arrival, caller, _reply) = deframed_arrival(framed, messages);
     assert_eq!(
         &arrival.body[..],
         b"abcd",

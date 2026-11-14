@@ -281,6 +281,7 @@ dependencies = [
  "busbar-plugin-loader",
  "bytes",
  "core_affinity",
+ "foldhash",
  "getrandom 0.3.4",
  "hex",
  "http-body",

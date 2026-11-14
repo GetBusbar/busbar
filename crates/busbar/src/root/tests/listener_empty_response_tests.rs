@@ -42,7 +42,7 @@ async fn empty_rendered_response_ends_in_its_initial_head() {
             },
         ) => {
             assert_eq!(status, 200);
-            assert_eq!(fields, b"result-code: 12\r\n");
+            assert_eq!(fields.encoded(&mut Vec::new()), b"result-code: 12\r\n");
             assert!(
                 end,
                 "a complete empty response must end in its initial head"
