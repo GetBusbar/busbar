@@ -3882,3 +3882,22 @@ mod completed_head_tests;
 #[cfg(test)]
 #[path = "tests/pool_prepared_tests.rs"]
 mod pool_prepared_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/compose_absorb_fail_tests.rs"]
+mod compose_absorb_fail_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/pool_prepared_seal_tests.rs"]
+mod pool_prepared_seal_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/pool_prepared_ready_tests.rs"]
+mod pool_prepared_ready_tests;
+
+#[cfg(test)]
+#[path = "tests/pool_prepared_target_tests.rs"]
+mod pool_prepared_target_tests;
