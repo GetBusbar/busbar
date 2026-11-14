@@ -2096,7 +2096,7 @@ pub fn requirements(
 fn running_executable() -> std::io::Result<std::fs::File> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        std::fs::File::open(std::env::current_exe()?)
+        std::fs::File::open("/proc/self/exe")
     }
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     {
