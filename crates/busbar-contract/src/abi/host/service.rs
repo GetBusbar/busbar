@@ -505,6 +505,15 @@ pub const DEST_RESOLVE: u32 = 1;
 pub const DEST_REFUSE_PRIVATE: u32 = 2;
 /// [`DestJudgeIn::flags`], with [`DEST_RESOLVE`]: on a refusal an address or the resolution
 pub const DEST_EXPLAIN: u32 = 4;
+/// [`DestJudgeIn::flags`] (appended in 1.6.0): judge only THE PLAINTEXT RULE for `dest`, the
+/// destination a plugin is about to reach WITHOUT TLS (a `postgres://` URL with
+/// `sslmode=disable`, a `redis://` URL, an `ldap://` URL without StartTLS): [`DEST_ALLOWED`] when
+/// it is loopback (a loopback literal or `localhost`) or an exact `advanced.tls.destinations` entry
+/// admits plaintext to it, else [`DEST_PLAINTEXT`]. The class and the other flags are not read; the
+/// destination itself is judged again at the dial. A plugin refuses its setting on
+/// [`DEST_PLAINTEXT`] (BUSBAR-3141). A host from before this flag answers FAULT (an unknown flag
+/// bit), so a plugin that needs the answer pins a core that has it.
+pub const DEST_PLAINTEXT_INTENT: u32 = 8;
 
 /// `dest.judge` verdict: admissible.
 pub const DEST_ALLOWED: u64 = 0;

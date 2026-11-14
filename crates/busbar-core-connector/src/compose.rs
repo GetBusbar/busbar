@@ -230,7 +230,23 @@ pub struct Connection {
     full: std::collections::HashSet<u64>,
     /// SEALED CREDENTIAL VALUES (TSEAL, [`crate::seal`]): the real bytes of the fillers the framer
     seals: crate::seal::Seals,
+    /// THE PLAINTEXT RULE ON A CARRIER THAT UPGRADES LATER ([`Connection::hold_clear_window`]):
+    /// `Some(n)` = before connection security is set, at most `n` more cleartext writes, each at
+    /// most [`CLEAR_WINDOW_BYTES`], are taken (the protocol's own negotiation: a postgres
+    /// SSLRequest, an LDAP StartTLS request, a MySQL SSLRequest); `None` = no window (secured from
+    /// the first byte, a framed dial, or a destination plaintext is admitted to).
+    clear_window: Option<u8>,
 }
+
+/// The largest cleartext write a carrier that must upgrade may make before it does
+/// ([`Connection::hold_clear_window`]): every negotiation request busbar's carriers make fits.
+pub const CLEAR_WINDOW_BYTES: usize = 64;
+
+/// The refusal of a cleartext write past the negotiation window on a connection that must be
+/// secured before it carries anything else.
+pub const CLEAR_WINDOW_REFUSED: &str = "BUSBAR-3141: plaintext is not admitted to this destination: \
+     it is neither loopback nor an exact advanced.tls.destinations entry with plaintext: true, so \
+     the connection must be secured before it carries application bytes";
 
 /// One write held back until the framing takes it: its stream, bytes, whether they end the
 struct Early {
@@ -770,6 +786,7 @@ impl Connection {
             opening_owed: false,
             unfed: VecDeque::new(),
             tunnel: None,
+            clear_window: None,
             fallback: None,
             alpn_offer: Vec::new(),
             offer: Vec::new(),
@@ -823,6 +840,7 @@ impl Connection {
             opening_owed: false,
             unfed: VecDeque::new(),
             tunnel: None,
+            clear_window: None,
             fallback: None,
             alpn_offer: Vec::new(),
             offer: Vec::new(),
@@ -973,6 +991,7 @@ impl Connection {
             opening_owed: false,
             unfed: VecDeque::new(),
             tunnel: None,
+            clear_window: None,
             fallback: None,
             alpn_offer,
             offer: accept.alpn.clone(),
@@ -1471,6 +1490,15 @@ impl Connection {
         self.emit(EXCHANGE_STREAM, bytes, end, text, cx)
     }
 
+    /// HOLD THIS CARRIER TO THE PLAINTEXT RULE: until connection security is set
+    /// ([`Connection::upgrade_secure`]), it takes one cleartext write of at most
+    /// [`CLEAR_WINDOW_BYTES`] (the protocol's request to negotiate security) and refuses any other.
+    pub fn hold_clear_window(&mut self) {
+        if self.tls.is_none() {
+            self.clear_window = Some(1);
+        }
+    }
+
     /// Offer `bytes` on `stream` (`end` = the stream's message is complete, `text` = it is a text
     pub fn emit(
         &mut self,
@@ -1484,6 +1512,15 @@ impl Connection {
             Phase::Failed(f) => return Err(f.clone()),
             Phase::Ended if self.framing.is_none() => return Err(Failure::Closed),
             _ => {}
+        }
+        if self.tls.is_none() && !bytes.is_empty() {
+            if let Some(left) = self.clear_window.as_mut() {
+                if *left == 0 || bytes.len() > CLEAR_WINDOW_BYTES {
+                    crate::egress_audit::dial_refused(&self.target, None, "plaintext-window", None);
+                    return Err(Failure::Refused(CLEAR_WINDOW_REFUSED.into()));
+                }
+                *left -= 1;
+            }
         }
 
         if let Err(f) = self.drive(cx) {
@@ -1952,6 +1989,7 @@ impl Connection {
 
         match &self.key_pin {
             Some(pin) if self.established.peer_key_pin.as_deref() != Some(pin.as_str()) => {
+                crate::egress_audit::tls_failed(&self.target, PIN_REFUSED);
                 Err(Failure::Refused(PIN_REFUSED.into()))
             }
             _ => Ok(()),
@@ -1969,6 +2007,9 @@ impl Connection {
                 break;
             }
             if let Err(e) = tls.process_new_packets() {
+                if self.side == SIDE_DIAL && crate::egress_audit::is_verification(&e) {
+                    crate::egress_audit::tls_failed(&self.target, &e.to_string());
+                }
                 self.security_error = Some(e.to_string());
                 // Flush the fatal alert that rustls queued (RFC 8446 §6.2) so the
                 // peer sees it before the TCP close.

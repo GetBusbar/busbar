@@ -684,6 +684,7 @@ async fn run(
             dest.clone(),
             &[base_cfg.listen.as_str(), base_cfg.admin_listen.as_str()],
         );
+        root::connector::install_trust_store(&base_cfg, false);
         let prepared_store = busbar_kernel::appbuild::prepare_config_store(&base_cfg, &deploy.plugins)
             .await
             .unwrap_or_else(|error| {
@@ -1085,6 +1086,7 @@ async fn run(
         .unwrap_or_else(|error| die_list("config errors", [error]));
 
     dest.replace(root::connector::dest_judge(&cfg));
+    root::connector::install_trust_store(&cfg, true);
     root::boot::note_provider_urls(
         cfg.providers
             .values()

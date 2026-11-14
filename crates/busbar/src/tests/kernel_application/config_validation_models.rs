@@ -63,6 +63,8 @@ fn make_root_cfg(
         allow_metadata_hosts: Vec::new(),
         allow_all_metadata: false,
         guard: Default::default(),
+        outbound_tls: Default::default(),
+        proxy_resolution: Default::default(),
         limits: config::LimitsResolved::default(),
         export: Default::default(),
         identity_providers: Default::default(),

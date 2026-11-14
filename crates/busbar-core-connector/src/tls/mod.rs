@@ -9,6 +9,7 @@
 use std::sync::Arc;
 
 pub mod client;
+pub mod store;
 
 use busbar_contract::transport::wire::{ConnectionSecurity, RawIo, SecuredIoFut};
 use busbar_kernel::config::secret::SecretResolver;
