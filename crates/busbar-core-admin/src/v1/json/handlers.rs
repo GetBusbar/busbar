@@ -248,7 +248,8 @@ pub(crate) async fn install_plugin(
 #[derive(serde::Deserialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct InspectPluginReq {
-    file: String,
+    #[serde(rename = "file")]
+    _file: String,
     tarball_b64: String,
 }
 

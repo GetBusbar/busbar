@@ -10,15 +10,17 @@ use axum::http::StatusCode;
 #[cfg(any(test, distribution_root))]
 use axum::response::Response;
 
+#[cfg(any(test, distribution_root))]
+use busbar_contract::caps::Route;
 use busbar_contract::caps::{
-    Audit, Grant, OpClassId, OriginKind, Outcome, Pass, PrincipalId, Route, VerifiedDestination,
+    Audit, Grant, OpClassId, OriginKind, Outcome, Pass, PrincipalId, VerifiedDestination,
 };
 use busbar_contract::{LaneId, UnitKey};
 #[cfg(any(test, distribution_root))]
 use busbar_kernel::plane_driver::PlaneAnswer;
-use busbar_kernel::teller::{
-    AccrualMeter, Ended, Evidence, RouteAwait, RouteLeg, Screen, UnitCtx, Units,
-};
+use busbar_kernel::teller::{AccrualMeter, Ended, Evidence, RouteAwait, UnitCtx, Units};
+#[cfg(any(test, distribution_root))]
+use busbar_kernel::teller::{RouteLeg, Screen};
 use busbar_kernel::Registration;
 use busbar_kernel_audit::{
     AuditInputs, Controls, FinishClass as RecordFinish, HookApplied, OpClassId as RecordOpClass,

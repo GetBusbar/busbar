@@ -1060,6 +1060,7 @@ impl<'a> Audit<'a> {
     fn address(&self, seq: u64) -> Result<Address> {
         audit_address(self.owner, seq)
     }
+    #[cfg(test)]
     fn validate(record: &AuditRecord) -> Result<()> {
         let framed = crate::audit::stream_registry::StreamRecord::from_parts(
             String::new(),
@@ -1081,6 +1082,7 @@ impl<'a> Audit<'a> {
         }
         Ok(())
     }
+    #[cfg(test)]
     pub(crate) async fn append(&self, record: &AuditRecord) -> Result<Outcome> {
         Self::validate(record)?;
         let mut plan = Plan::new(self.store);
@@ -1166,6 +1168,7 @@ impl<'a> Audit<'a> {
             }
         }
     }
+    #[cfg(test)]
     pub(crate) async fn retry(&self, id: PendingId) -> Result<Outcome> {
         outcome(self.store.retry(id).await?)
     }

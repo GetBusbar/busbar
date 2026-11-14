@@ -52,6 +52,7 @@ impl AsyncRecords {
     ) -> Result<Option<Secret<Vec<u8>>>, host_records::Error> {
         self.owner()?.get(schema, key).await
     }
+    #[cfg(test)]
     pub(crate) async fn put(
         &self,
         schema: &str,
@@ -60,6 +61,7 @@ impl AsyncRecords {
     ) -> Result<host_records::Outcome, host_records::Error> {
         self.owner()?.put(schema, key, value).await
     }
+    #[cfg(test)]
     pub(crate) async fn delete(
         &self,
         schema: &str,

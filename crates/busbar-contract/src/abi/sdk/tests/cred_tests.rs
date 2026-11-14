@@ -381,7 +381,8 @@ fn a_settings_enum_object_with_more_than_one_key_is_refused() {
     }
     #[derive(serde::Deserialize, Debug)]
     struct S {
-        mode: Mode,
+        #[serde(rename = "mode")]
+        _mode: Mode,
     }
     assert!(settings::<S>(br#"{"mode":{"tls":{},"plain":{}}}"#).is_err());
     assert!(settings::<S>(br#"{"mode":{"plain":{}}}"#).is_ok());

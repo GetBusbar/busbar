@@ -1119,7 +1119,8 @@ fn codeaudit_a_failed_opening_closes_the_instance_it_built() {
 fn codeaudit_settings_as_does_not_echo_a_mistyped_value() {
     #[derive(Debug, serde::Deserialize)]
     struct Typed {
-        n: u64,
+        #[serde(rename = "n")]
+        _n: u64,
     }
     let refusal = settings_as::<Typed>(br#"{"n":"s3cr3t-value"}"#).unwrap_err();
     let reason = refusal.text().unwrap();
@@ -1133,7 +1134,8 @@ fn codeaudit_settings_as_does_not_echo_a_mistyped_value() {
     }
     #[derive(Debug, serde::Deserialize)]
     struct Moded {
-        mode: Mode,
+        #[serde(rename = "mode")]
+        _mode: Mode,
     }
     let refusal = settings_as::<Moded>(br#"{"mode":"s3cr3t-variant"}"#).unwrap_err();
     let reason = refusal.text().unwrap();

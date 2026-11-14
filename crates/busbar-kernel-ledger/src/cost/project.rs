@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 
 use crate::cost::rate::RateCard;
 use crate::cost::{
-    plane_fee_lane, price_exact, price_in_view, split_plane_lane, whole, EntryKey, HistoryView,
-    LedgerEntry, Money, MoneyError, Tally, PER_REQUEST, STANDARD_TIER_BP,
+    plane_fee_lane, price_in_view, split_plane_lane, whole, EntryKey, HistoryView, LedgerEntry,
+    Money, MoneyError, Tally, PER_REQUEST, STANDARD_TIER_BP,
 };
 
 /// ONE METERING ROW, AS ITS READER HOLDS IT: the lane it was metered on, its counts by class, its

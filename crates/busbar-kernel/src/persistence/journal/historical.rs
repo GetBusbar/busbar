@@ -49,7 +49,7 @@ impl HistoricalSnapshot {
             .map_err(|_| Error::Budget)?;
         let mut previous = None;
         for record in &records {
-            let frame = JournalRecord::decode(&record.body).map_err(Error::Verification)?;
+            let frame = JournalRecord::decode(&record.body).map_err(|_| Error::Verification(()))?;
             if frame.node != node
                 || frame.node_seq == 0
                 || frame.identity() != record.identity()
@@ -63,7 +63,7 @@ impl HistoricalSnapshot {
         }
         // The original verifier checks every digest and consults only the
         // QuarantineNote bridges carried by original ChainBreak bodies.
-        busbar_kernel_wal::verify_journal(&decoded).map_err(Error::Verification)?;
+        busbar_kernel_wal::verify_journal(&decoded).map_err(|_| Error::Verification(()))?;
         let first_previous = decoded[0].prev_hash;
         let tail = decoded.last().ok_or(Error::Invalid)?;
         Ok(Self {

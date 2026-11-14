@@ -5,11 +5,7 @@ use crate::diagnostics::{
     PLUGIN_LOADED_UNVERIFIED, PLUGIN_SKIPPED_TRUST_POLICY,
 };
 
-use crate::{
-    admin, audit, auth, catalogue, config, config_validate, core_routes, cost, durable, endpoints,
-    export, governance, hooks, ingress, ir, json, limits, oauth_as, observability, operation,
-    plugin_routes, profile, snapshot, state, store, telemetry, trust,
-};
+use crate::{config, config_validate, governance};
 
 pub fn fleet_data_dir() -> Option<std::path::PathBuf> {
     let raw = std::env::var_os("BUSBAR_DATA_DIR")?;

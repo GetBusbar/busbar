@@ -2,6 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 #[path = "secret_door_plugin.rs"]
-mod secret_door_plugin;
+pub mod secret_door_plugin;
 
 busbar_contract::export_door!(secret_door_plugin::broken::door);

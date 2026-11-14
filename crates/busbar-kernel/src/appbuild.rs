@@ -14,11 +14,7 @@ use crate::preflight::{
 use crate::router::project_auth_scope_caps;
 use crate::state::App;
 use crate::store::{HealthState, LaneData};
-use crate::{
-    admin, audit, auth, catalogue, config, config_validate, core_routes, cost, durable, endpoints,
-    export, governance, hooks, ingress, ir, json, oauth_as, observability, operation,
-    plugin_routes, profile, ratelimit, snapshot, state, store, telemetry, trust,
-};
+use crate::{admin, config, config_validate, governance, hooks, ratelimit, state, telemetry};
 use busbar_kernel::plane_driver::route_input::{
     LaneInput, OnExhaustedInput, PoolInput, PoolMemberInput,
 };

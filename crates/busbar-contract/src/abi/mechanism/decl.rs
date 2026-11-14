@@ -144,6 +144,7 @@ macro_rules! abi_op {
         }
 
         #[doc = concat!("The RED table of `", stringify!($check), "`: one case per (field, rule) its declaration states unconditionally.")]
+        #[cfg(test)]
         $v const $table: &[$crate::abi::mechanism::decl::RedCase<$ot>] =
             $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [] $($steps)*);
     };

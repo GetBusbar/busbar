@@ -9,7 +9,6 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::Response;
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome as AbiOutcome, BLOB_JSON};
 use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
-use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::{PlaneOpenIn, PlaneOpenOut};
 use busbar_contract::caps::{OpClassId, ReasonCode};
 use busbar_contract::plane::{declares_record_kind, PlaneDeclaration};
@@ -1831,7 +1830,7 @@ pub(crate) fn need_binds(
         binds.push(crate::root::loader::boot::InboundBind {
             owner: crate::root::loader::boot::BindOwner::Need {
                 instance: instance.to_string(),
-                kind: KindCode::Plane,
+                kind: busbar_contract::abi::mechanism::KindCode::Plane,
                 need: claim.need,
             },
             transport: needs[claim.need as usize].transport.clone(),
