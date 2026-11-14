@@ -114,16 +114,7 @@ impl owned::axis::PersistenceAxis for DoorPersistenceAxis {
                 clippy::disallowed_methods,
                 reason = "boot: names why the store plugin did not load"
             )]
-            let plugin = match door {
-                StoreDoor::Linked(door) => crate::dispatch::LinkedRow::of_kind::<StoreV4>(door)
-                    .and_then(|row| crate::dispatch::load_linked::<StoreV4>(&row, bind)),
-                StoreDoor::Dropped {
-                    file,
-                    bytes,
-                    stated,
-                } => crate::dispatch::load_dropped_bytes::<StoreV4>(&bytes, &file, &stated, bind),
-            }
-            .map_err(|error| error.to_string())?;
+            let plugin = open_store(door, bind).map_err(|error| error.to_string())?;
             let backend =
                 LoadedPersistence::open(plugin, self.dispatcher.clone(), settings, self.limits)
                     .await?;
