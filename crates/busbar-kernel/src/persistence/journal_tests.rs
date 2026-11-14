@@ -74,6 +74,11 @@ struct Backend {
     lose_reply: AtomicBool,
     expire_receipt: AtomicBool,
     hang: AtomicBool,
+    /// Hang every commit from this send count on (0: never).
+    hang_from: std::sync::atomic::AtomicUsize,
+    /// Hold the first commit until `release_first` is notified.
+    hold_first: AtomicBool,
+    release_first: tokio::sync::Notify,
 }
 impl PersistenceBackend for Backend {
     fn info(&self) -> BackendInfo {
@@ -108,10 +113,18 @@ impl PersistenceBackend for Backend {
         Box::pin(async { Err(Failure::Unavailable) })
     }
     fn commit(&self, prepared: PreparedCandidate) -> Call<'_, Decision> {
-        self.state.lock().unwrap().sent.push(prepared.clone());
+        let sent = {
+            let mut state = self.state.lock().unwrap();
+            state.sent.push(prepared.clone());
+            state.sent.len()
+        };
         Box::pin(async move {
-            if self.hang.load(Ordering::SeqCst) {
+            let hang_from = self.hang_from.load(Ordering::SeqCst);
+            if self.hang.load(Ordering::SeqCst) || (hang_from != 0 && sent >= hang_from) {
                 std::future::pending::<()>().await;
+            }
+            if sent == 1 && self.hold_first.load(Ordering::SeqCst) {
+                self.release_first.notified().await;
             }
             let mut state = self.state.lock().unwrap();
             let candidate = prepared.candidate();
@@ -790,6 +803,65 @@ async fn runtime_cancelled_waiter_keeps_originals_and_refused_stage_keeps_sequen
     let state = backend.state.lock().unwrap();
     assert_eq!(state.sent[0].candidate().id, state.sent[1].candidate().id);
     assert_eq!(state.sent[0].fingerprint(), state.sent[1].fingerprint());
+}
+
+/// PER-REQUEST-WORK-INVENTORY U1 (lock order): a confirm queued behind a
+/// driver that holds the publication lock for a later ticket returns as soon as
+/// its own ticket is applied, not when that driver's later commit finishes.
+#[tokio::test]
+async fn confirm_returns_at_own_ticket_while_a_later_driver_holds_the_lock() {
+    let backend = Arc::new(Backend::default());
+    let store = Arc::new(attach(backend.clone(), 4).await);
+    let owner = RuntimeJournal::open(
+        store,
+        7,
+        BufferBudget {
+            records: 4,
+            bytes: 4096,
+        },
+    )
+    .await
+    .unwrap();
+    let first = owner
+        .stage_run(&[busbar_kernel_wal::Entry::new(
+            RecordClass::Transaction,
+            vec![1],
+        )])
+        .unwrap();
+    let second = owner
+        .stage_run(&[busbar_kernel_wal::Entry::new(
+            RecordClass::Transaction,
+            vec![2],
+        )])
+        .unwrap();
+    backend.hold_first.store(true, Ordering::SeqCst);
+    backend.hang_from.store(2, Ordering::SeqCst);
+    // The later unit's confirm takes the driver first and commits the earlier
+    // run (held at the barrier), then its own, which never completes.
+    let later = tokio::spawn({
+        let (owner, second) = (owner.clone(), second.clone());
+        async move { owner.confirm(&second).await }
+    });
+    for _ in 0..10_000 {
+        if !backend.state.lock().unwrap().sent.is_empty() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(backend.state.lock().unwrap().sent.len(), 1);
+    let mut own = Box::pin(owner.confirm(&first));
+    assert!(futures::poll!(own.as_mut()).is_pending());
+    backend.release_first.notify_one();
+    let confirmed = tokio::time::timeout(std::time::Duration::from_secs(2), own).await;
+    assert_eq!(
+        confirmed,
+        Ok(Ok(())),
+        "the earlier unit waits only for its own ticket, not the later commit"
+    );
+    assert!(owner.is_confirmed(&first).unwrap());
+    assert!(!owner.is_confirmed(&second).unwrap());
+    assert!(!later.is_finished());
+    later.abort();
 }
 fn applied(result: WriteResult) {
     let WriteResult::Submitted(submission) = result else {
