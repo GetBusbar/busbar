@@ -130,6 +130,8 @@ pub struct DispatchStats {
     pub forged_handles: u64,
     /// The off-crossing latch tripped (#74): nothing resolves outside a crossing any more.
     pub handles_latched: bool,
+    /// Watchdog scans run: an idle pool scans about once per smallest budget, not every period.
+    pub watchdog_scans: u64,
 }
 
 pub type CounterFamily = (&'static str, &'static str, u64);
@@ -162,6 +164,7 @@ pub(crate) struct Stats {
     write_behind_late: AtomicU64,
     driver_kept_high: AtomicU64,
     deadline_without_wake: AtomicU64,
+    pub(crate) watchdog_scans: AtomicU64,
 }
 
 pub(crate) struct Env {
@@ -2660,6 +2663,7 @@ impl Dispatcher {
             deadline_without_wake: s.deadline_without_wake.load(Ordering::Relaxed),
             forged_handles: super::handle::forged(),
             handles_latched: super::handle::latched(),
+            watchdog_scans: s.watchdog_scans.load(Ordering::Relaxed),
         }
     }
 
