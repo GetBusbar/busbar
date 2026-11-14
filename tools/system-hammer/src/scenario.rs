@@ -190,7 +190,9 @@ pub struct ReqSpec {
     pub pad: usize,
     #[serde(default = "ok200")]
     pub expect: u16,
-    /// Every sampled answer must contain this.
+    /// Each answer with the `expect` status is checked for this. A miss in the measured window
+    /// counts as a `body_miss` and fails the case; a miss during warmup, or one completing after
+    /// the measured window, is only logged as an error.
     #[serde(default)]
     pub contains: Option<String>,
     #[serde(default = "w1")]
