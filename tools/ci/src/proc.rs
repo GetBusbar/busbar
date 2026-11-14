@@ -39,11 +39,20 @@ mod ffi {
     }
 }
 
-pub const O_NOFOLLOW: i32 = if cfg!(target_os = "linux") {
+/// `O_NOFOLLOW`: Linux x86 and arm differ (arm and aarch64 use the generic
+/// 0o100000; 0o400000 there is `O_LARGEFILE`, which would silently follow links).
+pub const O_NOFOLLOW: i32 = if cfg!(all(
+    target_os = "linux",
+    any(target_arch = "aarch64", target_arch = "arm")
+)) {
+    0o100000
+} else if cfg!(target_os = "linux") {
     0o400000
 } else {
     0x0100
 };
+/// `ELOOP`: what an `O_NOFOLLOW` open of a link fails with.
+pub const ELOOP: i32 = if cfg!(target_os = "linux") { 40 } else { 62 };
 pub const SIGINT: i32 = 2;
 pub const SIGKILL: i32 = 9;
 pub const SIGTERM: i32 = 15;
@@ -138,8 +147,18 @@ pub const HOST_PATH: &str = "/usr/sbin:/usr/bin:/sbin:/bin";
 /// Exact host executable from the fixed host PATH (`shutil.which`).
 pub fn host_program(name: &str) -> Result<String> {
     use std::os::unix::fs::PermissionsExt;
+    // `name` is a controller constant, but it is still confined to one bare file
+    // name: a separator, `..` or NUL would let it leave the fixed PATH.
+    let bare = std::path::Path::new(name);
+    let single = bare.components().count() == 1;
+    crate::confined::check_relative(bare)
+        .ok()
+        .filter(|_| single && !name.contains('/'))
+        .ok_or_else(|| format!("host tool name is not a bare file name: {name:?}"))?;
     for directory in HOST_PATH.split(':') {
-        let path = std::path::Path::new(directory).join(name);
+        // The fixed host PATH: operator-owned system directories.
+        let directory = crate::confined::Trusted::internal(std::path::Path::new(directory));
+        let path = directory.as_path().join(bare);
         if let Ok(metadata) = std::fs::metadata(&path)
             && metadata.is_file()
             && metadata.permissions().mode() & 0o111 != 0
@@ -343,5 +362,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(String::from_utf8(output.stdout).unwrap(), "disposed\n");
+    }
+
+    /// A host tool name is one bare file name looked up on the fixed PATH, never a path.
+    #[test]
+    fn host_program_names_cannot_leave_the_fixed_path() {
+        assert!(host_program("sh").is_ok());
+        for name in ["../bin/sh", "/bin/sh", "bin/../sh", "", "sh\0"] {
+            assert!(host_program(name).is_err(), "{name:?}");
+        }
     }
 }

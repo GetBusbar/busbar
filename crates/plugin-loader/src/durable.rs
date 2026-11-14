@@ -89,7 +89,11 @@ fn sync_dir(dir: &Path) -> io::Result<()> {
     crate::durable::hooks::parent_fsync(dir)?;
     #[cfg(unix)]
     {
-        std::fs::File::open(dir)?.sync_all()
+        // Internal: `dir` holds an entry this process just created, renamed or removed; it is the
+        // caller's own path, never request, plugin or archive input.
+        busbar_contract::confined_path::TrustedPath::internal(dir)
+            .open_dir()?
+            .sync_all()
     }
 
     #[cfg(not(unix))]
