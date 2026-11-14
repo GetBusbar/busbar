@@ -601,7 +601,9 @@ pub fn run_scenario(env: &Env, s: &Scenario, log: &mut dyn FnMut(&str)) -> Vec<C
         Ok(k) => k,
         Err(e) => return vec![failed(s, "-", e)],
     };
-    let _ = std::fs::write(work.join("signing.key"), &signing);
+    if let Err(e) = std::fs::write(work.join("signing.key"), &signing) {
+        return vec![failed(s, "-", format!("signing.key: {e}"))];
+    }
     let token = admin_token();
     vars.insert("LISTEN".into(), listen.to_string());
     vars.insert("ADMIN".into(), admin.to_string());
@@ -638,7 +640,9 @@ pub fn run_scenario(env: &Env, s: &Scenario, log: &mut dyn FnMut(&str)) -> Vec<C
     for (rel, content) in &s.files {
         let p = work.join(rel);
         if let Some(parent) = p.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                return vec![failed(s, "-", format!("files: {}: {e}", parent.display()))];
+            }
         }
         if let Err(e) = std::fs::write(&p, scenario::fill(content, &vars)) {
             return vec![failed(s, "-", format!("files: {}: {e}", p.display()))];
