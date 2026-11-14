@@ -439,7 +439,8 @@ impl RuntimeJournal {
                     let next_records = records.saturating_add(pending.run.records.len());
                     let next_bytes = bytes.saturating_add(pending.run.bytes);
                     if runs > 0
-                        && (next_records > limits.scan_items || next_bytes > limits.scan_bytes)
+                        && (next_records > limits.scan_items
+                            || next_bytes > limits.scan_bytes.saturating_mul(16))
                     {
                         break;
                     }
