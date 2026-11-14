@@ -12,7 +12,7 @@ use busbar_kernel_ledger::cost::{measurement_lane, RawRateEra};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
 };
 
 pub const MAX_CLASSES: usize = 64;
@@ -216,8 +216,10 @@ pub enum Refusal {
 
 /// Capacity remains occupied until the existing durable flusher has settled it.
 /// Retrying/cancelling an invocation must retain its same Operation, not reserve again.
+/// The runtime never keeps its governor alive: once the governor retires, a new reservation is
+/// refused. Only a reserved operation holds the governor, until its counts are handed off.
 pub struct MeasurementRuntime {
-    gov: Arc<GovState>,
+    gov: Weak<GovState>,
     capacity: usize,
     operations: Mutex<HashMap<[u8; 16], Arc<MeasurementOperation>>>,
 }
@@ -235,7 +237,7 @@ impl MeasurementRuntime {
             .try_reserve(capacity)
             .map_err(|_| Refusal::Unavailable)?;
         Ok(Arc::new(Self {
-            gov,
+            gov: Arc::downgrade(&gov),
             capacity,
             operations: Mutex::new(operations),
         }))
@@ -249,7 +251,8 @@ impl MeasurementRuntime {
         context: &MeasurementContext,
         slot: u32,
     ) -> Result<Arc<MeasurementOperation>, Refusal> {
-        if !self.gov.unit_checkpoints_enabled() {
+        let gov = self.gov.upgrade().ok_or(Refusal::Unavailable)?;
+        if !gov.unit_checkpoints_enabled() {
             return Err(Refusal::Unavailable);
         }
         let mut operations = self.operations.lock().unwrap_or_else(|p| p.into_inner());
@@ -335,7 +338,7 @@ impl MeasurementRuntime {
             unread: None,
         };
         let operation = Arc::new(MeasurementOperation {
-            gov: self.gov.clone(),
+            gov,
             id,
             state: Mutex::new(State {
                 snapshot: Some(snapshot),
