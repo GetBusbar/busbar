@@ -123,10 +123,7 @@ impl crate::refresh::Report for Captured {
     }
 }
 
-fn relending(
-    axis: &Arc<Axis>,
-    reresolve: Reresolve,
-) -> (RelendingAuth, &'static Captured) {
+fn relending(axis: &Arc<Axis>, reresolve: Reresolve) -> (RelendingAuth, &'static Captured) {
     let report: &'static Captured = Box::leak(Box::default());
     let dyn_axis = Arc::clone(axis) as Arc<dyn AuthAxis>;
     let first = dyn_axis
@@ -192,7 +189,6 @@ fn a_refused_rotation_keeps_the_auth_instance_and_reports_8028() {
     assert_eq!(lines[0].1, tracing::Level::ERROR, "a refusal is ERROR");
     assert!(lines[0].2.contains(&("cause", "refused".to_string())));
     assert_eq!(report.audits.lock().unwrap()[0].2, "degraded");
-
 }
 
 #[test]
