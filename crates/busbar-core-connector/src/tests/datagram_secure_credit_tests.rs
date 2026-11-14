@@ -72,7 +72,7 @@ fn consumed_secure_datagram_waits_as_a_continuation_and_is_not_reingested() {
     for queued in [false, true] {
         for cancel in [false, true] {
             let (mut host, mut far, door, now) = established();
-            let host_addr: SocketAddr = host.local.parse().unwrap();
+            let host_addr: SocketAddr = host.local.as_str().parse().unwrap();
             let sealed = packet(&mut far, host_addr, PLAINTEXT);
             let before = host.secure.as_ref().unwrap().ingest_calls();
 
@@ -227,7 +227,7 @@ fn consumed_secure_datagram_waits_as_a_continuation_and_is_not_reingested() {
 #[test]
 fn credit_before_secure_ingest_leaves_the_datagram_unaccepted_and_raw_readiness_counts_it() {
     let (mut host, mut far, door, now) = established();
-    let host_addr: SocketAddr = host.local.parse().unwrap();
+    let host_addr: SocketAddr = host.local.as_str().parse().unwrap();
     let sealed = packet(&mut far, host_addr, PLAINTEXT);
     let before = host.secure.as_ref().unwrap().ingest_calls();
     host.memory(Memory::new(Some(1)));
@@ -263,7 +263,7 @@ fn credit_before_secure_ingest_leaves_the_datagram_unaccepted_and_raw_readiness_
 #[test]
 fn ready_secure_continuation_precedes_the_next_raw_datagram() {
     let (host, mut far, door, now) = established();
-    let host_addr: SocketAddr = host.local.parse().unwrap();
+    let host_addr: SocketAddr = host.local.as_str().parse().unwrap();
     let mut first = packet(&mut far, host_addr, b"first channel message");
     // Two valid records force another checked secure batch before fresh admission.
     first.extend(packet(&mut far, host_addr, b"continued channel message"));
@@ -322,7 +322,7 @@ fn ready_secure_service_is_bounded_and_does_not_queue_fresh_raw_input() {
     let (mut host, mut far, door, now) = established();
     let memory = Memory::new(None);
     host.memory(Arc::clone(&memory));
-    let host_addr: SocketAddr = host.local.parse().unwrap();
+    let host_addr: SocketAddr = host.local.as_str().parse().unwrap();
     let mut first = packet(&mut far, host_addr, b"first");
     for _ in 0..6 {
         first.extend(packet(&mut far, host_addr, b"continued"));

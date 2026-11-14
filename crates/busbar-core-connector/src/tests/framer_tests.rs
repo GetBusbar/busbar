@@ -821,7 +821,7 @@ impl MuxDoor {
             },
             host: Arc::new(AuthHost::default()),
             next: std::sync::atomic::AtomicU32::new(1),
-            held: std::sync::Mutex::new(HashMap::new()),
+            held: std::sync::Mutex::new(HashMap::default()),
             resumed: std::sync::Mutex::new(Vec::new()),
         }
     }

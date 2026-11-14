@@ -555,7 +555,7 @@ fn the_session_cert_shows_only_its_fingerprint_and_dimpl_never_holds_the_key() {
     let cert = SessionCert::mint().unwrap();
     assert_eq!(cert.fingerprint(), sha256(cert.public_der()));
     let shown = format!("{cert:?}");
-    assert!(shown.contains(&hex(&cert.fingerprint())));
+    assert!(shown.contains(&format!("{:?}", Hex(&cert.fingerprint()))));
     assert!(!shown.contains("key"), "{shown}");
     let handed = cert.dimpl();
     assert!(
