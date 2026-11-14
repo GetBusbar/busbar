@@ -146,7 +146,7 @@ async fn through_final_gate_identity(
         .uri(head.path_and_query())
         .body(axum::body::Body::empty())
         .unwrap();
-    *request.headers_mut() = header_map(head);
+    *request.headers_mut() = Derived::default().headers(head).clone();
     request.extensions_mut().insert(receipt);
     let response = router.oneshot(request).await.unwrap();
     let (record, key) = observed.lock().unwrap().clone();
@@ -185,7 +185,7 @@ async fn ticket_preflight_skips_the_chain_and_only_the_final_gate_spends_it() {
                 .id,
             id
         );
-        let mut changed = original.stripped(&answer.strips).unwrap();
+        let mut changed = original.stripped_for_test(&answer.strips).unwrap();
         changed.target = OTHER.into();
         assert_eq!(
             k.hand_in(MESSAGES, MESSAGES, answer.unit, changed).0,
@@ -202,7 +202,7 @@ async fn ticket_preflight_skips_the_chain_and_only_the_final_gate_spends_it() {
         answer.flow, FLOW_CONTINUE,
         "abandoned and failed hand-ins did not spend the ticket"
     );
-    let sanitized = original.stripped(&answer.strips).unwrap();
+    let sanitized = original.stripped_for_test(&answer.strips).unwrap();
     assert_eq!(
         k.hand_in(MESSAGES, MESSAGES, answer.unit, sanitized.clone())
             .0,
@@ -250,7 +250,7 @@ async fn ticket_callers_leave_the_reactor_live_during_store_waits(ops: &[&'stati
         let answer = preflight.await.unwrap();
         assert_eq!(answer.flow, FLOW_CONTINUE);
         assert_eq!(earlier.calls(), 0);
-        let sanitized = original.stripped(&answer.strips).unwrap();
+        let sanitized = original.stripped_for_test(&answer.strips).unwrap();
         assert_eq!(
             k.hand_in(MESSAGES, MESSAGES, answer.unit, sanitized.clone())
                 .0,
@@ -459,7 +459,7 @@ async fn later_verifiers_and_keys_keep_the_original_candidate_after_declared_str
         let first = k
             .call(MESSAGES, UnitRef::NONE, POINT_HEAD, original.clone())
             .unwrap();
-        let stripped = original.stripped(&first.strips).unwrap();
+        let stripped = original.stripped_for_test(&first.strips).unwrap();
         let last = k
             .call(MESSAGES, first.unit, POINT_HEAD_BODY, stripped.clone())
             .unwrap();
@@ -2370,7 +2370,7 @@ async fn a_declared_signed_identity_preempts_ticket_and_plugins_through_the_fina
         assert_eq!(answer.flow, FLOW_CONTINUE);
         assert_eq!(reader.calls(), 1);
         assert_eq!(earlier.calls(), 0);
-        let sanitized = head.stripped(&answer.strips).unwrap();
+        let sanitized = head.stripped_for_test(&answer.strips).unwrap();
         assert_eq!(
             k.hand_in(MESSAGES, MESSAGES, answer.unit, sanitized.clone())
                 .0,
@@ -2434,7 +2434,7 @@ async fn a_signed_pass_reaches_ticket_once_but_a_signed_refusal_never_does() {
         assert_eq!(earlier.calls(), 0);
         assert_eq!(answer.flow, if pass { FLOW_CONTINUE } else { FLOW_STOP });
         if pass {
-            let sanitized = head.stripped(&answer.strips).unwrap();
+            let sanitized = head.stripped_for_test(&answer.strips).unwrap();
             assert_eq!(
                 k.hand_in(MESSAGES, MESSAGES, answer.unit, sanitized.clone())
                     .0,
@@ -2515,7 +2515,7 @@ async fn signed_receipt_replay_is_claimed_only_at_final_admission_and_ticket_sta
     for status in [200, 401] {
         let answer = signed_call_async(&k, head.clone()).await;
         assert_eq!(answer.flow, FLOW_CONTINUE, "preflight never claims replay");
-        let sanitized = head.stripped(&answer.strips).unwrap();
+        let sanitized = head.stripped_for_test(&answer.strips).unwrap();
         assert_eq!(
             k.hand_in(MESSAGES, MESSAGES, answer.unit, sanitized.clone())
                 .0,
@@ -3022,7 +3022,7 @@ fn a_head_body_continuation_cannot_authenticate_another_head_for_the_original_un
             0,
             "a substituted head must not reach the body verifier"
         );
-        let sanitized = original.stripped(&first.strips).unwrap();
+        let sanitized = original.stripped_for_test(&first.strips).unwrap();
         assert_eq!(
             k.hand_in(MESSAGES, MESSAGES, first.unit, sanitized.clone())
                 .0,
@@ -3073,7 +3073,7 @@ fn continuations_allow_only_original_bytes_and_declared_partial_stripping() {
                 continuation.fields.remove(0);
             }
             "query" => continuation.query = Some("scope=A&token=b".into()),
-            "both" => continuation = original.stripped(&first.strips).unwrap(),
+            "both" => continuation = original.stripped_for_test(&first.strips).unwrap(),
             "case" => {
                 continuation.fields[0].0 = "authorization".into();
                 continuation.fields[1].0 = "x-resource".into();
@@ -3093,7 +3093,7 @@ fn continuations_allow_only_original_bytes_and_declared_partial_stripping() {
                 MESSAGES,
                 MESSAGES,
                 first.unit,
-                original.stripped(&first.strips).unwrap()
+                original.stripped_for_test(&first.strips).unwrap()
             )
             .0,
             FLOW_CONTINUE
@@ -3187,7 +3187,7 @@ async fn a_host_receipt_forwards_only_the_verifiers_credential_through_the_opaqu
             .unwrap()
             .unit;
         let sanitized = original
-            .stripped(&[
+            .stripped_for_test(&[
                 Strip::field("authorization"),
                 Strip::field("x-custom"),
                 Strip::query("token"),
@@ -3284,7 +3284,7 @@ fn authenticated_framing_fields_cannot_disappear_before_hand_in_or_claim() {
         .call(MESSAGES, UnitRef::NONE, POINT_HEAD, original.clone())
         .unwrap();
     assert_eq!(answer.flow, FLOW_CONTINUE);
-    let admitted = original.stripped(&answer.strips).unwrap();
+    let admitted = original.stripped_for_test(&answer.strips).unwrap();
     for removed in ["connection", "content-length", "x-signed"] {
         let mut changed = admitted.clone();
         changed.fields.retain(|(name, _)| name != removed);

@@ -389,7 +389,7 @@ async fn reader_pass_resumes_head_identity_on_the_same_unit_without_lending_the_
             expected("head", AuthPoint::Head, answer.unit.id)
         ]
     );
-    let head = signed_head().stripped(&answer.strips).unwrap();
+    let head = signed_head().stripped_for_test(&answer.strips).unwrap();
     assert_eq!(
         k.hand_in(MESSAGES, MESSAGES, answer.unit, head.clone()).0,
         FLOW_CONTINUE

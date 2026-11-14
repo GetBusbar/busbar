@@ -13,7 +13,7 @@ fn consumed_query_credentials_are_stripped_without_interpreting_the_opaque_targe
         fields: vec![("Authorization".into(), b"secret".to_vec())],
     };
     let stripped = head
-        .stripped(&[
+        .stripped_for_test(&[
             Strip {
                 place: StripPlace::Query,
                 name: "token".into(),
@@ -31,7 +31,7 @@ fn consumed_query_credentials_are_stripped_without_interpreting_the_opaque_targe
     let mut only_credential = head.clone();
     only_credential.query = Some("token=secret".into());
     assert!(only_credential
-        .stripped(&[Strip {
+        .stripped_for_test(&[Strip {
             place: StripPlace::Query,
             name: "token".into(),
         }])
@@ -312,7 +312,7 @@ fn continuation_bytes_preserve_the_original_request_except_declared_partial_stri
                 retained.fields.remove(0);
             }
             "query" => retained.query = Some("scope=A&token=b".into()),
-            "both" => retained = original.stripped(&strips).unwrap(),
+            "both" => retained = original.stripped_for_test(&strips).unwrap(),
             "case" => {
                 retained.fields[0].0 = "authorization".into();
                 retained.fields[1].0 = "x-resource".into();
@@ -337,7 +337,7 @@ fn authenticated_framing_fields_remain_exact_at_the_claim_boundary() {
     ];
     original.query = Some("x=1".into());
     let strips = [Strip::field("authorization".to_string())];
-    let admitted = original.stripped(&strips).unwrap();
+    let admitted = original.stripped_for_test(&strips).unwrap();
     for removed in ["connection", "content-length", "x-signed"] {
         let mut changed = admitted.clone();
         changed.fields.retain(|(name, _)| name != removed);

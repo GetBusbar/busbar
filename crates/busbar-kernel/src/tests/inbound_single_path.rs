@@ -14,7 +14,7 @@ use busbar_contract::stage_probe::{Derive, Scope};
 async fn claimed_and_read(k: &Kit, seen: &Arc<Mutex<Vec<Seen>>>) -> Answer {
     let answer = two_points(k, seen).await;
     if answer.flow == FLOW_CONTINUE {
-        let head = signed_head().stripped(&answer.strips).unwrap();
+        let head = signed_head().stripped_for_test(&answer.strips).unwrap();
         assert_eq!(
             k.hand_in(MESSAGES, MESSAGES, answer.unit, head.clone()).0,
             FLOW_CONTINUE
@@ -261,7 +261,7 @@ async fn an_admitted_hand_in_scans_for_stripped_credentials_once() {
     let k = mixed(reader, &[head, body]);
     let answer = two_points(&k, &seen).await;
     assert_eq!(answer.flow, FLOW_CONTINUE);
-    let handed = signed_head().stripped(&answer.strips).unwrap();
+    let handed = signed_head().stripped_for_test(&answer.strips).unwrap();
 
     let scope = Scope::open();
     let (flow, _) = k.hand_in(MESSAGES, MESSAGES, answer.unit, handed);
@@ -291,12 +291,12 @@ async fn served_from_fresh_heads(k: &Kit) {
         .await
         .unwrap();
     assert_eq!(answer.flow, FLOW_CONTINUE);
-    let handed = signed_head().stripped(&answer.strips).unwrap();
+    let handed = signed_head().stripped_for_test(&answer.strips).unwrap();
     assert_eq!(
         k.hand_in(MESSAGES, MESSAGES, answer.unit, handed).0,
         FLOW_CONTINUE
     );
-    let claimed = signed_head().stripped(&answer.strips).unwrap();
+    let claimed = signed_head().stripped_for_test(&answer.strips).unwrap();
     let request = k.inbound.claim_request(OWNER, 1, 1, &claimed).unwrap();
     let _ = crate::auth::admitted_context(&request).await;
 }
