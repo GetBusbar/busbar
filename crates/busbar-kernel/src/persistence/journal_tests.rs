@@ -1264,6 +1264,46 @@ async fn uncertainty_and_cancellation_retain_exact_original_candidate() {
 }
 
 #[tokio::test]
+async fn group_append_matches_concatenated_claim() {
+    let backend = Arc::new(Backend::default());
+    let store = attach(backend.clone(), 4).await;
+    let journal = StoreJournal::new(&store, 7).unwrap();
+    let proof = verified(&journal).await;
+    let a = record(1, [0; 32], vec![5; 1024]);
+    let b = record(2, hash(&a), b"second run".to_vec());
+    backend.hang.store(true, Ordering::SeqCst);
+    {
+        let runs = [std::slice::from_ref(&a), std::slice::from_ref(&b)];
+        let mut future = Box::pin(journal.append_runs(&proof, &runs));
+        assert!(futures::poll!(future.as_mut()).is_pending());
+        drop(future);
+    }
+    backend.hang.store(false, Ordering::SeqCst);
+    assert!(matches!(
+        journal
+            .append_runs(
+                &proof,
+                &[std::slice::from_ref(&b), std::slice::from_ref(&a)]
+            )
+            .await,
+        Err(Error::Access(AccessError::OperationConflict))
+    ));
+    applied(
+        journal
+            .append(&proof, &[a.clone(), b.clone()])
+            .await
+            .unwrap(),
+    );
+    {
+        let state = backend.state.lock().unwrap();
+        assert_eq!(state.sent.len(), 2);
+        assert_eq!(state.sent[0].candidate().id, state.sent[1].candidate().id);
+        assert_eq!(state.sent[0].fingerprint(), state.sent[1].fingerprint());
+    }
+    assert_eq!(verified(&journal).await.hash(), hash(&b));
+}
+
+#[tokio::test]
 async fn replay_checks_middle_records_and_requires_completion() {
     let backend = Arc::new(Backend::default());
     let store = attach(backend.clone(), 4).await;
