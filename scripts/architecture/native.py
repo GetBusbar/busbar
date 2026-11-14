@@ -772,6 +772,17 @@ class Qualification:
             self.save()
         return self._sdk
 
+    def bad_patterns(self):
+        """The fleet bad-pattern check beside clippy: busbar-release tools/bad-patterns at the
+        trusted pin (ci/bad-patterns.pin), over the candidate's whole workspace."""
+        if not hasattr(self, '_bad_patterns'):
+            pin = (self.trusted / 'ci/bad-patterns.pin').read_text().split()[0]
+            self._bad_patterns = checkout('GetBusbar/busbar-release', pin, self.work / 'bad-patterns')
+            self.receipt['bad_patterns_revision'] = pin
+            self.save()
+        self.run('bad-patterns', ['cargo', 'run', '--locked', '--quiet', '--manifest-path',
+                                  str(self._bad_patterns / 'Cargo.toml'), '-p', 'busbar-bad-patterns', '--', str(self.root)])
+
     def architecture(self, sdk=None, dependency_units=None):
         scratch = self.harness / 'architecture' if self.execution else self.work / 'architecture'
         command = ['python3', str(self.trusted / 'scripts/architecture/check.py'), '--policy', str(self.trusted / 'ci/architecture.toml'),
@@ -828,6 +839,7 @@ class Qualification:
         self.receipt['sdk_revision'] = json.loads((self.host() / 'scripts/ci-product-pins.json').read_text())['sdk']
         for name, command in CORE_CLIPPY_COMMANDS:
             self.run(name, command)
+        self.bad_patterns()
         self.receipt['checks'] = {'clippy': {name: 'pass' for name, _ in CORE_CLIPPY_COMMANDS}}
         self.save()
 

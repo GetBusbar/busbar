@@ -125,6 +125,33 @@ idna = { version = "1.1.0", default-features = false, features = ["alloc", "comp
 zeroize = "1"
 stringprep = "=0.1.5"
 unicode-normalization = "0.1.25"
+# The shared fast-hash aliases (foldhash::HashMap / HashSet, per-process seeded) the bad-pattern rules
+# point at instead of std's SipHash HashMap/HashSet. Already in Cargo.lock.
+foldhash = "0.2"
+
+# Every member takes these with `[lints] workspace = true`.
+[workspace.lints.rust]
+# busbar: the default distribution's build script sets a `linked_section_<section>` cfg per linked
+# plane door; core's source gates a few tests on two of them, and core alone sets none.
+# busbar-kernel: the transaction-fence red witness.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(linked_section_pools)", "cfg(linked_section_agents)", "cfg(txn_fence_red)"] }
+
+# Fleet bad-pattern rules: the list is in clippy.toml (a byte-identical copy of GetBusbar/busbar-release
+# template/clippy.toml's block). It is raised to deny only inside module trees that carry the
+# request-path marker; everywhere else these three stay off.
+[workspace.lints.clippy]
+disallowed_macros = "allow"
+disallowed_methods = "allow"
+disallowed_types = "allow"
+# Always on, every crate and target: each one's suggested fix is itself allowed.
+assigning_clones = "deny"
+cloned_instead_of_copied = "deny"
+stable_sort_primitive = "deny"
+unnecessary_to_owned = "deny"
+mutex_atomic = "deny"
+rc_buffer = "deny"
+large_stack_arrays = "deny"
+large_futures = "deny"
 
 # Plugins that name busbar-contract by git resolve to this tree, so exactly one copy links.
 [patch.'https://github.com/GetBusbar/busbar']

@@ -81,7 +81,5 @@ busbar-core-admin = { path = "../busbar-core-admin", default-features = false, f
 ring = { workspace = true }
 # External fixtures used by this source when the distribution runs its unit tests.
 
-[lints.rust]
-# The default distribution's build script sets a `linked_section_<section>` cfg per linked plane door;
-# core's source gates a few tests on two of them, and core alone sets none.
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(linked_section_pools)", "cfg(linked_section_agents)"] }
+[lints]
+workspace = true

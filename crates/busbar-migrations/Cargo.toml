@@ -28,3 +28,6 @@ tokio = { workspace = true, features = ["rt", "sync", "time"] }
 [dev-dependencies]
 busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+
+[lints]
+workspace = true
