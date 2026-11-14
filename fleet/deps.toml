@@ -120,6 +120,12 @@ default-features = false
 repos = ["busbar-transport-ws"]
 reason = "the HTTP/1 chunked transfer-coding decoder (parse_chunk_size) a refused WebSocket upgrade's body is read with; already in the closure through tungstenite, no socket of its own (Q128 transport-ws r162)."
 
+[plugin-deps.siphasher]
+version = "1"
+default-features = false
+repos = ["busbar-plane-llm"]
+reason = "the ONE wire-compatible hasher (PLANE-LLM-SYNTH-ID, drop-in): SipHasher13 with a zero key keeps the client-visible tool-call ids 1.5.5 synthesized (std's DefaultHasher, whose algorithm std does not promise), byte for byte. Used only in plane-llm/src/codec/tool_call_id.rs; busbar-release bad-patterns (LINT-RULES LR-159) refuses it anywhere else. No dependencies of its own."
+
 # ── Git sources (GetBusbar forks of crates.io crates; Q128 ruling, 2026-10-18) ────────────────────
 # A plugin takes a crates.io crate from a git repository only through a row here: ONE repository, for
 # the plugin repos `repos` names and no other, at ONE pinned commit, with a reviewed `reason`. The key is
