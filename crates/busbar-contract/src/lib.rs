@@ -95,6 +95,7 @@ pub mod unit;
 pub mod upstream;
 pub mod vocab;
 pub mod wire;
+pub mod work_count;
 
 /// THE HEADER VOCABULARY the protocol-seam shapes name (`HeaderMap`, `HeaderName`, `HeaderValue`,
 pub use http;
