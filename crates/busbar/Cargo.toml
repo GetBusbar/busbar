@@ -76,6 +76,8 @@ tracing-subscriber = { workspace = true }
 busbar-core-admin = { path = "../busbar-core-admin", default-features = false, features = ["test-support"] }
 busbar-contract = { path = "../busbar-contract", features = ["stage-probe", "test-seal"] }
 ring = { workspace = true }
+proc-macro2 = { workspace = true }
+syn = { workspace = true }
 # External fixtures used by this source when the distribution runs its unit tests.
 
 [lints]
