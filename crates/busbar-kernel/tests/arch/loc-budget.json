@@ -6,7 +6,7 @@
     "busbar-core-admin": { "budget": 17070 },
     "busbar-core-connector": { "budget": 22193 },
     "busbar-core-oauth2": { "budget": 6472 },
-    "busbar-kernel": { "budget": 101341 },
+    "busbar-kernel": { "budget": 101034 },
     "busbar-kernel-audit": { "budget": 3092 },
     "busbar-kernel-breaker": { "budget": 1088 },
     "busbar-kernel-egress": { "budget": 1600 },
