@@ -120,6 +120,19 @@ pub(super) fn address() -> Address {
     }
 }
 
+/// What [`FirstStart::abandon`] did on the exit path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Abandoned {
+    /// This writer's row is retired; the next inspect takes over at once.
+    Retired,
+    /// The first start is published; nothing to hand over, nothing written.
+    Published,
+    /// This writer was already retired (taken over); nothing written.
+    NotAdmitted,
+    /// The retire's outcome is unknown or it was refused; the next owner waits the window.
+    Unconfirmed,
+}
+
 struct State {
     birth: Birth,
     pending: Option<(Birth, Arc<Attempt>)>,
@@ -155,6 +168,11 @@ impl FirstStart {
 
     pub(crate) fn owner(&self) -> [u8; 16] {
         self.authority.writer
+    }
+
+    /// Exit path only: retire this writer so the next inspect takes over at once.
+    pub async fn abandon(&self) -> Result<Abandoned, startup::Error> {
+        todo!("FIRST-START-TAKEOVER §2.7: FirstStart::abandon")
     }
 
     /// Atomically consume a finite host initialization binding with its native effects.
