@@ -48,6 +48,11 @@ pub const DEFAULT_RATE_SWEEP_INTERVAL: u32 = 256;
 
 pub const DEFAULT_USAGE_FLUSH_INTERVAL_MS: u64 = 100;
 
+/// Longest rest of a claim retention scope after a complete sweep pass. It
+/// bounds how long a lapsed claim's row may linger; redeem refuses a lapsed
+/// claim by its own TimeGuard whatever the sweep timing.
+pub const DEFAULT_CLAIM_SWEEP_MAX_REST_SECS: u64 = 60;
+
 pub const DEFAULT_PROBE_INTERVAL_SECS: u64 = 30;
 
 pub const DEFAULT_PROBE_TIMEOUT_SECS: u64 = 5;
