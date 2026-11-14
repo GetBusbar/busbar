@@ -43,3 +43,7 @@ pub fn parse_err_log(bytes_len: usize) -> String {
 #[cfg(test)]
 #[path = "tests/depth_guard_tests.rs"]
 mod depth_guard_tests;
+
+#[cfg(test)]
+#[path = "tests/json_sort_keys_tests.rs"]
+mod json_sort_keys_tests;
