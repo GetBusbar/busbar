@@ -109,6 +109,14 @@ pub fn install_signal_handlers() {
     }
 }
 
+/// Restore default SIGTERM/SIGINT dispositions after a supervised phase.
+pub fn restore_default_signals() {
+    unsafe {
+        ffi::signal(SIGTERM, 0);
+        ffi::signal(SIGINT, 0);
+    }
+}
+
 pub fn interrupted() -> Option<i32> {
     match INTERRUPTED.load(Ordering::SeqCst) {
         0 => None,
