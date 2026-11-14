@@ -96,8 +96,9 @@ struct ModelCell {
     /// The last durably-ACKNOWLEDGED (flushed) unit counters — the additive-flush baseline.
     flushed: std::collections::BTreeMap<String, Count>,
     flushed_era: std::collections::BTreeMap<String, Count>,
-    /// Zero-sized: only [`ModelCell::new`] can build one, so only it writes a `ModelCell` literal.
-    seal: model_cell_seal::Seal,
+    /// Zero-sized and never read: only [`ModelCell::new`] can build one, so only it writes a
+    /// `ModelCell` literal. The leading `_` marks it a marker field, like a `PhantomData`.
+    _seal: model_cell_seal::Seal,
 }
 
 mod model_cell_seal {
@@ -124,13 +125,16 @@ mod model_cell_seal {
             let empty = !super::has_units(&cur)
                 && !super::has_units(&flushed)
                 && !super::has_units(&flushed_era);
-            (!(model.is_empty() && empty)).then(|| super::ModelCell {
+            if model.is_empty() && empty {
+                return None;
+            }
+            Some(super::ModelCell {
                 model,
                 era,
                 cur,
                 flushed,
                 flushed_era,
-                seal: Seal(()),
+                _seal: Seal(()),
             })
         }
     }
