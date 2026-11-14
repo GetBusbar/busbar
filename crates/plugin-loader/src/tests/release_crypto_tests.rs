@@ -571,7 +571,7 @@ fn native_key_decoders_do_not_construct_dalek_keys_or_hash_outside_provider() {
 fn structure_validation_hashes_exact_library_with_selected_provider() {
     let m = manifest();
     let provider = TraceCrypto::default();
-    let abi = |_: &str| &([1][..]);
+    let abi = |_: &str| Some(1);
     assert_eq!(
         sign::validate_structure_with_crypto(&m, LIB, &abi, "busbar", &provider),
         Ok(())
