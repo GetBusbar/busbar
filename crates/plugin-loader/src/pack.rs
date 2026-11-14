@@ -559,7 +559,7 @@ fn verify_cli(args: &[String]) -> ExitCode {
     let mut path = String::new();
     let mut run = || -> Result<String, String> {
         let (p, flags) = release_args(args, &["keys", "target", "name", "version"])?;
-        path = p.clone();
+        path.clone_from(&p);
         let keys = release_keys(&flags)?;
         let target = flag(&flags, "target").unwrap_or(release_trust::PLUGIN_TARGET);
         let bytes = read_file(&p)?;

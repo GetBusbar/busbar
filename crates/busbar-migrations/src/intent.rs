@@ -30,7 +30,6 @@ fn checkpoint_phase(
     candidate: &PreparedCandidate,
     migration: Id,
 ) -> Result<Option<busbar_contract::persistence::lifecycle::CompletionMarker>, Error> {
-    use busbar_contract::crypto::Sha256;
     use busbar_contract::persistence::lifecycle as native;
     let marker_address = native::completion_marker_address(migration);
     let mut markers =

@@ -3,7 +3,6 @@
 
 #![cfg(all(target_os = "linux", target_env = "gnu"))]
 
-use super::*;
 use crate::dispatch_tests::UnloadWitness;
 
 #[test]

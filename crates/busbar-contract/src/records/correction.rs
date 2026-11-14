@@ -148,7 +148,7 @@ impl Request {
     #[must_use]
     pub fn fingerprint(&self) -> [u8; 32] {
         let bytes = serde_json::to_vec(self).expect("usage correction contains only JSON values");
-        crate::crypto::sha256(&bytes).into()
+        crate::crypto::sha256(&bytes)
     }
 }
 

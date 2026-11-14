@@ -731,7 +731,7 @@ impl NodeAmendments {
                     hash: String::new(),
                 };
                 amendment.hash = AmendChain::digest_of(&amendment);
-                tail = amendment.hash.clone();
+                tail.clone_from(&amendment.hash);
                 seq = next;
                 amendments.push(amendment);
             }

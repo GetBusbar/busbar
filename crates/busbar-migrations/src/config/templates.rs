@@ -114,7 +114,6 @@ pub fn resolved_settings(value: &Value, host: &dyn MigrateHost) -> Result<Value,
 /// Preserve scalar quoting after a structural move. A quoted `${N}` that resolves
 /// to a string must not become an unquoted numeric YAML scalar after serialization.
 pub(super) fn render_authored(yaml: &str, host: &dyn MigrateHost) -> Result<String, String> {
-    use busbar_contract::crypto::Sha256;
     let mut doc: Yaml = yaml::from_str(yaml).map_err(|_| "converted template is not YAML")?;
     let prefix = format!(
         "__BUSBAR_AUTHORED_{}__",

@@ -371,26 +371,26 @@ impl<O> PreparedCandidate<O> {
 fn candidate_fingerprint<O>(candidate: &Candidate<O>) -> [u8; 32] {
     use crate::abi::sdk::digest::Sha256Stream as Sha256;
     fn bytes(hash: &mut Sha256, value: &[u8]) {
-        hash.update(&(value.len() as u64).to_le_bytes());
-        hash.update(&value[..]);
+        hash.update((value.len() as u64).to_le_bytes());
+        hash.update(value);
     }
     fn address(hash: &mut Sha256, address: &Address) {
         hash.update(&address.namespace[..]);
         bytes(hash, &address.key);
     }
     fn timestamp(hash: &mut Sha256, value: Option<u64>) {
-        hash.update(&[u8::from(value.is_some())]);
+        hash.update([u8::from(value.is_some())]);
         if let Some(value) = value {
-            hash.update(&value.to_le_bytes());
+            hash.update(value.to_le_bytes());
         }
     }
     let mut hash = Sha256::new();
     hash.update(b"busbar.persistence.candidate/1\0");
-    hash.update(&candidate.codec.to_le_bytes());
+    hash.update(candidate.codec.to_le_bytes());
     hash.update(&candidate.id.dataset.0[..]);
-    hash.update(&candidate.id.writer_epoch.to_le_bytes());
+    hash.update(candidate.id.writer_epoch.to_le_bytes());
     hash.update(&candidate.id.writer[..]);
-    hash.update(&candidate.id.execution_epoch.to_le_bytes());
+    hash.update(candidate.id.execution_epoch.to_le_bytes());
     hash.update(&candidate.id.operation[..]);
     let time = candidate.time.unwrap_or(TimeGuard {
         not_before: None,
@@ -398,27 +398,27 @@ fn candidate_fingerprint<O>(candidate: &Candidate<O>) -> [u8; 32] {
     });
     timestamp(&mut hash, time.not_before);
     timestamp(&mut hash, time.before);
-    hash.update(&(candidate.predicates.len() as u64).to_le_bytes());
+    hash.update((candidate.predicates.len() as u64).to_le_bytes());
     for predicate in &candidate.predicates {
         address(&mut hash, &predicate.address);
         match &predicate.expected {
-            ExpectedValue::Absent => hash.update(&[0]),
+            ExpectedValue::Absent => hash.update([0]),
             ExpectedValue::Exact(value) => {
-                hash.update(&[1]);
+                hash.update([1]);
                 bytes(&mut hash, &value.0);
             }
         }
     }
-    hash.update(&(candidate.mutations.len() as u64).to_le_bytes());
+    hash.update((candidate.mutations.len() as u64).to_le_bytes());
     for mutation in &candidate.mutations {
         match mutation {
             Mutation::Put { address: at, value } => {
-                hash.update(&[0]);
+                hash.update([0]);
                 address(&mut hash, at);
                 bytes(&mut hash, &value.0);
             }
             Mutation::Delete(at) => {
-                hash.update(&[1]);
+                hash.update([1]);
                 address(&mut hash, at);
             }
             Mutation::DeleteRange {
@@ -426,10 +426,10 @@ fn candidate_fingerprint<O>(candidate: &Candidate<O>) -> [u8; 32] {
                 prefix,
                 exact_key_length,
             } => {
-                hash.update(&[2]);
+                hash.update([2]);
                 hash.update(&namespace.0[..]);
                 bytes(&mut hash, prefix);
-                hash.update(&exact_key_length.to_le_bytes());
+                hash.update(exact_key_length.to_le_bytes());
             }
         }
     }

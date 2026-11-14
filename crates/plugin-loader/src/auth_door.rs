@@ -876,7 +876,7 @@ impl AuthInstance {
                 .generation
                 .max(metadata.attempted_generation)
                 .checked_add(1)
-                .ok_or((None, "auth lifecycle generation exhausted".to_string()))?;
+                .ok_or_else(|| (None, "auth lifecycle generation exhausted".to_string()))?;
             metadata.attempted_generation = generation;
             generation
         };

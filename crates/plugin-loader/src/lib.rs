@@ -3,8 +3,6 @@
 
 #![deny(unsafe_code)]
 
-use libloading::Library;
-
 // busbar:request-path
 #[cfg_attr(
     not(test),

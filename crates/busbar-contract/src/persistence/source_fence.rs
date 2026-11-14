@@ -302,7 +302,7 @@ fn text(value: &str, max: usize) -> bool {
 fn hash<T: Serialize + ?Sized>(domain: &[u8], value: &T) -> Result<[u8; 32], Error> {
     let bytes = serde_json::to_vec(value).map_err(|_| Error::Invalid)?;
     let mut digest = Sha256::new();
-    digest.update(&domain[..]);
+    digest.update(domain);
     digest.update(&bytes[..]);
     Ok(digest.finish())
 }

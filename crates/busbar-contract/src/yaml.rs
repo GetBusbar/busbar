@@ -1443,8 +1443,8 @@ impl Serialize for StructVariant<'_> {
             serializer.serialize_struct_variant(self.name, self.index, self.variant, self.len)?;
         for (key, value) in self.fields {
             match value {
-                Some(value) => fields.serialize_field(*key, &Tagging(value))?,
-                None => fields.skip_field(*key)?,
+                Some(value) => fields.serialize_field(key, &Tagging(value))?,
+                None => fields.skip_field(key)?,
             }
         }
         fields.end()
@@ -1513,13 +1513,13 @@ impl Serialize for Content {
             Self::None => s.serialize_none(),
             Self::Some(v) => s.serialize_some(&**v),
             Self::Unit => s.serialize_unit(),
-            Self::UnitStruct(name) => s.serialize_unit_struct(*name),
+            Self::UnitStruct(name) => s.serialize_unit_struct(name),
             Self::UnitVariant(name, index, variant) => {
-                s.serialize_unit_variant(*name, *index, *variant)
+                s.serialize_unit_variant(name, *index, variant)
             }
-            Self::NewtypeStruct(name, v) => s.serialize_newtype_struct(*name, &**v),
+            Self::NewtypeStruct(name, v) => s.serialize_newtype_struct(name, &**v),
             Self::NewtypeVariant(name, index, variant, v) => {
-                s.serialize_newtype_variant(*name, *index, *variant, &**v)
+                s.serialize_newtype_variant(name, *index, variant, &**v)
             }
             Self::Seq(len, items) => {
                 let mut seq = s.serialize_seq(*len)?;
@@ -1536,14 +1536,14 @@ impl Serialize for Content {
                 tuple.end()
             }
             Self::TupleStruct(name, items) => {
-                let mut tuple = s.serialize_tuple_struct(*name, items.len())?;
+                let mut tuple = s.serialize_tuple_struct(name, items.len())?;
                 for item in items {
                     tuple.serialize_field(item)?;
                 }
                 tuple.end()
             }
             Self::TupleVariant(name, index, variant, items) => {
-                let mut tuple = s.serialize_tuple_variant(*name, *index, *variant, items.len())?;
+                let mut tuple = s.serialize_tuple_variant(name, *index, variant, items.len())?;
                 for item in items {
                     tuple.serialize_field(item)?;
                 }
@@ -1557,21 +1557,21 @@ impl Serialize for Content {
                 map.end()
             }
             Self::Struct(name, len, fields) => {
-                let mut record = s.serialize_struct(*name, *len)?;
+                let mut record = s.serialize_struct(name, *len)?;
                 for (key, value) in fields {
                     match value {
-                        Some(value) => record.serialize_field(*key, value)?,
-                        None => record.skip_field(*key)?,
+                        Some(value) => record.serialize_field(key, value)?,
+                        None => record.skip_field(key)?,
                     }
                 }
                 record.end()
             }
             Self::StructVariant(name, index, variant, len, fields) => {
-                let mut record = s.serialize_struct_variant(*name, *index, *variant, *len)?;
+                let mut record = s.serialize_struct_variant(name, *index, variant, *len)?;
                 for (key, value) in fields {
                     match value {
-                        Some(value) => record.serialize_field(*key, value)?,
-                        None => record.skip_field(*key)?,
+                        Some(value) => record.serialize_field(key, value)?,
+                        None => record.skip_field(key)?,
                     }
                 }
                 record.end()

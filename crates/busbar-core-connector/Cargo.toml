@@ -60,3 +60,6 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
 # The webpki refusal values the dialled-refusal words are pinned against (tests only).
 webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true
