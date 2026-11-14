@@ -38,18 +38,18 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<serde_json::Value, &'static str>
     let mut keys = None;
     let mut range = None;
     let mut head = None;
-    let mut args = args.into_iter();
-    while let Some(flag) = args.next() {
-        let slot = match flag.to_str() {
-            Some("--keys") => &mut keys,
-            Some("--range") => &mut range,
-            Some("--trusted-head") => &mut head,
+    let mut args = lexopt::Parser::from_args(args);
+    while let Some(flag) = args.next().map_err(|_| USAGE)? {
+        let slot = match flag {
+            lexopt::Arg::Long("keys") => &mut keys,
+            lexopt::Arg::Long("range") => &mut range,
+            lexopt::Arg::Long("trusted-head") => &mut head,
             _ => return Err(USAGE),
         };
         if slot.is_some() {
             return Err("a file option was repeated");
         }
-        *slot = Some(PathBuf::from(args.next().ok_or(USAGE)?));
+        *slot = Some(PathBuf::from(args.value().map_err(|_| USAGE)?));
     }
     let keys = read_json(keys.ok_or(USAGE)?)?;
     let range = read_json(range.ok_or(USAGE)?)?;

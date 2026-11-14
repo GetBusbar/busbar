@@ -56,6 +56,7 @@ bytes = { workspace = true }
 zeroize = { workspace = true }
 tracing = { workspace = true }
 idna_adapter = { workspace = true }
+lexopt = { workspace = true }
 metrics = { workspace = true }
 serde_yaml = { workspace = true }
 core_affinity = { workspace = true }

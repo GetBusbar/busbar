@@ -1,7 +1,7 @@
 {
   "version": 1,
   "budgets": {
-    "busbar": { "budget": 40549 },
+    "busbar": { "budget": 40517 },
     "busbar-contract": { "budget": 60990 },
     "busbar-core-admin": { "budget": 16990 },
     "busbar-core-connector": { "budget": 21645 },
@@ -19,8 +19,8 @@
   },
   "generated": [
     "crates/busbar-kernel/src/diagnostics/mod.rs:88",
-    "crates/busbar/src/main.rs:273",
-    "crates/busbar/src/main.rs:275",
+    "crates/busbar/src/main.rs:274",
+    "crates/busbar/src/main.rs:276",
     "crates/busbar/src/root/migration_table.rs:4"
   ]
 }

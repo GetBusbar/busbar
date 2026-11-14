@@ -4,7 +4,7 @@
 use busbar_kernel::{config, config_validate, diagnostics};
 use busbar_kernel::{load_config_from_disk, DEFAULT_CONFIG_PATH, ENV_CONFIG};
 
-use crate::{build_info_line, safe_mode_requested};
+use crate::build_info_line;
 
 const EXIT_SUCCESS: i32 = 0;
 const EXIT_FAILURE: i32 = 1;
@@ -22,9 +22,8 @@ const OPTION_HELP: &str = "--help";
 const OPTION_HELP_SHORT: &str = "-h";
 const OPTION_CONFIG: &str = "--config";
 const OPTION_CONFIG_SHORT: &str = "-c";
-pub(super) const OPTION_PROVIDERS: &str = "--providers";
-const OPTION_CONFIG_ASSIGNMENT: &str = "--config=";
-const OPTION_PROVIDERS_ASSIGNMENT: &str = "--providers=";
+const OPTION_PROVIDERS: &str = "--providers";
+const PATH_VALUES: &str = "configuration path flags require explicit values";
 
 const HELP_HEAD: &str = "
 
@@ -184,60 +183,125 @@ pub(crate) enum Parsed {
     Serve,
 }
 
+/// The command line, read once by one lexopt parser. Every option takes its own value, so a value
+/// spelled like a flag (`--migrate-config --config`) is never read as one.
+#[derive(Default)]
+pub struct Argv {
+    pub(crate) config: Option<String>,
+    pub(crate) providers: Option<String>,
+    pub(crate) safe_mode: bool,
+    /// Every other argument, in order: the first one is the command.
+    pub(crate) words: Vec<String>,
+    /// The path after a leading `--migrate-config`.
+    migrate_path: Option<String>,
+    /// The principal-transition values, in `principal_transition::FLAGS` order.
+    pub(crate) transition: [Option<String>; 4],
+    /// The first malformed option; nothing runs past it.
+    pub(crate) refusal: Option<&'static str>,
+}
+
+impl Argv {
+    pub(crate) fn parse(args: impl IntoIterator<Item = impl Into<std::ffi::OsString>>) -> Self {
+        use super::principal_transition::{FLAGS, INPUT_FLAG};
+        let mut parser = lexopt::Parser::from_args(args);
+        let mut argv = Self::default();
+        loop {
+            // `--` and short clusters (`-cfoo`, `-c=x`, `-Vx`) stay whole words, as they always were.
+            let whole = parser.try_raw_args().and_then(|mut raw| {
+                raw.next_if(|arg| {
+                    let arg = arg.as_encoded_bytes();
+                    arg == b"--" || (arg.len() > 2 && arg[0] == b'-' && arg[1] != b'-')
+                })
+            });
+            let name = match whole {
+                Some(word) => word.to_string_lossy().into_owned(),
+                None => match parser.next() {
+                    Ok(Some(lexopt::Arg::Short(short))) => format!("-{short}"),
+                    Ok(Some(lexopt::Arg::Long(long))) => format!("--{long}"),
+                    Ok(Some(lexopt::Arg::Value(word))) => word.to_string_lossy().into_owned(),
+                    _ => break,
+                },
+            };
+            match (name.as_str(), FLAGS.iter().position(|flag| *flag == name)) {
+                (_, Some(slot)) => {
+                    let refusal = "principal transition flags require explicit values";
+                    let value = argv.value(&mut parser, refusal, name == INPUT_FLAG);
+                    if argv.transition[slot].replace(value).is_some() {
+                        argv.refusal
+                            .get_or_insert("duplicate principal transition flag");
+                    }
+                }
+                (OPTION_CONFIG | OPTION_CONFIG_SHORT, _) => {
+                    argv.config = Some(argv.value(&mut parser, PATH_VALUES, false));
+                }
+                (OPTION_PROVIDERS, _) => {
+                    argv.providers = Some(argv.value(&mut parser, PATH_VALUES, false));
+                }
+                (OPTION_MIGRATE_CONFIG | super::overlay_migrate::FLAG, _) => {
+                    let path = parser.value().ok().and_then(|path| path.into_string().ok());
+                    if argv.words.is_empty() && name == OPTION_MIGRATE_CONFIG {
+                        argv.migrate_path = path;
+                    }
+                    argv.words.push(name);
+                }
+                _ => match parser.optional_value() {
+                    Some(value) => argv
+                        .words
+                        .push(format!("{name}={}", value.to_string_lossy())),
+                    None if name == crate::OPTION_SAFE_MODE => argv.safe_mode = true,
+                    None => {
+                        if name.starts_with("-c=") {
+                            argv.refusal
+                                .get_or_insert("use -c <path> or --config=<path>");
+                        }
+                        argv.words.push(name);
+                    }
+                },
+            }
+        }
+        argv
+    }
+
+    /// The option's value; a missing, empty, non-UTF-8 or flag-like one is refused.
+    fn value(&mut self, parser: &mut lexopt::Parser, refusal: &'static str, dash: bool) -> String {
+        let value = parser
+            .value()
+            .ok()
+            .and_then(|value| value.into_string().ok());
+        let value = value.unwrap_or_default();
+        if value.is_empty() || (value.starts_with('-') && !(dash && value == "-")) {
+            self.refusal.get_or_insert(refusal);
+        }
+        value
+    }
+}
+
+/// This process's command line.
+pub(crate) fn argv() -> &'static Argv {
+    static ARGV: std::sync::OnceLock<Argv> = std::sync::OnceLock::new();
+    ARGV.get_or_init(|| Argv::parse(std::env::args_os().skip(1)))
+}
+
 /// Explicit informational commands exit; ordinary startup owns data upgrades.
 pub(crate) fn handle_cli_flags() -> Parsed {
     ordinary_cli_flags().map_or(Parsed::Serve, Parsed::Exit)
 }
 
 fn ordinary_cli_flags() -> Option<i32> {
-    let supplied: Vec<String> = std::env::args().skip(1).collect();
-    match super::overlay_migrate::command(supplied.iter().cloned()) {
-        Ok(Some(_)) => return None,
-        Ok(None) => {}
+    let argv = argv();
+    // A maintenance mode owns the whole command line; boot runs it once the Store is open.
+    let maintenance = super::overlay_migrate::command(std::env::args().skip(1))
+        .map(|overlay| overlay.is_some())
+        .and_then(|overlay| Ok(overlay || super::principal_transition::command(argv)?.is_some()));
+    match maintenance {
+        Ok(true) => return None,
+        Ok(false) => {}
         Err(error) => {
             eprintln!("busbar: {error}. Try 'busbar --help'.");
             return Some(EXIT_USAGE);
         }
     }
-    match super::principal_transition::command(supplied.iter().cloned()) {
-        Ok(Some(_)) => return None,
-        Ok(None) => {}
-        Err(error) => {
-            eprintln!("busbar: {error}. Try 'busbar --help'.");
-            return Some(EXIT_USAGE);
-        }
-    }
-    let mut values = supplied.iter();
-    while let Some(arg) = values.next() {
-        if arg == OPTION_MIGRATE_CONFIG {
-            values.next();
-            continue;
-        }
-        if matches!(
-            arg.as_str(),
-            OPTION_CONFIG | OPTION_CONFIG_SHORT | OPTION_PROVIDERS
-        ) && values.next().is_none()
-        {
-            eprintln!("busbar: {arg} requires a value. Try 'busbar --help'.");
-            return Some(EXIT_USAGE);
-        }
-    }
-    let mut args = supplied.into_iter();
-
-    let command = loop {
-        let arg = args.next();
-        match arg.as_deref() {
-            Some(OPTION_CONFIG | OPTION_CONFIG_SHORT | OPTION_PROVIDERS) => {
-                args.next();
-            }
-            Some(crate::OPTION_SAFE_MODE) => {}
-            Some(a)
-                if a.starts_with(OPTION_CONFIG_ASSIGNMENT)
-                    || a.starts_with(OPTION_PROVIDERS_ASSIGNMENT) => {}
-            _ => break arg,
-        }
-    };
-    match command.as_deref() {
+    match argv.words.first().map(String::as_str) {
         None => None,
         Some(OPTION_VERSION | OPTION_VERSION_SHORT) => {
             println!("busbar {}", env!("CARGO_PKG_VERSION"));
@@ -250,7 +314,7 @@ fn ordinary_cli_flags() -> Option<i32> {
         }
         Some(OPTION_METADATA_BLOCKLIST) => {
             let mut entries = config_validate::metadata_enforced_entries();
-            let config_path = resolve_config_path(config_path_flag().as_deref());
+            let config_path = resolve_config_path(argv.config.as_deref());
             if let Ok(raw) = std::fs::read_to_string(&config_path) {
                 match config::interpolate_env(&raw) {
                     Ok(interpolated) => match config::deploy_from_yaml_str(&interpolated) {
@@ -289,7 +353,7 @@ fn ordinary_cli_flags() -> Option<i32> {
         Some(OPTION_VALIDATE) => Some(validate_config_command()),
         Some(OPTION_GENERATE_SIGNING_KEY) => Some(generate_signing_key_command()),
         Some(OPTION_LIST_PLUGINS) => Some(list_plugins_command()),
-        Some(OPTION_MIGRATE_CONFIG) => Some(migrate_config_command(args.next())),
+        Some(OPTION_MIGRATE_CONFIG) => Some(migrate_config_command(argv.migrate_path.clone())),
         Some(OPTION_HELP | OPTION_HELP_SHORT) => {
             print!("{}", render_help(env!("CARGO_PKG_VERSION"), &help_rows()));
             Some(EXIT_SUCCESS)
@@ -302,13 +366,13 @@ fn ordinary_cli_flags() -> Option<i32> {
 }
 
 pub(crate) fn validate_config_command() -> i32 {
-    let providers_override = providers_override();
-    let config_path = std::path::PathBuf::from(resolve_config_path(config_path_flag().as_deref()));
-    let safe_mode = safe_mode_requested(std::env::args());
+    let argv = argv();
+    let config_path = std::path::PathBuf::from(resolve_config_path(argv.config.as_deref()));
+    let safe_mode = argv.safe_mode;
 
     let mut loaded = match load_config_from_disk(
         &config_path,
-        providers_override.as_deref(),
+        argv.providers.as_deref().map(std::path::Path::new),
         safe_mode,
         config::EnvSubst::Lenient,
     ) {
@@ -457,12 +521,12 @@ pub(crate) fn validate_config_command() -> i32 {
 const LIST_PLUGINS_HEADER: &str = "FILE                               NAME                     ALIAS        KIND   VERSION   SIGNATURE                STATUS";
 
 fn list_plugins_command() -> i32 {
-    let providers_override = providers_override();
-    let config_path = std::path::PathBuf::from(resolve_config_path(config_path_flag().as_deref()));
+    let argv = argv();
+    let config_path = std::path::PathBuf::from(resolve_config_path(argv.config.as_deref()));
 
     let (plugins_cfg, store_ref) = match load_config_from_disk(
         &config_path,
-        providers_override.as_deref(),
+        argv.providers.as_deref().map(std::path::Path::new),
         false,
         config::EnvSubst::Lenient,
     ) {
@@ -557,11 +621,10 @@ fn migrate_config_command(path: Option<String>) -> i32 {
             return EXIT_FAILURE;
         }
     };
-    let providers_flag = value_flag(std::env::args().skip(1), OPTION_PROVIDERS, None);
     let captured = match super::config_migrate::capture_environment(
         &raw,
         &working_directory,
-        providers_flag.as_deref(),
+        argv().providers.as_deref(),
         |name| std::env::var_os(name),
     ) {
         Ok(captured) => captured,
@@ -641,49 +704,6 @@ pub(crate) fn resolve_config_path(cli: Option<&str>) -> String {
         Some(p) => p.to_string(),
         None => std::env::var(ENV_CONFIG).unwrap_or_else(|_| DEFAULT_CONFIG_PATH.into()),
     }
-}
-
-pub(crate) fn value_flag(
-    args: impl Iterator<Item = String>,
-    long: &str,
-    short: Option<&str>,
-) -> Option<String> {
-    let eq_prefix = format!("{long}=");
-    let mut result = None;
-    let mut iter = args;
-    while let Some(a) = iter.next() {
-        if let Some(v) = a.strip_prefix(&eq_prefix) {
-            result = Some(v.to_string());
-        } else if a == long || short == Some(a.as_str()) {
-            if let Some(v) = iter.next() {
-                result = Some(v);
-            }
-        } else if matches!(
-            a.as_str(),
-            OPTION_MIGRATE_CONFIG
-                | OPTION_CONFIG
-                | OPTION_CONFIG_SHORT
-                | OPTION_PROVIDERS
-                | super::principal_transition::INPUT_FLAG
-                | super::principal_transition::ACTION_FLAG
-                | super::principal_transition::ATTESTATION_FLAG
-        ) {
-            iter.next();
-        }
-    }
-    result
-}
-
-pub(crate) fn config_path_flag() -> Option<String> {
-    value_flag(
-        std::env::args().skip(1),
-        OPTION_CONFIG,
-        Some(OPTION_CONFIG_SHORT),
-    )
-}
-
-pub(crate) fn providers_override() -> Option<std::path::PathBuf> {
-    value_flag(std::env::args().skip(1), OPTION_PROVIDERS, None).map(std::path::PathBuf::from)
 }
 
 pub(crate) fn config_override_notice(flag: Option<&str>, env: Option<&str>) -> Option<String> {
