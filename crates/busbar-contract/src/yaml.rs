@@ -28,6 +28,11 @@
 //! - A typed enum is written as serde_yaml wrote it: a unit variant as its plain name (`Variant`),
 //!   a newtype, tuple or struct variant as `!Variant` over its payload (`!Size 127`, `!Rgb` over
 //!   a sequence, `!Color` over a mapping), never serde-saphyr's `Variant: payload` mapping.
+//! - A character outside YAML's printable set anywhere in the text (`\u{7}`, `\u{7f}`) refuses
+//!   the document, as libyaml's reader refused it.
+//! - A byte order mark after the first character is content, as libyaml read it, in an untyped
+//!   read (`k: \u{feff}x` is the string `"\u{feff}x"`).
+//! - Sequences and mappings nest 128 deep, as serde_yaml's recursion limit allowed.
 
 #![forbid(unsafe_code)]
 
@@ -213,6 +218,110 @@ pub fn options() -> serde_saphyr::Options {
         reject_unsupported_tags: false,
         non_finite_float_policy: NonFiniteFloatPolicy::PassThrough,
         with_snippet: false,
+        // serde_yaml's recursion limit: 128 nested sequences or mappings read, the 129th
+        // refused (serde-saphyr's default budget stops at 64).
+        budget: serde_saphyr::budget! { max_depth: MAX_DEPTH },
+    }
+}
+
+/// How deep sequences and mappings may nest, as serde_yaml's `remaining_depth` allowed.
+const MAX_DEPTH: usize = 128;
+
+/// Whether libyaml's reader accepted `c` in a YAML stream: YAML's printable set. Any other
+/// character anywhere in the text (a scalar, a comment, a key) made 1.5.5 refuse the whole
+/// document with `control characters are not allowed`; granit-parser lets some through (an
+/// ASCII control inside a plain scalar), so the refusal is made here, before parsing.
+fn libyaml_printable(c: char) -> bool {
+    matches!(
+        u32::from(c),
+        0x09 | 0x0A
+            | 0x0D
+            | 0x20..=0x7E
+            | 0x85
+            | 0xA0..=0xD7FF
+            | 0xE000..=0xFFFD
+            | 0x1_0000..=0x10_FFFF
+    )
+}
+
+/// 1.5.5's refusal of a document holding a character outside YAML's printable set, placed at the
+/// first one (1-based line and column, in characters).
+fn refuse_control_characters(text: &str) -> Result<(), Error> {
+    let (mut line, mut column) = (1u64, 1u64);
+    for c in text.chars() {
+        if !libyaml_printable(c) {
+            return Err(Error {
+                message: "control characters are not allowed".to_owned(),
+                path: None,
+                location: located(line, column),
+                placed_suffix: true,
+            });
+        }
+        if c == '\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += 1;
+        }
+    }
+    Ok(())
+}
+
+/// A [`Location`] at `line` and `column` (serde-saphyr builds them; its `Deserialize` is public).
+fn located(line: u64, column: u64) -> Option<Location> {
+    use serde::Deserialize;
+    let fields = Value::Map(vec![
+        (Value::from("line"), Value::from(line)),
+        (Value::from("column"), Value::from(column)),
+    ]);
+    Location::deserialize(deserializer(fields)).ok()
+}
+
+/// A byte order mark after the first character, read as libyaml read it: an ordinary printable
+/// character, content of the scalar it is in, or the first character of a plain scalar
+/// (`k: \u{feff}[x]` is the string `"\u{feff}[x]"`). granit-parser refuses one that starts a token
+/// (`BomInsideDocument`), so for an untyped read each is swapped for a private-use character the
+/// text does not hold, which granit-parser reads as libyaml read the mark, and swapped back in the
+/// tree ([`restore_byte_order_marks`]). The leading mark, which both skip, is kept as it is.
+fn shield_inner_byte_order_marks(text: &str) -> (std::borrow::Cow<'_, str>, Option<char>) {
+    use std::borrow::Cow;
+    let body = text.strip_prefix('\u{feff}').unwrap_or(text);
+    if !body.contains('\u{feff}') {
+        return (Cow::Borrowed(text), None);
+    }
+    let Some(stand_in) = ('\u{F0000}'..='\u{FFFFD}').find(|c| !text.contains(*c)) else {
+        return (Cow::Borrowed(text), None);
+    };
+    let lead = &text[..text.len() - body.len()];
+    let shielded = format!(
+        "{lead}{}",
+        body.replace('\u{feff}', stand_in.encode_utf8(&mut [0; 4]))
+    );
+    (Cow::Owned(shielded), Some(stand_in))
+}
+
+/// Undo [`shield_inner_byte_order_marks`] in a tree: strings, keys and tag names.
+fn restore_byte_order_marks(value: &mut Value, stand_in: char) {
+    match value {
+        Value::Text(s) if s.contains(stand_in) => *s = s.replace(stand_in, "\u{feff}"),
+        Value::Array(items) => {
+            for item in items {
+                restore_byte_order_marks(item, stand_in);
+            }
+        }
+        Value::Map(pairs) => {
+            for (key, item) in pairs {
+                restore_byte_order_marks(key, stand_in);
+                restore_byte_order_marks(item, stand_in);
+            }
+        }
+        Value::Tag(id, inner) => {
+            if let Some(name) = tag_name(*id).filter(|name| name.contains(stand_in)) {
+                *id = tag_id(&name.replace(stand_in, "\u{feff}"));
+            }
+            restore_byte_order_marks(inner, stand_in);
+        }
+        _ => {}
     }
 }
 
@@ -242,6 +351,13 @@ impl Error {
             location: None,
             placed_suffix: false,
         }
+    }
+
+    /// Undo [`shield_inner_byte_order_marks`] in the message and path (a key named in them).
+    fn restore_byte_order_marks(mut self, stand_in: char) -> Self {
+        self.message = self.message.replace(stand_in, "\u{feff}");
+        self.path = self.path.map(|path| path.replace(stand_in, "\u{feff}"));
+        self
     }
 }
 
@@ -365,7 +481,15 @@ impl From<serde_saphyr::SerializeError> for Error {
 /// a repeated mapping key is refused, and an application tag is kept as a [`Value::Tag`].
 pub fn from_str<T: DeserializeOwned>(text: &str) -> Result<T, Error> {
     if untyped_target::<T>() {
-        let tree = with_deserializer(text, |d| Node.deserialize(d))?;
+        let (shielded, stand_in) = shield_inner_byte_order_marks(text);
+        let mut tree =
+            with_deserializer(&shielded, |d| Node.deserialize(d)).map_err(|e| match stand_in {
+                Some(stand_in) => e.restore_byte_order_marks(stand_in),
+                None => e,
+            })?;
+        if let Some(stand_in) = stand_in {
+            restore_byte_order_marks(&mut tree, stand_in);
+        }
         return T::deserialize(deserializer(tree));
     }
     with_deserializer(text, |d| T::deserialize(d))
@@ -650,6 +774,7 @@ pub fn with_deserializer<'de, R, F>(text: &'de str, read: F) -> Result<R, Error>
 where
     F: for<'t, 'e> FnOnce(Tracked<'t, 'de, 'e>) -> Result<R, serde_saphyr::Error>,
 {
+    refuse_control_characters(text)?;
     let mut track = serde_path_to_error::Track::new();
     let read = serde_saphyr::with_deserializer_from_str_with_options(text, options(), |de| {
         read(serde_path_to_error::Deserializer::new(de, &mut track))

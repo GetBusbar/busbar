@@ -37,6 +37,58 @@
 //! output, seeds, `apply_merge`, the multi-document iterator and bytes (APIs this module does not
 //! offer), and the typed `0644` case, which is the owner-accepted difference pinned by
 //! `leading_zero_into_an_integer_field_reads_as_decimal_until_upstream_274` (ACCEPT 282).
+//!
+//! PROPOSED ACCEPTS, awaiting the owner. Each is still asserted as 1.5.5 read it, so each is red
+//! until the owner approves it (then the assertion flips to the new reading) or it is fixed.
+//! Each test or record concerned carries a `// PROPOSED ACCEPT:` comment. None is skipped.
+//!
+//! Typed reads go straight to serde-saphyr's deserializer, which decides these before any code
+//! of ours runs; untyped reads are not affected. They could be fixed only by a forwarding layer
+//! between serde and serde-saphyr that reads each scalar's source text through `Spanned`
+//! byte spans (granit-parser reports an empty node as the scalar `~`; only its span says it was
+//! empty). That layer is not built.
+//! 1. `empty:\ntilde: ~\n` into `{ empty: String, tilde: String }`: 1.5.5 read `""` and `"~"`
+//!    (its `deserialize_str` took any scalar's text); now refused, `cannot deserialize null into
+//!    string; use Option<String>`. Likewise `null` into a `String` (1.5.5: `"null"`).
+//! 2. `- !String\n` into `Vec<Enum>` with `String(String)`: 1.5.5 read `[String("")]`; now
+//!    refused, the same null-into-string error on the variant's empty payload.
+//! 3. `thing:\n` into `{ thing: Vec<_> }` or `{ thing: BTreeMap<_, _> }`: 1.5.5 read an empty
+//!    collection (an empty plain scalar was an empty sequence or mapping); now refused, `expected
+//!    sequence start` / `expected mapping start`. Likewise the explicit empty document `---\n`
+//!    into a struct, `Vec` or map (1.5.5: empty; now refused). `""` and `# comment` still match.
+//! 4. `{}` into a unit struct: 1.5.5 refused it (`invalid type: map, expected unit struct ..`); now
+//!    read as the unit struct (serde-saphyr allows an empty mapping for one).
+//! 5. `0XFF`, `0O17`, `0B1` (upper-case radix prefixes): 1.5.5 read strings untyped and refused
+//!    them for integer fields (its prefixes were lower-case only); now the integers 255, 15, 1.
+//!    Lower-case `0x`/`0o`/`0b`, signed or not (`+0xF0`, `-0o70`, `-0b10`), read alike.
+//! 6. The alias bomb in fields a struct ignores (`ignored_alias_bomb_reads`): 1.5.5 read it (it
+//!    skipped ignored events without following aliases); now refused by serde-saphyr's alias
+//!    replay budget, as serde-saphyr walks an ignored value with `deserialize_any`. serde has no
+//!    skip, so no forwarding layer could fix it either.
+//! 7. U+2028 / U+2029: libyaml read them as line breaks, YAML 1.2 (granit-parser) as content.
+//!    Recorded inputs 1.5.5 refused for that break inside an implicit key or indentation
+//!    (`mutated-oracle-config#211` `st\u{2028}ore:`, `#249` `  \u{2028}  limits:`) are expected
+//!    to read now (as maps with those keys). `#147` and `#269` also hold one, but are expected to
+//!    be refused alike for their other corruption (`~{` after a key; a leading backtick). The
+//!    recorded inputs 1.5.5 accepted with one inside a multi-line scalar (`#91`, `#234`) read
+//!    alike.
+//! 8. Typed reads only: a byte order mark that starts a token (`k: \u{feff}[x]`): 1.5.5 read the
+//!    string `"\u{feff}[x]"`; now refused, `BomInsideDocument`. Untyped reads are fixed (below).
+//!
+//! FIXED in `busbar_contract::yaml` (each with a test below): a character outside YAML's
+//! printable set anywhere in the text is refused, as libyaml's reader refused it (the 12 recorded
+//! control-character refusals, `\u{7}` and `\u{7f}`, which granit-parser reads inside a plain
+//! scalar); a byte order mark after the first character is content in an untyped read
+//! (`mutated-oracle-config#58`, `admin_auth: \u{feff}[admin-tokens]`); nesting is allowed 128
+//! deep and refused at 129, serde_yaml's recursion limit (serde-saphyr's default stopped at 64).
+//!
+//! Traced and already reading as 1.5.5 did: `!!int |-` on a block scalar; `Unit`, `'Unit'`,
+//! `!Unit`, `!Unit ~`, `!Unit null` into a unit variant; `[0, 0]` into a struct and a two-key
+//! untagged map into an enum, both refused; a self-referencing alias and nesting 1,000 deep, both
+//! refused; billion laughs refused; repeated `null`/`~` and `{}` keys refused at the repeat; the
+//! recorded tab inputs libyaml tolerated (`#121`, `#155`, `#185`, `#234`); a byte order mark
+//! inside a scalar (`#98`, `#117`, `#150`, `#282`, `#302`, `#354`); record `#117`'s bare `!` key
+//! tag, kept as the tag `!`.
 
 use std::collections::BTreeMap;
 
@@ -427,6 +479,21 @@ fn application_tags_are_found_wherever_they_are() {
 /// skipped by name. Empty: every recorded case is held to its 1.5.5 meaning.
 const ACCEPTED_DIFFERENCES: &[(&str, &str)] = &[];
 
+/// Recorded cases proposed to the owner as accepted differences (item 7 in the module docs), not
+/// yet approved: still checked and still failing when they differ. This list only labels their
+/// failures `PROPOSED ACCEPT`; it skips nothing.
+// PROPOSED ACCEPT: U+2028 / U+2029 are content in YAML 1.2, line breaks to libyaml.
+const PROPOSED_ACCEPTS: &[(&str, &str)] = &[
+    (
+        "mutated-oracle-config#211",
+        "U+2028 inside an implicit key (`st<U+2028>ore:`): a libyaml line break, YAML 1.2 content",
+    ),
+    (
+        "mutated-oracle-config#249",
+        "U+2028 in indentation (`  <U+2028>  limits:`): a libyaml line break, YAML 1.2 content",
+    ),
+];
+
 const RECORDED_CASES: usize = 1141;
 
 /// A recorded 1.5.5 value, spelled out in the fixture, as the tree it means.
@@ -528,18 +595,23 @@ fn every_recorded_1_5_5_input_means_what_it_meant() {
             skipped += 1;
             continue;
         }
+        // A proposed accept is still checked; only its failure is labelled.
+        let label = match PROPOSED_ACCEPTS.iter().find(|(n, _)| *n == name) {
+            Some((_, why)) => format!("PROPOSED ACCEPT ({why}): {name}"),
+            None => name.to_owned(),
+        };
         match (record.get("value"), yaml::from_str::<Value>(input)) {
             (None, Err(_)) => refused += 1,
             (None, Ok(got)) => failures.push(format!(
-                "{name}: 1.5.5 refused it, now read as {}",
+                "{label}: 1.5.5 refused it, now read as {}",
                 brief(&got)
             )),
             (Some(_), Err(error)) => {
-                failures.push(format!("{name}: 1.5.5 accepted it, now refused: {error}"));
+                failures.push(format!("{label}: 1.5.5 accepted it, now refused: {error}"));
             }
             (Some(want), Ok(got)) => match first_difference(&recorded(want), &got, "") {
                 None => accepted += 1,
-                Some(difference) => failures.push(format!("{name}: {difference}")),
+                Some(difference) => failures.push(format!("{label}: {difference}")),
             },
         }
     }
@@ -713,6 +785,8 @@ fn numbers_into_string_fields_keep_their_spelling() {
 }
 
 /// test_de `test_empty_string`: into a `String` field an empty node is `""` and `~` is `"~"`.
+// PROPOSED ACCEPT (item 1): 1.5.5 read `""` and `"~"`; serde-saphyr refuses both, `cannot
+// deserialize null into string; use Option<String>`. Red until approved or fixed.
 #[test]
 fn empty_and_tilde_into_string_fields() {
     #[derive(Debug, Deserialize, PartialEq)]
@@ -878,6 +952,8 @@ fn empty_documents_are_null() {
 }
 
 /// test_de `test_empty_scalar`: an empty node into a sequence or mapping field is empty.
+// PROPOSED ACCEPT (item 3): 1.5.5 read empty collections; serde-saphyr refuses `thing:` for a
+// `Vec` (`expected sequence start`) and a map (`expected mapping start`). Red until approved.
 #[test]
 fn empty_node_into_collection_fields_is_empty() {
     #[derive(Debug, Deserialize, PartialEq)]
@@ -974,6 +1050,8 @@ fn tags_select_enum_variants() {
             Enum::Number(0.0),
         ]
     );
+    // PROPOSED ACCEPT (item 2): 1.5.5 read `[String("")]`; serde-saphyr refuses the empty payload,
+    // `cannot deserialize null into string`. Red until approved or fixed.
     assert_eq!(
         yaml::from_str::<Vec<Enum>>("- !String\n").unwrap(),
         [Enum::String(String::new())]
@@ -1057,6 +1135,9 @@ fn untagged_enums_see_resolved_scalars() {
 
 /// test_de `test_bomb`: unused aliases in fields a typed read ignores are not expanded, so the
 /// document reads.
+// PROPOSED ACCEPT (item 6): 1.5.5 read `Data { expected: "string" }`; serde-saphyr walks the
+// ignored fields with `deserialize_any`, following the aliases, and refuses the document on its
+// alias replay budget (its own port of this test asserts the refusal). Red until approved.
 #[test]
 fn ignored_alias_bomb_reads() {
     #[derive(Debug, Deserialize, PartialEq)]
@@ -1483,4 +1564,133 @@ fn a_mapping_field_reads_its_pairs() {
         yaml::to_string(&expected).unwrap(),
         "substructure:\n  a: foo\n  b: bar\n"
     );
+}
+
+// ---- Cases traced against the 1.5.5 source (busbar-yaml's `de.rs`, libyaml's reader) ----
+
+/// The explicit empty document `---` is one empty node: `None` and null, and (1.5.5's
+/// `deserialize_map`/`deserialize_seq` took an empty plain scalar as empty) an all-optional
+/// struct, an empty sequence and an empty map.
+#[test]
+fn an_explicit_empty_document_is_empty() {
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct NoRequiredFields {
+        optional: Option<usize>,
+    }
+    assert_eq!(yaml::from_str::<Option<String>>("---\n").unwrap(), None);
+    assert_eq!(yaml::from_str::<Value>("---\n").unwrap(), Value::Null);
+    // PROPOSED ACCEPT (item 3): 1.5.5 read these as empty; serde-saphyr refuses `---` for a
+    // struct, a `Vec` and a map (its own port of `test_no_required_fields` asserts the refusal).
+    // Red until approved or fixed.
+    assert_eq!(
+        yaml::from_str::<NoRequiredFields>("---\n").unwrap(),
+        NoRequiredFields { optional: None }
+    );
+    assert!(yaml::from_str::<Vec<String>>("---\n").unwrap().is_empty());
+    assert!(yaml::from_str::<BTreeMap<String, usize>>("---\n")
+        .unwrap()
+        .is_empty());
+}
+
+/// 1.5.5 read a unit struct as unit only (`deserialize_unit_struct` was `deserialize_unit`):
+/// an empty mapping was refused, from the text and from a tree.
+#[test]
+fn an_empty_mapping_is_not_a_unit_struct() {
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Foo;
+    assert!(yaml::from_value::<Foo>(tree("{}\n")).is_err());
+    // PROPOSED ACCEPT (item 4): serde-saphyr reads `{}` as the unit struct. Red until approved.
+    assert!(yaml::from_str::<Foo>("{}\n").is_err());
+}
+
+/// 1.5.5's radix prefixes were lower-case only (`0x`, `0o`, `0b`): an upper-case one was a
+/// string untyped and refused for an integer field.
+// PROPOSED ACCEPT (item 5): serde-saphyr also takes `0X`, `0O`, `0B`, so `0XFF` is 255, `0O17` 15,
+// `0B1` 1 and `-0XFF` -255, untyped and typed. Red until approved or fixed.
+#[test]
+fn upper_case_radix_prefixes_are_not_numbers() {
+    for word in ["0XFF", "0O17", "0B1", "+0XFF", "-0XFF"] {
+        assert_eq!(tree(word), text(word), "`{word}` must stay a string");
+    }
+    assert!(yaml::from_str::<u32>("0XFF\n").is_err());
+    assert!(yaml::from_str::<i64>("-0XFF\n").is_err());
+}
+
+/// libyaml's reader refused a character outside YAML's printable set anywhere in the text
+/// (`control characters are not allowed`), in a plain or quoted scalar or in a comment, for
+/// every reader; the 12 recorded refusals hold `\u{7}` or `\u{7f}`.
+#[test]
+fn control_characters_are_refused() {
+    for doc in [
+        "k: a\u{7}b\n",
+        "k: \"a\u{7f}b\"\n",
+        "# a\u{7}comment\nk: v\n",
+        "k: a\u{80}b\n",
+        "k: v\u{1b}\n",
+    ] {
+        assert!(yaml::from_str::<Value>(doc).is_err(), "{doc:?}");
+    }
+    let error = yaml::from_str::<BTreeMap<String, String>>("k: v\nl: a\u{7}b\n")
+        .expect_err("typed reads refuse it too");
+    assert!(
+        error
+            .to_string()
+            .starts_with("control characters are not allowed"),
+        "{error}"
+    );
+    let at = error.location().expect("the refusal names a position");
+    assert_eq!((at.line(), at.column()), (2, 5), "{error}");
+    // A tab, a line break and the rest of Unicode are printable.
+    assert_eq!(
+        tree("k: a\tb \u{e9}\u{1f389}\n").at("k"),
+        &text("a\tb \u{e9}\u{1f389}")
+    );
+}
+
+/// libyaml read a byte order mark after the first character as an ordinary character: content
+/// of the scalar it is in, or the start of a plain scalar (recorded `mutated-oracle-config#58`,
+/// `admin_auth: \u{feff}[admin-tokens]`). Only a leading mark is skipped.
+#[test]
+fn an_inner_byte_order_mark_is_content() {
+    assert_eq!(tree("k: \u{feff}[x]\n").at("k"), &text("\u{feff}[x]"));
+    assert_eq!(tree("k: a\u{feff}b\n").at("k"), &text("a\u{feff}b"));
+    assert_eq!(tree("\u{feff}k: \u{feff}v\n").at("k"), &text("\u{feff}v"));
+    assert_eq!(tree("k: '\u{feff}v'\n").at("k"), &text("\u{feff}v"));
+    let doc = tree("k: 1\n\u{feff}l: 2\n");
+    assert_eq!(doc.at("\u{feff}l").as_u64(), Some(2), "{doc:?}");
+}
+
+/// The same byte order mark, read into a typed field.
+// PROPOSED ACCEPT (item 8): 1.5.5 read `"\u{feff}[x]"`; serde-saphyr refuses a mark that starts a
+// token (`BomInsideDocument`). Untyped reads are fixed; typed reads would need the forwarding
+// layer. Red until approved or fixed.
+#[test]
+fn an_inner_byte_order_mark_is_content_in_typed_reads() {
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct K {
+        k: String,
+    }
+    assert_eq!(
+        yaml::from_str::<K>("k: \u{feff}[x]\n").unwrap(),
+        K {
+            k: "\u{feff}[x]".to_owned()
+        }
+    );
+}
+
+/// serde_yaml's recursion limit: 128 nested sequences or mappings read, the 129th refused
+/// (`remaining_depth: 128`), untyped and typed.
+#[test]
+fn nesting_is_allowed_128_deep() {
+    let nested = |depth: usize| "[".repeat(depth) + &"]".repeat(depth);
+    assert!(yaml::from_str::<Value>(&nested(128)).is_ok());
+    assert!(yaml::from_str::<Value>(&nested(129)).is_err());
+    let block = |depth: usize| {
+        (0..depth)
+            .map(|level| format!("{}k:\n", "  ".repeat(level)))
+            .collect::<String>()
+    };
+    assert!(yaml::from_str::<Value>(&block(128)).is_ok());
+    assert!(yaml::from_str::<Value>(&block(129)).is_err());
+    assert!(yaml::from_str::<BTreeMap<String, Value>>(&block(128)).is_ok());
 }
