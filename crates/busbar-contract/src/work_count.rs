@@ -34,6 +34,8 @@ static CROSSINGS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "test-support")]
 static STORE_ROUND_TRIPS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "test-support")]
+static CLOCK_READS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-support")]
 static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 
 /// Count one unit of `work`. A no-op unless built with `test-support`.

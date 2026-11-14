@@ -295,23 +295,16 @@ impl StoreUnitCheckpoints {
             return Err(refusal("invalid running money head"));
         }
         let journal = StoreJournal::new(&self.evidence.store, head.node).map_err(error)?;
-        // Records after the last chain discontinuity are located in O(1) from
-        // the runtime's verified head; only a cold record is replayed.
-        let ordinal = self.evidence.journal.locate(proof, head.sequence);
-        let original = match ordinal {
-            Some(ordinal) => journal
-                .read_located_record(proof, head.sequence, ordinal)
-                .await
-                .map_err(error)?,
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "cold fallback: record before the last chain discontinuity"
-            )]
-            None => journal
-                .read_verified_record(proof, head.sequence)
-                .await
-                .map_err(error)?,
-        };
+        // Every record is located in O(1) from the runtime's segment map (W1); no replay.
+        let ordinal = self
+            .evidence
+            .journal
+            .locate(proof, head.sequence)
+            .map_err(error)?;
+        let original = journal
+            .read_verified_record_at(proof, head.sequence, ordinal)
+            .await
+            .map_err(error)?;
         let record = JournalRecord::decode(&original.body).map_err(error)?;
         let mut reader = BodyReader::new(&record.body);
         let tag = reader.text();
@@ -352,7 +345,7 @@ impl StoreUnitCheckpoints {
         if snapshot.id != *id || snapshot.revision != head.revision {
             return Err(refusal("running money head differs from journal evidence"));
         }
-        Ok((head, snapshot, original, ordinal))
+        Ok((head, snapshot, original, Some(ordinal)))
     }
     fn no_foreign_pending(&self) -> RecordStoreResult<()> {
         if self
@@ -493,6 +486,7 @@ impl StoreUnitCheckpoints {
                             .evidence
                             .journal
                             .locate(&used, record.node_seq)
+                            .ok()
                             .or(carried)
                         else {
                             continue;
