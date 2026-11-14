@@ -3,7 +3,6 @@
 
 //! THE DESTINATION GUARD: the one check every outbound connection asks, whatever dials it. It is
 
-use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, PoisonError, RwLock};
 
@@ -16,7 +15,6 @@ use busbar_contract::net::{
     is_link_local_v6, judged_host, IpNet, IpNetError, METADATA_HOSTS,
 };
 use busbar_kernel::config::Destinations;
-use foldhash::HashMap;
 
 /// THE DEFAULT POLICY, ONE TABLE: the egress classes whose dials the private address refusal holds
 pub const PRIVATE_REFUSED_IN: &[u32] = &[

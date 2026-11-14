@@ -19,6 +19,8 @@ test-support = []
 busbar-contract = { path = "../busbar-contract" }
 busbar-kernel-breaker = { path = "../busbar-kernel-breaker" }
 foldhash = { workspace = true }
+# select() races work against a deadline (race.rs), deadline polled first.
+futures = { workspace = true }
 
 [lints]
 workspace = true
