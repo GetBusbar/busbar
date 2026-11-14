@@ -189,7 +189,11 @@ impl BreakerUnit {
     }
 
     /// [`Self::with_limits`] on a unit already in service: the next hard-down arms the new sticky
-    pub(crate) fn set_limits(&self, hard_down_cooldown_secs: u64, max_honored_retry_after_secs: u64) {
+    pub(crate) fn set_limits(
+        &self,
+        hard_down_cooldown_secs: u64,
+        max_honored_retry_after_secs: u64,
+    ) {
         self.hard_down_cooldown_secs
             .store(hard_down_cooldown_secs, Ordering::Relaxed);
         self.max_honored_retry_after_secs

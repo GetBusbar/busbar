@@ -395,7 +395,9 @@ fn open_claims(records: &[JournalRecord]) -> (Vec<ClaimTaken>, u64) {
     (open, incarnation)
 }
 
-pub(crate) fn audit_body(record: &AuditRecord) -> Result<Vec<u8>, busbar_kernel_audit::FieldTooLong> {
+pub(crate) fn audit_body(
+    record: &AuditRecord,
+) -> Result<Vec<u8>, busbar_kernel_audit::FieldTooLong> {
     journal_body(record)
 }
 
