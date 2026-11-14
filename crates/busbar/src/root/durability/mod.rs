@@ -55,6 +55,9 @@ pub use audit::AuditWindowAt;
 #[cfg(feature = "root-admin")]
 mod audit_page;
 
+mod ring;
+pub(crate) use ring::AuditRing;
+
 mod recovery;
 pub use recovery::{node_verb_store, report_operator_breaks};
 
@@ -78,7 +81,7 @@ pub struct Durability {
 
     pub record: AuditChain,
 
-    pub audit_records: Vec<AuditRecord>,
+    audit_ring: AuditRing,
 
     pub audit_findings: Vec<String>,
 
@@ -97,6 +100,26 @@ pub struct Durability {
     history_budget: BufferBudget,
 
     resumed: bool,
+}
+
+impl Durability {
+    /// The retained audit ring: the newest <= `AUDIT_RING` sealed records, oldest first.
+    #[must_use]
+    pub fn audit_records(&self) -> &[AuditRecord] {
+        self.audit_ring.as_slice()
+    }
+
+    /// Test-only: in-place mutation of the visible ring window (tamper proofs).
+    #[cfg(test)]
+    pub(crate) fn audit_records_mut_for_tamper_test(&mut self) -> &mut [AuditRecord] {
+        self.audit_ring.window_mut_for_tamper_test()
+    }
+
+    /// Test-only: remove ring records in place (tamper-by-removal proofs).
+    #[cfg(test)]
+    pub(crate) fn retain_audit_for_tamper_test(&mut self, f: impl FnMut(&AuditRecord) -> bool) {
+        self.audit_ring.retain_for_tamper_test(f);
+    }
 }
 
 pub type ChainRead = std::io::Result<Result<Vec<JournalRecord>, busbar_kernel_wal::JournalBreak>>;
@@ -467,7 +490,7 @@ pub async fn build_on_store(
     let mut durability = Durability {
         journal,
         record: AuditChain::new().sealing_as(node),
-        audit_records: Vec::new(),
+        audit_ring: AuditRing::new(),
         audit_findings: Vec::new(),
         audit_signed_from: None,
         incarnation: 0,
@@ -495,7 +518,7 @@ pub async fn build_on_store(
     );
     let (open, claimed) = open_claims(&records);
     let audited = durability
-        .audit_records
+        .audit_records()
         .iter()
         .map(|record| record.what.incarnation)
         .max()
@@ -516,6 +539,10 @@ pub(crate) use audit::tests::Scratch;
 #[cfg(test)]
 #[path = "../tests/durability.rs"]
 pub(crate) mod tests;
+
+#[cfg(test)]
+#[path = "../tests/ring_front_eviction.rs"]
+mod ring_front_eviction;
 
 #[cfg(test)]
 #[path = "../tests/durability_boot_reads.rs"]

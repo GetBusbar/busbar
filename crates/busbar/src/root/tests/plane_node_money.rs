@@ -254,7 +254,7 @@ fn a_competing_sweep_leaves_a_claimed_units_hold_and_slot_with_its_owner() {
     assert!(book
         .lock()
         .unwrap_or_else(|p| p.into_inner())
-        .audit_records
+        .audit_records()
         .is_empty());
     node.lost
         .lock()
@@ -266,7 +266,7 @@ fn a_competing_sweep_leaves_a_claimed_units_hold_and_slot_with_its_owner() {
     assert_eq!(
         book.lock()
             .unwrap_or_else(|p| p.into_inner())
-            .audit_records
+            .audit_records()
             .iter()
             .filter(|r| r.what.unit_key == key)
             .count(),
@@ -283,7 +283,7 @@ fn a_swept_unit_seals_exactly_one_audit_record_whose_amount_is_its_ledger_line()
 
     let durability = book.lock().unwrap_or_else(|p| p.into_inner());
     let records: Vec<_> = durability
-        .audit_records
+        .audit_records()
         .iter()
         .filter(|r| r.what.unit_key == key)
         .collect();
@@ -291,7 +291,7 @@ fn a_swept_unit_seals_exactly_one_audit_record_whose_amount_is_its_ledger_line()
         records.len(),
         1,
         "one record for the one swept unit: {:?}",
-        durability.audit_records
+        durability.audit_records()
     );
     let record = records[0];
     assert_eq!(
@@ -349,16 +349,16 @@ fn no_swept_unit_settles_with_zero_audit_records() {
     for key in keys {
         assert_eq!(
             durability
-                .audit_records
+                .audit_records()
                 .iter()
                 .filter(|r| r.what.unit_key == key)
                 .count(),
             1,
             "unit {key:?} settled and must have exactly one record: {:?}",
-            durability.audit_records
+            durability.audit_records()
         );
     }
-    assert_eq!(durability.audit_records.len(), keys.len());
+    assert_eq!(durability.audit_records().len(), keys.len());
 }
 
 const SEARCH_UNITS: &str = "search_units";
@@ -488,7 +488,7 @@ async fn the_exit_arm_seals_no_money_figure_into_the_record() {
 
     let durability = book.lock().unwrap_or_else(|p| p.into_inner());
     let record = durability
-        .audit_records
+        .audit_records()
         .last()
         .expect("the exit arm sealed the unit's record");
     assert!(
@@ -758,7 +758,7 @@ fn cancelling_before_the_door_retires_the_borrowed_facts_and_sweeps_once() {
     let durability = book.durability.lock().unwrap_or_else(|p| p.into_inner());
     assert_eq!(
         durability
-            .audit_records
+            .audit_records()
             .iter()
             .filter(|r| r.what.unit_key == key)
             .count(),
@@ -872,7 +872,7 @@ async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
     let records = || {
         book.lock()
             .unwrap_or_else(|p| p.into_inner())
-            .audit_records
+            .audit_records()
             .len()
     };
     let site = NodeEndPost::new(Arc::clone(&node));
@@ -953,7 +953,7 @@ async fn every_unit_the_node_answers_served_or_refused_seals_one_record_on_one_t
     assert_eq!(post.open_units(), 0, "both units' facts closed");
 
     let durability = book.durability.lock().expect("unpoisoned");
-    let records = durability.audit_records.clone();
+    let records = durability.audit_records().to_vec();
     assert_eq!(records.len(), 2, "one record per unit: {records:?}");
     let (served, refused) = (&records[0], &records[1]);
     assert_eq!(

@@ -819,7 +819,7 @@ async fn a_full_audit_store_lane_stops_first_auth_minting_before_any_unit_tag() 
         "zero is never an accepted unit"
     );
     assert_eq!(ingress.observed.lock().unwrap().len(), 1);
-    assert_eq!(book.lock().unwrap().audit_records.len(), 1);
+    assert_eq!(book.lock().unwrap().audit_records().len(), 1);
     assert_eq!(
         lane.pending_records(),
         1,

@@ -990,7 +990,7 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
         1,
         "the unit has one native audit record and no shadow money posting"
     );
-    assert_eq!(book.lock().unwrap().audit_records.len(), 1);
+    assert_eq!(book.lock().unwrap().audit_records().len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1087,7 +1087,7 @@ async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
     let records = || {
         book.lock()
             .unwrap_or_else(|p| p.into_inner())
-            .audit_records
+            .audit_records()
             .len()
     };
     let site = NodeEndPost::new(Arc::clone(&node));
@@ -1187,7 +1187,7 @@ async fn every_unit_the_node_answers_served_or_refused_seals_one_record_on_one_t
     rig.server.shutdown().await;
 
     let durability = book.durability.lock().expect("unpoisoned");
-    let records = durability.audit_records.clone();
+    let records = durability.audit_records().to_vec();
     assert_eq!(records.len(), 2, "one record per unit: {records:?}");
     let (served, refused) = (&records[0], &records[1]);
     assert_eq!(
@@ -3230,7 +3230,7 @@ async fn a_swept_unit_seals_exactly_one_audit_record_whose_amount_is_its_ledger_
 
     let durability = book.lock().unwrap_or_else(|p| p.into_inner());
     let records: Vec<_> = durability
-        .audit_records
+        .audit_records()
         .iter()
         .filter(|r| r.what.unit_key == key)
         .collect();
@@ -3238,7 +3238,7 @@ async fn a_swept_unit_seals_exactly_one_audit_record_whose_amount_is_its_ledger_
         records.len(),
         1,
         "one record for the one swept unit: {:?}",
-        durability.audit_records
+        durability.audit_records()
     );
     let record = records[0];
     assert_eq!(
@@ -3302,16 +3302,16 @@ async fn no_swept_unit_settles_with_zero_audit_records() {
     for key in keys {
         assert_eq!(
             durability
-                .audit_records
+                .audit_records()
                 .iter()
                 .filter(|r| r.what.unit_key == key)
                 .count(),
             1,
             "unit {key:?} settled and must have exactly one record: {:?}",
-            durability.audit_records
+            durability.audit_records()
         );
     }
-    assert_eq!(durability.audit_records.len(), keys.len());
+    assert_eq!(durability.audit_records().len(), keys.len());
 }
 
 const SEARCH_UNITS: &str = "search_units";
@@ -3950,12 +3950,12 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     {
         let durability = book.durability.lock().expect("unpoisoned");
         assert_eq!(
-            durability.audit_records.len(),
+            durability.audit_records().len(),
             1,
             "one record per unit: {:?}",
-            durability.audit_records
+            durability.audit_records()
         );
-        let record = &durability.audit_records[0];
+        let record = durability.audit_records()[0];
         assert_eq!(record.what.unit_key, key_n);
         assert_eq!(record.what.incarnation, durability.incarnation);
         assert_eq!(
@@ -4151,8 +4151,8 @@ async fn a_late_arm_with_no_reading_writes_the_exits_own_line() {
     let journal = book.durability.lock().unwrap().journal.clone();
     assert_eq!(selected(&journal).await.len(), 1);
     let durable = book.durability.lock().unwrap();
-    assert_eq!(durable.audit_records.len(), 1);
-    assert!(durable.audit_records[0].usage.lines.is_empty());
+    assert_eq!(durable.audit_records().len(), 1);
+    assert!(durable.audit_records()[0].usage.lines.is_empty());
 }
 
 #[tokio::test]
@@ -4429,7 +4429,7 @@ async fn the_exit_arm_seals_no_money_figure_into_the_record() {
 
     let durability = book.lock().unwrap_or_else(|p| p.into_inner());
     let record = durability
-        .audit_records
+        .audit_records()
         .last()
         .expect("the exit arm sealed the unit's record");
     assert!(
