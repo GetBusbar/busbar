@@ -196,42 +196,7 @@ fn main() {
     let cfgs = build_cfgs(&manifest, &enabled);
     for (cfg, on) in &cfgs {
         println!("cargo::rustc-check-cfg=cfg({cfg})");
-    }
-    for cfg in cfgs {
-        println!("cargo::rustc-cfg={cfg}");
-    }
-
-    for cfg in linked_axis_cfgs(&manifest, &enabled).1 {
-        println!("cargo::rustc-check-cfg=cfg({cfg})");
-    }
-
-    println!("cargo::rustc-check-cfg=cfg(linked_axis_body_ingress)");
-    // The `node` axis is gone and nothing sets this cfg; it stays declared only while
-    // root/tests/plane_node.rs (mounted under it) waits for its in-flight edits to land
-    // before it is deleted.
-    println!("cargo::rustc-check-cfg=cfg(linked_axis_node)");
-
-    println!("cargo::rustc-check-cfg=cfg(linked_transport_rows)");
-    if metadata_map(&manifest, "package.metadata.busbar.linked-axes")
-        .iter()
-        .any(|(f, axes)| enabled(f) && axes.split_whitespace().any(|a| a == "transport"))
-    {
-        println!("cargo::rustc-cfg=linked_transport_rows");
-    }
-
-    println!(
-        "cargo:rustc-env=BUSBAR_LINKED_AXES={}",
-        linked_axis_cfgs(&manifest, &enabled).0.join(" ")
-    );
-    for cfg in linked_axis_cfgs(&manifest, &enabled).0 {
-        println!("cargo::rustc-cfg={cfg}");
-    }
-
-    let mut sections: Vec<String> = Vec::new();
-    for (feature, section) in metadata_map(&manifest, "package.metadata.busbar.linked-section") {
-        let cfg = format!("linked_section_{}", section.replace('-', "_"));
-        println!("cargo::rustc-check-cfg=cfg({cfg})");
-        if enabled(&feature) {
+        if *on {
             println!("cargo::rustc-cfg={cfg}");
         }
     }
