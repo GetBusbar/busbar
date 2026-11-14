@@ -1,0 +1,99 @@
+listen: "127.0.0.1:7001"
+admin_listen: "127.0.0.1:7002"
+identity-providers:
+  admin-tokens:
+    module: admin-tokens
+    token: { env: BUSBAR_ADMIN_TOKEN }
+auth:
+  chain:
+    - keys
+  signing_key: { file: "/w/signing.key" }
+  admin_auth: [admin-tokens]
+export:
+  metrics: { module: prometheus, settings: { buffer_seconds: 60 } }
+groups:
+  oracle:
+    limits:
+      - { budget: 1000000, per: day }
+  broke:
+    limits:
+      - { requests: 1, per: day }
+      - { budget: 1, per: day }
+  broke-quota:
+    limits:
+      - { budget: 1, per: day }
+providers:
+  anthropic:
+    api_key: { env: ORACLE_UPSTREAM_KEY }
+  openai-chat:
+    api_key: { env: ORACLE_UPSTREAM_KEY }
+  openai-responses:
+    api_key: { env: ORACLE_UPSTREAM_KEY }
+  gemini:
+    api_key: { env: ORACLE_UPSTREAM_KEY }
+  bedrock:
+    api_key: { env: ORACLE_UPSTREAM_KEY }
+  cohere:
+    api_key: { env: ORACLE_UPSTREAM_KEY }
+models:
+  m-anthropic:
+    provider: anthropic
+  m-openai-chat:
+    provider: openai-chat
+  m-openai-responses:
+    provider: openai-responses
+  m-gemini:
+    provider: gemini
+  m-bedrock:
+    provider: bedrock
+  m-cohere:
+    provider: cohere
+  m-lane-c1:
+    provider: openai-chat
+    max_concurrent: 1
+  m-queue-lane:
+    provider: openai-chat
+    max_concurrent: 1
+  m-cd-lane:
+    provider: openai-chat
+rate_card:
+  m-anthropic: { input_utok: 100000, output_utok: 200000 }
+  m-openai-chat: { input_utok: 100000, output_utok: 200000 }
+  m-openai-responses: { input_utok: 100000, output_utok: 200000 }
+  m-gemini: { input_utok: 100000, output_utok: 200000 }
+  m-bedrock: { input_utok: 100000, output_utok: 200000 }
+  m-cohere: { input_utok: 100000, output_utok: 200000 }
+  m-lane-c1: { input_utok: 100000, output_utok: 200000 }
+  m-queue-lane: { input_utok: 100000, output_utok: 200000 }
+  m-cd-lane: { input_utok: 100000, output_utok: 200000 }
+pools:
+  oracle-unused:
+    members:
+      - model: m-openai-chat
+  oracle-fo:
+    members:
+      - { model: m-openai-chat, weight: 3 }
+      - { model: m-anthropic, weight: 1 }
+    breaker: { base_cooldown_secs: 15, max_cooldown_secs: 120, trip: { mode: consecutive, consecutive_n: 1 } }
+    failover: { timeout_secs: 120, max_hops: 3 }
+  oracle-fb:
+    members:
+      - { model: m-cohere }
+    breaker: { trip: { mode: consecutive, consecutive_n: 1 } }
+    on_exhausted: { fallback_pool: oracle-fo }
+  oracle-lb:
+    members:
+      - { model: m-gemini }
+    breaker: { trip: { mode: consecutive, consecutive_n: 1 } }
+    on_exhausted: least_bad
+  oracle-lc1:
+    members:
+      - { model: m-lane-c1 }
+  oracle-q:
+    members:
+      - { model: m-queue-lane }
+    on_exhausted: { queue: { max_ms: 4000 } }
+  oracle-cd:
+    members:
+      - { model: m-cd-lane }
+    breaker: { base_cooldown_secs: 1, max_cooldown_secs: 5, trip: { mode: consecutive, consecutive_n: 1 } }

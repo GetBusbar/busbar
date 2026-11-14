@@ -502,9 +502,27 @@ pub(crate) fn validate_config_command() -> i32 {
             fetch: None,
             resolve_builtins: true,
         },
-    ) {
-        Ok(r) => r,
-        Err(config_validate::Refusal::Config(errs)) => {
+    )
+    .map_err(ValidateRefusal::Check)?;
+    Ok(Validated {
+        cfg,
+        loaded,
+        registry,
+    })
+}
+
+pub(crate) fn validate_config_command() -> i32 {
+    let providers_override = providers_override();
+    let config_path = std::path::PathBuf::from(resolve_config_path(config_path_flag().as_deref()));
+    let safe_mode = safe_mode_requested(std::env::args());
+
+    let Validated {
+        cfg,
+        loaded,
+        registry,
+    } = match validate_judged(&config_path, providers_override.as_deref(), safe_mode) {
+        Ok(v) => v,
+        Err(refusal) => {
             eprintln!(
                 "{}",
                 refusal_list(
@@ -541,6 +559,8 @@ pub(crate) fn validate_config_command() -> i32 {
             return EXIT_FAILURE;
         }
     };
+    let providers_path = loaded.providers_path.clone();
+    let unset_env_vars = loaded.unset_env_vars.clone();
 
     let Some(registry) = crate::root::loader::rows::registry_arc(registry) else {
         eprintln!(

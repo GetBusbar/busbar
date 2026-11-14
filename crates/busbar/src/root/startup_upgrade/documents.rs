@@ -66,6 +66,8 @@ struct State {
     source_profile: Option<busbar_contract::persistence::lifecycle::DocumentSemantics>,
     config_proofs: BTreeMap<[u8; 32], busbar_migrations::config::HistoricalShape>,
     secret_binding: Option<[u8; 32]>,
+    /// The decisions behind the last refused deployment normalization, wiped on drop.
+    debt: Option<Vec<Zeroizing<String>>>,
 }
 #[derive(Default)]
 pub struct Documents {
@@ -222,14 +224,20 @@ impl Documents {
                     self.notice(notice);
                 }
                 output.changes.zeroize();
-                output.todos.zeroize();
                 output.warnings.zeroize();
                 if debt != 0 {
                     output.yaml.zeroize();
+                    // The reasons stay in custody for the boot refusal to explain itself.
+                    let todos: Vec<Zeroizing<String>> =
+                        output.todos.drain(..).map(Zeroizing::new).collect();
+                    if let Ok(mut state) = self.state.lock() {
+                        state.debt = Some(todos);
+                    }
                     return Err(format!(
                         "configuration migration requires {debt} unresolved configuration decision(s)"
                     ));
                 }
+                output.todos.zeroize();
                 (Zeroizing::new(output.yaml), false)
             }
             ConfigDocument::Providers => {
@@ -290,6 +298,12 @@ impl Documents {
         entry.converted = Some(converted);
         entry.requires_released_source = requires_released_source;
         Ok(answer)
+    }
+
+    /// The unresolved decisions behind the last refused deployment normalization. Taken once:
+    /// a second call returns `None`.
+    pub fn take_debt(&self) -> Option<Vec<Zeroizing<String>>> {
+        self.state.lock().ok()?.debt.take()
     }
 
     /// The migration owner alone constructs this proof from actual native inspection.
@@ -1039,6 +1053,40 @@ impl RootRules for BootstrapRules {
     }
 }
 
+/// The boot refusal text for a deployment document left with migration debt.
+///
+/// `diagnosis` is `--validate`'s judgement of the same file's unmigrated bytes. Only its
+/// plugin-preflight class names the condition behind the debt (a named plugin that is not
+/// present), so only that class replaces the decision list; every other outcome prints the
+/// decisions themselves.
+pub(crate) fn explain_debt(
+    todos: &[impl AsRef<str>],
+    diagnosis: Option<&crate::root::cli::ValidateRefusal>,
+    config: &Path,
+) -> String {
+    if let Some(crate::root::cli::ValidateRefusal::Check(
+        busbar_kernel::config_validate::Refusal::Plugins(text),
+    )) = diagnosis
+    {
+        return text.clone();
+    }
+    let mut detail = format!(
+        "configuration migration requires {} unresolved configuration decision(s):\n",
+        todos.len()
+    );
+    for todo in todos {
+        detail.push_str("  * ");
+        detail.push_str(todo.as_ref());
+        detail.push('\n');
+    }
+    let config = config.display();
+    detail.push_str(&format!(
+        "Decide each item in {config}, then boot again (busbar --migrate-config {config} shows \
+         the converted document)."
+    ));
+    detail
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1309,3 +1357,7 @@ mod tests {
         assert!(docs.pending_secrets().unwrap().is_empty());
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/startup_debt.rs"]
+mod startup_debt;

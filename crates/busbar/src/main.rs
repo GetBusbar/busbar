@@ -624,9 +624,19 @@ async fn run(
         &bootstrap_rules,
     )
     .unwrap_or_else(|e| {
+        let detail = match documents.take_debt() {
+            Some(todos) => root::startup_upgrade::documents::explain_debt(
+                &todos,
+                root::cli::validate_judged(&config_path, providers_override.as_deref(), safe_mode)
+                    .err()
+                    .as_ref(),
+                &config_path,
+            ),
+            None => e,
+        };
         die(boot_error(
             "principal transition configuration load refused",
-            e,
+            detail,
         ))
     });
     let LoadedConfig {
