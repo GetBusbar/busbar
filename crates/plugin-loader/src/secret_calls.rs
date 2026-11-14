@@ -30,8 +30,8 @@ use crate::dispatch::kinds::secret::Secret;
 use crate::dispatch::lifecycle::{self, blob, open_frame, AnswerLease};
 use crate::dispatch::Called;
 use crate::dispatch::{
-    in_head, instant_at, load_dropped_bytes, load_linked, now_ns, out_head, Bind, ConnTable,
-    Dispatcher, EnvelopeSink, Frame, NoSink, Plugin, PluginLogConfig, NO_BLOB,
+    in_head, instant_at, now_ns, out_head, Bind, ConnTable, Dispatcher, EnvelopeSink, Frame,
+    NoSink, Plugin, PluginLogConfig, NO_BLOB,
 };
 
 const CALL_DEADLINE: Duration = Duration::from_secs(30);
@@ -145,13 +145,8 @@ impl Loader {
 
             conns: ConnTable::serving((self.conns)()),
         };
-        match &c.origin {
-            Origin::Linked(row) => load_linked::<Secret>(row, bind),
-            Origin::Dropped { file, bytes } => {
-                load_dropped_bytes::<Secret>(bytes, file, &c.stated, bind)
-            }
-        }
-        .map_err(|e| format!("secret module '{}' could not be loaded: {e}", c.name))
+        crate::boot::open_candidate::<Secret>(c, bind)
+            .map_err(|e| format!("secret module '{}' could not be loaded: {e}", c.name))
     }
 
     fn placed(&self, c: &Candidate, opened: LoadedSecret) -> LoadedSecret {
@@ -371,21 +366,21 @@ impl LoadedSecret {
         settings: &[u8],
         secrets: &[SecretValue<Vec<u8>>],
     ) -> Result<Self, String> {
-        let owned: Vec<zeroize::Zeroizing<Vec<u8>>> =
-            match (secrets.is_empty(), dispatcher.seal()) {
-                (true, _) => Vec::new(),
-                (false, Some(seal)) => secrets
-                    .iter()
-                    .map(|s| zeroize::Zeroizing::new(s.expose(seal).clone()))
-                    .collect(),
-                (false, None) => {
-                    return Err(format!(
-                        "plugin '{}' open failed: its secret material is revealed only on a \
+        let owned: Vec<zeroize::Zeroizing<Vec<u8>>> = match (secrets.is_empty(), dispatcher.seal())
+        {
+            (true, _) => Vec::new(),
+            (false, Some(seal)) => secrets
+                .iter()
+                .map(|s| zeroize::Zeroizing::new(s.expose(seal).clone()))
+                .collect(),
+            (false, None) => {
+                return Err(format!(
+                    "plugin '{}' open failed: its secret material is revealed only on a \
                          dispatcher the host lent its seal",
-                        plugin.name()
-                    ));
-                }
-            };
+                    plugin.name()
+                ));
+            }
+        };
         let blobs = owned
             .iter()
             .map(|s| blob(s, BLOB_OCTETS, BLOB_SECRET))
@@ -601,7 +596,6 @@ impl LoadedSecret {
     }
 }
 
-
 impl SecretCalls for LoadedSecret {
     fn relends(&self) -> bool {
         self.relending.is_some()
@@ -667,7 +661,6 @@ impl SecretCalls for LoadedSecret {
     }
 
     fn resolve(&self, settings: &[u8]) -> Result<SecretValue<Vec<u8>>, SecretRefused> {
-
         let name = self.name();
         if !matches!(self.disk, Disk::No) {
             return Err(refused_fmt(
