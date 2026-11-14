@@ -190,6 +190,7 @@ impl<'a> StoreJournal<'a> {
         if sequence == 0 || sequence > proof.head.sequence {
             return Err(Error::Invalid);
         }
+        super::count_replay();
         // The proof fixes one immutable prefix, not the journal's future tip.
         // Replaying a later selected head here would mistake a valid concurrent
         // append for changed original evidence. Read exactly the proven prefix;
