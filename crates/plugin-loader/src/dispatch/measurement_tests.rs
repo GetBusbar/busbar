@@ -883,3 +883,199 @@ fn measurement_plane_common_and_legacy_class_ownership_must_be_disjoint() {
     );
     assert_eq!(validate(&p, 0).outcome, Outcome::Ready);
 }
+
+/// Answer leases released inside the crossing ([`Plugin::answer`]): the leasing fixture leases
+/// every READY VALIDATE, and RELEASE answers READY (leasing again when `RELEASE_LEASES`).
+mod answer_release {
+    use super::*;
+    use busbar_contract::abi::mechanism::lifecycle::ReleaseIn;
+    use std::sync::atomic::AtomicUsize;
+
+    static LEASED: AtomicU64 = AtomicU64::new(0);
+    static RELEASED: AtomicU64 = AtomicU64::new(0);
+    static RELEASE_LEASES: AtomicBool = AtomicBool::new(false);
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+    extern "C" fn leasing_validate(
+        ctx: *mut std::ffi::c_void,
+        input: *const std::ffi::c_void,
+        output: *mut std::ffi::c_void,
+    ) -> RawOutcome {
+        let outcome = report(ctx, input, output);
+        if outcome == RawOutcome::of(Outcome::Ready) {
+            // SAFETY: VALIDATE's output leads with its head.
+            unsafe {
+                (*output.cast::<OutHead>()).lease = 1 + LEASED.fetch_add(1, Ordering::SeqCst)
+            };
+        }
+        outcome
+    }
+    extern "C" fn counted_release(
+        ctx: *mut std::ffi::c_void,
+        input: *const std::ffi::c_void,
+        output: *mut std::ffi::c_void,
+    ) -> RawOutcome {
+        RELEASED.fetch_add(1, Ordering::SeqCst);
+        let outcome = report(ctx, input, output);
+        if RELEASE_LEASES.load(Ordering::SeqCst) {
+            // SAFETY: RELEASE's output is its head.
+            unsafe { (*output.cast::<OutHead>()).lease = 99 };
+        }
+        outcome
+    }
+    extern "C" fn leasing() -> &'static Door {
+        static DOOR: OnceLock<usize> = OnceLock::new();
+        let ptr = *DOOR.get_or_init(|| {
+            let mut parts = measured(crate::neutral_secret::door()).parts();
+            let bytes = unsafe { (*parts.ops).size } as usize;
+            let table = Box::leak(
+                vec![0usize; bytes.div_ceil(std::mem::size_of::<usize>())].into_boxed_slice(),
+            );
+            // SAFETY: a copy of the measured fixture's complete table, two slots replaced.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    parts.ops.cast::<u8>(),
+                    table.as_mut_ptr().cast::<u8>(),
+                    bytes,
+                );
+                let ops = table
+                    .as_mut_ptr()
+                    .cast::<u8>()
+                    .add(dispatch::FIRST_SLOT)
+                    .cast::<Option<Op>>();
+                ops.add(slot::VALIDATE as usize)
+                    .write(Some(leasing_validate));
+                ops.add(slot::RELEASE as usize).write(Some(counted_release));
+                parts.ops = table.as_ptr().cast();
+                Box::leak(Box::new(Door::__from_parts(parts))) as *const Door as usize
+            }
+        });
+        unsafe { &*(ptr as *const Door) }
+    }
+
+    /// Leases the plugin still holds.
+    fn held() -> u64 {
+        LEASED.load(Ordering::SeqCst) - RELEASED.load(Ordering::SeqCst)
+    }
+
+    /// An authority with room for `room` more operations, then none.
+    struct Room(AtomicUsize);
+    impl Authority for Room {
+        fn reserve(
+            &self,
+            _: &Binding,
+            _: Option<&Context>,
+            _: u32,
+        ) -> Result<Arc<dyn Operation>, Refusal> {
+            self.0
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1))
+                .map_err(|_| Refusal::Unavailable)?;
+            Ok(Arc::new(Work {
+                revision: AtomicU64::new(1),
+                captured: Mutex::default(),
+                released: AtomicU64::new(0),
+                finished: AtomicU64::new(0),
+                conflict: false,
+                maintenance: false,
+                host: std::sync::Weak::new(),
+            }))
+        }
+    }
+
+    fn opened(room: Arc<Room>) -> (Dispatcher, Plugin<dispatch::kinds::secret::Secret>) {
+        let d = Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        );
+        assert!(d.set_measurement_authority(room).is_ok());
+        let p = dispatch::load_linked(
+            &LinkedRow::of(leasing).unwrap(),
+            Bind {
+                instance: "answer-release".into(),
+                max_inflight_cap: 4,
+                sink: Arc::new(NoSink),
+                dispatcher: d.adopter(),
+                conns: ConnTable::Probe,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            crate::door_both_ways::open(&p, b"{}").outcome,
+            Outcome::Ready
+        );
+        (d, p)
+    }
+
+    fn validating() -> Frame<ValidateIn, OutHead> {
+        Frame::new(
+            ValidateIn {
+                head: dispatch::in_head(),
+                settings: dispatch::NO_BLOB,
+                err_buf: std::ptr::null_mut(),
+                err_cap: 0,
+            },
+            dispatch::out_head(),
+        )
+    }
+
+    #[test]
+    fn answer_releases_its_lease_under_the_crossings_own_reservation() {
+        let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        RELEASE_LEASES.store(false, Ordering::SeqCst);
+        let room = Arc::new(Room(AtomicUsize::new(usize::MAX)));
+        let (_d, p) = opened(room.clone());
+        let before = held();
+        room.0.store(1, Ordering::SeqCst);
+        let answered = p.answer(slot::VALIDATE, &mut validating());
+        assert_eq!(answered.outcome, Outcome::Ready, "{answered:?}");
+        assert!(!p.is_faulted(), "the release reserved no second operation");
+        assert_eq!(held(), before, "the answer's lease was released");
+        // A release after the call returns needs an operation of its own: refused here.
+        room.0.store(1, Ordering::SeqCst);
+        let called = p.call(slot::VALIDATE, &mut validating());
+        assert_eq!(called.outcome, Outcome::Ready);
+        assert_ne!(called.lease, 0);
+        dispatch::lifecycle::release(&p, called.lease);
+        assert_eq!(held(), before + 1, "no room left for a separate RELEASE");
+        room.0.store(usize::MAX, Ordering::SeqCst);
+        dispatch::lifecycle::release(&p, called.lease);
+        assert_eq!(held(), before);
+    }
+
+    #[test]
+    fn a_leasing_release_answer_is_crossed_once() {
+        let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        let (_d, p) = opened(Arc::new(Room(AtomicUsize::new(usize::MAX))));
+        RELEASE_LEASES.store(true, Ordering::SeqCst);
+        let released = RELEASED.load(Ordering::SeqCst);
+        let mut frame = Frame::new(
+            ReleaseIn {
+                head: dispatch::in_head(),
+                lease: 5,
+            },
+            dispatch::out_head(),
+        );
+        let answered = p.answer(slot::RELEASE, &mut frame);
+        RELEASE_LEASES.store(false, Ordering::SeqCst);
+        assert_eq!(answered.outcome, Outcome::Ready, "{answered:?}");
+        assert_eq!(
+            RELEASED.load(Ordering::SeqCst) - released,
+            1,
+            "no recursion"
+        );
+    }
+
+    #[test]
+    fn call_still_hands_the_lease_to_the_loader() {
+        let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        RELEASE_LEASES.store(false, Ordering::SeqCst);
+        let (_d, p) = opened(Arc::new(Room(AtomicUsize::new(usize::MAX))));
+        let before = held();
+        let called = p.call(slot::VALIDATE, &mut validating());
+        assert_eq!(called.outcome, Outcome::Ready);
+        assert_ne!(called.lease, 0);
+        assert_eq!(held(), before + 1, "held until the loader releases it");
+        dispatch::lifecycle::release(&p, called.lease);
+        assert_eq!(held(), before);
+    }
+}
