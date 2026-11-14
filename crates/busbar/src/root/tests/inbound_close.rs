@@ -115,6 +115,7 @@ async fn hooked_app() -> Arc<busbar_kernel::state::App> {
         DispatchConfig::default(),
         busbar_kernel::host_services::caller_binding(),
     ));
+    assert!(dispatcher.lend_seal(busbar_kernel::seal::lend()));
     let axis = Arc::new(HookRows::new(&[fixture::door], None, dispatcher).unwrap());
     let registry = crate::root::loader::PluginRegistry::empty()
         .link(vec![crate::root::loader::LinkedPlugin::door_of_kind(
