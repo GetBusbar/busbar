@@ -434,6 +434,10 @@ pub(crate) fn resolve_projection(
     let before = errors.len();
 
     if durable {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: an export instance refused at config load"
+        )]
         errors.push(
             coded::config_export_invalid(format!(
             "export.{name}.durable: `true` is NOT YET IMPLEMENTED in this release — core does not \
@@ -452,6 +456,10 @@ pub(crate) fn resolve_projection(
     let subscribed: Vec<ExportStream> = match stream_tokens {
         None => module_carries.unwrap_or(PRODUCED_STREAMS).to_vec(),
         Some([]) => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: an export instance refused at config load"
+            )]
             errors.push(
                 coded::config_export_invalid(format!(
                 "export.{name}.streams: is EMPTY — a sink that subscribes to no stream receives \
@@ -469,6 +477,10 @@ pub(crate) fn resolve_projection(
             for tok in list {
                 let Some(stream) = ExportStream::from_token(tok) else {
                     if tok == "audit" {
+                        #[expect(
+                            clippy::disallowed_methods,
+                            reason = "config: an export instance refused at config load"
+                        )]
                         errors.push(
                             coded::config_export_invalid(format!(
                             "export.{name}.streams: `audit` is NOT a stream — it was a use case, \
@@ -480,6 +492,10 @@ pub(crate) fn resolve_projection(
                             .into(),
                         );
                     } else {
+                        #[expect(
+                            clippy::disallowed_methods,
+                            reason = "config: an export instance refused at config load"
+                        )]
                         errors.push(
                             coded::config_export_invalid(format!(
                             "export.{name}.streams: unknown stream `{tok}`; the streams are: {}.",
@@ -491,6 +507,10 @@ pub(crate) fn resolve_projection(
                     continue;
                 };
                 if !stream_produced(stream) {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: an export instance refused at config load"
+                    )]
                     errors.push(
                         coded::config_export_invalid(format!(
                         "export.{name}.streams: `{}` HAS NO PRODUCER in this release — nothing \
@@ -506,6 +526,10 @@ pub(crate) fn resolve_projection(
                 }
                 if let Some(carried) = module_carries {
                     if !carried.contains(&stream) {
+                        #[expect(
+                            clippy::disallowed_methods,
+                            reason = "config: an export instance refused at config load"
+                        )]
                         errors.push(
                             coded::config_export_invalid(format!(
                                 "export.{name}.streams: `module: {module}` cannot carry the `{}` \
@@ -520,6 +544,10 @@ pub(crate) fn resolve_projection(
                     }
                 }
                 if out.contains(&stream) {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: an export instance refused at config load"
+                    )]
                     errors.push(
                         coded::config_export_invalid(format!(
                             "export.{name}.streams: `{}` is listed twice.",
@@ -564,6 +592,10 @@ fn resolve_fields_override(
     errors: &mut Vec<String>,
 ) -> Vec<ExportField> {
     if list.is_empty() {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: an export instance refused at config load"
+        )]
         errors.push(coded::config_export_invalid(format!(
             "export.{name}.fields: is EMPTY — `fields:` is an EXHAUSTIVE OVERRIDE, so an empty list \
              means a record with no fields at all. Omit the key to take each subscribed stream's \
@@ -575,6 +607,10 @@ fn resolve_fields_override(
     let mut blocked = false;
     for s in subscribed {
         if s.default_fields().is_empty() {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: an export instance refused at config load"
+            )]
             errors.push(
                 coded::config_export_invalid(format!(
                 "export.{name}.fields: the `{}` stream has no per-record fields to project (its \
@@ -594,6 +630,10 @@ fn resolve_fields_override(
             .find(|p| !produced.contains(p))
             .copied()
         {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: an export instance refused at config load"
+            )]
             errors.push(
                 coded::config_export_invalid(format!(
                 "export.{name}.fields: the `{}` stream cannot be projected with `fields:` in this \
@@ -613,6 +653,10 @@ fn resolve_fields_override(
     let mut granted: Vec<ExportField> = Vec::new();
     for tok in list {
         let Some(field) = ExportField::from_token(tok) else {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: an export instance refused at config load"
+            )]
             errors.push(
                 coded::config_export_invalid(format!(
                 "export.{name}.fields: unknown field `{tok}`. The fields of the subscribed streams \
@@ -627,6 +671,10 @@ fn resolve_fields_override(
             .iter()
             .any(|s| s.default_fields().contains(&field))
         {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: an export instance refused at config load"
+            )]
             errors.push(
                 coded::config_export_invalid(format!(
                 "export.{name}.fields: `{tok}` is not a field of any subscribed stream ({}), so it \
@@ -643,6 +691,10 @@ fn resolve_fields_override(
                 .iter()
                 .any(|s| produced_fields(*s).contains(&field))
         {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: an export instance refused at config load"
+            )]
             errors.push(coded::config_export_invalid(format!(
                 "export.{name}.fields: `{tok}` HAS NO PRODUCER in this release — it is a documented \
                  field of a subscribed stream but nothing fills it in yet, so asking for it \
@@ -651,6 +703,10 @@ fn resolve_fields_override(
             continue;
         }
         if granted.contains(&field) {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: an export instance refused at config load"
+            )]
             errors.push(
                 coded::config_export_invalid(format!(
                     "export.{name}.fields: `{tok}` is listed twice."
@@ -666,6 +722,10 @@ fn resolve_fields_override(
         for s in subscribed {
             for pinned in s.pinned_fields() {
                 if !granted.contains(pinned) {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: an export instance refused at config load"
+                    )]
                     errors.push(
                         coded::config_export_invalid(format!(
                         "export.{name}.fields: omits `{}`, which is PINNED on the `{}` stream. \
