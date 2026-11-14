@@ -53,6 +53,17 @@ impl Default for Budgets {
 }
 
 impl Budgets {
+    /// The smallest class budget: no crossing that starts after a watchdog scan can reach its
+    /// deadline sooner than this.
+    #[must_use]
+    pub fn min(&self) -> Duration {
+        self.call
+            .min(self.stream)
+            .min(self.connection)
+            .min(self.write_behind)
+            .min(self.lifecycle)
+    }
+
     pub(crate) fn of(&self, s: u32, class: DeadlineClass) -> Duration {
         if s == slot::VALIDATE || is_lifecycle(s) {
             return self.lifecycle;
@@ -2559,7 +2570,11 @@ impl Dispatcher {
         for (w, rx) in started {
             spawn_worker(w, rx, env.clone());
         }
-        watchdog::spawn(Arc::downgrade(&pool), config.watchdog_period);
+        watchdog::spawn(
+            Arc::downgrade(&pool),
+            config.watchdog_period,
+            config.budgets.min(),
+        );
         Self { pool }
     }
 

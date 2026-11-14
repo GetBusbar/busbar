@@ -60,39 +60,69 @@ fn breach(pool: &Pool, inst: &Instance) -> bool {
     true
 }
 
-pub(crate) fn spawn(pool: Weak<Pool>, period: Duration) {
+/// Wakes at the earliest deadline its own last scan saw, never sooner than `period` and never later
+/// than `min_budget` (the smallest class budget), so a crossing that started after a scan is seen no
+/// later than today's fixed-period poll would: its deadline is at least `min_budget` away. Workers
+/// publish nothing new; only this thread computes its wake.
+pub(crate) fn spawn(pool: Weak<Pool>, period: Duration, min_budget: Duration) {
     std::thread::Builder::new()
         .name("busbar-dispatch-watchdog".into())
-        .spawn(move || loop {
-            std::thread::sleep(period);
-            let Some(pool) = pool.upgrade() else {
-                return;
-            };
-            if pool.stop.load(Ordering::Acquire) {
-                return;
+        .spawn(move || {
+            let mut next = next_wake(period, min_budget, None);
+            loop {
+                std::thread::sleep(next);
+                let Some(pool) = pool.upgrade() else {
+                    return;
+                };
+                if pool.stop.load(Ordering::Acquire) {
+                    return;
+                }
+                next = next_wake(period, min_budget, scan(&pool));
             }
-            scan(&pool);
         })
         .expect("spawn the dispatch watchdog");
 }
 
-fn scan(pool: &Pool) {
+/// `max(period, min(earliest, min_budget))`.
+pub(crate) fn next_wake(
+    period: Duration,
+    min_budget: Duration,
+    earliest: Option<Duration>,
+) -> Duration {
+    earliest
+        .map_or(min_budget, |e| e.min(min_budget))
+        .max(period)
+}
+
+/// Scan every slot and ticketless call; answer the time until the earliest deadline still owed.
+fn scan(pool: &Pool) -> Option<Duration> {
     pool.env
         .stats
         .watchdog_scans
         .fetch_add(1, Ordering::Relaxed);
+    let mut earliest: Option<Duration> = None;
     for (i, slot) in pool.slots.iter().enumerate() {
         let w = slot.get();
         let started = w.crossing_since.load(Ordering::Acquire);
         let budget = w.crossing_budget.load(Ordering::Relaxed);
-        if started != 0 && super::now_ns().saturating_sub(started) > budget {
+        if started == 0 {
+            continue;
+        }
+        let elapsed = super::now_ns().saturating_sub(started);
+        if elapsed > budget {
             replace(pool, i, &w, started);
+        } else {
+            let left = Duration::from_nanos(budget - elapsed);
+            earliest = Some(earliest.map_or(left, |e| e.min(left)));
         }
     }
-    ticketless(pool);
+    if let Some(left) = ticketless(pool) {
+        earliest = Some(earliest.map_or(left, |e| e.min(left)));
+    }
+    earliest
 }
 
-fn ticketless(pool: &Pool) {
+fn ticketless(pool: &Pool) -> Option<Duration> {
     let mut adopted = pool.adopted.lock().unwrap_or_else(|e| e.into_inner());
     adopted.retain(|w| w.strong_count() > 0);
     let live: Vec<_> = adopted
@@ -100,15 +130,23 @@ fn ticketless(pool: &Pool) {
         .filter_map(std::sync::Weak::upgrade)
         .collect();
     drop(adopted);
+    let mut earliest: Option<Duration> = None;
     for inst in live {
         let fresh = {
             let mut calls = inst.lock_calls();
             let mut fresh = 0;
             for (started, slot, counted) in calls.values_mut() {
-                if !*counted && started.elapsed() > pool.env.budgets.of(*slot, DeadlineClass::Call)
-                {
+                if *counted {
+                    continue;
+                }
+                let budget = pool.env.budgets.of(*slot, DeadlineClass::Call);
+                let elapsed = started.elapsed();
+                if elapsed > budget {
                     *counted = true;
                     fresh += 1;
+                } else {
+                    let left = budget - elapsed;
+                    earliest = Some(earliest.map_or(left, |e| e.min(left)));
                 }
             }
             fresh
@@ -123,6 +161,7 @@ fn ticketless(pool: &Pool) {
             inst.let_go_held();
         }
     }
+    earliest
 }
 
 fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: u64) {
