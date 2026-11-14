@@ -1,5 +1,5 @@
 # Core copy of the fleet bad-pattern rule block (request-path rows, marker-gated). The source is
-# GetBusbar/busbar-release ci/core-clippy-bans.toml (busbar-release 1f82bea22db37d5250604161f20d42c7fc2b4735); this block is a
+# GetBusbar/busbar-release ci/core-clippy-bans.toml (busbar-release 240a8f5afc80cf6d16ec5a5f31cb89750f67f2c6); this block is a
 # byte-identical copy of it below its header. Crate-wide rows are in clippy-crate-wide/clippy.toml.
 
 # --- Fleet bad-pattern rules. One list: GetBusbar/busbar-release LINT-RULES.md (every row, its reason
@@ -10,6 +10,11 @@
 # disallowed_* lints to "allow" and the marker raises them to deny:
 #   #[cfg_attr(not(test), deny(clippy::disallowed_macros, clippy::disallowed_methods, clippy::disallowed_types, clippy::redundant_clone, clippy::format_push_string, clippy::needless_collect, clippy::or_fun_call, clippy::needless_pass_by_value, clippy::allow_attributes, clippy::allow_attributes_without_reason))]
 #   mod door;
+#   mod cold;
+# Scope is module-level. Cold code the request path needs (refusal text, rare off-path sweeps of
+# state) lives in the ONE sanctioned cold module, `cold`, a sibling of the marked module and outside
+# the marker; the request path calls into it. Every fn in `cold` is #[cold] or #[inline(never)], and
+# it holds no while/loop and no loop or iterator sweep over request data (busbar-bad-patterns BP17).
 # Escapes are forbidden (coordinator ruling 308): no #[allow], #[expect] or cfg_attr(.., allow/expect)
 # of these lints anywhere, reasoned or not. Fix the site; a ban that is wrong for a case is narrowed
 # here and in LINT-RULES.md together, with a written justification. busbar-bad-patterns
