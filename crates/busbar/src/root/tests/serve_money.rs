@@ -2135,6 +2135,42 @@ async fn root_custody_expiry_obeys_store_liveness_and_preserves_the_paid_request
     assert_source_request_retained(&g, &source).await;
 }
 
+/// WASTE-CORE-LIFECYCLE W4: held tickets far from expiry are not re-read every sweep; the
+/// round-robin backstop reads them together in one batched `Read`.
+#[tokio::test]
+async fn ticket_sweep_reads_only_due_tickets_batched() {
+    let _one = PUBLISHING.lock().await;
+    let g = governed("root-ticket-sweep-batched", true).await;
+    let a = reserved_source(&g, "root-ticket-sweep-batched-a").await;
+    let b = reserved_source(&g, "root-ticket-sweep-batched-b").await;
+    for source in [&a, &b] {
+        mint_reserved_source(&g, source, source.now).await;
+        source.money.settle_end(source.unit, 200);
+        source.owner.custody.terminal(source.unit, true);
+    }
+    let custody = Arc::clone(&a.owner.custody);
+    let before = custody
+        .sweep_reads
+        .load(std::sync::atomic::Ordering::Relaxed);
+    for _ in 0..10 {
+        custody.sweep().await;
+    }
+    let reads = custody
+        .sweep_reads
+        .load(std::sync::atomic::Ordering::Relaxed)
+        - before;
+    assert!(
+        reads <= 2,
+        "two live tickets an hour from expiry cost at most one batched backstop read over 10 \
+         sweeps, not two reads per sweep: {reads} reads"
+    );
+    assert_eq!(
+        custody.entries.lock().unwrap().tickets.len(),
+        2,
+        "live tickets stay in custody"
+    );
+}
+
 #[tokio::test]
 async fn cancelling_an_actual_owned_session_retires_money_even_without_source_registration() {
     use busbar_contract::caps::{Abort, Outcome, ReasonCode};
