@@ -142,7 +142,7 @@ async fn confidential_secret_device_tokens_retain_their_records_and_revoke_the_w
         .register_client(Client {
             client_id: ClientId::new(CLIENT),
             auth: ClientAuth::ConfidentialSecretHash {
-                hash: SecretHash::sha256(SECRET),
+                hash: SecretHash::sha256_with_crypto(&crate::crypto_provider::FacadeCrypto, SECRET),
             },
             grant_types: vec![GrantType::DeviceCode, GrantType::RefreshToken],
             redirect_uris: Vec::new(),

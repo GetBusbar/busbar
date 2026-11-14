@@ -79,7 +79,8 @@ deny = [
     # THE CRYPTO SEAM (CRYPTO-SEAM r15 §2.7, decisions 210, 224, 229): one backend, reached only through
     # the facade; AWS-LC (aws-lc-rs) is the one provider. Wrappers are the third-party parents allowed
     # to carry a banned crate. Not yet on: `ring` (four plugins still name it), `aes`/`cipher`
-    # (transport-webrtc), `sha2`/`getrandom` (oauth-as 1.0.1 links both unconditionally, §8 step 4).
+    # (transport-webrtc), `sha2` (busbar-auth-oauth) and `getrandom`/`rand_core` (busbar-store-memory,
+    # -postgres, -sqlite): core is clean since oauth-as 1.1 (decision 228), these plugins move in §8 5-7.
     { crate = "aws-lc-rs", wrappers = ["busbar-crypto-backend", "quinn-proto", "rcgen", "rustls", "rustls-webpki", "x509-parser"], reason = "AWS-LC only through the crypto backend" },
     { crate = "aws-lc-sys", wrappers = ["busbar-crypto-backend", "aws-lc-rs"], reason = "AWS-LC only through the crypto backend" },
     { crate = "aws-lc-fips-sys", wrappers = ["aws-lc-rs"], reason = "the private FIPS build only" },
