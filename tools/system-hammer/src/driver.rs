@@ -150,6 +150,21 @@ impl Outcome {
         self.body_miss += o.body_miss;
     }
 
+    /// Merge a joined worker; a panicked worker is counted under `worker panic` rather than
+    /// dropped, and its message is returned for `first_error`.
+    fn merge_join(&mut self, r: Result<Local, tokio::task::JoinError>) -> Option<String> {
+        match r {
+            Ok(local) => {
+                self.merge(local);
+                None
+            }
+            Err(e) => {
+                *self.errors.entry("worker panic".into()).or_insert(0) += 1;
+                Some(format!("worker panic: {e}"))
+            }
+        }
+    }
+
     pub fn rps(&self) -> f64 {
         if self.measured.is_zero() {
             return 0.0;
@@ -554,13 +569,16 @@ pub async fn run(plan: Plan) -> (Outcome, Option<String>) {
         .collect();
     let mut out = Outcome::new(windows);
     for h in handles {
-        if let Ok(local) = h.await {
-            out.merge(local);
+        if let Some(msg) = out.merge_join(h.await) {
+            ctx.note_error(|| msg);
         }
     }
     stop.store(true, Ordering::Relaxed);
     if let Some(p) = pacer {
-        let _ = p.join();
+        if p.join().is_err() {
+            *out.errors.entry("pacer panic".into()).or_insert(0) += 1;
+            ctx.note_error(|| "pacer panic".into());
+        }
     }
     out.measured = ctx.plan.measure;
     let first = ctx.first_error.lock().unwrap().take();
@@ -599,4 +617,22 @@ pub fn pct_us(h: &Histogram<u64>, q: f64) -> f64 {
         return 0.0;
     }
     h.value_at_quantile(q) as f64 / 1000.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_panicking_worker_is_counted_as_an_error_not_dropped() {
+        let mut out = Outcome::new(1);
+        let r = tokio::spawn(async {
+            panic!("boom");
+            #[allow(unreachable_code)]
+            Local::new(1)
+        })
+        .await;
+        assert!(out.merge_join(r).is_some());
+        assert_eq!(out.errors.get("worker panic"), Some(&1));
+    }
 }
