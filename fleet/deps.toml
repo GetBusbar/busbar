@@ -163,6 +163,7 @@ deny = [
     { crate = "ring:<0.17", reason = "one ring major (0.17) fleet-wide" },
     { crate = "serde_yaml", reason = "unmaintained; YAML is busbar's busbar-yaml (through busbar-contract)" },
     { crate = "unsafe-libyaml", reason = "unmaintained C translation (RUSTSEC-2024-0449); busbar-yaml is a safe port of libyaml" },
+    { crate = "paste", reason = "unmaintained (RUSTSEC-2024-0436)" },
 ]
 # Duplicate versions the fleet accepts beyond busbar's own. multiple-versions is "deny" (OWNER
 # 2026-10-02: no plugin may drag in a second version of anything busbar already uses); busbar-release's

@@ -10,12 +10,10 @@
 # written justification and a tracking link — never blanket-ignore.
 version = 2
 ignore = [
-    # RUSTSEC-2024-0436: `paste` is unmaintained (author archived the repo). It's pulled in
-    # transitively as a BUILD-TIME proc-macro via tikv-jemalloc-ctl (jemalloc) — no runtime
-    # code, no vulnerability, and there is no safe upgrade (jemalloc-ctl has not migrated off
-    # it). Advisory is "unmaintained", not a security hole. Re-evaluate when tikv-jemalloc-ctl
-    # drops paste. Tracking: https://github.com/tikv/jemallocator/issues
-    "RUSTSEC-2024-0436",
+    # Empty. RUSTSEC-2024-0436 (`paste`, via tikv-jemalloc-ctl) and RUSTSEC-2024-0449
+    # (`unsafe-libyaml`, via serde_yaml_ng) were accepted here until both crates left the graph:
+    # busbar-kernel's `mallctl` calls jemalloc directly, and YAML is busbar-yaml. The bans below keep
+    # them out.
 ]
 
 [licenses]
@@ -80,6 +78,8 @@ deny = [
     { crate = "serde_yaml", reason = "unmaintained; YAML is busbar-yaml" },
     { crate = "serde_yaml_ng", reason = "rests on unsafe-libyaml; YAML is busbar-yaml" },
     { crate = "unsafe-libyaml", reason = "unmaintained C translation (RUSTSEC-2024-0449); YAML is busbar-yaml's safe port of libyaml" },
+    { crate = "tikv-jemalloc-ctl", reason = "pulls unmaintained `paste`; jemalloc control is busbar-kernel's `mallctl`" },
+    { crate = "paste", reason = "unmaintained (RUSTSEC-2024-0436)" },
     # ONE Ed25519 = ed25519-dalek 3 (ARCHITECT ruling 2026-10-02, DEPS-AUDIT cut #9 REFUSED; moved
     # from 2 to 3 so der 0.7 and pkcs8 0.10 leave the graph). Plugin signatures, the audit-chain
     # seal, token and card signing and the operator signature verify through dalek's

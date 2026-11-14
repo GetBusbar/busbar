@@ -219,7 +219,8 @@ socket2 = { workspace = true }
 # else moved to busbar-core. Full rationale in main.rs at the `#[global_allocator]` site.
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true }
-tikv-jemalloc-ctl = { workspace = true }
+# The jemalloc control main.rs calls (background purge thread, idle arena purge).
+busbar-kernel = { path = "../../crates/busbar-kernel", default-features = false, features = ["mallctl"] }
 
 [target.'cfg(target_env = "musl")'.dependencies]
 tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] }
@@ -1201,7 +1202,6 @@ sonic-rs = "0.5"
 syn = { version = "2", features = ["full", "visit", "parsing", "printing"] }
 # No `xattr`: the loader unpacks in memory and restores nothing to disk.
 tar = { version = "0.4", default-features = false }
-tikv-jemalloc-ctl = "0.6"
 tikv-jemallocator = "0.6"
 # No feature floor: each consumer needs a different slice of the runtime and tokio's default set is
 # empty, so the whole feature choice belongs to the member.
