@@ -76,7 +76,7 @@ Busbar at config.yaml, taking precedence over `BUSBAR_CONFIG`; `--providers <pat
 `--providers=<path>`) points it at the provider catalog, taking precedence over `providers_file:`.
 See [Operations → Process configuration](operations.md#process-configuration).
 
-**Operational environment overrides are retired in 1.6.0.** `BUSBAR_PROVIDERS`, `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY` and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` are captured only by `--migrate-config`, using the old deployment's environment and working directory. Serving reads `providers_file:` (or `--providers`) and the corresponding `advanced` keys. The old `BUSBAR_CONFIG_OVERLAY` file selector is migration input; runtime config is persisted through Store. `BUSBAR_CONFIG` (bootstrap), explicit secret `{ env: NAME }` references, `RUST_LOG`, and the `TOKIO_WORKER_THREADS` fallback remain supported. See [the 1.6 upgrade instructions](migration-1.6.md#2-migrate-retired-operational-environment-variables-before-starting-16).
+**Operational environment overrides are retired in 1.6.0.** `BUSBAR_PROVIDERS`, `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY` and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` are read once, by the first 1.6.0 boot on a 1.5.5 config, and copied into config. Serving reads `providers_file:` (or `--providers`) and the corresponding `advanced` keys. The old `BUSBAR_CONFIG_OVERLAY` file is imported into the Store by that boot; runtime config is persisted through Store. `BUSBAR_CONFIG` (bootstrap), explicit secret `{ env: NAME }` references, `RUST_LOG`, and the `TOKIO_WORKER_THREADS` fallback remain supported. See [the 1.6 upgrade instructions](migration-1.6.md#retired-environment-variables).
 
 ### `config`
 
@@ -408,7 +408,7 @@ still hold independent grants.
 | `allowed_pools` | DATA-PLANE grant: pools this role may target. OMITTED = ALL pools; an explicit `[]` = NO pools (an empty list is the empty set, everywhere in the 1.5.0 config). Pool lists union across a principal's granting roles; any omitted grant widens the union to all pools. |
 | `group` | The `groups:` bucket this role's principals charge through. Absent = no group (authed + unlimited). With several bound groups the first in role order wins. |
 | `admin_scope` | The admin authority this role grants: `read-only` \| `full` (see [admin-api.md](admin-api.md#authentication--scopes)). Absent = none. A principal holds the highest scope its bound roles grant, then the asserting provider's `max_admin_scope` ceiling caps it (a `read-only` ceiling, which is the default and the recommended posture for an external IdP, reduces a `full` grant to `read-only`). Omitting `admin_scope` here is how a role gets no admin authority at all. |
-| *the role `"*"`* | 1.6.0. Binds the principals 1.5.5 admitted with no grant: a principal that asserts no roles, and, when the provider's table binds no other role, every principal the provider identifies. It grants what its fields state, like any role. A principal whose roles a named binding grants is judged by those alone; one asserting only roles the table does not name is still refused. 1.6.0 refuses a signed-in principal no binding grants (401), so `busbar --migrate-config` writes `"*": {}` (every pool, no budget) for each data-plane provider whose users 1.5.5 admitted that way, with a warning: it keeps 1.5.5's access and is yours to tighten or remove. |
+| *the role `"*"`* | 1.6.0. Binds the principals 1.5.5 admitted with no grant: a principal that asserts no roles, and, when the provider's table binds no other role, every principal the provider identifies. It grants what its fields state, like any role. A principal whose roles a named binding grants is judged by those alone; one asserting only roles the table does not name is still refused. 1.6.0 refuses a signed-in principal no binding grants (401), so the 1.6.0 upgrade writes `"*": {}` (every pool, no budget) for each data-plane provider whose users 1.5.5 admitted that way, with a warning: it keeps 1.5.5's access and is yours to tighten or remove. |
 | `verbs` | 1.6.0. The PER-VERB admin allow-list this role grants: `"*"` (every verb, exactly `admin_scope: full`) or a list of admin operation names from the closed verb table, e.g. `[get_keys, post_keys, get_ledger_totals]` (the snake-case operation names of the [admin API](admin-api.md), the 1.6.0 verbs by their own names). A named verb is admitted whatever scope it needs; any verb the list does not name is `403 forbidden`, the same answer a missing scope gets. `admin_scope` stays the 1.5.5 shorthand beside it (`read-only` = every read, `full` = every verb), and a principal holds the UNION of both across its bound roles. The provider's `max_admin_scope` caps a named verb as it caps `admin_scope`. Absent = only what `admin_scope` grants, as in 1.5.5. Any other shape, or a name the table does not declare, fails `--validate`/boot. |
 
 Admin access is therefore EITHER a role's `admin_scope` (through an identity provider named in `admin_auth`)
@@ -802,7 +802,7 @@ internal`; no figure moves, only the status and code the caller sees change.
 
 ### `store`
 
-The store as a plugin instance: `{ module, settings }`. **Required in 1.6.0**: `busbar --validate` refuses a config without a `store:` block, and `busbar --migrate-config` inserts `store: {module: memory}`. The `memory` module is the
+The store as a plugin instance: `{ module, settings }`. **Required in 1.6.0**: `busbar --validate` refuses a config without a `store:` block, and the 1.6.0 upgrade inserts `store: {module: memory}`. The `memory` module is the
 compiled-in ephemeral RAM store (keys, usage, and the audit log reset on restart); every durable
 backend is a signed plugin tarball.
 
@@ -1001,7 +1001,7 @@ pools:
 | `tier` | string | no | none | Operator-declared routing tier label (e.g. `"primary"`, `"overflow"`, `"large"`, `"small"`). Inert for plain weighted pools (no hooks). Exposed to gate hooks as the `tier` field on each candidate. See [Pool `hooks`](#pool-hooks-ordering-and-gates). |
 | `tags` | list<string> | no | `[]` | Free-form string labels (e.g. `["opus", "large-context"]`). The `restrict` gate verb intersects the candidate set against these tags (compliance pinning). Exposed to gate hooks for tag-based candidate selection. Inert for plain weighted pools. |
 
-The member object above is the canonical form and the one `busbar --migrate-config` preserves as written. A pool whose members carry nothing but a weight may instead list them as bare model names with a pool-level `weights: { <model>: <n> }` map; the two spellings are equivalent, may be mixed, and an inline `weight:` wins over the map for that member. A pool-level `tier:` and `attempt_timeout_ms:` likewise apply to every member that does not state its own. With `weights:` absent and bare names only, the pool is an ordered failover list with the first member as primary.
+The member object above is the canonical form and the one the 1.6.0 upgrade preserves as written. A pool whose members carry nothing but a weight may instead list them as bare model names with a pool-level `weights: { <model>: <n> }` map; the two spellings are equivalent, may be mixed, and an inline `weight:` wins over the map for that member. A pool-level `tier:` and `attempt_timeout_ms:` likewise apply to every member that does not state its own. With `weights:` absent and bare names only, the pool is an ordered failover list with the first member as primary.
 
 Selection uses Nginx-style smooth weighted round-robin (SWRR) across the healthy subset. A tripped, dead, or capacity-exhausted member is skipped and its share redistributes to the remaining members automatically. Selection state is isolated per-pool (separate SWRR shard), so unrelated pools that share a lane select independently.
 
@@ -1725,7 +1725,7 @@ per_request_fee: 1
 
 # ---------------------------------------------------------------------------
 # Store: keys/usage/audit/denylist (a plugin; REQUIRED in 1.6.0, `module: memory`
-# is the ephemeral RAM store; `busbar --migrate-config` inserts it).
+# is the ephemeral RAM store; the 1.6.0 upgrade inserts it).
 # ---------------------------------------------------------------------------
 store:
   module: sqlite
@@ -1950,9 +1950,9 @@ Internal tuning knobs, normally omitted; each field defaults to its historical v
 advanced:
   rate_sweep_interval: 256          # rate-limiter stale-entry sweep amortization (every Nth check_rate)
   usage_flush_interval_ms: 100      # write-behind flush cadence for in-memory usage/budget counters
-  worker_threads: 4                 # data-plane worker count — one pinned runtime + listener each (was the tokio pool size pre-1.6.0; old BUSBAR_WORKER_THREADS values are captured by --migrate-config); omit ⇒ one per core
-  upstream_http1_only: false        # pin the upstream client to HTTP/1.1 (old BUSBAR_UPSTREAM_HTTP1_ONLY values are captured by --migrate-config)
-  upstream_h2_prior_knowledge: false # force h2c prior-knowledge to cleartext upstreams (old BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE values are captured by --migrate-config)
+  worker_threads: 4                 # data-plane worker count — one pinned runtime + listener each (was the tokio pool size pre-1.6.0; old BUSBAR_WORKER_THREADS values are captured by the first 1.6.0 boot); omit ⇒ one per core
+  upstream_http1_only: false        # pin the upstream client to HTTP/1.1 (old BUSBAR_UPSTREAM_HTTP1_ONLY values are captured by the first 1.6.0 boot)
+  upstream_h2_prior_knowledge: false # force h2c prior-knowledge to cleartext upstreams (old BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE values are captured by the first 1.6.0 boot)
   response_headers:                 # every busbar-injected response header, opt-in, default OFF
     server_timing: false            # `Server-Timing: busbar;dur=<ms>` (formerly observability.emit_server_timing)
     route_policy: false             # `x-busbar-route-policy` / `x-busbar-route-target`

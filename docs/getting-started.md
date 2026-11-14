@@ -174,7 +174,7 @@ Save this as `config.yaml` in your working directory.
 | `providers.<name>.api_key` | A secret reference to this provider's API key (`{ env: VAR }` / `{ file: /path }` / a secret plugin) |
 | `models.<name>.provider` | Which provider entry in the `providers` block this model calls |
 | `models.<name>.max_concurrent` | Optional per-lane concurrency limiter: max simultaneous in-flight requests to this model. Omit for unbounded (the default); set a value ≥ 1 to cap. |
-| `store.module` | The store keys, usage and audit live in: `memory` (RAM, reset on restart) or a store plugin (`sqlite`, `postgres`, `valkey`). A config without a `store:` block is refused; `busbar --migrate-config` inserts `store: { module: memory }` |
+| `store.module` | The store keys, usage and audit live in: `memory` (RAM, reset on restart) or a store plugin (`sqlite`, `postgres`, `valkey`). A config without a `store:` block is refused; the 1.6.0 upgrade inserts `store: { module: memory }` |
 
 `providers`, `models` and `store` are the only required sections. `listen` defaults to `0.0.0.0:8080`. `auth` defaults to an empty chain (`chain: []`), an open relay, when omitted, fine for local dev, not for production.
 
@@ -393,7 +393,7 @@ Prometheus scrape exposition. Like `/stats`, `/metrics` is subject to the auth m
 ### Durable store: giving persistence a writable volume
 
 **A `store:` block is required in 1.6.0.** `busbar --validate` refuses a config without one, and
-`busbar --migrate-config` inserts `store: {module: memory}` into a config that lacks it. The `memory` store keeps keys, usage counters, ledgers and the
+The 1.6.0 upgrade inserts `store: {module: memory}` into a config that lacks it. The `memory` store keeps keys, usage counters, ledgers and the
 audit trail in RAM, so they are gone on restart — Busbar logs one WARN at boot saying so. The
 admin-API config overlay uses the same configured Store; a memory Store also loses those changes
 on restart. Use one-time migration to import an old file overlay before serving an existing deployment.

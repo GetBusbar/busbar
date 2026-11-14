@@ -18,5 +18,5 @@ either a fix commit or an explicit "no fix proposed" / "owner decision open" lin
 ledger this was compiled from had no ruling on a question, the advisory says "not found" rather
 than inferring one.
 
-See also: [the 1.6.0 migration guide](../../migration-1.6.md), section 3, "What you will notice
-after the upgrade," for the operator-facing summary these advisories back.
+See also: [Upgrade from 1.5.5 to 1.6.0](../../migration-1.6.md#what-you-will-notice), "What you will
+notice," for the operator-facing summary these advisories back.
