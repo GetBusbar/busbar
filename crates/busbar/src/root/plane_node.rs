@@ -22,7 +22,7 @@ use busbar_kernel_audit::{
     OutcomeFacts, Subject, Usage as RecordUsage, UsageLine as RecordLine, What,
 };
 
-use crate::root::linked::node::{Handed, Late, Reported, Resolve};
+use crate::root::linked::node::{Late, Reported, Resolve};
 
 struct LaneNames {
     interner: Arc<Mutex<Registration>>,
@@ -118,6 +118,10 @@ pub struct Node {
 
     mono: AtomicU64,
 
+    /// The clock a unit's arrival is read from: once, at the door, and every window it is
+    /// admitted and billed in is the one that reading names.
+    clock: Arc<dyn busbar_kernel::Clock>,
+
     book: std::sync::OnceLock<Arc<Mutex<crate::root::durability::Durability>>>,
 
     lane: std::sync::OnceLock<Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>>,
@@ -169,9 +173,19 @@ impl Node {
             marked: AtomicU64::new(0),
             lost: Mutex::new(HashMap::new()),
             mono: AtomicU64::new(0),
+            clock: Arc::new(busbar_kernel::WallClock),
 
             dispatch: Arc::new(crate::root::transports::DrivenOnce::new()),
             ticket_custody: crate::root::serve::TicketCustody::new(),
+        }
+    }
+
+    /// A node whose arrivals are read from `clock`.
+    #[must_use]
+    pub fn with_clock(clock: Arc<dyn busbar_kernel::Clock>) -> Self {
+        Self {
+            clock,
+            ..Self::new()
         }
     }
 
@@ -201,10 +215,7 @@ impl Node {
     }
 
     pub fn arrived(&self) -> Arrived {
-        Arrived::at(
-            busbar_kernel::store::now_ms(),
-            self.mono.fetch_add(1, Ordering::AcqRel),
-        )
+        Arrived::at(self.clock.now(), self.mono.fetch_add(1, Ordering::AcqRel))
     }
 
     #[must_use]
@@ -787,124 +798,6 @@ impl Node {
             Err(_) => {
                 self.ticket_custody.terminal(key, false);
                 None
-            }
-        }
-    }
-
-    #[must_use]
-    pub async fn answer(&self, handed: Handed) -> Response {
-        self.answer_arriving_at(handed, self.arrived()).await
-    }
-
-    #[must_use]
-    pub async fn answer_arriving_at(&self, handed: Handed, arrived: Arrived) -> Response {
-        self.answer_pinned(handed, arrived, || crate::root::kernel::ROOT_CARD.pin())
-            .await
-    }
-
-    async fn answer_pinned(
-        &self,
-        handed: Handed,
-        arrived: Arrived,
-        pin: impl FnOnce() -> Option<crate::root::kernel::PinnedHistory>,
-    ) -> Response {
-        self.sweep(arrived);
-
-        let (principal, op_class, proto, build) = handed;
-
-        if let Some(why) = self.journal_refusal() {
-            return journal_unavailable(proto, &why);
-        }
-        let key = self.next_key.mint();
-
-        let meter = Arc::new(AccrualMeter::new());
-
-        let history = pin();
-
-        let (units, route, finish) = build((self.resolver(), arrived.secs()));
-
-        let call = self.kernel.next_call();
-        let hold = busbar_kernel::inflight::arrival_hold(
-            &self.kernel,
-            &self.door,
-            principal.clone(),
-            call,
-        );
-        let entered = self.inflight.insert(busbar_kernel::inflight::Enter {
-            key,
-            origin: OriginKind::Client,
-            session: None,
-            admin_listener: false,
-            zero_hold_tick: false,
-            arrival: hold,
-
-            now: arrived.ms(),
-        });
-
-        match entered {
-            Err(_refused) => unavailable(proto),
-            Ok(slot) => {
-                let mut occupied = Occupied {
-                    node: self,
-                    post: None,
-                    slot: Arc::clone(&slot),
-                    arrived,
-                    op_class,
-                    reached_end: false,
-                };
-                let ctx = UnitCtx {
-                    call,
-                    key,
-                    origin: OriginKind::Client,
-                    session: None,
-                    generation: busbar_kernel::registry::Generation::FIRST,
-                    admin_listener: false,
-                    kernel_verb_only: false,
-                };
-                let driven = Driven {
-                    node: self,
-                    route: &*route,
-                    op_class,
-                    principal: &principal,
-                    arrived,
-                    history: history.as_ref(),
-                    sealing: Mutex::new(Some(Accruing::default())),
-                };
-                let ended = busbar_kernel::teller::run_unit_async(
-                    &self.kernel,
-                    &*units,
-                    &ctx,
-                    busbar_kernel::teller::Run {
-                        cell: slot.cell(),
-                        parent: None,
-                        leases: slot.leases(),
-                        gauge: &self.gauge,
-                        canary: &self.canary,
-                        meter: &meter,
-                        taps: Some(&driven),
-                    },
-                    &driven,
-                )
-                .await;
-
-                let (answer, late) = finish();
-                let response =
-                    answer.map_or_else(|| unavailable(proto), PlaneAnswer::into_response);
-                let seal = driven.take_seal(key);
-                let response = self
-                    .tail(
-                        ended,
-                        response,
-                        late,
-                        &principal,
-                        arrived,
-                        history.as_ref(),
-                        seal,
-                    )
-                    .await;
-
-                occupied.reached_end = true;
-                response
             }
         }
     }
@@ -2026,19 +1919,12 @@ pub fn node() -> Arc<Node> {
     Arc::clone(&NODE)
 }
 
-fn drive(
-    handed: Handed,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = PlaneAnswer> + Send>> {
-    Box::pin(async move { PlaneAnswer::Live(NODE.answer(handed).await) })
-}
-
 pub fn bind_book(book: Arc<Mutex<crate::root::durability::Durability>>) {
     bind_node_book(&NODE, &crate::root::kernel::ROOT_CARD, book);
 }
 
 pub const ROOT_UNIT: crate::root::linked::RootUnit = crate::root::linked::RootUnit {
     seal: None,
-    drive: Some(drive),
     on_config: Some(|_| crate::root::kernel::install_card_repricer()),
     opens_book: true,
     on_book: Some(|ctx| bind_book(Arc::clone(&ctx.book.durability))),
@@ -2054,7 +1940,7 @@ fn bind_node_book(
     node.bind_book(book);
 }
 
-#[cfg(all(test, linked_axis_node))]
+#[cfg(test)]
 #[path = "tests/plane_node.rs"]
 mod tests;
 

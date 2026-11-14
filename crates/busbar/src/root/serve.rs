@@ -7340,6 +7340,18 @@ mod money_tests;
 #[path = "tests/serve_door_far.rs"]
 mod door_far_tests;
 
+#[cfg(all(test, linked_section_pools, linked_driver_proofs))]
+#[path = "tests/node_door_rig.rs"]
+mod node_rig;
+
+#[cfg(all(test, linked_section_pools, linked_driver_proofs))]
+#[path = "tests/work_budget.rs"]
+mod work_budget;
+
+#[cfg(all(test, linked_section_pools, linked_driver_proofs))]
+#[path = "tests/node_arrival.rs"]
+mod node_arrival;
+
 #[cfg(all(test, linked_section_pools))]
 #[path = "tests/serve_framed.rs"]
 mod framed_tests;
