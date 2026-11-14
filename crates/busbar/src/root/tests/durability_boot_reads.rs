@@ -43,7 +43,6 @@ async fn keyset_binding_refuses_unreadable_store_without_second_bootstrap() {
     assert!(reopened.record.signing_key_id().is_none());
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn an_unreadable_old_audit_window_is_never_answered_empty() {
     use crate::root::units_admin::{AuditView, NodeAudit};

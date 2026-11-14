@@ -31,13 +31,10 @@
 
 use super::*;
 
-#[cfg(feature = "root-admin")]
 const THE_OPERATORS_CREDENTIAL: &str = "admin-token";
 
-#[cfg(feature = "root-admin")]
 struct ADirectoryThatMintedIt;
 
-#[cfg(feature = "root-admin")]
 impl crate::root::auth_bindings::VirtualKeyDirectory for ADirectoryThatMintedIt {
     fn verify(
         &self,
@@ -56,10 +53,8 @@ impl crate::root::auth_bindings::VirtualKeyDirectory for ADirectoryThatMintedIt 
     }
 }
 
-#[cfg(feature = "root-admin")]
 struct IdentifiesTheOperator;
 
-#[cfg(feature = "root-admin")]
 impl busbar_kernel_identity::module::AuthModule for IdentifiesTheOperator {
     fn name(&self) -> &'static str {
         "identifies-the-operator"
@@ -79,7 +74,6 @@ impl busbar_kernel_identity::module::AuthModule for IdentifiesTheOperator {
     }
 }
 
-#[cfg(feature = "root-admin")]
 fn a_door_that_identifies_the_operator() -> busbar_kernel_identity::AuthChain {
     busbar_kernel_identity::AuthChain::new(
         vec![busbar_kernel_identity::chain::ChainEntry {
@@ -95,24 +89,20 @@ fn a_door_that_identifies_the_operator() -> busbar_kernel_identity::AuthChain {
 /// A RECORDING surface, not a silent one: a walk that never reached the operation and a walk that
 /// reached it and came back look identical from the response alone if the wrap is willing to
 /// manufacture an answer of its own. Reading what the surface received is what tells them apart.
-#[cfg(feature = "root-admin")]
 #[derive(Default)]
 struct SurfaceLog {
     seen: std::sync::Mutex<Vec<(String, String, Vec<u8>)>>,
 }
 
-#[cfg(feature = "root-admin")]
 impl SurfaceLog {
     fn seen(&self) -> Vec<(String, String, Vec<u8>)> {
         self.seen.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 }
 
-#[cfg(feature = "root-admin")]
 const THE_SURFACES_OWN_BYTES: &[u8] =
     br#"{"answered_by":"the surface below the wrap","entries":[]}"#;
 
-#[cfg(feature = "root-admin")]
 fn a_recording_surface(log: Arc<SurfaceLog>) -> axum::Router {
     axum::Router::new().fallback(axum::routing::any(
         move |req: axum::http::Request<axum::body::Body>| {
@@ -140,13 +130,11 @@ fn a_recording_surface(log: Arc<SurfaceLog>) -> axum::Router {
     ))
 }
 
-#[cfg(feature = "root-admin")]
 struct ANodeWhoseChainThisCellReads {
     router: axum::Router,
     surface: Arc<SurfaceLog>,
 }
 
-#[cfg(feature = "root-admin")]
 async fn mounted_over(
     inner: axum::Router,
     request_body_max_bytes: usize,
@@ -176,7 +164,6 @@ async fn mounted_over(
     )
 }
 
-#[cfg(feature = "root-admin")]
 async fn a_node() -> ANodeWhoseChainThisCellReads {
     let surface = Arc::new(SurfaceLog::default());
 
@@ -190,7 +177,6 @@ async fn a_node() -> ANodeWhoseChainThisCellReads {
     ANodeWhoseChainThisCellReads { router, surface }
 }
 
-#[cfg(feature = "root-admin")]
 async fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
     crate::dist_root_install::install();
     busbar_core_admin::install();
@@ -302,7 +288,6 @@ async fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
     (bare, mounted)
 }
 
-#[cfg(feature = "root-admin")]
 async fn over_the_listener(
     node: &ANodeWhoseChainThisCellReads,
     method: &str,
@@ -312,7 +297,6 @@ async fn over_the_listener(
     over(&node.router, method, path, body.to_vec()).await
 }
 
-#[cfg(feature = "root-admin")]
 async fn over(
     router: &axum::Router,
     method: &str,
@@ -330,7 +314,6 @@ async fn over(
     .await
 }
 
-#[cfg(feature = "root-admin")]
 async fn send(
     router: &axum::Router,
     method: &str,
@@ -368,7 +351,6 @@ async fn send(
     (status, bytes.to_vec(), headers)
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn the_mounted_live_admin_door_keeps_no_verdict_apart_from_bad_credentials() {
     use busbar_contract::auth_calls::{
@@ -536,7 +518,6 @@ async fn the_mounted_live_admin_door_keeps_no_verdict_apart_from_bad_credentials
     }
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_real_verb_still_answers_end_to_end_over_the_admin_listener() {
     let node = a_node().await;
@@ -565,7 +546,6 @@ async fn a_real_verb_still_answers_end_to_end_over_the_admin_listener() {
     );
 }
 
-#[cfg(feature = "root-admin")]
 async fn audit_rows_for(router: &axum::Router, resource: &str) -> (u16, Vec<u8>) {
     let (status, body, _headers) = over(
         router,
@@ -577,7 +557,6 @@ async fn audit_rows_for(router: &axum::Router, resource: &str) -> (u16, Vec<u8>)
     (status, body)
 }
 
-#[cfg(feature = "root-admin")]
 fn actions_and_outcomes(body: &[u8]) -> Vec<(String, String)> {
     let page: serde_json::Value = serde_json::from_slice(body).expect("the audit page is JSON");
     page["items"]
@@ -593,7 +572,6 @@ fn actions_and_outcomes(body: &[u8]) -> Vec<(String, String)> {
         .collect()
 }
 
-#[cfg(feature = "root-admin")]
 async fn a_key_minted_over(router: &axum::Router, name: &str) -> String {
     let (status, body, _headers) = over(
         router,
@@ -608,7 +586,6 @@ async fn a_key_minted_over(router: &axum::Router, name: &str) -> String {
     format!("key:{id}")
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_mutating_verb_still_seals_exactly_one_entry_onto_the_audit_chain() {
     let (_bare, mounted) = the_real_surface_bare_and_mounted().await;
@@ -623,7 +600,6 @@ async fn a_mutating_verb_still_seals_exactly_one_entry_onto_the_audit_chain() {
     );
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_read_verb_still_seals_nothing_onto_the_audit_chain() {
     let (_bare, mounted) = the_real_surface_bare_and_mounted().await;
@@ -646,7 +622,6 @@ async fn a_read_verb_still_seals_nothing_onto_the_audit_chain() {
     );
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn the_served_audit_body_is_byte_identical_with_and_without_the_root() {
     let (bare, mounted) = the_real_surface_bare_and_mounted().await;
@@ -681,10 +656,8 @@ async fn the_served_audit_body_is_byte_identical_with_and_without_the_root() {
     );
 }
 
-#[cfg(feature = "root-admin")]
 struct AnApplyingStore;
 
-#[cfg(feature = "root-admin")]
 impl busbar_kernel::persistence::recovery_api::Store for AnApplyingStore {
     fn chain_break<'a>(
         &'a self,
@@ -705,7 +678,6 @@ impl busbar_kernel::persistence::recovery_api::Store for AnApplyingStore {
     }
 }
 
-#[cfg(feature = "root-admin")]
 async fn the_operators_rows_for(router: &axum::Router, resource: &str) -> Vec<(String, String)> {
     let (status, body) = audit_rows_for(router, resource).await;
     assert_eq!(status, 200, "the audit page answers");
@@ -724,7 +696,6 @@ async fn the_operators_rows_for(router: &axum::Router, resource: &str) -> Vec<(S
         .collect()
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_none() {
     crate::dist_root_install::install();
@@ -867,7 +838,6 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
     }
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_book() {
     crate::dist_root_install::install();
@@ -987,7 +957,6 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
     }
 }
 
-#[cfg(feature = "root-admin")]
 const THE_REMOVED_VERBS: [(&str, &str); 9] = [
     ("POST", "/api/v1/admin/operator-key"),
     ("POST", "/api/v1/admin/escrow"),
@@ -1000,7 +969,6 @@ const THE_REMOVED_VERBS: [(&str, &str); 9] = [
     ("POST", "/api/v1/admin/slices/resolve"),
 ];
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_nothing() {
     crate::dist_root_install::install();
@@ -1146,7 +1114,6 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
     }
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn an_admin_verb_still_meters_to_nothing_and_posts_nothing() {
     let node = a_node().await;
@@ -1169,7 +1136,6 @@ async fn an_admin_verb_still_meters_to_nothing_and_posts_nothing() {
     assert_eq!(status, 200, "and so did the mutation");
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_path_the_table_does_not_declare_reaches_the_surface_without_the_loop() {
     let node = a_node().await;
@@ -1184,7 +1150,6 @@ async fn a_path_the_table_does_not_declare_reaches_the_surface_without_the_loop(
     );
 }
 
-#[cfg(feature = "root-admin")]
 const A_SERVED_PLANE: busbar_contract::plane::PlaneDeclaration =
     busbar_contract::plane::PlaneDeclaration {
         key: "example",
@@ -1211,10 +1176,8 @@ const A_SERVED_PLANE: busbar_contract::plane::PlaneDeclaration =
         caller_credential_refusal: None,
     };
 
-#[cfg(feature = "root-admin")]
 struct IdentifiesATenant;
 
-#[cfg(feature = "root-admin")]
 impl busbar_kernel_identity::module::AuthModule for IdentifiesATenant {
     fn name(&self) -> &'static str {
         "identifies-a-tenant"
@@ -1232,7 +1195,6 @@ impl busbar_kernel_identity::module::AuthModule for IdentifiesATenant {
     }
 }
 
-#[cfg(feature = "root-admin")]
 async fn a_q71_node(
     door: busbar_kernel_identity::AuthChain,
 ) -> (
@@ -1242,7 +1204,6 @@ async fn a_q71_node(
     a_q71_node_trusting(door, crate::root::units_admin::no_trust()).await
 }
 
-#[cfg(feature = "root-admin")]
 async fn a_q71_node_trusting(
     door: busbar_kernel_identity::AuthChain,
     trust: crate::root::units_admin::TrustDesk,
@@ -1352,7 +1313,6 @@ async fn a_q71_node_trusting(
     (mounted, kept)
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
     let _one = crate::root::PUBLISHING.lock().await;
@@ -1522,7 +1482,6 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
     );
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_rejected_approval_is_audited() {
     let _one = crate::root::PUBLISHING.lock().await;
@@ -1605,7 +1564,6 @@ async fn a_rejected_approval_is_audited() {
     );
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_new_verb_past_the_nodes_mutation_budget_is_refused() {
     let (node, _) = a_q71_node(a_door_that_identifies_the_operator()).await;
@@ -1643,7 +1601,6 @@ async fn a_new_verb_past_the_nodes_mutation_budget_is_refused() {
     );
 }
 
-#[cfg(feature = "root-admin")]
 async fn over_as(
     router: &axum::Router,
     method: &str,
@@ -1660,7 +1617,6 @@ async fn over_as(
 
 // These operation tests compare complete JSON values; the recording-surface tests above
 // separately prove that the admin wrapper returns the surface's exact bytes.
-#[cfg(feature = "root-admin")]
 async fn over_as_json(
     router: &axum::Router,
     method: &str,
@@ -1675,7 +1631,6 @@ async fn over_as_json(
     )
 }
 
-#[cfg(feature = "root-admin")]
 fn the_q71_verbs() -> [(&'static str, &'static str, String); 4] {
     [
         ("GET", "/api/v1/admin/verify", String::new()),
@@ -1697,7 +1652,6 @@ fn the_q71_verbs() -> [(&'static str, &'static str, String); 4] {
     ]
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn the_four_q71_verbs_are_served_and_refuse_by_name() {
     let (node, kept) = a_q71_node(a_door_that_identifies_the_operator()).await;
@@ -1853,7 +1807,6 @@ async fn the_four_q71_verbs_are_served_and_refuse_by_name() {
     );
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn the_four_q71_verbs_refuse_an_unauthorized_caller_by_text() {
     const DOOR: &str = r#"{"error":{"code":"unauthorized","message":"missing or invalid admin credential (Bearer or x-admin-token)"}}"#;
@@ -1919,7 +1872,6 @@ async fn the_four_q71_verbs_refuse_an_unauthorized_caller_by_text() {
     }
 }
 
-#[cfg(feature = "root-admin")]
 async fn over_with_key(router: &axum::Router, path: &str, body: &str, key: &str) -> (u16, String) {
     let (status, bytes, _) = send(
         router,
@@ -1936,7 +1888,6 @@ async fn over_with_key(router: &axum::Router, path: &str, body: &str, key: &str)
     )
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn the_q71_writes_replay_under_an_idempotency_key() {
     const MISMATCH: &str = r#"{"error":{"code":"conflict","message":"this Idempotency-Key was already used with a different request body"}}"#;

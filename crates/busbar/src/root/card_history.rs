@@ -142,7 +142,6 @@ pub fn migrated(chains: &[Chain], writer: u64) -> Result<Vec<StoredEntry>, Strin
     Ok(out)
 }
 
-#[cfg(feature = "root-admin")]
 fn amended_fields(body: &[u8]) -> CardFields {
     let Some(amendment) = crate::root::units_admin::amendment_from_body(body) else {
         return CardFields::default();
@@ -160,11 +159,6 @@ fn amended_fields(body: &[u8]) -> CardFields {
         &cells,
         Some(amendment.sealed_fee),
     )
-}
-
-#[cfg(not(feature = "root-admin"))]
-fn amended_fields(_body: &[u8]) -> CardFields {
-    CardFields::default()
 }
 
 #[cfg(test)]

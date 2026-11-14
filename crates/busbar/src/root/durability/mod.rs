@@ -36,22 +36,18 @@ pub use store_identity::{host_identity, take_node};
 #[cfg(test)]
 pub use store_identity::{stored_keyset, BootIdentity};
 
-#[cfg(any(test, feature = "root-admin"))]
 pub use store_identity::walk_stored_chains;
 
 mod amend;
 
 pub use amend::bind_amendments;
 
-#[cfg(feature = "root-admin")]
 pub(crate) use amend::verify_held;
 
 mod audit;
 
-#[cfg(feature = "root-admin")]
 pub use audit::AuditWindowAt;
 
-#[cfg(feature = "root-admin")]
 mod audit_page;
 
 mod recovery;
@@ -527,6 +523,6 @@ pub(crate) mod tests;
 #[path = "../tests/durability_boot_reads.rs"]
 mod boot_reads;
 
-#[cfg(all(test, feature = "root-admin"))]
+#[cfg(test)]
 #[path = "../tests/durability_reads_unlocked.rs"]
 mod reads_unlocked;

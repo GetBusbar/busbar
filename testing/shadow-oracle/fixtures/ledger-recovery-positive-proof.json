@@ -5,9 +5,7 @@
   "test": "root::units_admin::ledger_recovery_actual::an_actual_retained_usage_operation_is_listed_and_resolved_through_the_admin_route",
   "source": "crates/busbar/src/root/units_admin/tests/ledger_recovery_actual.rs",
   "requires": {
-    "features": [
-      "root-admin"
-    ],
+    "features": [],
     "actual_store_library_env": "BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN",
     "actual_store_settings_env": "BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS",
     "store_isolation": "fresh actual Store instance; persistent settings must use an isolated path",
