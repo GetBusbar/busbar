@@ -309,13 +309,16 @@ fn an_untrusted_midstream_upgrade_records_the_security_cause() {
         let result =
             poll_fn(|cx| c.upgrade_secure(&client, "localhost", Duration::from_secs(5), cx)).await;
         assert!(matches!(result, Err(Failure::Refused(_))), "{result:?}");
-        let expected = ConnCause {
-            stage: CAUSE_SECURITY,
-            text: rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer)
-                .to_string(),
-            outbound: false,
-        };
-        assert_eq!(c.cause(), Some(&expected));
+        let unknown =
+            rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer).to_string();
+        let expected = c.cause().cloned().expect("a cause");
+        assert_eq!(expected.stage, CAUSE_SECURITY);
+        assert!(!expected.outbound);
+        assert!(
+            expected.text.starts_with(&unknown) && expected.text.contains("does not chain"),
+            "the stack's own words, explained: {}",
+            expected.text
+        );
         assert!(next(&mut c).await.is_err());
         assert_eq!(c.cause(), Some(&expected));
         drop(c);
