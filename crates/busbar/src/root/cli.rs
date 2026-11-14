@@ -396,7 +396,7 @@ pub(crate) fn validate_config_command() -> i32 {
         config_validate::Check {
             plugins: &loaded.deploy.plugins,
             unset_env_vars: &unset_env_vars,
-            root: &destination_guard,
+            root: &root_rules,
             fetch: None,
             resolve_builtins: true,
         },
