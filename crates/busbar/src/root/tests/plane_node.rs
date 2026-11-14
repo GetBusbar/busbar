@@ -82,7 +82,7 @@ async fn selected(
 
 use super::*;
 
-use busbar_kernel::teller::{Ended, Kernel};
+use busbar_kernel::teller::Ended;
 const LANE: &str = "m0";
 
 #[tokio::test]
@@ -140,8 +140,16 @@ async fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
     {
         use busbar_kernel::test_hooks::tokens::{end, grant};
         let ledger = grant::<busbar_contract::caps::WriteMoney>();
-        let accrual = busbar_contract::caps::HoldAccrual::after_terminal(who.clone(), 0, &ledger);
-        let posted = busbar_contract::caps::Posted::settle_late(accrual, &ledger);
+        let hold = busbar_contract::caps::Hold::open(
+            &grant::<busbar_contract::caps::Admittance>(),
+            who.clone(),
+        );
+        let usage = busbar_contract::caps::Usage::report(
+            &grant::<busbar_contract::caps::Consumption>(),
+            Vec::new(),
+        )
+        .expect("an empty report fits the record");
+        let posted = busbar_contract::caps::Posted::settle(hold, 0, &usage, &ledger);
         node.seal_end(
             &who,
             arrived,
@@ -173,6 +181,8 @@ async fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
 }
 
 const EPOCH: u64 = 1_700_000_000;
+
+const RERANK_LANE: &str = "rerank-v3.5";
 
 fn history_of(entries: &[(u64, f64)]) -> crate::root::kernel::PinnedHistory {
     let mut history = busbar_kernel_ledger::cost::History::new();
@@ -1060,9 +1070,7 @@ async fn observe_native_ledger(
     history: &crate::root::kernel::PinnedHistory,
     at: u64,
 ) -> Vec<NativeLedgerObservation> {
-    let usage = (core.ledger().get_usage(principal, 0).await)
-        .await
-        .expect("canonical usage reads");
+    let usage = (core.ledger().get_usage(principal, 0).await).expect("canonical usage reads");
     let classes = usage
         .models
         .iter()
@@ -1673,11 +1681,11 @@ async fn the_exit_arm_seals_no_money_figure_into_the_record() {
 
     const MONEY: u64 = 150;
     let who = PrincipalId::new("acct:h2");
-    let hold = Hold::open(&grant::<Admittance>(), who.clone(), 100);
+    let hold = Hold::open(&grant::<Admittance>(), who.clone());
     let usage = Usage::report(&grant::<busbar_contract::caps::Consumption>(), Vec::new())
         .expect("an empty report fits the record");
-    let posted = Posted::settle(hold, u128::from(MONEY), &usage, &grant::<WriteMoney>());
-    assert_eq!(posted.settled(), MONEY, "the posting moved money");
+    let posted = Posted::settle(hold, MONEY, &usage, &grant::<WriteMoney>());
+    assert_eq!(posted.quantity(), MONEY, "the posting moved money");
     let ended = Ended::Settled {
         end: end(Outcome::Completed, Ok(posted)),
         requests: 0,
