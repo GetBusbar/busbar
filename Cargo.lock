@@ -314,6 +314,7 @@ dependencies = [
  "base64 0.22.1",
  "busbar-yaml",
  "bytes",
+ "criterion",
  "futures",
  "getrandom 0.3.4",
  "hex",
