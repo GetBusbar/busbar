@@ -26,9 +26,6 @@ pub const MAX_LEGS: usize = 8;
 /// The most leg replies one unit may collect.
 pub const MAX_LEG_REPLIES: usize = 2;
 
-/// The most places a plane may say the client's response ceiling could be.
-pub const MAX_RESPONSE_PTRS: usize = 2;
-
 /// The per-unit scratch pad's starting size, in bytes.
 pub const SCRATCH_BASE_BYTES: usize = 4 * 1024;
 
