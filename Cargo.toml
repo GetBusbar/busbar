@@ -27,6 +27,9 @@ busbar-contract = { path = "crates/busbar-contract" }
 # The one crypto backend: busbar-crypto names it by this URL; a private build patches its own in.
 busbar-crypto-backend = { path = "crates/busbar-crypto-backend" }
 arc-swap = "1"
+# The accept-error backoff (core-connector listen.rs, shared by the root listener). No default
+# features: no sleeper, no std rng; only the ExponentialBuilder iterator, as a const.
+backon = { version = "1.6", default-features = false }
 async-trait = "0.1"
 axum = "0.8"
 base64 = "0.22"
