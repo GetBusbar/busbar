@@ -195,8 +195,10 @@ impl HookCalls for Answers {
         self.1
     }
     fn decide(&self, frame: Arc<DecideFrame>, _: Duration) -> Pending<Answered<DecideOut>> {
-        let (outcome, out) = frame.answer_decide(&self.0);
+        let verdict = self.0.clone();
         Box::pin(async move {
+            // `DecideOut` carries raw pointers (not `Send`), so it is built inside the future.
+            let (outcome, out) = frame.answer_decide(&verdict);
             Answered::Answer {
                 outcome,
                 out,
