@@ -102,7 +102,7 @@ single-valued tap `at:` into it). Omitting `phase:` means exactly these four cor
 | `response` | the outcome (was `completion`) | `outcome` + `status`, including the **synthetic rejected completion**, so an audit tap sees denials, not just served traffic |
 
 The three renamed stage words are a HARD rename: an old `route`/`attempt`/`completion` value is
-rejected at boot with the new spelling named in the error (`busbar --migrate-config` rewrites it).
+rejected at boot with the new spelling named in the error (the 1.6.0 upgrade rewrites it).
 
 Stage payloads ride a top-level `stage` object on the (shape-only) per-request projection, with
 only the stage's own fields present:

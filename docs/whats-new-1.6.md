@@ -22,67 +22,12 @@ qualification remains specific to the tested source and assembled product. See
 
 ## Your upgrade
 
-Before executing dropped native bootstrap, check or migration code, install the intended signed
-archives and put each complete archive's SHA-256 in its matching operator base
-`plugins.fetch[].sha256` entry. This includes release-index-downloaded migrators. A release pin or
-signature does not supply that authorization; replace stale hashes when replacing archives.
-Linked plugins need no archive pin. See [the upgrade authorization steps](migration-1.6.md#authorize-native-bootstrap-checks-and-migration).
-
-```sh
-busbar --migrate-config config.yaml > config-1.6.yaml   # convert the config
-busbar --validate -c config-1.6.yaml                    # offline checks; no application Store opened
-```
-
-Then install the 1.6.0 binary, point it at the new file and start it.
-
-What `--migrate-config` does for you:
-
-- **Adds the `store:` block.** 1.6.0 asks the config to say which store it runs on. A 1.5.5 config
-  without one ran on the in-memory store, so the migration writes exactly that,
-  `store: {module: memory}`. Nothing about how it runs changes. A config that already names a store
-  is left as written.
-- **Rewrites the old hook spellings.** `plugin:` becomes `module:` and a single-stage `at:` becomes
-  `phase:`. The old spellings still work in 1.6.0; the rewrite just puts your file in the documented
-  form. A saved config overlay is rewritten the same way when Busbar starts.
-- **Pins the 1.6.0 plugins.** Each plugin your config uses that this binary does not carry gets a
-  `plugins.fetch` pin to its 1.6.0 release, found in the release index; a pin to a 1.5.5-era
-  release is rewritten. A 1.5.5 build left beside its 1.6.0 build only warns at startup.
-- **Lets each plugin migrate its own settings.** Core never edits inside a plugin's section: each
-  plugin's own migration does, and its report lines are printed under its name. Your webhook
-  exporter's auth header that 1.5.5 never sent is removed that way, and the private provider and
-  sign-in hosts you used are reported and added to `advanced.allow_destinations`, exactly those
-  hosts.
-- **Keeps your bill.** A `rate_card:` entry gains `units:` at `0` for every unit 1.5.5 never billed.
-- **Keeps your users signed in.** A sign-in provider whose users 1.5.5 let through with no grant
-  gets an explicit `role_bindings.<provider>."*": {}`, with a warning to tighten it.
-- **Drops block-list entries that never matched.** An entry naming no usable host is removed.
-- **Leaves everything else exactly as you wrote it.** Pools, members, weights, providers and models
-  are not touched. When there is nothing to decide, the output has no banner and no comments: it
-  reads like a file you wrote by hand.
-- **Never guesses.** Where a decision belongs to you, the migration prints a `TODO(migrate)` line
-  naming the key instead of choosing for you.
-
-What carries over without the migration doing anything:
-
-- **Your keys.** `auth.signing_key` is read as before, so every outstanding key keeps verifying.
-  Nothing is re-minted.
-- **Your data.** A SQLite, Postgres, MySQL or Valkey store opens on its 1.5.5 contents: keys,
-  groups, audit records and usage history. Usage history is converted to the 1.6.0 layout on first
-  read by a migration that is safe to interrupt and rerun.
-- **Your plugin names.** A config that names a first-party plugin by its 1.5.5 name (for example
-  `module: busbar-webrequest`) still resolves to the 1.6.0 plugin.
-- **Your environment variables.** Deprecated operational `BUSBAR_*` inputs remain compatibility
-  inputs with warnings. The legacy overlay selector does not access a file: runtime config is
-  Store-only in 1.6.0, and memory Store contents are ephemeral.
-- **Your CI.** `--validate` checks operator inputs and local artifacts without network access.
-  Authorized native grammar/check callbacks may execute. It does not open the application Store,
-  recover its overlay, or prove plugin opening/readiness and backend reachability. Verify those
-  after starting the actual assembled build.
-- **Your log pipeline.** Plugins write their own log files. Warning and error log records handed
-  to the host are also offered to Busbar's tracing subscriber, whose filter and output policy
-  determine collection; this is not a promise to mirror every diagnostic envelope.
-
-The full step-by-step guide is [Migrating from 1.5.x to 1.6.0](migration-1.6.md).
+1.6.0 upgrades only from 1.5.5; on anything older, [upgrade to 1.5.5](upgrade-to-1.5.5.md) first.
+Stop every 1.5.5 instance, back up your store, install the 1.6.0 builds of your plugins and start
+1.6.0. Migration runs automatically at boot: config files are rewritten once (the original is kept
+as `<file>.1.5.5`), your store is converted, and each plugin upgrades its own data when it first
+loads. Your keys, data and plugin names carry over. The step-by-step guide is
+[Upgrade from 1.5.5 to 1.6.0](migration-1.6.md).
 
 ---
 
@@ -223,7 +168,7 @@ flattened.
 ## Things you might notice
 
 This is the complete list of what a 1.5.5 deployment can see change. Each item says what the
-migration does about it.
+upgrade does about it.
 
 ### Might need one step before you restart
 
@@ -231,18 +176,18 @@ migration does about it.
 
 | What changed | What to do | Done for you? |
 |---|---|---|
-| A config must have a `store:` block. | Nothing. | Yes, `--migrate-config` adds it. |
-| Hook `plugin:` and `at:` keys are the old spellings. | Nothing; they still work. | Yes, `--migrate-config` rewrites them. |
+| A config must have a `store:` block. | Nothing. | Yes, the upgrade adds it. |
+| Hook `plugin:` and `at:` keys are the old spellings. | Nothing; they still work. | Yes, the upgrade rewrites them. |
 | A plugin named by its 1.5.5 name. | Nothing. | Yes, the old name still resolves. |
 | 1.5.5 builds of the SQLite, Postgres, MySQL and Valkey stores, the OIDC, GitHub and LDAP sign-in plugins, the Vault secret plugin and the web-request hook do not load in 1.6.0. | Install the intended signed 1.6.0 archives and authorize every dropped native bootstrap/check/migration archive with its complete SHA-256 in the matching operator base fetch entry. On an offline host, copy those same archives into `plugins.dir`. | Release pins are migrated; exact operator archive authorization is your step. An old build beside its 1.6.0 build only warns. |
 | A plugin built by someone else for 1.5.5 does not load. | Its author rebuilds it with [the SDK migration guide](plugin-sdk-migration-1.6.md). | No. |
-| A `rate_card:` must price every billable unit a provider reports, not only tokens. | Nothing, to keep 1.5.5's bill exactly; set real rates when you want to bill those units ([how](migration-1.6.md#a-card-must-configure-every-billable-unit-its-plane-counts)). | Yes, `--migrate-config` adds every unit at `0`. |
-| A provider or identity provider on a private or loopback address (a local ollama or vLLM, an in-cluster gateway, an internal DNS name) is refused by default. `--validate` names a provider URL the guard will refuse; it cannot see an identity provider's. | Nothing. | Yes, `--migrate-config` adds exactly the hosts the provider's plane and the sign-in plugins report to `advanced.allow_destinations`. |
-| A provider `api_key` reference that does not resolve stops startup instead of running the provider with an empty key. | Fix the reference, or write `api_key: none` for a provider that takes no key. The migration does not guess this for you, because guessing wrong would disarm a provider that needs a key. | No, by design; `--migrate-config` names each one in a TODO. |
-| A metadata block-list entry that names no usable host (for example `db.1`) is no longer silently ignored. | Nothing. | Yes, `--migrate-config` removes it; it never matched anything. |
+| A `rate_card:` must price every billable unit a provider reports, not only tokens. | Nothing, to keep 1.5.5's bill exactly; set real rates when you want to bill those units ([how](migration-1.6.md#rate-cards)). | Yes, the upgrade adds every unit at `0`. |
+| A provider or identity provider on a private or loopback address (a local ollama or vLLM, an in-cluster gateway, an internal DNS name) is refused by default. `--validate` names a provider URL the guard will refuse; it cannot see an identity provider's. | Nothing. | Yes, the upgrade adds exactly the hosts the provider's plane and the sign-in plugins report to `advanced.allow_destinations`. |
+| A provider `api_key` reference that does not resolve stops startup instead of running the provider with an empty key. | Fix the reference, or write `api_key: none` for a provider that takes no key. The migration does not guess this for you, because guessing wrong would disarm a provider that needs a key. | No, by design; the upgrade does not guess. |
+| A metadata block-list entry that names no usable host (for example `db.1`) is no longer silently ignored. | Nothing. | Yes, the upgrade removes it; it never matched anything. |
 | A webhook exporter's auth header that cannot be built as an HTTP header is refused at validation. 1.5.5 silently sent the webhook without it. | Nothing. | Yes, the exporter's own migration removes it and says 1.5.5 never sent it. |
 | A `file:` secret that is a directory, device or pipe is refused. | Point it at a regular file. | No. |
-| A signed-in user that your role bindings grant nothing is refused (401). 1.5.5 let such users through with no pool limits and no budget. | Review the binding the migration wrote and tighten it. | Yes, `--migrate-config` writes `role_bindings.<provider>."*": {}` (every pool, no budget) with a warning. |
+| A signed-in user that your role bindings grant nothing is refused (401). 1.5.5 let such users through with no pool limits and no budget. | Review the binding the migration wrote and tighten it. | Yes, the upgrade writes `role_bindings.<provider>."*": {}` (every pool, no budget) with a warning. |
 | An identity provider reached by a DNS name whose discovery or key URL redirects to a private address fails sign-in. `--validate` does not catch this. | Point the issuer at the address it finally serves from. | No. |
 | Plugin log lines, including the model plane's warnings, go to each plugin's own file under `plugins.logs.dir` (default `logs/plugins/`). | Collect that directory. Warning/error log records are also offered to the host tracing subscriber; its filter and output policy apply. | File logging and log-record mirroring are implemented; not every diagnostic envelope is mirrored. |
 
