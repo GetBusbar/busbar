@@ -169,7 +169,7 @@ async fn exercise(case: Case) {
         move |claim| {
             claims.lock().unwrap().push(claim.to_owned());
             assert_eq!(money.open_units(), 0, "adoption precedes paid admission");
-            assert!(book.lock().unwrap().audit_records.is_empty());
+            assert!(book.lock().unwrap().audit_records().is_empty());
             assert_eq!(
                 handler_pieces(&observed_plane),
                 0,
@@ -291,7 +291,7 @@ async fn exercise(case: Case) {
         );
         assert_eq!(g.money.open_units(), 1);
         assert_eq!(g.post.open_units(), 1);
-        assert!(g.book.lock().unwrap().audit_records.is_empty());
+        assert!(g.book.lock().unwrap().audit_records().is_empty());
         assert!(
             handler_pieces(&plane) > 0,
             "only the adopted governed session invokes the plane"
@@ -383,7 +383,7 @@ async fn exercise(case: Case) {
     assert_eq!(g.post.node().sweep(g.post.node().arrived()), 0);
     assert_eq!(g.requests().await, u64::from(case == Case::Accepted));
     assert_eq!(
-        g.book.lock().unwrap().audit_records.len(),
+        g.book.lock().unwrap().audit_records().len(),
         usize::from(case == Case::Accepted),
         "exactly one terminal audit for the admitted session; none for refused upgrades"
     );

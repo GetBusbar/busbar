@@ -339,7 +339,7 @@ impl NodeAudit {
 impl AuditView for NodeAudit {
     fn read(&self, take: &mut dyn FnMut(&AuditChain, Option<&[AuditRecord]>)) {
         let durability = self.lock();
-        take(&durability.record, Some(&durability.audit_records));
+        take(&durability.record, Some(durability.audit_records()));
     }
 
     async fn read_window(

@@ -157,14 +157,14 @@ async fn hook_child_uses_normal_admission_and_replays_without_credentials() {
     assert_eq!(g.money.open_units(), 0);
     assert_eq!(g.post.open_units(), 0);
     let book = g.book.lock().unwrap_or_else(|p| p.into_inner());
-    assert_eq!(book.audit_records.len(), 2);
+    assert_eq!(book.audit_records().len(), 2);
     let parent = book
-        .audit_records
+        .audit_records()
         .iter()
         .find(|r| r.what.parent.is_none())
         .unwrap();
     let child = book
-        .audit_records
+        .audit_records()
         .iter()
         .find(|r| r.what.parent.is_some())
         .unwrap();
@@ -247,9 +247,9 @@ async fn hook_child_deadline_cancels_and_retires_pending_child() {
             Err(_) => true,
         }));
     let book = g.book.lock().unwrap_or_else(|p| p.into_inner());
-    assert_eq!(book.audit_records.len(), 2);
+    assert_eq!(book.audit_records().len(), 2);
     let child = book
-        .audit_records
+        .audit_records()
         .iter()
         .find(|r| r.what.parent.is_some())
         .unwrap();

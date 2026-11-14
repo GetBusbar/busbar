@@ -193,7 +193,7 @@ fn handed() -> Handed {
 
 fn assert_sealed_with_destination_and_controls(book: &crate::root::durability::NodeBook) {
     let durability = book.durability.lock().unwrap_or_else(|p| p.into_inner());
-    let records = durability.audit_records.clone();
+    let records = durability.audit_records().to_vec();
     assert_eq!(records.len(), 1, "one record for the one unit: {records:?}");
     let record = &records[0];
     assert_eq!(
@@ -437,7 +437,7 @@ async fn an_unfinished_session_retires_its_facts_and_preserves_its_destination_f
     assert_eq!(node.sweep(node.arrived()), 0);
     let durability = book.durability.lock().unwrap_or_else(|p| p.into_inner());
     let records: Vec<_> = durability
-        .audit_records
+        .audit_records()
         .iter()
         .filter(|r| r.what.unit_key == key)
         .collect();
@@ -468,7 +468,7 @@ async fn an_admitted_session_seals_one_record_when_it_ends() {
     assert!(admitted, "the door passed the session");
     assert_eq!(post.open_units(), 0, "its facts closed at its end");
     let durability = book.durability.lock().unwrap_or_else(|p| p.into_inner());
-    let records = durability.audit_records.clone();
+    let records = durability.audit_records().to_vec();
     assert_eq!(
         records.len(),
         1,
@@ -500,7 +500,7 @@ async fn a_session_refused_at_its_open_seals_a_refused_record() {
     let (key, admitted) = open_and_finish(&node, &post, &RefusedAtApprove).await;
     assert!(!admitted, "the door refused the session");
     let durability = book.durability.lock().unwrap_or_else(|p| p.into_inner());
-    let records = durability.audit_records.clone();
+    let records = durability.audit_records().to_vec();
     assert_eq!(
         records.len(),
         1,
@@ -686,7 +686,7 @@ async fn sealed_after(
     assert!(outcome.is_some(), "the table took the unit and it ended");
     assert_eq!(post.open_units(), 0, "its facts closed at its end");
     let durability = book.durability.lock().unwrap_or_else(|p| p.into_inner());
-    let records = durability.audit_records.clone();
+    let records = durability.audit_records().to_vec();
     assert_eq!(records.len(), 1, "one record for the one unit: {records:?}");
     records.into_iter().next().expect("one record")
 }
@@ -796,7 +796,7 @@ async fn sealed_under(
     assert!(outcome.is_some(), "the table took the unit and it ended");
     assert_eq!(post.open_units(), 0, "its facts closed at its end");
     let durability = book.durability.lock().unwrap_or_else(|p| p.into_inner());
-    let records = durability.audit_records.clone();
+    let records = durability.audit_records().to_vec();
     assert_eq!(records.len(), 1, "one record for the one unit: {records:?}");
     records.into_iter().next().expect("one record")
 }
@@ -965,7 +965,7 @@ async fn a_completed_terminal_receipt_requires_actual_seal_success_even_when_the
         );
         let book = book.lock().unwrap();
         assert_eq!(
-            book.audit_records.len(),
+            book.audit_records().len(),
             1,
             "the failed seal still cached its audit chain record"
         );

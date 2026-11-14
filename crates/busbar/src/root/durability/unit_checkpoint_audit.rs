@@ -15,7 +15,7 @@ use busbar_kernel_audit::{
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
-use super::{Durability, AUDIT_RING};
+use super::Durability;
 
 /// Captured only by NodeEndPost from the actual unit and its pinned host state. The outer
 /// unit.accrued signature binds these facts to the admitted money snapshot and original identity.

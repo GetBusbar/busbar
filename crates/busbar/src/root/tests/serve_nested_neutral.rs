@@ -24,14 +24,14 @@ async fn a_real_third_claim_nested_reply_preserves_opaque_status_fields_and_gove
     assert_eq!(g.money.open_units(), 0);
     assert_eq!(g.post.open_units(), 0);
     let book = g.book.lock().unwrap();
-    assert_eq!(book.audit_records.len(), 2);
+    assert_eq!(book.audit_records().len(), 2);
     let parent = book
-        .audit_records
+        .audit_records()
         .iter()
         .find(|row| row.what.parent.is_none())
         .unwrap();
     let child = book
-        .audit_records
+        .audit_records()
         .iter()
         .find(|row| row.what.parent.is_some())
         .unwrap();

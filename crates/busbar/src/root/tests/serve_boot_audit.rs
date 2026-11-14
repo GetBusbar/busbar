@@ -393,7 +393,7 @@ pub(super) async fn run() {
     );
     let durability = book.durability.lock().unwrap_or_else(|p| p.into_inner());
     let record = durability
-        .audit_records
+        .audit_records()
         .last()
         .expect("the unit seals an audit record");
     assert_eq!(

@@ -127,8 +127,8 @@ impl Durability {
         body["snapshot_to"] = json!(cursor.snapshot_to.to_string());
         body["semantics"] = json!("bounded_live_range");
         body["retention"] = json!({
-            "ring_from": self.audit_records.first().map(|r| r.seq.to_string()),
-            "ring_to": self.audit_records.last().map(|r| r.seq.to_string()),
+            "ring_from": self.audit_records().first().map(|r| r.seq.to_string()),
+            "ring_to": self.audit_records().last().map(|r| r.seq.to_string()),
             "durable_from": null,
             "durable_from_known": false,
         });
@@ -142,7 +142,7 @@ impl Durability {
         .map_err(|_| GovernanceError::Store)?;
         body["anchor"] = snapshot_body["anchor"].clone();
         let covered = self
-            .audit_records
+            .audit_records()
             .first()
             .is_some_and(|r| r.seq <= cursor.next_audit);
         let exhausted = cursor.next_audit > cursor.snapshot_to;
@@ -152,7 +152,7 @@ impl Durability {
             .min(cursor.journal_end);
         let (records, stored) = if exhausted || covered {
             (
-                self.audit_records
+                self.audit_records()
                     .iter()
                     .filter(|r| r.seq >= cursor.next_audit && r.seq <= cursor.snapshot_to)
                     .cloned()
@@ -349,7 +349,9 @@ mod tests {
     async fn audit_range_reports_actual_bounds_gaps_and_unsealed_tail() {
         let fixture = NativeFixture::new(47).await;
         let book = book(&fixture, 5).await;
-        book.lock().unwrap().audit_records.retain(|r| r.seq != 3);
+        book.lock()
+            .unwrap()
+            .retain_audit_for_tamper_test(|r| r.seq != 3);
         let view = NodeAudit::new(book);
         let body = page(&view, 1, 7, None).await;
         assert_eq!(body["returned_from"], "1");
@@ -403,7 +405,9 @@ mod tests {
         let mut cursor = first["next_cursor"].as_str().map(str::to_string);
         // Change the live retained set after the first page. The later ring page
         // must expose this missing position, even though the initial capture saw it.
-        book.lock().unwrap().audit_records.retain(|r| r.seq != 300);
+        book.lock()
+            .unwrap()
+            .retain_audit_for_tamper_test(|r| r.seq != 300);
         let mut gap_seen = false;
         for _ in 0..100 {
             let body = page(&view, 1, 1200, cursor.as_deref()).await;
