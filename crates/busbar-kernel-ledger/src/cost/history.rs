@@ -78,7 +78,7 @@ impl EntryKey {
 
     /// The key as lowercase hex (40 characters), the spelling the admin verbs take.
     pub fn hex(&self) -> String {
-        hex(&self.0)
+        hex::encode(self.0)
     }
 
     /// The key from its 40-character hex spelling.
@@ -169,7 +169,7 @@ impl EntryId {
 
     /// The 24-character lowercase hex spelling.
     pub fn hex(&self) -> String {
-        hex(&self.0)
+        hex::encode(self.0)
     }
 
     /// The id from its 24-character hex spelling.

@@ -16,6 +16,7 @@ path = "src/lib.rs"
 test-support = []
 
 [dependencies]
+hex = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
 serde = { workspace = true }
 foldhash = { workspace = true }

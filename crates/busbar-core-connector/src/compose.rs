@@ -1542,22 +1542,13 @@ impl Connection {
     /// The far end's certificate hashed as RFC 5929 section 4.1 `tls-server-end-point` hashes it
     #[must_use]
     pub fn peer_cert_hash(&self) -> Option<String> {
-        use std::fmt::Write as _;
         let tls = self.tls.as_ref().filter(|t| !t.is_handshaking())?;
         let leaf = tls.peer_certificates()?.first()?;
         let digest = ring::digest::digest(
             crate::tls::client::end_point_digest(leaf.as_ref()),
             leaf.as_ref(),
         );
-        Some(
-            digest
-                .as_ref()
-                .iter()
-                .fold(String::with_capacity(64), |mut hex, b| {
-                    let _ = write!(hex, "{b:02x}");
-                    hex
-                }),
-        )
+        Some(hex::encode(digest.as_ref()))
     }
 
     /// Why the connection failed, once it has: the stage it failed in (the socket's open,
