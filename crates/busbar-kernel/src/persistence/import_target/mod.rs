@@ -5,9 +5,7 @@
 //! live in busbar-migrations, which depends on this facade; kernel never imports it.
 
 pub mod candidate_codec;
-pub mod journal;
 pub mod records;
-pub mod recovery;
 pub mod target;
 
 pub use target::{ActivationChange, ActivationRequest, TargetIdentity};

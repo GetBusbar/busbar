@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A frozen legacy Applied decision is not a native executable receipt. This
-//! immutable disposition authorizes the existing current-owner adoption path;
-//! original selected heads and journal frames remain unchanged.
+//! Cold adoption of a retired native writer's recovery heads. Each adoption
+//! fixes one immutable child descriptor; original selected heads and journal
+//! frames remain unchanged.
 use super::*;
 use crate::governance::recovery::MigratedChildContext;
 use crate::governance::{recovery::RecoveryKind, GovState};
@@ -47,150 +47,12 @@ pub(super) fn copy_guards(guards: &[Predicate]) -> Vec<Predicate> {
         .collect()
 }
 
-/// Stable facts supplied only after the migration provider checks its actual
-/// native source fence, complete original ancestry, and matching old receipt.
-/// A fresh fence challenge is deliberately not part of the immutable row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AppliedImportEvidence {
-    pub source_dataset: [u8; 16],
-    pub source_snapshot: [u8; 16],
-    pub source_content_digest: [u8; 32],
-    pub source_schema_digest: [u8; 32],
-    pub upgrade: [u8; 16],
-    pub fence_enforcement: [u8; 32],
-    pub route: [u8; 32],
-    pub receipt_evidence: [u8; 32],
-    pub historical_body_digest: [u8; 32],
-    pub recovery_closure_digest: [u8; 32],
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AppliedProof {
-    initial: RecoveryEvent,
-    selected: RecoveryEvent,
-    original_head: Vec<u8>,
-    evidence: AppliedImportEvidence,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Disposition {
-    version: u8,
-    proof: AppliedProof,
-    digest: [u8; 32],
-}
 fn imported_address(operation: &[u8; 16]) -> Address {
     Address {
         namespace: IMPORTED.0,
         key: operation.to_vec(),
     }
 }
-pub fn applied_disposition_authorizes(address: &Address) -> bool {
-    address.namespace == IMPORTED.0
-        && address.key.len() == 16
-        && address.key.iter().any(|byte| *byte != 0)
-}
-fn validate_original(event: &RecoveryEvent) -> Result<(), RecoveryError> {
-    let checked = match event.kind {
-        RecoveryKind::Usage => GovState::legacy_usage_values(event).map(|_| ()),
-        RecoveryKind::Metering => GovState::legacy_metering_values(event).map(|_| ()),
-        RecoveryKind::Correction => GovState::legacy_correction_fingerprint(event).map(|_| ()),
-    };
-    checked.map_err(invalid)
-}
-impl Disposition {
-    fn checked(proof: AppliedProof) -> Result<Self, RecoveryError> {
-        proof.initial.follows(None)?;
-        let initial = &proof.initial;
-        let selected = &proof.selected;
-        if initial.operation_id == [0; 16]
-            || initial.operation_id != selected.operation_id
-            || initial.kind != selected.kind
-            || initial.body_fingerprint != selected.body_fingerprint
-            || initial.first_sent_at_ms != selected.first_sent_at_ms
-            || (selected.revision == 0 && selected != initial)
-            || (selected.revision > 0 && selected.previous_event.is_none())
-            || !matches!(
-                selected.state,
-                RecoveryState::Intent
-                    | RecoveryState::Applied
-                    | RecoveryState::LandedUnknown
-                    | RecoveryState::VerdictLanded
-            )
-        {
-            return Err(invalid(
-                "imported Applied decision differs from original custody",
-            ));
-        }
-        validate_original(initial)?;
-        validate_original(selected)?;
-        let head: Head = serde_json::from_slice(&proof.original_head).map_err(invalid)?;
-        if head.version != 1
-            || head.node == 0
-            || head.sequence == 0
-            || head.revision != selected.revision
-            || head.event_digest != selected.fingerprint()?
-        {
-            return Err(invalid(
-                "imported Applied decision names another selected head",
-            ));
-        }
-        let evidence = &proof.evidence;
-        if evidence.source_dataset == [0; 16]
-            || evidence.source_snapshot == [0; 16]
-            || evidence.upgrade == [0; 16]
-            || [
-                evidence.source_content_digest,
-                evidence.source_schema_digest,
-                evidence.fence_enforcement,
-                evidence.route,
-                evidence.receipt_evidence,
-                evidence.historical_body_digest,
-                evidence.recovery_closure_digest,
-            ]
-            .contains(&[0; 32])
-        {
-            return Err(invalid(
-                "imported Applied decision lacks checked source/fence/receipt facts",
-            ));
-        }
-        let mut hash = Sha256::new();
-        hash.update(b"busbar.recovery.imported-applied/1\0");
-        hash.update(serde_json::to_vec(&proof).map_err(invalid)?);
-        Ok(Self {
-            version: 1,
-            proof,
-            digest: hash.finalize().into(),
-        })
-    }
-    fn decode(address: &Address, bytes: &[u8]) -> Result<Self, RecoveryError> {
-        let value: Self = serde_json::from_slice(bytes).map_err(invalid)?;
-        let checked = Self::checked(value.proof.clone())?;
-        if value != checked
-            || !applied_disposition_authorizes(address)
-            || address.key != value.proof.initial.operation_id
-        {
-            return Err(invalid("invalid imported Applied disposition"));
-        }
-        Ok(value)
-    }
-    fn resolution(&self, selected: &RecoveryEvent) -> RecoveryResolution {
-        RecoveryResolution {
-            operation_id: selected.operation_id,
-            body_fingerprint: selected.body_fingerprint,
-            expected_revision: selected.revision,
-            verdict: RecoveryVerdict::Landed,
-            sender_quiesced: true,
-            backend_quiesced: true,
-            actor: "core migration".into(),
-            reason: format!(
-                "verified frozen Applied receipt {}",
-                hex::encode(self.digest)
-            ),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ChildDescriptor {
@@ -229,23 +91,6 @@ impl StoreRecovery {
     /// retains the original native attempt; the next call retries it before
     /// obtaining another clock observation. Competing processes always read
     /// the winning immutable descriptor rather than retaining their proposal.
-    async fn imported_context(
-        &self,
-        disposition: &Disposition,
-        disposition_raw: &Secret<Vec<u8>>,
-    ) -> Result<(ChildDescriptor, Predicate), RecoveryError> {
-        let operation = disposition.proof.initial.operation_id;
-        self.context_for(
-            disposition.digest,
-            operation,
-            &Secret::new(disposition.proof.original_head.clone()),
-            &[Predicate {
-                address: imported_address(&operation),
-                expected: ExpectedValue::Exact(disposition_raw.clone()),
-            }],
-        )
-        .await
-    }
     async fn context_for(
         &self,
         provenance: [u8; 32],
@@ -351,7 +196,7 @@ impl StoreRecovery {
         ))
     }
 
-    pub(super) async fn adopt_imported(&self) -> Result<(), RecoveryError> {
+    pub(super) async fn adopt_pending(&self) -> Result<(), RecoveryError> {
         let retained = self
             .state
             .lock()
@@ -379,74 +224,21 @@ impl StoreRecovery {
             self.adopt_at_with(&resolution, &pending.transitions, &pending.guards)
                 .await?;
         }
-        for (operation, tip) in heads(&self.store).await? {
-            let imported = imported_address(&operation);
-            let Some(raw) = read(&self.store, vec![imported.clone()])
+        // Only an unreleased 1.6.0-dev importer wrote these rows. Refuse rather
+        // than adopt such an operation natively without its native receipt.
+        for (operation, _) in heads(&self.store).await? {
+            if read(&self.store, vec![imported_address(&operation)])
                 .await?
                 .pop()
                 .flatten()
-            else {
-                continue;
-            };
-            let disposition = Disposition::decode(&imported, raw.expose(&crate::seal::lend()))?;
-            let original: Head =
-                serde_json::from_slice(&disposition.proof.original_head).map_err(invalid)?;
-            if tip != original {
-                // A previous real adoption is reusable only through actual
-                // selected ancestry, never from fabricated quiescence facts.
-                let resolution = disposition.resolution(&disposition.proof.selected);
-                let mut history = History::new(&self.store);
-                let mut attested = false;
-                let selection = history
-                    .selection(&operation, &tip, |_, candidate| {
-                        attested |= candidate.adoption.as_ref().is_some_and(|proof| {
-                            proof.foreign_head == original && proof.matches(&resolution)
-                        });
-                        Ok(())
-                    })
-                    .await?;
-                history.finish().await?;
-                if !attested || selection.initial != disposition.proof.initial {
-                    return Err(invalid(
-                        "migrated Applied head lacks its selected adoption ancestry",
-                    ));
-                }
-                continue;
-            }
-            let selection = self.selection(&operation, &tip).await?;
-            if selection.initial != disposition.proof.initial
-                || selection.selected != disposition.proof.selected
+                .is_some()
             {
-                return Err(invalid(
-                    "migrated Applied disposition differs from original selected ancestry",
+                return Err(RecoveryError::Invalid(
+                    "store carries a recovery disposition written by an unreleased 1.6.0-dev \
+                     import; upgrade from 1.5.5"
+                        .into(),
                 ));
             }
-            let (descriptor, context_guard) = self.imported_context(&disposition, &raw).await?;
-            let resolution = disposition.resolution(&selection.selected);
-            let transitions = match selection.selected.kind {
-                RecoveryKind::Correction => {
-                    GovState::stage_foreign_correction_verdict(&selection.selected, &resolution)?
-                }
-                RecoveryKind::Usage | RecoveryKind::Metering => {
-                    GovState::stage_imported_raw_verdict(
-                        &selection.selected,
-                        &resolution,
-                        &descriptor.context,
-                    )?
-                }
-            };
-            self.adopt_at_with(
-                &resolution,
-                &transitions,
-                &[
-                    Predicate {
-                        address: imported,
-                        expected: ExpectedValue::Exact(raw),
-                    },
-                    context_guard,
-                ],
-            )
-            .await?;
         }
         self.adopt_native_foreign().await
     }
@@ -588,25 +380,11 @@ impl StoreRecovery {
                 reason: "native writer permanently retired; canonical operation receipt checked"
                     .into(),
             };
-            let imported = imported_address(&operation);
-            let imported_raw = read(&self.store, vec![imported.clone()])
-                .await?
-                .pop()
-                .flatten();
-            let provenance = if let Some(raw) = imported_raw {
-                let disposition = Disposition::decode(&imported, raw.expose(&crate::seal::lend()))?;
-                guards.push(Predicate {
-                    address: imported,
-                    expected: ExpectedValue::Exact(raw),
-                });
-                disposition.digest
-            } else {
-                let mut hash = Sha256::new();
-                hash.update(b"busbar.recovery.native-child-custody/1\0");
-                hash.update(self.store.info().dataset.0);
-                hash.update(selection.initial.fingerprint()?);
-                hash.finalize().into()
-            };
+            let mut hash = Sha256::new();
+            hash.update(b"busbar.recovery.native-child-custody/1\0");
+            hash.update(self.store.info().dataset.0);
+            hash.update(selection.initial.fingerprint()?);
+            let provenance: [u8; 32] = hash.finalize().into();
             let (descriptor, context_guard) = self
                 .context_for(provenance, operation, &raw_head, &guards)
                 .await?;
@@ -624,32 +402,4 @@ impl StoreRecovery {
         }
         Ok(())
     }
-}
-
-/// Emit BOTH the unchanged original selected head and its immutable disposition
-/// in one migration candidate. This never writes a native operation receipt or
-/// claims that an unsent remainder/authorized child is already settled.
-type ImportRows = Vec<(Address, Secret<Vec<u8>>)>;
-pub fn applied_disposition_rows(
-    initial: &RecoveryEvent,
-    selected: &RecoveryEvent,
-    original_head: &[u8],
-    evidence: &AppliedImportEvidence,
-) -> Result<ImportRows, RecoveryError> {
-    let disposition = Disposition::checked(AppliedProof {
-        initial: initial.clone(),
-        selected: selected.clone(),
-        original_head: original_head.to_vec(),
-        evidence: evidence.clone(),
-    })?;
-    Ok(vec![
-        (
-            super::address(&selected.operation_id),
-            Secret::new(original_head.to_vec()),
-        ),
-        (
-            imported_address(&selected.operation_id),
-            Secret::new(serde_json::to_vec(&disposition).map_err(invalid)?),
-        ),
-    ])
 }
