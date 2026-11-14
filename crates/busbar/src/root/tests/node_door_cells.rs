@@ -271,8 +271,9 @@ async fn a_caller_that_hangs_up_mid_dispatch_keeps_its_flat_fee_charged() {
         },
     )
     .await;
+    let body = chat();
     tokio::select! {
-        _ = rig.open(CHAT_PATH, &chat()) => {
+        _ = rig.open(CHAT_PATH, &body) => {
             panic!("the far end holds its body, so the unit cannot have answered");
         }
         // The unit is reading the held body: the caller goes away here, and its request future is
