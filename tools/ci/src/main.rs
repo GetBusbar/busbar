@@ -1,5 +1,6 @@
 mod bootstrap;
 mod confine;
+mod confined;
 mod fetch;
 mod images;
 mod inflate;
