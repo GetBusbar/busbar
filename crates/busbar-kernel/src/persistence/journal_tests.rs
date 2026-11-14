@@ -1479,6 +1479,59 @@ async fn group_is_cut_at_the_store_scan_limit() {
     assert!(runs.iter().all(|run| owner.is_confirmed(run).unwrap()));
 }
 
+/// The byte half of the store's per-append limit: two 100-byte runs fill
+/// `scan_bytes` exactly, so the third starts a new group, and a run that is
+/// `scan_bytes` on its own is sent alone (neighbours do not join it).
+#[tokio::test]
+async fn group_is_cut_at_the_store_byte_limit_and_a_full_run_goes_alone() {
+    let backend = Arc::new(Backend::default());
+    let hdr = busbar_kernel_wal::journal::JOURNAL_HEADER_BYTES;
+    let store = CoreStore::attach(
+        backend.clone(),
+        WriterAuthority {
+            writer_epoch: 2,
+            writer: [4; 16],
+            execution_epoch: 3,
+        },
+        Limits {
+            pending_operations: 8,
+            conflict_retries: 1,
+            scan_items: 4,
+            scan_bytes: 2 * (hdr + 100),
+        },
+    )
+    .await
+    .unwrap();
+    let owner = RuntimeJournal::open(
+        Arc::new(store),
+        7,
+        BufferBudget {
+            records: 64,
+            bytes: 64 * 1024,
+        },
+    )
+    .await
+    .unwrap();
+    let run = |len: usize| {
+        owner
+            .stage_run(&[busbar_kernel_wal::Entry::new(
+                RecordClass::Transaction,
+                vec![0; len],
+            )])
+            .unwrap()
+    };
+    let runs = [run(100), run(100), run(100), run(hdr + 200), run(100)];
+    appended(&backend);
+    owner.flush().await.unwrap();
+    let puts: Vec<_> = appended(&backend).iter().map(record_puts).collect();
+    assert_eq!(
+        puts,
+        [2, 1, 1, 1],
+        "byte cut at 2 runs; the full-limit run is sent alone"
+    );
+    assert!(runs.iter().all(|run| owner.is_confirmed(run).unwrap()));
+}
+
 #[tokio::test]
 async fn group_retry_after_uncertain_is_exact() {
     let backend = Arc::new(Backend::default());
