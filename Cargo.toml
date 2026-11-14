@@ -17,7 +17,6 @@ members = [
     "crates/busbar-kernel-wal",
     "crates/busbar-kernel-audit",
     "crates/plugin-loader",
-    "crates/busbar-yaml",
 ]
 
 # Each version is written once here; members inherit with `workspace = true` and may add features.
@@ -95,10 +94,10 @@ schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 serde_urlencoded = "0.7"
-# YAML is busbar-yaml: serde_yaml_ng 0.10's API on a memory-safe port of libyaml (no unsafe-libyaml),
-# under the `serde_yaml` name so call sites are unchanged. A path row: busbar-contract's git
-# consumers (the plugins) resolve it from this repository at the same pin.
-serde_yaml = { package = "busbar-yaml", path = "crates/busbar-yaml" }
+# YAML is yaml_serde, the YAML organization's maintained serde_yaml (the API and libyaml 0.2.5 parser
+# 1.5.5 shipped), under the `serde_yaml` name so call sites are unchanged. busbar-contract's git
+# consumers (the plugins) inherit it through this row.
+serde_yaml = { package = "yaml_serde", version = "0.10" }
 sha2 = "0.10"
 smallvec = "1"
 socket2 = { version = "0.6", features = ["all"] }

@@ -282,7 +282,6 @@ dependencies = [
  "busbar-kernel-wal",
  "busbar-migrations",
  "busbar-plugin-loader",
- "busbar-yaml",
  "bytes",
  "core_affinity",
  "getrandom 0.3.4",
@@ -302,6 +301,7 @@ dependencies = [
  "tokio-util",
  "tower",
  "tracing",
+ "yaml_serde",
  "zeroize",
 ]
 
@@ -312,7 +312,6 @@ dependencies = [
  "async-trait",
  "aws-lc-sys",
  "base64 0.22.1",
- "busbar-yaml",
  "bytes",
  "futures",
  "getrandom 0.3.4",
@@ -337,6 +336,7 @@ dependencies = [
  "tracing-core",
  "tracing-log",
  "windows-sys 0.61.2",
+ "yaml_serde",
  "zeroize",
 ]
 
@@ -349,7 +349,6 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "busbar-kernel-egress",
- "busbar-yaml",
  "flate2",
  "http-body-util",
  "jsonschema",
@@ -360,6 +359,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "yaml_serde",
 ]
 
 [[package]]
@@ -403,7 +403,6 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "busbar-plugin-loader",
- "busbar-yaml",
  "bytes",
  "futures",
  "http",
@@ -418,6 +417,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "yaml_serde",
  "zeroize",
 ]
 
@@ -438,7 +438,6 @@ dependencies = [
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
  "busbar-plugin-loader",
- "busbar-yaml",
  "bytes",
  "crc32fast",
  "criterion",
@@ -472,6 +471,7 @@ dependencies = [
  "tracing-log",
  "tracing-subscriber",
  "url",
+ "yaml_serde",
  "zeroize",
 ]
 
@@ -539,13 +539,13 @@ dependencies = [
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
- "busbar-yaml",
  "getrandom 0.3.4",
  "hex",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tokio",
+ "yaml_serde",
  "zeroize",
 ]
 
@@ -577,19 +577,6 @@ dependencies = [
  "tungstenite",
  "windows-sys 0.61.2",
  "zeroize",
-]
-
-[[package]]
-name = "busbar-yaml"
-version = "1.6.0"
-dependencies = [
- "indexmap",
- "itoa",
- "ryu",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "yaml_serde",
 ]
 
 [[package]]
