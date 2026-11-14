@@ -864,6 +864,7 @@ pub struct Instance {
     /// Some need takes its target from the settings ([`from_settings`]), judged once at bind.
     needs_from_settings: bool,
     /// Some need names a `target_from` settings path, judged once at bind.
+    #[cfg(any(test, feature = "test-support"))]
     targets_from_settings: bool,
 
     secret_refs: Box<[String]>,
@@ -3041,6 +3042,7 @@ impl<K: Kind> Plugin<K> {
                 measurement_authority: bind.dispatcher.measurements(),
                 instance,
                 needs_from_settings: declared_needs.iter().any(from_settings),
+                #[cfg(any(test, feature = "test-support"))]
                 targets_from_settings: declared_needs.iter().any(|n| !n.target_from.is_empty()),
                 needs: declared_needs,
                 secret_refs,

@@ -522,16 +522,15 @@ impl<I: InFrame, O: OutFrame> Reply<I, O> {
         }
     }
 
-    test_support_pub! {
-        fn wait_done(&self) -> Done<I, O> {
-            let mut g = self.slot.lock();
-            loop {
-                if let Some(d) = g.value.take() {
-                    drop(g);
-                    return d.take();
-                }
-                g = self.slot.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn wait_done(&self) -> Done<I, O> {
+        let mut g = self.slot.lock();
+        loop {
+            if let Some(d) = g.value.take() {
+                drop(g);
+                return d.take();
             }
+            g = self.slot.cv.wait(g).unwrap_or_else(|e| e.into_inner());
         }
     }
 
@@ -551,6 +550,7 @@ impl<I: InFrame, O: OutFrame> Reply<I, O> {
         Self { slot, owner: None }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn detach(mut self) {
         self.owner = None;
     }
@@ -696,6 +696,7 @@ enum Admit {
     /// Under the instance's `max_inflight` ([`Instance::acquire`]).
     Cap,
     /// On a driver ticket: outside `max_inflight`.
+    #[cfg(any(test, feature = "test-support"))]
     Driver,
     /// A plane driver tick whose caller only copies the scalar schedule.
     DriverCopy,
@@ -2969,15 +2970,14 @@ impl Dispatcher {
         )
     }
 
-    test_support_pub! {
-        fn tick<K: Kind>(
-            &self,
-            plugin: &Plugin<K>,
-            driver: Ticket,
-            now_ns: u64,
-        ) -> Reply<TickIn, TickOut> {
-            self.tick_with(plugin, driver, now_ns, Admit::Driver)
-        }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn tick<K: Kind>(
+        &self,
+        plugin: &Plugin<K>,
+        driver: Ticket,
+        now_ns: u64,
+    ) -> Reply<TickIn, TickOut> {
+        self.tick_with(plugin, driver, now_ns, Admit::Driver)
     }
 
     pub(crate) fn tick_copy<K: Kind>(
