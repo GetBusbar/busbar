@@ -88,10 +88,13 @@ impl SecureVec {
     /// Wipe-and-advance: the first `n` live bytes are wiped and released; nothing moves. Once
     /// empty, both offsets reset for free.
     pub fn consume(&mut self, n: usize) {
-        // RED STUB (TRANSPORT-TLS §8 item 1): the rejected front-memmove form, no wipe.
         let n = n.min(self.len());
-        self.v.copy_within(self.head + n..self.end, self.head);
-        self.end -= n;
+        wipe(&mut self.v[self.head..self.head + n]);
+        self.head += n;
+        if self.head == self.end {
+            self.head = 0;
+            self.end = 0;
+        }
     }
 
     /// Append `b`. On [`Overflow`] nothing is appended and the held bytes are unchanged.
