@@ -40,7 +40,10 @@ impl HealthState {
                 err: 0,
             });
             lane.dead.store(snap.dead, Ordering::Relaxed);
-            *lane.dead_reason.lock().unwrap_or_else(|e| e.into_inner()) = snap.dead_reason.clone();
+            lane.dead_reason
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone_from(&snap.dead_reason);
             lane.ok.reset_to(snap.ok);
             lane.err.store(snap.err, Ordering::Relaxed);
             lane.client_fault

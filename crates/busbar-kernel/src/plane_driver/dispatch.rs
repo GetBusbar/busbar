@@ -97,6 +97,7 @@ pub fn wire_format_names(key: &str) -> &'static [&'static str] {
 }
 
 pub fn provider_dialects() -> Vec<&'static str> {
+    // busbar:expect(bp::fresh_buffer, reason = "config: the dialect list is read when a configuration is built or validated")
     let mut out: Vec<&'static str> = Vec::new();
     for d in registry::plane_decls() {
         for name in (d.provider_dialects)(d) {
@@ -264,7 +265,12 @@ impl PlaneDispatch {
     }
 
     pub fn mounted_keys(&self) -> Vec<&'static str> {
-        self.claims.keys().copied().collect()
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the mounts are listed for inspection; a request resolves through mounted_plane_of"
+        )]
+        let keys = self.claims.keys().copied().collect();
+        keys
     }
 
     pub fn ingress_of(&self, path: &str) -> Ingress {
@@ -328,7 +334,12 @@ fn normalise_mount(path: &str) -> String {
     if trimmed.is_empty() {
         return String::new();
     }
-    format!("/{trimmed}")
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a mount path is normalised once, when the dispatch table is built"
+    )]
+    let mount = format!("/{trimmed}");
+    mount
 }
 
 fn path_is_under(path: &str, mount: &str) -> bool {
