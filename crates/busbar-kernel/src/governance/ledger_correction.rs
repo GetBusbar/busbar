@@ -1701,7 +1701,7 @@ impl GovState {
                     budget_window(super::super::super::WINDOW_TOTAL, epoch),
                 )],
             };
-            targets.sort_unstable();
+            targets.sort();
             targets.dedup();
             let mut snapshots = BTreeMap::new();
             for (bucket, window) in &targets {

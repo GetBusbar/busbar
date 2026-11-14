@@ -195,7 +195,7 @@ impl HookEnv {
             reason = "config: route declarations are collected once per boot or reload, in name order"
         )]
         let mut names: Vec<_> = hooks.keys().collect();
-        names.sort_unstable();
+        names.sort();
         let mut calls = foldhash::HashMap::default();
         // busbar:expect(bp::fresh_buffer, reason = "config: the route declarations are this boot or reload's output")
         let mut declarations = Vec::new();

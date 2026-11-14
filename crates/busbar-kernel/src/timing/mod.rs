@@ -411,7 +411,7 @@ mod imp {
             reason = "config: the BUSBAR_TIMING report table, printed on demand or at exit"
         )]
         let mut rows: Vec<(&&'static str, &MethodStat)> = map.iter().collect();
-        rows.sort_unstable_by_key(|(_, s)| std::cmp::Reverse(s.total_ns));
+        rows.sort_by_key(|(_, s)| std::cmp::Reverse(s.total_ns));
         eprintln!(
             "BUSBAR_TIMING scope={scope}  {:<28} {:>10} {:>11} {:>10} {:>10} {:>10} {:>10} {:>10}",
             "name", "count", "total", "mean", "p50", "p99", "min", "max"

@@ -425,7 +425,7 @@ fn judge_with_plugins(
 
         if member_protocols.len() > 1 {
             let mut protocols: Vec<&str> = member_protocols.iter().copied().collect();
-            protocols.sort_unstable();
+            protocols.sort();
             let (pool, protocols) = (pool_name.to_string(), protocols.join("+"));
             advisories.raise(move || {
                 diag_warn!(
@@ -630,7 +630,7 @@ fn judge_with_plugins(
             .map(|(name, _)| name.as_str())
             .collect();
         if defaults.len() > 1 {
-            defaults.sort_unstable();
+            defaults.sort();
             errors.push(
                 coded::config_hook_invalid(format!(
                 "more than one hook sets `default: true` ({}); at most one hook may be the default \

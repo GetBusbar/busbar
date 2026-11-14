@@ -101,7 +101,9 @@ impl ConsumedCredentials {
 pub struct CallerCredential(busbar_contract::SharedSecret);
 
 impl CallerCredential {
-    pub(super) fn verified(token: &str) -> Self {
+    /// Private to this module (LINT-RULES R23 derive-once): only [`verified_caller_credential`]
+    /// builds the caller credential, once per request.
+    fn verified(token: &str) -> Self {
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::SecretCopy);
         Self(busbar_contract::Secret::new(token.as_bytes().to_vec()).share())
     }
