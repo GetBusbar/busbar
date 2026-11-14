@@ -1,0 +1,117 @@
+name: hooks
+group: hooks
+description: Pool hooks on the request path - ranking (cheapest, least_busy) and the complexity classifier (a decisions child call per request).
+config: |
+  listen: "{LISTEN}"
+  admin_listen: "{ADMIN}"
+  public_url: "http://{LISTEN}"
+  identity-providers:
+    admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+  auth:
+    chain: [keys]
+    admin_auth: [admin-tokens]
+    signing_key: { file: "{WORK}/signing.key" }
+  groups:
+    bench:
+      limits:
+        - { requests: 1000000000, per: minute }
+  advanced:
+    allow_destinations: ["127.0.0.1"]
+  store: { module: memory }
+  providers:
+    openai: { api_key: { env: HAMMER_UPSTREAM_KEY } }
+    dec: { api_key: { env: HAMMER_UPSTREAM_KEY } }
+  models:
+    m-dear: { provider: openai }
+    m-cheap: { provider: openai }
+    small: { provider: openai }
+    large: { provider: openai }
+  rate_card:
+    m-dear: { input_utok: 100000, output_utok: 200000 }
+    m-cheap: { input_utok: 1000, output_utok: 2000 }
+  decisions:
+    models:
+      classifier: { provider: dec, upstream_model: classifier, protocol: jev }
+  hooks:
+    complexity:
+      kind: gate
+      module: complexity
+      prompt: ro
+      user: no
+      signals: [request_text_complete]
+      timeout_ms: 1500
+      on_error: weighted
+      child_dispatch:
+        revision: 1
+        plane: decision
+        operation: POST
+        target: /busbar/decisions/v1/classify
+        target_binding: classifier
+        max_input_bytes: 16384
+        max_output_bytes: 65536
+        max_children: 1
+        timeout_ms: 1000
+        max_budget_micros: 1000000
+      settings:
+        classifier_model: classifier
+        mode: prefer
+        min_confidence: 0.7
+        missing_confidence: abstain
+        previous_messages: 2
+        max_input_bytes: 16384
+        tiers:
+          - { label: easy, description: Short requests requiring little reasoning, examples: [Greet the user], candidates: [small] }
+          - { label: hard, description: Requests requiring several reasoning steps, candidates: [large] }
+  pools:
+    p-plain:
+      members:
+        - model: m-cheap
+    p-cheapest:
+      hooks: [cheapest]
+      members:
+        - model: m-dear
+        - model: m-cheap
+    p-least-busy:
+      hooks: [least_busy]
+      members:
+        - model: m-dear
+        - model: m-cheap
+    p-complexity:
+      hooks: [complexity]
+      members:
+        - model: small
+        - model: large
+providers: |
+  openai: { protocol: openai, base_url: "{MOCK}" }
+  dec: { protocol: jev, base_url: "{MOCK}" }
+setup:
+  - mint_key: { as: KEY, group: bench }
+cases:
+  - name: pool, no hook (baseline)
+    shape: { closed: 32 }
+    requests:
+      - path: /v1/chat/completions
+        headers: { authorization: "Bearer {KEY}", content-type: application/json }
+        body: '{"model":"p-plain","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+        contains: hammer-ok
+  - name: cheapest
+    shape: { closed: 32 }
+    requests:
+      - path: /v1/chat/completions
+        headers: { authorization: "Bearer {KEY}", content-type: application/json }
+        body: '{"model":"p-cheapest","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+        contains: hammer-ok
+  - name: least_busy
+    shape: { closed: 32 }
+    requests:
+      - path: /v1/chat/completions
+        headers: { authorization: "Bearer {KEY}", content-type: application/json }
+        body: '{"model":"p-least-busy","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+        contains: hammer-ok
+  - name: complexity (decisions child call)
+    shape: { closed: 32 }
+    requests:
+      - path: /v1/chat/completions
+        headers: { authorization: "Bearer {KEY}", content-type: application/json }
+        body: '{"model":"p-complexity","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+        contains: hammer-ok

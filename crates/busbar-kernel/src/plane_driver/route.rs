@@ -266,6 +266,13 @@ pub trait CallerEnd: Sync {
 
     fn head(&self, status: u32, fields: HeadFields);
 
+    /// Head of a WHOLE answer: exactly `len` body bytes follow in this call's writes and nothing
+    /// after. Transports that state framing (HTTP) override; every other caller is unchanged.
+    fn head_whole(&self, status: u32, fields: HeadFields, len: usize) {
+        let _ = len;
+        self.head(status, fields);
+    }
+
     fn write<'a>(&'a self, bytes: &'a [u8]) -> impl Future<Output = bool> + Send + 'a;
 
     fn write_text<'a>(&'a self, bytes: &'a [u8]) -> impl Future<Output = bool> + Send + 'a {

@@ -1,0 +1,42 @@
+name: llm-openai-openai
+group: llm
+description: The website cell, openai ingress to openai egress, whole, onthebench's own config (open auth, memory store).
+config: |
+  listen: "{LISTEN}"
+  providers:
+    mock-openai: { api_key: { env: HAMMER_UPSTREAM_KEY } }
+  models:
+    gpt-4o-mini: { provider: mock-openai }
+  advanced:
+    allow_destinations: ["127.0.0.1"]
+  store: { module: memory }
+config_1_5: |
+  listen: "{LISTEN}"
+  providers:
+    mock-openai: { api_key: { env: HAMMER_UPSTREAM_KEY } }
+  models:
+    gpt-4o-mini: { provider: mock-openai }
+providers: |
+  mock-openai:
+    protocol: openai
+    base_url: "{MOCK}"
+cases:
+  - name: openai>openai c=32
+    shape: { closed: 32 }
+    requests:
+      - path: /v1/chat/completions
+        headers: { authorization: "Bearer bench-token", content-type: application/json }
+        body: '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+        contains: hammer-ok
+    direct:
+      listener: mock
+      path: /v1/chat/completions
+      headers: { content-type: application/json }
+      body: '{"model":"mock","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+  - name: openai>openai c=1
+    shape: { closed: 1 }
+    requests:
+      - path: /v1/chat/completions
+        headers: { authorization: "Bearer bench-token", content-type: application/json }
+        body: '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+        contains: hammer-ok

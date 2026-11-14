@@ -1213,6 +1213,24 @@ each dialect translates, field by field, is listed in the generated
 ### Fixed
 
 - 1.6.0 Fixed: a webrequest hook's status no longer reports drift where its settings match.
+- **Billing change: Gemini transcriptions bill every token Google reports.** A transcription
+  (`generateContent` with inline audio) served same-dialect, from a Gemini caller to a Gemini
+  upstream, was not billed at all: no usage, no ledger line, no cap or budget charge. It is now
+  billed. On every route, a transcription now ledgers `usageMetadata` the way a Gemini chat turn
+  does: `promptTokenCount` less `cachedContentTokenCount`, plus `toolUsePromptTokenCount`, is input;
+  `cachedContentTokenCount` is cache read, priced at the cache-read rate; `candidatesTokenCount` plus
+  `thoughtsTokenCount` is output, since Google prices output including thinking. Previously only
+  the prompt and candidates counts were billed and the rest were recorded as unbilled residuals.
+  Thinking now counts against token caps and budgets. In the response, a Gemini caller's
+  `candidatesTokenCount` now includes thinking tokens, `promptTokenCount` still includes cached
+  tokens and also includes any tool-use prompt tokens, and `cachedContentTokenCount` is echoed. An
+  OpenAI-shaped caller on a Gemini upstream sees `output_tokens` and `total_tokens` rise by the
+  thinking tokens, and `input_tokens` keep cached tokens inside them and add tool-use prompt
+  tokens, so `input_tokens + output_tokens == total_tokens`. A count Google sends unreadable is
+  echoed as `null` and refused in the audit trail rather than dropped. **Migration:** expect
+  higher recorded spend on Gemini transcriptions that think or use tools and lower spend on cached
+  prompts. A caller that reconciled against the old figures must use the new ones. No config
+  change is needed.
 - **`oauth_as:` could not mint an authorization code at all.** The consent session cookie was
   scoped to a sibling path of the endpoint that reads it, so the browser never sent it and every
   authorization-code flow bounced between `/authorize` and the consent screen forever. The cookie
