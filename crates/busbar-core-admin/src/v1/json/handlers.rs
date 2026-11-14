@@ -206,7 +206,8 @@ pub(crate) async fn install_plugin(
                 &actor,
             );
             return err_json(&AdminError::Validation(format!(
-                "malformed plugin body: {e}"
+                "malformed plugin body: {}",
+                describe_body_error(&e)
             )));
         }
     };
@@ -1060,7 +1061,8 @@ pub(crate) async fn patch_group(
         Ok(r) => r,
         Err(e) => {
             return err_json(&AdminError::Validation(format!(
-                "malformed group patch: {e}"
+                "malformed group patch: {}",
+                describe_body_error(&e)
             )))
         }
     };
@@ -1752,7 +1754,12 @@ pub(crate) async fn put_auth(
     let expected = ok_or_respond!(if_match_version(&headers));
     let req: PutAuthBody = match serde_json::from_slice(&body) {
         Ok(b) => b,
-        Err(e) => return err_json(&AdminError::Validation(format!("invalid body: {e}"))),
+        Err(e) => {
+            return err_json(&AdminError::Validation(format!(
+                "invalid body: {}",
+                describe_body_error(&e)
+            )))
+        }
     };
     let chain = req.admin_auth.clone();
     let out = config_transaction(&handle, move |txn| {
@@ -2089,7 +2096,7 @@ pub(crate) async fn restart(
             Err(e) => {
                 audit::AUDIT.record_by("admin.restart", "process", audit::OUTCOME_REJECTED, &actor);
                 return err_json_cond(
-                    &AdminError::Validation(format!("invalid body: {e}")),
+                    &AdminError::Validation(format!("invalid body: {}", describe_body_error(&e))),
                     Cond::MalformedBody,
                 );
             }
@@ -2181,7 +2188,8 @@ pub(crate) async fn apply_config(
             Ok(d) => d,
             Err(e) => {
                 return err_json(&AdminError::Validation(format!(
-                    "malformed config body: {e}"
+                    "malformed config body: {}",
+                    describe_body_error(&e)
                 )))
             }
         };
@@ -2565,7 +2573,8 @@ pub(crate) async fn put_config_settings(
         Ok(r) => r,
         Err(e) => {
             return err_json(&AdminError::Validation(format!(
-                "malformed config settings body: {e}"
+                "malformed config settings body: {}",
+                describe_body_error(&e)
             )))
         }
     };
@@ -4787,7 +4796,8 @@ pub(crate) async fn validate_config(
             Ok(d) => d,
             Err(e) => {
                 return err_json(&AdminError::Validation(format!(
-                    "malformed config body: {e}"
+                    "malformed config body: {}",
+                    describe_body_error(&e)
                 )))
             }
         };

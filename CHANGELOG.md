@@ -157,6 +157,10 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 
 ### Security
 
+- **Admin body refusals name the missing or unknown field, the expected type and the position
+  again.** Values that serde quotes from the request body are replaced with `(values not echoed)`.
+  Field and key names the caller typed are shown only up to 64 bytes. Authored validation messages
+  are shown as written.
 - **Store-only plugin downgrade state and immutable bootstrap archives.** 1.6.0 Breaking: a dropped
   Store, secret plugin, transport or plane grammar probe needed before Store recovery must match the complete archive's
   SHA-256 in the operator's base `plugins.fetch` entry before native loading. Linked bootstrap
