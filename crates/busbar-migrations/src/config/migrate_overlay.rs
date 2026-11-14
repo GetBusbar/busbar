@@ -40,6 +40,14 @@ impl MigrateHost for OverlayHost<'_> {
     fn validate_migrated(&self, kind: &str, module: &str, settings: &Value) -> Result<(), String> {
         self.0.validate_migrated(kind, module, settings)
     }
+    fn validate_current(
+        &self,
+        kind: &str,
+        module: &str,
+        settings: &Value,
+    ) -> Result<(), super::migrate_plugins::Unvalidated> {
+        self.0.validate_current(kind, module, settings)
+    }
     fn migrating_from(&self) -> &str {
         "1.5.5"
     }

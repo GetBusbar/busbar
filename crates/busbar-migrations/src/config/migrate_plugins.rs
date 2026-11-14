@@ -19,6 +19,127 @@ const LOCALHOST_SUFFIX: &str = ".localhost";
 /// not assert that the physical schema uniquely identifies a product binary release.
 pub const FROM_DEFAULT: &str = "1.5.5";
 
+/// Why converted settings could not be checked by their current plugin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unvalidated {
+    /// The host could not obtain the current plugin. Closed set; the host writes the Display text.
+    Unavailable(Unobtainable),
+    /// The current plugin refused the settings. Its text is NOT carried, because it may echo
+    /// settings.
+    Refused,
+}
+
+/// Why the host could not obtain a current plugin. Holds no free text: every operator- or
+/// index-derived value is a [`Shown`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unobtainable {
+    /// Reading or downloading the plugin index failed.
+    IndexUnreachable { source: Shown },
+    /// The plugin index's bytes are not a release index.
+    NotAnIndex { source: Shown },
+    /// The plugin index has no row for this kind and module.
+    NoSuchPlugin { source: Shown },
+    /// The plugin index names no release of `repo` built for this busbar.
+    NoReleaseForAbi { repo: Shown },
+    /// The plugin index's release is not an `org/repo@tag` pin.
+    BadPin,
+    /// Downloading the plugin asset failed.
+    AssetUnreachable { asset: Shown },
+    /// The temporary staging directory could not be created or written.
+    Staging,
+    /// The plugin trust policy refused the fetched plugin.
+    NotAdmitted,
+    /// The fetched plugin serves no plugin of this kind and module.
+    NotServed,
+}
+
+impl std::fmt::Display for Unobtainable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::IndexUnreachable { source } => {
+                write!(f, "the plugin index {source} could not be read")
+            }
+            Self::NotAnIndex { source } => {
+                write!(f, "the plugin index {source} is not a release index")
+            }
+            Self::NoSuchPlugin { source } => {
+                write!(f, "the plugin index {source} names no such plugin")
+            }
+            Self::NoReleaseForAbi { repo } => write!(
+                f,
+                "the plugin index names no release of {repo} built for this busbar"
+            ),
+            Self::BadPin => {
+                f.write_str("the plugin index names a release that is not an org/repo@tag pin")
+            }
+            Self::AssetUnreachable { asset } => {
+                write!(f, "the plugin asset {asset} could not be downloaded")
+            }
+            Self::Staging => {
+                f.write_str("the migration staging directory could not be created or written")
+            }
+            Self::NotAdmitted => {
+                f.write_str("the fetched plugin was not admitted by the plugin trust policy")
+            }
+            Self::NotServed => {
+                f.write_str("the fetched plugin serves no plugin of this kind and module")
+            }
+        }
+    }
+}
+
+/// Index-derived or operator-supplied text as the host shows it. The only constructor is
+/// [`Shown::of`], which keeps at most a scheme, host, port and path, or a fixed placeholder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Shown(String);
+
+const SHOWN_UNPRINTABLE: &str = "<unprintable source>";
+const SHOWN_REDACTED: &str = "<redacted>";
+const SHOWN_SCHEME_END: &str = "://";
+
+impl Shown {
+    /// Show `s` without userinfo, query or fragment, refusing any byte outside printable ASCII.
+    #[must_use]
+    pub fn of(s: &str) -> Self {
+        if s.bytes().any(|b| !(0x21..=0x7E).contains(&b)) {
+            return Self(SHOWN_UNPRINTABLE.to_owned());
+        }
+        let mut rest = s.to_owned();
+        // Drop userinfo by the last `@` before any other cut, so no character inside a raw
+        // password can hide it.
+        if let Some(last_at) = s.rfind('@') {
+            let start = match s.find(SHOWN_SCHEME_END) {
+                Some(at) if at + SHOWN_SCHEME_END.len() <= last_at && is_scheme(&s[..at]) => {
+                    at + SHOWN_SCHEME_END.len()
+                }
+                _ => 0,
+            };
+            if s[start..=last_at].contains(['?', '#']) {
+                // A password holding `?`/`#` and a query or fragment holding `@` look the same.
+                return Self(format!("{}{SHOWN_REDACTED}", &s[..start]));
+            }
+            rest = format!("{}{}", &s[..start], &s[last_at + 1..]);
+        }
+        if let Some(cut) = rest.find(['?', '#']) {
+            rest.truncate(cut);
+        }
+        Self(rest)
+    }
+}
+
+/// RFC 3986 `scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`.
+fn is_scheme(text: &str) -> bool {
+    let mut bytes = text.bytes();
+    bytes.next().is_some_and(|b| b.is_ascii_alphabetic())
+        && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+}
+
+impl std::fmt::Display for Shown {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 pub trait MigrateHost {
     /// Source grammar declared by admitted owners; no source is inferred when absent.
     fn source_declarations(&self) -> Result<busbar_contract::secret_ref::Sugars, String> {
@@ -60,6 +181,21 @@ pub trait MigrateHost {
         _settings: &serde_json::Value,
     ) -> Result<(), String> {
         Ok(())
+    }
+
+    /// Validate converted current settings as [`Self::validate_migrated`] does, saying whether the
+    /// current plugin could not be obtained or refused them. The default reads every
+    /// [`Self::validate_migrated`] refusal as [`Unvalidated::Refused`] and drops its text, which
+    /// may echo settings. A host that fetches current plugins overrides this to say why one could
+    /// not be obtained.
+    fn validate_current(
+        &self,
+        kind: &str,
+        module: &str,
+        settings: &serde_json::Value,
+    ) -> Result<(), Unvalidated> {
+        self.validate_migrated(kind, module, settings)
+            .map_err(|_| Unvalidated::Refused)
     }
 
     fn migrating_from(&self) -> &str {
@@ -188,12 +324,16 @@ impl Site {
             })
     }
 
-    fn validate(&self, host: &dyn MigrateHost, settings: &serde_json::Value) -> Result<(), String> {
+    fn validate(
+        &self,
+        host: &dyn MigrateHost,
+        settings: &serde_json::Value,
+    ) -> Result<(), Unvalidated> {
         let Some(client_id) = &self.browser_client_id else {
-            return host.validate_migrated(&self.kind, &self.module, settings);
+            return host.validate_current(&self.kind, &self.module, settings);
         };
         if settings.get("client_id").is_some() {
-            return host.validate_migrated(&self.kind, &self.module, settings);
+            return host.validate_current(&self.kind, &self.module, settings);
         }
         // Match login opening: browser configuration supplies a fallback only.
         // Keep this projection out of authored settings and migration write-back.
@@ -210,8 +350,20 @@ impl Site {
             map.entry("client_id")
                 .or_insert_with(|| client_id.clone().into());
         }
-        host.validate_migrated(&self.kind, &self.module, &effective)
+        host.validate_current(&self.kind, &self.module, &effective)
     }
+}
+
+/// The failure line for a site whose current plugin the host could not obtain. Only host-written
+/// text ([`Unobtainable`]'s Display) is shown.
+fn unobtainable(site: &Site, why: &Unobtainable) -> String {
+    format!(
+        "{}: the current {} plugin '{}' could not be obtained to check these settings ({why}); \
+         install it in a plugins directory and set `plugins: {{enabled: true, dir: <dir>}}` in \
+         this config, or make BUSBAR_PLUGIN_INDEX and the plugin's GitHub release reachable, \
+         then retry",
+        site.path, site.kind, site.module
+    )
 }
 
 pub(super) struct PlaneFacts {
@@ -318,11 +470,15 @@ pub(super) fn migrate_over(
         }
         wanted.push((site.kind.clone(), site.module.clone()));
         match host.migrate(&site.kind, &site.module, &handed, &from) {
-            Ok(None) => {
-                if site.validate(host, &handed).is_err() {
+            Ok(None) => match site.validate(host, &handed) {
+                Ok(()) => {}
+                Err(Unvalidated::Unavailable(why)) => {
+                    ledger.failures.push(unobtainable(&site, &why));
+                }
+                Err(Unvalidated::Refused) => {
                     ledger.failures.push(format!("{}: current plugin validation refused unchanged settings; install the current plugin or resolve its migration prerequisites before retrying", site.path));
                 }
-            }
+            },
             Ok(Some((plugin, migrated))) => {
                 apply(root, host, &site, &handed, &plugin, migrated, ledger);
             }
@@ -676,9 +832,16 @@ fn apply(
             return;
         }
     }
-    if site.validate(host, &settings).is_err() {
-        ledger.failures.push(format!("{}: current plugin validation refused the migrated settings; no converted configuration was emitted", site.path));
-        return;
+    match site.validate(host, &settings) {
+        Ok(()) => {}
+        Err(Unvalidated::Unavailable(why)) => {
+            ledger.failures.push(unobtainable(site, &why));
+            return;
+        }
+        Err(Unvalidated::Refused) => {
+            ledger.failures.push(format!("{}: current plugin validation refused the migrated settings; no converted configuration was emitted", site.path));
+            return;
+        }
     }
     if *settings != *handed {
         if let Err(why) = write_back(root, site, handed, &settings) {
