@@ -81,6 +81,9 @@ oauth-as = { version = "1.1", default-features = false, features = [
     "dpop",
     "client-assertion",
 ] }
+# Canonical (OLPC) JSON for the signed release documents (plugin-loader release_trust); it rides on
+# serde_json, which it forces (decision 223).
+olpc-cjson = "0.1.4"
 # URI component and form codecs (DEPENDENCY-LADDER C6); already linked through url. The fleet's
 # plugins take percent-encoding from this row too.
 percent-encoding = "2.3.2"
