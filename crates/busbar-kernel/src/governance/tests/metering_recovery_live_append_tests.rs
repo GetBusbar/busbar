@@ -10,11 +10,13 @@
 //! verification, so the flusher keeps the delta in memory and `/admin/usage`
 //! misses the row for as long as traffic continues.
 //!
-//! The interposed product store lands one real journal append before every
-//! read of a recovery selected-head row, as live traffic does.
+//! The interposed in-memory store (the shared host-records test backend, so
+//! the case needs no product inputs) lands one real journal append before
+//! every read of a recovery selected-head row, as live traffic does.
 
 use super::persistence::recovery::StoreRecovery;
 use super::*;
+use crate::persistence::facade::{CoreStore, Limits, WriterAuthority};
 use crate::persistence::journal::runtime::{BufferBudget, RuntimeJournal};
 use busbar_contract::persistence::{
     BackendInfo, Call, ClockObservation, DatasetId, Decision, Page, PersistenceBackend,
@@ -110,12 +112,29 @@ async fn admin_usage_requests(gov: &GovState) -> u64 {
 async fn admin_usage_rows_land_within_settle_window_while_request_path_appends() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let backend = Arc::new(Traffic {
-            inner: crate::real_store::native_backend().await,
+            inner: Arc::new(crate::persistence::host_records::tests::Backend::default()),
             journal: OnceLock::new(),
             armed: AtomicBool::new(false),
             landed: AtomicUsize::new(0),
         });
-        let core = crate::real_store::core_over(backend.clone()).await;
+        let core = Arc::new(
+            CoreStore::attach(
+                backend.clone(),
+                WriterAuthority {
+                    writer_epoch: 2,
+                    writer: [4; 16],
+                    execution_epoch: 3,
+                },
+                Limits {
+                    pending_operations: 64,
+                    conflict_retries: 2,
+                    scan_items: 64,
+                    scan_bytes: 1024 * 1024,
+                },
+            )
+            .await
+            .unwrap(),
+        );
         let journal = RuntimeJournal::open(
             core.clone(),
             NODE,
