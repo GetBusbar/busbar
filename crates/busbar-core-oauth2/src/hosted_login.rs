@@ -470,38 +470,9 @@ fn code_challenge_s256(code_verifier: &str) -> String {
 }
 
 fn parse_query(q: &str) -> Vec<(String, String)> {
-    q.split('&')
-        .filter(|s| !s.is_empty())
-        .map(|pair| {
-            let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-            (pct_decode(k), pct_decode(v))
-        })
+    form_urlencoded::parse(q.as_bytes())
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
         .collect()
-}
-
-fn pct_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'+' => out.push(b' '),
-            b'%' if i + 2 < bytes.len() => {
-                let hi = (bytes[i + 1] as char).to_digit(16);
-                let lo = (bytes[i + 2] as char).to_digit(16);
-                match (hi, lo) {
-                    (Some(h), Some(l)) => {
-                        out.push((h * 16 + l) as u8);
-                        i += 2;
-                    }
-                    _ => out.push(b'%'),
-                }
-            }
-            b => out.push(b),
-        }
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn html_no_store(body: String) -> Response {
