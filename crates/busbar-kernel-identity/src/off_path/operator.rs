@@ -243,14 +243,6 @@ pub fn operator_file_policy(name: &str) -> String {
     ))
 }
 
-/// A `document_patch` path that moves the plugin admission set, which decides the operator credential.
-pub fn operator_admission_path(path: &str) -> String {
-    config_text(format_args!(
-        "{path} is the plugin admission set, which decides the operator credential and is set only \
-         in config.yaml: a document_patch path under /plugins other than /plugins/logs is refused"
-    ))
-}
-
 /// The operator a build or validate judges differs from the one bound at process start.
 pub fn operator_changed(was: &str, now: &str) -> String {
     config_text(format_args!(

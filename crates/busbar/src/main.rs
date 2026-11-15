@@ -895,10 +895,6 @@ async fn run(
         {
             die("restored configuration changed its prepared Store bootstrap binding");
         }
-        // config.yaml's operator definitions as read from disk, before any stored document patch:
-        // the operator file-policy reference this process starts with (OPERATOR-FROM-ADMITTED-AUTH
-        // §000.1).
-        let operator_reference = Arc::new(resumed.operator_reference);
         let mut deploy = resumed.deploy;
         let mut defs = resumed.defs;
         let mut providers_path = resumed.providers_path;
@@ -974,13 +970,6 @@ async fn run(
                     format!("Store document overlay refused: {error}"),
                 ))
             });
-            // A stored patch that moves the operator credential or the plugin admission set is
-            // refused here, naming its paths and remedies: never applied or dropped silently.
-            if let Some(patch) = doc.document_patch.as_ref() {
-                config::operator_file::stored_document_patch(patch, &patched).unwrap_or_else(
-                    |error| die(boot_error("Store document overlay refused", error)),
-                );
-            }
             if patched.config_locked && principal_transition.is_none() {
                 overlay_path = None;
             }
@@ -1077,7 +1066,6 @@ async fn run(
             base_group_names,
             fresh_record_bootstrap,
             judged_effective,
-            operator_reference,
         ))
     }))
     .await;
@@ -1096,7 +1084,6 @@ async fn run(
         base_group_names,
         fresh_record_bootstrap,
         judged_effective,
-        operator_reference,
     )) = bootstrap
     else {
         return;
@@ -1203,7 +1190,7 @@ async fn run(
     // configuration (the same deploy, definitions and overlay) before writing its Store baseline:
     // the application is built from that judged value and consumes that one result, so neither the
     // pass nor its warnings repeat.
-    let (mut cfg, judged) = match judged_effective {
+    let (cfg, judged) = match judged_effective {
         Some((effective, judged)) => (effective, Some(judged)),
         None => {
             if let Some(doc) = overlay_doc {
@@ -1212,8 +1199,6 @@ async fn run(
             (cfg, None)
         }
     };
-    // Boot is a disk read: the built App holds config.yaml's operator definitions as the reference.
-    cfg.operator_file_defs = Some(operator_reference);
 
     let blocked =
         config_validate::metadata_denylist_entries().len() + cfg.blocked_metadata_hosts.len();

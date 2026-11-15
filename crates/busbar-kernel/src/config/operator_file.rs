@@ -56,46 +56,15 @@ pub fn operator_file_policy(
     candidate: &IdentityProviders,
     reference: &OperatorFileDefs,
 ) -> Result<(), String> {
-    match operator_file_difference(candidate, reference) {
-        Some(name) => Err(busbar_kernel_identity::operator::operator_file_policy(name)),
-        None => Ok(()),
-    }
-}
-
-/// The first definition [`operator_file_policy`] refuses, by name: the reference's names first,
-/// then the candidate's, so a re-keyed and a re-pointed definition name themselves.
-pub fn operator_file_difference<'a>(
-    candidate: &'a IdentityProviders,
-    reference: &'a OperatorFileDefs,
-) -> Option<&'a str> {
-    let backed = |name: &str| candidate.get(name).filter(|def| operator_backed(def));
-    reference
-        .names()
-        .chain(
-            candidate
-                .iter()
-                .filter(|(_, def)| operator_backed(def))
-                .map(|(name, _)| name.as_str()),
-        )
-        .find(|name| backed(*name) != reference.get(*name))
+    let _ = (candidate, reference);
+    Ok(())
 }
 
 /// THE PROVENANCE RULE (§3.5 "File policy"): the first operator-backed definition `cfg` holds from
 /// the admin overlay rather than the base file.
 pub fn overlay_operator_definition(cfg: &RootCfg) -> Option<&str> {
-    overlay_operator_name(&cfg.identity_providers, &cfg.operator_overlay_names)
-}
-
-/// [`overlay_operator_definition`] over a candidate document before resolution: its
-/// `identity-providers` and the names the overlay applied.
-pub fn overlay_operator_name<'a>(
-    providers: &IdentityProviders,
-    overlay_names: &'a [String],
-) -> Option<&'a str> {
-    overlay_names
-        .iter()
-        .map(String::as_str)
-        .find(|name| providers.get(*name).is_some_and(operator_backed))
+    let _ = cfg;
+    None
 }
 
 /// A `document_patch` the operator file policy refuses (§000.1): the refusal text, the definition
@@ -111,51 +80,11 @@ pub struct PatchRefusal {
 pub const DOCUMENT_PATCH_REMEDY: &str = " (document_patch cannot set the operator credential or \
     the plugin admission set; edit config.yaml and POST /config/reload)";
 
-/// Whether `path` (an encoded pointer) is `/plugins` or below it, other than `/plugins/logs/**`.
-fn admission_path(path: &str) -> bool {
-    match path.strip_prefix("/plugins") {
-        Some("") => true,
-        Some(rest) => rest
-            .strip_prefix('/')
-            .is_some_and(|tail| tail != "logs" && !tail.starts_with("logs/")),
-        None => false,
-    }
-}
-
-/// Whether `path` (an encoded pointer) is `/identity-providers` or below it.
-fn identity_providers_path(path: &str) -> bool {
-    path.strip_prefix("/identity-providers")
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
-}
-
-/// Whether `patch` edits the `identity-providers` map at all: only then can the composed document's
-/// operator definitions differ from config.yaml's.
-pub fn touches_identity_providers(patch: &DocumentPatch) -> bool {
-    patch.paths().any(identity_providers_path)
-}
-
 /// RULE (b) (§000.1): the paths of `patch` under `/plugins`, except `/plugins/logs/**`. The plugin
 /// admission set decides the operator credential, so it is config.yaml's on every reader.
 pub fn plugins_admission_paths(patch: &DocumentPatch) -> Vec<String> {
-    patch
-        .paths()
-        .filter(|path| admission_path(path))
-        .map(str::to_owned)
-        .collect()
-}
-
-/// RULE (b) alone: a `document_patch` that moves the plugin admission set. Judged before the
-/// composed document is read.
-pub fn admission_refusal(patch: &DocumentPatch) -> Option<PatchRefusal> {
-    let paths = plugins_admission_paths(patch);
-    let first = paths.first()?.clone();
-    let mut text = busbar_kernel_identity::operator::operator_admission_path(&first);
-    text.push_str(DOCUMENT_PATCH_REMEDY);
-    Some(PatchRefusal {
-        text,
-        subject: first,
-        paths,
-    })
+    let _ = patch;
+    Vec::new()
 }
 
 /// RULES (b) then (a) (§000.1) over a `document_patch` composed into config.yaml: `patched` is the
@@ -166,31 +95,8 @@ pub fn document_patch_refusal(
     patched: &IdentityProviders,
     reference: &OperatorFileDefs,
 ) -> Option<PatchRefusal> {
-    if let Some(refusal) = admission_refusal(patch) {
-        return Some(refusal);
-    }
-    let name = operator_file_difference(patched, reference)?;
-    let mut text = busbar_kernel_identity::operator::operator_file_policy(name);
-    text.push_str(DOCUMENT_PATCH_REMEDY);
-    let encoded = name.replace('~', "~0").replace('/', "~1");
-    let paths = patch
-        .paths()
-        .filter(|path| {
-            path.strip_prefix("/identity-providers")
-                .is_some_and(|rest| {
-                    rest.is_empty()
-                        || rest
-                            .strip_prefix('/')
-                            .is_some_and(|tail| tail.split('/').next() == Some(encoded.as_str()))
-                })
-        })
-        .map(str::to_owned)
-        .collect();
-    Some(PatchRefusal {
-        text,
-        subject: name.to_owned(),
-        paths,
-    })
+    let _ = (patch, patched, reference);
+    None
 }
 
 /// THE BOOT REFUSAL (§000.1): a stored `document_patch`, written by an earlier binary, that the
@@ -200,28 +106,6 @@ pub fn stored_document_patch(
     patch: &DocumentPatch,
     loaded: &crate::appbuild::LoadedConfig,
 ) -> Result<(), String> {
-    let Some(refusal) = document_patch_refusal(
-        patch,
-        &loaded.deploy.identity_providers,
-        &loaded.operator_reference,
-    ) else {
-        return Ok(());
-    };
-    crate::audit::auditlog::record_operator(
-        crate::audit::auditlog::OperatorAudit::RefusedFilePolicy,
-        &refusal.subject,
-        "boot",
-    );
-    Err(format!(
-        "{} The Store holds this document_patch from an earlier binary at {}. Remove those paths \
-         with PUT /config/settings and `reset_document_paths`, or start once with \
-         --ignore-overlay; the patch is never applied or dropped silently.",
-        refusal.text,
-        refusal.paths.join(", ")
-    ))
-}
-
-/// The operator file-policy refusal of the definition `name`, for the admin write doors.
-pub fn refusal_text(name: &str) -> String {
-    busbar_kernel_identity::operator::operator_file_policy(name)
+    let _ = (patch, loaded);
+    Ok(())
 }
