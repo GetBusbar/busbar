@@ -20,7 +20,8 @@ fn a_secret_its_encodings_userinfo_and_a_token_parameter_are_masked() {
     assert!(forms.len() > 1, "the raw value and its encodings");
     for form in &forms {
         let form = core::str::from_utf8(form).expect("every encoding is ASCII");
-        let shown = scrub.text(&format!("upstream said {form} was rejected"));
+        let line = format!("upstream said {form} was rejected");
+        let shown = scrub.text(&line);
         assert!(!shown.contains(form), "{form} survived: {shown}");
         assert!(shown.contains("***"), "{shown}");
     }
