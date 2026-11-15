@@ -202,7 +202,7 @@ impl MemoryBackend {
             .time
             .is_some_and(|guard| !guard.permits(observed_at.unix_seconds))
         {
-            record(&mut *state, Verdict::TimeGuard);
+            record(&mut state, Verdict::TimeGuard);
             return Ok(Decision::TimeGuardFailed { observed_at });
         }
         for predicate in &candidate.predicates {
@@ -212,7 +212,7 @@ impl MemoryBackend {
                 ExpectedValue::Exact(bytes) => found.as_ref() == Some(bytes),
             };
             if !matches {
-                record(&mut *state, Verdict::Conflict);
+                record(&mut state, Verdict::Conflict);
                 return Ok(Decision::ConditionConflict);
             }
         }
@@ -283,7 +283,7 @@ impl MemoryBackend {
             let generation = state.generations.entry(namespace).or_default();
             *generation = generation.checked_add(1).ok_or(Failure::Refused)?;
         }
-        record(&mut *state, Verdict::Applied);
+        record(&mut state, Verdict::Applied);
         // A Put of a closed control Writer row deletes every slot row of that writer.
         for mutation in &candidate.mutations {
             if let Mutation::Put { address, value } = mutation {
