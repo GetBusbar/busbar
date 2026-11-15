@@ -101,7 +101,10 @@ pub enum Retrier {
 }
 
 struct LedgerState {
-    retained: BTreeMap<Target, UndrainedWriter>,
+    /// One entry per closer that retains a close of the target: several `WriterRetirements` in
+    /// one process (F5's, an adopter's) may race the same writer, and one closer's decision
+    /// never removes another's retained close (#258).
+    retained: BTreeMap<Target, Vec<UndrainedWriter>>,
     recorded: BTreeMap<Target, (u64, UndrainedWriter)>,
     generation: u64,
     record_failed: BTreeMap<Target, UndrainedWriter>,
@@ -109,6 +112,23 @@ struct LedgerState {
     retry: Retry,
     retried: u64,
     confirmed: u64,
+}
+
+impl LedgerState {
+    /// One closer's retained entry for `seen` leaves; the others stay.
+    fn release(&mut self, seen: &UndrainedWriter) {
+        let target = seen.target();
+        let Some(closers) = self.retained.get_mut(&target) else {
+            return;
+        };
+        let at = closers.iter().position(|held| held == seen).unwrap_or(0);
+        if at < closers.len() {
+            closers.remove(at);
+        }
+        if closers.is_empty() {
+            self.retained.remove(&target);
+        }
+    }
 }
 
 type Flight = (
@@ -178,7 +198,11 @@ impl RecordLedger {
 
     /// Called in the same critical section that retains an open writer's close attempt.
     pub(crate) fn retain(&self, seen: &UndrainedWriter) {
-        self.lock().retained.insert(seen.target(), seen.clone());
+        self.lock()
+            .retained
+            .entry(seen.target())
+            .or_default()
+            .push(seen.clone());
     }
 
     /// The close of `seen` was decided. Called once per decision, under the closer's lock.
@@ -186,7 +210,7 @@ impl RecordLedger {
     /// releasing its locks).
     pub(crate) fn decided(&self, seen: &UndrainedWriter, applied: bool) -> Option<String> {
         let mut state = self.lock();
-        state.retained.remove(&seen.target());
+        state.release(seen);
         if !applied {
             return None;
         }
@@ -209,7 +233,7 @@ impl RecordLedger {
     /// A decision this process lost with no driver in flight: printed at exit, never recorded.
     pub(crate) fn lost(&self, seen: &UndrainedWriter) {
         let mut state = self.lock();
-        state.retained.remove(&seen.target());
+        state.release(seen);
         state.unconfirmed.insert(seen.target(), seen.clone());
     }
 
@@ -270,7 +294,12 @@ impl RecordLedger {
         let state = self.lock();
         let mut unconfirmed: Vec<UndrainedWriter> =
             state.recorded.values().map(|(_, s)| s.clone()).collect();
-        unconfirmed.extend(state.retained.values().cloned());
+        unconfirmed.extend(
+            state
+                .retained
+                .values()
+                .filter_map(|closers| closers.first().cloned()),
+        );
         unconfirmed.extend(state.unconfirmed.values().cloned());
         ExitReport {
             unconfirmed,
