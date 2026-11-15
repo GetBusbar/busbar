@@ -43,7 +43,7 @@ pub(super) async fn run() {
     crate::root::connector::install_io(&on);
     let mut transports = Vec::new();
     for variable in ["BUSBAR_TEST_TCP_CDYLIB", "BUSBAR_TEST_HTTP_CDYLIB"] {
-        let path = std::path::PathBuf::from(std::env::var_os(variable).expect(variable));
+        let path = <std::path::PathBuf>::from(std::env::var_os(variable).expect(variable));
         let statement = rendering_of_library(&path)
             .unwrap()
             .expect("the actual transport states itself");
@@ -51,7 +51,7 @@ pub(super) async fn run() {
             &path,
             &statement,
             Bind {
-                instance: Arc::from(variable),
+                instance: <Arc<str>>::from(variable),
                 max_inflight_cap: 1024,
                 sink: Arc::new(NoSink),
                 dispatcher: on.adopter(),
@@ -219,7 +219,7 @@ pub(super) async fn run() {
     ));
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let connector = crate::root::connector::the().clone();
-    let plane_path = std::path::PathBuf::from(
+    let plane_path = <std::path::PathBuf>::from(
         std::env::var_os("BUSBAR_TEST_DECISIONS_CDYLIB")
             .expect("the boot audit requires the freshly built real Decisions image"),
     );
@@ -230,7 +230,7 @@ pub(super) async fn run() {
         &plane_path,
         &statement,
         Bind {
-            instance: Arc::from("boot-audit-decisions"),
+            instance: <Arc<str>>::from("boot-audit-decisions"),
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
@@ -248,9 +248,9 @@ pub(super) async fn run() {
         tokio::time::timeout(std::time::Duration::from_secs(10), async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut request = Vec::new();
-            let mut part = [0; 4096];
+            let mut part = vec![0u8; 4096];
             loop {
-                let n = socket.read(&mut part).await.unwrap();
+                let n = socket.read(&mut part[..]).await.unwrap();
                 assert_ne!(n, 0, "the real plane must send a complete provider request");
                 request.extend_from_slice(&part[..n]);
                 assert!(request.len() <= 64 * 1024);

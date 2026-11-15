@@ -426,7 +426,7 @@ async fn identical_plane_paths_on_distinct_listeners_are_sealed_independently() 
     topology.needs[0].instance = "right".into();
     topology.needs.push(ListenerNeed {
         instance: "left".into(),
-        module: "module-left".into(),
+        module: "module-left".to_owned(),
         kind: KindCode::Plane,
         need: 0,
         transport: "http".into(),
