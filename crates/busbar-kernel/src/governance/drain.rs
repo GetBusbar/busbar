@@ -504,6 +504,47 @@ impl GovState {
     }
 }
 
+/// What governance still owes the store, counted for the drain's progress line (SHUTDOWN-HANG
+/// F4 "Progress").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DrainRemaining {
+    /// Unit checkpoint entries in the book, running and terminal.
+    pub checkpoints: u64,
+    /// The terminal backlog: `ended` entries the money driver must still persist and settle.
+    pub terminal_checkpoints: u64,
+    /// Corrections held for persistence.
+    pub corrections: u64,
+    /// Budget flushes in flight.
+    pub budget_flights: u64,
+    /// Metering cells pending or in flight.
+    pub metering: u64,
+}
+
+impl GovState {
+    /// Counts only, read once per progress line; never on the request path.
+    #[must_use]
+    pub fn drain_remaining(&self) -> DrainRemaining {
+        let count = |n: usize| u64::try_from(n).unwrap_or(u64::MAX);
+        DrainRemaining {
+            checkpoints: count(self.unit_checkpoint_states().len()),
+            terminal_checkpoints: self.admissions.terminal(),
+            corrections: count(
+                self.corrections
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .len(),
+            ),
+            budget_flights: count(
+                self.budget_flushes
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .len(),
+            ),
+            metering: count(self.pending_metering.totals().0),
+        }
+    }
+}
+
 /// One unit still running at exit, joined with its checkpoint custody by checkpoint id
 /// (SHUTDOWN-HANG F4 `open_at_exit`). A unit with no checkpoint entry (waiting on upstream, or a
 /// stream before its first report) has neither revision.
