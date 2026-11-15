@@ -657,3 +657,14 @@ fn bootstrap_answer_too_large_to_encode_is_an_error_answer_and_does_not_advance_
         );
     }
 }
+
+/// A store declared through `store_v4_door!` reports the `former_names` it names, so a 1.5.5
+/// config naming the renamed store module resolves.
+mod named {
+    use super::*;
+    crate::store_v4_door!(Fake, "test-primitive", "0", 8, former_names: &["test-primitive-plugin"]);
+    #[test]
+    fn store_v4_door_declares_former_names() {
+        assert_eq!(MACRO_DOOR.former_names(), &["test-primitive-plugin"]);
+    }
+}

@@ -113,28 +113,14 @@ pub fn self_test() -> Result<(), Error> {
     Ok(())
 }
 
-/// The audit-link hash (SEALING-FIX §3): BLAKE3 in this backend.
+/// The audit-link hash (SEALING-FIX §3): SHA-256 through AWS-LC, one recipe on every backend.
 pub mod link {
     /// The recipe this backend's `Hasher` writes into each link.
-    pub const RECIPE: &str = "busbar.audit.digest.v7";
-    /// The SHA-256 variant a FIPS build writes; this backend verifies it too.
-    pub const RECIPE_SHA256: &str = "busbar.audit.digest.v7-sha256";
+    pub const RECIPE: &str = "busbar.audit.link.v1";
 
     /// A link hash in progress.
     #[derive(Clone, Debug, Default)]
-    pub struct Hasher(Inner);
-
-    #[derive(Clone, Debug)]
-    enum Inner {
-        Blake3(Box<blake3::Hasher>),
-        Sha256(super::Sha256State),
-    }
-
-    impl Default for Inner {
-        fn default() -> Self {
-            Self::Blake3(Box::default())
-        }
-    }
+    pub struct Hasher(super::Sha256State);
 
     impl Hasher {
         /// A hasher for `RECIPE`.
@@ -147,30 +133,18 @@ pub mod link {
         /// cannot recompute that recipe.
         #[must_use]
         pub fn verifier(recipe: &str) -> Option<Self> {
-            match recipe {
-                RECIPE => Some(Self::new()),
-                RECIPE_SHA256 => Some(Self(Inner::Sha256(super::Sha256State::new()))),
-                _ => None,
-            }
+            (recipe == RECIPE).then(Self::new)
         }
 
         /// Absorb `data`.
         pub fn update(&mut self, data: &[u8]) {
-            match &mut self.0 {
-                Inner::Blake3(h) => {
-                    h.update(data);
-                }
-                Inner::Sha256(h) => h.update(data),
-            }
+            self.0.update(data);
         }
 
         /// The 32-byte link.
         #[must_use]
         pub fn finish(self) -> [u8; 32] {
-            match self.0 {
-                Inner::Blake3(h) => *h.finalize().as_bytes(),
-                Inner::Sha256(h) => h.finish(),
-            }
+            self.0.finish()
         }
     }
 }

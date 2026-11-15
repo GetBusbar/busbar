@@ -94,7 +94,6 @@ deny = [
     { crate = "aws-lc-rs", wrappers = ["busbar-crypto-backend", "quinn-proto", "rcgen", "rustls", "rustls-webpki", "x509-parser"], reason = "AWS-LC only through the crypto backend" },
     { crate = "aws-lc-sys", wrappers = ["busbar-crypto-backend", "aws-lc-rs"], reason = "AWS-LC only through the crypto backend" },
     { crate = "aws-lc-fips-sys", wrappers = ["aws-lc-rs"], reason = "the private FIPS build only" },
-    { crate = "blake3", wrappers = ["busbar-crypto-backend"], reason = "the audit link hash belongs to the crypto backend" },
     { crate = "ed25519-dalek", wrappers = ["busbar-crypto-backend"], reason = "Ed25519 is AWS-LC's, through the facade" },
     { crate = "ed25519", wrappers = ["busbar-crypto-backend", "ed25519-dalek"], reason = "Ed25519 is AWS-LC's, through the facade" },
     { crate = "curve25519-dalek", wrappers = ["busbar-crypto-backend", "ed25519-dalek"], reason = "Ed25519 is AWS-LC's, through the facade" },

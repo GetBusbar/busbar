@@ -131,7 +131,11 @@ fn a_section_no_registered_plane_declares_is_an_unknown_field() {
     }
     let section = NamedMapSection::Plane("bays");
     let err = section
-        .parse_def("dock", &serde_json::json!({}))
+        .parse_def(
+            "dock",
+            &serde_json::json!({}),
+            &crate::config::Grammar::empty(),
+        )
         .err()
         .expect("a section no plane declares is refused");
     assert_eq!(err, "unknown field `bays`");

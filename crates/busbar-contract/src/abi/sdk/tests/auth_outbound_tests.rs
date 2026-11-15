@@ -1681,3 +1681,30 @@ fn the_outbound_and_combined_macros_fill_the_serve_slot() {
         "auth_door!"
     );
 }
+
+/// Outbound and combined auth doors declared through their kind macros report the `former_names`
+/// they name.
+mod named {
+    use super::*;
+    mod outbound {
+        use super::*;
+        crate::auth_outbound_door!(
+            Echo,
+            with_tail(noted(statement("echo", "1.0.0", 8)), TAIL),
+            former_names: &["echo-1-5-5"]
+        );
+    }
+    mod both {
+        use super::*;
+        crate::auth_door!(verify_and_outbound: Sig, with_tail(statement("sig", "1.0.0", 8), BOTH),
+            former_names: &["sig-1-5-5"]);
+    }
+    #[test]
+    fn auth_outbound_door_declares_former_names() {
+        assert_eq!(outbound::MACRO_DOOR.former_names(), &["echo-1-5-5"]);
+    }
+    #[test]
+    fn auth_door_declares_former_names() {
+        assert_eq!(both::MACRO_DOOR.former_names(), &["sig-1-5-5"]);
+    }
+}

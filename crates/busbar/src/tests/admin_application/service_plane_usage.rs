@@ -128,12 +128,15 @@ async fn app(cost: CostModel) -> busbar_kernel::state::App {
     let settings: serde_json::Value =
         crate::root::test_plugins::application_store_settings(&directory);
     assert!(settings.is_object());
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {}, "models": {},
-        "auth": {"chain": [], "admin_auth": []},
-        "store": {"module": module, "settings": settings},
-        "advanced": {"allow_destinations": ["127.0.0.1"]},
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {}, "models": {},
+            "auth": {"chain": [], "admin_auth": []},
+            "store": {"module": module, "settings": settings},
+            "advanced": {"allow_destinations": ["127.0.0.1"]},
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the actual usage deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
     let rules = Arc::new(crate::root::door_steps::Rules::default())
