@@ -3,7 +3,7 @@
 
 //! The file side of step 1's probes and step 5's write (MIGRATE-ON-BOOT §A3 1, 5b, 5d): bounded
 //! reads, the in-place probes, `create_like` (a new file with the source's mode and owner), the
-//! backup link and the fsynced rename. Temporary names are per process and `O_EXCL`.
+//! backup copy and the fsynced rename. Temporary names are per process and `O_EXCL`.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
@@ -187,13 +187,19 @@ pub(crate) fn create_like_at(
     }
 }
 
-/// 5b: keep the source as `config.yaml.1.5.5` by hard link (the same inode, byte-identical), then
-/// fsync the directory. A backup already present was checked equal by 5R.
-pub(crate) fn keep_backup(config: &Path, backup: &Path, _bytes: &[u8]) -> Result<(), Refusal> {
-    match fs::hard_link(config, backup) {
+/// 5b: keep the source bytes as `config.yaml.1.5.5`, a byte copy (its own inode, so no later
+/// in-place rewrite of config.yaml can reach the rollback copy): written with config.yaml's mode
+/// and owner and fsynced through [`create_like_at`], then linked into place without replacing
+/// anything, and the directory fsynced, all before the stamped file is renamed over config.yaml.
+/// A backup already present was checked equal by 5R and is kept.
+pub(crate) fn keep_backup(config: &Path, backup: &Path, bytes: &[u8]) -> Result<(), Refusal> {
+    let copy = create_like_at(config, backup, bytes)?;
+    let linked = fs::hard_link(&copy, backup);
+    let _ = fs::remove_file(&copy);
+    match linked {
         Ok(()) => {}
         Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
-        Err(error) => return Err(io_refusal(backup, "cannot link the backup", &error)),
+        Err(error) => return Err(io_refusal(backup, "cannot keep the backup", &error)),
     }
     sync_dir(config)
 }

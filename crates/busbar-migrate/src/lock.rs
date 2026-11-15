@@ -20,8 +20,8 @@ const BOUND: Duration = Duration::from_secs(120);
 
 /// Leftovers only a dead holder leaves: a new file is written only under the lock, so no live
 /// process owns one while this one holds it. (Step 1's probes run unlocked; each process removes
-/// its own, by pid, before it probes.)
-const LEFTOVERS: [&str; 1] = [".busbar-new."];
+/// its own, by pid, before it probes.) The backup's byte copy is written the same way, beside it.
+const LEFTOVERS: [&str; 2] = [".busbar-new.", ".1.5.5.busbar-new."];
 
 /// The held lock; dropping it releases the lock.
 pub(crate) struct Held {
