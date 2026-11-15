@@ -18,8 +18,6 @@ path = "src/lib.rs"
 # aws-lc-rs links; it is named only for MD5 (`EVP_md5`), which aws-lc-rs does not expose.
 aws-lc-rs = { version = "=1.19.0", default-features = false, features = ["aws-lc-sys"] }
 aws-lc-sys = { version = "=0.47.0", default-features = false }
-# The audit-link hash (SEALING-FIX, decision 170): BLAKE3 in the software backend.
-blake3 = { version = "1.8", default-features = false, features = ["std"] }
 zeroize = { version = "1.8", default-features = false }
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "aws_lc_rs"], optional = true }
 webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["std", "aws-lc-rs"], optional = true }
