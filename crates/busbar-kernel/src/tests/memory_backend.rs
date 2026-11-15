@@ -6,7 +6,8 @@
 //! Core's store-backed tests used to load the busbar-store-memory product cdylib
 //! (`BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN`, settings `{}`), which core no longer builds. This is the
 //! same contract behind [`PersistenceBackend`], in memory, keeping that product's observable rules:
-//! an ephemeral dataset with a fresh identity per backend; reads and commits judged against the
+//! a dataset with a fresh identity per backend, declared durable (Local) because it stands in for
+//! the durable product store those tests ran against; reads and commits judged against the
 //! dataset and their time guard; the execution fence (dataset root and writer records in
 //! [`control::NAMESPACE`]) checked before anything else on every commit but the proven-empty
 //! initialization; control records only conditionally replaced, never deleted; generation records
@@ -83,7 +84,9 @@ impl Default for MemoryBackend {
                 atomic_domain: identity(2),
                 clock_authority: identity(3),
                 physical_version: PHYSICAL_VERSION,
-                durability: Durability::Ephemeral,
+                // It stands in for the durable product store core's store-backed tests ran against
+                // (tests that need an ephemeral store wrap it to say so, as `EphemeralInfo` does).
+                durability: Durability::Local,
             },
             state: Mutex::new(State::default()),
         }
