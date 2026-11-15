@@ -60,16 +60,7 @@ impl Eq for HeldEnv {}
 /// A held environment NAMES NO VALUE in a debug line: its references' sources and whether they
 impl std::fmt::Debug for HeldEnv {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a held environment is rendered only into a debug line"
-        )]
-        let refs: Vec<String> = self
-            .0
-            .refs
-            .iter()
-            .map(|(name, reference)| format!("{name} = {}", reference.describe()))
-            .collect();
+        let refs = crate::off_path::lines::described_refs(&self.0.refs);
         f.debug_struct("HeldEnv")
             .field("refs", &refs)
             .field("resolved", &self.0.held.load().0.is_ok())
@@ -83,42 +74,9 @@ fn resolve(
     secrets: Option<SpawnSecretFn>,
     scope: &ConfigScope,
 ) -> Resolved {
-    Resolved(resolve_each(refs, secrets, scope))
-}
-
-fn resolve_each(
-    refs: &[(String, SecretRef)],
-    secrets: Option<SpawnSecretFn>,
-    scope: &ConfigScope,
-) -> Result<Vec<(String, Secret<String>)>, String> {
-    // busbar:expect(bp::fresh_buffer, reason = "config: a program's secret environment is resolved at load and re-resolved at config time, off every request path")
-    let mut env = Vec::with_capacity(refs.len());
-    for (name, reference) in refs {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a program's secret environment is resolved at load and re-resolved at config time, off every request path"
-        )]
-        let secret = secrets.ok_or_else(|| {
-            format!(
-                "the program's environment `{name}` is a secret reference and no secret \
-                 resolver is installed"
-            )
-        })?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a program's secret environment is resolved at load and re-resolved at config time, off every request path"
-        )]
-        let value = reference
-            .resolve_template(&|r| secret(r, scope))
-            .map_err(|e| {
-                format!(
-                    "the program's environment `{name}` ({}) did not resolve: {e}",
-                    reference.describe()
-                )
-            })?;
-        env.push((name.clone(), value));
-    }
-    Ok(env)
+    Resolved(crate::off_path::lines::resolve_spawn_env(
+        refs, secrets, scope,
+    ))
 }
 
 impl HeldEnv {
@@ -143,13 +101,8 @@ impl HeldEnv {
         if refs.is_empty() {
             return Self::written_only();
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a program's secret environment is resolved at load and re-resolved at config time, off every request path"
-        )]
-        let refs_held = refs.to_vec();
         let held = Self(Arc::new(SpawnEnv {
-            refs: refs_held,
+            refs: crate::off_path::lines::held_refs(refs),
             secrets,
             held: arc_swap::ArcSwap::from_pointee(resolve(refs, secrets, scope)),
             reloading: Mutex::new(()),
@@ -208,7 +161,7 @@ mod refresher {
     pub(super) fn keep(env: &Arc<SpawnEnv>) {
         busbar_kernel::refresh::keep(
             Arc::downgrade(env) as Weak<dyn busbar_kernel::refresh::Refreshable>,
-            Instant::now() + SPAWN_ENV_LEASE,
+            crate::off_path::lines::first_spawn_env_due(),
         );
     }
 

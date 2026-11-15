@@ -34,23 +34,12 @@ pub fn build_with_secrets(
     pool: PoolPosture,
     spawn_secrets: crate::spawn_env::SpawnSecretFn,
 ) -> Result<Arc<Connector>, String> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the process builds its one connector once, at boot"
-    )]
-    let proxy = crate::proxy::from_env().map_err(|e| format!("its proxy environment: {e}"))?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the process builds its one connector once, at boot"
-    )]
-    let view = Transports::new(entries()?).map_err(|e| e.to_string())?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the process builds its one connector once, at boot"
-    )]
+    let proxy = crate::proxy::from_env()
+        .map_err(|e| crate::cold::lines::prefixed("its proxy environment: ", &e))?;
+    let view = Transports::new(entries()?).map_err(|e| crate::cold::lines::display_text(&e))?;
     let connector =
         Connector::serving_with_trust(view, judge(dest, own_ports), EgressTrust::default(), wake)
-            .map_err(|e| format!("its connection security: {e}"))?;
+            .map_err(|e| crate::cold::lines::prefixed("its connection security: ", &e))?;
     Ok(Arc::new(
         connector
             .pooling(pool)
@@ -64,94 +53,28 @@ pub fn build_with_secrets(
 /// (`advanced.proxy_resolution: local`) or delegates the address check of a name that does not
 /// resolve here to the proxy (`proxy`). Nothing when no proxy is configured.
 pub fn note_proxy_posture(by_address: bool) {
-    let Ok(env) = crate::proxy::ProxyEnvValues::from_process_env() else {
-        return;
-    };
-    let mut hops = String::new();
-    for hop in [
-        env.https.as_deref(),
-        env.http.as_deref(),
-        env.all.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
-    .filter_map(|v| crate::proxy::parse_proxy(v).ok())
-    {
-        if !hops.is_empty() {
-            hops.push(',');
-        }
-        hops.push_str(hop.endpoint());
-    }
-    if hops.is_empty() {
-        return;
-    }
-    let no_proxy = env.no.unwrap_or_default();
-    let mode = if by_address { "local" } else { "proxy" };
-    tracing::info!(
-        diag = %busbar_kernel::diagnostics::CONFIG_PROXY_DELEGATES_ADDRESS_CHECK.banner(),
-        proxies = %hops,
-        no_proxy = %no_proxy,
-        proxy_resolution = mode,
-        "outbound connections go through a proxy: {}",
-        if by_address {
-            "every target is resolved here, each address it answers is judged, and the CONNECT \
-             names the judged address"
-        } else {
-            "each target's name is judged; its addresses are judged when it resolves here, and \
-             the address check of a name that does not is delegated to the proxy"
-        }
-    );
-    busbar_kernel::audit_ring::AUDIT.record_by(
-        "config.egress_proxy",
-        &format!("proxy:{hops}:no_proxy={no_proxy}:resolution={mode}"),
-        busbar_kernel::audit_ring::OUTCOME_APPLIED,
-        "system",
-    );
+    crate::off_path::lines::note_proxy_posture(by_address);
 }
 
 /// THE DEPLOYMENT'S ONE DESTINATION JUDGE: its [`Guard`] over the system resolver.
 pub fn dest_judge(d: &Destinations) -> Result<Arc<GuardJudge>, String> {
-    dest_judge_with(d, None)
-}
-
-/// The deployment's one destination judge, admitting plaintext to the exact hosts `store`'s
-/// `plaintext: true` entries name (and loopback).
-pub fn dest_judge_with(
-    d: &Destinations,
-    store: Option<Arc<crate::tls::store::TrustStore>>,
-) -> Result<Arc<GuardJudge>, String> {
-    let judge = GuardJudge::new(Guard::from_config(d)?, Arc::new(SystemResolver));
-    Ok(Arc::new(match store {
-        Some(s) => judge.admitting_plaintext(s),
-        None => judge,
-    }))
+    Ok(Arc::new(GuardJudge::new(
+        Guard::from_config(d)?,
+        Arc::new(SystemResolver),
+    )))
 }
 
 /// THE DESTINATION JUDGE (`busbar_kernel::host_services::DestJudge`) over the one [`Guard`]: a
 pub struct GuardJudge {
     guard: Guard,
     resolver: Arc<dyn Resolve>,
-    /// The exact hosts an `advanced.tls.destinations` entry admits plaintext to.
-    plaintext: Option<Arc<crate::tls::store::TrustStore>>,
 }
 
 impl GuardJudge {
     /// The judge over `guard`, resolving names through `resolver`.
     #[must_use]
     pub fn new(guard: Guard, resolver: Arc<dyn Resolve>) -> Self {
-        GuardJudge {
-            guard,
-            resolver,
-            plaintext: None,
-        }
-    }
-
-    /// The same judge, admitting plaintext (`dest.judge` with `DEST_PLAINTEXT_INTENT`) to the
-    /// exact hosts `store`'s `plaintext: true` entries name, besides loopback.
-    #[must_use]
-    pub fn admitting_plaintext(mut self, store: Arc<crate::tls::store::TrustStore>) -> Self {
-        self.plaintext = Some(store);
-        self
+        GuardJudge { guard, resolver }
     }
 
     /// The guard it judges by.
@@ -236,12 +159,7 @@ impl GuardJudge {
 
 /// A refusal's sentence, spelled only when a destination is refused.
 fn refusal_sentence(refusal: &impl std::fmt::Display) -> String {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a refused destination's sentence, built only on refusal"
-    )]
-    let sentence = refusal.to_string();
-    sentence
+    crate::cold::lines::display_text(refusal)
 }
 
 /// Loopback-allowed's scheme rule, held once the guard admitted the destination: plaintext only to
@@ -332,14 +250,10 @@ impl DestJudge for GuardJudge {
     }
 
     fn plaintext_admitted(&self, dest: &str) -> bool {
-        let host = busbar_contract::net::url_host(dest).unwrap_or_else(|| dest.to_owned());
+        let host: Cow<'_, str> =
+            busbar_contract::net::url_host(dest).map_or(Cow::Borrowed(dest), Cow::Owned);
         let bare = crate::tls::store::host_only(&host);
-        names_loopback(&bare)
-            || bare.parse::<IpAddr>().is_ok_and(|ip| is_loopback(ip))
-            || self
-                .plaintext
-                .as_ref()
-                .is_some_and(|s| s.plaintext_admitted(&host))
+        names_loopback(&bare) || bare.parse::<IpAddr>().is_ok_and(is_loopback)
     }
 
     fn judge(
@@ -522,8 +436,7 @@ impl DialJudge for OneJudge {
     }
 
     fn own_ports_applied(&self, ports: &[u16]) {
-        // busbar:expect(bp::into_alloc, reason = "config: the node's own ports change only on a config commit")
-        let next: Arc<[u16]> = ports.into();
+        let next = crate::off_path::lines::own_ports_held(ports);
         let previous = std::mem::replace(&mut *self.own.write().expect("own ports"), next);
         drop(previous);
     }
@@ -643,15 +556,7 @@ fn not_the_node(
 /// The ports the node listens on, read off its listen addresses (`listen`, `admin_listen`): an
 #[must_use]
 pub fn own_ports(listens: &[&str]) -> Vec<u16> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the node's own ports are read off its listen addresses once per config"
-    )]
-    let ports = listens
-        .iter()
-        .filter_map(|l| l.rsplit_once(':').and_then(|(_, p)| p.parse().ok()))
-        .collect();
-    ports
+    crate::off_path::lines::own_ports(listens)
 }
 
 #[cfg(test)]

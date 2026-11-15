@@ -6,7 +6,6 @@
 use std::task::Poll;
 
 use crate::secure::SecureVec;
-use zeroize::Zeroize;
 
 use super::Seal;
 use crate::abi::host::conn::connector::RequestPiece;
@@ -14,7 +13,11 @@ use crate::abi::sdk::conn::{Answer, Connector};
 use crate::abi::sdk::io::{Io, IoAnswer};
 
 pub(crate) enum Part {
-    Public(Vec<u8>),
+    /// Public bytes: their span `start..end` in the public bytes the `Parts` holds.
+    Public {
+        start: usize,
+        end: usize,
+    },
     Sealed(Seal),
 }
 
@@ -27,6 +30,8 @@ pub(crate) enum Part {
 #[derive(Default)]
 pub struct Parts {
     pub(crate) parts: Vec<Part>,
+    /// Every public piece's bytes, appended in wire order (public: nothing to wipe).
+    public: Vec<u8>,
     secure: bool,
     /// The total length of `parts`, kept current on every append (LINT-RULES LR-108, BP04).
     len: usize,
@@ -42,7 +47,12 @@ impl Parts {
     #[must_use]
     pub fn public(mut self, bytes: &[u8]) -> Self {
         self.len += bytes.len();
-        self.parts.push(Part::Public(bytes.to_vec()));
+        let start = self.public.len();
+        self.public.extend_from_slice(bytes);
+        self.parts.push(Part::Public {
+            start,
+            end: self.public.len(),
+        });
         self
     }
 
@@ -107,7 +117,7 @@ impl SealedWrite {
         let mut buf = SecureVec::from(Vec::with_capacity(wire.len()));
         for p in &wire.parts {
             match p {
-                Part::Public(b) => buf.extend_from_slice(b),
+                Part::Public { start, end } => buf.extend_from_slice(&wire.public[*start..*end]),
                 Part::Sealed(s) => buf.extend_from_slice(s.wire()),
             }
         }
@@ -154,7 +164,8 @@ impl SealedWrite {
                 Poll::Pending => return Poll::Pending,
                 _ => {
                     self.refused = true;
-                    self.buf.zeroize();
+                    crate::secure::wipe(&mut self.buf[..]);
+                    self.buf.clear();
                     c.closer().close(stream);
                     return Poll::Ready(Err(crate::abi::sdk::conn::ConnFailure::Refused(
                         super::NOT_SECURE.into(),

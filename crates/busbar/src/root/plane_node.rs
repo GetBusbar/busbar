@@ -58,7 +58,7 @@ struct LaneNames {
 /// cannot date it. Stamped from the wall clock twice, the second field is a copy rather than a
 /// reading, and two units of one second become unorderable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Arrived {
+pub(crate) struct Arrived {
     /// Milliseconds since the epoch: the reading, at the finest resolution either caller needs.
     ms: u64,
     /// The node's monotonic reading at the same arrival.
@@ -67,22 +67,22 @@ pub struct Arrived {
 
 impl Arrived {
     #[must_use]
-    pub fn at(ms: u64, mono: u64) -> Self {
+    pub(crate) fn at(ms: u64, mono: u64) -> Self {
         Self { ms, mono }
     }
 
     #[must_use]
-    pub fn secs(self) -> u64 {
+    pub(crate) fn secs(self) -> u64 {
         self.ms / 1_000
     }
 
     #[must_use]
-    pub fn ms(self) -> u64 {
+    pub(crate) fn ms(self) -> u64 {
         self.ms
     }
 
     #[must_use]
-    pub fn mono(self) -> u64 {
+    pub(crate) fn mono(self) -> u64 {
         self.mono
     }
 }
@@ -108,7 +108,7 @@ impl LaneNames {
     }
 }
 
-pub struct Node {
+pub(crate) struct Node {
     kernel: Arc<busbar_kernel::teller::Kernel>,
     pub(in crate::root) inflight: busbar_kernel::inflight::InFlight,
     gauge: busbar_kernel::slice::ConcurrencyGauge,
@@ -157,7 +157,7 @@ impl Default for Node {
 
 impl Node {
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let lanes = Arc::new(Mutex::new(crate::root::kernel::new_registration()));
         let kernel = crate::root::kernel::new_kernel();
         Self {
@@ -191,7 +191,7 @@ impl Node {
 
     /// A node whose arrivals are read from `clock`.
     #[must_use]
-    pub fn with_clock(clock: Arc<dyn busbar_kernel::Clock>) -> Self {
+    pub(crate) fn with_clock(clock: Arc<dyn busbar_kernel::Clock>) -> Self {
         Self {
             clock,
             ..Self::new()
@@ -209,7 +209,7 @@ impl Node {
     }
 
     #[must_use]
-    pub fn kernel_and_keys(
+    pub(crate) fn kernel_and_keys(
         &self,
     ) -> (
         Arc<busbar_kernel::teller::Kernel>,
@@ -220,21 +220,21 @@ impl Node {
 
     #[cfg(test)]
     #[must_use]
-    pub fn driven(&self) -> Option<u64> {
+    pub(crate) fn driven(&self) -> Option<u64> {
         self.dispatch.driven()
     }
 
-    pub fn arrived(&self) -> Arrived {
+    pub(crate) fn arrived(&self) -> Arrived {
         Arrived::at(self.clock.now(), self.mono.fetch_add(1, Ordering::AcqRel))
     }
 
     #[cfg(test)]
     #[must_use]
-    pub fn lanes(&self) -> Arc<Mutex<Registration>> {
+    pub(crate) fn lanes(&self) -> Arc<Mutex<Registration>> {
         Arc::clone(&self.lanes)
     }
 
-    pub fn resolver(&self) -> Resolve {
+    pub(crate) fn resolver(&self) -> Resolve {
         let names = Arc::clone(&self.lane_names);
         Arc::new(move |name: &str| {
             names
@@ -245,7 +245,7 @@ impl Node {
     }
 
     #[cfg(any(test, distribution_root))]
-    pub fn bind_book(&self, book: Arc<Mutex<crate::root::durability::Durability>>) {
+    pub(crate) fn bind_book(&self, book: Arc<Mutex<crate::root::durability::Durability>>) {
         let journal = book
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
@@ -268,7 +268,7 @@ impl Node {
     /// lease-tick retry and the admission refusal at unit open.
     pub(crate) fn journal_failed(&self) -> Result<(), String> {
         match self.lane.get().and_then(|journal| journal.failed()) {
-            Some(error) => Err(format!("native journal: {error:?}")),
+            Some(error) => Err(crate::root::cold::native_journal_refused(&error)),
             None => Ok(()),
         }
     }
@@ -294,7 +294,7 @@ impl Node {
         }
     }
     #[must_use]
-    pub fn journal_refusal(&self) -> Option<String> {
+    pub(crate) fn journal_refusal(&self) -> Option<String> {
         self.lane.get().and_then(|journal| journal.refuses_money())
     }
 
@@ -362,7 +362,7 @@ impl Node {
         .ok()
     }
 
-    pub fn sweep(&self, now: Arrived) -> usize {
+    pub(crate) fn sweep(&self, now: Arrived) -> usize {
         if self.marked.swap(0, Ordering::AcqRel) == 0 {
             return 0;
         }
@@ -458,7 +458,7 @@ impl Node {
     }
 
     #[must_use]
-    pub fn parent(&self, key: UnitKey) -> Option<Parent> {
+    pub(crate) fn parent(&self, key: UnitKey) -> Option<Parent> {
         self.inflight.get(key).map(|slot| Parent { key, slot })
     }
 
@@ -519,7 +519,7 @@ impl Node {
     }
 
     #[must_use]
-    pub fn mint(&self) -> UnitKey {
+    pub(crate) fn mint(&self) -> UnitKey {
         self.next_key.mint()
     }
 
@@ -527,7 +527,7 @@ impl Node {
         clippy::too_many_arguments,
         reason = "the unit's parts are handed down unbundled from its one owner"
     )]
-    pub async fn drive_borrowed<U: Units + RouteAwait>(
+    pub(crate) async fn drive_borrowed<U: Units + RouteAwait>(
         &self,
         key: UnitKey,
         arrived: Arrived,
@@ -666,7 +666,7 @@ impl Node {
         clippy::too_many_arguments,
         reason = "the unit's parts are handed down unbundled from its one owner"
     )]
-    pub async fn open_borrowed<'n, U: Units + RouteAwait>(
+    pub(crate) async fn open_borrowed<'n, U: Units + RouteAwait>(
         &'n self,
         key: UnitKey,
         arrived: Arrived,
@@ -849,13 +849,13 @@ impl Node {
 
     #[cfg(test)]
     #[must_use]
-    pub async fn answer(&self, handed: Handed) -> Response {
+    pub(crate) async fn answer(&self, handed: Handed) -> Response {
         self.answer_arriving_at(handed, self.arrived()).await
     }
 
     #[cfg(test)]
     #[must_use]
-    pub async fn answer_arriving_at(&self, handed: Handed, arrived: Arrived) -> Response {
+    pub(crate) async fn answer_arriving_at(&self, handed: Handed, arrived: Arrived) -> Response {
         self.answer_pinned(handed, arrived, || crate::root::kernel::ROOT_CARD.pin())
             .await
     }
@@ -1039,7 +1039,7 @@ impl Node {
 /// the serving lane the row is keyed by. What any of that is WORTH is the card's answer, and the card
 /// is this node's; the fee lands as a line of that pricing rather than as a number the plane invented.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Report {
+pub(crate) struct Report {
     /// Every class the tap reported, by neutral unit class — the reserved token split and every open
     /// class beside it (a rerank's search units): the same counts the governance ledger accrued when
     /// the cell filled. Empty for a response that billed nothing.
@@ -1295,7 +1295,7 @@ struct Lost {
 }
 
 #[must_use = "a session slot dropped unfinished is marked for the sweep"]
-pub struct SessionSlot<'n> {
+pub(crate) struct SessionSlot<'n> {
     occupied: Occupied<'n>,
     key: UnitKey,
     ctx: UnitCtx,
@@ -1332,13 +1332,13 @@ impl SessionSlot<'_> {
     }
 
     #[cfg(test)]
-    pub async fn finish(mut self, post: &NodeEndPost) -> Result<(), String> {
+    pub(crate) async fn finish(mut self, post: &NodeEndPost) -> Result<(), String> {
         let confirmation = self.finish_inner(post, None, Evidence::default());
         await_terminal(confirmation).await?;
         self.occupied.node.journal_failed()
     }
 
-    pub async fn finish_with<U: Units>(
+    pub(crate) async fn finish_with<U: Units>(
         mut self,
         post: &NodeEndPost,
         units: &U,
@@ -1567,7 +1567,7 @@ pub(in crate::root) struct OpenUnit {
     checkpoint_origin: OriginKind,
 }
 
-pub struct NodeEndPost {
+pub(crate) struct NodeEndPost {
     pub(in crate::root) node: Arc<Node>,
     pub(in crate::root) open: Vec<Mutex<OpenUnits>>,
 }
@@ -1600,11 +1600,11 @@ impl NodeEndPost {
     }
 
     #[must_use]
-    pub fn node(&self) -> &Arc<Node> {
+    pub(crate) fn node(&self) -> &Arc<Node> {
         &self.node
     }
 
-    pub fn open(
+    pub(crate) fn open(
         &self,
         key: UnitKey,
         principal: PrincipalId,
@@ -1637,7 +1637,7 @@ impl NodeEndPost {
         }
     }
 
-    pub fn audited(
+    pub(crate) fn audited(
         &self,
         key: UnitKey,
         facts: busbar_contract::caps::AuditFacts,
@@ -1664,7 +1664,7 @@ impl NodeEndPost {
         self.ended_as(key, Outcome::Completed);
     }
 
-    pub fn stopped(&self, key: UnitKey, reason: busbar_contract::caps::ReasonCode) {
+    pub(crate) fn stopped(&self, key: UnitKey, reason: busbar_contract::caps::ReasonCode) {
         if let Some(open) = self.lock(key).get_mut(&key) {
             open.sealing.said = Some(Outcome::Refused(
                 busbar_contract::caps::StepName::Route,
@@ -1673,7 +1673,7 @@ impl NodeEndPost {
         }
     }
 
-    pub fn reported(&self, key: UnitKey, report: Option<Reported>) {
+    pub(crate) fn reported(&self, key: UnitKey, report: Option<Reported>) {
         if let Some(open) = self.lock(key).get_mut(&key) {
             open.sealing.report = report.map(Report::of);
         }
@@ -1683,13 +1683,13 @@ impl NodeEndPost {
         self.lock(key).remove(&key)
     }
 
-    pub fn close(&self, key: UnitKey) {
+    pub(crate) fn close(&self, key: UnitKey) {
         self.lock(key).remove(&key);
     }
 
     #[cfg(test)]
     #[must_use]
-    pub fn open_units(&self) -> usize {
+    pub(crate) fn open_units(&self) -> usize {
         self.open
             .iter()
             .map(|shard| {
@@ -1789,7 +1789,7 @@ impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
             policy_epoch: policy_in_force(open.history.as_ref(), open.arrived.ms()),
             hooks: HookFacts(&open.sealing.ran.hooks),
         };
-        serde_json::to_vec(&captured).ok()
+        busbar_kernel::json::to_vec(&captured).ok()
     }
 
     fn post(&self, ctx: &UnitCtx, ended: Ended) {
@@ -1814,7 +1814,7 @@ impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
     }
 }
 
-pub struct Parent {
+pub(crate) struct Parent {
     key: UnitKey,
     slot: Arc<busbar_kernel::inflight::UnitSlot>,
 }
@@ -1822,12 +1822,12 @@ pub struct Parent {
 impl Parent {
     #[cfg(test)]
     #[must_use]
-    pub fn key(&self) -> UnitKey {
+    pub(crate) fn key(&self) -> UnitKey {
         self.key
     }
 
     #[must_use]
-    pub fn cell(&self) -> &busbar_contract::caps::HoldCell {
+    pub(crate) fn cell(&self) -> &busbar_contract::caps::HoldCell {
         self.slot.cell()
     }
 }
@@ -1913,7 +1913,7 @@ impl Confirm {
         let confirmed = self.audit.journal.confirm(&self.audit.run).await;
         self.custody
             .terminal(self.key, self.completed && confirmed.is_ok());
-        confirmed.map_err(|error| format!("terminal audit is unconfirmed: {error:?}"))
+        confirmed.map_err(|error| crate::root::cold::terminal_audit_unconfirmed(&error))
     }
 }
 
@@ -1929,7 +1929,7 @@ impl TerminalConfirmation {
         inner
             .custody
             .terminal(inner.key, inner.completed && confirmed.is_ok());
-        confirmed.map_err(|error| format!("terminal audit is unconfirmed: {error:?}"))
+        confirmed.map_err(|error| crate::root::cold::terminal_audit_unconfirmed(&error))
     }
 }
 
@@ -2000,10 +2000,9 @@ fn seal_lanes(verified: &mut Vec<LaneId>, destinations: &[VerifiedDestination]) 
 
 impl Ran {
     fn destination<'s>(&self, served: Option<&'s str>) -> Option<&'s str> {
-        let sealed = |lane: &str| self.verified.iter().any(|v| v.as_str() == lane);
         let lane = match (self.dialled, served) {
             (Some(dialled), _) => Some(dialled.as_str()),
-            (None, Some(served)) if sealed(served) => Some(served),
+            (None, Some(served)) if verified_lane(&self.verified, served) => Some(served),
 
             (None, _) => match self.verified.as_slice() {
                 [only] => Some(only.as_str()),
@@ -2012,6 +2011,11 @@ impl Ran {
         };
         lane
     }
+}
+
+/// Whether `lane` is one of the unit's own verified lanes (a handful, sealed per unit).
+fn verified_lane(verified: &[LaneId], lane: &str) -> bool {
+    verified.iter().any(|v| v.as_str() == lane)
 }
 
 #[cfg(test)]
@@ -2162,17 +2166,17 @@ pub(crate) fn policy_in_force(
 static NODE: LazyLock<Arc<Node>> = LazyLock::new(|| Arc::new(Node::new()));
 
 #[must_use]
-pub fn node() -> Arc<Node> {
+pub(crate) fn node() -> Arc<Node> {
     Arc::clone(&NODE)
 }
 
 #[cfg(any(test, distribution_root))]
-pub fn bind_book(book: Arc<Mutex<crate::root::durability::Durability>>) {
+pub(crate) fn bind_book(book: Arc<Mutex<crate::root::durability::Durability>>) {
     bind_node_book(&NODE, &crate::root::kernel::ROOT_CARD, book);
 }
 
 #[cfg(any(test, distribution_root))]
-pub const ROOT_UNIT: crate::root::linked::RootUnit = crate::root::linked::RootUnit {
+pub(crate) const ROOT_UNIT: crate::root::linked::RootUnit = crate::root::linked::RootUnit {
     seal: None,
     on_config: Some(|_| crate::root::kernel::install_card_repricer()),
     #[cfg(test)]

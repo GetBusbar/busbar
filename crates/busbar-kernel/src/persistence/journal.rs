@@ -32,6 +32,7 @@ const OWNER_MAGIC: &[u8; 8] = b"BBJOWN01";
 
 #[cfg(test)]
 pub(crate) mod historical;
+#[cfg(test)]
 mod transfer;
 #[cfg(test)]
 pub(crate) use transfer::Handover;
@@ -342,6 +343,7 @@ impl<'a> StoreJournal<'a> {
     ///
     /// Repeating this call with the same proof and records after cancellation or
     /// Unknown resumes the retained exact candidate. Changed input conflicts.
+    #[cfg(test)]
     pub(crate) async fn append(
         &self,
         previous: &VerifiedHead,

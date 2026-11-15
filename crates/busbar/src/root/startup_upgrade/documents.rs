@@ -27,7 +27,7 @@ struct Document {
 }
 
 /// Complete document inventory, including unchanged documents. Debug is deliberately absent.
-pub struct Publication {
+pub(crate) struct Publication {
     pub path: PathBuf,
     pub original: SecureVec,
     pub converted: SecureVec,
@@ -39,7 +39,7 @@ pub struct Publication {
 
 /// A protected artifact to materialize only after its native/Store intent is Applied.
 /// Raw material is never included in logs, fingerprints or diagnostic formatting.
-pub struct SecretPublication {
+pub(crate) struct SecretPublication {
     pub config_path: PathBuf,
     pub site: String,
     pub settings_path: Vec<String>,
@@ -72,7 +72,7 @@ struct State {
     debt: Option<Vec<SecureString>>,
 }
 #[derive(Default)]
-pub struct Documents {
+pub(crate) struct Documents {
     state: Mutex<State>,
     environment: Mutex<BTreeMap<String, Option<SecureString>>>,
     /// Startup conversion notices raised before the log is installed, replayed by
@@ -83,7 +83,7 @@ pub struct Documents {
 impl Documents {
     /// Report a startup conversion notice (an authored key and fixed text, never a value) at WARN:
     /// now when the log is installed, else held for [`Documents::replay_notices`].
-    pub fn notice(&self, notice: &str) {
+    pub(crate) fn notice(&self, notice: &str) {
         if tracing::dispatcher::has_been_set() {
             tracing::warn!(change = %notice, "startup converted a 1.5.5 configuration value");
         } else if let Ok(mut held) = self.notices.lock() {
@@ -92,7 +92,7 @@ impl Documents {
     }
 
     /// Log every notice held from before the log was installed. Called once logging starts.
-    pub fn replay_notices(&self) {
+    pub(crate) fn replay_notices(&self) {
         let held = self
             .notices
             .lock()
@@ -115,7 +115,7 @@ impl Documents {
             .map(|value| value.as_str().to_owned())
     }
 
-    pub fn normalize(
+    pub(crate) fn normalize(
         self: &Arc<Self>,
         kind: ConfigDocument,
         path: &Path,
@@ -310,13 +310,13 @@ impl Documents {
 
     /// The unresolved decisions behind the last refused deployment normalization. Taken once:
     /// a second call returns `None`.
-    pub fn take_debt(&self) -> Option<Vec<SecureString>> {
+    pub(crate) fn take_debt(&self) -> Option<Vec<SecureString>> {
         self.state.lock().ok()?.debt.take()
     }
 
     /// The migration owner alone constructs this proof from actual native inspection.
     /// Frozen settings semantics follow the admitted native profile, without inventing a release.
-    pub fn enter_released_source(
+    pub(crate) fn enter_released_source(
         &self,
         proof: &busbar_migrations::ReleasedSourceProof,
     ) -> Result<(), String> {
@@ -383,7 +383,7 @@ impl Documents {
     }
 
     /// Close historical conversion after validated adoption; subsequent reloads are current inputs.
-    pub fn finish_upgrade(&self) -> Result<(), String> {
+    pub(crate) fn finish_upgrade(&self) -> Result<(), String> {
         let mut state = self
             .state
             .lock()
@@ -423,7 +423,7 @@ impl Documents {
         Ok(())
     }
 
-    pub fn admit_config_profile(
+    pub(crate) fn admit_config_profile(
         &self,
         proof: &busbar_migrations::config::HistoricalConfigProof,
     ) -> Result<(), String> {
@@ -441,7 +441,7 @@ impl Documents {
     }
 
     /// Interpolate retained normalization output under only this startup's captured references.
-    pub fn interpolate_captured(&self, raw: &str) -> Result<SecureString, String> {
+    pub(crate) fn interpolate_captured(&self, raw: &str) -> Result<SecureString, String> {
         let state = self
             .state
             .lock()
@@ -459,7 +459,10 @@ impl Documents {
 
     /// The exact frozen authored deployment and a detection view under this startup's
     /// captured environment. Neither may be replaced by a re-read of a partially published file.
-    pub fn original_deployment(&self, path: &Path) -> Result<(SecureString, SecureString), String> {
+    pub(crate) fn original_deployment(
+        &self,
+        path: &Path,
+    ) -> Result<(SecureString, SecureString), String> {
         let authored = {
             let state = self
                 .state
@@ -491,7 +494,7 @@ impl Documents {
 
     /// Compare every Store field after reversing only secret representation changes
     /// bound to this exact retained document and its protected artifact intents.
-    pub fn bootstrap_equivalent(
+    pub(crate) fn bootstrap_equivalent(
         &self,
         original: &Option<config::StoreCfg>,
         target: &Option<config::StoreCfg>,
@@ -623,7 +626,7 @@ impl Documents {
         Ok(original == target)
     }
 
-    pub fn original_provider(&self) -> Result<Option<(PathBuf, SecureString)>, String> {
+    pub(crate) fn original_provider(&self) -> Result<Option<(PathBuf, SecureString)>, String> {
         let state = self
             .state
             .lock()
@@ -641,7 +644,12 @@ impl Documents {
         Ok(Some((path.clone(), entry.original.clone())))
     }
 
-    pub fn stage_catalog(&self, path: &Path, raw: &str, converted: &str) -> Result<(), String> {
+    pub(crate) fn stage_catalog(
+        &self,
+        path: &Path,
+        raw: &str,
+        converted: &str,
+    ) -> Result<(), String> {
         let mut state = self
             .state
             .lock()
@@ -676,7 +684,7 @@ impl Documents {
         Ok(())
     }
 
-    pub fn stage_secret(&self, secret: SecretPublication) -> Result<String, String> {
+    pub(crate) fn stage_secret(&self, secret: SecretPublication) -> Result<String, String> {
         let mut state = self
             .state
             .lock()
@@ -705,7 +713,7 @@ impl Documents {
         Ok(path)
     }
 
-    pub fn pending_secrets(&self) -> Result<Vec<SecretPublication>, String> {
+    pub(crate) fn pending_secrets(&self) -> Result<Vec<SecretPublication>, String> {
         let state = self
             .state
             .lock()
@@ -725,7 +733,7 @@ impl Documents {
 
     /// Restore only an inventory authenticated by the real checkpoint owner.
     /// A disk file may be its protected original or exact target after a partial publish.
-    pub fn restore_from_checkpoint(
+    pub(crate) fn restore_from_checkpoint(
         &self,
         input: super::document_commit::RestoredDocuments<'_>,
     ) -> Result<(), String> {
@@ -754,9 +762,9 @@ impl Documents {
                 .ok_or("checkpoint names an unobserved configuration source")?;
             let kind = *kind;
             let original_digest: [u8; 32] =
-                busbar_contract::crypto::sha256(publication.original.as_slice()).into();
+                busbar_contract::crypto::sha256(publication.original.as_slice());
             let target_digest: [u8; 32] =
-                busbar_contract::crypto::sha256(publication.converted.as_slice()).into();
+                busbar_contract::crypto::sha256(publication.converted.as_slice());
             if original_digest != publication.original_digest
                 || target_digest != publication.target_digest
             {
@@ -867,7 +875,7 @@ impl Documents {
         Ok(())
     }
 
-    pub fn pending(&self) -> Result<Vec<Publication>, String> {
+    pub(crate) fn pending(&self) -> Result<Vec<Publication>, String> {
         let state = self
             .state
             .lock()
@@ -889,9 +897,8 @@ impl Documents {
                 converted
             };
             let original_digest: [u8; 32] =
-                busbar_contract::crypto::sha256(entry.original.as_bytes()).into();
-            let target_digest: [u8; 32] =
-                busbar_contract::crypto::sha256(converted.as_bytes()).into();
+                busbar_contract::crypto::sha256(entry.original.as_bytes());
+            let target_digest: [u8; 32] = busbar_contract::crypto::sha256(converted.as_bytes());
             let transform_id = entry.restored_transform.unwrap_or_else(|| {
                 document_transform(
                     path,
@@ -915,7 +922,7 @@ impl Documents {
     }
 
     /// Record a completed native publication of this exact retained document pair.
-    pub fn mark_published(&self, publication: &Publication) -> Result<(), String> {
+    pub(crate) fn mark_published(&self, publication: &Publication) -> Result<(), String> {
         let expected = self
             .pending()?
             .into_iter()
@@ -932,8 +939,7 @@ impl Documents {
             .documents
             .get_mut(&publication.path)
             .ok_or("published source custody disappeared")?;
-        let actual_original: [u8; 32] =
-            busbar_contract::crypto::sha256(entry.original.as_bytes()).into();
+        let actual_original: [u8; 32] = busbar_contract::crypto::sha256(entry.original.as_bytes());
         if actual_original != publication.original_digest
             || entry.converted.as_ref().is_none_or(|target| {
                 let target = if entry.runtime_only {
@@ -941,8 +947,7 @@ impl Documents {
                 } else {
                     target
                 };
-                <[u8; 32]>::from(busbar_contract::crypto::sha256(target.as_bytes()))
-                    != publication.target_digest
+                busbar_contract::crypto::sha256(target.as_bytes()) != publication.target_digest
             })
         {
             return Err("published source changed during native publication".into());
@@ -951,7 +956,7 @@ impl Documents {
         Ok(())
     }
 
-    pub fn fingerprint(&self) -> Result<[u8; 32], String> {
+    pub(crate) fn fingerprint(&self) -> Result<[u8; 32], String> {
         let outputs = self.pending()?;
         let mut hash = Sha256::new();
         hash.update(b"busbar.startup.documents.2\0");
@@ -1028,7 +1033,7 @@ fn secret_fingerprint(secrets: &BTreeMap<PathBuf, SecretPublication>) -> [u8; 32
             secret.site.as_bytes(),
         ] {
             hash.update(&(part.len() as u64).to_be_bytes());
-            hash.update(&part[..]);
+            hash.update(part);
         }
         hash.update(&(secret.settings_path.len() as u64).to_be_bytes());
         for part in &secret.settings_path {
@@ -1040,7 +1045,7 @@ fn secret_fingerprint(secrets: &BTreeMap<PathBuf, SecretPublication>) -> [u8; 32
     hash.finish()
 }
 
-pub struct BootstrapRules(pub Arc<Documents>);
+pub(crate) struct BootstrapRules(pub Arc<Documents>);
 impl RootRules for BootstrapRules {
     fn check(&self, _: &config::RootCfg) -> Result<(), String> {
         Ok(())

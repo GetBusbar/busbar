@@ -17,7 +17,7 @@ fn the_table() -> Table {
     }
 }
 
-pub fn downloader(blocked: &[String]) -> impl Fn(&str) -> Result<Vec<u8>, String> {
+pub(crate) fn downloader(blocked: &[String]) -> impl Fn(&str) -> Result<Vec<u8>, String> {
     let blocked: Vec<String> = blocked.to_vec();
     move |url: &str| {
         let get = |u: &str| {
@@ -37,7 +37,7 @@ pub fn downloader(blocked: &[String]) -> impl Fn(&str) -> Result<Vec<u8>, String
 
 /// The release asset a GitHub release of a busbar plugin publishes for this binary's target.
 #[derive(Clone, PartialEq, Eq)]
-pub struct ReleaseAsset {
+pub(crate) struct ReleaseAsset {
     /// Its download URL.
     pub url: String,
     /// Its file name.
@@ -45,12 +45,12 @@ pub struct ReleaseAsset {
 }
 
 #[must_use]
-pub fn release_asset(github: &str) -> Option<ReleaseAsset> {
+pub(crate) fn release_asset(github: &str) -> Option<ReleaseAsset> {
     release_asset_for(github, env!("BUSBAR_BUILD_TARGET"))
 }
 
 #[must_use]
-pub fn release_asset_for(github: &str, target: &str) -> Option<ReleaseAsset> {
+pub(crate) fn release_asset_for(github: &str, target: &str) -> Option<ReleaseAsset> {
     let (path, tag) = github.split_once('@')?;
     let (org, repo) = path.split_once('/')?;
     // The file name is joined under a directory: no part of the pin may add a path separator.

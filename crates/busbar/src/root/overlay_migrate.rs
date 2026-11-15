@@ -9,10 +9,10 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub const FLAG: &str = "--migrate-overlay";
+pub(crate) const FLAG: &str = "--migrate-overlay";
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
 
-pub fn command(args: impl Iterator<Item = String>) -> Result<Option<PathBuf>, &'static str> {
+pub(crate) fn command(args: impl Iterator<Item = String>) -> Result<Option<PathBuf>, &'static str> {
     let args: Vec<_> = args.collect();
     if !args
         .iter()
@@ -469,7 +469,7 @@ pub(crate) async fn admit_legacy(
 
 /// Capture the actual historical Store selection in the newly emitted base YAML. The Store
 /// must be known before recovery; the original configuration and overlay remain unchanged.
-pub fn capture_store(raw: &str, old_config: &Path) -> Result<(String, bool), String> {
+pub(crate) fn capture_store(raw: &str, old_config: &Path) -> Result<(String, bool), String> {
     let value: busbar_contract::yaml::Value =
         busbar_contract::yaml::from_str(raw).map_err(|_| "old configuration is not valid YAML")?;
     if old_document(raw)?.at("config").at("locked").as_bool() == Some(true) {
@@ -507,7 +507,7 @@ pub fn capture_store(raw: &str, old_config: &Path) -> Result<(String, bool), Str
     Ok((yaml, true))
 }
 
-pub async fn run(
+pub(crate) async fn run(
     old_config: &Path,
     current_config: &Path,
     mut deploy: config::DeployCfg,

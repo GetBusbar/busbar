@@ -223,6 +223,9 @@ fn a_named_map_root_matches_on_a_segment_boundary_only() {
     }
 }
 
+/// The reference limiter's per-(principal, class) entry: (window, admitted, denied).
+type Window = (u64, u32, u32);
+
 /// Today's limiter, kept as the reference: two retains per check.
 struct Reference {
     latest_window: u64,

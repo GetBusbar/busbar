@@ -328,8 +328,8 @@ pub async fn register_race(subject: &impl Subject) {
         Decision::ConditionConflict
     ));
     assert_eq!(
-        value(b, writer_at([0xC1; 16])).await,
-        Some(open().encode().expect("open").to_vec())
+        value(b, writer_at([0xC1; 16])).await.as_deref(),
+        Some(&open().encode().expect("open")[..])
     );
     assert_eq!(value(b, writer_at([0xC2; 16])).await, None);
 }

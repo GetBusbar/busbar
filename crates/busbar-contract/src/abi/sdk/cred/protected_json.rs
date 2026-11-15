@@ -519,7 +519,6 @@ impl<'de, C: Custody> Visitor<'de> for Render<'_, '_, C> {
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
         let Self { doc, out, .. } = self;
         let mut arena = Guarded::empty(doc.custody);
-        let mut members = Vec::new();
         while let Some(key) = map.next_key_seed(AnyKey(doc))? {
             let ObjectKey::Text(key) = key else {
                 let number = map.next_value_seed(NumberText)?;
@@ -533,30 +532,13 @@ impl<'de, C: Custody> Visitor<'de> for Render<'_, '_, C> {
                 out: &mut arena,
                 lead: b"",
             })?;
-            members.push(Member {
-                value: name.end..arena.len(),
-                name,
-            });
+            let value = name.end..arena.len();
+            arena.member(Member { name, value });
         }
-        // The parsed value's map order (byte order of the keys), the last of equal keys winning:
-        // equal names stay in document order (their arena offsets), so the last of a run of equal
-        // names is the document's last.
-        members.sort_by(|a, b| {
-            arena
-                .get(&a.name)
-                .cmp(arena.get(&b.name))
-                .then(a.name.start.cmp(&b.name.start))
-        });
         out.push(b"{");
         let mut lead: &[u8] = b"";
-        for (i, member) in members.iter().enumerate() {
+        for member in &arena.2 {
             let name = arena.get(&member.name);
-            if members
-                .get(i + 1)
-                .is_some_and(|next| arena.get(&next.name) == name)
-            {
-                continue;
-            }
             out.push(lead);
             lead = b",";
             out.json::<str, A::Error>(std::str::from_utf8(name).map_err(A::Error::custom)?)?;
@@ -569,12 +551,13 @@ impl<'de, C: Custody> Visitor<'de> for Render<'_, '_, C> {
 }
 
 /// A buffer whose growth wipes the allocation it leaves, so no partial copy of what it holds is
-/// freed unwiped; dropping it wipes it too.
-struct Guarded<C: Custody>(Vec<u8>, C);
+/// freed unwiped; dropping it wipes it too. An object's arena also keeps its members (ranges of
+/// the buffer, no bytes) in the parsed value's map order.
+struct Guarded<C: Custody>(Vec<u8>, C, Vec<Member>);
 
 impl<C: Custody> Guarded<C> {
     fn empty(custody: C) -> Self {
-        Self(Vec::new(), custody)
+        Self(Vec::new(), custody, Vec::new())
     }
 
     fn len(&self) -> usize {
@@ -585,6 +568,17 @@ impl<C: Custody> Guarded<C> {
         self.0.get(range.clone()).unwrap_or_default()
     }
 
+    /// Enter an object member whose name and value are already written here, in the parsed
+    /// value's map order (byte order of the names): a later member of an equal name replaces the
+    /// earlier, as the parsed value keeps the last.
+    fn member(&mut self, member: Member) {
+        let name = self.get(&member.name);
+        match self.2.binary_search_by(|m| self.get(&m.name).cmp(name)) {
+            Ok(i) => self.2[i] = member,
+            Err(i) => self.2.insert(i, member),
+        }
+    }
+
     fn push(&mut self, bytes: &[u8]) {
         let needed = self.0.len().saturating_add(bytes.len());
         if needed > self.0.capacity() {
@@ -592,9 +586,9 @@ impl<C: Custody> Guarded<C> {
             self.1.held(Held::Value, &self.0);
         }
         if needed > self.0.capacity() {
-            let mut next = Vec::with_capacity(needed.max(self.0.capacity().saturating_mul(2)));
-            next.extend_from_slice(&self.0);
+            let next = Vec::with_capacity(needed.max(self.0.capacity().saturating_mul(2)));
             let mut old = std::mem::replace(&mut self.0, next);
+            self.0.extend_from_slice(&old);
             wipe_bytes(&mut old);
         }
         self.0.extend_from_slice(bytes);

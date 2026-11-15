@@ -5,6 +5,7 @@
 
 use crate::abi::mechanism::{extensions, ticket::Ticket};
 use crate::abi::sdk::secret_bytes::SecretBytes;
+use crate::abi::sdk::wipe::wipe_bytes;
 use crate::host_records::{Decision, Expected};
 use crate::secure::SecureVec;
 use zeroize::Zeroize;
@@ -142,54 +143,100 @@ pub struct Request {
     pub candidate: ConditionalCandidate,
 }
 
+// Each impl below does exactly what its field-by-field `Zeroize` calls did: a `Vec<u8>` wipes its
+// whole capacity and empties, an `Expected` wipes its bytes, a list wipes each element, empties and
+// volatile-zeroes its spare capacity (`Zeroize for Vec<T>`).
 impl Zeroize for RecordPredicate {
     fn zeroize(&mut self) {
-        self.key.zeroize();
-        self.expected.zeroize();
+        wipe_predicate(self);
     }
 }
 impl Zeroize for RecordMutation {
     fn zeroize(&mut self) {
-        match self {
-            Self::Put { key, value, .. } => {
-                key.zeroize();
-                value.zeroize();
-            }
-            Self::Delete { key, .. } => key.zeroize(),
-        }
+        wipe_mutation(self);
     }
 }
 impl Zeroize for ChainMutation {
     fn zeroize(&mut self) {
-        match self {
-            Self::Check { scope, life, .. } | Self::Drop { scope, life, .. } => {
-                scope.zeroize();
-                life.zeroize();
-            }
-            Self::Append {
-                scope,
-                life,
-                content,
-                ..
-            } => {
-                scope.zeroize();
-                life.zeroize();
-                content.zeroize();
-            }
-        }
+        wipe_chain(self);
     }
 }
 impl Zeroize for ConditionalCandidate {
     fn zeroize(&mut self) {
-        self.predicates.zeroize();
-        self.mutations.zeroize();
-        self.chains.zeroize();
+        wipe_candidate(self);
     }
 }
 impl Zeroize for Request {
     fn zeroize(&mut self) {
-        self.candidate.zeroize();
+        wipe_candidate(&mut self.candidate);
     }
+}
+
+/// `Zeroize for Expected`: its bytes, if any, wiped whole.
+fn wipe_expected(expected: &mut Expected) {
+    if let Expected::Bytes(bytes) = expected {
+        wipe_bytes(bytes);
+    }
+}
+fn wipe_predicate(p: &mut RecordPredicate) {
+    wipe_bytes(&mut p.key);
+    wipe_expected(&mut p.expected);
+}
+fn wipe_mutation(m: &mut RecordMutation) {
+    match m {
+        RecordMutation::Put { key, value, .. } => {
+            wipe_bytes(key);
+            wipe_bytes(value);
+        }
+        RecordMutation::Delete { key, .. } => wipe_bytes(key),
+    }
+}
+fn wipe_chain(m: &mut ChainMutation) {
+    match m {
+        ChainMutation::Check { scope, life, .. } | ChainMutation::Drop { scope, life, .. } => {
+            wipe_bytes(scope);
+            wipe_expected(life);
+        }
+        ChainMutation::Append {
+            scope,
+            life,
+            content,
+            ..
+        } => {
+            wipe_bytes(scope);
+            wipe_expected(life);
+            wipe_bytes(content);
+        }
+    }
+}
+fn wipe_candidate(c: &mut ConditionalCandidate) {
+    wipe_list(&mut c.predicates, wipe_predicate);
+    wipe_list(&mut c.mutations, wipe_mutation);
+    wipe_list(&mut c.chains, wipe_chain);
+}
+
+/// `Zeroize for Vec<T>`: wipe every element, drop them all, then volatile-zero every byte of the
+/// spare capacity (which now holds the dropped elements' bytes) and fence.
+fn wipe_list<T>(items: &mut Vec<T>, wipe: fn(&mut T)) {
+    for item in items.iter_mut() {
+        wipe(item);
+    }
+    items.clear();
+    let spare = items.spare_capacity_mut();
+    let len = core::mem::size_of_val(spare);
+    // SAFETY: `spare` is `len` bytes of the live allocation, borrowed exclusively, and
+    // `MaybeUninit<u8>` carries no validity invariant and has alignment 1.
+    let bytes = unsafe {
+        core::slice::from_raw_parts_mut(
+            spare.as_mut_ptr().cast::<core::mem::MaybeUninit<u8>>(),
+            len,
+        )
+    };
+    for byte in bytes {
+        // SAFETY: an exclusive, aligned reference into the live allocation.
+        unsafe { core::ptr::write_volatile(byte, core::mem::MaybeUninit::new(0)) };
+    }
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
 }
 
 /// A read-only chain incarnation observation bound to the host's current operation.
@@ -244,15 +291,6 @@ trait Encode {
     fn push(&mut self, byte: u8);
 }
 
-impl Encode for Vec<u8> {
-    fn extend_from_slice(&mut self, bytes: &[u8]) {
-        Vec::extend_from_slice(self, bytes);
-    }
-    fn push(&mut self, byte: u8) {
-        Vec::push(self, byte);
-    }
-}
-
 impl Encode for SecretBytes {
     fn extend_from_slice(&mut self, bytes: &[u8]) {
         SecretBytes::extend_from_slice(self, bytes);
@@ -287,10 +325,39 @@ fn count(out: &mut impl Encode, n: usize) -> Result<(), &'static str> {
     Ok(())
 }
 fn authority(out: &mut impl Encode, c: Capability) {
-    out.extend_from_slice(&1_u32.to_le_bytes());
-    out.extend_from_slice(&c.ticket.slot.to_le_bytes());
-    out.extend_from_slice(&c.ticket.generation.to_le_bytes());
-    out.extend_from_slice(&c.epoch.to_le_bytes());
+    out.extend_from_slice(&authority_bytes(c));
+}
+/// The capability's wire form: version 1, ticket slot and generation, epoch.
+fn authority_bytes(c: Capability) -> [u8; 20] {
+    let mut out = [0; 20];
+    out[..4].copy_from_slice(&1_u32.to_le_bytes());
+    out[4..8].copy_from_slice(&c.ticket.slot.to_le_bytes());
+    out[8..12].copy_from_slice(&c.ticket.generation.to_le_bytes());
+    out[12..].copy_from_slice(&c.epoch.to_le_bytes());
+    out
+}
+/// A blob's `u32` length prefix.
+fn blob_len(value: &[u8]) -> Result<[u8; 4], &'static str> {
+    Ok(u32::try_from(value.len())
+        .map_err(|_| INVALID)?
+        .to_le_bytes())
+}
+/// One extension entry whose value is `parts` in order, written once into the returned buffer:
+/// the bytes `extensions::encode(&[(key, value)])` writes for the joined value, and nothing when
+/// the key or value outgrows its length prefix (an entry `encode` skips).
+fn entry_of(key: &str, parts: &[&[u8]]) -> Vec<u8> {
+    let len = parts.iter().map(|part| part.len()).sum::<usize>();
+    let (Ok(key_len), Ok(value_len)) = (u16::try_from(key.len()), u32::try_from(len)) else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(extensions::entry_len(key, &[]) + len);
+    out.extend_from_slice(&key_len.to_le_bytes());
+    out.extend_from_slice(key.as_bytes());
+    out.extend_from_slice(&value_len.to_le_bytes());
+    for part in parts {
+        out.extend_from_slice(part);
+    }
+    out
 }
 struct Read<'a>(&'a [u8]);
 impl<'a> Read<'a> {
@@ -316,9 +383,15 @@ impl<'a> Read<'a> {
             self.take(8)?.try_into().map_err(|_| INVALID)?,
         ))
     }
-    fn bytes(&mut self) -> Result<Vec<u8>, &'static str> {
+    /// A length-prefixed blob, borrowed from the lent bytes.
+    fn slice(&mut self) -> Result<&'a [u8], &'static str> {
         let n = self.u32()? as usize;
-        Ok(self.take(n)?.to_vec())
+        self.take(n)
+    }
+    /// A length-prefixed blob, copied out: the one copy an owned public field (`key`, `scope`,
+    /// `Expected::Bytes`) takes while the lease lives.
+    fn bytes(&mut self) -> Result<Vec<u8>, &'static str> {
+        Ok(self.slice()?.to_vec())
     }
     fn capability(&mut self) -> Result<Capability, &'static str> {
         if self.u32()? != 1 {
@@ -367,9 +440,7 @@ pub fn present(bytes: &[u8]) -> bool {
 }
 /// Encode the host capability as an extension entry.
 pub fn encode_capability(c: Capability) -> Vec<u8> {
-    let mut out = Vec::new();
-    authority(&mut out, c);
-    extensions::encode(&[(CAPABILITY, &out)])
+    entry_of(CAPABILITY, &[&authority_bytes(c)])
 }
 /// Read the Statement's guarded kind set; duplicate indices are invalid.
 pub fn required_kinds(bytes: &[u8]) -> Result<Vec<u32>, &'static str> {
@@ -378,7 +449,6 @@ pub fn required_kinds(bytes: &[u8]) -> Result<Vec<u32>, &'static str> {
     };
     let mut r = Read(value);
     let n = r.u32()?;
-    // busbar:expect(bp::fresh_buffer, reason = "boot: a Statement's guarded kinds, read once as the plugin loads")
     let mut kinds = Vec::new();
     for _ in 0..n {
         kinds.push(r.u32()?);
@@ -392,13 +462,28 @@ pub fn required_kinds(bytes: &[u8]) -> Result<Vec<u32>, &'static str> {
 }
 /// Encode the Statement's protocol support and guarded kind set together.
 pub fn statement(kinds: &[u32]) -> Result<Vec<u8>, &'static str> {
-    // busbar:expect(bp::fresh_buffer, reason = "boot: the Statement's conditional extension, encoded once as the plugin declares")
-    let mut value = Vec::new();
-    count(&mut value, kinds.len())?;
-    for k in kinds {
-        value.extend_from_slice(&k.to_le_bytes());
+    let n = u32::try_from(kinds.len()).map_err(|_| INVALID)?;
+    // The kinds entry's value (count, then each index) is written straight into the returned
+    // buffer; a value past its `u32` length prefix is skipped, as `extensions::encode` skips it.
+    let value_len = kinds
+        .len()
+        .checked_mul(4)
+        .and_then(|len| len.checked_add(4))
+        .and_then(|len| u32::try_from(len).ok());
+    let kinds_len = value_len.map_or(0, |len| {
+        extensions::entry_len(REQUIRED_KINDS, &[]) + len as usize
+    });
+    let mut encoded = Vec::with_capacity(extensions::entry_len(CAPABILITY, b"1") + kinds_len);
+    extensions::encode_into(&mut encoded, &[(CAPABILITY, b"1")]);
+    if let Some(len) = value_len {
+        encoded.extend_from_slice(&(REQUIRED_KINDS.len() as u16).to_le_bytes());
+        encoded.extend_from_slice(REQUIRED_KINDS.as_bytes());
+        encoded.extend_from_slice(&len.to_le_bytes());
+        encoded.extend_from_slice(&n.to_le_bytes());
+        for k in kinds {
+            encoded.extend_from_slice(&k.to_le_bytes());
+        }
     }
-    let encoded = extensions::encode(&[(CAPABILITY, b"1"), (REQUIRED_KINDS, &value)]);
     required_kinds(&encoded)?;
     Ok(encoded)
 }
@@ -406,7 +491,7 @@ pub fn statement(kinds: &[u32]) -> Result<Vec<u8>, &'static str> {
 /// Older hosts conservatively keep the original mandatory storage requirement.
 pub fn optional_statement(kinds: &[u32]) -> Result<Vec<u8>, &'static str> {
     let mut encoded = statement(kinds)?;
-    encoded.extend_from_slice(&extensions::encode(&[(OPTIONAL, b"1")]));
+    extensions::encode_into(&mut encoded, &[(OPTIONAL, b"1")]);
     Ok(encoded)
 }
 /// Read the strict optional-storage marker; absence preserves mandatory admission.
@@ -551,9 +636,7 @@ impl HeldExpected {
 }
 impl Drop for HeldExpected {
     fn drop(&mut self) {
-        if let Expected::Bytes(bytes) = &mut self.0 {
-            bytes.zeroize();
-        }
+        wipe_expected(&mut self.0);
     }
 }
 
@@ -574,7 +657,7 @@ impl Decoding {
 }
 impl Drop for Decoding {
     fn drop(&mut self) {
-        self.0.zeroize();
+        wipe_candidate(&mut self.0.candidate);
     }
 }
 /// Decode and own every candidate byte before returning the plugin's answer lease.
@@ -668,18 +751,22 @@ pub fn encode_result(
     request: &Request,
     result: &ConditionalResult,
 ) -> Result<Vec<u8>, &'static str> {
-    let mut out = Vec::new();
-    authority(&mut out, request.capability);
-    out.extend_from_slice(&result.correlation.to_le_bytes());
-    out.extend_from_slice(&request_digest(request)?);
-    out.push(match result.decision {
+    Ok(entry_of(RESULT, &[&result_body(request, result)?]))
+}
+/// A result's fixed-size body: authority, correlation, request digest, decision.
+fn result_body(request: &Request, result: &ConditionalResult) -> Result<[u8; 61], &'static str> {
+    let mut out = [0; 61];
+    out[..20].copy_from_slice(&authority_bytes(request.capability));
+    out[20..28].copy_from_slice(&result.correlation.to_le_bytes());
+    out[28..60].copy_from_slice(&request_digest(request)?);
+    out[60] = match result.decision {
         Ok(Decision::Applied) => 0,
         Ok(Decision::ConditionConflict) => 1,
         Err(ConditionalFailure::Refused(_)) => 2,
         Err(ConditionalFailure::OpIdConflict) => 3,
         Err(ConditionalFailure::Indeterminate) => 4,
-    });
-    Ok(extensions::encode(&[(RESULT, &out)]))
+    };
+    Ok(out)
 }
 /// Accept only the exact outstanding candidate's result; a missing result remains pending.
 pub fn read_result(
@@ -761,9 +848,7 @@ pub fn encode_settlement(
     request: &Request,
     result: &ConditionalResult,
 ) -> Result<Vec<u8>, &'static str> {
-    let encoded = encode_result(request, result)?;
-    let body = entry(&encoded, RESULT)?.ok_or(INVALID)?;
-    Ok(extensions::encode(&[(SETTLEMENT, body)]))
+    Ok(entry_of(SETTLEMENT, &[&result_body(request, result)?]))
 }
 
 /// Decode an outcome-only receipt; match it to retained Request custody before local effects.
@@ -801,11 +886,14 @@ pub fn read_settlement(bytes: &[u8]) -> Result<Option<Settlement>, &'static str>
 
 /// Acknowledge only an exact receipt consumed by outcome-only settlement. This is not a request.
 pub fn encode_settlement_ack(settlement: &Settlement) -> Vec<u8> {
-    let mut body = Vec::new();
-    authority(&mut body, settlement.capability);
-    body.extend_from_slice(&settlement.result.correlation.to_le_bytes());
-    body.extend_from_slice(&settlement.request_digest);
-    extensions::encode(&[(SETTLEMENT_ACK, &body)])
+    entry_of(
+        SETTLEMENT_ACK,
+        &[
+            &authority_bytes(settlement.capability),
+            &settlement.result.correlation.to_le_bytes(),
+            &settlement.request_digest,
+        ],
+    )
 }
 
 /// Decode an outcome-only acknowledgement for the host's retained original request.
@@ -833,12 +921,16 @@ pub fn encode_observation(request: &Observation) -> Result<Vec<u8>, &'static str
     if request.correlation == 0 {
         return Err(INVALID);
     }
-    let mut out = Vec::new();
-    authority(&mut out, request.capability);
-    out.extend_from_slice(&request.correlation.to_le_bytes());
-    out.extend_from_slice(&request.kind.to_le_bytes());
-    blob(&mut out, &request.scope)?;
-    Ok(extensions::encode(&[(OBSERVE, &out)]))
+    Ok(entry_of(
+        OBSERVE,
+        &[
+            &authority_bytes(request.capability),
+            &request.correlation.to_le_bytes(),
+            &request.kind.to_le_bytes(),
+            &blob_len(&request.scope)?,
+            &request.scope,
+        ],
+    ))
 }
 /// Copy a read-only observation request while its answer lease lives.
 pub fn read_observation(bytes: &[u8]) -> Result<Option<Observation>, &'static str> {
@@ -866,19 +958,33 @@ pub fn encode_observed(
     request: &Observation,
     result: &ObservationResult,
 ) -> Result<Vec<u8>, &'static str> {
-    let mut out = Vec::new();
-    authority(&mut out, request.capability);
-    out.extend_from_slice(&result.correlation.to_le_bytes());
-    out.extend_from_slice(&request.kind.to_le_bytes());
-    blob(&mut out, &request.scope)?;
-    match &result.result {
-        Ok(value) => {
-            out.push(0);
-            expected(&mut out, value)?;
+    // The result: `1` refused; `0` then the incarnation, `0` absent or `1` and its blob.
+    const ZERO: &[u8] = &[0];
+    const ONE: &[u8] = &[1];
+    const NONE: &[u8] = &[];
+    let len_bytes;
+    let (tag, life_tag, life_len, life) = match &result.result {
+        Ok(Expected::Absent) => (ZERO, ZERO, NONE, NONE),
+        Ok(Expected::Bytes(bytes)) => {
+            len_bytes = blob_len(bytes)?;
+            (ZERO, ONE, &len_bytes[..], bytes.as_slice())
         }
-        Err(_) => out.push(1),
-    }
-    Ok(extensions::encode(&[(OBSERVED, &out)]))
+        Err(_) => (ONE, NONE, NONE, NONE),
+    };
+    Ok(entry_of(
+        OBSERVED,
+        &[
+            &authority_bytes(request.capability),
+            &result.correlation.to_le_bytes(),
+            &request.kind.to_le_bytes(),
+            &blob_len(&request.scope)?,
+            &request.scope,
+            tag,
+            life_tag,
+            life_len,
+            life,
+        ],
+    ))
 }
 /// Read the original observation only on its actual ticket, epoch and correlation.
 pub fn read_observed(
@@ -892,7 +998,7 @@ pub fn read_observed(
     if r.capability()? != request.capability || r.u64()? != request.correlation {
         return Err(INVALID);
     }
-    if r.u32()? != request.kind || r.bytes()? != request.scope {
+    if r.u32()? != request.kind || r.slice()? != request.scope.as_slice() {
         return Err(INVALID);
     }
     let result = match r.take(1)?[0] {

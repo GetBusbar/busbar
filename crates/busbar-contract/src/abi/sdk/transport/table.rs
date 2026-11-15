@@ -50,15 +50,10 @@ impl Reach {
     /// The text an op answers with, naming what it reached for (`"framing"`, `"connection"`).
     #[must_use]
     pub fn why(self, what: &str) -> String {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a refused op's text, written once per refusal"
-        )]
-        let why = match self {
-            Self::Gone => format!("no such {what}"),
-            Self::Busy => format!("{what} busy: another op holds it"),
-        };
-        why
+        match self {
+            Self::Gone => crate::abi::sdk::cold::wire::no_such(what),
+            Self::Busy => crate::abi::sdk::cold::wire::busy(what),
+        }
     }
 }
 
@@ -194,10 +189,6 @@ impl<T> Table<T> {
             }
         };
         let (k, at) = place(index as usize);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a slot segment, allocated once, the first time the table grows into it"
-        )]
         let segment =
             self.segments[k].get_or_init(|| (0..BASE << k).map(|_| Slot::default()).collect());
 

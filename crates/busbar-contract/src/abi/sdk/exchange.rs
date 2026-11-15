@@ -13,6 +13,8 @@ use zeroize::Zeroize;
 
 use crate::secure::SecureVec;
 
+use super::wipe::wipe_bytes;
+
 pub use super::wipe::ResponseHead;
 
 use crate::abi::host::conn::connector::{
@@ -71,18 +73,55 @@ impl std::fmt::Debug for Request {
 
 impl Zeroize for Request {
     fn zeroize(&mut self) {
-        self.method.zeroize();
-        self.target.zeroize();
-        self.fields.zeroize();
-        self.body.zeroize();
-        self.timeout_ms.zeroize();
+        wipe_request(self);
     }
 }
 
 impl Drop for Request {
     fn drop(&mut self) {
-        self.zeroize();
+        wipe_request(self);
     }
+}
+
+/// `Zeroize for Request`, field by field: every byte buffer wiped whole and emptied, the timeout 0.
+fn wipe_request(request: &mut Request) {
+    wipe_bytes(&mut request.method);
+    wipe_bytes(&mut request.target);
+    wipe_fields(&mut request.fields);
+    wipe_bytes(&mut request.body);
+    request.timeout_ms = 0;
+}
+
+/// `Zeroize for Vec<(Vec<u8>, Vec<u8>)>`: wipe every name and value whole, drop them all, then
+/// volatile-zero every byte of the spare capacity (which now holds the dropped pairs' bytes) and
+/// fence.
+fn wipe_fields(fields: &mut Vec<(Vec<u8>, Vec<u8>)>) {
+    for (name, value) in fields.iter_mut() {
+        wipe_bytes(name);
+        wipe_bytes(value);
+    }
+    fields.clear();
+    let spare = fields.spare_capacity_mut();
+    let len = core::mem::size_of_val(spare);
+    // SAFETY: `spare` is `len` bytes of the live allocation, borrowed exclusively, and
+    // `MaybeUninit<u8>` carries no validity invariant and has alignment 1.
+    let bytes = unsafe {
+        core::slice::from_raw_parts_mut(
+            spare.as_mut_ptr().cast::<core::mem::MaybeUninit<u8>>(),
+            len,
+        )
+    };
+    for byte in bytes {
+        // SAFETY: an exclusive, aligned reference into the live allocation.
+        unsafe { core::ptr::write_volatile(byte, core::mem::MaybeUninit::new(0)) };
+    }
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+}
+
+/// `Zeroize for SecureVec`: volatile-wipe the live bytes and hold none; the allocation is kept.
+fn wipe_secure(bytes: &mut SecureVec) {
+    crate::secure::wipe(&mut bytes[..]);
+    bytes.clear();
 }
 
 /// The far end's reply to an [`exchange`].
@@ -111,11 +150,16 @@ impl std::fmt::Debug for ExchangeResponse {
 }
 
 impl Zeroize for ExchangeResponse {
+    /// Field by field: the status 0, the reason wiped and `None`, every field and the body wiped
+    /// whole and emptied.
     fn zeroize(&mut self) {
-        self.status.zeroize();
-        self.reason.zeroize();
-        self.fields.zeroize();
-        self.body.zeroize();
+        self.status = 0;
+        if let Some(reason) = &mut self.reason {
+            wipe_bytes(reason);
+        }
+        self.reason = None;
+        wipe_fields(&mut self.fields);
+        wipe_bytes(&mut self.body);
     }
 }
 
@@ -160,8 +204,8 @@ impl std::fmt::Debug for Ack {
 
 impl Zeroize for Ack {
     fn zeroize(&mut self) {
-        self.code.zeroize();
-        self.reason.zeroize();
+        self.code = 0;
+        wipe_bytes(&mut self.reason);
     }
 }
 
@@ -251,23 +295,20 @@ impl PreparedRequest {
     pub fn new(request: Request, sealed: Vec<(usize, Vec<u8>)>) -> Result<Self, ConnFailure> {
         for (_, name) in &sealed {
             if name.first() == Some(&b':') || name.iter().any(|b| *b == b'\r' || *b == b'\n') {
-                return Err(ConnFailure::Refused(format!(
-                    "the sealed request field `{}` is a pseudo-field or carries a line break",
-                    String::from_utf8_lossy(name)
-                )));
+                return Err(ConnFailure::Refused(
+                    super::cold::cred::sealed_name_refused(name),
+                ));
             }
         }
         for (name, value) in &request.fields {
             if name.first() == Some(&b':') {
-                return Err(ConnFailure::Refused(format!(
-                    "a request field `{}` is a pseudo-field; the framer names its own head",
-                    String::from_utf8_lossy(name)
-                )));
+                return Err(ConnFailure::Refused(
+                    super::cold::cred::pseudo_field_refused(name),
+                ));
             }
             if name.iter().chain(value).any(|b| *b == b'\r' || *b == b'\n') {
-                return Err(ConnFailure::Refused(format!(
-                    "the request field `{}` carries a line break",
-                    String::from_utf8_lossy(name)
+                return Err(ConnFailure::Refused(super::cold::cred::line_break_refused(
+                    name,
                 )));
             }
         }
@@ -282,13 +323,14 @@ impl PreparedRequest {
         let mut head = SecureVec::from(Vec::with_capacity(m + t + block));
         head.extend_from_slice(&request.method);
         head.extend_from_slice(&request.target);
-        let mut lines = Vec::with_capacity(request.fields.len());
-        for (name, value) in &request.fields {
+        // One slot per plain field, each set to where its line ends.
+        let mut lines = vec![0; request.fields.len()];
+        for ((name, value), end) in request.fields.iter().zip(&mut lines) {
             head.extend_from_slice(name);
             head.extend_from_slice(fields::SEPARATOR);
             head.extend_from_slice(value);
             head.extend_from_slice(fields::LINE_END);
-            lines.push(head.len());
+            *end = head.len();
         }
         let timeout_ms = request.timeout_ms;
         // The request wipes itself as it drops, now that its head is framed.
@@ -367,7 +409,7 @@ impl Drop for Exchange {
 /// read may have written, not the whole [`READ_CHUNK`].
 #[derive(Default)]
 struct ReadBuf {
-    bytes: Box<[u8]>,
+    bytes: Vec<u8>,
     /// How far reads may have written: every completed read's length, the whole buffer after a
     /// read that did not complete.
     written: usize,
@@ -377,7 +419,7 @@ impl ReadBuf {
     /// The buffer a read writes into, allocated on first use.
     fn lend(&mut self) -> &mut [u8] {
         if self.bytes.is_empty() {
-            self.bytes = vec![0; READ_CHUNK].into_boxed_slice();
+            self.bytes = vec![0; READ_CHUNK];
         }
         &mut self.bytes[..]
     }
@@ -404,7 +446,7 @@ impl std::ops::DerefMut for ReadBuf {
 impl Drop for ReadBuf {
     fn drop(&mut self) {
         if let Some(written) = self.bytes.get_mut(..self.written) {
-            written.zeroize();
+            crate::secure::wipe(written);
         }
     }
 }
@@ -527,10 +569,10 @@ impl Exchange {
 
     fn wipe_sending(&mut self) {
         match &mut self.sending {
-            Sending::Raw(bytes) => bytes.zeroize(),
+            Sending::Raw(bytes) => wipe_secure(bytes),
             Sending::Framed { head, body, .. } => {
-                head.zeroize();
-                body.zeroize();
+                wipe_secure(head);
+                wipe_secure(body);
             }
         }
     }
@@ -635,52 +677,32 @@ impl Exchange {
                 .as_ref()
                 .is_some_and(crate::abi::sdk::cred::SealedWrite::secure_required);
         if let Some(mut b) = body {
-            request.body.zeroize();
+            wipe_bytes(&mut request.body);
             request.body = std::mem::take(&mut b.buf).into_vec();
         }
         for (_, name, _) in &sealed {
             if name.first() == Some(&b':') || name.iter().any(|b| *b == b'\r' || *b == b'\n') {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: a refused request's text, written once per refusal"
-                )]
-                return Err(ConnFailure::Refused(format!(
-                    "the sealed request field `{}` is a pseudo-field or carries a line break",
-                    String::from_utf8_lossy(name)
-                )));
+                return Err(ConnFailure::Refused(
+                    super::cold::cred::sealed_name_refused(name),
+                ));
             }
         }
         for (_, name, seal) in &sealed {
             if seal.wire().iter().any(|b| matches!(b, b'\r' | b'\n' | 0)) {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: a refused request's text, written once per refusal"
-                )]
-                return Err(ConnFailure::Refused(format!(
-                    "the sealed request field `{}` carries a line break or NUL",
-                    String::from_utf8_lossy(name)
-                )));
+                return Err(ConnFailure::Refused(
+                    super::cold::cred::sealed_value_refused(name),
+                ));
             }
         }
         for (name, value) in &request.fields {
             if name.first() == Some(&b':') {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: a refused request's text, written once per refusal"
-                )]
-                return Err(ConnFailure::Refused(format!(
-                    "a request field `{}` is a pseudo-field; the framer names its own head",
-                    String::from_utf8_lossy(name)
-                )));
+                return Err(ConnFailure::Refused(
+                    super::cold::cred::pseudo_field_refused(name),
+                ));
             }
             if name.iter().chain(value).any(|b| *b == b'\r' || *b == b'\n') {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: a refused request's text, written once per refusal"
-                )]
-                return Err(ConnFailure::Refused(format!(
-                    "the request field `{}` carries a line break",
-                    String::from_utf8_lossy(name)
+                return Err(ConnFailure::Refused(super::cold::cred::line_break_refused(
+                    name,
                 )));
             }
         }
@@ -717,7 +739,9 @@ impl Exchange {
             &[&request.method[..], &request.target[..]],
         );
         let block_at = len;
-        let mut sealed_lines = Vec::new();
+        // One slot per sealed field (each goes before exactly one place), set in framing order.
+        let mut sealed_lines = vec![0; sealed.len()];
+        let mut sealed_at = 0;
         let mut index = 0;
         for at in 0..=request.fields.len() {
             for (_, name, seal) in sealed
@@ -725,7 +749,8 @@ impl Exchange {
                 .filter(|(s_at, ..)| (*s_at).min(request.fields.len()) == at)
             {
                 put(&mut head, &mut len, name, seal.wire());
-                sealed_lines.push(index);
+                sealed_lines[sealed_at] = index;
+                sealed_at += 1;
                 index += 1;
             }
             if let Some((name, value)) = request.fields.get(at) {
@@ -770,18 +795,15 @@ impl Exchange {
     ) -> Result<Self, ConnFailure> {
         let body = SecureVec::from(body);
         if sealed.len() != prepared.sealed.len() {
-            return Err(ConnFailure::Refused(format!(
-                "the prepared request names {} sealed fields and was given {}",
-                prepared.sealed.len(),
-                sealed.len()
-            )));
+            return Err(ConnFailure::Refused(
+                super::cold::cred::sealed_count_refused(prepared.sealed.len(), sealed.len()),
+            ));
         }
         for ((_, name), seal) in prepared.sealed.iter().zip(&sealed) {
             if seal.wire().iter().any(|b| matches!(b, b'\r' | b'\n' | 0)) {
-                return Err(ConnFailure::Refused(format!(
-                    "the sealed request field `{}` carries a line break or NUL",
-                    String::from_utf8_lossy(name)
-                )));
+                return Err(ConnFailure::Refused(
+                    super::cold::cred::sealed_value_refused(name),
+                ));
             }
         }
         let secure_required = sealed
@@ -798,7 +820,9 @@ impl Exchange {
         let block_at = prepared.method + prepared.target;
         let mut head = SecureVec::from(Vec::with_capacity(prepared.head.len() + sealed_bytes));
         head.extend_from_slice(&prepared.head[..block_at]);
-        let mut sealed_lines = Vec::new();
+        // One slot per sealed field (each goes before exactly one place), set in framing order.
+        let mut sealed_lines = vec![0; sealed.len()];
+        let mut sealed_at = 0;
         let mut index = 0;
         let plain = prepared.lines.len();
         let mut from = block_at;
@@ -813,7 +837,8 @@ impl Exchange {
                 head.extend_from_slice(fields::SEPARATOR);
                 head.extend_from_slice(seal.wire());
                 head.extend_from_slice(fields::LINE_END);
-                sealed_lines.push(index);
+                sealed_lines[sealed_at] = index;
+                sealed_at += 1;
                 index += 1;
             }
             if let Some(&end) = prepared.lines.get(at) {
@@ -886,22 +911,16 @@ fn spanned(buf: &[u8], span: FrameSpan) -> &[u8] {
 }
 
 fn failed<T>(text: &str) -> Answer<T> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a failed exchange's text, owned once per failure"
-    )]
-    let text = text.to_string();
-    Poll::Ready(Err(ConnFailure::Failed(text)))
+    Poll::Ready(Err(ConnFailure::Failed(super::cold::cred::failure_text(
+        text,
+    ))))
 }
 
 /// A timed-out exchange's failure (`ConnFailure::Failed` owns its text).
 pub(crate) fn timed_out() -> ConnFailure {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a timed-out exchange's text, owned once per timeout"
-    )]
-    let text = crate::conn::ConnError::Timeout.text().to_owned();
-    ConnFailure::Failed(text)
+    ConnFailure::Failed(super::cold::cred::failure_text(
+        crate::conn::ConnError::Timeout.text(),
+    ))
 }
 
 /// Ready(Ok(v)) -> v; anything else returns it from the calling function.
@@ -931,10 +950,10 @@ fn write_all(mut write: impl FnMut(&[u8]) -> Answer<usize>, bytes: &[u8]) -> Ans
 fn extend_wiping(body: &mut Vec<u8>, bytes: &[u8]) {
     let need = body.len().saturating_add(bytes.len());
     if need > body.capacity() {
-        let mut grown = Vec::with_capacity(need.max(body.capacity().saturating_mul(2)).max(8));
-        grown.extend_from_slice(body);
-        body.zeroize();
-        *body = grown;
+        let grown = Vec::with_capacity(need.max(body.capacity().saturating_mul(2)).max(8));
+        let mut old = std::mem::replace(body, grown);
+        body.extend_from_slice(&old);
+        wipe_bytes(&mut old);
     }
     body.extend_from_slice(bytes);
 }
@@ -1150,7 +1169,7 @@ fn read_to_end<K: KindMarker>(
 
         if fresh {
             if let Some(used) = state.buf.get_mut(..got.len) {
-                used.zeroize();
+                crate::secure::wipe(used);
             }
         }
         if let (true, Err(text)) = (fresh, applied) {
@@ -1189,12 +1208,15 @@ fn apply(state: &mut Exchange, p: ReplyPiece, len: usize, fresh: bool) -> Result
             state.code = p.code;
             state.head_seen = true;
             let reason = spanned(bytes, p.reason);
-            state.reply.reason.zeroize();
+            if let Some(old) = &mut state.reply.reason {
+                wipe_bytes(old);
+            }
             state.reply.reason = (!reason.is_empty()).then(|| reason.to_vec());
-            state.reply.fields.zeroize();
-            state.reply.fields = fields::lines(spanned(bytes, p.fields))
-                .map(|(n, v)| (n.to_vec(), v.to_vec()))
-                .collect();
+            // Into the reply's own list, wiped and emptied first: its allocation is reused.
+            wipe_fields(&mut state.reply.fields);
+            for (n, v) in fields::lines(spanned(bytes, p.fields)) {
+                state.reply.fields.push((n.to_vec(), v.to_vec()));
+            }
         }
         REPLY_BODY if fresh => {
             if state

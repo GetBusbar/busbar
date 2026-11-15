@@ -28,10 +28,6 @@ use std::io;
 use std::path::Path;
 
 #[path = "durable_documents.rs"]
-#[expect(
-    unsafe_code,
-    reason = "the native filesystem owner boundary; its safe API never exposes handles"
-)]
 pub(crate) mod documents;
 pub use busbar_contract::persistence::archive::spool;
 pub use spool::{SpoolReader, SpoolWriter};

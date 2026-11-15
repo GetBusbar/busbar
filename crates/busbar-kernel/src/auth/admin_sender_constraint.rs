@@ -7,7 +7,7 @@
 //! authenticate a caller. A proof header beside a Bearer credential does not change its scheme:
 //! RFC 9449 requires a DPoP presentation, whose proof remains the auth provider's responsibility.
 //! The "is bound" predicate and the every-occurrence scan are the data plane's own
-//! (`auth::dpop::carries_bound`), so the two can never disagree.
+//! (`auth::dpop::carrier_bound`), so the two can never disagree.
 
 use super::{App, HeaderMap, HeaderName, AUTHORIZATION};
 
@@ -30,11 +30,10 @@ fn downgraded_in<S: AsRef<str>>(
     headers: &HeaderMap,
     carriers: impl IntoIterator<Item = S>,
 ) -> bool {
-    let carriers: Vec<HeaderName> = carriers
+    carriers
         .into_iter()
         .filter_map(|name| HeaderName::from_bytes(name.as_ref().as_bytes()).ok())
-        .collect();
-    super::dpop::carries_bound(headers, &carriers)
+        .any(|name| super::dpop::carrier_bound(headers, &name))
 }
 
 #[cfg(test)]
