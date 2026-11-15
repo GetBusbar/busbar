@@ -299,6 +299,7 @@ dependencies = [
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
+ "busbar-migrate",
  "busbar-migrations",
  "busbar-plugin-loader",
  "bytes",
@@ -599,6 +600,13 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "foldhash",
+]
+
+[[package]]
+name = "busbar-migrate"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
 ]
 
 [[package]]

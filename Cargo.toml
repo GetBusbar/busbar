@@ -12,6 +12,7 @@ members = [
     "crates/busbar-crypto",
     "crates/busbar-kernel",
     "crates/busbar-migrations",
+    "crates/busbar-migrate",
     "crates/busbar-kernel-identity",
     "crates/busbar-kernel-ledger",
     "crates/busbar-kernel-egress",

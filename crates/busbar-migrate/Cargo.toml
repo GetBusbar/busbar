@@ -1,0 +1,19 @@
+[package]
+name = "busbar-migrate"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The boot's one-time 1.5.5 -> 1.6.0 config migration (MIGRATE-ON-BOOT): cold library code the gateway calls only for an unstamped config. Library only: no binary, no plugin loader, no store driver."
+license = "Apache-2.0"
+
+[lib]
+path = "src/lib.rs"
+
+# Separation (MIGRATE-ON-BOOT §7): YAML only through busbar_contract::yaml, digests only through
+# busbar_contract::crypto; no plugin-loader, no store driver, no postcard, no sha2.
+[dependencies]
+busbar-contract = { path = "../busbar-contract" }
+
+[lints]
+workspace = true

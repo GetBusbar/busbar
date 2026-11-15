@@ -3056,3 +3056,16 @@ pub(crate) fn install_normal_root_metadata() {
         );
     });
 }
+
+/// MIGRATE-ON-BOOT r42 §3: a stamped config.yaml (`config_version: 1`, its first key) passes the
+/// strict parse; the seam has already judged the value.
+#[test]
+fn a_stamped_config_passes_the_strict_parse() {
+    let grammar = crate::config::Grammar::empty();
+    let stamped = "config_version: 1\nlisten: 0.0.0.0:8080\nproviders: {}\nmodels: {}\n";
+    let deploy = crate::config::deploy_from_yaml_str(stamped, &grammar)
+        .unwrap_or_else(|error| panic!("a stamped config is refused: {error}"));
+    assert_eq!(deploy.listen, "0.0.0.0:8080");
+    let unstamped = "listen: 0.0.0.0:8080\nproviders: {}\nmodels: {}\n";
+    assert!(crate::config::deploy_from_yaml_str(unstamped, &grammar).is_ok());
+}

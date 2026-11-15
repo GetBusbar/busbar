@@ -2045,3 +2045,20 @@ fn no_mint_path_names_remedies_that_exist() {
         );
     }
 }
+
+/// MIGRATE-ON-BOOT r42 §9 C1 red (mc1)(2): the retired metadata carve-out keys are refused with a
+/// text that names the key and the manual fix (remove it). 1.6.0 has no `--migrate-config`, so the
+/// text names no such flag.
+#[test]
+fn a_retired_metadata_key_is_refused_with_the_manual_fix_and_no_migrate_flag() {
+    for key in [
+        "security.allow_metadata_hosts",
+        "security.allow_all_metadata",
+        "providers.p.allow_metadata_hosts",
+    ] {
+        let text = metadata_carve_out_retired(key);
+        assert!(text.starts_with(key), "{text}");
+        assert!(text.contains("remove the key"), "{text}");
+        assert!(!text.contains("--migrate-config"), "{text}");
+    }
+}

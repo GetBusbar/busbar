@@ -108,6 +108,8 @@ pub mod stage_probe;
 pub mod surface;
 pub mod transport;
 pub mod unit;
+/// The config stamp and the one upgrade line for a refused pre-1.6.0 config (MIGRATE-ON-BOOT).
+pub mod upgrade;
 pub mod upstream;
 pub mod vocab;
 pub mod wire;
