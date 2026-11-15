@@ -94,18 +94,6 @@ notes = "Actual source review, not human approval or executed tests. Exact crate
 
 [[audits.serde-saphyr]]
 criteria = "safe-to-deploy"
-delta = "2.1.1@git:8ec56f9acc93e8f2f2c30f4e52497acc76cce86a -> 2.1.1@git:9e1666f3199cf41ab83394936a5093f72c7e22c1"
-importable = false
-notes = "busbar's own patch: one commit, src/de/message_formatters.rs only. Unknown field and unknown variant refusals render their expected names as serde's default de::Error does (`a`, `a` or `b`, one of `a`, `b`, `c`; there are no fields/variants when empty) via a pure string helper. Display text only: no parsing, unsafe, I/O or dependency change. Covers only this exact revision."
-
-[[audits.serde-saphyr]]
-criteria = "safe-to-deploy"
-delta = "2.1.1@git:9e1666f3199cf41ab83394936a5093f72c7e22c1 -> 2.1.1@git:49b330217b7d8a2e7873336ce7411a0079776af8"
-importable = false
-notes = "busbar's own patch: one commit adding opt-in Options::unit_structs_refuse_mappings (default false): deserialize_unit_struct refuses a mapping start with the existing UnexpectedValueForUnit error when set. options.rs, cfg.rs, deserializer.rs (one match arm), tests.rs. No unsafe, I/O or dependency change; default behaviour unchanged. Covers only this exact revision."
-
-[[audits.serde-saphyr]]
-criteria = "safe-to-deploy"
 delta = "2.1.1 -> 2.1.1@git:8ec56f9acc93e8f2f2c30f4e52497acc76cce86a"
 importable = false
 notes = "busbar's own patch, reviewed by us (parser input-safety review before pinning, both should-fix findings fixed in the second commit): upstream tag 2.1.1 (07bfc26a, byte-identical src to the published crate) plus opt-in Options null_scalars_as_text, lowercase_radix_prefixes_only and bom_inside_document_as_content (all default false), mirroring serde_yaml 0.9's reading; with null_scalars_as_text the live event source reports granit-parser's empty node (plain `~` over a zero-length span) as the empty plain scalar (live_events.rs, one flag); and a backport of upstream #272 (c680e061: plain +.nan/-.nan infer as strings); and opt-in quoted_scalars_are_strings (default false; boolean/integer/float targets refuse an untagged quoted scalar, one helper over the existing scalar take). deserializer.rs, key_nodes.rs, parse_scalars.rs, options.rs, cfg.rs, tests. No unsafe (crate forbids it), no new dependencies, no I/O; default behaviour unchanged. Offered upstream. Covers only this exact revision."
@@ -115,6 +103,18 @@ criteria = "safe-to-deploy"
 delta = "2.1.1@git:49b330217b7d8a2e7873336ce7411a0079776af8 -> 2.1.1@git:98c72ddb98b8c71303db9c56db24a8e3a4b11624"
 importable = false
 notes = "busbar's own patch: two commits. Opt-in Options::null_tag_requires_null_text (default false): deserialize_unit refuses a !!null scalar whose text is not a null spelling, with the existing UnexpectedValueForUnit error. Opt-in Options::block_scalar_indent_at_least_one (default false), forwarded unchanged to granit-parser's option. options.rs, cfg.rs, deserializer.rs, tests.rs. No unsafe, I/O or dependency change; default behaviour unchanged. Covers only this exact revision."
+
+[[audits.serde-saphyr]]
+criteria = "safe-to-deploy"
+delta = "2.1.1@git:8ec56f9acc93e8f2f2c30f4e52497acc76cce86a -> 2.1.1@git:9e1666f3199cf41ab83394936a5093f72c7e22c1"
+importable = false
+notes = "busbar's own patch: one commit, src/de/message_formatters.rs only. Unknown field and unknown variant refusals render their expected names as serde's default de::Error does (`a`, `a` or `b`, one of `a`, `b`, `c`; there are no fields/variants when empty) via a pure string helper. Display text only: no parsing, unsafe, I/O or dependency change. Covers only this exact revision."
+
+[[audits.serde-saphyr]]
+criteria = "safe-to-deploy"
+delta = "2.1.1@git:9e1666f3199cf41ab83394936a5093f72c7e22c1 -> 2.1.1@git:49b330217b7d8a2e7873336ce7411a0079776af8"
+importable = false
+notes = "busbar's own patch: one commit adding opt-in Options::unit_structs_refuse_mappings (default false): deserialize_unit_struct refuses a mapping start with the existing UnexpectedValueForUnit error when set. options.rs, cfg.rs, deserializer.rs (one match arm), tests.rs. No unsafe, I/O or dependency change; default behaviour unchanged. Covers only this exact revision."
 
 [[audits.sseer]]
 criteria = "safe-to-deploy"
