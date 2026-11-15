@@ -15,7 +15,6 @@ fn change_unit(debt: &mut ExactUsageDelta, model: &str, unit: &str, change: i128
             .checked_add(change)
             .expect("raw correction debt overflow");
     } else {
-        // busbar:expect(bp::into_alloc, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
         debt.models
             .push(crate::governance::exact_debt::ExactModelDelta {
                 model: model.into(),
@@ -169,7 +168,6 @@ fn positive_current(
 ) -> RecordStoreResult<(ExactUsageDelta, ExactUsageDelta)> {
     let mut plain = ExactUsageDelta::default();
     let mut dated = ExactUsageDelta::default();
-    // busbar:expect(bp::fresh_buffer, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
     let mut transfers = Vec::new();
     for model in &accepted.models {
         if model.era != RawRateEra::legacy(0) && model.flushed != model.flushed_era {
@@ -446,7 +444,6 @@ struct RawCell {
 
 impl RawCell {
     fn capture(cell: &BudgetCell) -> RecordStoreResult<Self> {
-        // busbar:expect(bp::clone_alloc, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
         #[expect(
             clippy::disallowed_methods,
             reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
@@ -776,7 +773,6 @@ impl Custody {
 
     pub(super) fn repost_descriptor(&self) -> Option<&RecoveryChild> {
         self.repost_operation_id.and_then(|operation_id| {
-            // busbar:expect(bp::state_scan, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
             self.handoffs.iter().find(|child| {
                 child.operation_id == operation_id && child.kind == RecoveryKind::Correction
             })
@@ -894,7 +890,6 @@ impl Custody {
     }
 
     pub(super) fn owns_quarantined_target(&self, bucket: &str, window: u64) -> bool {
-        // busbar:expect(bp::state_scan, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
         !self.intent_applied
             && self
                 .targets
@@ -1057,7 +1052,6 @@ impl Custody {
                 return Err(unresolved("invalid raw correction custody targets"));
             }
             previous = Some(identity);
-            // busbar:expect(bp::clone_alloc, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
             for bucket in [target.bucket.clone(), era_bucket(&target.bucket)] {
                 if !custody.request.usage.iter().any(|row| {
                     row.address.bucket_id == bucket && row.address.window_start == target.window
@@ -1081,7 +1075,6 @@ impl Custody {
             .as_ref()
             .filter(|branch| branch.op_id == self.request.op_id && branch.window == window)
             .ok_or_else(|| unresolved("correction handoff target does not match its parent"))?;
-        // busbar:expect(bp::state_scan, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
         let target = self
             .targets
             .iter_mut()
@@ -1089,7 +1082,6 @@ impl Custody {
             .ok_or_else(|| unresolved("correction handoff target is outside raw custody"))?;
         target.before = RawCell::capture(cell)?;
         target.accepted = RawCell::capture(&branch.accepted)?;
-        // busbar:expect(bp::state_scan, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
         if let Some(existing) = self
             .handoffs
             .iter()
@@ -1116,7 +1108,6 @@ impl Custody {
             return Ok((ExactUsageDelta::default(), ExactUsageDelta::default()));
         }
         let capacity = |bucket: &str| -> RecordStoreResult<ExactUsageDelta> {
-            // busbar:expect(bp::state_scan, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
             let row = self
                 .request
                 .usage
@@ -1181,7 +1172,6 @@ impl Custody {
         };
         let plain_capacity = capacity(bucket)?;
         let dated_capacity = capacity(&era_bucket(bucket))?;
-        // busbar:expect(bp::state_scan, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
         let target = self
             .targets
             .iter()
@@ -1222,7 +1212,6 @@ impl Custody {
         dated: &ExactUsageDelta,
     ) -> RecordStoreResult<Option<(ExactUsageDelta, ExactUsageDelta)>> {
         let (plain_capacity, dated_capacity) = self.negative_capacity(bucket, window)?;
-        // busbar:expect(bp::state_scan, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
         let target = self
             .targets
             .iter_mut()
@@ -1271,7 +1260,6 @@ impl Custody {
         {
             return Err(unresolved("raw correction custody event identity mismatch"));
         }
-        // busbar:expect(bp::fresh_buffer, reason = "boot: a retained correction custody is restored once, at recovery")
         let mut targets = Vec::new();
         for target in self.targets {
             target.before.restore(&target.bucket)?;
@@ -1347,9 +1335,7 @@ pub(super) fn apply_selected_cut(
                 .iter()
                 .find(|base| base.model == model.model && base.era == model.era)
             {
-                // busbar:expect(bp::clone_alloc, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
                 model.flushed = base.cur.clone();
-                // busbar:expect(bp::clone_alloc, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
                 model.flushed_era = base.cur.clone();
             }
         }
@@ -1360,7 +1346,6 @@ pub(super) fn apply_selected_cut(
                 .iter()
                 .any(|model| model.model == base.model && model.era == base.era)
             {
-                // busbar:expect(bp::clone_alloc, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
                 live.models.extend(ModelCell::new(
                     base.model.clone(),
                     base.era,

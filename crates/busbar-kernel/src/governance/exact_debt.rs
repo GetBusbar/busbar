@@ -638,7 +638,6 @@ impl GovState {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .insert(bucket.into());
-        // busbar:expect(bp::into_alloc, reason = "config: a deleted bucket is held from flushing once, at key or group deletion")
         BudgetDeleteGuard {
             state: self,
             bucket: bucket.into(),
@@ -957,7 +956,6 @@ impl GovState {
         final_flush: bool,
     ) -> (usize, Vec<String>) {
         let mut confirmed = 0;
-        // busbar:expect(bp::fresh_buffer, reason = "error: the failure list allocates only once a flight has failed")
         let mut errors = Vec::new();
         for flight in flights {
             let (done, error) = self.drive_budget_flush_flight(&flight, final_flush).await;
@@ -976,7 +974,6 @@ impl GovState {
         &self,
         bucket: &str,
     ) -> RecordStoreResult<()> {
-        // busbar:expect(bp::state_scan, reason = "config: a deleted bucket's in-flight flushes are settled once, at key or group deletion")
         #[expect(
             clippy::disallowed_methods,
             reason = "config: a deleted bucket's in-flight flushes are settled once, at key or group deletion"

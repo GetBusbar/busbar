@@ -6,3 +6,6 @@
 //! refused, and the first-sight paths that key a name once and then share it. Every fn is
 //! `#[cold]` or `#[inline(never)]`; none holds a loop or sweeps request data (BP17). Each section
 //! is named for the request-path module it serves.
+
+/// `governance`: refusal text and rare first-sight paths of the governance request-path module.
+pub(crate) mod governance;
