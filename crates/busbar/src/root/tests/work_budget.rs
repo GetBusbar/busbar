@@ -154,10 +154,6 @@ fn budget(section: &str) -> [Option<u64>; ITEMS.len()] {
     out
 }
 
-fn tally_since(before: Tally) -> Tally {
-    Tally::now().since(before)
-}
-
 /// One request through the door, counted from hand-off until its last body byte is read.
 async fn counted(rig: &NodeRig, fixture: Fixture) -> Tally {
     use tower::ServiceExt as _;
@@ -177,7 +173,7 @@ async fn counted(rig: &NodeRig, fixture: Fixture) -> Tally {
         .expect("the router answers");
     let status = resp.status().as_u16();
     let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
-    let work = tally_since(before);
+    let work = Tally::now().since(before);
     let body = body.expect("the answer's body reads to its end");
     assert_eq!(
         status,

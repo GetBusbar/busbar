@@ -108,7 +108,7 @@ fn egress_over(pool_name: &str) -> Egress {
                 ride_anchors: Vec::new(),
                 connection_required: false,
                 need: NeedId(0),
-                base_url: "https://far.test/".to_owned(),
+                base_url: "https://far.test/".into(),
                 auth: None,
                 provider: "e".into(),
                 keep: Default::default(),
