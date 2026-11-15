@@ -8,7 +8,10 @@
     "busbar-kernel-egress",
     "busbar-kernel-identity",
     "busbar-kernel-ledger",
-    "busbar-kernel-wal"
+    "busbar-kernel-wal",
+    "busbar-plugin-abi"
   ],
-  "allowed_additions": []
+  "allowed_additions": [
+    "busbar-plugin-abi"
+  ]
 }
