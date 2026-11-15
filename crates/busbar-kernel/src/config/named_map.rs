@@ -250,7 +250,7 @@ impl PlaneDefinition<'_> {
     ) -> Result<(), String> {
         let section = self.section;
         let entry =
-            busbar_contract::yaml::to_value(def).map_err(|e| format!("`{section}.{name}`: {e}"))?;
+            busbar_contract::json::to_yaml(def).map_err(|e| format!("`{section}.{name}`: {e}"))?;
         crate::config::plane_sections::validate_plane_entry(
             section,
             name,
