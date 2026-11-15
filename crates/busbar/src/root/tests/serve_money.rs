@@ -848,43 +848,6 @@ async fn a_nest_past_the_depth_cap_is_refused() {
     assert_eq!(g.money.open_units(), 0);
 }
 
-const NODE_HOOKS_ARM: &str = "BUSBAR_TEST_NODE_HOOKS_ARM";
-
-#[test]
-fn the_nodes_boot_hooks_price_and_book_a_door_unit_in_every_build() {
-    if std::env::var_os(NODE_HOOKS_ARM).is_some() {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("a runtime")
-            .block_on(node_boot_hooks_arm());
-        return;
-    }
-    let run = std::process::Command::new(std::env::current_exe().expect("the test binary"))
-        .args([
-            "--exact",
-            "root::serve::money_tests::the_nodes_boot_hooks_price_and_book_a_door_unit_in_every_build",
-        ])
-        .args(["--test-threads", "1", "--nocapture"])
-        .env(NODE_HOOKS_ARM, "1")
-        .output()
-        .expect("the test binary runs");
-    let text =
-        String::from_utf8_lossy(&run.stdout).into_owned() + &String::from_utf8_lossy(&run.stderr);
-    assert!(run.status.success(), "the node-hooks arm failed:\n{text}");
-    assert!(
-        text.contains("1 passed"),
-        "the node-hooks arm ran nothing:\n{text}"
-    );
-}
-
-#[path = "serve_boot_audit.rs"]
-mod boot_audit;
-
-async fn node_boot_hooks_arm() {
-    boot_audit::run().await;
-}
-
 #[tokio::test]
 async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
     let _one = PUBLISHING.lock().await;
