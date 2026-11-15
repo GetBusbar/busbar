@@ -815,8 +815,9 @@ impl DatagramFraming {
         judge: Arc<dyn DialJudge>,
         class: u32,
     ) -> Result<(Self, Yielded), DialBegin> {
-        let _ = (door, local, opening, judge, class);
-        todo!()
+        let cert = SessionCert::mint()
+            .map_err(|e| DialBegin::Mint(crate::cold::datagram::minting_fault(&e)))?;
+        Self::dial(door, Arc::new(cert), local, opening, judge, class).map_err(DialBegin::Dial)
     }
 
     /// Begin a DIALLING association on `door`: as [`Self::accept`], with the `opening` fields the
