@@ -3753,9 +3753,11 @@ async fn default_self_refresh_publishes_when_the_derived_id_is_reused() {
         .refresh_self(sub, "corp", None, now + 3600, now)
         .await
         .unwrap();
-    assert_eq!(
+    // Owner-signed self-mint-holds (P1-P4, 2026-11-13): a refresh after an administrator's
+    // rotation mints a new id and never writes over the rotated row.
+    assert_ne!(
         binding.id, epoch_one.id,
-        "retain the default same-id policy"
+        "a refresh after an admin rotation mints a new id, never the rotated row's"
     );
     assert!(gov.verify_token(&token, now, None).is_some());
     assert!(gov.verify_token(&prior, now, None).is_none());
