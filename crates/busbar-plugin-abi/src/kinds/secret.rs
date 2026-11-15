@@ -93,6 +93,40 @@ pub mod secret {
         todo!()
     }
 
+    /// The D_SUGAR item body: the SugarRec, then exactly four TEXT records (word, key, shown, names).
+    fn sugar_body(role: u32, flags: u32, texts: [&str; 4]) -> Option<Vec<u8>> {
+        let _ = (role, flags, texts);
+        todo!()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::records::{Records, tag};
+
+        #[test]
+        fn a_sugar_body_is_the_rec_then_four_text_records_in_order() {
+            let texts = ["env", "key", "VAR", "the variable"];
+            let body = sugar_body(SUGAR_ROLE_FILL, SUGAR_ALIAS, texts).unwrap();
+            assert_eq!(body[..4], SUGAR_ROLE_FILL.to_ne_bytes());
+            assert_eq!(body[4..8], SUGAR_ALIAS.to_ne_bytes());
+            let read: Vec<&str> = Records::new(&body[8..])
+                .map(|r| {
+                    let r = r.unwrap();
+                    assert_eq!(r.tag, tag::TEXT);
+                    r.text().unwrap()
+                })
+                .collect();
+            assert_eq!(read, texts);
+        }
+
+        #[test]
+        fn an_empty_shown_text_is_still_a_record() {
+            let body = sugar_body(SUGAR_ROLE_PATH, 0, ["file", "path", "", "the file"]).unwrap();
+            assert_eq!(Records::new(&body[8..]).count(), 4);
+        }
+    }
+
     /// `vt` points into the plugin image; it is valid because `inst` holds the image (I13), and it is never
     /// handed out with a lifetime longer than `&self`.
     #[cfg(feature = "host")]
