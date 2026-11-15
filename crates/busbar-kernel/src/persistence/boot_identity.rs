@@ -342,8 +342,10 @@ impl WriterRetirements {
             result: Secret::default(),
         })
         .map_err(error)?;
-        // A record is owed only for a writer that never retired: its row still admits it.
-        let seen = seen.filter(|_| old.admits(epoch));
+        // A record is owed only for a writer that never retired: its row still has a live
+        // execution epoch. `epoch` is the dataset's writer epoch, not one of the row's execution
+        // epochs, so `admits(epoch)` would miss a writer that rolled its epoch and died (#258).
+        let seen = seen.filter(|_| !old.live().is_empty());
         {
             let mut state = self.state();
             if let Some(seen) = &seen {
