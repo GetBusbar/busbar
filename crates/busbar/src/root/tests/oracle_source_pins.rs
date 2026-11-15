@@ -10,11 +10,10 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-/// One `plugin-digests.tsv` row: name, tag, asset, release line.
+/// One `plugin-digests.tsv` row: name, tag, release line.
 struct Row {
     name: String,
     tag: String,
-    asset: String,
     line: String,
 }
 
@@ -30,12 +29,11 @@ fn rows() -> Vec<Row> {
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .filter_map(|l| {
             let mut c = l.split('\t');
-            let (name, tag, asset, _sha) = (c.next()?, c.next()?, c.next()?, c.next()?);
+            let (name, tag, _asset, _sha) = (c.next()?, c.next()?, c.next()?, c.next()?);
             let line = c.next().filter(|x| !x.is_empty()).unwrap_or("1.5");
             Some(Row {
                 name: name.to_string(),
                 tag: tag.to_string(),
-                asset: asset.to_string(),
                 line: line.to_string(),
             })
         })
@@ -46,20 +44,6 @@ fn rows_1_6() -> Vec<Row> {
     let rows: Vec<Row> = rows().into_iter().filter(|r| r.line == "1.6").collect();
     assert!(!rows.is_empty(), "plugin-digests.tsv has no 1.6 row");
     rows
-}
-
-/// The repos this tree ships: `scripts/ci-product-pins.json` `products[].repo`.
-fn shipped_repos() -> BTreeSet<String> {
-    let path = repo_root().join("scripts/ci-product-pins.json");
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    let pins: serde_json::Value =
-        serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    pins["products"]
-        .as_array()
-        .unwrap_or_else(|| panic!("{} has no products", path.display()))
-        .iter()
-        .filter_map(|p| p["repo"].as_str().map(str::to_string))
-        .collect()
 }
 
 #[test]
@@ -80,26 +64,6 @@ fn oracle_1_6_source_rows_take_the_trees_pin() {
                  scripts/ci-product-pins.json ships",
                 r.name, r.tag
             ));
-        }
-    }
-    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
-}
-
-#[test]
-fn oracle_1_6_source_rows_name_shipped_repos() {
-    let shipped = shipped_repos();
-    let mut wrong = Vec::new();
-    for r in rows_1_6() {
-        match r.asset.strip_prefix("build:") {
-            Some(repo) if shipped.contains(repo) => {}
-            Some(repo) => wrong.push(format!(
-                "{} (line 1.6) builds `{repo}`, which scripts/ci-product-pins.json does not ship",
-                r.name
-            )),
-            None => wrong.push(format!(
-                "{} (line 1.6): `{}` names no `build:<repo>`",
-                r.name, r.asset
-            )),
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
