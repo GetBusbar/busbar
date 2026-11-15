@@ -177,6 +177,8 @@ fn walk_secret_refs_with_boot_token<'a>(
         providers,
         identity_providers,
         credentials,
+        operator_overlay_names: _,
+        operator_file_defs: _,
 
         listen: _,
         listen_explicit: _,

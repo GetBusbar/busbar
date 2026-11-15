@@ -26,6 +26,8 @@ mod grammar_fields;
 mod authored_routing;
 pub mod document_patch;
 pub mod named_map;
+pub mod operator_file;
+pub use operator_file::{operator_file_policy, OperatorFileDefs};
 pub mod readback;
 
 pub mod parse;
@@ -489,6 +491,14 @@ pub struct RootCfg {
     /// `auth`/`admin_auth` above are the RESOLVED projection of it; this is the definition surface
     /// the admin API reads and rewrites (`GET/PUT/PATCH/DELETE /identity-providers/{name}`).
     pub identity_providers: IdentityProviders,
+    /// The `identity-providers` names whose operator-backed definition the admin overlay holds
+    /// rather than the base file: provenance for the operator file policy (OPERATOR-FROM-ADMITTED-AUTH
+    /// §3.5). Filled where the overlay's named maps are applied; refused by `config_validate`.
+    pub operator_overlay_names: Vec<String>,
+    /// The base file's operator-backed definitions this candidate is held to (§3.6.1): set by a
+    /// disk read (boot, reload) and, to the running generation's, for every body-read candidate.
+    /// When set, `config_validate` refuses any difference; the built `App` keeps it.
+    pub operator_file_defs: Option<std::sync::Arc<OperatorFileDefs>>,
     /// The `export:` NAMED-DEFINITION map, carried through resolve VERBATIM — the definition twin of
     /// the typed `export` projection above, for the same reason `identity_providers` is carried:
     /// the admin API serves DEFINITIONS, not the lowered per-module runtime shape.
@@ -878,6 +888,10 @@ pub struct DeployCfg {
     /// Exact consumed operator-source binding for indexed admin writes; never wire config.
     #[serde(skip)]
     pub document_source_fingerprints: Option<document_patch::SourceFingerprints>,
+    /// The `identity-providers` names the admin overlay applied with an operator-backed definition
+    /// (`overlay::apply_named_maps_to_deploy`): carried to [`RootCfg::operator_overlay_names`].
+    #[serde(skip)]
+    pub operator_overlay_names: Vec<String>,
     /// The grammar this document was read under ([`deploy_from_deserializer`]); `Unbound` when it was decoded
     /// some other way, which refuses wherever the grammar is needed. Never on the wire.
     #[serde(skip)]
@@ -2091,6 +2105,8 @@ pub fn resolve(
             ),
             export,
             identity_providers: deploy.identity_providers.clone(),
+            operator_overlay_names: deploy.operator_overlay_names.clone(),
+            operator_file_defs: None,
             export_defs: deploy.export.clone(),
             plane_sections,
             grammar: deploy.grammar.clone(),
