@@ -7,7 +7,7 @@
 
 use busbar_contract::abi::sdk::test_support::loans::Loans;
 use busbar_contract::abi::sdk::test_support::watch::{Block, Watch};
-use busbar_contract::abi::transport::{IngestIn, ReadIn, WriteIn};
+use busbar_contract::abi::transport::{BeginIn, IngestIn, ReadIn, WriteIn};
 
 #[global_allocator]
 static A: Watch = Watch::new();
@@ -234,4 +234,27 @@ fn the_thread_cpu_clock_moves_with_work() {
     }
     std::hint::black_box(x);
     assert!(cpu::thread_ns() > before);
+}
+
+#[test]
+fn a_begin_carries_its_scheme_and_a_lane_lends_its_paths() {
+    let mut b = Loans::<BeginIn>::new();
+    b.scheme(2).lane(|l| {
+        l.push(|lane| {
+            lane.size(1)
+                .keying(|k| {
+                    k.push(|m| {
+                        m.profile(1);
+                    });
+                })
+                .paths(|p| {
+                    p.push(|path| {
+                        path.path(1).addr("127.0.0.1:9");
+                    });
+                });
+        });
+    });
+    let sealed = b.seal();
+    assert_eq!(sealed.scheme, 2);
+    assert!(!sealed.lane.is_null());
 }
