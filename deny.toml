@@ -61,7 +61,7 @@ wildcards = "deny"
 # path dependencies with no version — that isn't a supply-chain wildcard, it's the workspace
 # referencing itself. Allow those; external wildcards are still denied.
 allow-wildcard-paths = true
-# ONE protocol = ONE library, ONE crypto backend = ring (BUSBAR-1.6.0.md, Libraries): the stacks
+# ONE protocol = ONE library, ONE crypto provider = AWS-LC (BUSBAR-1.6.0.md, Libraries; 229): the stacks
 # busbar does NOT use, named so a dependency that drags one in fails here instead of landing.
 deny = [
     # Stacks busbar does not use (kept from before the crypto seam; cargo-deny matches `name@version`
@@ -88,7 +88,9 @@ deny = [
     { crate = "paste", reason = "unmaintained (RUSTSEC-2024-0436)" },
     # THE CRYPTO SEAM (CRYPTO-SEAM r15 §2.7, decisions 210, 224, 229): one backend, reached only through
     # the facade; AWS-LC (aws-lc-rs) is the one provider. Wrappers are the third-party parents allowed
-    # to carry a banned crate. Not yet on: `ring` (four plugins still name it), `aes`/`cipher`
+    # to carry a banned crate. Not yet on: `ring` (busbar-auth-oauth, -oidc, -sigv4 and
+    # -transport-webrtc still name it, #173; dist/default has no deny.toml of its own and reads this
+    # one; core's own graph builds no ring, held by tools/ci-checks crypto-graph), `aes`/`cipher`
     # (transport-webrtc), `sha2` (busbar-auth-oauth) and `getrandom`/`rand_core` (busbar-store-memory,
     # -postgres, -sqlite): core is clean since oauth-as 1.1 (decision 228), these plugins move in §8 5-7.
     { crate = "aws-lc-rs", wrappers = ["busbar-crypto-backend", "quinn-proto", "rcgen", "rustls", "rustls-webpki", "x509-parser"], reason = "AWS-LC only through the crypto backend" },
