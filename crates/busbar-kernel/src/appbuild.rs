@@ -307,50 +307,31 @@ pub fn load_config_from_disk_compacting_document_patches(
         })?
     };
 
-    let config_dir = config_path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."));
     // A providers file the operator NAMED (--providers / env, or `providers_file:`) must exist. The
     // default one beside config.yaml is optional: absent means an empty catalog (an admin-only
-    // deployment configures no provider).
-    let providers_named = providers_override.is_some() || deploy.providers_file.is_some();
-    let providers_path: std::path::PathBuf = match providers_override {
-        Some(p) => p.to_path_buf(),
-        None => match deploy.providers_file.as_deref() {
-            Some(f) => {
-                let p = std::path::Path::new(f);
-                if p.is_absolute() {
-                    p.to_path_buf()
-                } else {
-                    config_dir.join(p)
-                }
-            }
-            None => config_dir.join("providers.yaml"),
-        },
-    };
-    let raw_providers = match std::fs::read_to_string(&providers_path) {
-        Ok(text) => text,
-        Err(e) if !providers_named && e.kind() == std::io::ErrorKind::NotFound => {
+    // deployment configures no provider). Custody learns of the absence itself, never a stand-in.
+    let location = config::providers::CatalogLocation::select(
+        config_path,
+        providers_override,
+        deploy.providers_file.as_deref(),
+    );
+    let providers_path = location.path.clone();
+    let source = location.read()?;
+    let normalized_providers = match &source {
+        config::providers::CatalogSource::Authored(raw) => {
+            rules.normalize_document(ConfigDocument::Providers, &providers_path, raw)?
+        }
+        config::providers::CatalogSource::AbsentDefault => {
             tracing::info!(
                 path = %providers_path.display(),
                 "no providers file at the default location; running with an empty provider catalog"
             );
-            "{}\n".to_string()
-        }
-        Err(e) => {
-            return Err(format!(
-                "cannot read providers file '{}': {e} (set `providers_file:` in config.yaml, or --providers; \
-                 an empty providers.yaml or `{{}}` is enough for a deployment that configures no provider)",
-                providers_path.display()
-            ));
+            rules.absent_document(ConfigDocument::Providers, &providers_path)?;
+            None
         }
     };
-    let normalized_providers =
-        rules.normalize_document(ConfigDocument::Providers, &providers_path, &raw_providers)?;
     let interpolated_providers = config::interpolate_env_with(
-        normalized_providers
-            .as_deref()
-            .unwrap_or(raw_providers.as_str()),
+        normalized_providers.as_deref().unwrap_or(source.text()),
         env_mode,
         &mut unset_env_vars,
     )
@@ -631,6 +612,18 @@ pub trait RootRules: Send + Sync {
         _raw: &str,
     ) -> Result<Option<busbar_contract::secure::SecureString>, String> {
         Ok(None)
+    }
+
+    /// The document's unnamed default file is absent and reads as its empty form
+    /// ([`config::providers::CatalogSource::AbsentDefault`]). There are no authored bytes to
+    /// normalize, so this replaces [`RootRules::normalize_document`] for that load; custody
+    /// records the absence as an unchanged document that is never published or created.
+    fn absent_document(
+        &self,
+        _kind: ConfigDocument,
+        _path: &std::path::Path,
+    ) -> Result<(), String> {
+        Ok(())
     }
 
     fn check_built(&self, _app: &App) -> Result<(), String> {
@@ -1213,6 +1206,7 @@ async fn build_app_native(
         present: cfg.rate_card.is_some(),
         plane_fees: cfg.plane_fees.clone(),
     };
+    let llm_configured = !cfg.providers.is_empty() || !cfg.models.is_empty();
     let mut sorted_models: Vec<_> = cfg.models.into_iter().collect();
     sorted_models.sort_by(|a, b| a.0.cmp(&b.0));
     for (model, mc) in sorted_models {
@@ -1760,6 +1754,7 @@ async fn build_app_native(
         &pool_inputs,
         &by_model,
         cfg.upstream_credentials,
+        llm_configured,
     ));
 
     let fallback = crate::plane_driver::dispatch::fallback_decl();
