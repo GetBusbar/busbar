@@ -29,6 +29,12 @@ pub trait EngineTablesView {
     fn on_exhausted_fallback(&self, pool: &str) -> Option<String>;
 
     fn upstream_creds(&self) -> busbar_contract::config::UpstreamCreds;
+
+    /// Whether the deployment configures the LLM plane (any provider or model). A deployment without
+    /// it serves no lanes, so lanes do not count against its health.
+    fn llm_configured(&self) -> bool {
+        true
+    }
 }
 
 /// THE KERNEL'S OWN TABLES VIEW over the pools and lanes it resolved: the lanes in the lane table's
@@ -43,6 +49,9 @@ pub struct ConfigTables {
     pub(crate) by_model: foldhash::HashMap<String, usize>,
     pub(crate) pools: foldhash::HashMap<String, Vec<(usize, u32)>>,
     pub(crate) fallbacks: foldhash::HashMap<String, String>,
+    /// True only when the deployment configures no provider and no model. Defaults to false, so a
+    /// table built without that fact counts the LLM plane as configured (health refuses, never opens).
+    pub(crate) no_llm: bool,
     pub(crate) upstream_credentials: busbar_contract::config::UpstreamCreds,
 }
 

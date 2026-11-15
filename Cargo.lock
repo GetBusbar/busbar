@@ -659,6 +659,11 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-plugin-loader",
+ "busbar-plugin-test",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "sonic-rs",
  "tokio",
 ]
 
