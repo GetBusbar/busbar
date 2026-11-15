@@ -96,16 +96,17 @@ impl FramedStream {
     ) -> Result<Self, Refused> {
         binding.ticket_less()?;
         let facts = door.facts();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a refusal names the entry and the claim it does not answer"
-        )]
         let index = facts
             .claims
             .iter()
             .position(|c| *c == claim)
             .and_then(|i| u32::try_from(i).ok())
-            .ok_or_else(|| fault(format!("`{}` does not answer `{claim}`", facts.name)))?;
+            .ok_or_else(|| {
+                crate::cold::framing::fault(format_args!(
+                    "`{}` does not answer `{claim}`",
+                    facts.name
+                ))
+            })?;
         let rows = facts
             .status_rows
             .iter()
@@ -167,13 +168,9 @@ impl FramedStream {
     fn observe(&mut self, yielded: &Yielded) -> Result<(), Refused> {
         self.deadline_ns = yielded.deadline_ns;
         if let Some(piece) = yielded.pieces.iter().find(|piece| piece.failed) {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a failed stream is refused with the framer's own sentence"
-            )]
             return Err(Refused {
                 outcome: Outcome::Failed,
-                error: String::from_utf8_lossy(&piece.bytes).into_owned(),
+                error: crate::cold::framing::lossy(&piece.bytes),
             });
         }
         Ok(())

@@ -6,7 +6,9 @@
 //! they live in memory; the per-account limiter, which protects the directory, is fleet-wide in the
 //! core store (`super::account`). Every function takes `now` (Unix seconds) so tests drive time.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
+
+use foldhash::HashMap;
 use std::net::IpAddr;
 
 use super::policy::{Limit, LoginLimitsPolicy};
@@ -32,17 +34,17 @@ pub(crate) enum SourceRefusal {
 }
 
 #[derive(Debug, Default)]
-struct Bucket {
+pub(crate) struct Bucket {
     /// (time, ticket id) of each failure, reservations included.
-    failures: VecDeque<(u64, u64)>,
+    pub(crate) failures: VecDeque<(u64, u64)>,
     /// Time of each submission in the last minute (base buckets only).
-    submissions: VecDeque<u64>,
+    pub(crate) submissions: VecDeque<u64>,
     /// When the bucket was last touched.
-    touched: u64,
+    pub(crate) touched: u64,
 }
 
 impl Bucket {
-    fn prune(&mut self, now: u64, window: u64) {
+    pub(crate) fn prune(&mut self, now: u64, window: u64) {
         while self
             .failures
             .front()
@@ -59,7 +61,7 @@ impl Bucket {
         }
     }
 
-    fn idle(&self) -> bool {
+    pub(crate) fn idle(&self) -> bool {
         self.failures.is_empty() && self.submissions.is_empty()
     }
 }
@@ -67,7 +69,7 @@ impl Bucket {
 /// The per-source failure and submission table.
 #[derive(Debug, Default)]
 pub(crate) struct SourceTable {
-    buckets: HashMap<SourceBucket, Bucket>,
+    pub(crate) buckets: HashMap<SourceBucket, Bucket>,
     next_id: u64,
 }
 
@@ -132,26 +134,13 @@ impl SourceTable {
     }
 
     /// Bound the table: drop idle buckets, then (still full) the least recently touched bucket
-    /// that is not at a ceiling. A throttled bucket is never evicted while another can go.
+    /// that is not at a ceiling. A throttled bucket is never evicted while another can go. The
+    /// sweep runs only when the table is full (`cold::auth::login`).
     fn make_room(&mut self, now: u64, window: u64) {
         if self.buckets.len() < MAX_TRACKED {
             return;
         }
-        self.buckets.retain(|_, b| {
-            b.prune(now, window);
-            !b.idle()
-        });
-        if self.buckets.len() < MAX_TRACKED {
-            return;
-        }
-        let victim = self
-            .buckets
-            .iter()
-            .min_by_key(|(_, b)| (b.failures.len(), b.touched))
-            .map(|(k, _)| *k);
-        if let Some(k) = victim {
-            self.buckets.remove(&k);
-        }
+        self.evict(now, window);
     }
 
     #[cfg(test)]
@@ -230,7 +219,7 @@ pub(crate) struct Breaker {
 /// Outages that open the breaker.
 pub const BREAKER_OUTAGES: usize = 5;
 /// Their window, seconds.
-pub const BREAKER_WINDOW_SECS: u64 = 60;
+const BREAKER_WINDOW_SECS: u64 = 60;
 /// How long it stays open, seconds (also its `Retry-After`).
 pub const BREAKER_OPEN_SECS: u64 = 30;
 
@@ -262,7 +251,7 @@ impl Breaker {
 /// THE ADMIN DOOR: presented-and-refused credentials per source.
 #[derive(Debug, Default)]
 pub(crate) struct AdminTable {
-    buckets: HashMap<SourceBucket, VecDeque<u64>>,
+    pub(crate) buckets: HashMap<SourceBucket, VecDeque<u64>>,
 }
 
 impl AdminTable {
@@ -287,10 +276,7 @@ impl AdminTable {
     /// (the first refusal of the window, which is audited).
     pub(crate) fn refused(&mut self, ip: IpAddr, limit: Limit, now: u64) -> bool {
         if self.buckets.len() >= MAX_TRACKED {
-            self.buckets.retain(|_, b| {
-                b.back()
-                    .is_some_and(|t| now.saturating_sub(*t) < limit.window_secs)
-            });
+            self.evict(now, limit.window_secs);
         }
         let bucket = self.buckets.entry(SourceBucket::base(ip)).or_default();
         while bucket
@@ -305,13 +291,16 @@ impl AdminTable {
 }
 
 /// The global per-node budget of login audit records per minute.
-pub const AUDIT_BUDGET_PER_MINUTE: u32 = 60;
+const AUDIT_BUDGET_PER_MINUTE: u32 = 60;
 
 /// THE AUDIT GATE: first record per (action, subject) per window, within a per-node budget; every
 /// suppressed record is counted and summarised once its minute has passed.
 #[derive(Debug, Default)]
 pub(crate) struct AuditGate {
-    latches: HashMap<(String, String), u64>,
+    /// action -> subject -> the window its record was written in.
+    pub(crate) latches: HashMap<String, HashMap<String, u64>>,
+    /// How many (action, subject) latches `latches` holds.
+    pub(crate) latched: usize,
     minute: u64,
     spent: u32,
     suppressed: u64,
@@ -346,8 +335,7 @@ impl AuditGate {
             self.suppressed = 0;
         }
         let window = now / window_secs.max(1);
-        let key = (action.to_string(), subject.to_string());
-        let latched = self.latches.get(&key) == Some(&window);
+        let latched = self.latches.get(action).and_then(|s| s.get(subject)) == Some(&window);
         if latched || self.spent >= AUDIT_BUDGET_PER_MINUTE {
             self.suppressed = self.suppressed.saturating_add(1);
             return AuditDecision {
@@ -355,10 +343,17 @@ impl AuditGate {
                 summary,
             };
         }
-        if self.latches.len() >= MAX_TRACKED {
-            self.latches.retain(|_, w| *w == window);
+        if self.latched >= MAX_TRACKED {
+            self.evict(window);
         }
-        self.latches.insert(key, window);
+        match self
+            .latches
+            .get_mut(action)
+            .and_then(|s| s.get_mut(subject))
+        {
+            Some(w) => *w = window,
+            None => self.first_latch(action, subject, window),
+        }
         self.spent += 1;
         AuditDecision {
             record: true,
@@ -373,7 +368,7 @@ pub const SUSTAINED_WINDOWS: u32 = 4;
 /// Tracks how many consecutive windows each account has been throttled in.
 #[derive(Debug, Default)]
 pub(crate) struct Sustained {
-    accounts: HashMap<String, (u64, u32, bool)>,
+    pub(crate) accounts: HashMap<String, (u64, u32, bool)>,
 }
 
 impl Sustained {
@@ -382,13 +377,14 @@ impl Sustained {
     pub(crate) fn throttled(&mut self, fingerprint: &str, window_secs: u64, now: u64) -> bool {
         let window = now / window_secs.max(1);
         if self.accounts.len() >= MAX_TRACKED {
-            self.accounts
-                .retain(|_, (w, _, _)| window.saturating_sub(*w) <= 1);
+            self.evict(window);
         }
-        let entry = self
-            .accounts
-            .entry(fingerprint.to_string())
-            .or_insert((window, 0, false));
+        if !self.accounts.contains_key(fingerprint) {
+            self.first_throttle(fingerprint, window);
+        }
+        let Some(entry) = self.accounts.get_mut(fingerprint) else {
+            return false;
+        };
         if entry.1 == 0 || window == entry.0 + 1 {
             entry.1 += 1;
             entry.2 = false;

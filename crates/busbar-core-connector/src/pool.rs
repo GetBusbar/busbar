@@ -4,7 +4,7 @@
 //! THE PER-WORKER POOLS (`BUSBAR-1.6.0.md` THE DESIGN, connections: the connector owns "per-worker
 
 use std::cell::Cell;
-use std::hash::{BuildHasher, Hash, Hasher, RandomState};
+use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -179,14 +179,14 @@ impl<T> std::hash::Hash for Same<T> {
 }
 
 /// One pooled line: in use (`idle` = `None`), or idle since the instant named.
-struct Entry {
-    line: Arc<Line>,
-    idle: Option<Instant>,
+pub(crate) struct Entry {
+    pub(crate) line: Arc<Line>,
+    pub(crate) idle: Option<Instant>,
     /// An idle freshness probe owns the line, with no shard lock held.
     checking: bool,
 }
 
-type Shard = Mutex<HashMap<PoolKey, Vec<Entry>>>;
+pub(crate) type Shard = Mutex<HashMap<PoolKey, Vec<Entry>>>;
 
 thread_local! {
     /// The calling thread's reused list of lines leaving the pool ([`Spent`]).
@@ -195,23 +195,23 @@ thread_local! {
 
 /// The lines one pool op takes out, closed once no pool lock is held: the calling thread's reused
 /// list, handed back empty for its next op (a re-entrant op gets a list of its own).
-struct Spent(Vec<Arc<Line>>);
+pub(crate) struct Spent(Vec<Arc<Line>>);
 
 impl Spent {
-    fn take() -> Self {
+    pub(crate) fn take() -> Self {
         Self(SPENT.take())
     }
 
-    fn push(&mut self, line: Arc<Line>) {
+    pub(crate) fn push(&mut self, line: Arc<Line>) {
         self.0.push(line);
     }
 
-    fn extend(&mut self, lines: impl IntoIterator<Item = Arc<Line>>) {
+    pub(crate) fn extend(&mut self, lines: impl IntoIterator<Item = Arc<Line>>) {
         self.0.extend(lines);
     }
 
     /// Close every line taken out that nobody holds.
-    fn close(mut self) {
+    pub(crate) fn close(mut self) {
         for line in self.0.drain(..) {
             if line.users() == 0 {
                 line.close();
@@ -230,13 +230,13 @@ impl Drop for Spent {
 /// The pools, one per shard.
 pub(crate) struct Pools {
     posture: RwLock<PoolPosture>,
-    shards: Box<[Shard]>,
+    pub(crate) shards: Box<[Shard]>,
     /// The instant the pools were made: what [`Self::reap_due`] counts from.
     epoch: Instant,
     /// When the earliest idle line's time runs out, in nanoseconds since [`Self::epoch`]
-    reap_due: AtomicU64,
+    pub(crate) reap_due: AtomicU64,
     /// The process's key hasher: [`Self::keyed`] hashes each key's fields with it once.
-    keys: RandomState,
+    keys: foldhash::fast::RandomState,
 }
 
 impl std::fmt::Debug for Pools {
@@ -259,23 +259,12 @@ fn shard_count() -> usize {
 impl Pools {
     /// The pools for `posture`.
     pub(crate) fn new(posture: PoolPosture) -> Self {
-        let count = shard_count();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the pools are made once, with the connector"
-        )]
-        let shards = (0..count).map(|_| Mutex::new(HashMap::default())).collect();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the pools are made once, with the connector"
-        )]
-        let epoch = Instant::now();
         Self {
             posture: RwLock::new(posture),
-            shards,
-            epoch,
+            shards: crate::off_path::lines::pool_shards(shard_count()),
+            epoch: crate::framer::now(),
             reap_due: AtomicU64::new(u64::MAX),
-            keys: RandomState::new(),
+            keys: foldhash::fast::RandomState::default(),
         }
     }
 
@@ -300,16 +289,13 @@ impl Pools {
 
     /// Bootstrap recovery replaces the posture without replacing the connector or its active
     pub(crate) fn reconfigure(&self, posture: PoolPosture) {
-        // busbar:expect(bp::fresh_buffer, reason = "config: the posture is replaced only by bootstrap recovery or a config commit")
-        let mut gone = Vec::new();
-        {
+        let gone = {
             let mut applied = self.posture.write().expect("pool posture");
             *applied = posture;
-            for shard in &*self.shards {
-                gone.push(std::mem::take(&mut *shard.lock().expect("pool")));
-            }
+            let gone = crate::off_path::lines::take_shards(&self.shards);
             self.reap_due.store(u64::MAX, Ordering::Release);
-        }
+            gone
+        };
         for map in gone {
             for entry in map.into_values().flatten() {
                 if entry.line.users() == 0 {
@@ -320,7 +306,7 @@ impl Pools {
     }
 
     /// `at`, in nanoseconds since the pools were made.
-    fn since_epoch(&self, at: Instant) -> u64 {
+    pub(crate) fn since_epoch(&self, at: Instant) -> u64 {
         u64::try_from(at.saturating_duration_since(self.epoch).as_nanos()).unwrap_or(u64::MAX)
     }
 
@@ -345,34 +331,7 @@ impl Pools {
         {
             return;
         }
-        let timeout = posture.idle_timeout;
-        let mut spent = Spent::take();
-        let mut next: Option<Instant> = None;
-        for shard in &*self.shards {
-            let mut map = shard.lock().expect("pool");
-            map.retain(|_, entries| {
-                let mut i = entries.len();
-                while i > 0 {
-                    i -= 1;
-                    match entries[i].idle {
-                        Some(since) if now.duration_since(since) >= timeout => {
-                            spent.push(entries.swap_remove(i).line);
-                        }
-                        Some(since) => {
-                            if let Some(ends) = since.checked_add(timeout) {
-                                next = Some(next.map_or(ends, |n| n.min(ends)));
-                            }
-                        }
-                        None => {}
-                    }
-                }
-                !entries.is_empty()
-            });
-        }
-        if let Some(next) = next {
-            self.reap_due
-                .fetch_min(self.since_epoch(next), Ordering::AcqRel);
-        }
+        let spent = crate::off_path::lines::sweep_idle_lines(self, posture.idle_timeout, now);
         drop(posture);
         spent.close();
     }
@@ -416,7 +375,7 @@ impl Pools {
         if !self.keeps() {
             return None;
         }
-        let now = Instant::now();
+        let now = crate::framer::now();
         self.reap_if_due(now);
         let mut spent = Spent::take();
 
@@ -508,7 +467,7 @@ impl Pools {
             self.drop_line(shard, key, line);
             return;
         }
-        let now = Instant::now();
+        let now = crate::framer::now();
         let mut spent = Spent::take();
         {
             let mut map = self.shards[shard].lock().expect("pool");
@@ -572,21 +531,7 @@ impl Pools {
 
     /// `owner` is gone: every line dialled for it leaves the pool, and each nobody holds is
     pub(crate) fn forget(&self, owner: InstanceId) {
-        let mut gone = Spent::take();
-        for shard in &*self.shards {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: an owner leaves the pool only when its instance is unloaded"
-            )]
-            shard.lock().expect("pool").retain(|key, entries| {
-                if key.owner != owner {
-                    return true;
-                }
-                gone.extend(entries.drain(..).map(|e| e.line));
-                false
-            });
-        }
-        gone.close();
+        crate::off_path::lines::forget_pooled(self, owner);
     }
 
     /// Drop `line` from the pool for `key` on `shard` (it failed its exchange's open); closed when

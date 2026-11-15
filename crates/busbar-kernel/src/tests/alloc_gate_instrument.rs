@@ -11,12 +11,10 @@ thread_local! {
 pub(crate) struct CountingJemalloc;
 
 impl CountingJemalloc {
-    #[allow(dead_code)]
     pub(crate) fn count() -> u64 {
         ALLOC_COUNT.with(|c| c.get())
     }
 
-    #[allow(dead_code)]
     pub(crate) fn reset() -> u64 {
         ALLOC_COUNT.with(|c| c.replace(0))
     }

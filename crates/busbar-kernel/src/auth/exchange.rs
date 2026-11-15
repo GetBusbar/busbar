@@ -95,11 +95,8 @@ pub(crate) async fn exchange(
     };
 
     let provisioner = Arc::new(HandleProvisioner::new(handle.clone(), principal.id.clone()));
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a self-serve mint provisions a key once, under the identifying provider's name"
-    )]
-    let keys = DeterministicEd25519Keys::new(gov, provider.to_string(), team, pools, provisioner);
+    let provider = crate::cold::auth::keys::self_key_provider(provider);
+    let keys = DeterministicEd25519Keys::new(gov, provider, team, pools, provisioner);
     match issue_key(&keys, principal, ttl, false).await {
         Ok(issued) => {
             let base_url = app.public_url.as_deref().unwrap_or("");
@@ -141,12 +138,8 @@ async fn admit_exchange_mint<'a>(
         return Err(ExchangeError::Unauthorized);
     };
     let Some(gov) = governance.cloned() else {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a mint refused because governance is disabled"
-        )]
         return Err(ExchangeError::MintFailed(
-            "governance is disabled: cannot mint keys".to_string(),
+            crate::cold::auth::keys::governance_disabled(),
         ));
     };
     if let Some(claim) = claim {

@@ -3,7 +3,7 @@
 
 #![allow(unsafe_code, clippy::missing_safety_doc)]
 
-#[path = "../common/mod.rs"]
+#[path = "../common/driver.rs"]
 mod common;
 
 #[path = "plane_driver_authenticated_route.rs"]
