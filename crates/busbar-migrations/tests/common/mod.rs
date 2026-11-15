@@ -13,14 +13,14 @@ use busbar_migrations::config::migrate_plugins::MigrateHost;
 pub const FIXTURE: &str = include_str!("../fixtures/operator_1_5_historical_plugins.yaml");
 
 /// The `plugins:` subtree the fixture normalizes to (the pin is re-pinned, its sha256 dropped).
-pub fn golden_plugins() -> Value {
+fn golden_plugins() -> Value {
     yaml::from_str("{ enabled: true, fetch: [{ github: Acme/busbar-stub@v1.6.0 }] }")
         .expect("golden YAML")
 }
 
-pub struct Host {
+struct Host {
     /// Refuse `kind: auth` settings that carry no `sha256`.
-    pub gate_auth: bool,
+    gate_auth: bool,
 }
 
 impl MigrateHost for Host {
@@ -58,7 +58,7 @@ impl MigrateHost for Host {
 }
 
 /// The `plugins:` of full normalization under a host that checks nothing (V without `ViewOnly`).
-pub fn plain_plugins(raw: &str) -> Option<Value> {
+fn plain_plugins(raw: &str) -> Option<Value> {
     let out = busbar_migrations::config::normalize_supported_source(
         DocumentSemantics::Historical,
         raw,
@@ -70,13 +70,13 @@ pub fn plain_plugins(raw: &str) -> Option<Value> {
 }
 
 /// The `plugins:` of pass 1 under the auth-refusing host.
-pub fn view(raw: &str) -> Result<Option<Value>, String> {
+fn view(raw: &str) -> Result<Option<Value>, String> {
     busbar_migrations::config::normalize_plugins_view(raw, &Host { gate_auth: true })
 }
 
 /// Pass 1's output, put back into a document with the fixture's other sections, as the second
 /// start reads it.
-pub fn with_plugins(raw: &str, plugins: &Value) -> String {
+fn with_plugins(raw: &str, plugins: &Value) -> String {
     let mut doc: Value = yaml::from_str(raw).expect("fixture YAML");
     if let Some(map) = doc.as_mapping_mut() {
         map.insert_key("plugins", plugins.clone());
