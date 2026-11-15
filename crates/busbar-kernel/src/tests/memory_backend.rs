@@ -6,7 +6,8 @@
 //! Core's store-backed tests used to load the busbar-store-memory product cdylib
 //! (`BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN`, settings `{}`), which core no longer builds. This is the
 //! same contract behind [`PersistenceBackend`], in memory, keeping that product's observable rules:
-//! an ephemeral dataset with a fresh identity per backend; reads and commits judged against the
+//! a dataset with a fresh identity per backend, declared durable (Local) because it stands in for
+//! the durable product store those tests ran against; reads and commits judged against the
 //! dataset and their time guard; the execution fence (dataset root and writer records in
 //! [`control::NAMESPACE`]) checked before anything else on every commit but the proven-empty
 //! initialization; control records only conditionally replaced, never deleted; generation records
@@ -52,6 +53,23 @@ struct State {
     receipts: HashMap<[u8; 16], [u8; 32]>,
 }
 
+impl State {
+    /// The record at `at` as a reader or a predicate sees it: a generation record is the
+    /// adapter-owned count of commits that mutated the namespace its key names (absent while none
+    /// has), every other record is the row itself.
+    fn value(&self, at: &Address) -> Option<Secret<Vec<u8>>> {
+        if at.namespace != control::GENERATION_NAMESPACE.0 {
+            return self.rows.get(at).cloned();
+        }
+        let namespace: [u8; 16] = at.key.as_slice().try_into().ok()?;
+        self.generations
+            .get(&namespace)
+            .copied()
+            .filter(|n| *n > 0)
+            .map(|n| Secret::new(n.to_le_bytes().to_vec()))
+    }
+}
+
 /// One ephemeral dataset.
 pub(crate) struct MemoryBackend {
     info: BackendInfo,
@@ -66,7 +84,9 @@ impl Default for MemoryBackend {
                 atomic_domain: identity(2),
                 clock_authority: identity(3),
                 physical_version: PHYSICAL_VERSION,
-                durability: Durability::Ephemeral,
+                // It stands in for the durable product store core's store-backed tests ran against
+                // (tests that need an ephemeral store wrap it to say so, as `EphemeralInfo` does).
+                durability: Durability::Local,
             },
             state: Mutex::new(State::default()),
         }
@@ -149,10 +169,10 @@ impl MemoryBackend {
             return Ok(Decision::TimeGuardFailed { observed_at });
         }
         for predicate in &candidate.predicates {
-            let found = state.rows.get(&predicate.address);
+            let found = state.value(&predicate.address);
             let matches = match &predicate.expected {
                 ExpectedValue::Absent => found.is_none(),
-                ExpectedValue::Exact(bytes) => found == Some(bytes),
+                ExpectedValue::Exact(bytes) => found.as_ref() == Some(bytes),
             };
             if !matches {
                 return Ok(Decision::ConditionConflict);
@@ -250,11 +270,7 @@ impl PersistenceBackend for MemoryBackend {
             let state = self.state();
             Ok(ReadResult::Values {
                 observed_at,
-                values: request
-                    .addresses
-                    .iter()
-                    .map(|at| state.rows.get(at).cloned())
-                    .collect(),
+                values: request.addresses.iter().map(|at| state.value(at)).collect(),
             })
         })
     }

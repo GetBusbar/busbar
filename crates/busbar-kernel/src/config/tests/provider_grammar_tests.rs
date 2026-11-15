@@ -46,7 +46,8 @@ fn a_new_descriptor_key_needs_no_kernel_grammar_change() {
         .unwrap_err()
         .to_string();
     assert!(
-        error.contains("unknown field `unexpected`, expected one of globs, enabled, spelling"),
+        error
+            .contains("unknown field `unexpected`, expected one of `globs`, `enabled`, `spelling`"),
         "{error}"
     );
     let error = read(&key, "[{enabled: true}]").unwrap_err().to_string();
@@ -59,7 +60,7 @@ fn a_new_descriptor_key_needs_no_kernel_grammar_change() {
         .unwrap_err()
         .to_string();
     assert!(
-        error.contains("unknown variant `typo`, expected one of first, second"),
+        error.contains("unknown variant `typo`, expected `first` or `second`"),
         "{error}"
     );
 }

@@ -81,18 +81,11 @@ fn dest_judge_answers_the_owner_default_guard_without_resolving() {
     let strict = DEST_REFUSE_PRIVATE | DEST_EXPLAIN;
     for (dest, class, flags, verdict) in [
         ("https://vendor.example/agent", open, strict, DEST_ALLOWED),
-        (
-            "https://vendor.example/agent",
-            infra,
-            DEST_EXPLAIN,
-            DEST_ALLOWED,
-        ),
         ("HTTPS://vendor.example/", open, 0, DEST_ALLOWED),
         // A bare authority carries no TLS intent, regardless of its port.
         ("vendor.example:8443", open, 0, DEST_PLAINTEXT),
         ("https://vendor.example:8443", open, 0, DEST_ALLOWED),
         ("http://vendor.example/", open, 0, DEST_PLAINTEXT),
-        ("http://vendor.example/", infra, 0, DEST_ALLOWED),
         ("ftp://vendor.example/", open, 0, DEST_SCHEME),
         ("https://user@vendor.example/", open, 0, DEST_NO_HOST),
         ("", open, 0, DEST_NO_HOST),
@@ -102,16 +95,8 @@ fn dest_judge_answers_the_owner_default_guard_without_resolving() {
             0,
             DEST_NO_HOST,
         ),
-        (metadata.as_str(), infra, 0, DEST_METADATA),
-        ("https://169.254.169.254/latest", infra, 0, DEST_METADATA),
+        ("https://169.254.169.254/latest", open, 0, DEST_METADATA),
         ("https://10.0.0.7/", open, 0, DEST_INTERNAL),
-        ("https://10.0.0.7/", infra, 0, DEST_ALLOWED),
-        (
-            "https://10.0.0.7/",
-            infra,
-            DEST_REFUSE_PRIVATE,
-            DEST_INTERNAL,
-        ),
         (
             "https://127.0.0.1/",
             EGRESS_LOOPBACK_ALLOWED,
@@ -137,7 +122,6 @@ fn dest_judge_answers_the_owner_default_guard_without_resolving() {
             DEST_INTERNAL,
         ),
         ("https://localhost/", open, 0, DEST_INTERNAL),
-        ("https://localhost/", infra, 0, DEST_ALLOWED),
         ("https://0x7f000001/", open, 0, DEST_OBFUSCATED),
     ] {
         let s = judged(&h, dest, class, flags);
@@ -148,6 +132,25 @@ fn dest_judge_answers_the_owner_default_guard_without_resolving() {
         );
 
         assert!(s.bytes.is_empty() && s.spans.is_empty(), "`{dest}`: {s:?}");
+    }
+    // The operator-infrastructure class belongs to a config-declared target, never to a host named
+    // inside content: dest.judge refuses it whatever the destination (BUSBAR-6014).
+    for dest in [
+        "https://vendor.example/agent",
+        "http://vendor.example/",
+        metadata.as_str(),
+        "https://10.0.0.7/",
+        "https://localhost/",
+    ] {
+        for flags in [0, DEST_EXPLAIN, DEST_REFUSE_PRIVATE] {
+            let s = judged(&h, dest, infra, flags);
+            assert_eq!(
+                s.outcome,
+                Outcome::Refused,
+                "`{dest}` under class {infra}: {s:?}"
+            );
+            assert!(s.error.contains("BUSBAR-6014"), "`{dest}`: {s:?}");
+        }
     }
 }
 
