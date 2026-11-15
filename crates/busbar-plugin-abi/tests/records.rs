@@ -446,3 +446,46 @@ fn step_and_codec_errors_map_to_their_fixed_verdicts() {
         (Status::REFUSED, refused::R_INVALID)
     );
 }
+
+/// The generic refusal codes and projection fact keys keep their frozen numbers (IF §4.1), and `next_rec` is the
+/// iterator's own step.
+#[test]
+fn the_generic_codes_and_projection_keys_are_frozen() {
+    assert_eq!(
+        [
+            refused::R_AUTH_REQUIRED,
+            refused::R_BAD_CREDENTIAL,
+            refused::R_EXPIRED,
+            refused::R_RATE_LIMITED,
+            refused::R_BUDGET,
+            refused::R_NO_ROUTE,
+            refused::R_POLICY,
+        ],
+        [7, 8, 9, 10, 11, 12, 13]
+    );
+    assert_eq!(
+        [
+            fact::PJ_MODEL,
+            fact::PJ_TOTAL_CHARS,
+            fact::PJ_MESSAGE_COUNT,
+            fact::PJ_TOOL_COUNT,
+            fact::PJ_SYSTEM_CHARS,
+            fact::PJ_STREAM,
+            fact::PJ_MAX_TOKENS,
+            fact::PJ_END_USER,
+            fact::PJ_TEXT_COMPLETE,
+        ],
+        [0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18]
+    );
+    let bytes = record(tag::TEXT, 0, b"one");
+    let mut recs = Records::new(&bytes);
+    assert_eq!(
+        recs.next_rec()
+            .expect("one record")
+            .expect("well-formed")
+            .text()
+            .expect("utf-8"),
+        "one"
+    );
+    assert!(recs.next_rec().is_none());
+}
