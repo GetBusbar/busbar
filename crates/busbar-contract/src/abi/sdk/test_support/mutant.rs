@@ -305,6 +305,21 @@ impl Mutant {
         }
     }
 
+    /// THE DROPPING-MEDIA ROW (STH r7.2 erratum §5): `door` with the six framer ops that lend a
+    /// datagram lane wrapped, so that every `every`-th RTP/RTCP route is removed. Not yet built:
+    /// the door is answered unchanged.
+    #[must_use]
+    pub fn dropping_media(door: DoorFn, every: u64) -> Self {
+        let _ = every;
+        Self::of(door)
+    }
+
+    /// Media routes dropped by any `dropping_media` mutant so far, process-wide. Not yet built.
+    #[must_use]
+    pub fn dropped_media() -> u64 {
+        0
+    }
+
     /// READY crossings into any failing READY so far, process-wide.
     #[must_use]
     pub fn failed_readies() -> u64 {
