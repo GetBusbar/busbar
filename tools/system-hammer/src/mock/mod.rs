@@ -190,8 +190,7 @@ fn signed_card(base: &str) -> Bytes {
     Bytes::from(jcs(&card))
 }
 
-/// The MCP tool the scenarios pin: its description and schema hash.
-pub const MCP_PING_DESCRIPTION: &str = "Returns the label it was given.";
+/// The MCP tool the scenarios pin: its schema hash.
 pub const MCP_PING_SCHEMA_HASH: &str =
     "7939d1408e8fc1ac98025ed864c53703091d173e733b1d5c6156f14732da75b0";
 
@@ -422,7 +421,7 @@ fn const_reply(body: &'static [u8]) -> Response<MockBody> {
 // The far ends' bodies, fixed at compile time. The JSON-RPC results are spliced around the
 // request id by `rpc_body`; the token body around the mint counter by `token_body`.
 const MCP_INITIALIZE: &str = r#"{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"hammer-mcp","version":"1.0.0"}}"#;
-/// Its description is [`MCP_PING_DESCRIPTION`] (a test pins the two together).
+/// Its description is `MCP_PING_DESCRIPTION` (a test pins the two together).
 const MCP_TOOLS_LIST: &str = r#"{"tools":[{"name":"ping","description":"Returns the label it was given.","inputSchema":{"type":"object","properties":{"label":{"type":"string"}},"additionalProperties":false}}]}"#;
 const MCP_TOOLS_CALL: &str =
     r#"{"content":[{"type":"text","text":"ping: hammer"}],"isError":false}"#;
@@ -619,6 +618,10 @@ async fn handle(st: &State, req: Request<Incoming>, tls: bool) -> Response<MockB
 /// The decisions provider's `input_tokens`, inlined in [`SYSTEMONE`]; a test pins the two together.
 #[cfg(test)]
 const IN_TOK_DEC: i64 = 4;
+
+/// The MCP ping tool's description, inlined in `MCP_TOOLS_LIST`; a test pins the two together.
+#[cfg(test)]
+const MCP_PING_DESCRIPTION: &str = "Returns the label it was given.";
 
 #[cfg(test)]
 mod tests {
