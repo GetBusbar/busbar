@@ -158,7 +158,7 @@ fn source_path(package: &Value, relative: &str) -> PathBuf {
     path
 }
 
-fn identifier(value: &str) {
+pub(crate) fn identifier(value: &str) {
     assert!(
         !value.is_empty()
             && value.bytes().enumerate().all(|(i, b)| b == b'_'
