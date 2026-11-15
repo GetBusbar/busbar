@@ -977,7 +977,8 @@ fn an_in_for_another_service_or_of_a_short_size_is_fault() {
     let mut i = judge_in("https://a.example/", TICKET, 0, 0);
     i.head.size -= 1;
     assert_eq!(call_judge(&d, &i).0.outcome(), Outcome::Fault);
-    let i = judge_in("https://a.example/", TICKET, 0, 8);
+    // 8 became DEST_PLAINTEXT_INTENT in 1.6.0; 16 is the first bit no flag names.
+    let i = judge_in("https://a.example/", TICKET, 0, 16);
     assert_eq!(
         call_judge(&d, &i).0.outcome(),
         Outcome::Fault,
