@@ -938,7 +938,8 @@ fn describe_body_error_renders_every_serde_form() {
         (Unexpected::Char('q'), "character (values not echoed)"),
         (Unexpected::Other("sk-other"), "(values not echoed)"),
         (Unexpected::Bytes(b"sk"), "byte array"),
-        (Unexpected::Unit, "unit value"),
+        // serde_json renders `Unexpected::Unit` as JSON's own word, `null`, not serde's `unit value`.
+        (Unexpected::Unit, "null"),
         (Unexpected::Option, "Option value"),
         (Unexpected::NewtypeStruct, "newtype struct"),
         (Unexpected::Seq, "sequence"),
