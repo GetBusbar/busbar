@@ -371,3 +371,104 @@ async fn records_survive_ring() {
         "older than the ring is read from the Store"
     );
 }
+
+fn card(output: f64) -> busbar_kernel_ledger::cost::RateCard {
+    use busbar_kernel_ledger::cost::representable_nano_rate;
+    crate::root::kernel::card_from_config(
+        [(
+            "lane",
+            busbar_contract::billing::RawTierRates {
+                input: representable_nano_rate(0.0),
+                output: representable_nano_rate(output),
+                cache_read: representable_nano_rate(0.0),
+                cache_write: representable_nano_rate(0.0),
+            },
+        )],
+        0,
+        true,
+    )
+}
+
+/// A RECORD PRICES BY THE RULE `/usage` PRICES ITS ROW BY (ADMIN-API-1.6 §3.2, through the one
+/// `price_era`): its sealed entry, voided or not, with a later amendment that prices the day's
+/// instant applied; voiding the amendment reverts it, and voiding the original changes nothing.
+#[test]
+fn records_price_through_amendments_and_voids() {
+    use busbar_core_admin::v1::records::UnitRecord;
+    use busbar_kernel_ledger::cost::{Author, CardEntryDraft, History};
+    let mut history = History::new();
+    history.append(CardEntryDraft {
+        effective_from: 0,
+        effective_until: None,
+        card: card(1.0),
+        appended_at: 0,
+        author: Author::Config { policy_epoch: 0 },
+    });
+    let original = history.entries()[0].key();
+    let arrived = 1_700_000_005_000;
+    let mut inputs = inputs_at(1, arrived);
+    inputs.what.destination = Some("lane".into());
+    inputs.usage.rate_card_version = Some(original.0);
+    inputs.usage.fee_count = 0;
+    inputs.usage.lines = vec![busbar_kernel_audit::UsageLine {
+        class: busbar_contract::MeterClassId::new(busbar_contract::records::UNIT_OUTPUT),
+        quantity: 1_000u64.into(),
+        source: busbar_contract::caps::QuantitySource::Count,
+        estimated: false,
+    }];
+    let record = AuditChain::new()
+        .sealing_as(NODE)
+        .seal(inputs, &audit_pass());
+    let priced = |history: &History| -> UnitRecord {
+        let (mut unit, input) = project(&record, &no_plane);
+        crate::root::units_admin::records::price(
+            &mut unit,
+            input.expect("a keyed record"),
+            &history.current(),
+        );
+        unit
+    };
+    let spend = |unit: &UnitRecord| -> f64 {
+        unit.spend_micros
+            .as_deref()
+            .expect("priced")
+            .parse()
+            .unwrap()
+    };
+    let before = priced(&history);
+    assert!(before.priced);
+    assert_eq!(before.priced_by, Some(original.hex()));
+    assert!(spend(&before) > 0.0);
+
+    history.append(CardEntryDraft {
+        effective_from: arrived / 86_400_000 * 86_400_000,
+        effective_until: None,
+        card: card(2.0),
+        appended_at: arrived + 60_000,
+        author: Author::Amend {
+            reason_hash: [7; 32],
+        },
+    });
+    let amendment = history
+        .entries()
+        .iter()
+        .find(|entry| matches!(entry.author(), Author::Amend { .. }))
+        .expect("the amendment")
+        .key();
+    let amended = priced(&history);
+    assert_eq!(
+        amended.priced_by,
+        Some(amendment.hex()),
+        "the back-dated amendment prices it"
+    );
+    assert_eq!(spend(&amended), 2.0 * spend(&before));
+
+    let _ = history.void(&amendment);
+    assert_eq!(priced(&history), before, "voiding the amendment reverts it");
+    let _ = history.void(&original);
+    assert_eq!(
+        priced(&history).spend_micros,
+        before.spend_micros,
+        "a voided original still prices the units sealed against it"
+    );
+}
