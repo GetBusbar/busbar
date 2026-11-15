@@ -1076,7 +1076,8 @@ pub(crate) fn current_target(
 pub(crate) fn target_identity(
     info: busbar_contract::persistence::BackendInfo,
 ) -> Result<Identity, Error> {
-    if info.dataset.0 == [0; 16] || info.physical_version != 1 {
+    // The adapter's physical format is bound into the artifact digest, never equated with core's.
+    if info.dataset.0 == [0; 16] {
         return Err(Error::IdentityMismatch);
     }
     let mut hash = Sha256::new();
