@@ -218,4 +218,9 @@ allow-git = [
     # the root/dist [patch.crates-io] rows and locks.
     "https://github.com/MattJackson/serde-saphyr",
     "https://github.com/MattJackson/granit-parser",
+    # JSON (SERDE-NUMBERS r17, SERDE-JSON-EXIT): exact numbers through foreign deserializers, and the
+    # canonical-JSON formatter with serde_json optional; offered upstream. Exact revisions in the
+    # root/dist [patch.crates-io] rows and locks.
+    "https://github.com/MattJackson/sonic-rs",
+    "https://github.com/MattJackson/olpc-cjson",
 ]
