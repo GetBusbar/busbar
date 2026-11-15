@@ -254,8 +254,8 @@ impl Sha256 {
     }
 }
 
-/// The audit-link hash (SEALING-FIX §3). The recipe depends on the backend: BLAKE3
-/// (`busbar.audit.digest.v7`) in core, SHA-256 (`…v7-sha256`) in a FIPS build.
+/// The audit-link hash (SEALING-FIX §3). SHA-256
+/// (`busbar.audit.link.v1`) on every backend.
 pub mod link {
     use super::{Unsupported, BACKEND};
     use busbar_crypto_backend as b;
