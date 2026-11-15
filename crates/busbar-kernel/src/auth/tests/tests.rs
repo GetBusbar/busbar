@@ -697,10 +697,23 @@ async fn operator_answer_response_projection_preserves_503_and_legacy_401() {
         )
         .0
     };
-    let rejected = inspect(classified(Verified::Reject)).await;
+    // Each envelope carries its request's id (ADMIN-API-1.6 section 1.2), so both answers are
+    // compared as the answer to one request.
+    let one_request = || "r_00000000000000a1".to_string();
+    let rejected =
+        crate::admin::gate::with_request_id(one_request(), inspect(classified(Verified::Reject)))
+            .await;
     assert_eq!(rejected.0, 401, "a bad credential is the admin401");
     assert_eq!(rejected.1, None, "a401 names no Retry-After");
-    let overloaded = inspect(classified(Verified::Overloaded)).await;
+    assert!(
+        rejected.2.contains(r#""request_id":"r_00000000000000a1""#),
+        "{rejected:?}"
+    );
+    let overloaded = crate::admin::gate::with_request_id(
+        one_request(),
+        inspect(classified(Verified::Overloaded)),
+    )
+    .await;
     assert_eq!(
         overloaded, rejected,
         "an overloaded operator answer uses the same bytes"
@@ -1884,6 +1897,10 @@ fn repeated_authorization_fields_keep_the_first_credential_after_separator_parsi
 async fn admin_unauthorized_challenges_without_changing_the_frozen_error_body() {
     let response = admin_unauthorized_response();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let response_request_id = response.headers()["x-request-id"]
+        .to_str()
+        .unwrap()
+        .to_string();
     assert_eq!(
         response.headers()[axum::http::header::WWW_AUTHENTICATE],
         "Bearer"
@@ -1893,9 +1910,15 @@ async fn admin_unauthorized_challenges_without_changing_the_frozen_error_body() 
         .await
         .unwrap();
     let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["error"]["code"], expected.code());
+    assert_eq!(body["error"]["message"], expected.message());
+    assert_eq!(body["error"]["reason"], "credential_invalid");
+    assert_eq!(body["error"]["details"], serde_json::json!({}));
+    assert_eq!(body["error"]["retryable"], false);
     assert_eq!(
-        body,
-        serde_json::json!({"error": {"code": expected.code(), "message": expected.message()}})
+        body["error"]["request_id"],
+        response_request_id.as_str(),
+        "the header and the body carry one request id"
     );
 }
 
@@ -1979,10 +2002,10 @@ async fn admin_door_throttle_answers_rate_limited_with_the_real_retry_after() {
         .await
         .unwrap();
     let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(
-        body,
-        serde_json::json!({"error": {"code": expected.code(), "message": expected.message()}})
-    );
+    assert_eq!(body["error"]["code"], expected.code());
+    assert_eq!(body["error"]["message"], expected.message());
+    assert_eq!(body["error"]["reason"], "mutation_budget");
+    assert_eq!(body["error"]["retryable"], true);
 }
 
 #[test]

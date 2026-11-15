@@ -1510,7 +1510,7 @@ A plugin rollback's rebuild failed AFTER the lowered pin was persisted, and the 
 
 `busbar --validate` ran the same plugin pre-flight boot runs — consistency, trust-policy resolution, the three-phase scan of every tarball (structural → trust → conflict), and store resolution — and it FAILED. Because this is the boot pipeline (manifest-only, no dlopen), the same plugin set would fail the plugin half of boot.
 
-**What to do:** Fix the reported plugin problem: a malformed manifest, a signature/trust-policy rejection, an ABI-floor or version-floor violation, a name/alias conflict, or an unresolvable `store.module`. Re-run `--validate` until it reports `ok`.
+**What to do:** Fix the reported plugin problem: a malformed manifest, a signature/trust-policy rejection, an ABI-floor or version-floor violation, a name/alias conflict, or a `store.module` that names no installed store plugin (the published binary links no store: install a plugin of kind `store` and select it by its name). Re-run `--validate` until it reports `ok`.
 
 <a id="cli-list-plugins-trust-invalid"></a>
 ### BUSBAR-6010 — --list-plugins could not build a trust policy (plugins.trust is invalid)

@@ -413,3 +413,7 @@ async fn unit_nonces_distinct_across_inbounds() {
     }
     assert_eq!(all.len(), 2 * MINTS);
 }
+
+#[cfg(not(target_env = "msvc"))]
+#[path = "inbound_table_cost.rs"]
+mod table_cost;

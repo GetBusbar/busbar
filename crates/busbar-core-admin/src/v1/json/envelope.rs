@@ -32,9 +32,59 @@ pub fn err_json_cond(e: &AdminError, cond: Cond) -> Response {
     err_json_tagged(e, Some(cond))
 }
 
+/// A plugin's own words, bounded and stripped of control characters, for `details.text`.
+fn scrubbed(text: &str) -> String {
+    const MAX_CHARS: usize = 512;
+    text.chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_CHARS)
+        .collect()
+}
+
+/// The typed `details` of one error (section 1.2): the scope a refusal needed, or a plugin's text
+/// (`PluginTextDetails`, section 1.3), else the empty object.
+fn details_of(e: &AdminError, reason: Option<&str>) -> serde_json::Value {
+    match e {
+        AdminError::Forbidden { needed } => {
+            busbar_kernel::admin::gate::scope_details(needed.as_str())
+        }
+        AdminError::PluginText {
+            cond,
+            text,
+            plugin_diag,
+            condition,
+        } => {
+            let mut details = serde_json::json!({
+                "text": text.as_deref().map(scrubbed),
+                "plugin_diag": plugin_diag.as_deref().map(scrubbed),
+            });
+            if *cond == Cond::PluginRejected {
+                details["condition"] = serde_json::json!(condition);
+            }
+            details
+        }
+        _ if matches!(reason, Some("hook_no_ack" | "plugin_rejected")) => {
+            serde_json::json!({ "text": null, "plugin_diag": null })
+        }
+        _ => serde_json::json!({}),
+    }
+}
+
 fn err_json_tagged(e: &AdminError, cond: Option<Cond>) -> Response {
+    let cond = match e {
+        AdminError::PluginText { cond, .. } => Some(*cond),
+        _ => cond,
+    };
+    let reason = cond.map(Cond::reason);
+    let details = details_of(e, reason);
     tagged(
-        busbar_kernel::admin::gate::admin_error_envelope(e.http_status(), e.code(), &e.message()),
+        busbar_kernel::admin::gate::admin_error_envelope_with(
+            e.http_status(),
+            e.code(),
+            reason,
+            &e.message(),
+            &details,
+        ),
         e,
         cond,
     )

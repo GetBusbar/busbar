@@ -32,8 +32,8 @@ async fn err_json_uses_stable_envelope() {
     );
     assert_eq!(
         body["error"].as_object().unwrap().len(),
-        2,
-        "the envelope is exactly code+message (additive changes go OUTSIDE error)"
+        6,
+        "the envelope is code, reason, message, request_id, retryable and details (ADMIN-API-1.6 section 1.2)"
     );
 }
 

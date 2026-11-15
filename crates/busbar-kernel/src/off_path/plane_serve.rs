@@ -89,7 +89,7 @@ fn route_index(tables: &[Arc<ServeTable>], public: bool) -> RouteIndex {
     let mut index = RouteIndex::default();
     let of_class = |r: &ServeRoute| (r.flags & ROUTE_PUBLIC != 0) == public;
     for table in tables {
-        for route in table.routes.iter().filter(|r| of_class(*r)) {
+        for route in table.routes.iter().filter(|r| of_class(r)) {
             if let Some(segment) = route.target.split('/').nth(1).filter(|s| !param(s)) {
                 index.by_segment.entry(segment.to_owned()).or_default();
             }

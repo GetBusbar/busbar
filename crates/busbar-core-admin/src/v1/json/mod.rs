@@ -668,5 +668,9 @@ pub use busbar_kernel::api::set_response_schema;
 #[path = "tests/tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "tests/envelope_reasons.rs"]
+mod envelope_reasons;
+
 #[cfg(feature = "test-support")]
 pub use handlers::credential_flush_response_for_test;
