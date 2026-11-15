@@ -1107,7 +1107,9 @@ async fn money_book(
             limits,
             ..Default::default()
         },
-    )].into_iter().collect::<std::collections::BTreeMap<_, _>>();
+    )]
+    .into_iter()
+    .collect::<std::collections::BTreeMap<_, _>>();
     let cost =
         busbar_kernel::cost::CostModel::resolve_parts(rate_card.as_ref(), per_request_fee, &groups);
     let (key, _secret) = gov
