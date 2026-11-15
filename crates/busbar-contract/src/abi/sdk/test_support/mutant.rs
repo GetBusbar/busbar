@@ -20,8 +20,9 @@ use crate::abi::mechanism::KindCode;
 use crate::abi::plane::PlaneTail;
 use crate::abi::sdk::door::RawDoorFn;
 use crate::abi::transport::{
-    slot as framer, AdoptIn, BeginIn, EmitIn, EncodeIn, FinishIn, FramerOut, FramerSink, FramingIn,
-    IngestIn, Ops as TransportOps, RefuseIn, TransportTail,
+    slot as framer, AdoptIn, BeginIn, DatagramLane, DatagramRoute, EmitIn, EncodeIn, FinishIn,
+    FramerOut, FramerSink, FramingIn, IngestIn, Ops as TransportOps, RefuseIn, TransportTail,
+    LANE_CLEAR,
 };
 
 /// How many mutants one process may forge: the bank of door functions below.
@@ -52,6 +53,50 @@ static CORRUPTING: [OnceLock<Corrupting>; BANK] = [const { OnceLock::new() }; BA
 
 /// Each bank slot's READY answers that wrote wire bytes so far.
 static WIRED: [AtomicU64; BANK] = [const { AtomicU64::new(0) }; BANK];
+
+/// The framer slots whose `in` lends a datagram lane (DETACH and TIMER share `FramingIn`), in the
+/// order of a dropping bank slot's ops.
+const LANE_OPS: [u32; 6] = [
+    framer::BEGIN,
+    framer::INGEST,
+    framer::EMIT,
+    framer::FINISH,
+    framer::DETACH,
+    framer::TIMER,
+];
+
+/// A dropping bank slot's wrap: the op each slot of [`LANE_OPS`] held (`None`: unserved, and left
+/// so), and every how many media routes one is dropped.
+#[derive(Debug, Clone, Copy)]
+struct Dropping {
+    real: [Option<Op>; LANE_OPS.len()],
+    every: u64,
+}
+
+/// Each bank slot's dropping wrap, set once when its mutant is forged.
+static DROPPING: [OnceLock<Dropping>; BANK] = [const { OnceLock::new() }; BANK];
+
+/// Each bank slot's media routes seen so far, across answers.
+static MEDIA: [AtomicU64; BANK] = [const { AtomicU64::new(0) }; BANK];
+
+/// Media routes dropped by any dropping mutant, process-wide.
+static DROPPED_MEDIA: AtomicU64 = AtomicU64::new(0);
+
+/// One dropping op per bank slot for the lane op at index `$k` of [`LANE_OPS`].
+macro_rules! drop_row {
+    ($k:literal; $($i:literal)+) => {
+        [$({
+            extern "C" fn dropping(
+                instance: *mut c_void,
+                input: *const c_void,
+                out: *mut c_void,
+            ) -> RawOutcome {
+                drop_media($i, $k, instance, input, out)
+            }
+            dropping
+        }),+]
+    };
+}
 
 macro_rules! bank {
     ($($i:literal)+) => {
@@ -85,6 +130,18 @@ macro_rules! bank {
             }
             corrupt
         }),+];
+        /// The dropping ops: per lane op of [`LANE_OPS`], one per slot. Each forwards the
+        /// crossing to the op it wraps, then compacts the answer's routes. Atomics, a `OnceLock`
+        /// read and in-place `DatagramRoute` copies besides the wrapped op (an SDK op, which
+        /// catches its own panics), so nothing unwinds out of `extern "C"`.
+        const DROP: [[Op; BANK]; LANE_OPS.len()] = [
+            drop_row!(0; $($i)+),
+            drop_row!(1; $($i)+),
+            drop_row!(2; $($i)+),
+            drop_row!(3; $($i)+),
+            drop_row!(4; $($i)+),
+            drop_row!(5; $($i)+),
+        ];
     };
 }
 bank!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15);
@@ -157,6 +214,131 @@ fn corrupt_wire(
     answered
 }
 
+/// The dropping op of bank slot `bank` for the lane op at index `op` of [`LANE_OPS`]: the
+/// crossing goes to the op it wraps; on a READY answer to a call lent a lane, every `every`-th
+/// media route (counted across this slot's answers) is removed from the lent routes, which are
+/// compacted in place, before the host reads them. Any bound that does not hold leaves the answer
+/// untouched, so the host's own check judges it.
+fn drop_media(
+    bank: usize,
+    op: usize,
+    instance: *mut c_void,
+    input: *const c_void,
+    out: *mut c_void,
+) -> RawOutcome {
+    let (Some(d), Some(&slot), Some(seen)) = (
+        DROPPING.get(bank).and_then(OnceLock::get),
+        LANE_OPS.get(op),
+        MEDIA.get(bank),
+    ) else {
+        return RawOutcome::of(Outcome::Fault);
+    };
+    let Some(Some(real)) = d.real.get(op).copied() else {
+        return RawOutcome::of(Outcome::Fault);
+    };
+    // SAFETY: the host calls this op under the call convention, for the slot the wrapped op sat
+    // in; the instance, `in` and `out` are forwarded unchanged to that op, which honours it.
+    let answered = unsafe { real(instance, input, out) };
+    if answered.outcome() != Outcome::Ready || input.is_null() || out.is_null() {
+        return answered;
+    }
+    // SAFETY: the host lends framer slot `slot` its own complete `in` of that slot's type for the
+    // crossing; each of them holds the call's lane (NULL for a stream framer) and its sink.
+    let (lane, sink): (*const DatagramLane, FramerSink) = unsafe {
+        match slot {
+            framer::BEGIN => {
+                let i = &*input.cast::<BeginIn>();
+                (i.lane, i.sink)
+            }
+            framer::INGEST => {
+                let i = &*input.cast::<IngestIn>();
+                (i.lane, i.sink)
+            }
+            framer::EMIT => {
+                let i = &*input.cast::<EmitIn>();
+                (i.lane, i.sink)
+            }
+            framer::FINISH => {
+                let i = &*input.cast::<FinishIn>();
+                (i.lane, i.sink)
+            }
+            framer::DETACH | framer::TIMER => {
+                let i = &*input.cast::<FramingIn>();
+                (i.lane, i.sink)
+            }
+            _ => return answered,
+        }
+    };
+    if lane.is_null() {
+        return answered;
+    }
+    // SAFETY: a non-NULL lane is the host's own complete `DatagramLane`, lent for the call.
+    let lane = unsafe { lane.read() };
+    let o = out.cast::<FramerOut>();
+    // SAFETY: a framer slot's `out` is the host's own complete `FramerOut`, which the wrapped op
+    // just answered.
+    let (routes_len, wire_len) = unsafe { ((*o).datagram.routes_len, (*o).yielded.wire_len) };
+    let Ok(n) = usize::try_from(routes_len) else {
+        return answered;
+    };
+    let Ok(wire_cap) = u64::try_from(sink.wire_cap) else {
+        return answered;
+    };
+    if n == 0
+        || lane.routes.is_null()
+        || n > lane.routes_cap
+        || sink.wire.is_null()
+        || wire_len > wire_cap
+    {
+        return answered;
+    }
+    for k in 0..n {
+        // SAFETY: `k < n <= routes_cap`: inside the routes buffer the host lent for the call.
+        let r = unsafe { lane.routes.add(k).read() };
+        if r.offset.checked_add(r.len).is_none_or(|end| end > wire_len) {
+            return answered;
+        }
+    }
+    let every = d.every.max(1);
+    let mut kept = 0usize;
+    for k in 0..n {
+        // SAFETY: `k < n <= routes_cap`, as above.
+        let r = unsafe { lane.routes.add(k).read() };
+        if is_media(&r, sink.wire) {
+            let nth = seen.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
+            if nth % every == 0 {
+                DROPPED_MEDIA.fetch_add(1, Ordering::SeqCst);
+                continue;
+            }
+        }
+        if kept != k {
+            // SAFETY: `kept < k < n <= routes_cap`: inside the routes buffer, which the host lent
+            // to this crossing alone and reads only after it returns.
+            unsafe { lane.routes.add(kept).write(r) };
+        }
+        kept += 1;
+    }
+    let kept = u32::try_from(kept).unwrap_or(routes_len);
+    // SAFETY: the host's own `FramerOut`, as above; `kept <= routes_len`.
+    unsafe { (*o).datagram.routes_len = kept };
+    answered
+}
+
+/// Whether route `r` is media: on [`LANE_CLEAR`], and its first byte in 128..=191 (RFC 7983
+/// RTP/RTCP). STUN (0..=3), DTLS (20..=63) and every secured route are not.
+fn is_media(r: &DatagramRoute, wire: *const u8) -> bool {
+    if r.lane != LANE_CLEAR || r.len == 0 {
+        return false;
+    }
+    let Ok(at) = usize::try_from(r.offset) else {
+        return false;
+    };
+    // SAFETY: `offset < offset + len <= wire_len <= wire_cap` (checked by the caller before any
+    // read): the byte lies inside the wire the host lent and the op wrote.
+    let first = unsafe { *wire.add(at) };
+    (128..=191).contains(&first)
+}
+
 /// A transport door's ops table, copied.
 ///
 /// # Panics
@@ -203,6 +385,8 @@ pub struct Mutant {
     ready_text: Option<&'static str>,
     /// The framer slot whose wire is corrupted, and on which of its wire-writing answers.
     corrupt: Option<(u32, u64)>,
+    /// Every how many media routes one is dropped.
+    dropping: Option<u64>,
 }
 
 impl Mutant {
@@ -216,6 +400,7 @@ impl Mutant {
             parts: Some(parts),
             ready_text: None,
             corrupt: None,
+            dropping: None,
         }
     }
 
@@ -305,19 +490,43 @@ impl Mutant {
         }
     }
 
-    /// THE DROPPING-MEDIA ROW (STH r7.2 erratum §5): `door` with the six framer ops that lend a
-    /// datagram lane wrapped, so that every `every`-th RTP/RTCP route is removed. Not yet built:
-    /// the door is answered unchanged.
+    /// THE DROPPING-MEDIA ROW (STH r7.2 erratum §5, §11.6): `door` with every framer op whose `in`
+    /// lends a `DatagramLane` wrapped: BEGIN, INGEST, EMIT, FINISH, DETACH and TIMER. After a
+    /// wrapped op answers READY, every `every`-th MEDIA route is removed before the host reads the
+    /// answer. A media route is one on `LANE_CLEAR` whose first byte, read through the lent
+    /// `sink.wire` at the route's offset, is in 128..=191 (RFC 7983 RTP/RTCP). Removal compacts the
+    /// lent `routes` array in place and lowers `out.datagram.routes_len`; the wire bytes stay. STUN
+    /// (0..=3), DTLS (20..=63) and every `LANE_SECURED` route are kept, so ICE and DTLS complete
+    /// and only media dies. The count is per forged mutant, from 1, across answers: `every = 1`
+    /// drops all media. A call lent no lane (a stream framer's) is forwarded untouched. The
+    /// Statement is the door's own, so the mutant is admitted as its door is. The negative
+    /// control of a datagram conformance run (webrtc: media must fail, `connected` must pass).
+    ///
+    /// # Panics
+    /// When `door` is not a transport's or serves none of the six ops, or `every` is 0.
     #[must_use]
     pub fn dropping_media(door: DoorFn, every: u64) -> Self {
-        let _ = every;
-        Self::of(door)
+        assert!(every >= 1, "the first media route is number 1");
+        let m = Self::of(door);
+        if let Some(p) = m.parts.as_ref() {
+            let mut table = transport_ops(p);
+            assert!(
+                LANE_OPS
+                    .iter()
+                    .any(|&slot| framer_op(&mut table, slot).is_some_and(|op| op.is_some())),
+                "the door serves none of the framer ops that lend a datagram lane"
+            );
+        }
+        Self {
+            dropping: Some(every),
+            ..m
+        }
     }
 
-    /// Media routes dropped by any `dropping_media` mutant so far, process-wide. Not yet built.
+    /// Media routes dropped by any [`Mutant::dropping_media`] mutant so far, process-wide.
     #[must_use]
     pub fn dropped_media() -> u64 {
-        0
+        DROPPED_MEDIA.load(Ordering::SeqCst)
     }
 
     /// READY crossings into any failing READY so far, process-wide.
@@ -387,12 +596,30 @@ impl Mutant {
                 *op = Some(CORRUPT[i]);
                 p.ops = std::ptr::from_ref(Box::leak(Box::new(table))).cast::<OpsHead>();
             }
+            if let Some(every) = self.dropping {
+                let mut table = transport_ops(&p);
+                let mut real = [None; LANE_OPS.len()];
+                let rows = LANE_OPS.iter().zip(real.iter_mut()).zip(DROP.iter());
+                for ((&slot, held), row) in rows {
+                    let op = framer_op(&mut table, slot).expect("each lane op is a framer op");
+                    *held = *op;
+                    if op.is_some() {
+                        *op = Some(row[i]);
+                    }
+                }
+                assert!(
+                    DROPPING[i].set(Dropping { real, every }).is_ok(),
+                    "each bank slot is forged once"
+                );
+                p.ops = std::ptr::from_ref(Box::leak(Box::new(table))).cast::<OpsHead>();
+            }
             // SAFETY: the parts are a real `'static` door's: its Statement (or a leaked copy of
             // it with one scalar or `'static` string changed), its ops table (or a leaked copy of
-            // it whose one framer op is this bank's corrupting op, which forwards every crossing
-            // to the op it replaced under the same convention) and its kind, and a replaced READY
-            // is this bank's, which honours the call convention. Leaked, so the door is `'static`
-            // as a door function's answer must be.
+            // it whose one framer op is this bank's corrupting op, or whose served lane ops are
+            // this bank's dropping ops, each forwarding every crossing to the op it replaced
+            // under the same convention) and its kind, and a replaced READY is this bank's, which
+            // honours the call convention. Leaked, so the door is `'static` as a door function's
+            // answer must be.
             Box::into_raw(Box::new(unsafe { Door::__from_parts(p) }))
         });
         DOORS[i].store(door, Ordering::Release);
