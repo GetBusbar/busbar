@@ -334,8 +334,24 @@ pub(super) fn document_patch_rejection(
     patch: &DocumentPatch,
     loaded: Option<&busbar_kernel::appbuild::LoadedConfig>,
 ) -> Option<(AdminError, crate::v1::contract::taxonomy::Cond)> {
-    let _ = (patch, loaded);
-    None
+    use busbar_kernel::config::operator_file;
+    let refusal = match loaded {
+        None => operator_file::admission_refusal(patch),
+        Some(loaded) => operator_file::document_patch_refusal(
+            patch,
+            &loaded.deploy.identity_providers,
+            &loaded.operator_reference,
+        ),
+    }?;
+    busbar_kernel::audit::auditlog::record_operator(
+        busbar_kernel::audit::auditlog::OperatorAudit::RefusedFilePolicy,
+        &refusal.subject,
+        "config.settings",
+    );
+    Some((
+        AdminError::Conflict(refusal.text),
+        crate::v1::contract::taxonomy::Cond::OperatorFilePolicy,
+    ))
 }
 
 fn pointer(key: &str) -> String {

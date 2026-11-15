@@ -128,15 +128,20 @@ pub struct LoadedConfig {
 impl LoadedConfig {
     /// A disk rebuild's candidate (`POST /config/reload`, `POST /plugins/reload`,
     /// `POST /plugins/rollback`): the overlay's root applied to config.yaml's deploy, then resolved.
-    /// The caller merges the overlay's named maps after it records the base names.
+    /// A disk rebuild re-reads config.yaml, so config.yaml's operator definitions, before any
+    /// patch, become the file-policy reference (OPERATOR-FROM-ADMITTED-AUTH §3.6.1): editing them
+    /// and reloading is how the operator credential rotates. The caller merges the overlay's named
+    /// maps after it records the base names.
     #[cold]
     #[inline(never)]
     pub fn disk_candidate(&mut self) -> Result<config::RootCfg, String> {
         if let Some(doc) = self.overlay_doc.as_ref() {
             config::overlay::apply_root_to_deploy(&mut self.deploy, doc);
         }
-        config::resolve(&self.deploy, &self.defs)
-            .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))
+        let mut cfg = config::resolve(&self.deploy, &self.defs)
+            .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
+        cfg.operator_file_defs = Some(Arc::new(std::mem::take(&mut self.operator_reference)));
+        Ok(cfg)
     }
 }
 
@@ -312,8 +317,21 @@ pub fn load_config_from_disk_compacting_document_patches(
         }
     }
 
+    // The operator credential's reference is config.yaml as read, before any patch (§000.1). Only a
+    // patch that edits `identity-providers` can make the composed document's differ: read it then.
+    let mut unpatched_reference = None;
     let mut deploy: config::DeployCfg = if let Some(patch) = patch.filter(|_| !ignore_overlay) {
         *patch = patch.compacted_against_yaml(&interpolated_config)?;
+        if config::operator_file::touches_identity_providers(patch) {
+            let unpatched = config::deploy_from_yaml_str(&interpolated_config).map_err(|e| {
+                format!(
+                    "config.yaml: invalid YAML: {} (the operator credential is read from \
+                     config.yaml before any document_patch)",
+                    config::augment_config_error(e)
+                )
+            })?;
+            unpatched_reference = Some(config::OperatorFileDefs::of(&unpatched.identity_providers));
+        }
         patch.parse_deploy_yaml_checked(&interpolated_config, |keys| {
             rules.unloaded_plane_refusal(keys).map_or(Ok(()), Err)
         })?
@@ -378,7 +396,8 @@ pub fn load_config_from_disk_compacting_document_patches(
     let config_read_only = false;
 
     let overlay_doc = None;
-    let operator_reference = config::OperatorFileDefs::of(&deploy.identity_providers);
+    let operator_reference = unpatched_reference
+        .unwrap_or_else(|| config::OperatorFileDefs::of(&deploy.identity_providers));
     Ok(LoadedConfig {
         operator_reference,
         deploy,
@@ -429,6 +448,11 @@ pub async fn load_config_from_disk_with_store(
                     doc.document_patch.as_ref(),
                     doc.providers_patch.as_ref(),
                 )?;
+                // A stored patch from an earlier binary that moves the operator credential is
+                // refused at every re-read, as at boot: never applied or dropped silently.
+                if let Some(patch) = doc.document_patch.as_ref() {
+                    config::operator_file::stored_document_patch(patch, &loaded)?;
+                }
                 patched_locked = loaded.config_locked;
             }
             loaded.overlay_path = (!patched_locked).then_some(reopened);
@@ -1099,6 +1123,13 @@ async fn build_app_native(
     judged: Option<config_validate::Judged>,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
     config::security_policy::check_candidate(prior, &cfg, &plugins_cfg)?;
+    // The operator file-policy reference (§3.6.1): a disk read sets it on the candidate; every
+    // other build carries the running generation's unchanged.
+    let operator_file_defs = cfg
+        .operator_file_defs
+        .clone()
+        .or_else(|| prior.map(|p| Arc::clone(&p.operator_file_defs)))
+        .unwrap_or_default();
     let configured_card = config::card::CardFields::of_root(&cfg);
     let configured_view = Arc::new(config::readback::ConfiguredView::from_root(
         &cfg,
@@ -2049,6 +2080,7 @@ async fn build_app_native(
     }
 
     app.configured_view = Some(configured_view);
+    app.operator_file_defs = operator_file_defs;
     // Existing direct builders pass an explicit providers path. The executable replaces this
     // initial default with its actual CLI/env provenance; subsequent generations inherit it.
     if let Some(prior) = prior {
