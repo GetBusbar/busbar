@@ -170,6 +170,12 @@ impl Issue {
     }
 }
 
+/// One ticket's bound hook children, by the caller's incarnation.
+type Children = HashMap<
+    busbar_contract::services::Incarnation,
+    Arc<dyn busbar_contract::services::HookChildInvocation>,
+>;
+
 /// The results of one dispatcher's services, by ticket then issue order, each ticket's under the
 /// epoch of the op that issued them. A new op's handles count from 0 again, so a handle alone does
 /// not name its op: a [`Completer`] carries its op's epoch, and a completion whose epoch is not the
@@ -183,15 +189,7 @@ pub struct ServiceStore {
     /// The last epoch minted.
     epochs: AtomicU64,
     /// Each ticket's bound hook children, by the caller's incarnation: unbound by ticket.
-    children: Mutex<
-        HashMap<
-            Ticket,
-            HashMap<
-                busbar_contract::services::Incarnation,
-                Arc<dyn busbar_contract::services::HookChildInvocation>,
-            >,
-        >,
-    >,
+    children: Mutex<HashMap<Ticket, Children>>,
     /// The driver tickets' held exchanges, by handle (`super::held`).
     pub(crate) held: super::held::Held,
 }
