@@ -9,6 +9,7 @@ use std::sync::{Arc, RwLock};
 
 type RawFeeEras = busbar_kernel_ledger::usage::FeeEras<RawRateEra>;
 
+pub mod drain;
 pub(crate) mod exact_debt;
 pub mod persistence;
 pub mod principal_transition;
@@ -637,6 +638,10 @@ pub enum LimitBlocked {
     /// (mint and boot validate this; it can only arise from a shared durable store whose keys
     /// reference a group another node's config no longer has).
     MissingGroup(String),
+    /// The gateway is shutting down: governed admission closed at the drain's request cut.
+    Draining,
+    /// The terminal backlog (finished units awaiting settlement) reached its cap.
+    CustodyFull { backlog: u64, cap: u64 },
 }
 
 /// WHAT ONE ADMISSION'S FEE CHARGE REACHED, carried from the charge to its refund (the design's
@@ -675,6 +680,9 @@ impl FeeCharge {
 pub struct AdmitGrant {
     gauges: Vec<Arc<std::sync::atomic::AtomicI64>>,
     charge: FeeCharge,
+    /// The governed admission gate's count (SHUTDOWN-HANG F4a), released when the grant drops,
+    /// which is after its unit's terminal checkpoint is staged.
+    hold: Option<drain::GateHold>,
 }
 
 impl AdmitGrant {
@@ -741,6 +749,9 @@ pub struct GovState {
     recovery_book: recovery::RecoveryBook,
 
     unit_checkpoints: unit_checkpoint::UnitCheckpointBook,
+
+    /// The one governed admission gate (SHUTDOWN-HANG F4a).
+    admissions: Arc<drain::AdmissionGate>,
 
     correction_claims: claims::AsyncClaimSet<String>,
 
@@ -1701,17 +1712,26 @@ pub fn spawn_budget_flusher(
     shutdown: tokio::sync::broadcast::Receiver<()>,
     app: Option<Arc<crate::state::AppHandle>>,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(run_budget_flusher(gov, shutdown, app))
+    tokio::spawn(run_budget_flusher(gov, shutdown, app, None))
 }
+
+/// The drain-mode pass's idle wait between passes (SHUTDOWN-HANG F4 [M]).
+pub const DRAIN_PASS_IDLE: std::time::Duration = std::time::Duration::from_millis(10);
 
 /// Run in the root's host maintenance scope. Keeping every flush on this future
 /// preserves that scope across awaits and avoids recursively metering journal IO.
 /// A shutdown signal never cancels an in-flight native write: it is observed at
 /// the next loop boundary, then the same task performs the final custody drain.
+///
+/// With a drain `clock` (SHUTDOWN-HANG F4 [M]) the shutdown arm is the money driver: it passes
+/// back to back from the first broadcast until `money_stop` (or expiry), reading the stop before
+/// every unit item, then runs the final budget and metering flushes and returns. Without one
+/// (tests and callers that never drain) it runs one pass and the final flushes, as before.
 pub async fn run_budget_flusher(
     gov: std::sync::Arc<GovState>,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
     app: Option<Arc<crate::state::AppHandle>>,
+    clock: Option<Arc<drain::DrainClock>>,
 ) {
     let interval = std::time::Duration::from_millis(crate::limits::usage_flush_interval_ms());
     purge_usage_windows(&gov).await;
@@ -1735,6 +1755,10 @@ pub async fn run_budget_flusher(
                 gov.flush_metering().await;
             }
             _ = shutdown.recv() => {
+                if let Some(clock) = &clock {
+                    drain_money(&gov, app.as_ref(), clock, interval).await;
+                    break;
+                }
                 resume_current_correction_verdicts(&gov, app.as_ref()).await;
                 if let Err(e) = gov.flush_unit_checkpoints().await {
                     tracing::warn!(error = ?e,
@@ -1745,6 +1769,42 @@ pub async fn run_budget_flusher(
                 break;
             }
         }
+    }
+}
+
+/// SHUTDOWN-HANG F4 [M]: money persists concurrently with the request drain, from the first
+/// broadcast until `money_stop`. The unit pass reads the halt before every item, so the final
+/// budget and metering flushes are never starved by a backlog that cannot drain in the budget.
+async fn drain_money(
+    gov: &Arc<GovState>,
+    app: Option<&Arc<crate::state::AppHandle>>,
+    clock: &Arc<drain::DrainClock>,
+    interval: std::time::Duration,
+) {
+    let halt = || clock.money_stopped() || clock.expired();
+    let mut money_stop = clock.money_stop_rx();
+    let mut expired = clock.expired_rx();
+    loop {
+        resume_current_correction_verdicts(gov, app).await;
+        if let Err(e) = gov.flush_unit_checkpoints_until(&halt).await {
+            tracing::warn!(error = ?e, "drain: unit checkpoints remain unresolved; retrying next pass");
+        }
+        if halt() {
+            break;
+        }
+        gov.flush_budgets().await;
+        gov.flush_metering().await;
+        clock.note_pass();
+        tokio::select! {
+            _ = tokio::time::sleep(interval.min(DRAIN_PASS_IDLE)) => {}
+            _ = money_stop.wait_for(|s| *s) => {}
+            _ = expired.wait_for(|e| *e) => {}
+        }
+    }
+    if !clock.expired() {
+        resume_current_correction_verdicts(gov, app).await;
+        gov.flush_budgets_final().await;
+        gov.flush_metering_final().await;
     }
 }
 

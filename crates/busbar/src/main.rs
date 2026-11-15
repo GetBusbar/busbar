@@ -1360,7 +1360,7 @@ async fn run(
         tokio::time::sleep(Duration::from_millis(250)).await;
     };
     let root::startup_upgrade::continuation::ReadyCandidate {
-        startup: mut store_admission,
+        startup: store_admission,
         app,
         book,
         limits: boot_limits,
@@ -1717,6 +1717,11 @@ async fn run(
         app_handle.attach_on_swap(spawn);
     }
 
+    // SHUTDOWN-HANG F4: one drain owner holds the budget from the first broadcast to exit.
+    let drain_clock = busbar_kernel::governance::drain::DrainClock::new(
+        busbar_kernel::governance::drain::DEFAULT_DRAIN_TIMEOUT,
+    );
+    let drain = root::shutdown::ShutdownDrain::new(Arc::clone(&drain_clock));
     let (shutdown_tx, _keep_open) = tokio::sync::broadcast::channel::<()>(1);
     // Persistence failure can request shutdown before a listener exists. A watch
     // receiver carries that level into the listener's broadcast shutdown path.
@@ -1731,11 +1736,14 @@ async fn run(
         });
     }
     let worker_shutdown_rx = control_work.shutdown_rx.clone();
+    // The first broadcast, from any sender, arms the drain clock.
     {
         let rx = shutdown_tx.subscribe();
         let shutdown_level = control_work.shutdown_tx.clone();
+        let clock = Arc::clone(&drain_clock);
         tokio::spawn(async move {
             recv_shutdown(rx).await;
+            clock.arm(tokio::time::Instant::now() + clock.budget());
             let _ = shutdown_level.send(true);
         });
     }
@@ -1743,22 +1751,29 @@ async fn run(
     let line_shutdown = line_served.as_ref().map(|_| shutdown_tx.subscribe());
 
     busbar_core_admin::restart::publish_shutdown(shutdown_tx.clone());
+    // The first signal starts the drain; a second one ends it at once (the deadline branch).
     {
         let shutdown_tx = shutdown_tx.clone();
+        let clock = Arc::clone(&drain_clock);
         tokio::spawn(async move {
             shutdown_signal().await;
             let _ = shutdown_tx.send(());
+            shutdown_signal().await;
+            tracing::warn!("second shutdown signal: the drain deadline is now");
+            clock.expire_now();
         });
     }
     // The listener's handler drains on a signal from here on.
     let _ = signal_handoff.send(());
 
-    let budget_flusher = app_handle.load().governance.clone().map(|gov| {
+    let governance = app_handle.load().governance.clone();
+    let budget_flusher = governance.clone().map(|gov| {
         tokio::spawn(root::measurements::maintenance(
             busbar_kernel::governance::run_budget_flusher(
                 gov,
                 shutdown_tx.subscribe(),
                 Some(app_handle.clone()),
+                Some(Arc::clone(&drain_clock)),
             ),
         ))
     });
@@ -1768,214 +1783,172 @@ async fn run(
 
     busbar_kernel::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
 
+    let mut threads: Vec<std::thread::JoinHandle<()>> = Vec::new();
+    let mut admin: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + '_>>> = None;
+    let mut lines: Option<std::pin::Pin<Box<dyn std::future::Future<Output = i32>>>> = None;
     if let Some(served) = line_served {
         let stop = recv_shutdown(line_shutdown.unwrap_or_else(|| shutdown_tx.subscribe()));
-        let code = root::serve::lines::serve_lines(
+        lines = Some(Box::pin(root::serve::lines::serve_lines(
             served,
             app_handle.clone(),
             || root::kernel::ROOT_CARD.pin(),
             stop,
-        )
-        .await;
-        let _ = shutdown_tx.send(());
-        let recovery_result = work_recovery.await;
-        control_work.drain().await;
-        let lease_result = join_node_lease(node_lease_task).await;
-        let gov = app_handle.load().governance.clone();
-        let drained = root::shutdown::tail_after_flusher(
-            gov,
-            &late_services,
-            book.as_ref().map(|b| &b.durability),
-            &shutdown_tx,
-            budget_flusher,
-        )
-        .await
-        .unwrap_or_else(|error| die(error));
-        recovery_result.unwrap_or_else(|error| die(format!("work recovery did not stop: {error}")));
-        if let Err(error) =
-            root::shutdown::retire_storage(&mut store_admission, book.as_ref(), drained).await
-        {
-            tracing::error!(%error, "storage shutdown incomplete");
-            root::exit::exit(1);
-        }
-        lease_result.unwrap_or_else(|error| die(error));
-        root::exit::exit(code);
-    }
-
-    let framer = listener_plan.has_root_listener().then(|| {
-        listener_framer(
-            &listen,
-            listener_plan.root_claim().unwrap_or_else(|e| die(e)),
-            &listener_plan,
-            "listen",
-            max_inbound,
-        )
-    });
-    let mut plugin_listeners = Vec::new();
-    for bind in listener_plan.stream_binds() {
-        let framer = listener_framer(
-            &bind.at,
-            &bind.transport,
-            &listener_plan,
-            &bind.at,
-            max_inbound,
-        );
-        let tls = bind.tls.clone();
-        let addr = bind.listen.to_string();
-        busbar_core_connector::tls::prepare(&addr, tls.as_ref(), &tls_secret_resolver, true)
-            .unwrap_or_else(|e| die(e.to_string()));
-        let limits = busbar_core_connector::listen::AcceptLimits {
-            max_conns: usize::try_from(bind.max_conns).unwrap_or(usize::MAX),
-            handshake_timeout: busbar_core_connector::listen::DEFAULT_HANDSHAKE_TIMEOUT,
-        };
-        let router = physical_routers
-            .remove(&bind.at)
-            .expect("each physical listener has its own boot router");
-        plugin_listeners.push((limits, framer, tls, addr, router));
-    }
-    let mut plugin_tasks = Vec::new();
-    for (limits, framer, tls, addr, router) in plugin_listeners {
-        plugin_tasks.push(serve_private_listener(
-            addr,
-            limits,
-            router,
-            tls,
-            Arc::clone(&tls_secret_resolver),
-            shutdown_tx.subscribe(),
-            worker_shutdown_rx.clone(),
-            framer,
-        ));
-    }
-
-    #[cfg(unix)]
-    {
-        let binds = listener_plan.binds();
-        let bound_at = |setting: &str, addr: &str| {
-            binds
-                .iter()
-                .find(|b| b.at == setting)
-                .map(|b| b.listen.to_string())
-                .unwrap_or_else(|| {
-                    die(format!(
-                        "cannot bind listen address '{addr}': it resolves to no socket address"
-                    ))
-                })
-        };
-        let admin_at = bound_at("admin_listen", &admin_listen);
-
-        let admin_via = root::connector::the().address_via();
-        let admin_listener =
-            Listening::bind_stream(admin_via.as_ref(), &admin_at, ROOT_BIND_LIMITS).unwrap_or_else(
-                |e| die(format!("cannot bind listen address '{admin_listen}': {e}")),
-            );
-        let data_handles = framer.map_or_else(Vec::new, |framer| {
-            serve_thread_per_core(
-                data_workers,
-                listen.clone(),
-                bound_at("listen", &listen),
-                data_router,
-                tls_cfg,
-                tls_secret_resolver.clone(),
-                &shutdown_tx,
-                worker_shutdown_rx,
-                framer,
+        )));
+    } else {
+        let framer = listener_plan.has_root_listener().then(|| {
+            listener_framer(
+                &listen,
+                listener_plan.root_claim().unwrap_or_else(|e| die(e)),
+                &listener_plan,
+                "listen",
+                max_inbound,
             )
         });
-        tracing::debug!(
-            listen = %admin_listen,
-            carrier = %root::connector::carrier_name(admin_via.as_ref()),
-            "admin listening through the connector"
-        );
-        serve_listener(
-            admin_listener,
-            admin_router,
-            admin_tls_cfg,
-            tls_secret_resolver.clone(),
-            &admin_listen,
-            recv_shutdown(shutdown_tx.subscribe()),
-            None,
-            true,
-            None,
-        )
-        .await;
+        let mut plugin_listeners = Vec::new();
+        for bind in listener_plan.stream_binds() {
+            let framer = listener_framer(
+                &bind.at,
+                &bind.transport,
+                &listener_plan,
+                &bind.at,
+                max_inbound,
+            );
+            let tls = bind.tls.clone();
+            let addr = bind.listen.to_string();
+            busbar_core_connector::tls::prepare(&addr, tls.as_ref(), &tls_secret_resolver, true)
+                .unwrap_or_else(|e| die(e.to_string()));
+            let limits = busbar_core_connector::listen::AcceptLimits {
+                max_conns: usize::try_from(bind.max_conns).unwrap_or(usize::MAX),
+                handshake_timeout: busbar_core_connector::listen::DEFAULT_HANDSHAKE_TIMEOUT,
+            };
+            let router = physical_routers
+                .remove(&bind.at)
+                .expect("each physical listener has its own boot router");
+            plugin_listeners.push((limits, framer, tls, addr, router));
+        }
+        for (limits, framer, tls, addr, router) in plugin_listeners {
+            threads.push(serve_private_listener(
+                addr,
+                limits,
+                router,
+                tls,
+                Arc::clone(&tls_secret_resolver),
+                shutdown_tx.subscribe(),
+                worker_shutdown_rx.clone(),
+                framer,
+            ));
+        }
 
-        let _ = tokio::task::spawn_blocking(move || {
-            for h in data_handles {
-                let _ = h.join();
-            }
-        })
-        .await;
-    }
-    #[cfg(not(unix))]
-    {
-        let admin_listener = root::listener::SocketAdmits::new(bind_listener(&admin_listen).await);
-        let data_handle = framer.map(|framer| {
-            let resolver = tls_secret_resolver.clone();
-            let shutdown = shutdown_tx.subscribe();
-            spawn_multithread_data(data_workers, worker_shutdown_rx, async move {
-                let data_listener = root::listener::SocketAdmits::new(bind_listener(&listen).await);
-                serve_listener(
-                    data_listener,
+        #[cfg(unix)]
+        {
+            let binds = listener_plan.binds();
+            let bound_at = |setting: &str, addr: &str| {
+                binds
+                    .iter()
+                    .find(|b| b.at == setting)
+                    .map(|b| b.listen.to_string())
+                    .unwrap_or_else(|| {
+                        die(format!(
+                            "cannot bind listen address '{addr}': it resolves to no socket address"
+                        ))
+                    })
+            };
+            let admin_at = bound_at("admin_listen", &admin_listen);
+
+            let admin_via = root::connector::the().address_via();
+            let admin_listener =
+                Listening::bind_stream(admin_via.as_ref(), &admin_at, ROOT_BIND_LIMITS)
+                    .unwrap_or_else(|e| {
+                        die(format!("cannot bind listen address '{admin_listen}': {e}"))
+                    });
+            if let Some(framer) = framer {
+                threads.extend(serve_thread_per_core(
+                    data_workers,
+                    listen.clone(),
+                    bound_at("listen", &listen),
                     data_router,
                     tls_cfg,
-                    resolver,
-                    &listen,
-                    recv_shutdown(shutdown),
-                    None,
-                    true,
-                    Some(framer),
-                )
-                .await;
-            })
-        });
-        serve_listener(
-            admin_listener,
-            admin_router,
-            admin_tls_cfg,
-            tls_secret_resolver.clone(),
-            &admin_listen,
-            recv_shutdown(shutdown_tx.subscribe()),
-            None,
-            true,
-            None,
-        )
-        .await;
-        if let Some(data_handle) = data_handle {
-            tokio::task::spawn_blocking(move || data_handle.join())
-                .await
-                .expect("data runtime join task panicked")
-                .expect("data runtime thread panicked");
+                    tls_secret_resolver.clone(),
+                    &shutdown_tx,
+                    worker_shutdown_rx,
+                    framer,
+                ));
+            }
+            tracing::debug!(
+                listen = %admin_listen,
+                carrier = %root::connector::carrier_name(admin_via.as_ref()),
+                "admin listening through the connector"
+            );
+            admin = Some(Box::pin(serve_listener(
+                admin_listener,
+                admin_router,
+                admin_tls_cfg,
+                tls_secret_resolver.clone(),
+                &admin_listen,
+                recv_shutdown(shutdown_tx.subscribe()),
+                None,
+                true,
+                None,
+            )));
+        }
+        #[cfg(not(unix))]
+        {
+            let admin_listener =
+                root::listener::SocketAdmits::new(bind_listener(&admin_listen).await);
+            if let Some(framer) = framer {
+                let resolver = tls_secret_resolver.clone();
+                let shutdown = shutdown_tx.subscribe();
+                threads.push(spawn_multithread_data(
+                    data_workers,
+                    worker_shutdown_rx,
+                    async move {
+                        let data_listener =
+                            root::listener::SocketAdmits::new(bind_listener(&listen).await);
+                        serve_listener(
+                            data_listener,
+                            data_router,
+                            tls_cfg,
+                            resolver,
+                            &listen,
+                            recv_shutdown(shutdown),
+                            None,
+                            true,
+                            Some(framer),
+                        )
+                        .await;
+                    },
+                ));
+            }
+            admin = Some(Box::pin(serve_listener(
+                admin_listener,
+                admin_router,
+                admin_tls_cfg,
+                tls_secret_resolver.clone(),
+                &admin_listen,
+                recv_shutdown(shutdown_tx.subscribe()),
+                None,
+                true,
+                None,
+            )));
         }
     }
-    let _ = shutdown_tx.send(());
-    let recovery_result = work_recovery.await;
-    let _ = tokio::task::spawn_blocking(move || {
-        for task in plugin_tasks {
-            let _ = task.join();
-        }
-    })
-    .await;
-    control_work.drain().await;
-    let lease_result = join_node_lease(node_lease_task).await;
 
-    let gov = app_handle.load().governance.clone();
-    let drained = root::shutdown::tail_after_flusher(
-        gov,
-        &late_services,
-        book.as_ref().map(|b| &b.durability),
-        &shutdown_tx,
-        budget_flusher,
-    )
-    .await
-    .unwrap_or_else(|error| die(error));
-    recovery_result.unwrap_or_else(|error| die(format!("work recovery did not stop: {error}")));
-    if let Err(error) =
-        root::shutdown::retire_storage(&mut store_admission, book.as_ref(), drained).await
-    {
-        tracing::error!(%error, "storage shutdown incomplete");
-        root::exit::exit(1);
-    }
-    lease_result.unwrap_or_else(|error| die(error));
+    let post = root::shutdown::PostServe {
+        admin,
+        lines,
+        threads,
+        work_recovery,
+        control_drain: Box::pin(control_work.drain()),
+        node_lease: node_lease_task,
+        flusher: budget_flusher,
+        governance,
+        late: Arc::clone(&late_services),
+        book,
+        startup: store_admission,
+        shutdown_tx: shutdown_tx.clone(),
+    };
+    let code = root::shutdown::finish(post, &drain).await;
+    root::exit::exit(code);
 }
 
 /// A door egress's model serving over `app`'s lanes; boot and every apply build it here.
@@ -2048,17 +2021,6 @@ async fn refresh_node_lease(
         };
         let _ = failure.send(true);
         return Err(error);
-    }
-}
-
-async fn join_node_lease(
-    task: Option<tokio::task::JoinHandle<Result<(), String>>>,
-) -> Result<(), String> {
-    match task {
-        Some(task) => task
-            .await
-            .map_err(|_| "node lease task failed".to_owned())?,
-        None => Ok(()),
     }
 }
 

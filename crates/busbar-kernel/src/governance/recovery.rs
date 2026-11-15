@@ -373,6 +373,17 @@ impl RecoveryEntry {
             || self.resolution_runner.is_running()
             || self.driver.is_running()
     }
+
+    /// SHUTDOWN-HANG §5: a staged original not yet confirmed is `in_doubt`; a selected operation
+    /// not yet Settled is durable custody the adopter settles.
+    pub(crate) fn custody(&self) -> (bool, bool) {
+        let staged = self.pending.is_some() || self.runner.is_running() || self.driver.is_running();
+        let selected = self
+            .selected
+            .as_ref()
+            .is_some_and(|event| event.state != RecoveryState::Settled);
+        (staged, selected)
+    }
 }
 
 impl RecoveryBook {
@@ -860,6 +871,16 @@ impl RecoveryAdmin<'_> {
 }
 
 impl super::GovState {
+    /// `(staged, selected)` counts of recovery custody at a non-retired exit (SHUTDOWN-HANG §5).
+    pub(super) fn recovery_custody_counts(&self) -> (usize, usize) {
+        let entries = self
+            .recovery_book
+            .entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        crate::off_path::governance::runtime::recovery_custody_counts(entries.values())
+    }
+
     pub(super) fn has_unsettled_recovery(&self) -> bool {
         self.recovery_book.attaching.is_running()
             || crate::off_path::governance::runtime::recovery_any_unsettled(

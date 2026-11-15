@@ -68,6 +68,16 @@ pub(crate) fn recovery_any_unsettled<'a>(
     entries.any(crate::governance::recovery::RecoveryEntry::unsettled)
 }
 
+/// `recovery`: `(staged, selected)` custody counts at a non-retired exit (SHUTDOWN-HANG §5).
+pub(crate) fn recovery_custody_counts<'a>(
+    entries: impl Iterator<Item = &'a crate::governance::recovery::RecoveryEntry>,
+) -> (usize, usize) {
+    entries.fold((0, 0), |(staged, selected), entry| {
+        let (s, x) = entry.custody();
+        (staged + usize::from(s), selected + usize::from(x))
+    })
+}
+
 /// `recovery`: every selected recovery event (boot attach, recovery resume, operator list).
 pub(crate) fn recovery_selected_events<'a>(
     entries: impl Iterator<Item = &'a crate::governance::recovery::RecoveryEntry>,
@@ -495,11 +505,32 @@ pub(crate) fn unit_checkpoint_validate(snapshot: &UnitCheckpoint) -> RecordStore
     Ok(())
 }
 
-/// `unit_checkpoint/book`: every pending checkpoint id (the flusher's pass and shutdown).
-pub(crate) fn unit_checkpoint_book_ids<'a>(
-    ids: impl Iterator<Item = &'a [u8; 16]>,
+/// `unit_checkpoint/book`: the flush pass's ids, every `first` entry before every `then` entry,
+/// each group in map order (SHUTDOWN-HANG F3.3: terminal before moved running entries).
+pub(crate) fn unit_checkpoint_book_flush_order<'a, T: 'a>(
+    entries: impl Iterator<Item = (&'a [u8; 16], &'a T)>,
+    first: impl Fn(&T) -> bool,
+    then: impl Fn(&T) -> bool,
 ) -> Vec<[u8; 16]> {
-    ids.copied().collect()
+    let mut firsts = Vec::new();
+    let mut thens = Vec::new();
+    for (id, entry) in entries {
+        if first(entry) {
+            firsts.push(*id);
+        } else if then(entry) {
+            thens.push(*id);
+        }
+    }
+    firsts.extend(thens);
+    firsts
+}
+
+/// `unit_checkpoint/book`: one value per pending checkpoint (a non-retired exit's evidence).
+pub(crate) fn unit_checkpoint_book_map<'a, T: 'a, U>(
+    entries: impl Iterator<Item = (&'a [u8; 16], &'a T)>,
+    f: impl FnMut((&'a [u8; 16], &'a T)) -> U,
+) -> Vec<U> {
+    entries.map(f).collect()
 }
 
 /// `unit_checkpoint/book`: whether every pending checkpoint satisfies `f` (boot only).
