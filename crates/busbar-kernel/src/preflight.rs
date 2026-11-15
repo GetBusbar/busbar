@@ -38,6 +38,13 @@ impl StoreRow<LinkedStore> {
     pub const fn linked(self) -> LinkedStore {
         self.0
     }
+
+    /// The names an earlier release answered to: none on this shape, which carries no door
+    /// declarations.
+    #[must_use]
+    pub const fn former_names(self) -> &'static [&'static str] {
+        &[]
+    }
 }
 
 impl StoreRow<LinkedStoreDoor> {
@@ -45,6 +52,13 @@ impl StoreRow<LinkedStoreDoor> {
     pub const fn linked(self) -> LinkedStore {
         let (key, ephemeral, door, canonical) = self.0;
         (key, ephemeral, door.door_fn(), canonical)
+    }
+
+    /// The names an earlier release answered to: the door's `FORMER_NAMES`.
+    #[must_use]
+    pub const fn former_names(self) -> &'static [&'static str] {
+        let (_, _, door, _) = self.0;
+        door.former_names()
     }
 }
 
