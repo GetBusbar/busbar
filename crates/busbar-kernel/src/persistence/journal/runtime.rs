@@ -112,16 +112,12 @@ fn walk_group(
     Ok((head, seal))
 }
 
-/// The selected-row change a domain owner asks `change_live` to make.
+/// The selected-row change a domain owner asks `change_live` to make (a guarded selection; a
+/// delete, or several rows at once, go through `change_rows_live`).
 pub(crate) enum LiveChange<'a> {
     Select {
         selection: Selection,
         guards: &'a [Predicate],
-    },
-    Delete {
-        operation_id: [u8; 16],
-        address: Address,
-        expected: ExpectedValue,
     },
 }
 
@@ -751,32 +747,57 @@ impl RuntimeJournal {
         // later return or cancellation leaves the caller holding the exact
         // proof whose digest CoreStore may retain.
         retain(&proof);
-        let (selection, delete, guards) = match change {
-            LiveChange::Select { selection, guards } => (selection, false, guards),
-            LiveChange::Delete {
-                operation_id,
-                address,
-                expected,
-            } => (
-                Selection {
-                    operation_id,
-                    address,
-                    expected,
-                    value: Secret::default(),
-                },
-                true,
-                &[][..],
-            ),
-        };
+        let LiveChange::Select { selection, guards } = change;
         let result = journal
             .change_selection_at(
                 &proof,
                 records,
                 Some(located.as_slice()),
                 selection,
-                delete,
+                false,
                 guards,
             )
+            .await
+            .map_err(RuntimeError::from)?;
+        drop(driver);
+        Ok((proof, result))
+    }
+
+    /// `change_live` for several rows of one namespace in one CAS (SHUTDOWN-HANG F3.1): the same
+    /// driver, proof and `retain` rules, and every row's originals located in O(1) by
+    /// [`Self::locate`]. One row is the same attempt as `change_live`'s selection or delete.
+    pub(crate) async fn change_rows_live(
+        &self,
+        operation_id: [u8; 16],
+        rows: &[RowChange<'_>],
+        retained: Option<Arc<VerifiedHead>>,
+        retain: &(dyn Fn(&Arc<VerifiedHead>) + Send + Sync),
+    ) -> std::result::Result<(Arc<VerifiedHead>, WriteResult), RuntimeError> {
+        let journal = StoreJournal::new(&self.store, self.node).map_err(RuntimeError::from)?;
+        let pre = self.live_head()?;
+        let driver = self.driving.lock().await;
+        self.drive_locked(&driver, self.staged_target()?).await?;
+        let proof = match retained {
+            Some(proof) => proof,
+            None => {
+                let live = self.live_head()?;
+                if !Arc::ptr_eq(&live, &pre) {
+                    prefix_of(&pre, &live)?;
+                }
+                live
+            }
+        };
+        let mut located = Vec::new();
+        located
+            .try_reserve_exact(rows.iter().map(|row| row.records.len()).sum::<usize>())
+            .map_err(|_| RuntimeError::Budget)?;
+        for record in rows.iter().flat_map(|row| row.records) {
+            located.push(self.locate(&proof, record.node_seq)?);
+        }
+        // Retain before any claim, as `change_live` does.
+        retain(&proof);
+        let result = journal
+            .change_rows_at(&proof, operation_id, rows, &located)
             .await
             .map_err(RuntimeError::from)?;
         drop(driver);
