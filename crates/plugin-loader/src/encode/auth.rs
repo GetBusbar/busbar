@@ -171,8 +171,7 @@ pub fn encode_login(w: &mut impl Writer, l: &LoginIn<'_>) -> Result<(), Full> {
 }
 
 /// outbound: O_METHOD, O_URL, PAIR* (headers), O_BODY_SHA256?, O_CALLER_CRED*, O_SCOPE?, O_CALLER_GRANT?.
-/// `UpstreamIn` (frozen) carries no refresh-ahead margin, so this writes no FACT(F_MIN_VALID_S); the adapter that
-/// holds core's margin calls [`encode_outbound_min_valid`].
+/// Round 23 (R3): ends with FACT(F_MIN_VALID_S) = `u.min_valid_s`, on every call.
 pub fn encode_outbound(w: &mut impl Writer, u: &UpstreamIn<'_>) -> Result<(), Full> {
     w.put_text(t::O_METHOD, u.method)?;
     w.put_text(t::O_URL, u.url)?;
@@ -191,17 +190,7 @@ pub fn encode_outbound(w: &mut impl Writer, u: &UpstreamIn<'_>) -> Result<(), Fu
     if let Some(g) = u.caller_grant {
         w.put(t::O_CALLER_GRANT, g)?;
     }
-    Ok(())
-}
-
-/// Round 23: [`encode_outbound`], then FACT(F_MIN_VALID_S) = core's refresh-ahead margin in seconds (§8.3).
-pub fn encode_outbound_min_valid(
-    w: &mut impl Writer,
-    u: &UpstreamIn<'_>,
-    min_valid_s: u32,
-) -> Result<(), Full> {
-    encode_outbound(w, u)?;
-    w.put_fact(abi::F_MIN_VALID_S, u64::from(min_valid_s))
+    w.put_fact(abi::F_MIN_VALID_S, u64::from(u.min_valid_s))
 }
 
 /// Round 29, `serve`: Q_METHOD, Q_PATH, Q_QUERY, PAIR* (headers), Q_BODY, Q_CLIENT.
@@ -224,7 +213,7 @@ pub fn decode_serve(a: &Answer<'_>) -> Result<ServeOut, RecErr> {
 /// [`decode_serve`] over the answer's records. METRIC records (generic, decoded once by `decode_metrics`) are
 /// skipped; any other record, a record out of order, a second SV_STATUS or SV_BODY, or a status outside
 /// 200..=599 is RecErr; no SV_STATUS is `Truncated`.
-pub fn decode_serve_records(records: Records<'_>) -> Result<ServeOut, RecErr> {
+fn decode_serve_records(records: Records<'_>) -> Result<ServeOut, RecErr> {
     let mut status: Option<u16> = None;
     let mut headers = Vec::new();
     let mut body: Option<Vec<u8>> = None;

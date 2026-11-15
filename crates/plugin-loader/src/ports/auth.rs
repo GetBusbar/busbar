@@ -163,6 +163,8 @@ pub struct UpstreamIn<'a> {
     pub caller_cred: &'a [Pair<'a>],
     pub scope: Option<&'a str>,
     pub caller_grant: Option<&'a [u8]>,
+    /// core's refresh-ahead margin in seconds (`CredPolicy.refresh_ahead_s`), written as FACT(F_MIN_VALID_S).
+    pub min_valid_s: u32,
 }
 
 pub struct OutboundAnswer {
