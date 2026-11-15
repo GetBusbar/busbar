@@ -462,16 +462,6 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
         ),
     ),
     (
-        "Lent",
-        SecretBearing::NotInResolvedConfig(
-            "the host's HELD upstream credential of one plane member (`busbar` \
-             `door_steps::Lent`): a runtime CARRIER built from the member registration's \
-             `upstream_credential.secret` when the member opens, resolved there (an unresolvable \
-             one refuses the open, naming the member) and again on its refresh lease; it is never \
-             part of `RootCfg`.",
-        ),
-    ),
-    (
         "ProviderDeploy",
         SecretBearing::NotInResolvedConfig(
             "the DESERIALIZE-side provider entry (providers.yaml). `resolve` lowers it into \
@@ -487,13 +477,13 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
         ),
     ),
     (
-        "PerHop",
+        "Lent",
         SecretBearing::NotInResolvedConfig(
-            "the composition root's per-hop binding of a registration's own outbound credential \
-             (`root::door_steps::upstream_credential_binding`): a runtime CARRIER built from the \
-             reference a door section declares at its `settings.*.upstream_credential.secret` path, \
-             which the door section's walk (`DoorSection`) already reported; it is never part of \
-             `RootCfg`.",
+            "what the composition root's per-hop binding (`PerHop`) of a registration's own \
+             outbound credential holds (`root::door_steps::upstream_credential_binding`): a \
+             runtime CARRIER built from the reference a door section declares at its \
+             `settings.*.upstream_credential.secret` path, which the door section's walk \
+             (`DoorSection`) already reported; it is never part of `RootCfg`.",
         ),
     ),
     (
