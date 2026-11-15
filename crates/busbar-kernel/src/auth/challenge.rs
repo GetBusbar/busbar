@@ -46,32 +46,14 @@ pub(crate) fn www_authenticate(
     description: Option<&str>,
     scope: Option<&str>,
 ) -> String {
-    use std::fmt::Write as _;
     let description = description.filter(|_| error != ChallengeError::Absent);
     let scope = scope.filter(|_| error == ChallengeError::InsufficientScope);
-    let sized =
-        resource_metadata.len() + description.map_or(0, str::len) + scope.map_or(0, str::len);
-    // busbar:expect(bp::fresh_buffer, reason = "error: the challenge header of a refused request, written once in place")
-    let mut out = String::with_capacity(96 + sized);
-    let _ = write!(
-        out,
-        "Bearer resource_metadata=\"{}\"",
-        Quoted(resource_metadata)
-    );
-    if let Some(code) = error.code() {
-        let _ = write!(out, ", error=\"{code}\"");
-    }
-    if let Some(d) = description {
-        let _ = write!(out, ", error_description=\"{}\"", Quoted(d));
-    }
-    if let Some(s) = scope {
-        let _ = write!(out, ", scope=\"{}\"", Quoted(s));
-    }
-    out
+    // The challenge head of a refused request: cold text, written out of line.
+    crate::cold::auth::keys::www_authenticate(error.code(), resource_metadata, description, scope)
 }
 
 /// A quoted-string's content: `"` and `\` escaped, control characters dropped.
-struct Quoted<'a>(&'a str);
+pub(crate) struct Quoted<'a>(pub(crate) &'a str);
 
 impl std::fmt::Display for Quoted<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -110,21 +92,7 @@ pub fn render(
         error: error.code().unwrap_or("unauthorized"),
         error_description: (error != ChallengeError::Absent).then_some(description),
     };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a refused request's challenge head; the plane head type owns its field bytes"
-    )]
-    let fields = vec![
-        (b"content-type".to_vec(), b"application/json".to_vec()),
-        (
-            b"www-authenticate".to_vec(),
-            if HeaderValue::from_str(&challenge).is_ok() {
-                challenge.into_bytes()
-            } else {
-                b"Bearer".to_vec()
-            },
-        ),
-    ];
+    let fields = crate::cold::auth::keys::challenge_fields(challenge);
     let mut rendered = crate::plane_driver::Rendered {
         status: u32::from(error.status().as_u16()),
         fields,

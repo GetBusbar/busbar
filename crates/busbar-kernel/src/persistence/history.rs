@@ -1168,10 +1168,6 @@ impl<'a> Audit<'a> {
             }
         }
     }
-    #[cfg(test)]
-    pub(crate) async fn retry(&self, id: PendingId) -> Result<Outcome> {
-        outcome(self.store.retry(id).await?)
-    }
 }
 
 #[cfg(test)]

@@ -66,12 +66,7 @@ fn op_of(c: &Carry<'_>) -> u8 {
 /// The text of a crossing that did not answer READY.
 #[must_use]
 pub fn text(c: &Crossed) -> String {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a crossing that did not answer READY is spelled for its refusal"
-    )]
-    let text = String::from_utf8_lossy(c.error.as_deref().unwrap_or_default()).into_owned();
-    text
+    crate::cold::lines::crossing_text(c.error.as_deref().unwrap_or_default())
 }
 
 /// A side as its holder drives it: the side, and the op pending on it (`0` = none).
@@ -142,7 +137,7 @@ impl Driven {
     }
 }
 
-const fn abi(b: &[u8]) -> AbiStr {
+pub(crate) const fn abi(b: &[u8]) -> AbiStr {
     AbiStr {
         ptr: b.as_ptr(),
         len: b.len(),
@@ -215,16 +210,7 @@ impl Carried {
         let mut wr = Driven::of(door.as_ref()).ok_or_else(refused)?;
         let rd = Driven::of(door.as_ref()).ok_or_else(refused)?;
         let (args, env): (Vec<AbiStr>, Vec<Field>) = match dest {
-            Dest::Program(p, _, _) => (
-                p.args.iter().map(|a| abi(a.as_bytes())).collect(),
-                p.env
-                    .iter()
-                    .map(|(k, v)| Field {
-                        name: abi(k.as_bytes()),
-                        value: abi(v.as_bytes()),
-                    })
-                    .collect(),
-            ),
+            Dest::Program(p, _, _) => crate::off_path::lines::program_destination(p),
             Dest::Authority(_) => (Vec::new(), Vec::new()),
         };
         let raw = match dest {
@@ -396,12 +382,8 @@ impl Carried {
 
     /// The dial's connect settled (the carrier's `flush` on a fresh dial): `Ready(Err)` with the
     pub fn poll_connected(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), String>> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a failed connect is answered with its sentence"
-        )]
-        let connected = self.poll_flush(cx).map_err(|e| e.to_string());
-        connected
+        self.poll_flush(cx)
+            .map_err(|e| crate::cold::lines::io_error_text(&e))
     }
 
     /// Every byte the carrier took is on the wire (`flush`).

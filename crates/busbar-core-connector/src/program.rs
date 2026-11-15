@@ -8,18 +8,16 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::task::{Context, Poll, Wake, Waker};
 
-use base64::Engine as _;
 use busbar_contract::conn::{
     ConnError, Piece, PieceKind, Program, PROGRAM_EXPECT_GENERATION_FIELD,
-    PROGRAM_EXPECT_INSTANCE_FIELD, PROGRAM_GENERATION_FIELD, PROGRAM_IDENTITY_FIELD,
-    PROGRAM_INSTANCE_FIELD,
+    PROGRAM_EXPECT_INSTANCE_FIELD, PROGRAM_GENERATION_FIELD,
 };
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::transport::ConnFacts;
 use foldhash::HashMap;
 
-use crate::compose::{Connection, Dial, Failure, Via, DEFAULT_OPEN_TIMEOUT, RECEIVE_BUFFER_BYTES};
+use crate::compose::{Connection, Failure, Via, RECEIVE_BUFFER_BYTES};
 use crate::map;
 
 thread_local! {
@@ -78,8 +76,9 @@ impl Wake for Fan {
 struct Inbox {
     /// The generation it opened on.
     generation: u64,
-    /// Its head's bytes, until read.
-    head: Option<Vec<u8>>,
+    /// How much of its head was read: `Some(0)` until its first read, `None` once all of it was.
+    /// The head is never held: [`copy_head`] renders it from the generation and the member's tail.
+    head: Option<usize>,
     /// The frames read since it opened, each with whether it ends its frame.
     pieces: VecDeque<(Vec<u8>, bool)>,
     /// The bytes of `pieces`: at [`RECEIVE_BUFFER_BYTES`] the program is not read again until this
@@ -116,7 +115,7 @@ struct State {
     /// Spawn attempts and connections whose close has not returned yet.
     programs_outstanding: usize,
     /// The callers that found the program's connection out with another lease, woken once it is
-    missed: Vec<Arc<Waker>>,
+    missed: Missed,
     /// Notifications and displaced caller owners are retired only after the outer State guard.
     wake_missed: Vec<Arc<Waker>>,
     retired_wakers: Vec<Arc<Waker>>,
@@ -292,6 +291,55 @@ fn next_supervision_key(counter: &std::sync::atomic::AtomicU64) -> Result<u64, C
         .map_err(|_| ConnError::Refused)
 }
 
+/// The callers waiting for a program's connection to come back, each kept once by the task its
+/// waker wakes: keyed by [`waker_key`], the identity [`Waker::will_wake`] compares, so keeping one
+/// is no scan.
+type Missed = HashMap<(usize, usize), Arc<Waker>>;
+
+/// `waker`'s identity as [`Waker::will_wake`] compares it: its data pointer and its vtable.
+fn waker_key(waker: &Waker) -> (usize, usize) {
+    (
+        waker.data().addr(),
+        std::ptr::from_ref(waker.vtable()).addr(),
+    )
+}
+
+/// A lease's head from byte `at` into `buf`: its generation line, then the member's `tail` (its
+/// instance and identity lines). Rendered from what the lease and the member hold, never held as
+/// a buffer of its own. Answers the bytes copied and whether the head ended with them.
+fn copy_head(generation: u64, tail: &[u8], at: usize, buf: &mut [u8]) -> (usize, bool) {
+    use busbar_contract::abi::transport::fields::{LINE_END, SEPARATOR};
+    let mut digits = [0_u8; 20];
+    let spelled = {
+        let mut rest = &mut digits[..];
+        let _ = std::io::Write::write_fmt(&mut rest, format_args!("{generation}"));
+        20 - rest.len()
+    };
+    let parts: [&[u8]; 5] = [
+        PROGRAM_GENERATION_FIELD.as_bytes(),
+        SEPARATOR,
+        &digits[..spelled],
+        LINE_END,
+        tail,
+    ];
+    let mut skip = at;
+    let mut n = 0;
+    let mut total = 0;
+    for part in parts {
+        total += part.len();
+        if skip >= part.len() {
+            skip -= part.len();
+            continue;
+        }
+        let from = &part[skip..];
+        skip = 0;
+        let take = from.len().min(buf.len() - n);
+        buf[n..n + take].copy_from_slice(&from[..take]);
+        n += take;
+    }
+    (n, at + n >= total)
+}
+
 /// A piece of `kind` that filled `len` bytes.
 fn piece(kind: PieceKind, len: usize, end: bool) -> Piece {
     Piece {
@@ -332,7 +380,7 @@ impl State {
             }
         }
         let missed = std::mem::take(&mut self.missed);
-        self.wake_missed.extend(missed);
+        self.wake_missed.extend(missed.into_values());
         self.wake_fan = true;
     }
 
@@ -345,9 +393,9 @@ impl State {
 
     /// `waker`'s caller found the program's connection out: it is woken once it is back.
     fn miss(&mut self, waker: &Arc<Waker>) {
-        if !self.missed.iter().any(|w| w.will_wake(waker)) {
-            self.missed.push(Arc::clone(waker));
-        }
+        self.missed
+            .entry(waker_key(waker))
+            .or_insert_with(|| Arc::clone(waker));
     }
 }
 
@@ -360,7 +408,7 @@ impl Member {
         alpn: Vec<Vec<u8>>,
     ) -> Result<Self, ConnError> {
         let supervision_key = next_supervision_key(&NEXT_SUPERVISION_KEY)?;
-        let lease_tail = lease_tail(supervision_key, &program);
+        let lease_tail = crate::off_path::lines::lease_tail(supervision_key, &program);
         Ok(Self {
             program,
             env,
@@ -376,7 +424,7 @@ impl Member {
                 leases: HashMap::default(),
                 spawning: false,
                 programs_outstanding: 0,
-                missed: Vec::new(),
+                missed: Missed::default(),
                 wake_missed: Vec::new(),
                 retired_wakers: Vec::new(),
                 wake_fan: false,
@@ -444,7 +492,7 @@ impl Member {
             None => st.doomed.push(conn),
         }
         let missed = std::mem::take(&mut st.missed);
-        st.wake_missed.extend(missed);
+        st.wake_missed.extend(missed.into_values());
         (st, Some(r))
     }
 
@@ -524,15 +572,7 @@ impl Member {
             }
         }
         if st.live.is_none() {
-            let dial = Dial {
-                target: self.program.command.clone(),
-                tls: None,
-                alpn: self.alpn.clone(),
-                open_timeout: DEFAULT_OPEN_TIMEOUT,
-                opening: None,
-                head_words: (Vec::new(), Vec::new()),
-                anchors: None,
-            };
+            let dial = crate::off_path::lines::member_spawn_dial(&self.program.command, &self.alpn);
 
             st.spawning = true;
             st.programs_outstanding += 1;
@@ -578,25 +618,11 @@ impl Member {
         let mid_frame = st.mid_frame;
         let lease = st.next_lease;
         st.next_lease += 1;
-        // The lease's own head: its generation line, then the member's tail, in one exactly sized
-        // buffer the inbox owns.
-        let mut head = Vec::with_capacity(
-            PROGRAM_GENERATION_FIELD.len()
-                + busbar_contract::abi::transport::fields::SEPARATOR.len()
-                + 20
-                + busbar_contract::abi::transport::fields::LINE_END.len()
-                + self.lease_tail.len(),
-        );
-        head.extend_from_slice(PROGRAM_GENERATION_FIELD.as_bytes());
-        head.extend_from_slice(busbar_contract::abi::transport::fields::SEPARATOR);
-        let _ = std::io::Write::write_fmt(&mut head, format_args!("{generation}"));
-        head.extend_from_slice(busbar_contract::abi::transport::fields::LINE_END);
-        head.extend_from_slice(&self.lease_tail);
         st.leases.insert(
             lease,
             Inbox {
                 generation,
-                head: Some(head),
+                head: Some(0),
                 pieces: VecDeque::new(),
                 queued: 0,
                 ended: None,
@@ -628,14 +654,9 @@ impl Member {
         let mut st = self.lock();
         loop {
             let inbox = st.leases.get_mut(&lease).ok_or(ConnError::Closed)?;
-            if let Some(head) = inbox.head.as_mut() {
-                let n = head.len().min(buf.len());
-                buf[..n].copy_from_slice(&head[..n]);
-                head.drain(..n);
-                let end = head.is_empty();
-                if end {
-                    inbox.head = None;
-                }
+            if let Some(at) = inbox.head {
+                let (n, end) = copy_head(inbox.generation, &self.lease_tail, at, buf);
+                inbox.head = (!end).then_some(at + n);
                 return Ok(piece(PieceKind::Fields, n, end));
             }
             if let Some((mut bytes, end)) = inbox.pieces.pop_front() {
@@ -890,24 +911,6 @@ impl Drop for Declaration {
     fn drop(&mut self) {
         self.member.retire();
     }
-}
-
-/// The instance and identity field lines every lease of the member keyed `supervision_key` running
-/// `program` carries in its head.
-fn lease_tail(supervision_key: u64, program: &Program) -> Vec<u8> {
-    use busbar_contract::abi::transport::fields::{LINE_END, SEPARATOR};
-    let identity = base64::engine::general_purpose::STANDARD.encode(program.command.as_bytes());
-    // busbar:expect(bp::fresh_buffer, reason = "config: a member is declared at a config commit; its lease tail is spelled once")
-    let mut tail = Vec::new();
-    tail.extend_from_slice(PROGRAM_INSTANCE_FIELD.as_bytes());
-    tail.extend_from_slice(SEPARATOR);
-    let _ = std::io::Write::write_fmt(&mut tail, format_args!("{supervision_key}"));
-    tail.extend_from_slice(LINE_END);
-    tail.extend_from_slice(PROGRAM_IDENTITY_FIELD.as_bytes());
-    tail.extend_from_slice(SEPARATOR);
-    tail.extend_from_slice(identity.as_bytes());
-    tail.extend_from_slice(LINE_END);
-    tail
 }
 
 /// Declaration custody is distinct from active leases: the last declaring record retires the
