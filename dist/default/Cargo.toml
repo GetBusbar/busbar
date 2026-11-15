@@ -675,11 +675,6 @@ path = "tests/boot_lines_neutrality.rs"
 name = "no_data_dir_neutrality"
 path = "tests/no_data_dir_neutrality.rs"
 
-# Boots the real binary on durable-Store configs that name an admin token (UPG-A30b).
-[[test]]
-name = "legacy_file_overlay_is_never_dropped"
-path = "tests/legacy_file_overlay_is_never_dropped.rs"
-
 [[test]]
 name = "law7_direct_model_route"
 path = "tests/law7_direct_model_route.rs"

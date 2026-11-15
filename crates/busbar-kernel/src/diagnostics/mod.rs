@@ -1726,17 +1726,17 @@ diagnostics! {
         "The store reported a time-guard failure whose observation came from another clock authority, or whose time the commit's guard permits, or for a commit with no guard. That is a store fault; retrying would replay the same recorded verdict, so the operation is held for reconciliation.",
         "Check the store plugin and its clock authority. Capture the log line (store, writer, slot, observed authority and time, the guard) and reconcile the held operation.";
 
-    /// A 1.5.5 file overlay holds settings this Store has not imported; serving refuses to start (fatal).
-    CONFIG_LEGACY_OVERLAY_NOT_IMPORTED = 3027, Config, Fatal, "config-legacy-overlay-not-imported", "1.6.0", false,
-        "A 1.5.5 file overlay holds settings this Store has not imported (boot refuses to start)",
-        "The overlay file a 1.5.5 deployment read and wrote (config.overlay.file, BUSBAR_CONFIG_OVERLAY, or busbar-overlay.json beside config.yaml) holds admin-API settings, and this Store has no import receipt for it. 1.6 serving never reads file overlays, so starting would silently drop those settings, security hooks and groups included; serving REFUSES to start instead. The message names the file and how it was selected, never its settings. In --safe-mode it is a warning and the boot continues.",
-        "Follow the remedy the message gives for this Store. The upgrade boot folds a 1.5.5 overlay into config.yaml; a config.yaml that is already migrated no longer reads it. Re-apply the settings you still want through the admin API (on a durable Store), keeping a copy of the file first. Moving the file away without a copy abandons the settings deliberately.";
+    /// RETIRED in 1.6.0: nothing emits it. The number is kept so a log line from a pre-release build still resolves to an entry that says what happened.
+    CONFIG_LEGACY_OVERLAY_NOT_IMPORTED = 3027, Config, Fatal, "config-legacy-overlay-not-imported", "1.6.0", true,
+        "A 1.5.5 file overlay held settings this Store had not imported — RETIRED",
+        "RETIRED. Nothing emits this code: serving no longer checks for a 1.5.5 file overlay. The first boot of a 1.5.5 config folds the overlay 1.5.5 read into config.yaml, keeps both originals as `.1.5.5` backups, and a migrated config never reads it again. The number is kept so a log line from a pre-release build still resolves to this page.",
+        "Nothing emits this code. Start busbar on the 1.5.5 config.yaml; the boot folds its overlay. See docs/migration-1.6.md.";
 
-    /// A 1.5.5 overlay selector, BUSBAR_CONFIG_OVERLAY or overlay file that loses nothing is not read.
-    CONFIG_LEGACY_OVERLAY_NOT_READ = 3028, Config, Actionable, "config-legacy-overlay-not-read", "1.6.0", false,
-        "A 1.5.5 overlay selector, variable or file is not read (nothing to import)",
-        "The deployment still carries a 1.5.5 file-overlay input that 1.6 serving does not read: a config.overlay selector or BUSBAR_CONFIG_OVERLAY naming a file that does not exist, an overlay file that holds no settings, a file whose settings this Store has already imported, or a file beside a locked config (which 1.5.5 ignored too). Nothing is lost, so the boot continues; the message names the file and how it was selected.",
-        "Remove the leftover input: delete the imported or empty overlay file, and remove BUSBAR_CONFIG_OVERLAY from the launcher. Remove `config.overlay` from config.yaml. See docs/migration-1.6.md.";
+    /// RETIRED in 1.6.0: nothing emits it. The number is kept so a log line from a pre-release build still resolves to an entry that says what happened.
+    CONFIG_LEGACY_OVERLAY_NOT_READ = 3028, Config, Actionable, "config-legacy-overlay-not-read", "1.6.0", true,
+        "A 1.5.5 overlay input was not read — RETIRED",
+        "RETIRED. Nothing emits this code: serving no longer looks for 1.5.5 overlay inputs. The first boot of a 1.5.5 config handles them once, in the upgrade, and reports what it did. The number is kept so a log line from a pre-release build still resolves to this page.",
+        "Nothing emits this code. See docs/migration-1.6.md.";
 
     /// A `plaintext: true` destination entry names a wildcard or a CIDR.
     CONFIG_PLAINTEXT_ENTRY_NOT_EXACT = 3144, Config, Fatal, "config-plaintext-entry-not-exact", "1.6.0", false,

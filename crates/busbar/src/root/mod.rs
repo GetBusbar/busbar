@@ -231,7 +231,6 @@ pub mod observe;
 // The request-path modules' code that runs off the request path: once per configuration, generation
 // or process lifecycle, never per request.
 pub(crate) mod off_path;
-pub mod overlay_migrate;
 
 // busbar:request-path
 #[cfg_attr(

@@ -17,8 +17,6 @@ use crate::persistence::{
 
 const SCHEMA: &str = "busbar.config.overlay.v1";
 const HEAD: &[u8] = b"head";
-/// The receipt a former release wrote beside HEAD when it imported a 1.5.5 file overlay.
-const RECEIPT: &[u8] = b"migration:1.5.5:file";
 type Observed = Arc<Mutex<Option<Option<Vec<u8>>>>>;
 
 #[derive(Serialize, Deserialize)]
@@ -414,23 +412,6 @@ impl NativeOverlay {
                 "config overlay conflict cleanup pending; exact candidate retained: {outcome:?}"
             )),
         }
-    }
-
-    /// What a 1.5.5 file overlay would meet here, read in the order the importer used
-    /// (RECEIPT, then HEAD).
-    pub(super) async fn legacy_import_state(
-        &self,
-    ) -> Result<super::overlay_store::LegacyImportState, String> {
-        use super::overlay_store::LegacyImportState;
-        if let Some(saved) = self.get(RECEIPT).await? {
-            let receipt: super::overlay_store::import::Receipt = serde_json::from_slice(&saved)
-                .map_err(|_| "overlay migration receipt is unreadable")?;
-            return Ok(LegacyImportState::Imported(receipt.source_sha256));
-        }
-        if self.get(HEAD).await?.is_some() {
-            return Ok(LegacyImportState::StoreOverlayPresent);
-        }
-        Ok(LegacyImportState::Empty)
     }
 
     pub(super) async fn update(

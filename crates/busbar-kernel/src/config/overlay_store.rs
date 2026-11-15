@@ -4,21 +4,6 @@
 use super::overlay::OverlayDoc;
 use std::sync::{Arc, Mutex};
 
-#[path = "overlay_import.rs"]
-pub(super) mod import;
-
-/// What the serve gate finds in this Store about a 1.5.5 file overlay: an import receipt a former
-/// release left, a 1.6 overlay, or neither.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LegacyImportState {
-    /// RECEIPT present: a 1.5.5 file overlay was imported into this Store (its source digest).
-    Imported([u8; 32]),
-    /// RECEIPT absent and HEAD present: the Store already holds a 1.6 overlay.
-    StoreOverlayPresent,
-    /// RECEIPT and HEAD absent: nothing was ever imported.
-    Empty,
-}
-
 pub struct OverlayStore {
     native: super::overlay_native::NativeOverlay,
     unpublished: std::sync::atomic::AtomicBool,
@@ -47,16 +32,11 @@ impl OverlayStore {
     }
 
     /// The configured Store loses its state with the process (`BackendInfo.durability == Ephemeral`).
-    /// The same fact BUSBAR-8016 (`appbuild`) and the overlay serve gate read, from the same
-    /// `CoreStore`, so the three cannot disagree.
+    /// The same fact BUSBAR-8016 (`appbuild`) reads, from the same `CoreStore`, so the two cannot
+    /// disagree.
     pub fn is_ephemeral(&self) -> bool {
         self.native.core_store_handle().info().durability
             == busbar_contract::persistence::Durability::Ephemeral
-    }
-
-    /// Read-only: whether this Store holds a 1.5.5 import receipt, a 1.6 overlay, or neither.
-    pub async fn legacy_import_state_async(&self) -> Result<LegacyImportState, String> {
-        self.native.legacy_import_state().await
     }
 
     pub async fn read_bytes_async(&self) -> Result<Option<Vec<u8>>, String> {

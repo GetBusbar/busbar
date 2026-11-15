@@ -16,11 +16,10 @@ Normal 1.6 startup reads the configured Store and current YAML only. It never ap
 
 Released 1.5.5 had Store-backed audit/usage data and one effective rate card, not dated historical rate cards or a deployment keyset file. Keep that effective card, including its overlay values, as the opening current card. Identity transitions that require trusted historical IDs remain explicit cold maintenance; a mutable username is not sufficient evidence to invent a stable numeric identity.
 
-## Serving checks for an overlay file that was not folded
+## After the upgrade boot
 
-Serving still answers for the overlay file 1.5.5 would have read, chosen by the 1.5.5 precedence from the deployment being served (relative to its directory). Messages name the file and how it was selected, never its settings.
+1.6.0 checks the overlay only on this one upgrade boot: the boot that migrates a 1.5.5 `config.yaml` selects the overlay file 1.5.5 would have read (by the 1.5.5 precedence, relative to the deployment's directory), folds its settings into `config.yaml`, and reports the file and how it was selected, never its settings. A boot of a `config.yaml` that already carries `config_version` reads no overlay file and no overlay selector. Messages from the upgrade boot name the file it folded, or say that it found none.
 
-- The file holds settings and this Store has no import receipt: serving refuses to start with BUSBAR-3027. The upgrade boot folds a 1.5.5 overlay into `config.yaml`; a `config.yaml` that is already migrated no longer reads it. Re-apply the settings you still want through the admin API (on a durable Store), keeping a copy of the file first, or move the file away to abandon the settings deliberately.
-- The file exists but cannot be read (not a regular file, over 64 MiB, not valid JSON, duplicate keys) or this Store's import state cannot be read: serving refuses, because it cannot prove that nothing would be lost.
-- The file was folded or imported earlier (a receipt exists), holds no settings, or a `config.overlay` selector or `BUSBAR_CONFIG_OVERLAY` names a file that does not exist, or the configuration is locked (1.5.5 ignored the file too): serving starts with a BUSBAR-3028 warning. Remove the leftover file and the variable from the launcher.
-- `--safe-mode` never refuses; it prints the same message as a warning.
+- The upgrade boot leaves a guard at the overlay path, so a 1.5.5 instance that was not stopped cannot write settings there that 1.6.0 would never read. Remove the guard and the `.1.5.5` copies only once the new deployment has served.
+- An overlay file the upgrade boot cannot read (not a regular file, over 64 MiB, not valid JSON, duplicate keys) refuses the upgrade before anything is written, so nothing it holds is lost.
+- `--ignore-overlay` with an overlay that still holds settings refuses the upgrade; boot once without it.
