@@ -650,7 +650,8 @@ pub mod test_support;
 pub use crate::signal::{Signal, SignalBag, SignalValue};
 
 /// Re-export the export kind's stream and field vocabulary, and the scraped snapshot's family and
-pub use crate::abi::export::{CheckPhase, ExportField, ExportStream, MetricFamily, MetricSample};
+pub use crate::abi::export::{CheckPhase, ExportField, MetricFamily, MetricSample};
+pub use crate::export_stream::ExportStream;
 
 /// Re-export the observability envelope (#85) so a plugin author names
 pub use crate::abi::mechanism::observe::{

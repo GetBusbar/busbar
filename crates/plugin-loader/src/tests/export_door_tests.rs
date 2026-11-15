@@ -3,8 +3,8 @@
 
 use std::sync::{Arc, OnceLock};
 
-use busbar_contract::abi::export::ExportStream;
 use busbar_contract::export_calls::ServeRequest;
+use busbar_contract::export_stream::ExportStream;
 
 use super::*;
 use crate::dispatch::{load_linked, Bind, DispatchConfig, LinkedRow, NoSink};
@@ -443,13 +443,13 @@ fn a_door_that_states_span_records_takes_them() {
 
 mod leaky {
     use busbar_contract::abi::export::{
-        CheckIn, CheckOut, DeliverIn, ExportStream, ScrapeIn, ScrapeOut, ServeIn, ServeOut,
-        StatusOut, Tail,
+        CheckIn, CheckOut, DeliverIn, ScrapeIn, ScrapeOut, ServeIn, ServeOut, StatusOut, Tail,
     };
     use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
     use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
     use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
     use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
+    use busbar_contract::export_stream::ExportStream;
 
     pub struct Leaky;
 
@@ -602,11 +602,12 @@ fn a_lease_named_on_a_failed_or_refused_answer_is_released() {
 
 mod push_only {
     use busbar_contract::abi::export::{
-        CheckIn, CheckOut, DeliverIn, ExportStream, Route, StatusOut, Tail, ROUTE_AUTH_KEY,
+        CheckIn, CheckOut, DeliverIn, Route, StatusOut, Tail, ROUTE_AUTH_KEY,
     };
     use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead};
     use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
     use busbar_contract::abi::sdk::Safe;
+    use busbar_contract::export_stream::ExportStream;
 
     use super::leaky::Ready;
 
@@ -708,12 +709,12 @@ fn a_push_sink_may_leave_scrape_and_serve_unstated() {
 
 mod pl_src_1_failing {
     use busbar_contract::abi::export::{
-        CheckIn, CheckOut, DeliverIn, ExportStream, ScrapeIn, ScrapeOut, ServeIn, ServeOut,
-        StatusOut, Tail,
+        CheckIn, CheckOut, DeliverIn, ScrapeIn, ScrapeOut, ServeIn, ServeOut, StatusOut, Tail,
     };
     use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
     use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
     use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
+    use busbar_contract::export_stream::ExportStream;
 
     use super::leaky::{Leaky, Ready};
     use busbar_contract::abi::sdk::life::Held;
@@ -828,12 +829,12 @@ fn a_batch_dropped_after_failed_delivery_is_counted_as_shed() {
 /// A DELIVER that answers READY and counts each batch and its lines.
 mod counting {
     use busbar_contract::abi::export::{
-        CheckIn, CheckOut, DeliverIn, ExportStream, ScrapeIn, ScrapeOut, ServeIn, ServeOut,
-        StatusOut, Tail,
+        CheckIn, CheckOut, DeliverIn, ScrapeIn, ScrapeOut, ServeIn, ServeOut, StatusOut, Tail,
     };
     use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
     use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
     use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
+    use busbar_contract::export_stream::ExportStream;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::leaky::{Leaky, Ready};

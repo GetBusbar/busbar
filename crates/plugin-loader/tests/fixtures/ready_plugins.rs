@@ -273,7 +273,7 @@ pub mod export {
 
     pub const NAME: &str = "ready-export-witness";
 
-    const STREAMS: &[u8] = &[busbar_contract::abi::export::ExportStream::Logs as u8];
+    const STREAMS: &[u8] = &[busbar_contract::export_stream::ExportStream::Logs as u8];
 
     const TAIL: busbar_contract::abi::export::Tail = busbar_contract::abi::export::Tail {
         head: busbar_contract::abi::mechanism::door::KindTailHead {

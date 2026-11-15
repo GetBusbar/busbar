@@ -10,7 +10,7 @@ use std::sync::PoisonError;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use busbar_contract::abi::export::{slot as export_slot, DeliverIn, ExportStream, Ops};
+use busbar_contract::abi::export::{slot as export_slot, DeliverIn, Ops};
 use busbar_contract::abi::mechanism::call::{
     Diag, MetricEntry, OutHead, Outcome, RawOutcome, BLOB_JSON, BLOB_JSONL, DIAG_LOG,
     DIAG_LOG_DROPPED,
@@ -20,6 +20,7 @@ use busbar_contract::abi::mechanism::lifecycle::OpsHead;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelIn, CancelOut, RefreshIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::export_calls::{Delivered, ExportCalls};
+use busbar_contract::export_stream::ExportStream;
 use busbar_plugin_loader::dispatch::kinds::export::Export;
 use busbar_plugin_loader::dispatch::{
     load_dropped_bytes, load_linked, rendering_of, rendering_of_library, Bind, ConnTable,

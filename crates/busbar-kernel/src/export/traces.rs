@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::projection::{FieldValue, JsonOut, ProjectedRecord, Projection, Rendered};
-use busbar_contract::abi::export::{ExportField as F, ExportStream::Traces};
+use busbar_contract::abi::export::ExportField as F;
+use busbar_contract::export_stream::ExportStream::Traces;
 use std::fmt::Write as _;
 use tracing::span::{Attributes, Id};
 use tracing::subscriber::Interest;

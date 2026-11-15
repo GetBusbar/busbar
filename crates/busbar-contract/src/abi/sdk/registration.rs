@@ -859,10 +859,10 @@ pub const unsafe fn check<T: KindOps>(st: &Statement, ops: &T) {
                 while i < t.streams_len {
                     let stream = *t.streams.add(i);
                     assert!(
-                        stream <= crate::abi::export::ExportStream::Content as u8,
+                        stream <= crate::export_stream::ExportStream::Content as u8,
                         "export stream code is invalid"
                     );
-                    if stream == crate::abi::export::ExportStream::Metrics as u8 {
+                    if stream == crate::export_stream::ExportStream::Metrics as u8 {
                         assert!(o.scrape.is_some(), "metrics export requires scrape");
                     } else {
                         assert!(o.deliver.is_some(), "record export requires deliver");
