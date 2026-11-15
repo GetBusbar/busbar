@@ -112,8 +112,258 @@ fn in_ffi(path: &str) -> bool {
 
 /// The judge: every failure, worded for the person who has to fix it.
 fn judge(tree: &Tree, now: &Register, bases: &[AtBase]) -> Vec<String> {
-    let _ = (tree, now, bases);
-    todo!("W1-U0: the escapes v2 judge lands with busbar-ffi and unsafe.yaml")
+    let mut failures = Vec::new();
+    let mut counts: BTreeMap<&str, EscapeCounts> = BTreeMap::new();
+    for (path, source) in &tree.files {
+        match scan::escape_counts(path, source) {
+            Ok(found) => {
+                counts.insert(path, found);
+            }
+            Err(error) => failures.push(error),
+        }
+    }
+
+    // E3 and the pins: the path, the file list, the per-file counts and the total.
+    if now.ffi.path != FFI_PATH {
+        failures.push(format!(
+            "unsafe.yaml: ffi.path is `{}`; the boundary crate is `{FFI_PATH}` and does not move",
+            now.ffi.path
+        ));
+    }
+    let measured_ffi: BTreeMap<String, usize> = counts
+        .iter()
+        .filter(|(path, _)| in_ffi(path))
+        .map(|(path, found)| (path[FFI_PATH.len() + 1..].to_string(), found.ffi()))
+        .collect();
+    for (file, tokens) in &measured_ffi {
+        match now.ffi.files.get(file) {
+            None => failures.push(format!(
+                "busbar-ffi: {file} is not a pinned file ({tokens} tokens); busbar-ffi holds only the \
+                 pinned modules, and a new file needs the owner"
+            )),
+            Some(row) if *tokens > row.tokens => failures.push(format!(
+                "busbar-ffi: {file} has {tokens} unsafe tokens, above its pin of {}; the count never rises",
+                row.tokens
+            )),
+            Some(row) if *tokens < row.tokens => failures.push(format!(
+                "busbar-ffi: {file} has {tokens} unsafe tokens, below its pin of {}: lower its pin to {tokens}",
+                row.tokens
+            )),
+            Some(_) => {}
+        }
+    }
+    for (file, row) in &now.ffi.files {
+        if !measured_ffi.contains_key(file) {
+            failures.push(format!(
+                "busbar-ffi: the pinned file {file} does not exist; remove its row"
+            ));
+        }
+        if row.reason.trim().is_empty() {
+            failures.push(format!("busbar-ffi: the pin of {file} gives no reason"));
+        }
+    }
+    let measured_total: usize = measured_ffi.values().sum();
+    let pinned_sum: usize = now.ffi.files.values().map(|row| row.tokens).sum();
+    if now.ffi.total != pinned_sum {
+        failures.push(format!(
+            "busbar-ffi: total is {} but the file pins sum to {pinned_sum}",
+            now.ffi.total
+        ));
+    }
+    if measured_total > now.ffi.total {
+        failures.push(format!(
+            "busbar-ffi: {measured_total} unsafe tokens, above the total of {}; it never rises",
+            now.ffi.total
+        ));
+    } else if measured_total < now.ffi.total {
+        failures.push(format!(
+            "busbar-ffi: {measured_total} unsafe tokens, below the total of {}: lower `total` to {measured_total}",
+            now.ffi.total
+        ));
+    }
+
+    // E4-E6 and E10 inside busbar-ffi.
+    let mut exported = Vec::new();
+    for (path, source) in tree.files.iter().filter(|(path, _)| in_ffi(path)) {
+        let (macros, findings) = scan::ffi_macro_findings(source);
+        exported.extend(macros);
+        failures.extend(
+            findings
+                .into_iter()
+                .map(|finding| format!("{path}: {finding}")),
+        );
+        for line in scan::unsafe_without_safety(source) {
+            failures.push(format!(
+                "{path}:{line}: an `unsafe` block or impl without a `// SAFETY:` comment above it (E6)"
+            ));
+        }
+        if path != &format!("{FFI_PATH}/src/lib.rs")
+            && scan::lowers_any(source, &scan::FFI_ROOT_LINTS[1..])
+        {
+            failures.push(format!(
+                "{path}: allows a lint busbar-ffi's root denies (E10); it is never lowered below the root"
+            ));
+        }
+    }
+    if exported != ["export"] {
+        failures.push(format!(
+            "busbar-ffi exports {exported:?}; it exports exactly one macro, `export!` (E4)"
+        ));
+    }
+    match tree.files.get(&format!("{FFI_PATH}/src/lib.rs")) {
+        Some(lib) => {
+            let denies = scan::inner_denies(lib);
+            for lint in scan::FFI_ROOT_LINTS {
+                if !denies.contains(lint) {
+                    failures.push(format!(
+                        "{FFI_PATH}/src/lib.rs: the root lacks `#![deny({lint})]` (E10)"
+                    ));
+                }
+            }
+        }
+        None => failures.push(format!("{FFI_PATH}/src/lib.rs is missing")),
+    }
+
+    // The dependency and dependent pins.
+    match tree.manifests.get(&format!("{FFI_PATH}/Cargo.toml")) {
+        Some(text) => match manifest::ffi_dependencies(text) {
+            Ok(found) if found == now.ffi.dependencies => {}
+            Ok(found) => failures.push(format!(
+                "busbar-ffi depends on {found:?}; the pinned list is {:?} (a new dependency needs the owner)",
+                now.ffi.dependencies
+            )),
+            Err(error) => failures.push(format!("{FFI_PATH}/Cargo.toml: {error}")),
+        },
+        None => failures.push(format!("{FFI_PATH}/Cargo.toml is missing")),
+    }
+    let mut dependents = BTreeMap::new();
+    for (path, text) in &tree.manifests {
+        if path == &format!("{FFI_PATH}/Cargo.toml") {
+            continue;
+        }
+        if let Some(role) = manifest::ffi_dependent(text) {
+            dependents.insert(path.clone(), role);
+        }
+    }
+    for (path, role) in &dependents {
+        if now.ffi.dependents.get(path) != Some(role) {
+            failures.push(format!(
+                "{path} depends on busbar-ffi ({role}); the allowlist is {:?} (E12: only plugin-abi, the \
+                 loader with `host` and plugin-test; plugin crates never enable `host`)",
+                now.ffi.dependents
+            ));
+        }
+    }
+
+    // E1: nothing outside busbar-ffi, except the exact interim rows.
+    for (path, found) in counts.iter().filter(|(path, _)| !in_ffi(path)) {
+        let tokens = found.outside();
+        match now.interim.get(*path) {
+            None if tokens > 0 => failures.push(format!(
+                "unsafe: {path} has {tokens} escape tokens ({found:?}); `unsafe` lives only in busbar-ffi"
+            )),
+            None => {}
+            Some(row) if tokens > row.tokens => failures.push(format!(
+                "unsafe: {path} has {tokens} escape tokens, above its interim row of {}; interim never rises",
+                row.tokens
+            )),
+            Some(row) if tokens < row.tokens => failures.push(format!(
+                "unsafe: {path} has {tokens} escape tokens, below its interim row of {}: lower it to {tokens}{}",
+                row.tokens,
+                if tokens == 0 { " (delete the row)" } else { "" }
+            )),
+            Some(_) => {}
+        }
+    }
+    for (path, row) in &now.interim {
+        if !counts.contains_key(path.as_str()) {
+            failures.push(format!(
+                "unsafe: the interim row {path} names no tracked .rs file; remove it"
+            ));
+        }
+        if in_ffi(path) {
+            failures.push(format!(
+                "unsafe: {path} is busbar-ffi's; it has no interim row"
+            ));
+        }
+        if row.by.trim().is_empty() {
+            failures.push(format!(
+                "unsafe: the interim row {path} names no deleting package"
+            ));
+        }
+    }
+
+    // E2: package roots.
+    for root in &tree.roots {
+        if in_ffi(root) {
+            continue;
+        }
+        let Some(source) = tree.files.get(root) else {
+            continue;
+        };
+        let forbids =
+            Parsed::new(source).inner_lint("forbid") && scan::forbids_unsafe_in_doctests(source);
+        match (forbids, now.interim_roots.contains_key(root)) {
+            (false, false) => failures.push(format!(
+                "unsafe: the package root {root} lacks `#![forbid(unsafe_code)]` and \
+                 `#![doc(test(attr(forbid(unsafe_code))))]` (E2)"
+            )),
+            (true, true) => failures.push(format!(
+                "unsafe: the package root {root} now forbids unsafe code: remove its interim_roots row"
+            )),
+            _ => {}
+        }
+    }
+    for root in now.interim_roots.keys() {
+        if !tree.roots.contains(root) {
+            failures.push(format!(
+                "unsafe: the interim_roots row {root} names no package root; remove it"
+            ));
+        }
+    }
+
+    // Against the merge base and the target tip.
+    let present: Vec<&Register> = bases.iter().filter_map(|(_, at)| at.as_ref()).collect();
+    if !present.is_empty() && present.len() != bases.len() {
+        for (revision, at) in bases {
+            if at.is_none() {
+                failures.push(format!(
+                    "unsafe: {REGISTER} is missing at {revision}, which predates the register while the \
+                     target has it: merge the target branch first"
+                ));
+            }
+        }
+    }
+    for (revision, at) in bases {
+        let Some(before) = at else {
+            continue;
+        };
+        if now.ffi.total > before.ffi.total {
+            failures.push(format!(
+                "busbar-ffi: total {} rose above {} at {revision}; no package adds a busbar-ffi token",
+                now.ffi.total, before.ffi.total
+            ));
+        }
+        for (path, row) in &now.interim {
+            if before
+                .interim
+                .get(path)
+                .is_none_or(|old| row.tokens > old.tokens)
+            {
+                failures.push(format!(
+                    "unsafe: the interim row {path} was added or raised against {revision}; interim only falls"
+                ));
+            }
+        }
+        for root in now.interim_roots.keys() {
+            if !before.interim_roots.contains_key(root) {
+                failures.push(format!(
+                    "unsafe: the interim_roots row {root} was added against {revision}"
+                ));
+            }
+        }
+    }
+    failures
 }
 
 /// The measured register, as YAML rows to paste after an intended change (owner-approved).
