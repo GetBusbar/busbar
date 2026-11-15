@@ -646,12 +646,15 @@ fn process_lifetime_refusal(
         }
         doc.get("providers").and_then(Value::as_mapping)
     };
-    providers?.values().find_map(|entry| {
+    // Bound to a local: the iterator borrows `doc`, which a tail expression's temporary would
+    // outlive.
+    let found = providers?.values().find_map(|entry| {
         entry
             .get("auth")
             .and_then(Value::as_str)
             .and_then(|style| grammar.item_refusal(config::grammar::ItemKind::Style, style))
-    })
+    });
+    found
 }
 
 pub async fn load_config_from_disk_with_store(
