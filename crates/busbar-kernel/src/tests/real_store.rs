@@ -1,56 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use busbar_plugin_loader::dispatch::{
-    load_dropped, rendering_of_library, Bind, ConnTable, DispatchConfig, Dispatcher, NoSink,
-};
+#[path = "memory_backend.rs"]
+mod memory_backend;
 
+/// A fresh primitive store for one test: the in-tree in-memory backend (`memory_backend.rs`), the
+/// contract busbar-store-memory serves, with no plugin loaded (core is built and tested solo).
 pub(crate) async fn native_backend() -> Arc<dyn busbar_contract::persistence::PersistenceBackend> {
-    let path = PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN").expect(
-            "BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN must name the freshly built product store",
-        ),
-    );
-    let stated = rendering_of_library(&path)
-        .expect("the product store library's statement is readable")
-        .expect("the product store library carries its statement");
-    let dispatcher = Arc::new(Dispatcher::new(
-        DispatchConfig::default(),
-        busbar_contract::services::test_caller_binding(),
-    ));
-    let plugin = load_dropped::<busbar_plugin_loader::dispatch::kinds::store_v4::StoreV4>(
-        &path,
-        &stated,
-        Bind {
-            instance: format!("governance-test-{}", crate::door::op_id().counter()).into(),
-            max_inflight_cap: 1024,
-            sink: Arc::new(NoSink),
-            dispatcher: dispatcher.adopter(),
-            conns: ConnTable::NoNeeds,
-        },
-    )
-    .expect("the product store loads through its actual ABI");
-    let settings =
-        std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".to_string());
-    let _: serde_json::Value =
-        serde_json::from_str(&settings).expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
-    let backend = busbar_plugin_loader::store_v4::LoadedPersistence::open(
-        plugin,
-        dispatcher,
-        settings.as_bytes(),
-        busbar_plugin_loader::store_v4::Limits {
-            descriptor_bytes: 32 * 1024 * 1024,
-            output_items: 4096,
-            output_bytes: 32 * 1024 * 1024,
-            decode_bytes: 32 * 1024 * 1024,
-        },
-    )
-    .await
-    .expect("the primitive product store opens with supplied settings");
-    Arc::new(backend)
+    Arc::new(memory_backend::MemoryBackend::default())
 }
 
 pub(crate) async fn core() -> Arc<crate::persistence::facade::CoreStore> {
