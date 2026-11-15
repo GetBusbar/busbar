@@ -24,6 +24,10 @@ struct Document {
     requires_released_source: bool,
     restored_transform: Option<[u8; 32]>,
     runtime_only: bool,
+    /// An unnamed default file that is absent ([`config::providers::CatalogSource::AbsentDefault`]):
+    /// its empty form is both original and target, and its file is never inspected as present,
+    /// published or created.
+    absent: bool,
 }
 
 /// Complete document inventory, including unchanged documents. Debug is deliberately absent.
@@ -35,6 +39,8 @@ pub(crate) struct Publication {
     pub target_digest: [u8; 32],
     pub transform_id: [u8; 32],
     pub locked: bool,
+    /// The intent binds that this document's file is absent; one that appears is a changed source.
+    pub absent: bool,
 }
 
 /// A protected artifact to materialize only after its native/Store intent is Applied.
@@ -156,13 +162,16 @@ impl Documents {
                         requires_released_source: false,
                         restored_transform: None,
                         runtime_only: false,
+                        absent: false,
                     });
                 if entry.kind != kind {
                     return Err("one file cannot be deployment and provider configuration".into());
                 }
-                if raw != entry.original.as_str()
-                    && !(entry.published
-                        && entry.converted.as_ref().is_some_and(|v| v.as_str() == raw))
+                // A file that appeared where this startup retained an absent default is changed.
+                if entry.absent
+                    || (raw != entry.original.as_str()
+                        && !(entry.published
+                            && entry.converted.as_ref().is_some_and(|v| v.as_str() == raw)))
                 {
                     return Err("configuration changed during startup migration".into());
                 }
@@ -308,6 +317,47 @@ impl Documents {
         Ok(answer)
     }
 
+    /// Retain an unnamed default document the loader found absent
+    /// ([`config::providers::CatalogSource::AbsentDefault`]). Its empty form is original and
+    /// target alike, so planning, the fingerprint, the intent and the commit all see one
+    /// unchanged document whose file stays absent. A file that existed earlier in this startup,
+    /// or appears later, is a changed source.
+    pub(crate) fn absent(&self, kind: ConfigDocument, path: &Path) -> Result<(), String> {
+        if kind != ConfigDocument::Providers {
+            return Err("only the default provider catalog may be absent".into());
+        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "configuration custody failed")?;
+        if state.phase == Phase::Current {
+            // A runtime reload of an absent default reads the empty catalog: a current input.
+            return Ok(());
+        }
+        let empty = SecureString::from(config::providers::CatalogSource::AbsentDefault.text());
+        let entry = state
+            .documents
+            .entry(path.to_owned())
+            .or_insert_with(|| Document {
+                kind,
+                original: empty.clone(),
+                converted: Some(empty.clone()),
+                published: false,
+                requires_released_source: false,
+                restored_transform: None,
+                runtime_only: false,
+                absent: true,
+            });
+        if entry.kind != kind {
+            return Err("one file cannot be deployment and provider configuration".into());
+        }
+        if !entry.absent {
+            return Err("configuration changed during startup migration".into());
+        }
+        entry.converted = Some(empty);
+        Ok(())
+    }
+
     /// The unresolved decisions behind the last refused deployment normalization. Taken once:
     /// a second call returns `None`.
     pub(crate) fn take_debt(&self) -> Option<Vec<SecureString>> {
@@ -374,7 +424,7 @@ impl Documents {
         for entry in state
             .documents
             .values_mut()
-            .filter(|entry| !entry.published && entry.restored_transform.is_none())
+            .filter(|entry| !entry.published && entry.restored_transform.is_none() && !entry.absent)
         {
             entry.converted = None;
             entry.requires_released_source = false;
@@ -626,7 +676,11 @@ impl Documents {
         Ok(original == target)
     }
 
-    pub(crate) fn original_provider(&self) -> Result<Option<(PathBuf, SecureString)>, String> {
+    /// The retained provider source: its path, and its authored text unless the default file is
+    /// absent (`None`, read as [`config::providers::CatalogSource::AbsentDefault`]).
+    pub(crate) fn original_provider(
+        &self,
+    ) -> Result<Option<(PathBuf, Option<SecureString>)>, String> {
         let state = self
             .state
             .lock()
@@ -641,7 +695,10 @@ impl Documents {
         if entries.next().is_some() {
             return Err("startup provider source is ambiguous".into());
         }
-        Ok(Some((path.clone(), entry.original.clone())))
+        Ok(Some((
+            path.clone(),
+            (!entry.absent).then(|| entry.original.clone()),
+        )))
     }
 
     pub(crate) fn stage_catalog(
@@ -668,8 +725,10 @@ impl Documents {
                 requires_released_source: true,
                 restored_transform: None,
                 runtime_only: false,
+                absent: false,
             });
-        if entry.kind != ConfigDocument::Providers || entry.original.as_str() != raw {
+        if entry.kind != ConfigDocument::Providers || entry.absent || entry.original.as_str() != raw
+        {
             return Err("providers source changed during conversion".into());
         }
         if entry
@@ -749,7 +808,7 @@ impl Documents {
                     let runtime = entry
                         .runtime_only
                         .then(|| (entry.original.clone(), entry.converted.as_ref().cloned()));
-                    (path.clone(), (entry.kind, runtime))
+                    (path.clone(), (entry.kind, runtime, entry.absent))
                 })
                 .collect();
             (observed, state.phase, state.revision)
@@ -757,10 +816,16 @@ impl Documents {
         let mut restored = BTreeMap::new();
         let mut locked = false;
         for publication in input.publications() {
-            let (kind, runtime) = observed
+            let (kind, runtime, absent) = observed
                 .get(&publication.path)
                 .ok_or("checkpoint names an unobserved configuration source")?;
             let kind = *kind;
+            // A retained absence and a file that is there now (or the reverse) are different sources.
+            if publication.absent != *absent {
+                return Err(
+                    "configuration changed outside the protected publication checkpoint".into(),
+                );
+            }
             let original_digest: [u8; 32] =
                 busbar_contract::crypto::sha256(publication.original.as_slice());
             let target_digest: [u8; 32] =
@@ -776,15 +841,16 @@ impl Documents {
                 Ok(bytes) => Some(SecureVec::from(bytes)),
                 Err(error)
                     if error.kind() == std::io::ErrorKind::NotFound
-                        && input.recoverable_missing(&publication.path) =>
+                        && (publication.absent || input.recoverable_missing(&publication.path)) =>
                 {
                     None
                 }
                 Err(_) => return Err("checkpoint configuration source could not be read".into()),
             };
             if current.as_ref().is_some_and(|bytes| {
-                bytes.as_slice() != publication.original.as_slice()
-                    && bytes.as_slice() != publication.converted.as_slice()
+                publication.absent
+                    || (bytes.as_slice() != publication.original.as_slice()
+                        && bytes.as_slice() != publication.converted.as_slice())
             }) {
                 return Err(
                     "configuration changed outside the protected publication checkpoint".into(),
@@ -820,9 +886,11 @@ impl Documents {
                         converted: Some(converted),
                         published,
                         requires_released_source: matches!(phase, Phase::Released(_, _))
-                            && kind == ConfigDocument::Providers,
+                            && kind == ConfigDocument::Providers
+                            && !publication.absent,
                         restored_transform: Some(publication.transform_id),
                         runtime_only,
+                        absent: publication.absent,
                     },
                 )
                 .is_some()
@@ -906,6 +974,7 @@ impl Documents {
                     original_digest,
                     target_digest,
                     state.source_binding,
+                    entry.absent,
                 )
             });
             outputs.push(Publication {
@@ -916,6 +985,7 @@ impl Documents {
                 target_digest,
                 transform_id,
                 locked: state.locked,
+                absent: entry.absent,
             });
         }
         Ok(outputs)
@@ -1010,6 +1080,7 @@ fn document_transform(
     original: [u8; 32],
     target: [u8; 32],
     source: Option<[u8; 32]>,
+    absent: bool,
 ) -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(b"busbar.startup.document-transform.1\0");
@@ -1019,6 +1090,11 @@ fn document_transform(
     hash.update(&[u8::from(kind == ConfigDocument::Providers)]);
     if let Some(binding) = source {
         hash.update(&binding[..]);
+    }
+    // An absent default and an authored file holding the same empty text are different sources,
+    // so the fingerprint and intent tell them apart. Present documents keep their transform.
+    if absent {
+        hash.update(b"\0absent-default");
     }
     hash.finish()
 }
@@ -1057,6 +1133,9 @@ impl RootRules for BootstrapRules {
         raw: &str,
     ) -> Result<Option<SecureString>, String> {
         self.0.normalize(kind, path, raw)
+    }
+    fn absent_document(&self, kind: ConfigDocument, path: &Path) -> Result<(), String> {
+        self.0.absent(kind, path)
     }
 }
 

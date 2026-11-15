@@ -242,29 +242,41 @@ impl Resolver {
             None => config::deploy_from_yaml_str(&input)
                 .map_err(|_| "retained deployment parsing refused")?,
         };
-        let selected_path = if let Some(path) = &self.providers_override {
-            path.clone()
-        } else {
-            let config_dir = self
-                .config_path
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("."));
-            config_dir.join(deploy.providers_file.as_deref().unwrap_or("providers.yaml"))
-        };
+        let selected = config::providers::CatalogLocation::select(
+            &self.config_path,
+            self.providers_override.as_deref(),
+            deploy.providers_file.as_deref(),
+        );
         let (provider_path, raw_providers) = self
             .documents
             .original_provider()?
             .ok_or("retained provider source is absent")?;
-        if provider_path != selected_path {
+        if provider_path != selected.path {
             return Err("retained provider source binding changed".into());
         }
-        let providers =
-            rules.normalize_document(ConfigDocument::Providers, &provider_path, &raw_providers)?;
-        let providers = self.documents.interpolate_captured(
-            providers
-                .as_ref()
-                .map_or(raw_providers.as_str(), |text| text.as_str()),
-        )?;
+        let providers = match raw_providers {
+            Some(raw_providers) => {
+                let providers = rules.normalize_document(
+                    ConfigDocument::Providers,
+                    &provider_path,
+                    &raw_providers,
+                )?;
+                self.documents.interpolate_captured(
+                    providers
+                        .as_ref()
+                        .map_or(raw_providers.as_str(), |text| text.as_str()),
+                )?
+            }
+            // Only an unnamed default may be absent; the loader refuses a named missing file.
+            None if selected.named => {
+                return Err("retained provider source binding changed".into());
+            }
+            None => {
+                rules.absent_document(ConfigDocument::Providers, &provider_path)?;
+                self.documents
+                    .interpolate_captured(config::providers::CatalogSource::AbsentDefault.text())?
+            }
+        };
         deploy.document_source_fingerprints = Some(
             config::document_patch::SourceFingerprints::from_sources(&input, &providers),
         );
