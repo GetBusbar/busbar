@@ -19,6 +19,8 @@ members = [
     "crates/busbar-kernel-wal",
     "crates/busbar-kernel-audit",
     "crates/plugin-loader",
+    "crates/busbar-plugin-abi",
+    "crates/busbar-plugin-bench",
     "crates/busbar-plugin-test",
     # Core's repository checks (no-getrandom, crypto-graph), one CI job line each.
     "tools/ci-checks",
