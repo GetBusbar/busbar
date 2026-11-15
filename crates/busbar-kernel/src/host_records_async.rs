@@ -30,10 +30,6 @@ impl AsyncRecords {
         instance: &str,
         schemas: impl IntoIterator<Item = String>,
     ) -> Result<Self, host_records::Error> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: an instance's record access is authorized once, when it is admitted"
-        )]
         let result = Self {
             store,
             instance: instance.into(),
@@ -125,132 +121,22 @@ pub fn migration_audit_authorizes(
     history::migration_audit_authorizes(owner, address)
 }
 
-struct Declaration {
-    kind: String,
-    mode: history::Mode,
-    retention: Retention,
-    parent: Option<String>,
+pub(crate) struct Declaration {
+    pub(crate) kind: String,
+    pub(crate) mode: history::Mode,
+    pub(crate) retention: Retention,
+    pub(crate) parent: Option<String>,
 }
 
 /// Immutable admitted collection declarations; every operation reconstructs a
 /// borrowed owner over these same facts, without backend slots or blocking.
 pub struct AsyncHistory {
-    store: Arc<CoreStore>,
-    instance: String,
-    declarations: Vec<Declaration>,
+    pub(crate) store: Arc<CoreStore>,
+    pub(crate) instance: String,
+    pub(crate) declarations: Vec<Declaration>,
 }
 impl AsyncHistory {
-    /// Bind explicit host-owned collection declarations without plugin facts.
-    pub fn authorized<'a>(
-        store: Arc<CoreStore>,
-        instance: &str,
-        declarations: impl IntoIterator<Item = HistoryCollection<'a>>,
-    ) -> Result<Self, HistoryError> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: an instance's collections are declared once, when it is admitted"
-        )]
-        let result = Self {
-            store,
-            instance: instance.into(),
-            declarations: declarations
-                .into_iter()
-                .map(|declaration| Declaration {
-                    kind: declaration.kind.into(),
-                    mode: declaration.mode,
-                    retention: declaration.retention,
-                    parent: declaration.parent.map(str::to_string),
-                })
-                .collect(),
-        };
-        result.owner()?;
-        Ok(result)
-    }
-
-    /// Core envelope sinks use independently authorized upsert collections.
-    /// An opaque envelope parent field does not declare a collection graph.
-    pub fn authorized_upserts(
-        store: Arc<CoreStore>,
-        instance: &str,
-        kinds: impl IntoIterator<Item = String>,
-    ) -> Result<Self, HistoryError> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: an instance's collections are declared once, when it is admitted"
-        )]
-        let result = Self {
-            store,
-            instance: instance.into(),
-            declarations: kinds
-                .into_iter()
-                .map(|kind| Declaration {
-                    kind,
-                    mode: history::Mode::Upsert,
-                    retention: Retention::Age,
-                    parent: None,
-                })
-                .collect(),
-        };
-        result.owner()?;
-        Ok(result)
-    }
-    pub fn admitted(
-        store: Arc<CoreStore>,
-        instance: &str,
-        facts: &crate::host_services::InstanceFacts,
-    ) -> Result<Self, history::Error> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: an instance's collections are declared once, when it is admitted"
-        )]
-        let declarations = facts
-            .record_collections
-            .iter()
-            .map(|d| {
-                let kind = facts
-                    .record_kinds
-                    .get(d.kind as usize)
-                    .ok_or(history::Error::Unauthorized)?
-                    .as_str()
-                    .to_string();
-                let parent = d
-                    .parent
-                    .map(|index| {
-                        facts
-                            .record_kinds
-                            .get(index as usize)
-                            .map(|k| k.as_str().to_string())
-                            .ok_or(history::Error::Unauthorized)
-                    })
-                    .transpose()?;
-                let retention = facts
-                    .record_retentions
-                    .iter()
-                    .find(|r| r.kind == d.kind)
-                    .map(|r| Retention::from_code(r.rule).ok_or(history::Error::Invalid))
-                    .transpose()?
-                    .unwrap_or_default();
-                let mode = match d.mode {
-                    busbar_contract::abi::plane::CollectionMode::Upsert => history::Mode::Upsert,
-                    busbar_contract::abi::plane::CollectionMode::Append => history::Mode::Append,
-                };
-                Ok(Declaration {
-                    kind,
-                    mode,
-                    retention,
-                    parent,
-                })
-            })
-            .collect::<Result<Vec<_>, history::Error>>()?;
-        let result = Self {
-            store,
-            instance: instance.into(),
-            declarations,
-        };
-        result.owner()?;
-        Ok(result)
-    }
-    fn owner(&self) -> Result<History<'_>, history::Error> {
+    pub(crate) fn owner(&self) -> Result<History<'_>, history::Error> {
         History::authorized(
             &self.store,
             &self.instance,

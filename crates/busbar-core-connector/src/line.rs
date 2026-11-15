@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll, Wake, Waker};
 
 use busbar_contract::conn::ConnCause;
+use busbar_contract::secure::{SecureString, SecureVec};
 use foldhash::{HashMap, HashSet};
 
 use crate::compose::{
@@ -143,8 +144,8 @@ struct State {
     missed: Vec<Arc<Waker>>,
     /// Pieces read off the connection for a holder that has not taken them, by stream.
     parked: HashMap<u64, VecDeque<Got>>,
-    /// The bytes of every piece in `parked`, kept current by [`State::park`], [`State::unpark`],
-    /// [`State::clear_parked`] and [`State::remove_parked`] (LINT-RULES LR-108, BP04).
+    /// The bytes of every piece in `parked`, kept current by [`State::park`], [`State::unpark`]
+    /// and [`State::clear_parked`] (LINT-RULES LR-108, BP04).
     parked_total: usize,
     /// The streams a holder still reads.
     held: HashSet<u64>,
@@ -166,9 +167,12 @@ impl HeldOpening {
 impl Drop for HeldOpening {
     fn drop(&mut self) {
         if let Some((fields, _)) = self.opening.as_mut() {
-            zeroize::Zeroize::zeroize(fields);
+            for (name, value) in fields.drain(..) {
+                drop(SecureString::from(name));
+                drop(SecureVec::from(value));
+            }
         }
-        zeroize::Zeroize::zeroize(&mut self.words.1);
+        drop(SecureVec::from(std::mem::take(&mut self.words.1)));
     }
 }
 
@@ -195,13 +199,6 @@ impl State {
     fn clear_parked(&mut self) {
         self.parked.clear();
         self.parked_total = 0;
-    }
-
-    /// Take `stream`'s parked pieces out.
-    fn remove_parked(&mut self, stream: u64) -> Option<VecDeque<Got>> {
-        let queue = self.parked.remove(&stream)?;
-        self.parked_total -= queue.iter().map(|g| g.bytes.len()).sum::<usize>();
-        Some(queue)
     }
 
     /// Whether a piece (or why its open failed) waits for `stream`.

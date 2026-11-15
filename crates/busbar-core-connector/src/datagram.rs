@@ -97,11 +97,11 @@ pub enum LineStep {
 
 /// The host's numbers for the far-end addresses it has handed up.
 #[derive(Debug, Default)]
-struct PathBook {
-    by_addr: HashMap<SocketAddr, u32>,
-    by_path: HashMap<u32, SocketAddr>,
+pub(crate) struct PathBook {
+    pub(crate) by_addr: HashMap<SocketAddr, u32>,
+    pub(crate) by_path: HashMap<u32, SocketAddr>,
     /// Numbered, not yet told to the framer.
-    untold: Vec<u32>,
+    pub(crate) untold: Vec<u32>,
     last: u32,
 }
 
@@ -131,22 +131,8 @@ impl PathBook {
             return Some(*p);
         }
         if self.by_addr.len() >= MAX_PATHS {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: at the path cap (a flood of far-end addresses) the paths no one keeps are let go"
-            )]
-            let gone: Vec<SocketAddr> =
-                self.by_addr.keys().copied().filter(|a| !keep(*a)).collect();
-            for a in gone {
-                if let Some(p) = self.by_addr.remove(&a) {
-                    self.by_path.remove(&p);
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "error: at the path cap (a flood of far-end addresses) the paths no one keeps are let go"
-                    )]
-                    self.untold.retain(|u| *u != p);
-                }
-            }
+            // At the cap (a flood of far-end addresses) the paths no one keeps are let go.
+            self.let_go_unkept(keep);
             if self.by_addr.len() >= MAX_PATHS {
                 return None;
             }
@@ -202,6 +188,42 @@ impl Op<'_> {
     }
 }
 
+/// The secure layer's plaintext owed to the framer, with the byte capacity it retains kept up to
+/// date as it is queued and taken (its custody is sized without a sweep).
+#[derive(Default)]
+struct Opened {
+    queue: VecDeque<Vec<u8>>,
+    /// The sum of every queued buffer's capacity.
+    bytes: usize,
+}
+
+impl Opened {
+    fn push_back(&mut self, plaintext: Vec<u8>) {
+        self.bytes += plaintext.capacity();
+        self.queue.push_back(plaintext);
+    }
+
+    fn push_front(&mut self, plaintext: Vec<u8>) {
+        self.bytes += plaintext.capacity();
+        self.queue.push_front(plaintext);
+    }
+
+    fn pop_front(&mut self) -> Option<Vec<u8>> {
+        let plaintext = self.queue.pop_front()?;
+        self.bytes -= plaintext.capacity();
+        Some(plaintext)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+
+    /// The host storage the queue retains: its slots and every buffer's capacity.
+    fn retained(&self) -> usize {
+        self.queue.capacity() * std::mem::size_of::<Vec<u8>>() + self.bytes
+    }
+}
+
 /// One datagram operation, paused between checked host-output batches. The input is crossed
 #[must_use = "drain the turn or drop it to finish its accepted operation"]
 pub struct DatagramTurn<'f> {
@@ -210,7 +232,7 @@ pub struct DatagramTurn<'f> {
     first: Option<Yielded>,
     recall: Option<Op<'static>>,
     recalls: crate::framer::Recalls,
-    opened: VecDeque<Vec<u8>>,
+    opened: Opened,
     closed: bool,
     complete: bool,
     custody: Custody,
@@ -222,7 +244,7 @@ struct Continuation {
     first: Option<Yielded>,
     recall: Option<Op<'static>>,
     recalls: crate::framer::Recalls,
-    opened: VecDeque<Vec<u8>>,
+    opened: Opened,
     closed: bool,
     complete: bool,
     custody: Custody,
@@ -264,7 +286,7 @@ impl<'f> DatagramTurn<'f> {
             first: None,
             recall: None,
             recalls: crate::framer::Recalls::default(),
-            opened: VecDeque::new(),
+            opened: Opened::default(),
             closed: false,
             complete: false,
             custody: Custody::default(),
@@ -302,25 +324,15 @@ impl<'f> DatagramTurn<'f> {
         batch.custody = custody;
         let taken = self.framing.take(&answer, &mut batch, self.now);
 
-        zeroize::Zeroize::zeroize(&mut batch.wire);
+        busbar_contract::abi::sdk::wipe::wipe_bytes(&mut batch.wire);
         let done = taken?;
         batch.split_piece_custody();
         self.framing.metadata_custody = batch.custody.split(self.framing.bufs.field_storage());
-        self.custody = batch.custody.split(
-            std::mem::size_of::<Continuation>()
-                + self.opened.capacity() * std::mem::size_of::<Vec<u8>>()
-                + self.opened.iter().map(Vec::capacity).sum::<usize>(),
-        );
+        self.custody = batch
+            .custody
+            .split(std::mem::size_of::<Continuation>() + self.opened.retained());
         if !self.framing.send.is_empty() {
-            self.framing.send_custody = batch.custody.split(
-                self.framing.send.capacity() * std::mem::size_of::<(SocketAddr, Vec<u8>)>()
-                    + self
-                        .framing
-                        .send
-                        .iter()
-                        .map(|(_, bytes)| bytes.capacity())
-                        .sum::<usize>(),
-            );
+            self.framing.send_custody = batch.custody.split(self.framing.send_retained());
         }
         let retained = batch.retained_capacity();
         batch.custody.reduce(retained);
@@ -337,14 +349,7 @@ impl<'f> DatagramTurn<'f> {
 
     fn security_valid(&self) -> Result<(), Refused> {
         if let Some(failure) = self.framing.secure.as_ref().and_then(Association::failure) {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a failed association's refusal names its failure"
-            )]
-            return Err(Refused {
-                outcome: Outcome::Failed,
-                error: format!("the secure layer failed the association: {failure:?}"),
-            });
+            return Err(crate::cold::datagram::secure_layer_failed(failure));
         }
         if self.framing.keying.is_some() && !self.framing.verified() {
             return Err(fault("keying material with the far end not verified"));
@@ -412,6 +417,7 @@ impl<'f> DatagramTurn<'f> {
             }
             if let Some(secure) = self.framing.secure.as_mut() {
                 while let Some(datagram) = secure.poll_wire() {
+                    self.framing.send_bytes += datagram.1.capacity();
                     self.framing.send.push_back(datagram);
                 }
                 while let Some(up) = secure.poll_up() {
@@ -430,21 +436,10 @@ impl<'f> DatagramTurn<'f> {
             }
             if let Some(mut credit) = self.framing.credit.take() {
                 if !self.framing.send.is_empty() {
-                    self.framing.send_custody = credit.split(
-                        self.framing.send.capacity() * std::mem::size_of::<(SocketAddr, Vec<u8>)>()
-                            + self
-                                .framing
-                                .send
-                                .iter()
-                                .map(|(_, bytes)| bytes.capacity())
-                                .sum::<usize>(),
-                    );
+                    self.framing.send_custody = credit.split(self.framing.send_retained());
                 }
-                self.custody = credit.split(
-                    std::mem::size_of::<Continuation>()
-                        + self.opened.capacity() * std::mem::size_of::<Vec<u8>>()
-                        + self.opened.iter().map(Vec::capacity).sum::<usize>(),
-                );
+                self.custody =
+                    credit.split(std::mem::size_of::<Continuation>() + self.opened.retained());
             }
             self.security_valid()?;
             if !self.opened.is_empty() || self.closed {
@@ -542,6 +537,8 @@ pub struct DatagramFraming {
     /// The host state the framer was last told: the bound path and the verified bit.
     told: (u32, bool),
     send: VecDeque<(SocketAddr, Vec<u8>)>,
+    /// The sum of every queued datagram's capacity, kept up to date as `send` is queued and taken.
+    send_bytes: usize,
     send_custody: Custody,
     retired_send: Custody,
     metadata_custody: Custody,
@@ -795,11 +792,7 @@ impl DatagramFraming {
         door: Arc<dyn FramerDoor>,
         local: SocketAddr,
     ) -> Result<(Self, Yielded), Refused> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a certificate that would not mint faults with its reason"
-        )]
-        let cert = SessionCert::mint().map_err(|e| fault(format!("{e:?}")))?;
+        let cert = SessionCert::mint().map_err(|e| crate::cold::datagram::minting_fault(&e))?;
         Self::accept(door, Arc::new(cert), local)
     }
 
@@ -827,17 +820,9 @@ impl DatagramFraming {
             door.facts().require_dial()?;
         }
         if !door.facts().datagram {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: the refusal names the door that is no datagram framer"
-            )]
-            return Err(Refused {
-                outcome: Outcome::Refused,
-                error: format!(
-                    "`{}` is no datagram framer: its calls carry no datagram lane",
-                    door.facts().name
-                ),
-            });
+            return Err(crate::cold::datagram::no_datagram_framer(
+                &door.facts().name,
+            ));
         }
         let mut bufs = Buffers::for_side(side);
         // Datagram Begin has no Established selector; its door's documented own claim applies.
@@ -855,6 +840,7 @@ impl DatagramFraming {
             presented: false,
             told: (0, false),
             send: VecDeque::new(),
+            send_bytes: 0,
             send_custody: Custody::default(),
             retired_send: Custody::default(),
             metadata_custody: Custody::default(),
@@ -992,14 +978,21 @@ impl DatagramFraming {
     pub fn poll_send(&mut self) -> Option<(SocketAddr, Vec<u8>)> {
         self.retired_send = Custody::default();
         let next = self.send.pop_front();
-        if next.is_some() {
+        if let Some((_, datagram)) = &next {
+            self.send_bytes -= datagram.capacity();
             self.retired_send = self.send_custody.clone();
         }
         if self.send.is_empty() {
             self.send = VecDeque::new();
+            self.send_bytes = 0;
             self.send_custody = Custody::default();
         }
         next
+    }
+
+    /// The host storage the send queue retains: its slots and every datagram's capacity.
+    fn send_retained(&self) -> usize {
+        self.send.capacity() * std::mem::size_of::<(SocketAddr, Vec<u8>)>() + self.send_bytes
     }
 
     /// How many routes the host refused to send (to a path the secure layer does not allow, or
@@ -1028,11 +1021,6 @@ impl DatagramFraming {
         self.secure
             .as_ref()
             .is_some_and(|s| s.bound_path() == Some(path))
-    }
-
-    /// The far-end addresses this association owns ([`Self::owns`]) that it has numbered: on the
-    pub fn addresses(&self) -> impl Iterator<Item = SocketAddr> + '_ {
-        self.book.by_addr.keys().copied().filter(|a| self.owns(*a))
     }
 
     /// How many of the far end's advertised candidates the destination judge refused (dialling).
@@ -1083,7 +1071,7 @@ impl DatagramFraming {
         while let Some(batch) = turn.next_batch()? {
             append_batch(&mut y, batch);
         }
-        zeroize::Zeroize::zeroize(&mut y.wire);
+        busbar_contract::abi::sdk::wipe::wipe_bytes(&mut y.wire);
         Ok(y)
     }
 
@@ -1205,14 +1193,9 @@ impl DatagramFraming {
             }
         };
         if let Err(f) = check_datagram(c.outcome, &o, &self.routes, self.routes.len() as u64) {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a broken datagram answer's fault text names the rule and field"
-            )]
-            return Err(fault(format!(
-                "the framer's datagram answer breaks {:?} at {}",
-                f.rule, f.field
-            )));
+            return Err(crate::cold::datagram::datagram_answer_broken(
+                &f.rule, &f.field,
+            ));
         }
         ready(c)?;
         if matches!(op, Op::Begin(_)) {
@@ -1352,6 +1335,7 @@ impl DatagramFraming {
             (Some(secure), Some(to)) if lane == LANE_CLEAR => {
                 let ok = secure.may_send_clear(to, &bytes);
                 if ok {
+                    self.send_bytes += bytes.capacity();
                     self.send.push_back((to, bytes));
                 }
                 ok
@@ -1397,10 +1381,6 @@ fn read_terms(t: &RendezvousTerms, frame: &[u8]) -> Result<Terms, Refused> {
             .get(at..at.saturating_add(len))
             .ok_or_else(|| fault("the framer's terms are out of bounds"))
     };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: an association's check credentials are kept owned, read once from its terms"
-    )]
     let utf8 = |s| -> Result<String, Refused> {
         let text = std::str::from_utf8(span(s)?)
             .map_err(|_| fault("the framer's check credentials are not text"))?;
@@ -1411,10 +1391,6 @@ fn read_terms(t: &RendezvousTerms, frame: &[u8]) -> Result<Terms, Refused> {
         HANDSHAKE_ANSWERS => Role::Server,
         _ => return Err(fault("the framer's terms name no handshake role")),
     };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: an association's far-end candidates are kept owned, read once from its terms"
-    )]
     let candidates = std::str::from_utf8(span(t.candidates)?)
         .map_err(|_| fault("the far end's candidates are not text"))?
         .lines()
@@ -1454,15 +1430,21 @@ fn read_terms(t: &RendezvousTerms, frame: &[u8]) -> Result<Terms, Refused> {
 /// every address of the 5-tuple.
 #[derive(Debug, Default)]
 pub struct Associations {
-    framings: HashMap<u64, DatagramFraming>,
+    pub(crate) framings: HashMap<u64, DatagramFraming>,
     by_user: HashMap<String, u64>,
     by_path: HashMap<SocketAddr, u64>,
+    /// Each association's paths in `by_path` (exactly the entries that name it), so its paths are
+    /// let go by key, not by a sweep of the port's map.
+    held: HashMap<u64, HeldPaths>,
     last: u64,
     /// The associations a [`PortAssociations`] caller has out on a crossing: still carried (their
     /// user name and paths still find them), their framing with the caller.
-    out: HashMap<u64, Out>,
+    pub(crate) out: HashMap<u64, Out>,
     emissions: HashMap<u64, Arc<Emission>>,
 }
+
+/// The paths one association holds in its port's path map (a few inline).
+type HeldPaths = smallvec::SmallVec<[SocketAddr; 4]>;
 
 #[derive(Debug)]
 struct Emission {
@@ -1490,7 +1472,7 @@ enum WhileBusy {
 /// What a caller owes an association that is out on another caller's crossing: run, in order, by
 /// that caller before it puts the association back.
 #[derive(Debug)]
-enum Owed<'a> {
+pub(crate) enum Owed<'a> {
     Datagram(SocketAddr, std::borrow::Cow<'a, [u8]>),
     Emit {
         stream: u64,
@@ -1523,16 +1505,16 @@ impl Owed<'_> {
 
 /// An association out on a crossing.
 #[derive(Debug, Default)]
-struct Out {
+pub(crate) struct Out {
     /// An incremental producer between batches. It remains exclusively out until completion.
     continuing: Option<DatagramFraming>,
     /// The completed batch must reach publication before the next producer step.
     publishing: bool,
-    owed: VecDeque<Owed<'static>>,
+    pub(crate) owed: VecDeque<Owed<'static>>,
     /// Removed while out: its holder finishes it as it brings it back.
     closing: bool,
     /// Its deadline as it went out, until the clock owes it a [`Owed::Timer`].
-    deadline: Option<Instant>,
+    pub(crate) deadline: Option<Instant>,
 }
 
 /// Why an association was not added to a port.
@@ -1559,10 +1541,6 @@ impl Associations {
 
     /// Whether `framing` may be carried: the user name it is found by.
     fn admits(&self, framing: &DatagramFraming) -> Result<String, NotAdded> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the port finds an association by its user name, kept once as it is added"
-        )]
         let user = framing.user().ok_or(NotAdded::NoTerms)?.to_owned();
         if self.by_user.contains_key(&user) {
             return Err(NotAdded::UserTaken);
@@ -1576,8 +1554,14 @@ impl Associations {
         let id = self.last;
         self.by_user.insert(user, id);
 
-        for addr in framing.addresses() {
-            self.by_path.entry(addr).or_insert(id);
+        // The far-end addresses it owns that it has numbered, indexed as it is carried: each found
+        // by its path (unless another association holds it), and listed as this one's.
+        let held = self.held.entry(id).or_default();
+        for &addr in framing.book.by_addr.keys() {
+            if framing.owns(addr) && !self.by_path.contains_key(&addr) {
+                self.by_path.insert(addr, id);
+                held.push(addr);
+            }
         }
         self.framings.insert(id, framing);
         self.emissions.insert(id, Arc::default());
@@ -1587,14 +1571,24 @@ impl Associations {
     /// Stop carrying association `id`; the framing, for its owner to finish.
     pub fn remove(&mut self, id: u64) -> Option<DatagramFraming> {
         let f = self.framings.remove(&id)?;
-        self.forget(id);
+        self.forget(id, f.user());
         Some(f)
     }
 
-    /// Association `id` is no longer carried: its user name and paths let go.
-    fn forget(&mut self, id: u64) {
-        self.by_user.retain(|_, v| *v != id);
-        self.by_path.retain(|_, v| *v != id);
+    /// Association `id` (found by `user`) is no longer carried: its user name and paths let go.
+    fn forget(&mut self, id: u64, user: Option<&str>) {
+        if let Some(user) = user {
+            if self.by_user.get(user) == Some(&id) {
+                self.by_user.remove(user);
+            }
+        }
+        if let Some(held) = self.held.remove(&id) {
+            for addr in held {
+                if self.by_path.get(&addr) == Some(&id) {
+                    self.by_path.remove(&addr);
+                }
+            }
+        }
         self.out.remove(&id);
         self.emissions.remove(&id);
     }
@@ -1630,7 +1624,7 @@ impl Associations {
             self.route(id, from, &f);
         }
         if answer.is_err() {
-            self.forget(id);
+            self.forget(id, f.user());
         } else {
             self.framings.insert(id, f);
         }
@@ -1661,32 +1655,28 @@ impl Associations {
             },
         };
         if take {
-            self.by_path.insert(from, id);
-
-            self.by_path
-                .retain(|addr, holder| *holder != id || f.owns(*addr));
-        }
-    }
-
-    /// The clock, for every association whose deadline has passed; a failed one is removed.
-    pub fn timeout(&mut self, now: Instant) -> Vec<(u64, Result<Yielded, Refused>)> {
-        let due: Vec<u64> = self
-            .framings
-            .iter()
-            .filter(|(_, f)| f.deadline().is_some_and(|d| d <= now))
-            .map(|(id, _)| *id)
-            .collect();
-        let mut out = Vec::new();
-        for id in due {
-            if let Some(f) = self.framings.get_mut(&id) {
-                let answer = f.timeout(now);
-                if answer.is_err() {
-                    self.remove(id);
+            if let Some(holder) = self.by_path.insert(from, id) {
+                if let Some(theirs) = self.held.get_mut(&holder) {
+                    if let Some(at) = theirs.iter().position(|a| *a == from) {
+                        theirs.swap_remove(at);
+                    }
                 }
-                out.push((id, answer));
             }
+            let held = self.held.entry(id).or_default();
+            if !held.contains(&from) {
+                held.push(from);
+            }
+            // The paths this association holds but no longer owns are let go (its own, by key).
+            let by_path = &mut self.by_path;
+            held.retain(|addr| {
+                let addr = *addr;
+                let owned = f.owns(addr);
+                if !owned {
+                    by_path.remove(&addr);
+                }
+                owned
+            });
         }
-        out
     }
 
     /// The earliest deadline of any association.
@@ -1697,13 +1687,6 @@ impl Associations {
             .filter_map(DatagramFraming::deadline)
             .chain(self.out.values().filter_map(|o| o.deadline))
             .min()
-    }
-
-    /// The next datagram any association owes the port, and where it goes.
-    pub fn poll_send(&mut self) -> Option<(SocketAddr, Vec<u8>)> {
-        self.framings
-            .values_mut()
-            .find_map(DatagramFraming::poll_send)
     }
 }
 
@@ -1746,7 +1729,7 @@ impl Drop for Taken<'_> {
             let emission = {
                 let mut assocs = self.port.lock();
                 let emission = assocs.emissions.get(&self.id).cloned();
-                assocs.forget(self.id);
+                assocs.forget(self.id, f.user());
                 emission
             };
             if let Some(emission) = emission {
@@ -1809,32 +1792,7 @@ impl PortAssociations {
         self.incremental(id, Owed::Datagram(from, bytes.into()), now, send)
     }
 
-    /// The serving caller's incremental clock path. A busy producer retains its ordinary
-    pub fn timeout_incremental(&self, now: Instant, send: &dyn Fn(SocketAddr, &[u8])) -> Answered {
-        let due: Vec<_> = {
-            let mut assocs = self.lock();
-            for out in assocs.out.values_mut() {
-                if out.deadline.is_some_and(|deadline| deadline <= now) {
-                    out.deadline = None;
-                    out.owed.push_back(Owed::Timer);
-                }
-            }
-            assocs
-                .framings
-                .iter()
-                .filter_map(|(id, f)| {
-                    f.deadline()
-                        .is_some_and(|deadline| deadline <= now)
-                        .then_some(*id)
-                })
-                .collect()
-        };
-        due.into_iter()
-            .flat_map(|id| self.incremental(id, Owed::Timer, now, send))
-            .collect()
-    }
-
-    fn incremental(
+    pub(crate) fn incremental(
         &self,
         id: u64,
         op: Owed<'_>,
@@ -1931,7 +1889,7 @@ impl PortAssociations {
         }
         if assocs.out.get(&id).is_none_or(|out| out.closing) || result.is_err() {
             let emission = assocs.emissions.get(&id).cloned();
-            assocs.forget(id);
+            assocs.forget(id, f.user());
             drop(assocs);
             if result.is_ok() {
                 if let Some(framing) = taken.framing.as_mut() {
@@ -2123,7 +2081,7 @@ impl PortAssociations {
         }
         let closing = assocs.out.get(&id).is_none_or(|out| out.closing);
         if closing || result.is_err() {
-            assocs.forget(id);
+            assocs.forget(id, f.user());
             drop(assocs);
             if result.is_ok() {
                 if let Some(framing) = taken.framing.as_mut() {
@@ -2196,7 +2154,7 @@ impl PortAssociations {
         Self::default()
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Associations> {
+    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, Associations> {
         self.assocs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2256,7 +2214,13 @@ impl PortAssociations {
                 None => assocs.remove(id),
             };
             if pending.is_some() {
-                assocs.forget(id);
+                assocs.forget(
+                    id,
+                    pending
+                        .as_ref()
+                        .and_then(|out| out.continuing.as_ref())
+                        .and_then(DatagramFraming::user),
+                );
             }
             (gone, pending, emission)
         };
@@ -2305,28 +2269,6 @@ impl PortAssociations {
         };
         self.turn(id, Owed::Datagram(from, bytes.into()), now, send)
             .1
-    }
-
-    /// The clock, for every association whose deadline has passed (one out is owed it).
-    pub fn timeout(&self, now: Instant, send: &dyn Fn(SocketAddr, &[u8])) -> Answered {
-        let due: Vec<u64> = {
-            let mut assocs = self.lock();
-            for out in assocs.out.values_mut() {
-                if out.deadline.is_some_and(|d| d <= now) {
-                    out.deadline = None;
-                    out.owed.push_back(Owed::Timer);
-                }
-            }
-            assocs
-                .framings
-                .iter()
-                .filter(|(_, f)| f.deadline().is_some_and(|d| d <= now))
-                .map(|(id, _)| *id)
-                .collect()
-        };
-        due.into_iter()
-            .flat_map(|id| self.turn(id, Owed::Timer, now, send).1)
-            .collect()
     }
 
     /// One message's bytes for `stream` on association `id`: whether it was taken (`false` = no
@@ -2399,7 +2341,7 @@ impl PortAssociations {
     }
 
     /// THE HAND-OFF: take association `id` out, run `first` on it and then what was owed it
-    fn turn(
+    pub(crate) fn turn(
         &self,
         id: u64,
         first: Owed<'_>,
@@ -2499,7 +2441,7 @@ impl PortAssociations {
                 assocs.route(id, from, f);
             }
             if failed || assocs.out.get(&id).is_none_or(|o| o.closing) {
-                assocs.forget(id);
+                assocs.forget(id, f.user());
                 drop(assocs);
                 if let Some(emission) = &emission {
                     emission.order.close();
@@ -2604,12 +2546,7 @@ pub fn stream_head(block: &[u8]) -> Option<StreamHead> {
 
 /// A stream head's named value, trimmed and kept.
 fn head_value(value: &str) -> String {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a session stream's head is read once, as the stream opens"
-    )]
-    let value = value.trim().to_owned();
-    value
+    value.trim().to_owned()
 }
 
 /// One frame a leg yielded on a line, for the paired line of the other leg.
@@ -2641,6 +2578,15 @@ pub struct Bridge {
     custody: Vec<Custody>,
 }
 
+/// How two legs' lines fail to mirror ([`Bridge::mirrored`]'s refusal, before its text).
+#[derive(Clone, Copy)]
+enum Mismatch {
+    /// The legs carry different counts of lines.
+    Count,
+    /// The line at this position is of a different kind on each leg.
+    Kind(usize),
+}
+
 impl Bridge {
     /// A bridge with no line yet.
     #[must_use]
@@ -2657,60 +2603,45 @@ impl Bridge {
 
     /// The upstream dial's opening fields: one `media` field per caller line, its kind, in order,
     #[must_use]
-    pub fn opening(&self, channels: &[&str]) -> Vec<(String, Vec<u8>)> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a session's upstream dial is opened once, its opening fields owned"
-        )]
-        let fields = self
-            .caller
+    pub fn opening<S: AsRef<str>>(&self, channels: &[S]) -> Vec<(String, Vec<u8>)> {
+        self.caller
             .iter()
             .map(|(_, kind)| ("media".to_owned(), kind.clone().into_bytes()))
             .chain(
                 channels
                     .iter()
-                    .map(|l| ("channel".to_owned(), l.as_bytes().to_vec())),
+                    .map(|l| ("channel".to_owned(), l.as_ref().as_bytes().to_vec())),
             )
-            .collect();
-        fields
+            .collect()
     }
 
     /// Whether the two legs' lines mirror: the same count, and the same kind at every position.
     pub fn mirrored(&self) -> Result<(), String> {
-        if self.caller.len() != self.upstream.len() {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: the refusal names how the legs' lines differ"
-            )]
-            return Err(format!(
-                "the upstream leg carries {} line(s), the caller's {}",
+        match self.mismatch() {
+            None => Ok(()),
+            Some(Mismatch::Count) => Err(crate::cold::datagram::lines_differ_in_count(
                 self.upstream.len(),
-                self.caller.len()
-            ));
+                self.caller.len(),
+            )),
+            Some(Mismatch::Kind(i)) => Err(crate::cold::datagram::line_kinds_differ(
+                i,
+                &self.caller[i].1,
+                &self.upstream[i].1,
+            )),
+        }
+    }
+
+    /// How the two legs' lines first fail to mirror, if they do (no text built).
+    fn mismatch(&self) -> Option<Mismatch> {
+        if self.caller.len() != self.upstream.len() {
+            return Some(Mismatch::Count);
         }
         for (i, ((_, a), (_, b))) in self.caller.iter().zip(&self.upstream).enumerate() {
             if a != b {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: the refusal names how the legs' lines differ"
-                )]
-                return Err(format!(
-                    "line {i} is `{a}` on the caller's leg and `{b}` upstream"
-                ));
+                return Some(Mismatch::Kind(i));
             }
         }
-        Ok(())
-    }
-
-    /// The caller's channels' labels, in the order it opened them: what the upstream dial names.
-    #[must_use]
-    pub fn caller_channels(&self) -> Vec<&str> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a session's upstream dial names the caller's channels once"
-        )]
-        let labels = self.channels.iter().map(String::as_str).collect();
-        labels
+        None
     }
 
     /// Stop the bridge: no frame crosses again, in either direction.
@@ -2721,7 +2652,7 @@ impl Bridge {
     /// The stream a frame on `leg`'s `stream` crosses to on the other leg; `None` = the stream is
     #[must_use]
     pub fn across(&self, leg: Leg, stream: u64) -> Option<u64> {
-        if self.stopped || self.mirrored().is_err() {
+        if self.stopped || self.mismatch().is_some() {
             return None;
         }
         let i = self.lines(leg).iter().position(|(s, _)| *s == stream)?;
@@ -2736,11 +2667,13 @@ impl Bridge {
     pub fn sort(
         &mut self,
         leg: Leg,
-        pieces: Vec<crate::framer::Got>,
+        mut pieces: Vec<crate::framer::Got>,
     ) -> (Vec<crate::framer::Got>, Vec<Across>) {
-        let mut session = Vec::new();
         let mut across = Vec::new();
-        for g in pieces {
+        // The session's pieces are compacted, in order, to the front of `pieces` itself.
+        let mut kept = 0;
+        for at in 0..pieces.len() {
+            let g = &mut pieces[at];
             if leg == Leg::Caller && g.fields {
                 if let Ok(fields) = std::str::from_utf8(&g.bytes) {
                     for (name, value) in fields.lines().filter_map(|line| line.split_once(':')) {
@@ -2768,19 +2701,21 @@ impl Bridge {
             }
             if known {
                 if let Some(stream) = self.across(leg, g.stream) {
-                    if is_line_payload(&g) {
+                    if is_line_payload(g) {
                         across.push(Across {
                             stream,
-                            bytes: g.bytes,
+                            bytes: std::mem::take(&mut g.bytes),
                             end_of_frame: g.end_of_frame,
                         });
                     }
                 }
                 continue;
             }
-            session.push(g);
+            pieces.swap(kept, at);
+            kept += 1;
         }
-        (session, across)
+        pieces.truncate(kept);
+        (pieces, across)
     }
 }
 
@@ -2920,7 +2855,7 @@ impl Pairing {
     #[must_use]
     pub fn opening(&self) -> Vec<(String, Vec<u8>)> {
         let st = self.lock();
-        st.bridge.opening(&st.bridge.caller_channels())
+        st.bridge.opening(&st.bridge.channels)
     }
 
     /// Wait for the caller's actual media or channel metadata before mirroring its opening.
@@ -3118,18 +3053,8 @@ impl DatagramFraming {
             let mut o: FramerOut = blank_out();
             let crossed = self.door.cross(Call::Finish(&mut i, &mut o));
             self.bufs.validate(crossed.outcome, &o)?;
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a broken FINISH answer's fault text names the rule and field"
-            )]
-            check_datagram(crossed.outcome, &o, &self.routes, self.routes.len() as u64).map_err(
-                |f| {
-                    fault(format!(
-                        "the framer's FINISH datagram answer breaks {:?} at {}",
-                        f.rule, f.field
-                    ))
-                },
-            )?;
+            check_datagram(crossed.outcome, &o, &self.routes, self.routes.len() as u64)
+                .map_err(|f| crate::cold::datagram::finish_answer_broken(&f.rule, &f.field))?;
             if crossed.outcome == Outcome::Pending {
                 return Err(fault("datagram FINISH must not pend"));
             }

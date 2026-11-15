@@ -86,6 +86,7 @@ fn chain(modules: &[(&str, &Arc<Canned>)], keys_in_chain: bool) -> AuthMiddlewar
             })
             .collect(),
         readers: Vec::new(),
+        reader_by_carrier: foldhash::HashMap::default(),
         carriers: Vec::new(),
         issued: None,
     }

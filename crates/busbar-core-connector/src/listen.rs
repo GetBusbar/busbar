@@ -18,7 +18,7 @@ use busbar_contract::abi::transport::{AcceptIn, AcceptOut, ListenIn, ListenOut, 
 use crate::carrier::{text, Carried, Carry, Driven};
 use crate::compose::{Accept, Connection, Failure, Slot, Via};
 use crate::framer::FramerDoor;
-use crate::hostio::{Admission, HostListener};
+use crate::hostio::HostListener;
 
 /// A listener's connection cap when its settings name none (new in 1.6.0).
 pub const DEFAULT_MAX_CONNS: usize = 1024;
@@ -187,12 +187,9 @@ pub(crate) type Bound = (u64, Driven, Option<u64>, SocketAddr);
 pub(crate) fn listen_through(via: &Via, bind: &str) -> std::io::Result<Bound> {
     let mut side = Driven::of(via.door.as_ref())
         .ok_or_else(|| other("the transport is no carrier the host drives".into()))?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a listener is bound at boot or at a config commit; the host admits its bind once"
-    )]
+    // A listener is bound at boot or at a config commit: the host admits its bind once.
     via.io
-        .admit(side.ticket(), Admission::Bind(bind.to_owned()));
+        .admit(side.ticket(), crate::off_path::conns::bind_admission(bind));
     let mut addr = vec![0_u8; usize::try_from(MAX_ADDR).unwrap_or(256)];
     let mut i: ListenIn = blank_in();
     i.bind = busbar_contract::abi::mechanism::call::AbiStr {

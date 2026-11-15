@@ -35,11 +35,11 @@ impl Drop for Completion {
 
 #[derive(Clone)]
 pub struct Context {
-    method: String,
-    target: String,
-    headers: HeaderMap,
-    actor: Option<String>,
-    roles: std::collections::BTreeSet<String>,
+    pub(crate) method: String,
+    pub(crate) target: String,
+    pub(crate) headers: HeaderMap,
+    pub(crate) actor: Option<String>,
+    pub(crate) roles: std::collections::BTreeSet<String>,
 }
 
 impl std::fmt::Debug for Context {
@@ -60,20 +60,6 @@ pub fn actor(door: &AdminDoor) -> Option<&str> {
     }
 }
 
-fn roles(door: &AdminDoor) -> std::collections::BTreeSet<String> {
-    match door {
-        AdminDoor::Identified(p, _) | AdminDoor::Listed(p, _, _) => {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: an admin change's effect context keeps the roles it was authorized under"
-            )]
-            let held = p.roles.iter().cloned().collect();
-            held
-        }
-        _ => Default::default(),
-    }
-}
-
 /// Named mutation verbs contribute a Full *required rung*, not full operator authority.
 /// Only a whole-rung grant (including the explicit open development posture) qualifies.
 pub fn full_operator(door: &AdminDoor) -> bool {
@@ -87,19 +73,10 @@ pub fn full_operator(door: &AdminDoor) -> bool {
 }
 
 impl Context {
+    /// Built once per admitted admin verb, off the request path
+    /// (`crate::off_path::auth::keys::effect`).
     pub fn new(method: &str, target: &str, headers: HeaderMap, admitted: &AdminDoor) -> Self {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: an admin change's effect context keeps the actor it was authorized for"
-        )]
-        let context = Self {
-            method: method.into(),
-            target: target.into(),
-            headers,
-            actor: actor(admitted).map(str::to_owned),
-            roles: roles(admitted),
-        };
-        context
+        crate::off_path::auth::keys::effect::context(method, target, headers, admitted)
     }
 
     pub async fn revalidate(&self, app: &App) -> Result<Authority, TxnError> {
@@ -110,7 +87,7 @@ impl Context {
                 .map_err(|_| TxnError::Forbidden)?;
         if COMPLETED_EFFECTS.load(Ordering::SeqCst) != completed
             || actor(&door) != self.actor.as_deref()
-            || roles(&door) != self.roles
+            || crate::off_path::auth::keys::effect::roles(&door) != self.roles
             || !super::admin_door_admits(&door, &self.method, &self.target)
         {
             return Err(TxnError::Forbidden);
@@ -188,24 +165,4 @@ pub fn current() -> Option<Context> {
 
 pub async fn scope<F: Future>(context: Option<Context>, future: F) -> F::Output {
     EFFECT.scope(context, future).await
-}
-
-impl crate::inbound::RequestAdmission {
-    pub fn effect_context(&self) -> Context {
-        let head = &self.inner.original;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: an admin change's effect context keeps the target it was authorized for"
-        )]
-        let target = match &head.query {
-            Some(query) => format!("{}?{query}", head.target),
-            None => head.target.clone(),
-        };
-        Context::new(
-            &head.method,
-            &target,
-            self.original_headers().clone(),
-            &self.admin_verdict().door,
-        )
-    }
 }
