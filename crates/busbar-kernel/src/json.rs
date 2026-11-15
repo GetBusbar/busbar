@@ -4,20 +4,44 @@
 
 use busbar_contract::spans::{exceeds_max_depth, MAX_JSON_DEPTH};
 
+/// Read one JSON document into `T`, numbers in binary64 (`u64`, `i64` or `f64`), as the kernel
+/// always has. The workspace's sonic-rs carries `arbitrary_precision` for `busbar_contract::json`,
+/// under which sonic's own `from_slice` hands `deserialize_any` (a `serde_json::Value`, an untagged
+/// or flattened field) the exact-number token map instead of a number. Exact reads go through the
+/// facade.
 #[inline]
 pub fn parse<'de, T: serde::Deserialize<'de>>(bytes: &'de [u8]) -> Result<T, sonic_rs::Error> {
     if exceeds_max_depth(bytes, MAX_JSON_DEPTH) {
         return sonic_rs::from_slice::<T>(b"");
     }
-    sonic_rs::from_slice(bytes)
+    // Every byte is checked here: sonic checks UTF-8 only in the strings it decodes.
+    let text = std::str::from_utf8(bytes).map_err(|_| refused("invalid UTF-8 in JSON"))?;
+    binary64(text)
 }
 
+/// [`parse`] for text.
 #[inline]
 pub fn parse_str<'de, T: serde::Deserialize<'de>>(s: &'de str) -> Result<T, sonic_rs::Error> {
     if exceeds_max_depth(s.as_bytes(), MAX_JSON_DEPTH) {
         return sonic_rs::from_slice::<T>(b"");
     }
-    sonic_rs::from_slice(s.as_bytes())
+    binary64(s)
+}
+
+/// One whole document, no `use_rawnumber`: numbers reach `T` in binary64.
+fn binary64<'de, T: serde::Deserialize<'de>>(text: &'de str) -> Result<T, sonic_rs::Error> {
+    if u32::try_from(text.len()).is_err() {
+        return Err(refused("JSON documents above 4 GiB are not read"));
+    }
+    let mut reader = sonic_rs::Deserializer::from_str(text);
+    let value = T::deserialize(&mut reader)?;
+    reader.end()?;
+    Ok(value)
+}
+
+#[cold]
+fn refused(message: &str) -> sonic_rs::Error {
+    <sonic_rs::Error as serde::de::Error>::custom(message)
 }
 
 #[inline]
