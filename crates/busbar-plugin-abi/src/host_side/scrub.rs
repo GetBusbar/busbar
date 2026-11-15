@@ -26,6 +26,7 @@ use std::borrow::Cow;
 /// record with `state.try_lock()` (skips the instance if a writer holds it; never blocks). `Drop for Scrub` (after
 /// close, cold) frees the rest. `retired` holds at most the snapshots replaced in the last 100 ms plus those a
 /// reader still holds.
+#[derive(Default)]
 pub struct Scrub {
     // W0-ABI: private fields (live: arc_swap::ArcSwap<Snap>, state: Mutex<ScrubState> (writers only)) and the
     // private `Snap`/`ScrubState` types land with W1-H0 (arc-swap, aho-corasick and zeroize are not wave-0

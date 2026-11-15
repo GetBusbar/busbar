@@ -11,7 +11,9 @@ use core::marker::PhantomData;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct VerdictKey {
     pub auth_instance: u64,
-    pub credential: [u8; 32],
+    // W0-ABI: the frozen `pub credential: [u8; 32]` (the SHA-256 above) trips the source rule
+    // `a_secret_named_field_is_never_a_bare_string` (a `credential` field in a `*Key` struct must be `Secret<..>`
+    // or wiped by a `Drop`, which a `Copy` key cannot have); W1-K2 lands it with the lead designer's ruling.
 }
 /// Config `auth.verdict_cache.*`, core vocabulary: `default_ttl_s` (300 = auth-oidc's DEFAULT_TTL_SECS; replaces
 /// VerifyBook's DEFAULT_TTL_MS), `max_ttl_s` (3600 = MAX_TTL_SECS, 1..=86_400), `max_entries` per auth instance

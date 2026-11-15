@@ -64,7 +64,7 @@ pub struct Attachment {
     pub greet: bool,
     pub ready_tail: Box<[u8]>,
     // W0-ABI: the private `rx` (the receiver of demuxed inbound messages) lands with W1-K8A.
-    _stub: (),
+    _stub: core::marker::PhantomData<Box<[u8]>>,
 }
 impl Attachment {
     /// Round 18: `ask` = the EX_MSG carried MSG_ASK (enters the ask line; under CH_SERIAL waits its turn).
