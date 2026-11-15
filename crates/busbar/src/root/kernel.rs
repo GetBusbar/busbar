@@ -718,7 +718,7 @@ const RESERVED_CLASSES: [&str; 4] = [
 /// `"<plane>\u{1f}"` key, and its fees are its own. Two forms are equal exactly when they build the
 /// same card — which is what lets a boot tell a restart that changed a price from one that did not.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CardForm {
+pub(crate) struct CardForm {
     /// Whether a rate card was configured at all (absent: every class reads 0, the flat figure posts).
     present: bool,
     /// The flat per-request figure, clamped as the card holds it.

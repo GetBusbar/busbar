@@ -221,6 +221,7 @@ fn a_composition_route_collision_publishes_none_of_its_staged_instances() {
             .0
             .now
             .load()
+            .tables
             .iter()
             .map(|t| t.instance.as_str())
             .collect::<Vec<_>>(),
@@ -234,6 +235,7 @@ fn a_composition_route_collision_publishes_none_of_its_staged_instances() {
             .0
             .now
             .load()
+            .tables
             .iter()
             .map(|t| t.instance.as_str())
             .collect::<Vec<_>>(),

@@ -52,7 +52,7 @@ use busbar_contract::yaml::ValueExt;
 pub(crate) use crate::root::off_path::serve::*;
 
 #[cfg(test)]
-pub const DEFAULT_EGRESS_CLASS: u32 = 0;
+pub(crate) const DEFAULT_EGRESS_CLASS: u32 = 0;
 
 #[path = "serve_neutral.rs"]
 pub(crate) mod neutral;
@@ -61,14 +61,14 @@ pub(crate) mod neutral;
 mod observations;
 
 #[must_use]
-pub fn kernel_services(dest: Arc<dyn DestJudge>) -> KernelServices {
+pub(crate) fn kernel_services(dest: Arc<dyn DestJudge>) -> KernelServices {
     KernelServices::new()
         .with_mono_clock(Arc::new(crate::root::loader::dispatch::now_ns))
         .with_dest_judge(dest)
         .with_disk_lane(crate::root::linked::disk_lane())
 }
 
-pub fn compose(
+pub(crate) fn compose(
     dest: Arc<dyn DestJudge>,
     late: &LateServices,
     credentials: crate::root::credentials::AppCredentials,
@@ -582,7 +582,7 @@ pub(crate) fn claim_ticket_custody(
     TicketClaimDisposition::Refused
 }
 
-pub struct LiveTickets(pub std::sync::Weak<busbar_kernel::state::AppHandle>);
+pub(crate) struct LiveTickets(pub std::sync::Weak<busbar_kernel::state::AppHandle>);
 
 #[async_trait::async_trait]
 impl busbar_kernel::host_services::TicketPress for LiveTickets {
@@ -667,7 +667,7 @@ impl busbar_kernel::host_services::TicketPress for LiveTickets {
     }
 }
 
-pub fn attach(
+pub(crate) fn attach(
     late: &LateServices,
     records: Option<&busbar_kernel::governance::GovState>,
     signer: Option<Arc<dyn SignKey>>,
@@ -697,10 +697,10 @@ pub fn attach(
     }
 }
 
-pub const RECORD_DRAIN: std::time::Duration =
+pub(crate) const RECORD_DRAIN: std::time::Duration =
     std::time::Duration::from_secs(5 * busbar_kernel::host_records::FLUSH_INTERVAL.as_secs());
 
-pub async fn drain_records(late: &LateServices, deadline: std::time::Duration) -> bool {
+pub(crate) async fn drain_records(late: &LateServices, deadline: std::time::Duration) -> bool {
     let Some(kernel) = late.kernel() else {
         return true;
     };
@@ -710,7 +710,7 @@ pub async fn drain_records(late: &LateServices, deadline: std::time::Duration) -
 }
 
 #[must_use]
-pub fn demotion_owner(planes: &[&PlaneDeclaration]) -> Option<&'static str> {
+pub(crate) fn demotion_owner(planes: &[&PlaneDeclaration]) -> Option<&'static str> {
     let mut owners = planes
         .iter()
         .filter(|d| declares_record_kind(d, KIND_DEMOTION));
@@ -720,7 +720,7 @@ pub fn demotion_owner(planes: &[&PlaneDeclaration]) -> Option<&'static str> {
     }
 }
 
-pub struct LateServices {
+pub(crate) struct LateServices {
     pub(crate) slot: Arc<ServicesSlot>,
 
     pub(crate) kernel: OnceLock<Arc<KernelServices>>,
@@ -728,13 +728,13 @@ pub struct LateServices {
 
 /// Why [`LateServices::install`] would not take a second set of services.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AlreadyInstalled;
+pub(crate) struct AlreadyInstalled;
 
-pub const NOT_INSTALLED: &str = "the kernel's host services are not installed yet";
+pub(crate) const NOT_INSTALLED: &str = "the kernel's host services are not installed yet";
 
 impl LateServices {
     #[must_use]
-    pub fn new() -> Arc<Self> {
+    pub(crate) fn new() -> Arc<Self> {
         Arc::new(LateServices {
             slot: ServicesSlot::late(Arc::new(NotInstalled(
                 KernelServices::new()
@@ -745,11 +745,11 @@ impl LateServices {
     }
 
     #[must_use]
-    pub fn slot(&self) -> Arc<ServicesSlot> {
+    pub(crate) fn slot(&self) -> Arc<ServicesSlot> {
         Arc::clone(&self.slot)
     }
 
-    pub fn install(&self, services: Arc<dyn HostServices>) -> Result<(), AlreadyInstalled> {
+    pub(crate) fn install(&self, services: Arc<dyn HostServices>) -> Result<(), AlreadyInstalled> {
         if self.slot.install(services) {
             Ok(())
         } else {
@@ -757,7 +757,7 @@ impl LateServices {
         }
     }
 
-    pub fn install_kernel(
+    pub(crate) fn install_kernel(
         &self,
         kernel: Arc<KernelServices>,
         services: Arc<dyn HostServices>,
@@ -767,13 +767,13 @@ impl LateServices {
     }
 
     #[must_use]
-    pub fn kernel(&self) -> Option<Arc<KernelServices>> {
+    pub(crate) fn kernel(&self) -> Option<Arc<KernelServices>> {
         self.kernel.get().cloned()
     }
 
     #[cfg(test)]
     #[must_use]
-    pub fn is_installed(&self) -> bool {
+    pub(crate) fn is_installed(&self) -> bool {
         self.slot.is_installed()
     }
 
@@ -928,27 +928,27 @@ impl HostServices for NotInstalled {
 /// what its units are served by: its tail's facts, the pools its section states, its money steps
 /// and its egress.
 #[derive(Clone)]
-pub struct ServedPlane {
+pub(crate) struct ServedPlane {
     /// The instance's label.
-    pub instance: String,
+    pub(crate) instance: String,
     /// The plane's driver: admitted to the kernel's services, its driver ticket minted.
-    pub driver: Arc<PlaneDriver>,
+    pub(crate) driver: Arc<PlaneDriver>,
     /// The first generation's snapshot, as the host copied it.
-    pub snapshot: OwnedSnapshot,
+    pub(crate) snapshot: OwnedSnapshot,
     /// The `audit_kind` its tail states: what its units are audited under.
     #[cfg(test)]
-    pub audit_kind: &'static str,
+    pub(crate) audit_kind: &'static str,
     /// Its key, scope kind, billable classes and fee units, read off its tail.
-    pub facts: DoorFacts,
+    pub(crate) facts: DoorFacts,
     /// Its money steps: the same seam its driver reports units, cancel bills and abandoned ends to.
-    pub money: Arc<PlaneMoney>,
+    pub(crate) money: Arc<PlaneMoney>,
     /// What its units are served over for the current refresh generation (its pools and its
     /// egress), replaced whole by a config apply ([`DoorApply`]).
-    pub live: Arc<DoorApply>,
+    pub(crate) live: Arc<DoorApply>,
     /// The kernel's host services it was admitted to: its units' records are written there.
-    pub kernel: Arc<KernelServices>,
+    pub(crate) kernel: Arc<KernelServices>,
     /// Its tail's dialects, in order: what a unit's dialect index names.
-    pub dialects: Vec<&'static str>,
+    pub(crate) dialects: Vec<&'static str>,
 }
 
 pub(crate) struct BoundConns {
@@ -1112,25 +1112,25 @@ pub(crate) fn bound_conns(
     })
 }
 
-pub struct DoorLive {
+pub(crate) struct DoorLive {
     pub(crate) observations: BTreeMap<String, busbar_kernel::plane_driver::ObservationPolicy>,
     pub(crate) ticket_nonce: Arc<()>,
-    pub section: busbar_contract::yaml::Value,
+    pub(crate) section: busbar_contract::yaml::Value,
 
-    pub generation: u64,
+    pub(crate) generation: u64,
 
-    pub pools: DoorPools,
+    pub(crate) pools: DoorPools,
 
-    pub egress: Option<Arc<Egress>>,
+    pub(crate) egress: Option<Arc<Egress>>,
 
-    pub facts: DoorFacts,
+    pub(crate) facts: DoorFacts,
 
-    pub probes: Option<Arc<busbar_kernel::plane_driver::PlaneProbes>>,
+    pub(crate) probes: Option<Arc<busbar_kernel::plane_driver::PlaneProbes>>,
 
-    pub shown: Option<crate::root::model_egress::ModelShown>,
+    pub(crate) shown: Option<crate::root::model_egress::ModelShown>,
 }
 
-pub struct DoorApply {
+pub(crate) struct DoorApply {
     /// The instance's label, shared with every ticket source its units register.
     pub(crate) instance: Arc<str>,
     pub(crate) observations_supported: bool,
@@ -1197,7 +1197,7 @@ impl DoorApply {
     }
 
     #[must_use]
-    pub fn current(&self) -> Arc<DoorLive> {
+    pub(crate) fn current(&self) -> Arc<DoorLive> {
         Arc::clone(
             &self
                 .live
@@ -1237,32 +1237,32 @@ impl std::fmt::Debug for ServedPlane {
 
 /// EVERY DOOR PLANE THIS PROCESS SERVES, composed once after the first app is built.
 #[derive(Debug, Default, Clone)]
-pub struct Served {
+pub(crate) struct Served {
     /// The process's shared nested-unit registry, also lent to the line carrier at boot.
     pub(crate) nests: Option<NestRoutes>,
     /// In the order the planes were bound.
-    pub planes: Vec<ServedPlane>,
+    pub(crate) planes: Vec<ServedPlane>,
     /// The posting site the planes' money steps post an abandoned end to, and the units' facts are
     /// opened on while they run: the process's one node's.
-    pub post: Option<Arc<crate::root::plane_node::NodeEndPost>>,
+    pub(crate) post: Option<Arc<crate::root::plane_node::NodeEndPost>>,
     /// The framer that answers a claim, by its name: what frames a stream that arrived on a claim
     /// another framer than the data listener's own answers. `None` = the process's
     /// one connector's.
-    pub framers: Option<StreamFramers>,
+    pub(crate) framers: Option<StreamFramers>,
     /// THE CLAIM DOORS, by the claim their datagram framer answers: the datagram port each one's
     /// inbound need binds ([`serve_datagram::ClaimDoor`]). Empty = no datagram claim is served.
-    pub claim_doors: serve_datagram::ClaimDoors,
+    pub(crate) claim_doors: serve_datagram::ClaimDoors,
     /// THE PUBLISHED INSTANCES' ADMIN TABLE these planes were published into: the generation's
     /// (`App::serve_tables`) the composition was lent, held here for the data listener's public
     /// mount ([`public_routes`]).
-    pub tables: ServeTables,
+    pub(crate) tables: ServeTables,
 }
 
 /// The framer that answers a claim, by its name (`Connector::framer_for`).
 #[derive(Clone)]
-pub struct StreamFramers(pub Arc<FramerFor>);
+pub(crate) struct StreamFramers(pub Arc<FramerFor>);
 
-pub type FramerFor =
+pub(crate) type FramerFor =
     dyn Fn(&str) -> Option<Arc<dyn busbar_core_connector::framer::FramerDoor>> + Send + Sync;
 
 impl std::fmt::Debug for StreamFramers {
@@ -1271,12 +1271,12 @@ impl std::fmt::Debug for StreamFramers {
     }
 }
 
-pub struct HookStage {
-    pub host: busbar_kernel::plane_driver::GenerationHost,
+pub(crate) struct HookStage {
+    pub(crate) host: busbar_kernel::plane_driver::GenerationHost,
 
-    pub gov: Arc<busbar_kernel::governance::GovState>,
+    pub(crate) gov: Arc<busbar_kernel::governance::GovState>,
 
-    pub journal: Option<Arc<dyn busbar_kernel::plane_driver::HookJournal>>,
+    pub(crate) journal: Option<Arc<dyn busbar_kernel::plane_driver::HookJournal>>,
 }
 
 pub(crate) struct GovCaller {
@@ -1395,7 +1395,7 @@ fn keep_arrival_field(name: &[u8]) -> bool {
             .any(|reserved| name.eq_ignore_ascii_case(reserved.as_bytes()))
 }
 
-pub struct DataRoutes {
+pub(crate) struct DataRoutes {
     /// The plane configuration sealed with this listener dispatcher.
     pub(crate) live: Vec<Arc<DoorLive>>,
     pub(crate) entries: Vec<Arc<EntrySpans>>,
@@ -1425,11 +1425,11 @@ impl Drop for UnitFrame<'_> {
 
 pub(crate) const NEST_REPLY_MAX: usize = 16 << 20;
 
-pub const NEST_UNSERVED: &str = "no plane serves the nested unit's claim";
+pub(crate) const NEST_UNSERVED: &str = "no plane serves the nested unit's claim";
 
 pub(crate) const NEST_PARENT_GONE: &str = "the nested unit's parent is not in flight";
 
-pub const NEST_UNREAD: &str = "the nested unit's reply could not be read";
+pub(crate) const NEST_UNREAD: &str = "the nested unit's reply could not be read";
 
 pub(crate) struct DoorNests {
     pub(crate) routes: NestRoutes,
@@ -1490,35 +1490,35 @@ impl std::fmt::Debug for DataRoutes {
     }
 }
 
-pub type DataMounts = (
+pub(crate) type DataMounts = (
     Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
     Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
     Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
     Option<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
 );
 
-pub struct DoorRequest {
-    pub method: axum::http::Method,
+pub(crate) struct DoorRequest {
+    pub(crate) method: axum::http::Method,
 
-    pub uri: axum::http::Uri,
+    pub(crate) uri: axum::http::Uri,
 
-    pub headers: axum::http::HeaderMap,
+    pub(crate) headers: axum::http::HeaderMap,
 
-    pub body: Bytes,
+    pub(crate) body: Bytes,
 
-    pub gov: busbar_contract::records::PlaneRequestCtx,
+    pub(crate) gov: busbar_contract::records::PlaneRequestCtx,
 
-    pub credential: Option<busbar_kernel::auth::CallerCredential>,
+    pub(crate) credential: Option<busbar_kernel::auth::CallerCredential>,
 
-    pub ticket: Option<Vec<u8>>,
+    pub(crate) ticket: Option<Vec<u8>>,
 
-    pub host_ticket_admission: Option<busbar_kernel::host_services::HostTicketAdmission>,
+    pub(crate) host_ticket_admission: Option<busbar_kernel::host_services::HostTicketAdmission>,
 
-    pub app: Arc<busbar_kernel::state::App>,
+    pub(crate) app: Arc<busbar_kernel::state::App>,
 
-    pub scheme: u8,
+    pub(crate) scheme: u8,
 
-    pub consumed_fields: Vec<(String, String)>,
+    pub(crate) consumed_fields: Vec<(String, String)>,
 }
 
 pub(crate) fn line_auth(flags: u32, data_chain: &[ChainAuth]) -> busbar_kernel::guest::LineAuth {
@@ -1529,7 +1529,7 @@ pub(crate) fn line_auth(flags: u32, data_chain: &[ChainAuth]) -> busbar_kernel::
     }
 }
 
-pub type ChainAuth = (String, busbar_contract::abi::auth::AuthPoints);
+pub(crate) type ChainAuth = (String, busbar_contract::abi::auth::AuthPoints);
 
 #[cfg(test)]
 #[path = "tests/listener_plan.rs"]
@@ -1547,7 +1547,7 @@ pub(crate) fn listener_method_bits(method: RouteMethod) -> u32 {
 /// The process's physical listeners and its boot-mounted plane routes. Application candidates
 /// supply their own plugin routes, auth instances and limits when each list is sealed.
 #[derive(Debug)]
-pub struct ListenerPlan {
+pub(crate) struct ListenerPlan {
     pub(crate) root_claim: Result<String, String>,
     pub(crate) initial: crate::root::boot::ListenerNeeds,
     pub(crate) served: std::sync::OnceLock<Served>,
@@ -3049,7 +3049,7 @@ fn deframed_arrival(
 /// arrival's body once, then nothing until the response is dropped, and the long-lived response is
 /// what the session writes.
 #[derive(Debug)]
-pub struct IngressCaller {
+pub(crate) struct IngressCaller {
     pub(crate) head: Mutex<Option<oneshot::Sender<Head>>>,
     pub(crate) body: mpsc::Sender<Bytes>,
     /// The status the unit stated its head with; `0` before it did.
@@ -3062,7 +3062,7 @@ pub(crate) type Head = (u32, HeadFields);
 
 /// The handler's end of an [`IngressCaller`]: the reply, once the unit states its head.
 #[derive(Debug)]
-pub struct IngressReply {
+pub(crate) struct IngressReply {
     pub(crate) head: oneshot::Receiver<Head>,
     pub(crate) body: mpsc::Receiver<Bytes>,
     /// The answer's trailers, where a framer renders a close after its body.
@@ -3071,12 +3071,12 @@ pub struct IngressReply {
 
 impl IngressCaller {
     #[must_use]
-    pub fn new() -> (Self, IngressReply) {
+    pub(crate) fn new() -> (Self, IngressReply) {
         Self::arriving(Bytes::new())
     }
 
     #[must_use]
-    pub fn arriving(body: Bytes) -> (Self, IngressReply) {
+    pub(crate) fn arriving(body: Bytes) -> (Self, IngressReply) {
         let (head_tx, head) = oneshot::channel();
         let (body_tx, reply_body) = mpsc::channel(1);
         let caller = IngressCaller {
@@ -3096,7 +3096,7 @@ impl IngressCaller {
     }
 
     #[must_use]
-    pub fn stated(&self) -> Option<u32> {
+    pub(crate) fn stated(&self) -> Option<u32> {
         Some(self.stated.load(std::sync::atomic::Ordering::Acquire)).filter(|s| *s != 0)
     }
 }
@@ -3150,7 +3150,7 @@ impl SessionCaller for IngressCaller {
 
 impl IngressReply {
     #[cfg(test)]
-    pub async fn response(self) -> Option<Response> {
+    pub(crate) async fn response(self) -> Option<Response> {
         let head = self.head.await.ok()?;
         Some(stated(
             head,
@@ -3167,7 +3167,7 @@ impl IngressReply {
         self
     }
 
-    pub async fn answer(self, unit: DrivenUnit) -> Response {
+    pub(crate) async fn answer(self, unit: DrivenUnit) -> Response {
         self.answer_collecting(unit).await
     }
 
@@ -3483,7 +3483,8 @@ impl Whole {
     }
 }
 
-pub type DrivenUnit = std::pin::Pin<Box<dyn std::future::Future<Output = Option<Rendered>> + Send>>;
+pub(crate) type DrivenUnit =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Option<Rendered>> + Send>>;
 
 pub(crate) fn stated((status, fields): Head, body: Body) -> Response {
     let status = [status, refusal_status(ReasonCode::PlanePanic)]
@@ -3570,13 +3571,13 @@ fn framed_by(
 }
 
 #[path = "serve_lines.rs"]
-pub mod lines;
+pub(crate) mod lines;
 
 #[path = "serve_framed.rs"]
 mod serve_framed;
 
 #[path = "serve_datagram.rs"]
-pub mod serve_datagram;
+pub(crate) mod serve_datagram;
 
 #[cfg(test)]
 #[path = "tests/claim_line.rs"]

@@ -6,9 +6,7 @@ use std::sync::Arc;
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome};
 use busbar_contract::abi::mechanism::call::{InHead, OutHead};
 use busbar_contract::abi::mechanism::check::{fault, reported, Fault, Rule};
-use busbar_contract::abi::mechanism::door::{
-    Statement, SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED,
-};
+use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, DriveIn, OpenIn, RefreshIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::mechanism::KindCode;
@@ -24,7 +22,7 @@ use busbar_contract::abi::plane::{
     PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn,
     ProjectOut, RecordWrite, RefusalIn, RefusalOut, RefusalStatus, ServeIn, ServeOut,
 };
-use busbar_contract::plane::{PinMechanismDecl, TrustKeyDecl, TrustRole};
+use busbar_contract::plane::{PinMechanismDecl, TrustKeyDecl};
 use busbar_contract::plane_calls::InstanceDecl;
 use busbar_contract::secure::SecureVec;
 
@@ -197,23 +195,16 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
     OVER_CAP.with(|c| c.set(false));
     let facts = tail_facts_read(st);
     if OVER_CAP.with(|c| c.replace(false)) {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a load-time Statement refusal"
-        )]
-        return Err("the plane tail states a list or string longer than its cap".to_string());
+        return Err(crate::cold::dispatch::kinds::refusal(
+            "the plane tail states a list or string longer than its cap",
+        ));
     }
     facts
 }
 
 /// The load-time refusal naming the rule and field a plane tail breaks.
 fn broke(f: Fault) -> String {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a load-time Statement refusal"
-    )]
-    let refusal = format!("the plane tail breaks {:?} at {}", f.rule, f.field);
-    refusal
+    crate::cold::dispatch::kinds::tail_fault("plane", f)
 }
 
 std::thread_local! {
@@ -290,14 +281,7 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
     unsafe { check_metric_lanes(&metric_lanes) }.map_err(broke)?;
 
     let sections = listed(st.sections, st.sections_len);
-    check_sections(&sections).map_err(|f| {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a load-time Statement refusal"
-        )]
-        let refusal = format!("the plane's sections break {:?} at {}", f.rule, f.field);
-        refusal
-    })?;
+    check_sections(&sections).map_err(crate::cold::dispatch::kinds::plane_sections_fault)?;
     let refusal_statuses = listed(tail.refusal_statuses, tail.refusal_statuses_len);
     check_refusal_statuses(&refusal_statuses, tail.dialects_len as u64).map_err(broke)?;
 
@@ -306,7 +290,7 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
         tail.dialects_len as u64,
     )
     .map_err(broke)?;
-    let mut decl = declared(&tail);
+    let mut decl = crate::cold::dispatch::kinds::plane_declared(&tail);
     decl.ticket_prefix = ticket_prefix(st)?;
 
     let extensions = if st.extensions.len
@@ -342,144 +326,16 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
             return Err("conditional record kind is not declared".into());
         }
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the served facts are copied out once, at bind"
-    )]
-    let facts = PlaneFacts {
+    // The served facts are copied out once, at bind, out of line; the provider keys last, as the
+    // tail's other lists are read first.
+    let mut served = crate::cold::dispatch::kinds::plane_served(st, &tail);
+    served.provider_keys = stated_provider_keys(st.extensions)?;
+    Ok(PlaneFacts {
         bounds: Bounds::of(&tail),
         refusal_statuses,
         declared: decl,
-        served: ServedFacts {
-            section: sections
-                .iter()
-                .find(|s| s.flags & SECTION_DECLARING != 0)
-                .map_or("", |s| kept(s.name)),
-            consumed: sections
-                .iter()
-                .filter(|s| s.flags & SECTION_CONSUMED != 0)
-                .map(|s| kept(s.name))
-                .collect(),
-            owns: sections
-                .iter()
-                .filter(|s| s.flags & (SECTION_DECLARING | SECTION_CONSUMED) == 0)
-                .map(|s| kept(s.name))
-                .collect(),
-            consumes: sections
-                .iter()
-                .filter(|s| s.flags & SECTION_CONSUMED != 0)
-                .map(|s| kept(s.name))
-                .collect(),
-            requires: sections
-                .iter()
-                .filter(|s| s.flags & SECTION_REQUIRED != 0)
-                .map(|s| kept(s.name))
-                .collect(),
-            secret_refs: listed(st.secret_refs, st.secret_refs_len)
-                .into_iter()
-                .map(kept)
-                .collect(),
-            admin_routes: admin_routes
-                .into_iter()
-                .map(|r| busbar_contract::plane_calls::StatedAdminRoute {
-                    verb: kept(r.verb),
-                    target: kept(r.target),
-                    flags: r.flags,
-                    audit_verb: kept(r.audit_verb),
-                })
-                .collect(),
-            admin_openapi: (!tail.admin_openapi.ptr.is_null())
-                .then(|| kept_blob(tail.admin_openapi)),
-            op_classes: listed(tail.op_classes, tail.op_classes_len)
-                .into_iter()
-                .map(|c| kept(c.op))
-                .collect(),
-            audit_kind: kept(tail.audit_kind),
-            billable_classes: listed(tail.billable_classes, tail.billable_classes_len)
-                .into_iter()
-                .map(|c| kept(c.class))
-                .collect(),
-            class_parents: {
-                let classes = listed(tail.billable_classes, tail.billable_classes_len);
-                listed(tail.class_parents, tail.class_parents_len)
-                    .into_iter()
-                    .map(|edge| busbar_contract::plane::ClassParent {
-                        child: kept(classes[edge.child as usize].class),
-                        parent: kept(classes[edge.parent as usize].class),
-                    })
-                    .collect()
-            },
-            route_cost: listed(tail.route_cost, tail.route_cost_len)
-                .into_iter()
-                .map(|term| (term.class, term.weight))
-                .collect(),
-            fee_units: listed(tail.fee_units, tail.fee_units_len)
-                .into_iter()
-                .map(kept)
-                .collect(),
-            streaming_content_types: streaming_content_types.into_iter().map(kept).collect(),
-            metric_lanes: listed(tail.metric_lanes, tail.metric_lanes_len)
-                .into_iter()
-                .map(kept)
-                .collect(),
-            keeps: listed(st.needs, st.needs_len)
-                .into_iter()
-                .map(|n| NeedKeep {
-                    mode: n.keep_mode,
-                    kept: listed(n.keep_response_headers, n.keep_response_headers_len)
-                        .into_iter()
-                        .map(kept)
-                        .collect(),
-                    denied: listed(n.deny_response_headers, n.deny_response_headers_len)
-                        .into_iter()
-                        .map(kept)
-                        .collect(),
-                })
-                .collect(),
-            need_auths: listed(st.needs, st.needs_len)
-                .into_iter()
-                .map(|n| (n.direction, kept(n.auth)))
-                .collect(),
-            need_targets: listed(st.needs, st.needs_len)
-                .into_iter()
-                .map(|n| kept(n.target_from))
-                .collect(),
-            need_trust: listed(st.needs, st.needs_len)
-                .into_iter()
-                .map(|n| kept(n.trust_from))
-                .collect(),
-            trust_keys: declared(&tail).trust_keys,
-            need_transports: listed(st.needs, st.needs_len)
-                .into_iter()
-                .map(|n| kept(n.transport))
-                .collect(),
-            dialects: listed(tail.dialects, tail.dialects_len)
-                .into_iter()
-                .map(kept)
-                .collect(),
-            dialect_auth: listed(tail.dialect_auth, tail.dialect_auth_len)
-                .into_iter()
-                .map(|d| (d.dialect, kept(d.style), kept_blob(d.params)))
-                .collect(),
-            dialect_flags: dialect_flags(&tail),
-            nouns: (
-                kept(tail.label),
-                kept(tail.subject_noun),
-                kept(tail.admin_noun),
-            ),
-            billable_families: listed(tail.billable_classes, tail.billable_classes_len)
-                .into_iter()
-                .map(|c| kept(c.family))
-                .collect(),
-            probes: tail.flags & busbar_contract::abi::plane::TAIL_PROBES != 0,
-            fallback: tail.flags & busbar_contract::abi::plane::TAIL_FALLBACK != 0,
-            caller_credential_refusal: kept(tail.caller_credential_refusal),
-            tail_flags: tail.flags,
-            stream_ceiling_secs: tail.stream_ceiling_secs,
-            provider_keys: stated_provider_keys(st.extensions)?,
-        },
-    };
-    Ok(facts)
+        served,
+    })
 }
 
 fn stated_provider_keys(
@@ -496,16 +352,11 @@ fn stated_provider_keys(
     // into owned values before this returns.
     let bytes = unsafe { crate::dispatch::validate::lent(ext.ptr, ext.len) }
         .ok_or("the Statement's extensions are longer than any blob may be")?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a load-time Statement refusal"
-    )]
-    let keys = busbar_contract::provider_keys::stated(bytes)
-        .map_err(|e| format!("the plane's provider keys are refused: {e}"));
-    keys
+    busbar_contract::provider_keys::stated(bytes)
+        .map_err(crate::cold::dispatch::kinds::plane_provider_keys)
 }
 
-fn dialect_flags(tail: &busbar_contract::abi::plane::PlaneTail) -> Vec<u32> {
+pub(crate) fn dialect_flags(tail: &busbar_contract::abi::plane::PlaneTail) -> Vec<u32> {
     let mut flags = vec![0; listed(tail.dialects, tail.dialects_len).len()];
     for d in listed(tail.dialect_auth, tail.dialect_auth_len) {
         if let Some(f) = flags.get_mut(d.dialect as usize) {
@@ -515,7 +366,7 @@ fn dialect_flags(tail: &busbar_contract::abi::plane::PlaneTail) -> Vec<u32> {
     flags
 }
 
-fn kept(s: AbiStr) -> &'static str {
+pub(crate) fn kept(s: AbiStr) -> &'static str {
     if check_tail_text(s, "plane.tail.text").is_err() {
         over_cap();
         return "";
@@ -539,7 +390,7 @@ fn kept(s: AbiStr) -> &'static str {
     crate::intern_name(text)
 }
 
-fn kept_blob(b: Blob) -> &'static [u8] {
+pub(crate) fn kept_blob(b: Blob) -> &'static [u8] {
     if busbar_contract::abi::mechanism::check::blob(&b, "plane.tail.blob", "plane.tail.blob")
         .is_err()
     {
@@ -566,16 +417,10 @@ fn kept_blob(b: Blob) -> &'static [u8] {
     if let Some(kept) = blobs.get(bytes) {
         return kept;
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a Statement blob is interned once per process, at bind"
-    )]
-    let kept: &'static [u8] = bytes.to_vec().leak();
-    blobs.insert(kept);
-    kept
+    crate::cold::dispatch::kinds::first_blob(&mut blobs, bytes)
 }
 
-fn kept_mechanisms(mechanisms: Vec<PinMechanismDecl>) -> &'static [PinMechanismDecl] {
+pub(crate) fn kept_mechanisms(mechanisms: Vec<PinMechanismDecl>) -> &'static [PinMechanismDecl] {
     if mechanisms.is_empty() {
         return &[];
     }
@@ -593,7 +438,7 @@ fn kept_mechanisms(mechanisms: Vec<PinMechanismDecl>) -> &'static [PinMechanismD
     mechanisms
 }
 
-fn listed<T: Copy>(p: *const T, n: usize) -> Vec<T> {
+pub(crate) fn listed<T: Copy>(p: *const T, n: usize) -> Vec<T> {
     if busbar_contract::abi::mechanism::check::bounded(p, n, "plane.tail.list").is_err() {
         over_cap();
         return Vec::new();
@@ -604,12 +449,7 @@ fn listed<T: Copy>(p: *const T, n: usize) -> Vec<T> {
         over_cap();
         return Vec::new();
     };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a Statement list is copied out once, at bind"
-    )]
-    let owned = list.to_vec();
-    owned
+    crate::cold::dispatch::kinds::statement_list(list)
 }
 
 fn ticket_prefix(st: &Statement) -> Result<Option<&'static str>, String> {
@@ -621,76 +461,17 @@ fn ticket_prefix(st: &Statement) -> Result<Option<&'static str>, String> {
         }
         let word = kept(w.word);
         if word.is_empty() {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "boot: a load-time Statement refusal"
-            )]
-            return Err("the plane declares an empty issued-id prefix".to_string());
+            return Err(crate::cold::dispatch::kinds::refusal(
+                "the plane declares an empty issued-id prefix",
+            ));
         }
         if found.replace(word).is_some() {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "boot: a load-time Statement refusal"
-            )]
-            return Err("the plane declares two issued-id prefixes".to_string());
+            return Err(crate::cold::dispatch::kinds::refusal(
+                "the plane declares two issued-id prefixes",
+            ));
         }
     }
     Ok(found)
-}
-
-fn declared(t: &PlaneTail) -> InstanceDecl {
-    let words = |p: *const AbiStr, n: usize| -> Vec<&'static str> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a Statement word list is copied out once, at bind"
-        )]
-        let words = listed(p, n).into_iter().map(kept).collect();
-        words
-    };
-    let (domain, prefix) = (kept(t.signing_domain), kept(t.signing_kid_prefix));
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the trust keys are copied out once, at bind"
-    )]
-    let trust_keys = listed(t.trust_keys, t.trust_keys_len)
-        .into_iter()
-        .map(|k| TrustKeyDecl {
-            key: kept(k.key),
-            role: match k.role {
-                plane::TRUST_PIN => TrustRole::Pin,
-                plane::TRUST_REVERIFY_TTL => TrustRole::ReverifyTtl,
-                plane::TRUST_ITEM_APPROVALS => TrustRole::ItemApprovals,
-                _ => TrustRole::RecoveryBackoff,
-            },
-            fingerprint: k.flags & plane::PIN_FINGERPRINT != 0,
-            default: Some(kept(k.default)).filter(|d| !d.is_empty()),
-            mechanisms: kept_mechanisms(
-                listed(k.mechanisms, k.mechanisms_len)
-                    .into_iter()
-                    .map(|m| PinMechanismDecl {
-                        token: kept(m.token),
-                        root: m.flags & plane::MECHANISM_ROOT != 0,
-                        peer_key: m.flags & plane::MECHANISM_PEER_KEY != 0,
-                    })
-                    .collect::<Vec<_>>(),
-            ),
-        })
-        .collect();
-    InstanceDecl {
-        authenticated_route: t.flags & plane::TAIL_AUTHENTICATED_ROUTE != 0,
-        conditional_records: false,
-        conditional_records_optional: false,
-        conditional_record_kinds: Vec::new(),
-        label: Arc::default(),
-        record_kinds: words(t.record_kinds, t.record_kinds_len),
-        record_collections: Vec::new(),
-        signing: (!domain.is_empty() && !prefix.is_empty()).then_some((domain, prefix)),
-        scope_kinds: words(t.scope_kinds, t.scope_kinds_len),
-        trust_keys,
-        record_chains: listed(t.record_chains, t.record_chains_len),
-        record_retentions: listed(t.record_retentions, t.record_retentions_len),
-        ticket_prefix: None,
-    }
 }
 
 impl crate::dispatch::Plugin<Plane> {
@@ -734,17 +515,15 @@ pub fn linked_probe(
     instance: &str,
     callers: Arc<dyn busbar_contract::services::CallerBinding>,
 ) -> ProbeBind {
+    use crate::cold::dispatch::kinds as cold;
     let dispatcher = Arc::new(crate::dispatch::Dispatcher::new(
         crate::dispatch::DispatchConfig::default(),
         callers,
     ));
-    // busbar:expect(bp::into_alloc, reason = "boot: the probe's instance name is shared once, at registration")
-    let instance: Arc<str> = Arc::from(instance);
+    let instance = cold::shared_name(instance);
     Arc::new(move || {
-        #[expect(clippy::disallowed_methods, reason = "boot: a probe-bind refusal")]
-        let row = crate::dispatch::LinkedRow::of(door).map_err(|e| e.to_string())?;
-        #[expect(clippy::disallowed_methods, reason = "boot: a probe-bind refusal")]
-        let plugin = crate::dispatch::load_linked::<Plane>(
+        let row = crate::dispatch::LinkedRow::of(door).map_err(cold::load_refusal)?;
+        crate::dispatch::load_linked::<Plane>(
             &row,
             crate::dispatch::Bind {
                 instance: Arc::clone(&instance),
@@ -754,28 +533,20 @@ pub fn linked_probe(
                 conns: crate::dispatch::ConnTable::Probe,
             },
         )
-        .map_err(|e| e.to_string());
-        plugin
+        .map_err(cold::load_refusal)
     })
 }
 
 pub fn linked_cli_help(
     door: busbar_contract::abi::mechanism::door::DoorFn,
 ) -> Result<Option<&'static str>, String> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a load-time Statement refusal"
-    )]
+    use crate::cold::dispatch::kinds as cold;
     let (door, _) = crate::dispatch::load::read_door(
         crate::dispatch::load::enter_door(crate::dispatch::load::raw(door)),
         Some(KindCode::Plane),
     )
-    .map_err(|e| e.to_string())?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a load-time Statement refusal"
-    )]
-    let st = crate::dispatch::load::statement(&door).map_err(|e| e.to_string())?;
+    .map_err(cold::load_refusal)?;
+    let st = crate::dispatch::load::statement(&door).map_err(cold::load_refusal)?;
     // SAFETY: `PlaneTail` is a `#[repr(C)]` kind tail of integers and pointers (all-zero valid); a
     // non-NULL kind tail is `'static` plugin data of its stated size.
     let tail: PlaneTail =
@@ -787,44 +558,17 @@ pub fn linked_cli_help(
 }
 
 pub fn rendered_cli_help(rendering: &[u8]) -> Result<Option<String>, String> {
+    use crate::cold::dispatch::kinds as cold;
     use busbar_contract::abi::mechanism::rendering::{read, read_plane_cli_help};
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a load-time Statement refusal"
-    )]
-    let r = read(rendering).map_err(|e| {
-        format!(
-            "the plane Statement rendering does not read back: byte {} is not {}",
-            e.at, e.what
-        )
-    })?;
+    let r = read(rendering).map_err(|e| cold::unreadable("the plane Statement", &e))?;
     if r.kind != KindCode::Plane as u32 {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a load-time Statement refusal"
-        )]
-        return Err(format!(
-            "the Statement rendering states kind {}, not plane",
-            r.kind
-        ));
+        return Err(cold::rendering_kind(r.kind, "plane"));
     }
     if r.kind_tail_size == 0 {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a load-time Statement refusal"
-        )]
-        return Err("a plane states no kind tail".to_string());
+        return Err(cold::refusal("a plane states no kind tail"));
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a load-time Statement refusal"
-    )]
-    let help = read_plane_cli_help(&r.kind_tail).map_err(|e| {
-        format!(
-            "the plane tail's rendering does not read back: byte {} is not {}",
-            e.at, e.what
-        )
-    })?;
+    let help =
+        read_plane_cli_help(&r.kind_tail).map_err(|e| cold::unreadable("the plane tail's", &e))?;
     Ok((!help.is_empty()).then_some(help))
 }
 
@@ -837,17 +581,10 @@ pub fn stated_facts(
 fn stated_facts_raw(
     door: busbar_contract::abi::sdk::door::RawDoorFn,
 ) -> Result<(String, PlaneFacts), String> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a load-time Statement refusal"
-    )]
-    let v = crate::dispatch::load::validate::<Plane>(door).map_err(|e| e.to_string())?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the plane's name is copied out once, at registration"
-    )]
+    use crate::cold::dispatch::kinds as cold;
+    let v = crate::dispatch::load::validate::<Plane>(door).map_err(cold::load_refusal)?;
     let name = crate::dispatch::plugin::str_bytes(v.statement.name)
-        .map(|n| String::from_utf8_lossy(n).into_owned())
+        .map(cold::lossy_name)
         .ok_or("the plane's Statement name is NULL or over-long")?;
     Ok((name, tail_facts(&v.statement)?))
 }
@@ -876,16 +613,11 @@ pub fn registration(
 ) -> Result<busbar_contract::plane_calls::PlaneRegistration, String> {
     let plugin = Arc::new(bind()?);
     let declared = plugin.declared();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a plane's registration is built once, at boot"
-    )]
-    let name = plugin.name().to_string();
     Ok(registered(
-        &name,
+        plugin.name(),
         &plugin.served(),
         &declared,
-        Some(plugin),
+        Some(Arc::clone(&plugin)),
         bind,
     ))
 }
@@ -910,108 +642,67 @@ fn registered(
     bound: Option<Arc<crate::dispatch::Plugin<Plane>>>,
     bind: ProbeBind,
 ) -> busbar_contract::plane_calls::PlaneRegistration {
-    let (label, subject_noun, admin_noun) = served.nouns;
+    use crate::cold::dispatch::kinds as cold;
     let key = crate::intern_name(name);
-    let refusal = served.caller_credential_refusal;
     let judge: Judge = std::sync::OnceLock::new();
     if let Some(plugin) = bound {
         let _ = judge.set(plugin);
     }
     let judge_bind = Arc::clone(&bind);
-    // busbar:expect(bp::clone_alloc, reason = "boot: a plane's registration is built once, at boot")
-    let dialects = served.dialects.clone();
+    let dialects = cold::statement_list(&served.dialects);
     let probe: std::sync::Mutex<Option<Probe>> = std::sync::Mutex::new(None);
-    // busbar:expect(bp::clone_alloc, reason = "boot: a plane's registration is built once, at boot")
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a plane's registration is built once, at boot"
-    )]
-    let registration = busbar_contract::plane_calls::PlaneRegistration {
-        key,
-        section: served.section,
-        owns: served.owns.clone(),
-        consumes: served.consumes.clone(),
-        requires: served.requires.clone(),
-        secret_refs: served.secret_refs.clone(),
-        admin_routes: served.admin_routes.clone(),
-        admin_openapi: served.admin_openapi,
-        streaming_content_types: served.streaming_content_types.clone(),
-        label,
-        subject_noun,
-        admin_noun,
-        audit_kind: served.audit_kind,
-        signing: declared.signing,
-        dialects: served.dialects.clone(),
-        dialect_flags: served.dialect_flags.clone(),
-        scope_kinds: declared.scope_kinds.clone(),
-        billable_classes: served
-            .billable_classes
-            .iter()
-            .copied()
-            .zip(served.billable_families.iter().copied())
-            .collect(),
-        class_parents: served.class_parents.clone(),
-        fee_units: served.fee_units.clone(),
-        record_kinds: declared.record_kinds.clone(),
-        trust_keys: declared.trust_keys.clone(),
-        caller_credential_refusal: (!refusal.is_empty()).then_some(refusal),
-        fallback: served.fallback,
-        provider_keys: served.provider_keys.clone(),
-        validate: Arc::new(move |settings: &[u8]| {
+    let validate: busbar_contract::plane_calls::SectionJudge =
+        Arc::new(move |settings: &[u8]| {
             let plugin = judge_of(&judge, &judge_bind)?;
             lifecycle::validate_json(&plugin, settings)
-        }),
-        facing: Arc::new(
-            move |settings: &[u8],
-                  owned: &[u8],
-                  public_url: Option<&str>,
-                  facts: &[busbar_contract::plane_calls::DialectFacts]| {
-                let url = public_url.unwrap_or_default();
-                let same = |p: &Probe| p.url == url && p.owned == owned && p.facts == facts;
-                let lock = || {
-                    probe
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                };
-                let taken = { lock().take() };
-                let mut probe = match taken {
-                    Some(probe) if same(&probe) => probe,
-                    other => {
-                        drop(other);
-                        #[expect(
-                            clippy::disallowed_methods,
-                            reason = "config: a facing probe is bound once per changed plane settings"
-                        )]
-                        let fresh = Probe {
-                            url: url.to_owned(),
-                            owned: owned.to_vec(),
-                            facts: facts.to_vec(),
-                            plugin: bind()?,
-                            generation: 0,
-                        };
-                        fresh
+        });
+    let face: busbar_contract::plane_calls::FacingProbe = Arc::new(
+        move |settings: &[u8],
+              owned: &[u8],
+              public_url: Option<&str>,
+              facts: &[busbar_contract::plane_calls::DialectFacts]| {
+            let url = public_url.unwrap_or_default();
+            let same = |p: &Probe| p.url == url && p.owned == owned && p.facts == facts;
+            let lock = || {
+                probe
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            };
+            let taken = { lock().take() };
+            let mut probe = match taken {
+                Some(probe) if same(&probe) => probe,
+                other => {
+                    drop(other);
+                    // A facing probe is bound once per changed plane settings.
+                    let (probe_url, probe_owned, probe_facts) = cold::probe_key(url, owned, facts);
+                    Probe {
+                        url: probe_url,
+                        owned: probe_owned,
+                        facts: probe_facts,
+                        plugin: bind()?,
+                        generation: 0,
                     }
-                };
-                let faced = facing(
-                    &probe.plugin,
-                    &dialects,
-                    &mut probe.generation,
-                    settings,
-                    owned,
-                    public_url,
-                    facts,
-                );
-                let spare = if faced.is_ok() && !probe.plugin.is_faulted() {
-                    lock().replace(probe)
-                } else {
-                    Some(probe)
-                };
-                drop(spare);
-                faced
-            },
-        ),
-    };
-    registration
+                }
+            };
+            let faced = facing(
+                &probe.plugin,
+                &dialects,
+                &mut probe.generation,
+                settings,
+                owned,
+                public_url,
+                facts,
+            );
+            let spare = if faced.is_ok() && !probe.plugin.is_faulted() {
+                lock().replace(probe)
+            } else {
+                Some(probe)
+            };
+            drop(spare);
+            faced
+        },
+    );
+    cold::plane_registration(key, served, declared, validate, face)
 }
 
 struct Probe {
@@ -1040,41 +731,42 @@ impl Drop for Probe {
     }
 }
 
+/// The provider facts a plane's open is lent, one per dialect, borrowing `dialects`; built once
+/// per plane open.
 #[must_use]
 pub fn provider_facts(
     dialects: &[busbar_contract::plane_calls::DialectFacts],
 ) -> Vec<busbar_contract::abi::plane::ProviderFacts> {
-    use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON};
+    crate::cold::dispatch::kinds::plane_provider_facts(dialects)
+}
+
+/// One dialect's provider facts, borrowing `d`.
+pub(crate) fn provider(
+    d: &busbar_contract::plane_calls::DialectFacts,
+) -> busbar_contract::abi::plane::ProviderFacts {
+    use busbar_contract::abi::mechanism::call::{BLOB_ABSENT, BLOB_JSON};
     let text = |s: &str| AbiStr {
         ptr: s.as_ptr(),
         len: s.len(),
     };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: provider facts are lent once per plane open"
-    )]
-    let facts = dialects
-        .iter()
-        .map(|d| busbar_contract::abi::plane::ProviderFacts {
-            name: text(&d.name),
-            protocol: text(&d.protocol),
-            error_map: match &d.error_map {
-                Some(json) => Blob {
-                    ptr: json.as_ptr(),
-                    len: json.len(),
-                    fmt: BLOB_JSON,
-                    flags: 0,
-                },
-                None => Blob {
-                    ptr: std::ptr::null(),
-                    len: 0,
-                    fmt: BLOB_ABSENT,
-                    flags: 0,
-                },
+    busbar_contract::abi::plane::ProviderFacts {
+        name: text(&d.name),
+        protocol: text(&d.protocol),
+        error_map: match &d.error_map {
+            Some(json) => Blob {
+                ptr: json.as_ptr(),
+                len: json.len(),
+                fmt: BLOB_JSON,
+                flags: 0,
             },
-        })
-        .collect();
-    facts
+            None => Blob {
+                ptr: std::ptr::null(),
+                len: 0,
+                fmt: BLOB_ABSENT,
+                flags: 0,
+            },
+        },
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1124,14 +816,7 @@ fn checked(
     plugin: &crate::dispatch::Plugin<Plane>,
     snapshot: Option<OwnedSnapshot>,
 ) -> Result<OwnedSnapshot, String> {
-    #[expect(clippy::disallowed_methods, reason = "error: a refused plane snapshot")]
-    let snapshot = snapshot.ok_or_else(|| {
-        format!(
-            "plane `{}`'s snapshot did not pass the host's checks",
-            plugin.name()
-        )
-    });
-    snapshot
+    snapshot.ok_or_else(|| crate::cold::dispatch::kinds::plane_snapshot_refused(plugin.name()))
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1166,10 +851,11 @@ pub fn refresh_door_on(
         busbar_contract::abi::mechanism::extensions::encode(&[(plane::EXT_OWNED, owned)])
     });
     let inputs = Arc::new((settings, extensions));
-    #[expect(clippy::disallowed_methods, reason = "error: a refused plane refresh")]
     let mut call = (0..dispatcher.workers().max(1))
         .find_map(|worker| Ticketed::mint(dispatcher, worker))
-        .ok_or_else(|| "no ticket could be minted for a plane refresh".to_string())?;
+        .ok_or_else(|| {
+            crate::cold::dispatch::kinds::refusal("no ticket could be minted for a plane refresh")
+        })?;
     let mut head = in_head();
     head.extensions = lifecycle::blob(&inputs.1, BLOB_OCTETS, 0);
     let frame = Frame::new(
@@ -1219,16 +905,7 @@ pub fn refresh_door_on(
 
 /// A refresh that did not come back READY, with the plugin's own error text when it gave one.
 pub(crate) fn refresh_failure(name: &str, outcome: Outcome, error: Option<&[u8]>) -> String {
-    #[expect(clippy::disallowed_methods, reason = "error: a refused plane refresh")]
-    let failure = match error.filter(|e| !e.is_empty()) {
-        Some(e) => format!(
-            "plane `{name}` did not refresh: {:?}: {}",
-            outcome,
-            String::from_utf8_lossy(e)
-        ),
-        None => format!("plane `{name}` did not refresh: {outcome:?}"),
-    };
-    failure
+    crate::cold::dispatch::kinds::plane_refresh_failure(name, outcome, error)
 }
 
 fn refreshed(
@@ -1323,26 +1000,9 @@ fn facing(
         snapshot
     };
     let snapshot = checked(plugin, snapshot)?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a plane's facing is copied out once per plane settings"
-    )]
-    let claims = snapshot
-        .claims
-        .iter()
-        .map(|c| {
-            let dialect = dialects
-                .get(usize::from(c.refusal_dialect))
-                .copied()
-                .unwrap_or_default();
-            (c.target.clone(), dialect)
-        })
-        .collect();
-    Ok(busbar_contract::plane_calls::DoorFacing {
-        claims,
-        admission: snapshot.audience.zip(snapshot.resource_metadata),
-        listed: snapshot.listed,
-    })
+    Ok(crate::cold::dispatch::kinds::plane_facing(
+        snapshot, dialects,
+    ))
 }
 
 fn check_tail_fee_units(tail: &PlaneTail) -> Result<(), Fault> {
@@ -1382,12 +1042,9 @@ fn refuse_retired_trust_roles(tail: &PlaneTail) -> Result<(), String> {
     const CODE: busbar_contract::diagnostic::Banner = busbar_contract::diagnostic::Banner(6017);
     for key in listed(tail.trust_keys, tail.trust_keys_len) {
         if key.role == plane::TRUST_PRIVATE_REACH {
-            return Err(format!(
-                "{CODE}: the plane declares trust key `{}` with the retired role \
-                 TRUST_PRIVATE_REACH (4); one core setting, `advanced.allow_destinations`, governs \
-                 every private destination. Upgrade the plugin to a release built against busbar \
-                 1.6.0",
-                kept(key.key)
+            return Err(crate::cold::dispatch::kinds::retired_trust_role(
+                CODE,
+                kept(key.key),
             ));
         }
     }
@@ -2115,38 +1772,32 @@ impl crate::dispatch::Plugin<Plane> {
     }
 }
 
-fn owned_str(s: busbar_contract::abi::mechanism::call::AbiStr) -> Option<Option<String>> {
+pub(crate) fn owned_str(
+    s: busbar_contract::abi::mechanism::call::AbiStr,
+) -> Option<Option<String>> {
     if s.ptr.is_null() {
         return Some(None);
     }
     // SAFETY: the plugin's generation data, valid until `retire` of its generation, and read only
     // inside the READY crossing that published it; its length capped before the slice is formed.
     let bytes = unsafe { crate::dispatch::validate::lent_str(s) }?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a plane snapshot is copied out once per open or refresh"
-    )]
-    let text = std::str::from_utf8(bytes).ok().map(|t| Some(t.to_owned()));
-    text
+    std::str::from_utf8(bytes)
+        .ok()
+        .map(|t| Some(crate::cold::dispatch::kinds::snapshot_text(t)))
 }
 
-fn owned_blob(b: Blob) -> Option<Option<Vec<u8>>> {
+pub(crate) fn owned_blob(b: Blob) -> Option<Option<Vec<u8>>> {
     if b.ptr.is_null() {
         return Some(None);
     }
     // SAFETY: as `owned_str`.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a plane snapshot is copied out once per open or refresh"
-    )]
-    let blob =
-        unsafe { crate::dispatch::validate::lent(b.ptr, b.len) }.map(|bytes| Some(bytes.to_vec()));
-    blob
+    unsafe { crate::dispatch::validate::lent(b.ptr, b.len) }
+        .map(|bytes| Some(crate::cold::dispatch::kinds::snapshot_bytes(bytes)))
 }
 
 pub(crate) fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<OwnedSnapshot> {
     use busbar_contract::abi::plane::check::{
-        check_admin_routes, check_arrival_spans, check_claim_target, check_claims, check_listed,
+        check_admin_routes, check_arrival_spans, check_claims, check_listed,
     };
     if p.is_null() {
         return None;
@@ -2169,59 +1820,8 @@ pub(crate) fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<Ow
     check_admin_routes(routes).ok()?;
     check_listed(listed).ok()?;
     check_arrival_spans(spans).ok()?;
-
-    let span_of = |i: usize| -> Option<String> {
-        let name = spans.get(i).map_or(Some(String::new()), |n| {
-            owned_str(*n).map(Option::unwrap_or_default)
-        })?;
-        name.bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-            .then_some(name)
-    };
-    let text = |a| owned_str(a)?.or(Some(String::new()));
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a plane snapshot is copied out once per open or refresh"
-    )]
-    let snapshot = OwnedSnapshot {
-        generation: s.generation,
-        claims: claims
-            .iter()
-            .enumerate()
-            .map(|(i, c)| {
-                let target = text(c.target)?;
-                check_claim_target(&target, c.flags).ok()?;
-                Some(OwnedClaim {
-                    verb: text(c.verb)?,
-                    target,
-                    carrier: text(c.carrier)?,
-                    flags: c.flags,
-                    refusal_dialect: c.refusal_dialect,
-                    arrival_span: span_of(i)?,
-                })
-            })
-            .collect::<Option<_>>()?,
-        admin_routes: routes
-            .iter()
-            .map(|r| {
-                Some(OwnedAdminRoute {
-                    verb: text(r.verb)?,
-                    target: text(r.target)?,
-                    flags: r.flags,
-                    audit_verb: text(r.audit_verb)?,
-                })
-            })
-            .collect::<Option<_>>()?,
-        openapi: owned_blob(s.openapi)?,
-        audience: owned_str(s.audience)?,
-        resource_metadata: owned_str(s.resource_metadata)?,
-        resource_facts: owned_blob(s.resource_facts)?,
-        listed: listed
-            .iter()
-            .map(|n| owned_str(*n).flatten())
-            .collect::<Option<_>>()?,
-    };
-    Some(snapshot)
+    // The snapshot is copied out once per open or refresh, out of line.
+    crate::cold::dispatch::kinds::plane_snapshot(s, claims, routes, listed, spans)
 }
 
 #[cfg(test)]

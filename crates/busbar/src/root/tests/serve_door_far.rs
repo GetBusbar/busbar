@@ -384,7 +384,7 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
                 ride_anchors: Vec::new(),
                 connection_required: false,
                 need: NeedId(0),
-                base_url: "https://far.test/".into(),
+                base_url: "https://far.test/".to_owned(),
                 auth: None,
                 provider: "e".into(),
                 keep: Default::default(),

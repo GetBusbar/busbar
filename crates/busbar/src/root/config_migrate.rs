@@ -78,7 +78,7 @@ pub(crate) struct IndexPlugin {
 
 /// One release of an [`IndexPlugin`].
 #[derive(Debug, Clone)]
-pub struct IndexRelease {
+pub(crate) struct IndexRelease {
     /// The release tag (`v1.6.0`).
     pub tag: String,
     /// The kind ABI version its build states.

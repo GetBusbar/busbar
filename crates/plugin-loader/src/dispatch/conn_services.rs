@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::collections::HashMap;
-
-use foldhash::HashSet;
+use foldhash::{HashMap, HashSet};
 use std::mem::size_of;
 use std::net::IpAddr;
 use std::os::raw::c_void;
@@ -12,7 +10,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use futures::FutureExt as _;
-use zeroize::Zeroize;
 
 use busbar_contract::abi::host::conn::connector::{
     service, ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, ReplyIn,
@@ -24,6 +21,7 @@ use busbar_contract::abi::host::conn::connector::{
 use busbar_contract::abi::host::service::{lent_out, ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket};
+use busbar_contract::abi::sdk::wipe::wipe_bytes;
 use busbar_contract::abi::transport::{fields, FrameSpan};
 use busbar_contract::auth_calls::{Fields, FieldsRequest};
 use busbar_contract::conn::{
@@ -34,6 +32,7 @@ use std::future::Future as _;
 
 use super::services::{service, write_out, Answered};
 use super::ticket::InstanceWake;
+use crate::cold::dispatch::services::Sweep as _;
 
 pub static CONN_SLOTS: ConnectorSlots = ConnectorSlots {
     size: size_of::<ConnectorSlots>() as u32,
@@ -135,11 +134,7 @@ fn interned(text: &str) -> &'static str {
     if kept.len() >= CAUSE_TEXTS_MAX {
         return "";
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a failure cause's text is interned once per process, the first time it is met"
-    )]
-    let t: &'static str = Box::leak(text.to_owned().into_boxed_str());
+    let t = crate::cold::dispatch::services::leak_text(text);
     kept.insert(t);
     t
 }
@@ -478,14 +473,8 @@ impl ConnState {
     }
 
     fn take_dialling(&self, _table: Option<&ArmedConns>, gone: impl Fn(&Ticket) -> bool) -> Closes {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a worker's or instance's dials are detached once, when it retires"
-        )]
-        let dials = lock(&self.dialling)
-            .extract_if(|k, _| gone(k))
-            .map(|(_, dial)| dial)
-            .collect();
+        // A worker's or instance's dials are detached once, when it retires.
+        let dials = lock(&self.dialling).drain_where(|k, _| gone(k));
         let waits = self.take_waits(|handle, _| gone(&handle.ticket));
         Closes {
             dials,
@@ -497,12 +486,8 @@ impl ConnState {
     /// Detach an instance's resources after CLOSE, leaving transport calls to the deferred owner.
     pub(crate) fn retire_all(&self) -> Closes {
         let mut closes = self.take_dialling(None, |_| true);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: an instance's streams are detached once, when it retires"
-        )]
-        let streams = std::mem::take(&mut *self.streams()).into_values().collect();
-        closes.streams = streams;
+        // An instance's streams are detached once, when it retires.
+        closes.streams = std::mem::take(&mut *self.streams()).drain_values();
         lock(&self.facts).clear();
         lock(&self.kept).clear();
         closes
@@ -524,26 +509,21 @@ impl ConnState {
         &self,
         binding: &Arc<super::export_bindings::Generation>,
     ) -> Closes {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a binding generation's streams are detached once, when it retires"
-        )]
-        let streams: Vec<_> = self
+        // A binding generation's streams and dials are detached once, when it retires.
+        let streams = self
             .streams()
-            .extract_if(|_, stream| stream.authority.belongs_to(binding))
-            .collect();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a binding generation's dials are detached once, when it retires"
-        )]
-        let dials = lock(&self.dialling)
-            .extract_if(|_, dial| dial.authority.belongs_to(binding))
-            .map(|(_, dial)| dial)
-            .collect();
+            .drain_pairs_where(|_, stream| stream.authority.belongs_to(binding));
+        let dials = lock(&self.dialling).drain_where(|_, dial| dial.authority.belongs_to(binding));
+        let mut closes = Closes {
+            dials,
+            streams: Vec::with_capacity(streams.len()),
+            waits: Vec::new(),
+        };
         {
             let mut facts = lock(&self.facts);
-            for (key, _) in &streams {
-                facts.remove(key);
+            for (key, stream) in streams {
+                facts.remove(&key);
+                closes.streams.push(stream);
             }
         }
         let waits = self.take_waits(|_, wait| {
@@ -551,16 +531,8 @@ impl ConnState {
                 .as_ref()
                 .is_some_and(|creating| Arc::ptr_eq(creating, binding))
         });
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a binding generation's streams are detached once, when it retires"
-        )]
-        let streams = streams.into_iter().map(|(_, s)| s).collect();
-        Closes {
-            dials,
-            streams,
-            waits,
-        }
+        closes.waits = waits;
+        closes
     }
 }
 
@@ -1037,35 +1009,26 @@ impl ConnState {
         needs: &[busbar_contract::abi::mechanism::rendering::ReadNeed],
     ) {
         let _ = self.context.set(ctx);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: an instance's needs are declared once, at bind"
-        )]
+        // An instance's needs are declared once, at bind: load-time tables.
+        use crate::cold::dispatch::services::load_table;
         let _ = self
             .need_timeouts
-            .set(needs.iter().map(|n| n.timeout_ms).collect());
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: an instance's needs are declared once, at bind"
-        )]
-        let _ = self.response_keeps.set(
-            needs
-                .iter()
-                .map(|n| ResponseKeep {
-                    mode: n.keep_mode,
-                    kept: n
-                        .keep_response_headers
+            .set(load_table(needs.iter().map(|n| n.timeout_ms)));
+        let _ = self.response_keeps.set(load_table(needs.iter().map(|n| {
+            ResponseKeep {
+                mode: n.keep_mode,
+                kept: load_table(
+                    n.keep_response_headers
                         .iter()
-                        .map(|h| crate::intern_name(h))
-                        .collect(),
-                    denied: n
-                        .deny_response_headers
+                        .map(|h| crate::intern_name(h)),
+                ),
+                denied: load_table(
+                    n.deny_response_headers
                         .iter()
-                        .map(|h| crate::intern_name(h))
-                        .collect(),
-                })
-                .collect(),
-        );
+                        .map(|h| crate::intern_name(h)),
+                ),
+            }
+        })));
     }
 
     fn need_timeout(&self, need: NeedId) -> u64 {
@@ -1105,7 +1068,8 @@ impl ConnState {
         if timeout_ms == 0 {
             return Ok(());
         }
-        let now = std::time::Instant::now();
+        // The read's one reading of the dispatch clock.
+        let now = super::instant_at(super::now_ns());
         let Some(at) = now.checked_add(std::time::Duration::from_millis(timeout_ms)) else {
             return Ok(());
         };
@@ -1231,12 +1195,15 @@ impl ConnState {
         (kept, closes)
     }
 
+    /// Retire `handles`' connector results on `ticket` into `removed` (this thread's lent
+    /// buffer, dropped by the caller after its locks).
     pub(crate) fn retire(
         &self,
         ticket: Ticket,
         handles: &[busbar_contract::abi::sdk::completion_retirement::Handle],
+        removed: &mut RetiredKept,
         detach: impl FnOnce() -> Result<(), ()>,
-    ) -> Result<Vec<Kept>, ()> {
+    ) -> Result<(), ()> {
         use busbar_contract::abi::sdk::completion_retirement::Domain;
         let mut all = lock(&self.kept);
         for handle in handles {
@@ -1249,11 +1216,11 @@ impl ConnState {
                 _ => {}
             }
         }
-        let mut removed = Vec::with_capacity(handles.len());
+        removed.0.reserve(handles.len());
         detach()?;
         if let Some(entries) = all.get_mut(&ticket) {
             for handle in handles.iter().filter(|h| h.domain == Domain::Connector) {
-                removed.push(
+                removed.0.push(
                     entries
                         .remove(&handle.seq)
                         .expect("validated connector result"),
@@ -1263,7 +1230,31 @@ impl ConnState {
                 all.remove(&ticket);
             }
         }
-        Ok(removed)
+        Ok(())
+    }
+}
+
+std::thread_local! {
+    /// The connector results a retirement takes out under the state lock, to drop after it: one
+    /// buffer per thread, reused (its capacity kept) by every retirement on the thread.
+    static RETIRED_KEPT: std::cell::Cell<Vec<Kept>> = const { std::cell::Cell::new(Vec::new()) };
+}
+
+/// This thread's connector retirement buffer, lent for one retirement: dropping it (after the
+/// locks are released) drops the retired results and hands the emptied buffer back.
+pub(crate) struct RetiredKept(Vec<Kept>);
+
+impl RetiredKept {
+    pub(crate) fn lend() -> Self {
+        RetiredKept(RETIRED_KEPT.take())
+    }
+}
+
+impl Drop for RetiredKept {
+    fn drop(&mut self) {
+        let mut kept = std::mem::take(&mut self.0);
+        kept.clear();
+        RETIRED_KEPT.set(kept);
     }
 }
 
@@ -1354,11 +1345,9 @@ pub(crate) fn forget_worker(ids: &[InstanceId], worker: u32) {
             drop(forget(id, ticket));
         }
         w.conn_state.drop_dialling(w.conn.get(), gone);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a faulted worker's kept answers are dropped once, when the watchdog replaces it"
-        )]
-        lock(&w.conn_state.kept).retain(|t, _| !gone(t));
+        // A faulted worker's kept answers are dropped once, when the watchdog replaces it.
+        let dropped = lock(&w.conn_state.kept).drain_where(|t, _| gone(t));
+        drop(dropped);
     }
 }
 
@@ -1369,12 +1358,8 @@ pub(crate) fn purge(id: InstanceId, table: &Arc<dyn DeclaredConns>) {
 
         *lock(&st.facts) = foldhash::HashMap::default();
         *lock(&st.kept) = foldhash::HashMap::default();
-        let gone = std::mem::take(&mut *st.streams());
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a purged instance's streams are detached once"
-        )]
-        let streams = gone.into_values().collect();
+        // A purged instance's streams are detached once.
+        let streams = std::mem::take(&mut *st.streams()).drain_values();
         drop(Closes {
             streams,
             waits: st.take_waits(|_, _| true),
@@ -1414,10 +1399,21 @@ struct Head {
 
 impl Drop for Head {
     fn drop(&mut self) {
-        self.method.zeroize();
-        self.target.zeroize();
-        self.fields.zeroize();
+        wipe_bytes(&mut self.method);
+        wipe_bytes(&mut self.target);
+        for (name, value) in &mut self.fields {
+            wipe_text(name);
+            wipe_bytes(value);
+        }
+        self.fields.clear();
     }
+}
+
+/// Wipe a text's whole allocation (as `wipe_bytes`) and leave it empty, its capacity kept.
+fn wipe_text(text: &mut String) {
+    let mut bytes = std::mem::take(text).into_bytes();
+    wipe_bytes(&mut bytes);
+    *text = String::from_utf8(bytes).unwrap_or_default();
 }
 
 /// Where a stream is.
@@ -1433,7 +1429,8 @@ enum Conn {
         /// The registration the stream names (`EstablishIn::member`); empty = none.
         member: String,
         dial_timeout_ms: u64,
-        head: Option<Head>,
+        /// Boxed: the variant stays as small as the rest of the enum.
+        head: Option<Box<Head>>,
         body: SecureVec,
     },
     /// Open on the connection table.
@@ -1509,9 +1506,9 @@ fn filter_reply_head(
     }
     HEAD_SCRATCH.with_borrow_mut(|scratch| {
         let filtered = filter_reply_head_in(scratch, buf, field_len, reason, policy);
-        scratch.reason.zeroize();
-        scratch.kept.zeroize();
-        scratch.lower.zeroize();
+        wipe_bytes(&mut scratch.reason);
+        wipe_bytes(&mut scratch.kept);
+        wipe_text(&mut scratch.lower);
         filtered
     })
 }
@@ -1916,14 +1913,14 @@ extern "C" fn write_request(
                         Ok(l) => l,
                         Err(refused) => return refused,
                     };
-                    *head = Some(Head {
+                    *head = Some(Box::new(Head {
                         completed: None,
                         method: method.to_vec(),
                         target: words.to_vec(),
                         fields: lines,
                         timeout_ms: piece.timeout_ms,
                         dial_timeout_ms: *dial_timeout_ms,
-                    });
+                    }));
                     Answered::ready(0, bytes.len() as u64)
                 }
                 (REQUEST_BODY, true) => {
@@ -2056,7 +2053,7 @@ extern "C" fn write_request(
                                             target,
                                             within,
                                             member,
-                                            head: h,
+                                            head: *h,
                                             body,
                                         })),
                                     }
@@ -2618,14 +2615,8 @@ fn process() -> &'static (String, String) {
         let user = std::env::var("USER")
             .or_else(|_| std::env::var("LOGNAME"))
             .unwrap_or_default();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the process identity is read once per process"
-        )]
-        let program = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-            .unwrap_or_default();
+        // The process identity is read once per process.
+        let program = crate::cold::dispatch::services::program_name();
         (user, program)
     })
 }
@@ -3007,16 +2998,16 @@ mod creating_authority_tests {
                         need: NeedId(0),
                         target: String::new(),
                         within: Vec::new(),
-                        member: "member".into(),
+                        member: "member".to_owned(),
                         dial_timeout_ms: 0,
-                        head: Some(Head {
+                        head: Some(Box::new(Head {
                             completed: None,
                             method: b"GET".to_vec(),
                             target: b"/".to_vec(),
                             fields: Vec::new(),
                             timeout_ms: 0,
                             dial_timeout_ms: 0,
-                        }),
+                        })),
                         body: SecureVec::new(),
                     },
                     prepared: None,
@@ -3309,14 +3300,14 @@ mod creating_authority_tests {
                     within: Vec::new(),
                     member: "member".to_owned(),
                     dial_timeout_ms: 0,
-                    head: Some(Head {
+                    head: Some(Box::new(Head {
                         completed: None,
                         method: b"POST".to_vec(),
                         target: b"/rpc".to_vec(),
                         fields: Vec::new(),
                         timeout_ms: 0,
                         dial_timeout_ms: 0,
-                    }),
+                    })),
                     body: SecureVec::new(),
                 },
                 prepared: None,

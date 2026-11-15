@@ -37,12 +37,7 @@ fn checkpoint_tag(snapshot: &UnitCheckpoint) -> &'static str {
     }
 }
 fn error(e: impl std::fmt::Debug) -> RecordStoreError {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a failed checkpoint operation renders its message once"
-    )]
-    let message = format!("unit checkpoint: {e:?}");
-    RecordStoreError(message)
+    crate::cold::governance::runtime::unit_checkpoint_store_error(&e)
 }
 fn refusal(message: &str) -> RecordStoreError {
     RecordStoreError(message.into())
@@ -113,41 +108,14 @@ impl UnitCheckpointEvidence {
         unit: u64,
         incarnation: u64,
     ) -> RecordStoreResult<Option<AuditRecord>> {
-        self.journal.flush().await.map_err(error)?;
-        let journal = StoreJournal::new(&self.store, self.node).map_err(error)?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "once per terminal unit, without the driver (A27c §8b bounds it)"
-        )]
-        let mut replay = journal.historical_replay().await.map_err(error)?;
-        let mut found = None;
-        while let Some(original) = replay.next().await.map_err(error)? {
-            let record = JournalRecord::decode(&original.body).map_err(error)?;
-            if record.class != RecordClass::Transaction {
-                continue;
-            }
-            if let Some(audit) = busbar_kernel_audit::from_journal_body(
-                &record.body,
-                &crate::Registration::meter_class,
-            )
-            .map_err(error)?
-            {
-                if audit.what.unit_key.get() == unit && audit.what.incarnation == incarnation {
-                    if found.is_some() {
-                        return Err(refusal("duplicate original audit for recovered unit"));
-                    }
-                    found = Some(audit);
-                }
-            }
-        }
-        let proof = replay.finish().map_err(error)?;
-        // The scan ran without the driver; confirm its prefix against the live
-        // head so a concurrent append is not mistaken for lost authority.
-        self.journal
-            .confirm_live_owned(Some(&proof))
-            .await
-            .map_err(error)?;
-        Ok(found)
+        crate::off_path::governance::runtime::unit_checkpoint_store_find_audit(
+            &self.store,
+            self.node,
+            &self.journal,
+            unit,
+            incarnation,
+        )
+        .await
     }
     /// Retain the exact signed audit and original sealed frame before native IO.
     /// Callers reuse pending_audit after uncertainty rather than sealing a new line.
@@ -248,9 +216,10 @@ impl StoreUnitCheckpoints {
         partition::namespace(FAMILY, &[&self.evidence.node.to_be_bytes()])
     }
     fn prefix(&self) -> Vec<u8> {
-        let mut key = FAMILY.0.to_vec();
-        key.extend_from_slice(&self.evidence.node.to_be_bytes());
-        key
+        crate::off_path::governance::runtime::unit_checkpoint_store_prefix(
+            &FAMILY.0,
+            self.evidence.node,
+        )
     }
     fn address(&self, id: &[u8; 16]) -> Address {
         let mut key = self.prefix();
@@ -415,7 +384,10 @@ impl StoreUnitCheckpoints {
                                 operation_id: p.operation,
                                 address: self.address(&p.snapshot.id),
                                 expected: duplicate_expected(&p.expected),
-                                value: Secret::new(serde_json::to_vec(&p.head).map_err(error)?),
+                                value: Secret::new(
+                                    crate::off_path::governance::runtime::unit_checkpoint_store_encode(&p.head)
+                                        .map_err(error)?,
+                                ),
                             },
                             guards: &[],
                         },
@@ -593,7 +565,8 @@ impl UnitCheckpointSink for StoreUnitCheckpoints {
                 ));
             }
         }
-        let encoded = serde_json::to_vec(snapshot).map_err(error)?;
+        let encoded = crate::off_path::governance::runtime::unit_checkpoint_store_encode(snapshot)
+            .map_err(error)?;
         if snapshot.measurement.is_some()
             && encoded.len() > crate::host_measurement::MAX_EVIDENCE_BYTES
         {
@@ -706,12 +679,7 @@ impl UnitCheckpointSink for StoreUnitCheckpoints {
             .await
             .map_err(error)?;
         self.no_foreign_pending()?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: checkpoints are replayed once, when the sink is attached"
-        )]
-        let replayed = out.into_values().collect();
-        Ok(replayed)
+        Ok(crate::off_path::governance::runtime::unit_checkpoint_store_replayed(out))
     }
     async fn recover_audit(&self, snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
         if snapshot.measurement.is_some() {

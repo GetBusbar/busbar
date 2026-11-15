@@ -22,12 +22,8 @@ impl<K: Kind> Plugin<K> {
         if !self.has_ready() {
             return Ok(());
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: names a plugin that did not become ready at load"
-        )]
         let failed = |reason: &dyn std::fmt::Display| {
-            format!("plugin '{}' ready failed: {reason}", self.name())
+            crate::cold::dispatch::runtime::ready_failed(self.name(), reason)
         };
         let ticket = dispatcher
             .mint(0)

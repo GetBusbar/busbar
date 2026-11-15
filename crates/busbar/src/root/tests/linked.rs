@@ -310,7 +310,7 @@ mod blocked_disk_resolver {
     use std::sync::mpsc::{Receiver, Sender};
     use std::sync::Mutex;
 
-    pub static HOLD: Mutex<Option<(Sender<()>, Receiver<()>)>> = Mutex::new(None);
+    pub(super) static HOLD: Mutex<Option<(Sender<()>, Receiver<()>)>> = Mutex::new(None);
     pub struct Source;
     impl Life for Source {
         type Kind = busbar_contract::plugin::markers::SecretKind;
