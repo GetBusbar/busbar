@@ -3,7 +3,7 @@
 
 use super::*;
 
-crate::own_seal!(Own);
+use crate::support::Own;
 const BOUNDS: Bounds = Bounds {
     items: 128,
     bytes: 16384,

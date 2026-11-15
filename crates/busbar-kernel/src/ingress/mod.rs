@@ -72,56 +72,6 @@ impl std::fmt::Display for PoolScope<'_> {
     }
 }
 
-pub fn admit_check(
-    app: &Arc<App>,
-    gov: &crate::governance::GovCtx,
-    proto: &str,
-    pool: &str,
-    charged_at: u64,
-) -> Result<(Option<crate::governance::AdmitGrant>, Option<String>), Box<Response>> {
-    let (Some(g), Some(key)) = (&app.governance, &gov.key) else {
-        return Ok((None, None));
-    };
-
-    // The pools this admission has downgraded to, in order; the last is the effective pool. Each
-    // is a distinct configured pool, so the history is bounded by the pool count.
-    // busbar:expect(bp::fresh_buffer, reason = "error: only a budget-exhausted (LimitBlocked) admission that downgrades records history here")
-    let mut downgraded: Vec<String> = Vec::new();
-    let blocked = loop {
-        let attempt_pool = downgraded.last().map_or(pool, String::as_str);
-        match g.try_admit(&app.cost, key, attempt_pool, charged_at) {
-            Ok(grant) => return Ok((Some(grant), downgraded.pop())),
-            Err(crate::governance::LimitBlocked::Limit {
-                downgrade_to: Some(to),
-                group,
-                ..
-            }) if !downgraded.contains(&to)
-                && app.engine_tables_view().pool_exists(&to)
-                && pool_authorized(gov, &to, proto).is_none()
-                && fallback_pools_authorized(app, gov, &to, proto).is_none() =>
-            {
-                tracing::info!(key_id = %key.id, from = attempt_pool, to = %to, group = %group,
-                    "governance: budget exhausted; downgrading pool (on_exhaust: downgrade)");
-                downgraded.push(to);
-            }
-            Err(blocked) => break blocked,
-        }
-    };
-    {
-        tracing::info!(key_id = %key.id, blocked = ?blocked, "governance: limit bucket blocked admission");
-        let (status, kind, message, retry_after) = limit_refusal(proto, &blocked);
-        let mut resp = ingress_error(proto, status, kind, &message);
-
-        if let Some(retry) = retry_after {
-            resp.headers_mut().insert(
-                axum::http::header::RETRY_AFTER,
-                axum::http::HeaderValue::from(retry),
-            );
-        }
-        Err(Box::new(resp))
-    }
-}
-
 /// The client-facing text of a limit refusal, written straight into its destination.
 struct RefusalText<'a>(&'a crate::governance::LimitBlocked);
 
@@ -223,24 +173,8 @@ pub fn limit_refusal(
             None,
         ),
     };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the refusal text of a limit-blocked request; callers carry it as an owned message"
-    )]
-    let message = RefusalText(blocked).to_string();
+    let message = crate::cold::host::ingress_refusal_text(&RefusalText(blocked));
     (status, kind, message, retry_after)
-}
-
-pub fn governance_guard(
-    app: &Arc<App>,
-    gov: &crate::governance::GovCtx,
-    proto: &'static str,
-    pool: &str,
-    started: Instant,
-    charged_at: u64,
-) -> Result<(Option<crate::governance::AdmitGrant>, Option<String>), Box<Response>> {
-    destination_guard(app, gov, proto, pool, started, charged_at)?;
-    admission_door(app, gov, proto, pool, started, charged_at)
 }
 
 pub fn destination_guard(
@@ -284,23 +218,6 @@ pub fn destination_guard(
         )));
     }
     Ok(())
-}
-
-pub fn admission_door(
-    app: &Arc<App>,
-    gov: &crate::governance::GovCtx,
-    proto: &'static str,
-    pool: &str,
-    started: Instant,
-    charged_at: u64,
-) -> Result<(Option<crate::governance::AdmitGrant>, Option<String>), Box<Response>> {
-    let label = pool_label(app, pool);
-    match admit_check(app, gov, proto, pool, charged_at) {
-        Err(resp) => Err(Box::new(finish_rejected(
-            app, gov, proto, label, started, charged_at, *resp,
-        ))),
-        Ok(admitted) => Ok(admitted),
-    }
 }
 
 pub fn pool_label<'a>(app: &Arc<App>, model: &'a str) -> &'a str {
@@ -450,36 +367,6 @@ pub mod dispatch;
 pub mod observe;
 
 pub(crate) use dispatch::protocol_dispatch;
-
-/// The not-found text for `model`: the plane's shaped copy when it has one, else the default.
-pub struct NotFoundMessage<'a> {
-    model: &'a str,
-    shaped: Option<&'a str>,
-}
-
-impl std::fmt::Display for NotFoundMessage<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.shaped {
-            Some(shaped) => f.write_str(shaped),
-            None => write!(
-                f,
-                "The model '{}' does not exist or you do not have access to it.",
-                self.model
-            ),
-        }
-    }
-}
-
-#[must_use]
-pub fn not_found_message<'a>(
-    model: &'a str,
-    model_not_found_message: Option<&'a str>,
-) -> NotFoundMessage<'a> {
-    NotFoundMessage {
-        model,
-        shaped: model_not_found_message,
-    }
-}
 
 #[cfg(test)]
 pub fn percent_decode(s: &str) -> String {

@@ -29,7 +29,7 @@ async fn echo() -> String {
     tokio::spawn(async move {
         while let Ok((mut s, _)) = l.accept().await {
             tokio::spawn(async move {
-                let mut buf = [0_u8; 4096];
+                let mut buf = vec![0_u8; 4096];
                 while let Ok(n) = s.read(&mut buf).await {
                     if n == 0 || s.write_all(&buf[..n]).await.is_err() {
                         break;
@@ -685,7 +685,7 @@ fn an_upgrade_over_a_piece_still_in_the_inbox_is_refused_and_the_connection_fail
         tokio::spawn(async move {
             let (mut s, _) = l.accept().await.unwrap();
             let _ = s.write_all(b"OK\nFORGED-PLAINTEXT").await;
-            let mut sink = [0_u8; 1024];
+            let mut sink = vec![0_u8; 1024];
             while matches!(s.read(&mut sink).await, Ok(n) if n > 0) {}
         });
         let mut c = Planned::carried(crate::support::via(), dial(&far))
@@ -740,8 +740,8 @@ fn a_holder_that_does_not_read_holds_the_far_end_back() {
             .expect("dials");
         let line = crate::line::Line::new(conn);
         let waker = std::task::Waker::noop();
-        let started = Instant::now();
-        while started.elapsed() < Duration::from_secs(2) {
+        // About 2 s of 1 ms polls, counted rather than read off the clock.
+        for _ in 0..2000 {
             let _ = line.poll_ready(EXCHANGE_STREAM, &mut std::task::Context::from_waker(waker));
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
@@ -784,9 +784,9 @@ fn a_far_end_that_never_reads_is_not_read_past_the_answers_it_is_owed() {
         ));
         let mut c = Connection::dial(door, &crate::support::via(), dial(&far)).expect("dials");
         let waker = std::task::Waker::noop();
-        let started = Instant::now();
         let mut most = 0;
-        while started.elapsed() < Duration::from_secs(3) {
+        // About 3 s of 1 ms polls, counted rather than read off the clock.
+        for _ in 0..3000 {
             while let std::task::Poll::Ready(Ok(Some(_))) =
                 c.poll_piece(&mut std::task::Context::from_waker(waker))
             {}

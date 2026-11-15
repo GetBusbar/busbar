@@ -1967,13 +1967,17 @@ fn panic_child(origin: &str) {
     assert_eq!(open(&d, &p, 0), Outcome::Ready);
     let _ = p.call(TICK, &mut frame(plug::PANIC));
 
-    std::process::exit(0);
+    // Survived the panic: the child returns success without running a destructor, so only the
+    // panic itself can make it abort.
+    std::mem::forget(d);
+    std::mem::forget(p);
 }
 
 #[test]
 fn red_a_panic_in_a_hand_written_slot_aborts() {
     if let Ok(origin) = std::env::var("BUSBAR_M1_PANIC_CHILD") {
         panic_child(&origin);
+        return;
     }
 
     dropped_path();

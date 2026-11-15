@@ -72,7 +72,7 @@ fn read_scratch_reentrant_never_aliases() {
     {
         let mut inner = Scratch::take(&READ_SCRATCH);
         assert_eq!(misses(), before + 1, "the inner taker found the slot held");
-        inner.extend(&[2_u8; 64 * 1024]).unwrap();
+        inner.extend(&vec![2_u8; 64 * 1024]).unwrap();
         assert_ne!(inner.as_slice().as_ptr(), outer.as_slice().as_ptr());
         assert_eq!(
             outer.as_slice(),

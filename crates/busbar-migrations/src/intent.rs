@@ -72,8 +72,7 @@ fn checkpoint_phase(
             _ => None,
         })
         .ok_or(Error::Corrupt)?;
-    let digest: [u8; 32] =
-        busbar_contract::crypto::sha256(checkpoint.expose(&crate::seal::lend())).into();
+    let digest: [u8; 32] = busbar_contract::crypto::sha256(checkpoint.expose(&crate::seal::lend()));
     if digest != marker.checkpoint_value_digest {
         return Err(Error::Corrupt);
     }

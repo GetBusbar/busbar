@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use crate::off_path::auth::login::{missing_login_axis, select_inbound_provider};
 
 #[test]
 fn inbound_default_selects_declared_styles_and_refuses_provider_names() {

@@ -11,16 +11,16 @@ use busbar_kernel_wal::{BodyReader, BodyWriter, Entry, RecordClass};
 
 use crate::root::durability::Durability;
 
-pub const CALLER_REF_MATERIAL: &[u8] = b"busbar deployment keyset: caller-ref material v1";
+pub(crate) const CALLER_REF_MATERIAL: &[u8] = b"busbar deployment keyset: caller-ref material v1";
 
 #[must_use]
-pub fn fingerprint_of(key: &AuditVerifyingKey) -> [u8; 32] {
+pub(crate) fn fingerprint_of(key: &AuditVerifyingKey) -> [u8; 32] {
     let raw = hex::decode(key.public_key_hex()).expect("AuditVerifyingKey holds valid hex");
     busbar_contract::abi::sdk::digest::sha256(&raw)
 }
 
 #[must_use]
-pub fn fingerprint_of_signer(key: &AuditSigningKey) -> [u8; 32] {
+pub(crate) fn fingerprint_of_signer(key: &AuditSigningKey) -> [u8; 32] {
     let public = AuditVerifyingKey::from_hex(&key.public_key_hex())
         .expect("a signing key's own public half is a valid key");
     fingerprint_of(&public)
@@ -94,7 +94,7 @@ pub(crate) fn bootstrap_body(fingerprint: &[u8; 32], key_id: &str) -> Vec<u8> {
 }
 
 #[must_use]
-pub fn bootstrap_fingerprint(body: &[u8]) -> Option<[u8; 32]> {
+pub(crate) fn bootstrap_fingerprint(body: &[u8]) -> Option<[u8; 32]> {
     BodyReader::new(body).bytes()?.try_into().ok()
 }
 
@@ -223,7 +223,7 @@ pub async fn bind(
 }
 
 #[cfg(test)]
-pub fn bind_ephemeral(durability: &mut Durability) -> Result<KeysetSource, KeysetError> {
+pub(crate) fn bind_ephemeral(durability: &mut Durability) -> Result<KeysetSource, KeysetError> {
     let seed = mint_seed_hex()?;
     let key = AuditSigningKey::from_hex_seed(&seed).expect("a freshly minted seed is valid");
     sign_with(durability, key);

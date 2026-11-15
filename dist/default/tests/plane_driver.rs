@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-#[path = "../../../crates/busbar-kernel/tests/common/mod.rs"]
+#[path = "../../../crates/busbar-kernel/tests/common/driver.rs"]
 mod common;
 
 #[path = "fixtures/plane_driver_test_plane.rs"]

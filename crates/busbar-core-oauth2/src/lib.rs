@@ -8,23 +8,10 @@ pub mod config;
 pub mod consent;
 pub mod crypto_provider;
 
+mod cold;
 mod hosted_login;
-// busbar:request-path
-#[cfg_attr(
-    not(test),
-    deny(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        clippy::disallowed_types,
-        clippy::redundant_clone,
-        clippy::format_push_string,
-        clippy::needless_collect,
-        clippy::or_fun_call,
-        clippy::needless_pass_by_value,
-        clippy::allow_attributes,
-        clippy::allow_attributes_without_reason
-    )
-)]
+mod mount;
+// The plane's build, generation hand-over and sweep; its request path is the marked `plane::serve`.
 pub mod plane;
 pub mod policy;
 // busbar:request-path
@@ -115,7 +102,7 @@ pub fn install<C: Connections>() {
             input_schema: config::input_schema,
             check: config::seam_check,
             build: plane::seam_build::<C>,
-            mount: routes::seam_mount,
+            mount: mount::seam_mount,
             verify_dpop: plane::seam_verify_dpop,
         },
     );

@@ -46,8 +46,8 @@ fn p(s: &str) -> SocketAddr {
 
 fn creds(ufrag: &str, pwd: &str) -> IceCredentials {
     IceCredentials {
-        ufrag: ufrag.into(),
-        pwd: pwd.into(),
+        ufrag: ufrag.to_owned(),
+        pwd: pwd.to_owned(),
     }
 }
 
@@ -194,7 +194,7 @@ fn scripted_as(knobs: Knobs, local: (&'static str, &'static str)) -> Arc<Scripte
     Arc::new(Scripted {
         facts: DoorFacts {
             dials: true,
-            name: "scripted".into(),
+            name: "scripted".to_owned(),
             claims: vec!["scripted"],
             role: ROLE_FRAMER,
             composes_over: Vec::new(),
@@ -1278,6 +1278,7 @@ fn a_session_opening_waits_for_real_caller_metadata_and_wakes_on_publication() {
             self.0.fetch_add(1, Ordering::SeqCst);
         }
     }
+    let now = std::time::Instant::now();
     for publication in [false, true] {
         let connector = book();
         let pairing = super::Pairing::new(Arc::new(Sink::default()), p("127.0.0.1:3478"));
@@ -1292,9 +1293,9 @@ fn a_session_opening_waits_for_real_caller_metadata_and_wakes_on_publication() {
         if publication {
             let mut yielded = crate::framer::Yielded::default();
             yielded.pieces = pieces;
-            pairing.publish(super::Leg::Caller, yielded, Instant::now());
+            pairing.publish(super::Leg::Caller, yielded, now);
         } else {
-            pairing.sort(super::Leg::Caller, pieces, Instant::now());
+            pairing.sort(super::Leg::Caller, pieces, now);
         }
         assert!(
             count.0.load(Ordering::SeqCst) > 0,
@@ -1330,6 +1331,7 @@ fn a_session_opening_waits_for_real_caller_metadata_and_wakes_on_publication() {
 fn a_session_opening_close_wakes_waiters_and_ordinary_units_do_not_wait() {
     use std::future::Future;
     use std::task::{Context, Poll, Waker};
+    let now = std::time::Instant::now();
     let connector = book();
     let mut cx = Context::from_waker(Waker::noop());
     assert_eq!(
@@ -1350,7 +1352,7 @@ fn a_session_opening_close_wakes_waiters_and_ordinary_units_do_not_wait() {
     pairing.sort(
         super::Leg::Caller,
         vec![got(8, b"kind: audio\r\n", true)],
-        Instant::now(),
+        now,
     );
     assert_eq!(
         Box::pin(pairing.wait_opening()).as_mut().poll(&mut cx),
@@ -1361,7 +1363,7 @@ fn a_session_opening_close_wakes_waiters_and_ordinary_units_do_not_wait() {
     media.sort(
         super::Leg::Caller,
         vec![got(9, b"kind: audio\r\n", true)],
-        Instant::now(),
+        now,
     );
     assert_eq!(
         Box::pin(media.wait_opening()).as_mut().poll(&mut cx),
@@ -1378,7 +1380,7 @@ fn book_begin(begin: VecDeque<(u64, Vec<u8>, u16)>) -> crate::Connector {
     let dg = Arc::new(Scripted {
         facts: DoorFacts {
             dials: true,
-            name: "dg".into(),
+            name: "dg".to_owned(),
             claims: vec!["dg"],
             ..scripted(dialling()).facts.clone()
         },
@@ -1447,14 +1449,18 @@ fn a_composed_dial_keeps_all_begin_batches_before_and_after_its_description() {
     use busbar_contract::transport::wire::WireStatusClass;
 
     crate::support::worker().block_on(async {
-        let c = book_begin(VecDeque::from([
-            (20, b"kind: audio\r\ncodec: opus\r\n".to_vec(), PIECE_FIELDS),
-            (3, b"label: messages\r\n".to_vec(), PIECE_FIELDS),
-            (0, b"offer".to_vec(), 0),
-            (20, b"first".to_vec(), 0),
-            (20, b"second".to_vec(), 0),
-            (3, b"channel".to_vec(), 0),
-        ]));
+        let c = book_begin(
+            [
+                (20, b"kind: audio\r\ncodec: opus\r\n".to_vec(), PIECE_FIELDS),
+                (3, b"label: messages\r\n".to_vec(), PIECE_FIELDS),
+                (0, b"offer".to_vec(), 0),
+                (20, b"first".to_vec(), 0),
+                (20, b"second".to_vec(), 0),
+                (3, b"channel".to_vec(), 0),
+            ]
+            .into_iter()
+            .collect::<VecDeque<_>>(),
+        );
         let sink = Arc::new(Sink::default());
         let pairing =
             super::Pairing::with_memory_limit(sink.clone(), p("127.0.0.1:3478"), Some(usize::MAX));
@@ -1516,11 +1522,15 @@ fn closing_a_composed_dial_retires_unread_begin_output_before_the_exchange_answe
     use busbar_contract::conn::{Conns as _, InstanceId};
 
     crate::support::worker().block_on(async {
-        let c = book_begin(VecDeque::from([
-            (3, b"label: messages\r\n".to_vec(), PIECE_FIELDS),
-            (0, b"offer".to_vec(), 0),
-            (3, b"unread".to_vec(), 0),
-        ]));
+        let c = book_begin(
+            [
+                (3, b"label: messages\r\n".to_vec(), PIECE_FIELDS),
+                (0, b"offer".to_vec(), 0),
+                (3, b"unread".to_vec(), 0),
+            ]
+            .into_iter()
+            .collect::<VecDeque<_>>(),
+        );
         let sink = Arc::new(Sink::default());
         let pairing =
             super::Pairing::with_memory_limit(sink.clone(), p("127.0.0.1:3478"), Some(usize::MAX));
@@ -2534,6 +2544,7 @@ fn a_refused_framing_parked_in_finish_holds_no_other_caller_of_its_port() {
 /// What a caller owes an association out on another caller's crossing does not wait for it: it is
 #[test]
 fn what_an_association_out_on_a_crossing_is_owed_its_holder_runs_in_order() {
+    let now = std::time::Instant::now();
     let da = scripted(Knobs::default());
     let port = Arc::new(super::PortAssociations::new());
     let a = port.add(settled(da.clone())).unwrap();
@@ -2544,7 +2555,7 @@ fn what_an_association_out_on_a_crossing_is_owed_its_holder_runs_in_order() {
             let port = Arc::clone(port);
             std::thread::spawn(move || {
                 let none = |_: SocketAddr, _: &[u8]| {};
-                port.emit(a, 1, b"first", true, false, Instant::now(), &none)
+                port.emit(a, 1, b"first", true, false, now, &none)
             })
         };
         entered
@@ -2558,10 +2569,10 @@ fn what_an_association_out_on_a_crossing_is_owed_its_holder_runs_in_order() {
     let check = check(HOST_UFRAG, FAR_UFRAG, HOST_PWD, 1);
     let pa = p("203.0.113.1:1000");
     assert!(
-        port.datagram(pa, &check, Instant::now(), &none).is_empty(),
+        port.datagram(pa, &check, now, &none).is_empty(),
         "queued for the holder"
     );
-    let (ok, ran) = port.emit(a, 1, b"second", true, false, Instant::now(), &none);
+    let (ok, ran) = port.emit(a, 1, b"second", true, false, now, &none);
     assert!(ok && ran.is_empty(), "queued for the holder");
     let _ = release.send(());
     let (ok, answered) = holder.join().unwrap();
@@ -2584,7 +2595,7 @@ fn what_an_association_out_on_a_crossing_is_owed_its_holder_runs_in_order() {
     let (holder, release) = parked(&port);
     let before = lanes(&da).len();
     port.remove(a);
-    let _ = port.emit(a, 1, b"late", true, false, Instant::now(), &none);
+    let _ = port.emit(a, 1, b"late", true, false, now, &none);
     let _ = release.send(());
     let _ = holder.join().unwrap();
     assert_eq!(lanes(&da).len(), before + 1, "only the parked call crossed");
@@ -2689,19 +2700,20 @@ fn datagram_finish_lends_the_current_lane_and_retires_once() {
 fn a_split_mixed_opening_waits_for_its_channel_before_mirroring_either_line() {
     use std::future::Future;
     use std::task::{Context, Poll, Waker};
+    let now = std::time::Instant::now();
     let pair = super::Pairing::new(Arc::new(Sink::default()), p("127.0.0.1:3478"));
     let mut ready = Box::pin(pair.wait_opening());
     let mut cx = Context::from_waker(Waker::noop());
     pair.sort(
         super::Leg::Caller,
         vec![got(9, b"kind: audio\r\nopening-pending: 1\r\n", true)],
-        Instant::now(),
+        now,
     );
     assert!(ready.as_mut().poll(&mut cx).is_pending());
     pair.sort(
         super::Leg::Caller,
         vec![got(1, b"label: events\r\nopening-pending: 0\r\n", true)],
-        Instant::now(),
+        now,
     );
     assert_eq!(ready.as_mut().poll(&mut cx), Poll::Ready(Ok(())));
     assert_eq!(

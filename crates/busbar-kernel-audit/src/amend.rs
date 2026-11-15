@@ -3,7 +3,7 @@
 
 //! The two amendment classes: an access, and an adjustment.
 
-use crate::record::{displays_as, subject_tag, OpClassId, Subject, SubjectValue};
+use crate::record::{subject_tag, OpClassId, Subject, SubjectValue};
 use busbar_contract::{
     caps::{Audit, DurableWrite, Grant, Pass},
     count::Count,
@@ -126,21 +126,8 @@ impl std::ops::Deref for SubjectText<'_> {
     }
 }
 
-/// The subject [`subject_fields`] wrote, or `None` for a pair it never writes.
-pub fn subject_from_fields(tag: &str, value: &str) -> Option<Subject> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: an amendment's subject is read back from the journal at restore"
-    )]
-    let subject = match tag {
-        "principal" => Subject::PrincipalId(value.to_string()),
-        "arrival" => Subject::Arrival,
-        "node" => Subject::Node(value.parse().ok()?),
-        "aggregate" => Subject::Aggregate,
-        _ => return None,
-    };
-    displays_as(SubjectValue(&subject), value).then_some(subject)
-}
+// Read back from the journal at restore, never per request: it lives off the request path.
+pub use crate::off_path::amend::subject_from_fields;
 
 /// One content access.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -459,24 +446,18 @@ impl AmendJournal {
         self.chain.head()
     }
 
-    /// REBUILD A JOURNAL FROM A WHOLE RUN read back off durable storage, oldest first from the
-    pub fn restore(run: Vec<Amendment>) -> Result<AmendJournal, crate::record::AuditBreak> {
-        AmendChain::verify(&run)?;
-        let chain = run.last().map_or_else(AmendChain::new, |a| {
-            // busbar:expect(bp::clone_alloc, reason = "boot: the amendment chain is restored once, from its journal")
-            AmendChain::resume(a.hash.clone(), a.seq.saturating_add(1))
-        });
-        let released = run.len().saturating_sub(AMENDMENTS_RETAINED);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the amendment chain is restored once, from its journal"
-        )]
-        let recent = run.into_iter().skip(released).collect();
-        Ok(AmendJournal {
+    /// A journal from its parts, as a restore rebuilt them (see `AmendJournal::restore`, which runs
+    /// off the request path).
+    pub(crate) fn from_parts(
+        chain: AmendChain,
+        recent: VecDeque<Amendment>,
+        released: u64,
+    ) -> Self {
+        AmendJournal {
             chain,
             recent,
-            released: released as u64,
-        })
+            released,
+        }
     }
 
     /// Verify what is held: from the genesis while nothing has been released, and always to the
@@ -649,17 +630,14 @@ impl NodeAmendments {
     ) -> Result<(), AmendPersistError> {
         let pending = {
             let mut held = self.held();
-            // busbar:expect(bp::fresh_buffer, reason = "boot: binding the durable sink once replays what it has not journalled")
-            let mut pending = Vec::new();
-            if let Some(sink) = &sink {
-                for amendment in held
-                    .journal
-                    .recent()
-                    .filter(|amendment| amendment.seq > journalled_through)
-                {
-                    pending.push(sink.sealed(amendment)?);
-                }
-            }
+            let pending = match &sink {
+                Some(sink) => crate::off_path::amend::stage_unjournalled(
+                    &held.journal,
+                    sink.as_ref(),
+                    journalled_through,
+                )?,
+                None => Vec::new(),
+            };
             held.sink = sink;
             pending
         };
@@ -667,35 +645,6 @@ impl NodeAmendments {
             confirmation.await?;
         }
         Ok(())
-    }
-
-    /// Record that `reader` `name` was handed `fields` of a unit's content at `wall` (unix seconds,
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the read names its reader, item, principal, class and fields as the record does"
-    )]
-    pub async fn record_read(
-        &self,
-        token: &Pass<Audit>,
-        reader: Reader,
-        name: &str,
-        principal: Option<&str>,
-        op_class: &str,
-        fields: Vec<String>,
-        wall: u64,
-    ) -> Result<Amendment, AmendPersistError> {
-        let fact = ReadFact {
-            reader,
-            name,
-            principal,
-            op_class,
-            fields,
-            wall,
-        };
-        let mut recorded = self
-            .record_reads(token, std::slice::from_ref(&fact))
-            .await?;
-        recorded.pop().ok_or(AmendPersistError)
     }
 
     /// Record several content accesses at once: each fact is its own amendment (own seq and hash,
@@ -757,12 +706,7 @@ impl NodeAmendments {
     /// The amendments the journal holds, oldest first.
     #[must_use]
     pub fn recent(&self) -> Vec<Amendment> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the retained run is copied out whole only to hand it to a restore"
-        )]
-        let run = self.held().journal.recent().cloned().collect();
-        run
+        crate::off_path::amend::copy_run(&self.held().journal)
     }
 }
 

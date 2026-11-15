@@ -11,15 +11,7 @@ use crate::framer::FramerDoor;
 pub fn unlayered(door: &dyn FramerDoor) -> Result<(), String> {
     let facts = door.facts();
     if !facts.composes_over.is_empty() {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a load-time refusal of a transport entry"
-        )]
-        return Err(format!(
-            "transport `{}` names a transport it composes over; no transport names another \
-             (the carrier is the connector's choice from the target's scheme)",
-            facts.name
-        ));
+        return Err(crate::cold::lines::composes_over(&facts.name));
     }
     Ok(())
 }

@@ -7,27 +7,6 @@ use busbar_contract::{persistence::Address, records::*, Secret};
 
 pub type Rows = Vec<(Address, Secret<Vec<u8>>)>;
 
-pub enum OriginalAccounting {
-    Usage(Vec<(String, u64, UsageDelta)>),
-    Metering(Vec<MeteringDelta>),
-    CorrectionFingerprint([u8; 32]),
-}
-/// Inspect a stored candidate under its owner's unchanged payload/fingerprint
-/// validation. Returned values describe the old attempt, never a new candidate.
-pub fn original_accounting(
-    event: &crate::governance::recovery::RecoveryEvent,
-) -> RecordStoreResult<OriginalAccounting> {
-    use crate::governance::{recovery::RecoveryKind, GovState};
-    match event.kind {
-        RecoveryKind::Usage => GovState::legacy_usage_values(event).map(OriginalAccounting::Usage),
-        RecoveryKind::Metering => {
-            GovState::legacy_metering_values(event).map(OriginalAccounting::Metering)
-        }
-        RecoveryKind::Correction => GovState::legacy_correction_fingerprint(event)
-            .map(OriginalAccounting::CorrectionFingerprint),
-    }
-}
-
 pub mod identity {
     use super::*;
     use crate::governance::persistence::identity as owner;

@@ -13,11 +13,11 @@ const AUTHORIZATION: &str = "authorization";
 /// THE BASIC VALUE AN OPERATOR'S URL SPELLED (`Basic base64(user:pass)`), root-owned. `Debug` prints
 /// a marker; the bytes are zeroised when the last copy drops.
 #[derive(Clone)]
-pub struct UserinfoBasic(Arc<Secret<Vec<u8>>>);
+pub(crate) struct UserinfoBasic(Arc<Secret<Vec<u8>>>);
 
 impl UserinfoBasic {
     #[must_use]
-    pub fn of(url: &str) -> Option<Self> {
+    pub(crate) fn of(url: &str) -> Option<Self> {
         let parts = busbar_contract::net::url_authority(url);
         parts.scheme?;
         let spelled = parts.userinfo?;
@@ -50,7 +50,7 @@ impl UserinfoBasic {
     }
 
     #[must_use]
-    pub fn leading<'a>(
+    pub(crate) fn leading<'a>(
         &'a self,
         fields: &[(&'a str, &'a [u8])],
     ) -> Option<Vec<(&'a str, &'a [u8])>> {
@@ -68,7 +68,7 @@ impl UserinfoBasic {
     }
 
     #[must_use]
-    pub fn lead(&self, answer: Fields) -> Fields {
+    pub(crate) fn lead(&self, answer: Fields) -> Fields {
         match answer {
             Fields::Ready(mut fields)
                 if !fields
@@ -109,7 +109,7 @@ fn percent_decoded(text: &str) -> Option<String> {
 }
 
 #[must_use]
-pub fn lead_with(
+pub(crate) fn lead_with(
     auth: Arc<dyn OutboundAuth>,
     basic: Option<UserinfoBasic>,
 ) -> Arc<dyn OutboundAuth> {

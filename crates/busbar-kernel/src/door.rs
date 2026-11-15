@@ -150,12 +150,7 @@ impl VerifyRefusal {
 
     #[must_use]
     pub fn message(&self) -> String {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a refusal renders its message once, on the refusal path"
-        )]
-        let message = self.to_string();
-        message
+        crate::cold::host::door_refusal_message(self)
     }
 
     #[must_use]
@@ -223,11 +218,7 @@ fn priced(view: &dyn PoolView, name: &str) -> Option<VerifyRefusal> {
     if !(view.has_key() && !view.is_configured(name) && view.is_unpriced(name)) {
         return None;
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the refusal carries the name the caller spelled"
-    )]
-    let name = name.to_string();
+    let name = crate::cold::host::door_refused_name(name);
     Some(VerifyRefusal::NoRate { name })
 }
 

@@ -6,7 +6,7 @@
 /// AN OUTCOME TAG THAT DOES NOT RE-RENDER IS REFUSED, never mapped to a different reason — the
 #[test]
 fn an_outcome_tag_that_does_not_re_render_is_refused_never_remapped() {
-    use crate::journal::outcome_of;
+    use crate::off_path::journal::outcome_of;
     use busbar_contract::caps::{Outcome, ReasonCode, StepName};
     let real = Outcome::Refused(StepName::Admit, ReasonCode::OverBudget);
     assert_eq!(outcome_of("Refused(Admit, OverBudget)"), Some(real));

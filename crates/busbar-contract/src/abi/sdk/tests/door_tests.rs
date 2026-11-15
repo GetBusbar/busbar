@@ -170,7 +170,7 @@ mod plugin {
 }
 
 fn the_door() -> &'static Door {
-    let door: DoorFn = plugin::door;
+    let door: DoorFn = plugin::MACRO_DOOR.door_fn();
     door()
 }
 
@@ -677,7 +677,7 @@ mod kind_plugin {
         const ST: &crate::abi::mechanism::door::Statement =
             &stamp::<TwoKindOps>(statement("sdk-door-kind-ops", "0.0.1", 1));
         // SAFETY: the real Secret fixture owns this complete static lifecycle table.
-        let mut head = unsafe { *plugin::door().ops() };
+        let mut head = unsafe { *(plugin::MACRO_DOOR.door_fn())().ops() };
         head.size = size_of::<TwoKindOps>() as u32;
         head.slots = LIFECYCLE_SLOTS + 2;
         let ops = Box::leak(Box::new(TwoKindOps {
@@ -878,7 +878,7 @@ mod auth_plugin {
 #[test]
 fn an_auth_plugin_wires_every_kind_op() {
     use crate::abi::auth::{slot as auth_slot, FieldsIn, FieldsOut, IdentifyOut, Ops, VerifyIn};
-    let d = auth_plugin::door();
+    let d = (auth_plugin::MACRO_DOOR.door_fn())();
     // SAFETY: the macro's `'static` door and its auth table.
     let t = unsafe { &*d.ops.cast::<Ops>() };
     assert_eq!(d.kind, KindCode::Auth as u32);
@@ -971,7 +971,7 @@ mod secret_plugin {
 #[test]
 fn a_secret_plugin_wires_every_kind_op() {
     use crate::abi::secret::{slot as secret_slot, Ops, ResolveIn, ResolveOut};
-    let d = secret_plugin::door();
+    let d = (secret_plugin::MACRO_DOOR.door_fn())();
     // SAFETY: the macro's `'static` door and its secret table.
     let t = unsafe { &*d.ops.cast::<Ops>() };
     assert_eq!(d.kind, KindCode::Secret as u32);
@@ -999,8 +999,16 @@ fn a_secret_plugin_wires_every_kind_op() {
 #[test]
 fn a_kind_op_a_door_does_not_name_is_absent() {
     // SAFETY: the macros' `'static` doors and their tables.
-    let secret = unsafe { &*secret_plugin::door().ops.cast::<crate::abi::secret::Ops>() };
-    let auth = unsafe { &*auth_plugin::door().ops.cast::<crate::abi::auth::Ops>() };
+    let secret = unsafe {
+        &*(secret_plugin::MACRO_DOOR.door_fn())()
+            .ops
+            .cast::<crate::abi::secret::Ops>()
+    };
+    let auth = unsafe {
+        &*(auth_plugin::MACRO_DOOR.door_fn())()
+            .ops
+            .cast::<crate::abi::auth::Ops>()
+    };
     assert!(secret.check.is_none(), "an unnamed kind op is absent");
     assert!(auth.target.is_none(), "an unnamed kind op is absent");
     // An auth plugin that serves no provisioning routes names no `serve`: the slot is NULL.
@@ -1068,7 +1076,11 @@ mod secret_check_plugin {
 fn a_secret_plugin_that_serves_check_answers_it() {
     use crate::abi::secret::{slot as secret_slot, CheckIn, Ops};
     // SAFETY: the macro's `'static` door and its secret table.
-    let t = unsafe { &*secret_check_plugin::door().ops.cast::<Ops>() };
+    let t = unsafe {
+        &*(secret_check_plugin::MACRO_DOOR.door_fn())()
+            .ops
+            .cast::<Ops>()
+    };
     assert_eq!(t.head.slots, crate::abi::secret::SLOTS);
     // SAFETY: plain data; all-zero is valid.
     let mut input: CheckIn = unsafe { std::mem::zeroed() };
@@ -1140,7 +1152,7 @@ mod export_plugin {
 #[test]
 fn an_export_plugin_wires_every_kind_op() {
     use crate::abi::export::{slot as export_slot, DeliverIn, Ops, ServeIn, ServeOut};
-    let d = export_plugin::door();
+    let d = (export_plugin::MACRO_DOOR.door_fn())();
     // SAFETY: the macro's `'static` door and its export table.
     let t = unsafe { &*d.ops.cast::<Ops>() };
     assert_eq!(d.kind, KindCode::Export as u32);
@@ -1236,7 +1248,7 @@ mod hook_plugin {
 #[test]
 fn a_hook_plugin_wires_every_kind_op() {
     use crate::abi::hook::{slot as hook_slot, DecideIn, DecideOut, Ops, ServeIn, ServeOut};
-    let d = hook_plugin::door();
+    let d = (hook_plugin::MACRO_DOOR.door_fn())();
     // SAFETY: the macro's `'static` door and its hook table.
     let t = unsafe { &*d.ops.cast::<Ops>() };
     assert_eq!(d.kind, KindCode::Hook as u32);
@@ -1338,7 +1350,7 @@ fn a_store_plugin_wires_every_kind_op() {
     use crate::abi::store::v4::{
         self, slot as store_slot, ClockIn, ClockOut, Ops, ReadIn, ReadOut,
     };
-    let d = store_plugin::door();
+    let d = (store_plugin::MACRO_DOOR.door_fn())();
     // SAFETY: the macro's static primitive Store table.
     let t = unsafe { &*d.ops.cast::<Ops>() };
     assert_eq!(d.kind, KindCode::Store as u32);
@@ -1514,7 +1526,7 @@ mod plane_plugin {
 fn a_plane_open_in_that_ends_before_the_providers_hands_none() {
     use crate::abi::plane::{Ops, PlaneOpenIn, PlaneOpenOut, ProviderFacts};
     // SAFETY: the macro's `'static` door and its plane table.
-    let t = unsafe { &*plane_plugin::door().ops.cast::<Ops>() };
+    let t = unsafe { &*(plane_plugin::MACRO_DOOR.door_fn())().ops.cast::<Ops>() };
     // SAFETY: plain data; all-zero is valid.
     let mut input: PlaneOpenIn = unsafe { std::mem::zeroed() };
     input.open.head = in_head::<PlaneOpenIn>(slot::OPEN, Ticket::NONE);
@@ -1541,7 +1553,7 @@ fn a_plane_plugin_wires_every_kind_op() {
     use crate::abi::plane::{
         PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneSnapshot,
     };
-    let d = plane_plugin::door();
+    let d = (plane_plugin::MACRO_DOOR.door_fn())();
     // SAFETY: the macro's `'static` door and its plane table.
     let t = unsafe { &*d.ops.cast::<Ops>() };
     assert_eq!(d.kind, KindCode::Plane as u32);
@@ -1704,7 +1716,7 @@ fn a_transport_plugin_wires_every_kind_op() {
     use crate::abi::transport::{
         slot as transport_slot, FramerOut, FramingIn, ListenIn, ListenOut, Ops,
     };
-    let d = transport_plugin::door();
+    let d = (transport_plugin::MACRO_DOOR.door_fn())();
     // SAFETY: the macro's `'static` door and its transport table.
     let t = unsafe { &*d.ops.cast::<Ops>() };
     assert_eq!(d.kind, KindCode::Transport as u32);
@@ -1816,7 +1828,7 @@ mod auth_serve_plugin {
 fn an_auth_plugin_wires_serve_with_the_verified_client() {
     use crate::abi::auth::{slot as auth_slot, Ops, ServeIn, ServeOut};
     use crate::abi::mechanism::call::AbiStr;
-    let d = auth_serve_plugin::door();
+    let d = (auth_serve_plugin::MACRO_DOOR.door_fn())();
     // SAFETY: the macro's `'static` door and its auth table.
     let t = unsafe { &*d.ops.cast::<Ops>() };
     assert_eq!(t.head.slots, crate::abi::auth::SLOTS);
