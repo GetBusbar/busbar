@@ -10,16 +10,15 @@
 //!   test-only `#[cfg(test)]` (read from the syn AST, as bad-patterns does), a `#[test]` fn, or a
 //!   `tests/` tree. A file syn cannot parse is scanned line by line instead, so it is never skipped.
 //! - `crypto-graph`: AWS-LC is the one crypto provider, reached only through the facade (229). In
-//!   the root `Cargo.lock`, `ring`, `sha2` and `ed25519-dalek` are reachable from first-party
-//!   packages only through `busbar-crypto*`. Dev-dependency edges count: tests use the facade too.
+//!   the root workspace's feature-resolved graph (`cargo tree`: every feature, target and edge
+//!   kind), `ring`, `sha2` and `ed25519-dalek` are built only beneath `busbar-crypto*`. Dev edges
+//!   count: tests use the facade too.
 //!
 //! Usage: `busbar-ci-checks [check...]`; with no argument every check runs. Each finding prints as
 //! one line; any finding or error fails the run.
 
-use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, VecDeque};
 use std::path::{Component, Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 
 use proc_macro2::{Spacing, TokenStream, TokenTree};
 use syn::punctuated::Punctuated;
@@ -46,9 +45,7 @@ fn main() -> ExitCode {
     for name in names {
         let outcome = match name {
             "no-getrandom" => no_getrandom(&root),
-            "crypto-graph" => std::fs::read_to_string(root.join("Cargo.lock"))
-                .map(|lock| crypto_graph(&lock))
-                .map_err(|error| format!("Cargo.lock: {error}")),
+            "crypto-graph" => crypto_graph(&root),
             other => Err(format!(
                 "unknown check `{other}` (checks: {})",
                 CHECKS.join(", ")
@@ -445,114 +442,66 @@ fn rel(root: &Path, file: &Path) -> String {
 
 // ---- crypto-graph -------------------------------------------------------------------------------
 
-/// One `[[package]]` of a Cargo.lock: path packages (no `source`) are first-party.
-struct Package<'a> {
-    name: &'a str,
-    version: &'a str,
-    first_party: bool,
-    deps: Vec<&'a str>,
+/// The root workspace's feature-resolved graph (every feature, target and edge kind), outside the
+/// seam: cargo's own resolver decides what builds. `Cargo.lock` alone over-reports: it also records
+/// an optional dependency that only a weak feature names (rustls-webpki's `alloc = ["ring?/alloc"]`
+/// keeps a `ring` entry that no build compiles).
+fn crypto_graph(root: &Path) -> Result<Vec<String>, String> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let output = Command::new(cargo)
+        .current_dir(root)
+        .args([
+            "tree",
+            "--locked",
+            "--workspace",
+            "--exclude",
+            SEAM,
+            "--all-features",
+            "--target",
+            "all",
+            "--edges",
+            "normal,build,dev",
+            "--prune",
+            SEAM,
+            "--prune",
+            "busbar-crypto-backend",
+            "--prefix",
+            "depth",
+            "--format",
+            "{p}",
+        ])
+        .output()
+        .map_err(|error| format!("cargo tree: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "cargo tree: {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(seam_only_reached(&String::from_utf8_lossy(&output.stdout)))
 }
 
-fn packages(lock: &str) -> Vec<Package<'_>> {
-    let mut out: Vec<Package<'_>> = Vec::new();
-    let mut in_package = false;
-    let mut in_deps = false;
-    for line in lock.lines() {
-        let line = line.trim();
-        if line.starts_with('[') && !in_deps {
-            in_package = line == "[[package]]";
-            if in_package {
-                out.push(Package {
-                    name: "",
-                    version: "",
-                    first_party: true,
-                    deps: Vec::new(),
-                });
-            }
-            continue;
-        }
-        let Some(package) = out.last_mut().filter(|_| in_package) else {
+/// Each seam-only crate in a `cargo tree --prefix depth` listing, with the path that reaches it.
+fn seam_only_reached(tree: &str) -> Vec<String> {
+    let mut path: Vec<&str> = Vec::new();
+    let mut findings = Vec::new();
+    for line in tree.lines() {
+        let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+        let Ok(depth) = line[..digits].parse::<usize>() else {
             continue;
         };
-        if in_deps {
-            if line == "]" {
-                in_deps = false;
-            } else {
-                package
-                    .deps
-                    .push(line.trim_end_matches(',').trim_matches('"'));
-            }
-        } else if let Some(name) = line.strip_prefix("name = ") {
-            package.name = name.trim_matches('"');
-        } else if let Some(version) = line.strip_prefix("version = ") {
-            package.version = version.trim_matches('"');
-        } else if line.starts_with("source = ") {
-            package.first_party = false;
-        } else if line == "dependencies = [" {
-            in_deps = true;
+        let package = &line[digits..];
+        let name = package.split(' ').next().unwrap_or_default();
+        path.truncate(depth);
+        path.push(name);
+        // `(*)`: a repeat of a subtree already listed (and reported) above.
+        if SEAM_ONLY.contains(&name) && !package.ends_with("(*)") {
+            findings.push(format!(
+                "{package} is built outside busbar-crypto*: {}",
+                path.join(" -> ")
+            ));
         }
-    }
-    out
-}
-
-fn crypto_graph(lock: &str) -> Vec<String> {
-    let packages = packages(lock);
-    let mut by_name: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
-    for (index, package) in packages.iter().enumerate() {
-        by_name.entry(package.name).or_default().push(index);
-    }
-    // A lock dependency is `name`, `name version` or `name version (source)`.
-    let resolve = |dep: &str| -> Option<usize> {
-        let mut parts = dep.split(' ');
-        let name = parts.next()?;
-        let version = parts.next();
-        by_name
-            .get(name)?
-            .iter()
-            .copied()
-            .find(|&index| version.is_none_or(|version| packages[index].version == version))
-    };
-    let seam = |index: usize| packages[index].name.starts_with(SEAM);
-    // Breadth-first from every first-party package outside the seam, never entering the seam;
-    // `reached_from` keeps each package's first parent for the report.
-    let mut reached_from: BTreeMap<usize, Option<usize>> = BTreeMap::new();
-    let mut queue = VecDeque::new();
-    for (index, package) in packages.iter().enumerate() {
-        if package.first_party && !seam(index) {
-            reached_from.insert(index, None);
-            queue.push_back(index);
-        }
-    }
-    while let Some(index) = queue.pop_front() {
-        for &dep in &packages[index].deps {
-            let Some(dep) = resolve(dep).filter(|&dep| !seam(dep)) else {
-                continue;
-            };
-            if let Entry::Vacant(slot) = reached_from.entry(dep) {
-                slot.insert(Some(index));
-                queue.push_back(dep);
-            }
-        }
-    }
-    let mut findings = Vec::new();
-    for &index in reached_from.keys() {
-        let package = &packages[index];
-        if !SEAM_ONLY.contains(&package.name) {
-            continue;
-        }
-        let mut chain = vec![package.name];
-        let mut parent = reached_from.get(&index).copied().flatten();
-        while let Some(at) = parent {
-            chain.push(packages[at].name);
-            parent = reached_from.get(&at).copied().flatten();
-        }
-        chain.reverse();
-        findings.push(format!(
-            "Cargo.lock: {} {} is reachable outside busbar-crypto*: {}",
-            package.name,
-            package.version,
-            chain.join(" -> ")
-        ));
     }
     findings
 }
