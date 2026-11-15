@@ -22,7 +22,8 @@ impl Input {
 
     /// Erase all unread bytes and retain the allocation for the next read.
     pub fn clear(&mut self) {
-        self.0.zeroize();
+        crate::secure::wipe(&mut self.0);
+        self.0.clear();
     }
 
     pub(super) fn extend_from_slice(&mut self, bytes: &[u8]) {
@@ -50,9 +51,9 @@ impl Input {
         crate::abi::sdk::secret_bytes::watch(&bytes);
         let old_len = self.0.len();
         let new_len = old_len - (end - start);
-        self.0[start..end].zeroize();
+        crate::secure::wipe(&mut self.0[start..end]);
         self.0.copy_within(end..old_len, start);
-        self.0[new_len..old_len].zeroize();
+        crate::secure::wipe(&mut self.0[new_len..old_len]);
         self.0.truncate(new_len);
         Drain {
             bytes,

@@ -31,3 +31,7 @@ pub(crate) fn observe_wipe<T>(
         .map(|payload| payload.wiped && payload.complete_read);
     (result, first, None)
 }
+
+// The crate's one test owner seal, for the tests that only name an owner type: a seal minted in
+// each such module would leave its `here()` unused.
+crate::own_seal!(Own);
