@@ -2,11 +2,13 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use crate::cold::governance::ledger as ledger_cold;
 use crate::governance::recovery::{
     RecoveryChild, RecoveryError, RecoveryEvent, RecoveryKind, RecoveryOrigin, RecoveryResolution,
     RecoveryState, RecoveryVerdict,
 };
-use busbar_contract::records::correction::{self, Decision, Request, UsageAddress, UsageChange};
+use crate::off_path::governance::ledger as ledger_off_path;
+use busbar_contract::records::correction::{self, Decision, Request, UsageAddress};
 use busbar_contract::records::{ModelTokens, UsageLedger};
 
 #[path = "ledger_correction_recovery.rs"]
@@ -26,20 +28,15 @@ struct Intent {
 }
 impl Intent {
     fn of(adj: &Adjustment<'_, Count>, action_id: Option<&str>) -> Self {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-        )]
-        let built = Self {
+        Self {
             pool: adj.pool.into(),
             model: adj.model.into(),
             era: adj.entry_era,
             entry_id: adj.entry_id.map(|id| id.0),
             epoch: adj.card_epoch_ms,
             delta: adj.delta.clone(),
-            action_id: action_id.map(str::to_string),
-        };
-        built
+            action_id: action_id.map(Into::into),
+        }
     }
 }
 
@@ -89,13 +86,7 @@ impl PendingCorrection {
     }
 
     fn receipt_retention_expired(&self) -> bool {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-        )]
-        let built =
-            self.started.elapsed().as_secs() >= busbar_contract::abi::store::OP_ID_RETENTION_SECS;
-        built
+        ledger_off_path::ledger_correction_retention_expired(self.started)
     }
 
     pub(super) fn unresolved_day(&self) -> Option<u64> {
@@ -127,18 +118,24 @@ fn address(bucket: &str, window: u64) -> UsageAddress {
 }
 
 impl GovState {
+    /// The retained correction `owns` picks (recovery, operator verdicts and correction custody).
+    fn retained_correction(
+        &self,
+        owns: impl Fn(&PendingCorrection) -> bool,
+    ) -> Option<PendingCorrection> {
+        ledger_off_path::ledger_corrections_find(
+            &*self.corrections.lock().unwrap_or_else(|p| p.into_inner()),
+            owns,
+        )
+    }
+
     pub(in crate::governance) fn validate_foreign_correction_verdict(
         &self,
         resolution: &RecoveryResolution,
     ) -> Result<(), RecoveryError> {
         resolution.validate_quiescence()?;
-        let pending = self
-            .corrections
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values()
-            .find(|pending| pending.request.op_id.0 == resolution.operation_id)
-            .cloned();
+        let pending =
+            self.retained_correction(|pending| pending.request.op_id.0 == resolution.operation_id);
         let receipt = pending
             .as_ref()
             .and_then(|pending| *pending.receipt.lock().unwrap_or_else(|p| p.into_inner()));
@@ -168,13 +165,7 @@ impl GovState {
         &self,
         operation_id: [u8; 16],
     ) -> Result<Option<CorrectionRecoveryRun>, RecoveryError> {
-        let pending = self
-            .corrections
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values()
-            .find(|pending| pending.request.op_id.0 == operation_id)
-            .cloned();
+        let pending = self.retained_correction(|pending| pending.request.op_id.0 == operation_id);
         let Some(pending) = pending else {
             return Ok(None);
         };
@@ -191,7 +182,7 @@ impl GovState {
     }
 
     /// Prepare foreign adoption transitions without performing persistence or runtime effects.
-    pub(in crate::governance) fn stage_foreign_correction_verdict(
+    pub(crate) fn stage_foreign_correction_verdict(
         event: &RecoveryEvent,
         resolution: &RecoveryResolution,
     ) -> Result<Vec<RecoveryEvent>, RecoveryError> {
@@ -256,45 +247,45 @@ impl GovState {
                     "foreign correction already has an unlanded outcome".into(),
                 ))
             }
-            RecoveryState::Intent | RecoveryState::LandedUnknown => {
-                let mut events = Vec::new();
-                let previous = if event.state == RecoveryState::Intent {
-                    custody.mark_age_unknown();
-                    let unknown = successor(
-                        event,
-                        RecoveryState::LandedUnknown,
-                        custody.encode().map_err(|error| {
-                            crate::governance::rendered_error(RecoveryError::Invalid, error)
-                        })?,
-                    )?;
-                    events.push(unknown.clone());
-                    unknown
-                } else {
-                    event.clone()
-                };
+            RecoveryState::Intent => {
+                custody.mark_age_unknown();
+                let unknown = successor(
+                    event,
+                    RecoveryState::LandedUnknown,
+                    custody.encode().map_err(|error| {
+                        crate::governance::rendered_error(RecoveryError::Invalid, error)
+                    })?,
+                )?;
                 custody.record_verdict(resolution);
-                events.push(successor(
-                    &previous,
+                let verdict = successor(
+                    &unknown,
                     desired,
                     custody.encode().map_err(|error| {
                         crate::governance::rendered_error(RecoveryError::Invalid, error)
                     })?,
-                )?);
-                Ok(events)
+                )?;
+                Ok(vec![unknown, verdict])
+            }
+            RecoveryState::LandedUnknown => {
+                custody.record_verdict(resolution);
+                Ok(vec![successor(
+                    event,
+                    desired,
+                    custody.encode().map_err(|error| {
+                        crate::governance::rendered_error(RecoveryError::Invalid, error)
+                    })?,
+                )?])
             }
             _ => Ok(vec![successor(event, event.state, event.payload.clone())?]),
         }
     }
 
-    fn correction_quarantine_events(&self) -> Vec<RecoveryEvent> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-        )]
-        let built = self
-            .selected_recovery_events()
+    /// The selected correction events still awaiting an outcome (quarantine), lazily, in
+    /// selection order.
+    fn correction_quarantine_events(&self) -> impl Iterator<Item = RecoveryEvent> + '_ {
+        self.selected_recovery_events()
             .into_iter()
-            .filter(|event| {
+            .filter(move |event| {
                 event.kind == RecoveryKind::Correction
                     && match event.state {
                         RecoveryState::LandedUnknown
@@ -306,8 +297,6 @@ impl GovState {
                         _ => false,
                     }
             })
-            .collect();
-        built
     }
 
     /// Remaining unknown positive exposure from selected correction owners only. No pending
@@ -318,16 +307,12 @@ impl GovState {
     ) -> RecordStoreResult<(ExactUsageDelta, ExactUsageDelta)> {
         use crate::governance::exact_debt::SegmentedUsage;
         let mut capacity = SegmentedUsage::default();
-        for event in self
-            .correction_quarantine_events()
-            .into_iter()
-            .filter(|event| {
-                matches!(
-                    event.state,
-                    RecoveryState::Intent | RecoveryState::LandedUnknown
-                )
-            })
-        {
+        for event in self.correction_quarantine_events().filter(|event| {
+            matches!(
+                event.state,
+                RecoveryState::Intent | RecoveryState::LandedUnknown
+            )
+        }) {
             let custody = recovery::Custody::decode(&event.payload)?;
             let (plain, dated) = custody.negative_capacity(bucket, window)?;
             capacity.merge(&SegmentedUsage::of(&plain, &dated)?);
@@ -342,16 +327,12 @@ impl GovState {
         plain: &mut ExactUsageDelta,
         dated: &mut ExactUsageDelta,
     ) -> RecordStoreResult<Option<RecoveryEvent>> {
-        for selected in self
-            .correction_quarantine_events()
-            .into_iter()
-            .filter(|event| {
-                matches!(
-                    event.state,
-                    RecoveryState::Intent | RecoveryState::LandedUnknown
-                )
-            })
-        {
+        for selected in self.correction_quarantine_events().filter(|event| {
+            matches!(
+                event.state,
+                RecoveryState::Intent | RecoveryState::LandedUnknown
+            )
+        }) {
             let mut custody = recovery::Custody::decode(&selected.payload)?;
             if !custody.owns_quarantined_target(bucket, window) {
                 continue;
@@ -362,12 +343,7 @@ impl GovState {
                 continue;
             };
             let pending = self
-                .corrections
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .values()
-                .find(|pending| pending.request.op_id.0 == selected.operation_id)
-                .cloned();
+                .retained_correction(|pending| pending.request.op_id.0 == selected.operation_id);
             if let Some(pending) = &pending {
                 let retained = pending
                     .recovery_event
@@ -431,13 +407,8 @@ impl GovState {
     ) -> RecordStoreResult<()> {
         let custody = recovery::Custody::decode(&event.payload)?;
         custody.validate_event(event)?;
-        if let Some(existing) = self
-            .corrections
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values()
-            .find(|pending| pending.request.op_id.0 == event.operation_id)
-            .cloned()
+        if let Some(existing) =
+            self.retained_correction(|pending| pending.request.op_id.0 == event.operation_id)
         {
             if existing.request.fingerprint() != event.body_fingerprint {
                 return Err(unresolved(
@@ -532,13 +503,8 @@ impl GovState {
                         custody.encode().map_err(unavailable)?,
                     )?;
                     self.keep_recovery_event(&next).await.map_err(unavailable)?;
-                    if let Some(pending) = self
-                        .corrections
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .values()
-                        .find(|pending| pending.request.op_id.0 == operation_id)
-                        .cloned()
+                    if let Some(pending) =
+                        self.retained_correction(|pending| pending.request.op_id.0 == operation_id)
                     {
                         *pending
                             .recovery_event
@@ -565,13 +531,8 @@ impl GovState {
                 } else {
                     Decision::ConditionConflict
                 };
-                let pending = self
-                    .corrections
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .values()
-                    .find(|pending| pending.request.op_id.0 == operation_id)
-                    .cloned();
+                let pending =
+                    self.retained_correction(|pending| pending.request.op_id.0 == operation_id);
                 if let Some(pending) = pending.as_ref().filter(|pending| !pending.quarantined) {
                     let _running = self.hold_foreign_correction_recovery(operation_id)?;
                     *pending.receipt.lock().unwrap_or_else(|p| p.into_inner()) = Some(decision);
@@ -618,13 +579,9 @@ impl GovState {
         &self,
         operation_id: [u8; 16],
     ) -> RecordStoreResult<()> {
-        let pending = self
-            .corrections
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values()
-            .find(|pending| pending.request.op_id.0 == operation_id && pending.quarantined)
-            .cloned();
+        let pending = self.retained_correction(|pending| {
+            pending.request.op_id.0 == operation_id && pending.quarantined
+        });
         let Some(pending) = pending else {
             return Ok(());
         };
@@ -685,13 +642,8 @@ impl GovState {
         }
         let stored = recovery::Custody::decode(&selected.payload).map_err(unavailable)?;
         stored.validate_event(&selected).map_err(unavailable)?;
-        let pending = self
-            .corrections
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values()
-            .find(|pending| pending.request.op_id.0 == resolution.operation_id)
-            .cloned();
+        let pending =
+            self.retained_correction(|pending| pending.request.op_id.0 == resolution.operation_id);
         let pending = match pending {
             Some(pending) => pending,
             None => stored
@@ -870,16 +822,7 @@ impl GovState {
                 delta: &intent.delta,
                 now: crate::store::now(),
             };
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-            )]
-            let delta = intent
-                .delta
-                .iter()
-                .filter(|(_, count)| **count != Count::ZERO)
-                .map(|(unit, count)| (unit.as_str(), *count))
-                .collect();
+            let delta = ledger_off_path::ledger_adjust_nonzero_delta(&intent.delta);
             self.correct_usage_with_parent(
                 cost,
                 &adj,
@@ -1017,12 +960,7 @@ impl GovState {
             .filter(|branch| branch.window == window)
             .ok_or_else(|| unresolved("correction handoff has no reserved target"))?;
         let pending = self
-            .corrections
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values()
-            .find(|pending| pending.request.op_id == branch.op_id)
-            .cloned()
+            .retained_correction(|pending| pending.request.op_id == branch.op_id)
             .ok_or_else(|| unresolved("correction handoff has no operation owner"))?;
         let mut retained = pending
             .recovery_event
@@ -1420,36 +1358,21 @@ impl GovState {
         decision: Decision,
         terminal: Option<&RecoveryEvent>,
     ) -> RecordStoreResult<()> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-        )]
-        let cuts: BTreeMap<_, _> = terminal
-            .map(|event| recovery::Custody::decode(&event.payload)?.selected_cuts())
-            .transpose()?
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(bucket, window, cell)| ((bucket, window), cell))
-            .collect();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-        )]
-        let mut order: Vec<_> = pending
-            .targets
-            .iter()
-            .map(|(bucket, _)| self.budget.shard_index(bucket))
-            .collect();
-        order.sort();
-        order.dedup();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-        )]
-        let mut guards: Vec<_> = order
-            .iter()
-            .map(|shard| (*shard, self.budget.shard_at(*shard).write()))
-            .collect();
+        let cuts = ledger_off_path::ledger_correction_cuts_by_target(
+            terminal
+                .map(|event| recovery::Custody::decode(&event.payload)?.selected_cuts())
+                .transpose()?
+                .unwrap_or_default(),
+        );
+        let order = ledger_off_path::ledger_correction_shard_order(
+            pending
+                .targets
+                .iter()
+                .map(|(bucket, _)| self.budget.shard_index(bucket)),
+        );
+        let mut guards = ledger_off_path::ledger_correction_hold_shards(&order, |shard| {
+            self.budget.shard_at(shard).write()
+        });
 
         for (bucket, window) in &pending.targets {
             let index = order
@@ -1465,7 +1388,7 @@ impl GovState {
                 return Err(unresolved("reserved raw cell custody missing"));
             }
         }
-        let mut selected = Vec::new();
+        let mut selected = ledger_off_path::ledger_correction_staging(pending.targets.len());
         for (bucket, window) in &pending.targets {
             let index = order
                 .binary_search(&self.budget.shard_index(bucket))
@@ -1544,18 +1467,10 @@ impl GovState {
     }
 
     pub(in crate::governance::state) async fn retry_usage_corrections(&self) -> Vec<String> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-        )]
-        let pending: Vec<_> = self
-            .corrections
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values()
-            .cloned()
-            .collect();
-        let mut errors = Vec::new();
+        let pending = ledger_off_path::ledger_corrections_snapshot(
+            &*self.corrections.lock().unwrap_or_else(|p| p.into_inner()),
+        );
+        let mut errors = ledger_off_path::ledger_correction_staging(pending.len());
         for pending in pending {
             if pending.quarantined {
                 if self
@@ -1568,21 +1483,19 @@ impl GovState {
                         .is_some_and(|event| event.state == RecoveryState::LandedUnknown)
                     {
                         if let Err(error) = result {
-                            #[expect(
-                                clippy::disallowed_methods,
-                                reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-                            )]
-                            errors.push(format!("{}: {error}", pending.request.key_id));
+                            errors.push(ledger_cold::ledger_correction_retry_failure(
+                                &pending.request.key_id,
+                                &error,
+                            ));
                         }
                         continue;
                     }
                 }
                 if let Err(error) = self.confirm_pending_recovery(pending.request.op_id.0).await {
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-                    )]
-                    errors.push(format!("{}: {error}", pending.request.key_id));
+                    errors.push(ledger_cold::ledger_correction_retry_failure(
+                        &pending.request.key_id,
+                        &error,
+                    ));
                 }
                 continue;
             }
@@ -1590,11 +1503,10 @@ impl GovState {
                 continue;
             }
             if let Err(error) = self.decide_usage_correction(&pending).await {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-                )]
-                errors.push(format!("{}: {error}", pending.request.key_id));
+                errors.push(ledger_cold::ledger_correction_retry_failure(
+                    &pending.request.key_id,
+                    &error,
+                ));
             }
         }
         errors
@@ -1666,31 +1578,29 @@ impl GovState {
             }
             let mut owners: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
             let epoch = adj.card_epoch_ms / 1_000;
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-            )]
-            let mut targets: Vec<(String, u64)> = match cost.chain_for(&key) {
-                Ok(chain) => chain
-                    .iter()
-                    .filter(|bucket| bucket.applies_to_pool(adj.pool))
-                    .map(|bucket| {
-                        if let Some(group) = bucket.group_name {
-                            owners
-                                .entry(bucket.bucket_id.into())
-                                .or_default()
-                                .insert(group.into());
-                        }
-                        (bucket.bucket_id.into(), budget_window(bucket.window, epoch))
-                    })
-                    .collect(),
-                Err(_) => vec![(
-                    adj.key_id.into(),
-                    budget_window(super::super::super::WINDOW_TOTAL, epoch),
-                )],
+            let targets = match cost.chain_for(&key) {
+                Ok(chain) => ledger_off_path::ledger_correction_targets(
+                    chain
+                        .iter()
+                        .filter(|bucket| bucket.applies_to_pool(adj.pool))
+                        .map(|bucket| {
+                            (
+                                bucket.bucket_id,
+                                budget_window(bucket.window, epoch),
+                                bucket.group_name,
+                            )
+                        }),
+                    &mut owners,
+                ),
+                Err(_) => ledger_off_path::ledger_correction_targets(
+                    std::iter::once((
+                        adj.key_id,
+                        budget_window(super::super::super::WINDOW_TOTAL, epoch),
+                        None,
+                    )),
+                    &mut owners,
+                ),
             };
-            targets.sort();
-            targets.dedup();
             let mut snapshots = BTreeMap::new();
             for (bucket, window) in &targets {
                 for name in [bucket.clone(), era_bucket(bucket)] {
@@ -1705,15 +1615,10 @@ impl GovState {
                 prepare!(correction::canonical_ledger(&mut row));
                 snapshots.insert(address(bucket, day), row);
             }
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-            )]
-            let mut metering: Vec<_> =
-                prepare!(self.core_store()?.ledger().list_metering(day).await)
-                    .into_iter()
-                    .filter(|row| row.key_id == adj.key_id)
-                    .collect();
+            let mut metering = ledger_off_path::ledger_correction_key_metering(
+                prepare!(self.core_store()?.ledger().list_metering(day).await),
+                adj.key_id,
+            );
             correction::canonical_metering(&mut metering);
             let metered_era = prepare!(unique_metered_era(adj, &metering));
             if let Some(history) = crate::rate_apply::dated_history() {
@@ -1739,27 +1644,17 @@ impl GovState {
             ) {
                 return Ok(Err(refused));
             }
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-            )]
-            let mut order: Vec<_> = targets
-                .iter()
-                .map(|(bucket, _)| self.budget.shard_index(bucket))
-                .collect();
-            order.sort();
-            order.dedup();
-            let pending = {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-                )]
-                let mut guards: Vec<_> = order
+            let order = ledger_off_path::ledger_correction_shard_order(
+                targets
                     .iter()
-                    .map(|shard| (*shard, self.budget.shard_at(*shard).write()))
-                    .collect();
-                let mut replacements = snapshots.clone();
-                let mut branches = Vec::new();
+                    .map(|(bucket, _)| self.budget.shard_index(bucket)),
+            );
+            let pending = {
+                let mut guards = ledger_off_path::ledger_correction_hold_shards(&order, |shard| {
+                    self.budget.shard_at(shard).write()
+                });
+                let mut replacements = ledger_off_path::ledger_correction_replacements(&snapshots);
+                let mut branches = ledger_off_path::ledger_correction_staging(targets.len());
                 for (bucket, window) in &targets {
                     let index = order
                         .binary_search(&self.budget.shard_index(bucket))
@@ -1795,20 +1690,13 @@ impl GovState {
                         segment_at(&target.models, adj.model, adj.card_epoch_ms)
                     };
                     if segment.is_none() && delta.values().any(|count| *count < Count::ZERO) {
-                        #[expect(
-                            clippy::disallowed_methods,
-                            reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-                        )]
-                        return Ok(Err(AdjustRefused::Unplaced {
-                            bucket: bucket.clone(),
-                            window: *window,
-                            class: delta
-                                .iter()
-                                .find(|(_, count)| **count < Count::ZERO)
-                                .expect("negative delta")
-                                .0
-                                .to_string(),
-                        }));
+                        let (class, _) = delta
+                            .iter()
+                            .find(|(_, count)| **count < Count::ZERO)
+                            .expect("negative delta");
+                        return Ok(Err(ledger_cold::ledger_correction_unplaced(
+                            bucket, *window, class,
+                        )));
                     }
                     let era = segment.map_or(metered_era, |index| target.models[index].era);
                     for (class, change) in delta {
@@ -1853,16 +1741,14 @@ impl GovState {
                         accepted
                     } else {
                         let mut accepted = before.clone();
-                        #[expect(
-                            clippy::disallowed_methods,
-                            reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-                        )]
-                        accepted.rolled.retain(|(at, _)| at != window);
-                        #[expect(
-                            clippy::disallowed_methods,
-                            reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-                        )]
-                        accepted.rolled_eras.retain(|(at, _)| at != window);
+                        ledger_off_path::ledger_correction_release_window(
+                            &mut accepted.rolled,
+                            *window,
+                        );
+                        ledger_off_path::ledger_correction_release_window(
+                            &mut accepted.rolled_eras,
+                            *window,
+                        );
                         accepted
                     };
                     before.last_touch = adj.now;
@@ -1891,30 +1777,16 @@ impl GovState {
                             .ok_or("adjustment magnitude overflow")),
                     ));
                 }
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-                )]
                 let request = Request {
                     version: correction::VERSION,
                     op_id: crate::door::op_id(),
                     key_id: adj.key_id.into(),
                     day_start: day,
                     metering,
-                    usage: prepare!(snapshots
-                        .into_iter()
-                        .map(|(address, expected)| {
-                            let mut replacement =
-                                replacements.remove(&address).expect("same raw row set");
-
-                            correction::canonical_ledger(&mut replacement)?;
-                            Ok::<_, &'static str>(UsageChange {
-                                address,
-                                expected,
-                                replacement,
-                            })
-                        })
-                        .collect::<Result<Vec<_>, _>>()),
+                    usage: prepare!(ledger_off_path::ledger_correction_usage_changes(
+                        snapshots,
+                        &mut replacements
+                    )),
                 };
                 prepare!(request.encode());
                 for (bucket, window, mut before, accepted) in branches {
@@ -1928,16 +1800,13 @@ impl GovState {
                     }));
                     guards[index].1.insert(bucket, before);
                 }
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-                )]
+                let (sent_at, started) = ledger_off_path::ledger_correction_sent_clock();
                 let pending = PendingCorrection {
                     request,
                     intent: Intent::of(adj, action_id),
                     targets,
-                    sent_at: crate::store::now(),
-                    started: std::time::Instant::now(),
+                    sent_at,
+                    started,
                     running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     receipt: Arc::new(std::sync::Mutex::new(None)),
                     settled: Arc::new(std::sync::Mutex::new(None)),
@@ -2017,16 +1886,10 @@ fn check_metered(
     down: &UsageLedger,
     era: RawRateEra,
 ) -> Result<(), AdjustRefused> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-    )]
-    let lane: Vec<_> = metering
+    let in_lane = |row: &MeteringRow| metering_lane(&row.model, &row.provider) == adj.model;
+    if let Some(in_force) = metering
         .iter()
-        .filter(|row| metering_lane(&row.model, &row.provider) == adj.model)
-        .collect();
-    if let Some(in_force) = lane
-        .iter()
+        .filter(|row| in_lane(row))
         .map(|row| row.priced_from_ms)
         .filter(|era| *era > adj.entry_era && *era <= adj.card_epoch_ms)
         .max()
@@ -2036,20 +1899,15 @@ fn check_metered(
             in_force,
         });
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-    )]
-    let rows: Vec<_> = lane
-        .into_iter()
-        .filter(|row| {
-            row.priced_from_ms == adj.entry_era
-                && adj.entry_id.is_none_or(|id| {
-                    EntryId::parse_metering_version(&row.pricing_version) == Some(Some(id))
-                })
-        })
-        .collect();
-    if rows.is_empty() {
+    // The lane's rows dated with the named entry, read lazily from the day's metering.
+    let dated = |row: &MeteringRow| {
+        in_lane(row)
+            && row.priced_from_ms == adj.entry_era
+            && adj.entry_id.is_none_or(|id| {
+                EntryId::parse_metering_version(&row.pricing_version) == Some(Some(id))
+            })
+    };
+    if !metering.iter().any(&dated) {
         return Err(AdjustRefused::NotMetered { day });
     }
     let slot = adjustment_slot(adj.key_id, adj.model, era);
@@ -2063,36 +1921,26 @@ fn check_metered(
                 None => Some(Count::ZERO),
             }
         };
-        let count = rows
+        let count = metering
             .iter()
+            .filter(|row| dated(row))
             .try_fold(Count::ZERO, |n, row| {
                 n.checked_add(metered_count(row, class).ok()?).ok()
             })
             .and_then(|n| n.checked_add(adjusted(up)?).ok())
             .and_then(|n| n.checked_sub(adjusted(down)?).ok());
         let Some(count) = count else {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-            )]
-            return Err(AdjustRefused::Exceeds {
-                bucket: format!("metering@{day}"),
-                class: (*class).into(),
-                count: Count::ZERO,
-                delta: *change,
-            });
+            return Err(ledger_cold::ledger_correction_metering_exceeds(
+                day,
+                class,
+                Count::ZERO,
+                *change,
+            ));
         };
         if moved(count, *change).is_none() {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-            )]
-            return Err(AdjustRefused::Exceeds {
-                bucket: format!("metering@{day}"),
-                class: (*class).into(),
-                count,
-                delta: *change,
-            });
+            return Err(ledger_cold::ledger_correction_metering_exceeds(
+                day, class, count, *change,
+            ));
         }
     }
     Ok(())
@@ -2155,16 +2003,8 @@ fn capture_target(
                 ))?;
             }
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-        )]
-        let fees: BTreeMap<_, _> = local.fee_eras.dated().iter().copied().collect();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-        )]
-        let flushed: BTreeMap<_, _> = local.flushed_fee_eras.dated().iter().copied().collect();
+        let fees = ledger_off_path::ledger_correction_fee_eras(local.fee_eras.dated());
+        let flushed = ledger_off_path::ledger_correction_fee_eras(local.flushed_fee_eras.dated());
         for era in crate::governance::sorted_union(fees.keys(), flushed.keys()) {
             let difference = i128::from(fees.get(era).copied().unwrap_or(0))
                 - i128::from(flushed.get(era).copied().unwrap_or(0));
@@ -2186,7 +2026,10 @@ fn capture_target(
                 .models
                 .iter()
                 .find(|base| base.model == model.model && base.era == model.era);
-            model.flushed = base.map(|base| base.cur.clone()).unwrap_or_default();
+            match base {
+                Some(base) => model.flushed.clone_from(&base.cur),
+                None => model.flushed.clear(),
+            }
             model.flushed_era = model.flushed.clone();
         }
 
@@ -2196,12 +2039,14 @@ fn capture_target(
                 .iter()
                 .any(|model| model.model == base.model && model.era == base.era)
             {
+                let (flushed, flushed_era) =
+                    ledger_off_path::ledger_correction_baselines(&base.cur);
                 before.models.extend(ModelCell::new(
                     base.model,
                     base.era,
                     BTreeMap::new(),
-                    base.cur.clone(),
-                    base.cur,
+                    flushed,
+                    flushed_era,
                 ));
             }
         }
@@ -2278,22 +2123,8 @@ fn move_unit(
     // Normalize the entire touched model once; every unit in a row shares its scale.
     if let Some(position) = position {
         let model = &mut row.models[position];
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
-        )]
-        let normalized = model
-            .usage_units
-            .iter()
-            .map(|(k, n)| {
-                let count = Count::from_stored(*n, model.scale)
-                    .map_err(|_| "invalid stored count scale")?;
-                if count.is_negative() {
-                    return Err("negative stored usage count");
-                }
-                Ok((k.clone(), count.micros()))
-            })
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let normalized =
+            ledger_off_path::ledger_correction_normalized_units(&model.usage_units, model.scale)?;
         model.usage_units = normalized;
         model.scale = COUNT_SCALE;
     }
@@ -2317,7 +2148,7 @@ fn move_unit(
         row.models.push(ModelTokens {
             model: model.into(),
             scale: COUNT_SCALE,
-            usage_units: BTreeMap::from([(unit.into(), next)]),
+            usage_units: ledger_off_path::ledger_correction_unit_map(unit, next),
         });
     }
     Ok(())

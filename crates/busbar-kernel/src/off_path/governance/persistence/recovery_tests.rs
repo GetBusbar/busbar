@@ -325,7 +325,7 @@ async fn sink(store: Arc<CoreStore>, node: u64) -> StoreRecovery {
 }
 
 async fn native_usage(backend: Arc<Backend>, applied_head: bool) -> (RecoveryEvent, RecoveryEvent) {
-    use crate::governance::{ExactUsageDelta, GovState};
+    use crate::governance::{exact_debt::ExactUsageDelta, GovState};
     let source = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
     let child = GovState::usage_recovery_child(
         "imported",

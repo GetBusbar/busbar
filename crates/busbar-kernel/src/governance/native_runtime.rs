@@ -40,7 +40,7 @@ impl GovState {
             bucket_id,
             budget_period,
             include_request_fee,
-            cell,
+            &cell,
             observed,
         )
     }
@@ -52,7 +52,7 @@ impl GovState {
         bucket_id: &str,
         budget_period: &str,
         include_request_fee: bool,
-        cell: BudgetCell,
+        cell: &BudgetCell,
         observed: crate::persistence::observations::BudgetTotal,
     ) -> RecordStoreResult<DerivedUsage> {
         if observed.spent_nanos != 0 || !observed.units.is_empty() {
@@ -60,11 +60,11 @@ impl GovState {
                 .price_observed_cell(cost, include_request_fee, cell, &observed)?
                 .map_err(|error| money_refusal(bucket_id, &error));
         }
-        let inputs = money_view::Inputs::of(cost, budget_period, include_request_fee, &cell);
+        let inputs = money_view::Inputs::of(cost, budget_period, include_request_fee, cell);
         let priced = match self.money_view.fresh(bucket_id, &inputs) {
             Some(priced) => priced,
             None => {
-                let priced = self.price_cell(cost, include_request_fee, &cell)?;
+                let priced = self.price_cell(cost, include_request_fee, cell)?;
                 self.money_view.keep(bucket_id, inputs, priced.clone());
                 priced
             }
@@ -95,24 +95,20 @@ impl GovState {
         buckets: &[(&str, &str)],
         now: u64,
     ) -> RecordStoreResult<Vec<KeyScrape>> {
-        let mut cells = Vec::with_capacity(buckets.len());
-        let mut windows = Vec::with_capacity(buckets.len());
-        for (id, period) in buckets {
-            let window = budget_window(period, now);
-            cells.push(self.bucket_cell_async(id, window).await?);
-            windows.push((*id, window));
-        }
+        let (cells, windows) =
+            crate::off_path::governance::runtime::native_runtime_scrape_cells(self, buckets, now)
+                .await?;
         let observed = self.observation_totals_async(&windows).await?;
-        buckets
-            .iter()
-            .zip(cells)
-            .zip(observed)
-            .map(|((&(id, period), cell), observed)| {
+        crate::off_path::governance::runtime::native_runtime_scrape_views(
+            buckets,
+            cells,
+            observed,
+            |id, period, cell, observed| {
                 let models = model_lanes(&cell, &observed)?;
-                let usage = self.viewed_usage(cost, id, period, true, cell, observed)?;
+                let usage = self.viewed_usage(cost, id, period, true, &cell, observed)?;
                 Ok(KeyScrape { usage, models })
-            })
-            .collect()
+            },
+        )
     }
 
     /// Observation totals for many (bucket, window) pairs: one store open, one
@@ -121,33 +117,10 @@ impl GovState {
         &self,
         buckets: &[(&str, u64)],
     ) -> RecordStoreResult<Vec<crate::persistence::observations::BudgetTotal>> {
-        use crate::persistence::observations::{BudgetTotal, ObservationStore};
-        let none = || buckets.iter().map(|_| BudgetTotal::default()).collect();
-        if buckets.is_empty() || !ObservationStore::supports(&self.core) {
-            return Ok(none());
-        }
-        let store = ObservationStore::open(self.core.clone())
-            .map_err(|e| RecordStoreError(e.to_string()))?;
-        if !store
-            .has_accounting()
-            .await
-            .map_err(|e| RecordStoreError(e.to_string()))?
-        {
-            return Ok(none());
-        }
-        let ids: Vec<String> = buckets
-            .iter()
-            .map(|(bucket, window)| crate::plane_driver::observation_budget_id(bucket, *window))
-            .collect();
-        let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
-        let totals = store
-            .budgets(&ids)
-            .await
-            .map_err(|e| RecordStoreError(e.to_string()))?;
-        for ((bucket, window), total) in buckets.iter().zip(&totals) {
-            self.cache_observation_total(bucket, *window, total.clone());
-        }
-        Ok(totals)
+        crate::off_path::governance::runtime::native_runtime_observation_totals(
+            self, &self.core, buckets,
+        )
+        .await
     }
 }
 
@@ -164,31 +137,10 @@ fn model_lanes(
     cell: &BudgetCell,
     observed: &crate::persistence::observations::BudgetTotal,
 ) -> RecordStoreResult<Vec<(String, std::collections::BTreeMap<String, Count>)>> {
-    let overflow = std::cell::Cell::new(false);
-    let models = cell
-        .models
-        .iter()
-        .map(|model| (&*model.model, model.cur.clone()));
-    let by_lane = busbar_kernel_ledger::usage::by_lane(models, |a, b| {
-        a.checked_add(b).unwrap_or_else(|_| {
-            overflow.set(true);
-            Count::ZERO
-        })
-    });
-    if overflow.get() {
-        return Err(RecordStoreError("lane count total overflow".into()));
-    }
-    let mut by_lane: BTreeMap<String, BTreeMap<String, Count>> = by_lane.into_iter().collect();
-    for (lane, units) in &observed.units {
-        let counts = by_lane.entry(lane.clone()).or_default();
-        for (class, count) in units {
-            let entry = counts.entry(class.clone()).or_default();
-            *entry = entry
-                .checked_add(*count)
-                .map_err(|_| RecordStoreError("observation lane count overflow".into()))?;
-        }
-    }
-    Ok(by_lane.into_iter().collect())
+    crate::off_path::governance::runtime::native_runtime_model_lanes(
+        cell.models.iter().map(|model| (&*model.model, &model.cur)),
+        observed,
+    )
 }
 
 impl GovState {
@@ -222,7 +174,7 @@ impl GovState {
         let window = budget_window(budget_period, now);
         let cell = self.bucket_cell_async(bucket_id, window).await?;
         let observed = self.observation_total_async(bucket_id, window).await?;
-        self.price_observed_cell(cost, include_request_fee, cell, &observed)
+        self.price_observed_cell(cost, include_request_fee, &cell, &observed)
     }
 
     pub(super) async fn observation_total_async(
@@ -250,11 +202,11 @@ impl GovState {
         &self,
         cost: &crate::cost::CostModel,
         include_request_fee: bool,
-        cell: BudgetCell,
+        cell: &BudgetCell,
         observed: &crate::persistence::observations::BudgetTotal,
     ) -> RecordStoreResult<Result<DerivedUsage, MoneyError>> {
         if observed.spent_nanos == 0 && observed.units.is_empty() {
-            return self.price_cell(cost, include_request_fee, &cell);
+            return self.price_cell(cost, include_request_fee, cell);
         }
         let tokens = Count::total(
             std::iter::once(cell.total_tokens()).chain(
@@ -280,7 +232,7 @@ impl GovState {
             }))
     }
 
-    pub(super) async fn bucket_cell_async(
+    pub(crate) async fn bucket_cell_async(
         &self,
         bucket_id: &str,
         window: u64,
@@ -322,10 +274,5 @@ impl GovState {
 
 /// A failed observation read, rendered once on the error path.
 fn store_error(error: &dyn std::fmt::Display) -> RecordStoreError {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a failed observation read renders its message once"
-    )]
-    let message = error.to_string();
-    RecordStoreError(message)
+    crate::cold::governance::runtime::native_runtime_store_error(error)
 }
