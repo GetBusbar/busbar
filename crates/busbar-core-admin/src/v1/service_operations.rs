@@ -101,14 +101,6 @@ impl AdminService {
     }
 
     pub(crate) async fn info(&self) -> Result<InfoView, AdminError> {
-        let auth_modules = auth_modules_compiled_in();
-        let hook_plugins = hook_plugins_compiled_in();
-
-        let view = self.app.engine_tables_view();
-        let providers: std::collections::BTreeSet<String> = (0..view.lane_count())
-            .filter_map(|i| view.lane_view(i).map(|l| l.provider.to_string()))
-            .collect();
-
         let live = busbar_kernel::persistence::boot_identity::live();
         let nodes = match live {
             Some(live) => live
@@ -126,6 +118,14 @@ impl AdminService {
                 .collect(),
             None => Vec::new(),
         };
+
+        let auth_modules = auth_modules_compiled_in();
+        let hook_plugins = hook_plugins_compiled_in();
+
+        let view = self.app.engine_tables_view();
+        let providers: std::collections::BTreeSet<String> = (0..view.lane_count())
+            .filter_map(|i| view.lane_view(i).map(|l| l.provider.to_string()))
+            .collect();
 
         Ok(InfoView {
             version: env!("CARGO_PKG_VERSION"),
