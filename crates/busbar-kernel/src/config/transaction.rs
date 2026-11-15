@@ -516,7 +516,7 @@ where
 /// before the generation is published; if the transaction ends without publishing (a refused build,
 /// a refused commit, a failed persist), dropping this puts the found set back, and only if it
 /// changed. Publication disarms it.
-struct SecretRestore(Option<Box<dyn crate::preflight::SecretSnapshot>>);
+struct SecretRestore(Option<crate::preflight::SecretRestoreFn>);
 
 impl SecretRestore {
     fn take() -> Self {
@@ -534,8 +534,8 @@ impl SecretRestore {
 
 impl Drop for SecretRestore {
     fn drop(&mut self) {
-        if let Some(snapshot) = self.0.take() {
-            snapshot.restore_if_changed();
+        if let Some(restore) = self.0.take() {
+            restore();
         }
     }
 }

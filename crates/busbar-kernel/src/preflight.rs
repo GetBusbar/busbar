@@ -226,14 +226,12 @@ pub struct RootInstall {
     pub config_projection: Option<crate::appbuild::ConfigProjection>,
 }
 
-/// The live dropped-in secret set as it was when the snapshot was taken.
-pub trait SecretSnapshot: Send {
-    /// Put the snapshot's set back on the live axis if the live set differs from it (by name,
-    /// version and image). An unchanged set is left alone, with its cached checkers.
-    fn restore_if_changed(self: Box<Self>);
-}
+/// Puts the live dropped-in secret set back as it was when it was taken, if the live set differs
+/// from it (by name, version and image). An unchanged set is left alone, with its cached checkers.
+pub type SecretRestoreFn = Box<dyn FnOnce() + Send>;
 
-pub type SecretSnapshotTake = fn() -> Box<dyn SecretSnapshot>;
+/// Takes the live dropped-in secret set and returns what puts it back ([`SecretRestoreFn`]).
+pub type SecretSnapshotTake = fn() -> SecretRestoreFn;
 
 pub type PluginLogsCheck = fn(&config::PluginsCfg) -> Result<(), String>;
 

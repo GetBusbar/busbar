@@ -378,18 +378,13 @@ fn conns() -> Option<busbar_contract::conn::admissions::AdmissionAuthority> {
     })
 }
 
-/// The dropped-in secret set a config transaction found, put back if the transaction publishes
-/// nothing ([`busbar_kernel::preflight::RootInstall::secret_snapshot`]).
-struct DroppedSecrets(Vec<crate::root::loader::boot::Candidate>);
-
-impl busbar_kernel::preflight::SecretSnapshot for DroppedSecrets {
-    fn restore_if_changed(self: Box<Self>) {
-        secret_rows().restore_if_changed(self.0);
-    }
-}
-
-fn secret_snapshot() -> Box<dyn busbar_kernel::preflight::SecretSnapshot> {
-    Box::new(DroppedSecrets(secret_rows().dropped()))
+/// Takes the dropped-in secret set a config transaction found; the returned restore puts it back if
+/// the transaction publishes nothing ([`busbar_kernel::preflight::RootInstall::secret_snapshot`]).
+fn secret_snapshot() -> busbar_kernel::preflight::SecretRestoreFn {
+    let found = secret_rows().dropped();
+    Box::new(move || {
+        secret_rows().restore_if_changed(found);
+    })
 }
 
 /// The process's one secret axis: this build's linked secret sources, whichever reader asks first.
