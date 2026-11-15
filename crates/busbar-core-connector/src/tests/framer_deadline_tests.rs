@@ -76,7 +76,7 @@ impl Deadlined {
         Arc::new(Self {
             facts: DoorFacts {
                 dials: true,
-                name: "deadlined".to_owned(),
+                name: "deadlined".into(),
                 claims: vec!["deadlined"],
                 role: ROLE_FRAMER,
                 composes_over: Vec::new(),
@@ -201,7 +201,6 @@ fn the_incremental_timeout_step_fires_an_elapsed_framer_deadline_once_and_states
 #[test]
 fn a_future_framer_deadline_waits_for_its_instant_in_both_clock_paths() {
     let ahead = 60_000_000_000_u64;
-    let early = Instant::now();
     for incremental in [false, true] {
         let door = Deadlined::new(ahead);
         let mut framing = framing(&door);
@@ -213,6 +212,7 @@ fn a_future_framer_deadline_waits_for_its_instant_in_both_clock_paths() {
             Duration::from_nanos(ahead),
             "the future deadline is exactly `ahead` after the reading it was stated from"
         );
+        let early = Instant::now();
         assert!(early < due, "a minute ahead is not yet due");
 
         let clock = |framing: &mut DatagramFraming, now: Instant| {

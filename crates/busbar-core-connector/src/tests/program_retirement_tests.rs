@@ -203,8 +203,14 @@ async fn handoff_read(
     id: ConnId,
     buf: &mut [u8],
 ) -> busbar_contract::conn::Piece {
-    // About 10 s of 5 ms polls, counted rather than read off the clock.
-    handoff_read_before(c, owner, id, buf, &mut 2000).await
+    handoff_read_before(
+        c,
+        owner,
+        id,
+        buf,
+        std::time::Instant::now() + Duration::from_secs(10),
+    )
+    .await
 }
 
 async fn handoff_read_before(
@@ -212,12 +218,11 @@ async fn handoff_read_before(
     owner: InstanceId,
     id: ConnId,
     buf: &mut [u8],
-    polls: &mut u32,
+    deadline: std::time::Instant,
 ) -> busbar_contract::conn::Piece {
     loop {
         match c.read(owner, id, 7, buf) {
-            Err(ConnError::Pending) if *polls > 0 => {
-                *polls -= 1;
+            Err(ConnError::Pending) if std::time::Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
             answer => return answer.expect("the actual child's bounded read succeeds"),
@@ -260,14 +265,16 @@ async fn handoff_pid_after_broadcasts(
         c.write(owner, id, message.as_bytes(), false, false),
         Ok(message.len())
     );
-    // One budget (about 10 s of 5 ms polls) for every reply, never read off the clock.
-    let mut polls = 2000_u32;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let mut held = Vec::new();
     let mut seen = 0;
     loop {
-        assert!(polls > 0, "correlated child reply deadline");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "correlated child reply deadline"
+        );
         let mut buf = [0_u8; 256];
-        let piece = handoff_read_before(c, owner, id, &mut buf, &mut polls).await;
+        let piece = handoff_read_before(c, owner, id, &mut buf, deadline).await;
         assert_eq!(piece.kind, PieceKind::Body);
         held.extend_from_slice(&buf[..piece.len]);
         while let Some(at) = held.iter().position(|b| *b == b'\n') {

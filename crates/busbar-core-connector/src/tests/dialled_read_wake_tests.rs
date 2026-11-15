@@ -223,12 +223,12 @@ fn establish_keying(
         far_cert,
         Role::Client,
         &IceCredentials {
-            ufrag: "far".to_owned(),
-            pwd: "far-password-0123456789".to_owned(),
+            ufrag: "far".into(),
+            pwd: "far-password-0123456789".into(),
         },
         &IceCredentials {
-            ufrag: "host".to_owned(),
-            pwd: "host-password-0123456789".to_owned(),
+            ufrag: "host".into(),
+            pwd: "host-password-0123456789".into(),
         },
         host_cert.fingerprint(),
     );
@@ -292,7 +292,7 @@ impl Rig {
         let door = Arc::new(RawFramer {
             facts: DoorFacts {
                 dials: true,
-                name: "upstream-read-wake".to_owned(),
+                name: "upstream-read-wake".into(),
                 claims: vec!["upstream-read-wake"],
                 role: ROLE_FRAMER,
                 composes_over: Vec::new(),
@@ -309,8 +309,7 @@ impl Rig {
         });
         let (mut framing, _) =
             DatagramFraming::accept(door.clone(), host_cert.clone(), port.local_addr()).unwrap();
-        let now = std::time::Instant::now();
-        framing.rendezvous(b"terms", now).unwrap();
+        framing.rendezvous(b"terms", Instant::now()).unwrap();
 
         let username = b"host:far";
         let mut check = vec![0, 1, 0, 36, 0x21, 0x12, 0xa4, 0x42];
@@ -322,7 +321,9 @@ impl Rig {
                 .unwrap();
         check.extend_from_slice(&[0, 8, 0, 20]);
         check.extend_from_slice(&signature);
-        framing.datagram(far.local_addr(), &check, now).unwrap();
+        framing
+            .datagram(far.local_addr(), &check, Instant::now())
+            .unwrap();
         if let Some(cert) = far_cert {
             establish_keying(
                 &mut framing,
@@ -342,7 +343,7 @@ impl Rig {
             let mut head = super::message(b"kind: opaque\r\n");
             head.stream = stream;
             head.fields = true;
-            pairing.sort(leg, vec![head], now);
+            pairing.sort(leg, vec![head], Instant::now());
         }
         let dialled = Dialled::new(framing, ReadyPort::open(port).unwrap(), pairing, None);
         dialled.pairing.attach(dialled.leg.clone()).unwrap();
@@ -494,7 +495,6 @@ fn storage_pending_and_a_full_channel_queue_do_not_schedule_retry_spins() {
         *rig.dialled.leg.ready.lock().unwrap() =
             super::ready_messages(&vec![(&b"queued"[..], true); crate::dialled::MAX_READY]);
         rig.woke.clear();
-        let now = std::time::Instant::now();
         for _ in 0..3 {
             rig.dialled.leg.wait_ready(&rig.waker);
             rig.dialled
@@ -503,7 +503,7 @@ fn storage_pending_and_a_full_channel_queue_do_not_schedule_retry_spins() {
                     &rig.dialled.pairing,
                     &mut Context::from_waker(&rig.waker),
                     None,
-                    now,
+                    std::time::Instant::now(),
                 )
                 .unwrap();
             assert_eq!(rig.woke.count.load(Ordering::SeqCst), 0);
@@ -584,8 +584,7 @@ fn conn_wait_reports_the_keying_timeout_after_the_exchange_spent_the_outer_deadl
     use busbar_contract::conn::{Conns as _, InstanceId, NeedId};
     crate::support::worker().block_on(async {
         let mut rig = Rig::new(None);
-        let now = std::time::Instant::now();
-        rig.dialled.due = Some(now - Duration::from_nanos(1));
+        rig.dialled.due = Some(Instant::now() - Duration::from_nanos(1));
         let wake_count = Arc::new(AtomicUsize::new(0));
         let counted = wake_count.clone();
         let connector = crate::Connector {
@@ -597,7 +596,7 @@ fn conn_wait_reports_the_keying_timeout_after_the_exchange_spent_the_outer_deadl
         let owner = InstanceId(17);
         let need = NeedId(23);
         let held = crate::Held::over(None, None, None)
-            .bounded(now, 1)
+            .bounded(std::time::Instant::now(), 1)
             .dialling(rig.dialled);
 
         held.answered();
@@ -618,14 +617,13 @@ fn conn_wait_reports_the_keying_timeout_after_the_exchange_spent_the_outer_deadl
 
 #[test]
 fn an_unexpired_or_successfully_keyed_leg_stays_pending_without_a_timeout_spin() {
-    let now = std::time::Instant::now();
     for keyed in [false, true] {
         crate::support::worker().block_on(async {
             let mut rig = Rig::settings(None, keyed);
             rig.dialled.due = Some(if keyed {
-                now - Duration::from_nanos(1)
+                Instant::now() - Duration::from_nanos(1)
             } else {
-                now + Duration::from_secs(60)
+                Instant::now() + Duration::from_secs(60)
             });
             assert_eq!(rig.dialled.leg.presented(), keyed);
             for _ in 0..3 {
