@@ -81,8 +81,6 @@ pub(crate) fn plane_claims(planes: &[LinkedClaims]) -> Vec<PlaneClaim> {
 /// dispatcher's door validation and served over the host's sockets (`crate::root::doors`).
 #[derive(Clone)]
 pub(crate) struct DroppedDoor {
-    /// Its registry key: its own claim.
-    pub key: &'static str,
     /// Every scheme it claims, its own first (each is registered under its own key).
     pub claims: Vec<&'static str>,
     /// The layers it declares.

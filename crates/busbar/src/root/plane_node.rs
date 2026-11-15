@@ -191,6 +191,7 @@ impl Node {
 
     /// A node whose arrivals are read from `clock`.
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn with_clock(clock: Arc<dyn busbar_kernel::Clock>) -> Self {
         Self {
             clock,
