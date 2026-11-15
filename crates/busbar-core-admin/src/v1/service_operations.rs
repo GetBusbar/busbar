@@ -1187,6 +1187,7 @@ impl AdminService {
         &self,
         config: serde_json::Value,
         providers: std::collections::HashMap<String, busbar_kernel::config::ProviderDef>,
+        parse: crate::v1::json::BodyParser,
     ) -> Result<Result<ConfigValidateView, AdminError>, AdminError> {
         let overlay = match self.app.overlay_path.as_deref() {
             Some(store) => store
@@ -1227,7 +1228,14 @@ impl AdminService {
         let reference = std::sync::Arc::clone(&self.app.operator_file_defs);
         match tokio::task::spawn_blocking(move || {
             let _gate = gate;
-            validate_config_blocking(config, providers, candidate.plugins, &rules, reference)
+            validate_config_blocking(
+                config,
+                providers,
+                parse,
+                candidate.plugins,
+                &rules,
+                reference,
+            )
         })
         .await
         {
@@ -1864,6 +1872,7 @@ fn rollup_refused(error: &'static str) -> AdminError {
 fn validate_config_blocking(
     config: serde_json::Value,
     defs: std::collections::HashMap<String, busbar_kernel::config::ProviderDef>,
+    parse: crate::v1::json::BodyParser,
     plugins: busbar_kernel::config::PluginsCfg,
     rules: &std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>,
     reference: std::sync::Arc<busbar_kernel::config::OperatorFileDefs>,
@@ -1873,7 +1882,7 @@ fn validate_config_blocking(
         busbar_kernel::config::grammar::Fetch::None,
         "config.validate",
     )?;
-    let deploy = crate::v1::json::typed_body(config, &grammar)?;
+    let deploy = crate::v1::json::typed_body(config, &grammar, parse)?;
     // A dry run never says yes to what apply refuses: the same pre-check, status and text.
     if let Some(refusal) =
         crate::v1::json::config_body_refusal(&deploy, &reference, "config.validate")

@@ -2009,12 +2009,14 @@ fn observation_export_detail_preserves_decimal_strings_above_js_integer_range() 
 #[tokio::test(start_paused = true)]
 async fn a_reload_class_read_behind_a_held_scan_gate_is_unavailable() {
     let held = CATALOG_SCAN_GATE.lock().await;
-    let mut plugins = busbar_kernel::config::PluginsCfg::default();
-    plugins.enabled = true;
-    plugins.dir = std::env::temp_dir()
-        .join("busbar-ssb-g24-must-not-be-scanned")
-        .to_string_lossy()
-        .into_owned();
+    let plugins = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: std::env::temp_dir()
+            .join("busbar-ssb-g24-must-not-be-scanned")
+            .to_string_lossy()
+            .into_owned(),
+        ..Default::default()
+    };
     let refused = read_grammar(
         plugins,
         Vec::new(),

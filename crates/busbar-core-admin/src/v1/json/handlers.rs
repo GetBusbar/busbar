@@ -2158,13 +2158,21 @@ pub(crate) struct ApplyConfigReq {
     providers: std::collections::HashMap<String, busbar_kernel::config::ProviderDef>,
 }
 
-/// An admin body's deployment typed under `grammar` (its own phase 1), through the boot pre-pass.
+/// The boot pre-pass an admin verb reads its body with (`deploy_from_deserializer`): the verb names
+/// it, and the body is typed by it once the body's own grammar exists.
+pub(crate) type BodyParser = fn(
+    serde_json::Value,
+    &busbar_kernel::config::Grammar,
+) -> Result<busbar_kernel::config::DeployCfg, serde_json::Error>;
+
+/// An admin body's deployment typed under `grammar` (its own phase 1) by the verb's boot pre-pass.
 /// A refused word carries the grammar's report, trimmed for an admin response.
 pub(crate) fn typed_body(
     config: serde_json::Value,
     grammar: &busbar_kernel::config::Grammar,
+    parse: BodyParser,
 ) -> Result<busbar_kernel::config::DeployCfg, AdminError> {
-    busbar_kernel::config::deploy_from_deserializer(config, grammar).map_err(|e| {
+    parse(config, grammar).map_err(|e| {
         AdminError::Validation(grammar.with_report(format!(
             "malformed config body: {}",
             describe_body_error(&e)
@@ -2180,6 +2188,7 @@ pub(crate) fn typed_body(
 async fn read_apply_body(
     snapshot: &busbar_kernel::state::App,
     config: serde_json::Value,
+    parse: BodyParser,
     overlay: Option<&busbar_kernel::config::overlay::OverlayDoc>,
 ) -> Result<Result<busbar_kernel::config::DeployCfg, AdminError>, AdminError> {
     let candidate = busbar_kernel::config::security_policy::Candidate::of_json(
@@ -2196,7 +2205,7 @@ async fn read_apply_body(
         "config.apply",
     )
     .await?;
-    let deploy = typed_body(config, &grammar)?;
+    let deploy = typed_body(config, &grammar, parse)?;
     if let Some(refusal) =
         config_body_refusal(&deploy, &snapshot.operator_file_defs, "config.apply")
     {
@@ -2245,6 +2254,8 @@ pub(crate) async fn apply_config(
     }
 
     let ApplyConfigReq { config, providers } = req;
+    let parse: BodyParser =
+        |config, grammar| busbar_kernel::config::deploy_from_deserializer(config, grammar);
     let out = config_transaction(&handle, move |txn| {
         let current = txn.app();
         if let Some(e) = stale_if_match(expected, current.config_version) {
@@ -2266,10 +2277,11 @@ pub(crate) async fn apply_config(
                     .map_err(AdminError::Validation)?,
                 None => None,
             };
-            let mut deploy = match read_apply_body(&snapshot, config, overlay_doc.as_ref()).await? {
-                Ok(deploy) => deploy,
-                Err(refusal) => return Ok(Outcome::Value(Applied::FilePolicy(refusal))),
-            };
+            let mut deploy =
+                match read_apply_body(&snapshot, config, parse, overlay_doc.as_ref()).await? {
+                    Ok(deploy) => deploy,
+                    Err(refusal) => return Ok(Outcome::Value(Applied::FilePolicy(refusal))),
+                };
             if let Some(doc) = overlay_doc.as_ref() {
                 busbar_kernel::config::overlay::apply_root_to_deploy(&mut deploy, doc)
                     .map_err(AdminError::Validation)?;
@@ -4919,8 +4931,10 @@ pub(crate) async fn validate_config(
         return err_json(&AdminError::Validation(refusal));
     }
 
+    let parse: BodyParser =
+        |config, grammar| busbar_kernel::config::deploy_from_deserializer(config, grammar);
     match service(&handle)
-        .validate_config(req.config, req.providers)
+        .validate_config(req.config, req.providers, parse)
         .await
     {
         Ok(Ok(view)) => ok_json(StatusCode::OK, &view),
