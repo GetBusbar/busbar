@@ -79,3 +79,9 @@ impl HmacSha256Key {
 pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     constant_time::verify_slices_are_equal(a, b).is_ok()
 }
+
+/// HMAC-SHA384 of `msg` under `key`.
+#[inline]
+pub fn hmac_sha384(key: &[u8], msg: &[u8]) -> Result<[u8; 48], Error> {
+    Ok(mac(hmac::HMAC_SHA384, key, msg))
+}
