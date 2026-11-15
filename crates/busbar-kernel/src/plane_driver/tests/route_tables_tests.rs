@@ -46,6 +46,7 @@ fn the_tables_project_the_resolved_sections_in_lane_order() {
         &pools,
         &by_model,
         busbar_contract::config::UpstreamCreds::Passthrough,
+        true,
     );
     assert_eq!(t.lane_count(), 2);
     let b = t.lane_view(1).expect("lane 1");

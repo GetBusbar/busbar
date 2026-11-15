@@ -138,10 +138,16 @@ async fn healthz_with_no_model_lane_is_ready_when_a_configured_plane_opened() {
 
 #[tokio::test]
 async fn healthz_with_no_model_lane_is_unready_when_the_planes_open_refused() {
+    let key = kernel::plane_driver::registry::plane_decl_for_config_section("decisions")
+        .expect("the actual decisions plane is installed")
+        .key;
     assert_eq!(
         lane_less_healthz(Some(false)).await,
-        (503, b"no usable lanes".to_vec()),
-        "a plane that is configured but did not open makes nothing ready"
+        (
+            503,
+            format!("plane '{key}' configured but not open").into_bytes()
+        ),
+        "a plane that is configured but did not open makes health 503 and names the plane"
     );
 }
 

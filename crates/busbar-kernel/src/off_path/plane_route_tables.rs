@@ -14,6 +14,7 @@ impl ConfigTables {
         pools: &[crate::plane_driver::route_input::PoolInput],
         by_model: impl IntoIterator<Item = (&'m String, &'m usize)>,
         upstream_credentials: busbar_contract::config::UpstreamCreds,
+        llm_configured: bool,
     ) -> Self {
         ConfigTables {
             lanes: lanes
@@ -43,6 +44,7 @@ impl ConfigTables {
                 })
                 .collect(),
             upstream_credentials,
+            no_llm: !llm_configured,
         }
     }
 }
@@ -89,5 +91,8 @@ impl EngineTablesView for ConfigTables {
     }
     fn upstream_creds(&self) -> busbar_contract::config::UpstreamCreds {
         self.upstream_credentials
+    }
+    fn llm_configured(&self) -> bool {
+        !self.no_llm
     }
 }

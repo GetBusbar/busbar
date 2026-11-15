@@ -1216,6 +1216,7 @@ async fn build_app_native(
         present: cfg.rate_card.is_some(),
         plane_fees: cfg.plane_fees.clone(),
     };
+    let llm_configured = !cfg.providers.is_empty() || !cfg.models.is_empty();
     let mut sorted_models: Vec<_> = cfg.models.into_iter().collect();
     sorted_models.sort_by(|a, b| a.0.cmp(&b.0));
     for (model, mc) in sorted_models {
@@ -1800,6 +1801,7 @@ async fn build_app_native(
         &pool_inputs,
         &by_model,
         cfg.upstream_credentials,
+        llm_configured,
     ));
 
     let fallback = crate::plane_driver::dispatch::fallback_decl();

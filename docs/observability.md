@@ -10,7 +10,7 @@ Cross-references: [Circuit breaker](/docs/circuit-breaker/) · [In-flight failov
 GET /healthz
 ```
 
-No auth required. Returns `200 OK` (body: `ok`) if any lane is usable: meaning at least one lane across all configured pools has a Closed or HalfOpen breaker in any of its cells, and is not permanently dead. Returns `503 Service Unavailable` (body: `no usable lanes`) if every lane is unusable.
+No auth required. Returns `200 OK` (body: `ok`) if any lane is usable: meaning at least one lane across all configured pools has a Closed or HalfOpen breaker in any of its cells, and is not permanently dead. Returns `503 Service Unavailable` (body: `no usable lanes`) if every lane is unusable. A deployment that configures no provider and no model (an admin-only engine) has no lanes to count: it returns `200 OK` while every other configured plane is open, and `503` (body: `plane '<key>' configured but not open`) naming the first configured plane that is not.
 
 Use as a Kubernetes readiness and liveness probe. The check is side-effect-free: it never steals a HalfOpen recovery probe slot.
 
