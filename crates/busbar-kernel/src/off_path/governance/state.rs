@@ -478,10 +478,12 @@ pub(crate) fn metering_flush_take_unretained<K, V, T>(
 {
     for shard in shards {
         let mut map = shard.lock().unwrap_or_else(|p| p.into_inner());
-        flight.extend(
-            map.extract_if(|key, _| !retained.contains(key))
-                .filter_map(&mut make),
-        );
+        let kept: Vec<(K, V)> = retained
+            .iter()
+            .filter_map(|key| map.remove_entry(key))
+            .collect();
+        flight.extend(map.drain().filter_map(&mut make));
+        map.extend(kept);
     }
 }
 
