@@ -124,21 +124,31 @@ fn a_declared_token_endpoint_keeps_host_metadata_policy() {
             .iter()
             .any(|e| e.contains("scope") || e.contains("http or https")));
     }
+    // 1.6.0 retired the 1.5.5 carve-outs (BUSBAR-3136): neither a provider's nor the global
+    // `allow_metadata_hosts`, nor `allow_all_metadata`, lifts the token endpoint's refusal.
+    let refused = |provider: &crate::config::providers::ResolvedProvider, cfg: &RootCfg| {
+        check(provider, cfg)
+            .iter()
+            .any(|e| e.contains("blocked cloud-metadata"))
+    };
     provider.token_url = Some("foreign://169.254.169.254:443/token".into());
     provider.allow_metadata_hosts.push("169.254.169.254".into());
     assert!(
-        check(&provider, &cfg).is_empty(),
-        "provider override remains authoritative"
+        refused(&provider, &cfg),
+        "a provider override no longer admits a metadata token endpoint"
     );
     provider.allow_metadata_hosts.clear();
     cfg.allow_metadata_hosts.push("169.254.169.254".into());
     assert!(
-        check(&provider, &cfg).is_empty(),
-        "global override remains authoritative"
+        refused(&provider, &cfg),
+        "a global override no longer admits a metadata token endpoint"
     );
     cfg.allow_metadata_hosts.clear();
     cfg.allow_all_metadata = true;
-    assert!(check(&provider, &cfg).is_empty());
+    assert!(
+        refused(&provider, &cfg),
+        "allow_all_metadata no longer turns the guard off"
+    );
     cfg.allow_all_metadata = false;
     cfg.blocked_metadata_hosts.push("token.example.com".into());
     provider.token_url = Some("foreign://token.example.com:443/token".into());
@@ -214,9 +224,13 @@ fn provider_destination_intent_does_not_bypass_independent_host_policy() {
         .unwrap()
         .allow_metadata_hosts
         .push("169.254.169.254".into());
+    // 1.6.0 retired the provider carve-out (BUSBAR-3136): the destination stays refused.
     assert!(
         validate_provider_destinations(&cfg, &[], &|_| Ok(destination("0xa9fea9fe:7443", true)))
-            .is_ok()
+            .unwrap_err()
+            .iter()
+            .any(|e| e.contains("metadata")),
+        "a provider's allow_metadata_hosts no longer admits a metadata destination"
     );
 }
 
