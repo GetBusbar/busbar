@@ -1596,3 +1596,7 @@ pub fn held_operator_rows() -> Vec<String> {
         .map(|row| format!("{} {}", row.action, row.resource))
         .collect()
 }
+
+#[cfg(test)]
+#[path = "tests/audit_keyset_tests.rs"]
+mod keyset_tests;
