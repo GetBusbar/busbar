@@ -51,38 +51,7 @@ pub struct UnitCheckpoint {
 
 impl UnitCheckpoint {
     pub fn validate(&self) -> RecordStoreResult<()> {
-        if let Some(evidence) = &self.measurement {
-            evidence
-                .validate(self)
-                .map_err(|_| error("invalid host measurement origin"))?;
-        }
-        if self.principal.is_empty()
-            || self
-                .units
-                .iter()
-                .any(|(class, count)| class.is_empty() || count.is_negative())
-        {
-            return Err(error("invalid running money principal or quantity"));
-        }
-        let mut targets = std::collections::BTreeSet::new();
-        if self.targets.iter().any(|target| {
-            target.bucket.is_empty() || !targets.insert((&target.bucket, target.window))
-        }) {
-            return Err(error("duplicate or empty running money target"));
-        }
-        if let Some(events) = &self.terminal {
-            if !self.ended {
-                return Err(error("running checkpoint contains terminal operations"));
-            }
-            let mut operations = std::collections::BTreeSet::new();
-            for event in events {
-                event.follows(None).map_err(|e| failed(&e))?;
-                if !operations.insert(event.operation_id) {
-                    return Err(error("duplicate unit terminal operation"));
-                }
-            }
-        }
-        Ok(())
+        crate::off_path::governance::runtime::unit_checkpoint_validate(self)
     }
 
     pub fn era(&self) -> RawRateEra {
@@ -116,23 +85,9 @@ pub(super) struct UnitCheckpointBook {
     flushing: tokio::sync::Mutex<()>,
 }
 
-/// A refusal from a lower layer, rendered once on the error path.
-fn failed(cause: &dyn std::fmt::Display) -> RecordStoreError {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a refused checkpoint renders its message once"
-    )]
-    let message = cause.to_string();
-    RecordStoreError(message)
-}
-
+/// A checkpoint refusal, rendered once on the error path.
 fn error(message: &str) -> RecordStoreError {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a refused checkpoint renders its message once"
-    )]
-    let message = message.to_string();
-    RecordStoreError(message)
+    crate::cold::governance::runtime::unit_checkpoint_refusal(message)
 }
 
 impl GovState {

@@ -446,10 +446,14 @@ fn unit(revision: u64) -> UnitCheckpoint {
         provider: Some("race".into()),
         era_at: 42,
         era_entry: None,
-        units: BTreeMap::from([(
-            "work".into(),
-            Count::parse(if terminal { "0.25" } else { "0.125" }).unwrap(),
-        )]),
+        units: {
+            let mut units = BTreeMap::new();
+            units.insert(
+                "work".to_owned(),
+                Count::parse(if terminal { "0.25" } else { "0.125" }).unwrap(),
+            );
+            units
+        },
         targets: vec![UnitTarget {
             bucket: "race-principal".into(),
             window: 0,

@@ -81,10 +81,6 @@ impl From<keys::KeyError> for Error {
 }
 impl From<Error> for RecordStoreError {
     fn from(value: Error) -> Self {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the refusal text is built only when the store operation fails"
-        )]
         let message = match value {
             Error::Conflict => "identity conflict retry budget exhausted".into(),
             Error::Invalid(message) => message.into(),
@@ -165,12 +161,7 @@ struct Denied {
     revision: u64,
 }
 fn encode<T: Serialize>(record: &T) -> Result<Vec<u8>> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: identity rows are encoded only by key and credential management"
-    )]
-    let encoded = serde_json::to_vec(&Record { version: 1, record }).map_err(|_| corrupt());
-    encoded
+    serde_json::to_vec(&Record { version: 1, record }).map_err(|_| corrupt())
 }
 fn decode<T: DeserializeOwned>(
     bytes: &Secret<Vec<u8>>,
@@ -365,10 +356,6 @@ impl<'a> Tx<'a> {
         if meta.revoked_at.is_some() && !secret.expose(&seal).is_empty() {
             return Err(corrupt());
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a stored credential is read only by cache refresh and boot hydration"
-        )]
         let secret = busbar_contract::secure::SecureString::from(
             std::str::from_utf8(secret.expose(&seal))
                 .map_err(|_| corrupt())?
@@ -431,10 +418,6 @@ impl<'a> Tx<'a> {
         meta.revision = self.bump()?;
         self.revision(b'C', &meta.id, old, meta.revision)?;
         self.put(row(b'C', &meta.id)?, encode(&meta)?);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: identity rows are encoded only by key and credential management"
-        )]
         self.put(confidential(&meta.id)?, secret.to_vec());
         Ok(())
     }
@@ -556,10 +539,6 @@ impl<'a> Tx<'a> {
         )
     }
     fn committed(&self, changed: bool) -> Result<IdentityCommit> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: an identity commit is reported only by key and credential management"
-        )]
         let mut result = IdentityCommit {
             changed,
             revision: self.revision,
@@ -583,10 +562,6 @@ impl<'a> Tx<'a> {
                         .get(&confidential(&meta.id)?)
                         .and_then(Option::as_ref)
                         .ok_or_else(corrupt)?;
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "config: an identity commit is reported only by key and credential management"
-                    )]
                     let secret = busbar_contract::secure::SecureString::from(
                         std::str::from_utf8(secret.expose(&crate::seal::lend()))
                             .map_err(|_| corrupt())?
@@ -610,10 +585,6 @@ impl<'a> Tx<'a> {
         }
         let at = address(b'V', &[])?;
         self.put(at.clone(), revision_encode(self.revision));
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: identity rows are committed only by key and credential management"
-        )]
         let candidate = PreparedCandidate::new(Candidate {
             codec: CANDIDATE_VERSION,
             id: self.store.next_id()?,
@@ -969,9 +940,7 @@ impl Identity<'_> {
     /// Warm refresh may observe the confirmed revision before an active commit.
     /// Inactive uncertain originals must settle first; query's guards reject any
     /// remaining unresolved candidate before and after the coherent native read.
-    pub(in crate::governance) async fn snapshot_for_refresh(
-        &self,
-    ) -> RecordStoreResult<IdentitySnapshot> {
+    pub(crate) async fn snapshot_for_refresh(&self) -> RecordStoreResult<IdentitySnapshot> {
         let _ = self
             .store
             .settle_identity_pending()
@@ -1183,10 +1152,6 @@ impl Identity<'_> {
                 {
                     return Err(corrupt());
                 }
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "config: identity store queries run only for key management, cache refresh and boot hydration"
-                )]
                 let subjects = denied.into_iter().map(|entry| entry.subject).collect();
                 Output::Denied(subjects)
             }
@@ -1207,10 +1172,6 @@ impl Identity<'_> {
             }
             Query::Key(id) => {
                 let key = tx.key(id).await?;
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "config: identity store queries run only for key management, cache refresh and boot hydration"
-                )]
                 let keys = key.into_iter().collect();
                 Output::Keys(keys)
             }
@@ -1394,10 +1355,6 @@ pub(crate) fn migration_credential_rows(
         )
         .into());
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: credential rows are rebuilt only by startup migration"
-    )]
     let mut rows = vec![
         (row(b'C', &meta.id)?, Secret::new(encode(meta)?)),
         (confidential(&meta.id)?, Secret::new(envelope.to_vec())),

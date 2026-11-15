@@ -56,11 +56,7 @@ impl RevocationSync {
         caches: Arc<RwLock<super::GovCaches>>,
         order: Arc<super::CacheOrder>,
     ) -> Arc<Self> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the refresh clock's origin is read once, when the identity cache is built"
-        )]
-        let clock = Instant::now();
+        let clock = crate::off_path::governance::state::revocation_clock_origin();
         Arc::new(Self {
             native: NativeRefresh {
                 core,
@@ -85,11 +81,7 @@ impl RevocationSync {
 
     pub(crate) fn insert(&self, sub: &str) {
         let mut set = self.set.write().unwrap_or_else(|e| e.into_inner());
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a revocation is recorded once, when a key or subject is revoked"
-        )]
-        set.insert(sub.to_string());
+        crate::off_path::governance::state::revocation_insert(&mut set, sub);
     }
 
     #[cfg(test)]
