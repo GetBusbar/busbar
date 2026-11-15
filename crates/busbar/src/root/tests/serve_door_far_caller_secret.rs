@@ -85,7 +85,7 @@ fn egress_over(pool_name: &str) -> Egress {
         clock: Arc::new(Wall),
         journal: Arc::new(Quiet),
         telemetry: Arc::new(Quiet),
-        pools: HashMap::from([(
+        pools: foldhash::HashMap::from_iter([(
             pool_name.to_owned(),
             Pool {
                 name: pool_name.to_owned(),

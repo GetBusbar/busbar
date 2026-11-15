@@ -207,15 +207,7 @@ fn the_armed_cooldown_is_a_function_of_the_now_the_caller_supplied() {
 
     let first = arm();
 
-    let start = std::time::SystemTime::now();
-    while std::time::SystemTime::now()
-        .duration_since(start)
-        .unwrap_or_default()
-        .as_millis()
-        < 1_100
-    {
-        std::thread::yield_now();
-    }
+    std::thread::sleep(std::time::Duration::from_millis(1_100));
     let second = arm();
 
     assert_eq!(
