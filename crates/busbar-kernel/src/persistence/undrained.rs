@@ -357,6 +357,33 @@ impl RecordLedger {
     }
 }
 
+/// Test-only: where one target sits in the ledger (SHUTDOWN-HANG 8.14, 8.15).
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Placement {
+    pub(crate) retained: bool,
+    /// The record's generation, while recorded and not confirmed.
+    pub(crate) recorded: Option<u64>,
+    pub(crate) record_failed: bool,
+    pub(crate) unconfirmed: bool,
+}
+
+#[cfg(test)]
+impl RecordLedger {
+    pub(crate) fn placement(&self, target: Target) -> Placement {
+        let state = self.lock();
+        Placement {
+            retained: state.retained.contains_key(&target),
+            recorded: state
+                .recorded
+                .get(&target)
+                .map(|(generation, _)| *generation),
+            record_failed: state.record_failed.contains_key(&target),
+            unconfirmed: state.unconfirmed.contains_key(&target),
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/undrained_tests.rs"]
 mod tests;
