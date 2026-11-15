@@ -15,8 +15,6 @@ path = "src/lib.rs"
 default = []
 # Core's side: answers, the buffer pool, the Need driver, the entry guard, the Host static and the scrubber (§10).
 host = ["dep:busbar-crypto", "dep:aho-corasick", "dep:arc-swap", "dep:base64", "dep:percent-encoding", "dep:hex", "dep:zeroize"]
-# Dev-only (C-PANIC-HOST, like the kernel's): the injection point at the top of the host's `contain`.
-conformance = ["host"]
 # The in-memory hyper/tokio IO adapter transports use (§9).
 memio = []
 

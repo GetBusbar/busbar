@@ -45,13 +45,9 @@ const PBKDF2_ITERATIONS: core::ops::RangeInclusive<u32> = 1..=10_000_000;
 /// Round 20 (I10): runs `body`, and answers `fallback` if it panics. A caught panic bumps
 /// `HOST_FAULTS[HOST_PANIC]` and nothing else: no log call, no allocation here (the payload is dropped).
 fn contain<R>(fallback: R, body: impl FnOnce() -> R) -> R {
-    #[cfg(feature = "conformance")]
-    if conformance::uncontained() {
-        return body();
-    }
     let run = AssertUnwindSafe(|| {
-        #[cfg(any(test, feature = "conformance"))]
-        conformance::fire();
+        #[cfg(test)]
+        injection::fire();
         body()
     });
     match std::panic::catch_unwind(run) {
@@ -63,10 +59,11 @@ fn contain<R>(fallback: R, body: impl FnOnce() -> R) -> R {
     }
 }
 
-/// The `conformance` feature (dev-only, like the kernel's; C-PANIC-HOST): the one injection point at the top of
-/// `contain`, and the negative control's switch that runs bodies bare.
-#[cfg(any(test, feature = "conformance"))]
-pub mod conformance {
+/// The unit tests' injection point at the top of `contain` (C-PANIC-HOST). The dev-only `conformance` feature
+/// that exposes it to the conformance crate, with its `uncontained` negative control, lands with its first
+/// caller (the HOST entries, UNSAFE-MIN).
+#[cfg(test)]
+mod injection {
     use core::cell::Cell;
 
     std::thread_local! {
@@ -74,7 +71,7 @@ pub mod conformance {
     }
 
     /// The next `contain` on this thread panics once, inside its guarded body.
-    pub fn arm_panic() {
+    pub(super) fn arm_panic() {
         ARMED.with(|armed| armed.set(true));
     }
 
@@ -82,21 +79,6 @@ pub mod conformance {
         if ARMED.with(|armed| armed.replace(false)) {
             std::panic::resume_unwind(Box::new("C-PANIC-HOST injection"));
         }
-    }
-
-    #[cfg(feature = "conformance")]
-    static UNCONTAINED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-
-    /// C-PANIC-HOST's negative control: with `on`, `contain` runs its body bare, so an injected panic unwinds
-    /// across `extern "C"` and aborts the process the case runs in.
-    #[cfg(feature = "conformance")]
-    pub fn set_uncontained(on: bool) {
-        UNCONTAINED.store(on, core::sync::atomic::Ordering::Relaxed);
-    }
-
-    #[cfg(feature = "conformance")]
-    pub(super) fn uncontained() -> bool {
-        UNCONTAINED.load(core::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -899,8 +881,11 @@ mod tests {
         });
     }
 
+    /// What the sink saw: (slot, level, error, message length).
+    type Seen = Option<(Option<u32>, u32, u32, usize)>;
+
     std::thread_local! {
-        static SEEN: Cell<Option<(Option<u32>, u32, u32, usize)>> = const { Cell::new(None) };
+        static SEEN: Cell<Seen> = const { Cell::new(None) };
         static SINK_PANICS: Cell<bool> = const { Cell::new(false) };
     }
 
@@ -915,16 +900,16 @@ mod tests {
     fn c_panic_host_every_body_answers_its_fallback() {
         fresh(|| {
             let before = faults(HOST_PANIC);
-            conformance::arm_panic();
+            injection::arm_panic();
             assert_eq!(vt::now(), 0);
-            conformance::arm_panic();
+            injection::arm_panic();
             assert_eq!(vt::mono(), 0);
-            conformance::arm_panic();
+            injection::arm_panic();
             let random = vt::random(16);
             assert_eq!((random.crypto_status(), random.len()), (status::RNG, 0));
-            conformance::arm_panic();
+            injection::arm_panic();
             assert_eq!(vt::deployment(), DeploymentId([0; 16]));
-            conformance::arm_panic();
+            injection::arm_panic();
             vt::log(3, 0, "dropped");
             assert_eq!(faults(HOST_PANIC), before + 5);
             assert!(vt::now() > 1_600_000_000_000_000_000);

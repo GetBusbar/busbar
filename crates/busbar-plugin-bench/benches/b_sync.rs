@@ -8,8 +8,8 @@
 //! rebuild on another thread never blocks it. This bench times that path on an instance with 1,024 bindings
 //! registered (about 14 needles each): `Scrub::text` alone on one thread, then `fail_text` on 16 threads while a
 //! 17th registers a changing value in a loop (a whole-automaton rebuild each time). It prints the median and p99
-//! per call and the clock's own cost per timed call, for the IF §14 gate: median ≤ the OK arm + `text` alone
-//! + 22 ns, p99 ≤ 2 µs with the rebuild thread running. The OK arm (a no-op `verify` through `entry::guard`)
+//! per call and the clock's own cost per timed call, for the IF §14 gate: median ≤ the OK arm plus `text` alone
+//! plus 22 ns, p99 ≤ 2 µs with the rebuild thread running. The OK arm (a no-op `verify` through `entry::guard`)
 //! and the RMW counts join this file with the guard (W1-H1) and the auth adapter (W1-L5).
 //!
 //! `B_SYNC_CALLS` sets the calls per thread (default 1,000,000).

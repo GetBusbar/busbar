@@ -122,7 +122,7 @@ deny = [
     { crate = "dimpl", wrappers = ["busbar-crypto", "busbar-crypto-backend", "busbar-core-connector", "str0m", "str0m-proto"], reason = "the DTLS provider is the crypto backend's" },
     { crate = "busbar-crypto-backend", wrappers = ["busbar-crypto"], reason = "the backend is reached only through the facade" },
     { crate = "busbar-crypto-backend", deny-multiple-versions = true, reason = "one backend per graph" },
-    { crate = "busbar-crypto", wrappers = ["busbar-contract"], reason = "every crate reaches the facade as busbar_contract::crypto" },
+    { crate = "busbar-crypto", wrappers = ["busbar-contract", "busbar-plugin-abi"], reason = "every crate reaches the facade as busbar_contract::crypto; busbar-plugin-abi[host] sits below busbar-contract and names it directly (ABI-MIN3-INTERFACE §1, §16.23)" },
     { crate = "busbar-crypto", deny-multiple-versions = true, reason = "one facade per graph" },
     # Never in any graph: C-backed crypto, other Ed25519s, other RustCrypto algorithms, other str0m providers.
     { crate = "openssl", reason = "TLS is rustls; no OpenSSL" },
