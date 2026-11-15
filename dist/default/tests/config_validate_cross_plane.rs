@@ -17,7 +17,7 @@ fn the_tools_section_enumerates_every_secret_reference_its_plane_declares() {
         child:\n    transport: stdio\n    command: \"/usr/bin/true\"\n    \
         pin: { mechanism: unpinned }\n    \
         env:\n      API_KEY: { env: BUSBAR_TEST_CHILD_KEY }\n      MODE: \"plain\"\n";
-    let deploy = config::deploy_from_yaml_str(text)
+    let deploy = config::deploy_from_yaml_str(text, &live_grammar())
         .unwrap_or_else(|e| panic!("the section parses: {e}\n{text}"));
     let mut found: Vec<String> = deploy
         .plane_section("tools")
@@ -48,7 +48,7 @@ fn the_agents_section_enumerates_every_secret_reference_its_plane_declares() {
         client_identity:\n      cert: { env: BUSBAR_TEST_AGENT_CERT }\n      \
         key: { env: BUSBAR_TEST_AGENT_KEY }\n  \
         plain:\n    url: \"https://c.example/rpc\"\n    pin: { mechanism: unpinned }\n";
-    let deploy = config::deploy_from_yaml_str(text)
+    let deploy = config::deploy_from_yaml_str(text, &live_grammar())
         .unwrap_or_else(|e| panic!("the section parses: {e}\n{text}"));
     let mut found: Vec<String> = deploy
         .plane_section("agents")
@@ -116,7 +116,7 @@ fn a_plane_card_silent_about_a_declared_class_does_not_refuse_boot() {
             )
         };
         let validated = |text: String| {
-            let deploy = config::deploy_from_yaml_str(&text)
+            let deploy = config::deploy_from_yaml_str(&text, &live_grammar())
                 .unwrap_or_else(|e| panic!("{}: the document parses: {e}\n{text}", d.key));
             let cfg = config::resolve(&deploy, &HashMap::new())
                 .unwrap_or_else(|e| panic!("{}: the document resolves: {e:?}\n{text}", d.key));
@@ -188,7 +188,7 @@ fn a_present_plane_card_refuses_every_lane_it_does_not_name() {
              other: {{ url: \"https://y.example/t\", pin: {{ mechanism: unpinned }} }}\n",
             s = d.config_section,
         );
-        let deploy = config::deploy_from_yaml_str(&text)
+        let deploy = config::deploy_from_yaml_str(&text, &live_grammar())
             .unwrap_or_else(|e| panic!("{}: the document parses: {e}\n{text}", d.key));
         let cfg = config::resolve(&deploy, &HashMap::new())
             .unwrap_or_else(|e| panic!("{}: the document resolves: {e:?}\n{text}", d.key));
@@ -210,4 +210,16 @@ fn a_present_plane_card_refuses_every_lane_it_does_not_name() {
             d.key
         );
     }
+}
+
+/// The grammar these fixtures read under: the words the installed secret axis declares (this
+/// distribution's linked secret modules), passed explicitly.
+fn live_grammar() -> busbar_kernel::config::Grammar {
+    busbar_kernel::config::Grammar::new(
+        busbar_kernel::config::secret::live_axis()
+            .map(busbar_contract::secret::SecretAxis::sugars)
+            .unwrap_or_default(),
+        Default::default(),
+        Vec::new(),
+    )
 }

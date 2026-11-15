@@ -54,10 +54,13 @@ async fn app(auth: RouteAuth, calls: &Arc<AtomicUsize>) -> Arc<busbar_kernel::st
             serde_json::json!({}),
         )
     };
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "store": {"module": "memory"}, "auth": auth_config,
-        "identity-providers": providers, "providers": {}, "models": {},
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "store": {"module": "memory"}, "auth": auth_config,
+            "identity-providers": providers, "providers": {}, "models": {},
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the admission deployment parses");
     let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the admission deployment resolves");

@@ -106,6 +106,7 @@ fn auth_role_forms_match_owned_grammar_and_policy_prepass() {
     ] {
         let actual = busbar_kernel::config::deploy_from_deserializer(
             json!({"providers":{},"models":{},"auth":case.clone()}),
+            &busbar_kernel::config::Grammar::empty(),
         )
         .is_ok();
         assert_eq!(auth.is_valid(&case), actual, "{case}");

@@ -111,8 +111,11 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
         serde_json::to_vec_pretty(&definitions).expect("serialize actual provider definitions"),
     )
     .expect("write the actual provider definitions");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &definitions)
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -337,8 +340,11 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
         serde_json::to_vec_pretty(&definitions).expect("serialize actual provider definitions"),
     )
     .expect("write the actual provider definitions");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &definitions)
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -518,8 +524,11 @@ async fn test_admin_v1_config_settings_partial_update_preserves_prior() {
         serde_json::to_vec_pretty(&definitions).expect("serialize actual provider definitions"),
     )
     .expect("write the actual provider definitions");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &definitions)
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -663,8 +672,11 @@ async fn test_admin_v1_config_settings_put_refuses_retired_persist_without_store
         serde_json::to_vec_pretty(&definitions).expect("serialize actual provider definitions"),
     )
     .expect("write the actual provider definitions");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &definitions)
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -818,8 +830,11 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
         serde_json::to_vec_pretty(&definitions).expect("serialize actual provider definitions"),
     )
     .expect("write the actual provider definitions");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &definitions)
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
