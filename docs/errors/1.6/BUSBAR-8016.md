@@ -8,11 +8,11 @@ slug: docs/1.6/errors/BUSBAR-8016
 
 ## What it means
 
-busbar selected the in-memory (ephemeral) governance store, so virtual keys, groups' usage, and ledgers live only in RAM and are LOST on restart. This is the default when no durable store plugin is configured — fine for a trial or local development, but not for anything that must retain keys or spend across restarts.
+busbar selected the in-memory (ephemeral) governance store, so virtual keys, groups' usage, and ledgers live only in RAM and are LOST on restart. This is the default when no durable store plugin is configured — fine for a trial or local development, but not for anything that must retain keys or spend across restarts. Admin-API config changes are held in the same RAM: live ones apply until restart; restart-only ones (including creating or replacing an exporter) are refused, because the restart would discard them.
 
 ## How to fix it
 
-Configure a durable governance store plugin for persistence if keys, usage, or budgets must survive a restart. No action is needed for ephemeral/dev use.
+Configure a durable governance store plugin for persistence if keys, usage, or budgets must survive a restart. No action is needed for ephemeral/dev use. To change a restart-only setting or add an exporter, edit config.yaml and restart.
 
 ---
 

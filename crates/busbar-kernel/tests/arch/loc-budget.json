@@ -5,21 +5,18 @@
     "busbar-contract": { "budget": 60676 },
     "busbar-core-admin": { "budget": 16990 },
     "busbar-core-connector": { "budget": 21645 },
-    "busbar-core-oauth2": { "budget": 6472 },
+    "busbar-core-oauth2": { "budget": 6252 },
     "busbar-kernel": { "budget": 100005 },
     "busbar-kernel-audit": { "budget": 3077 },
     "busbar-kernel-breaker": { "budget": 1088 },
     "busbar-kernel-egress": { "budget": 1600 },
-    "busbar-kernel-identity": { "budget": 537 },
+    "busbar-kernel-identity": { "budget": 345 },
     "busbar-kernel-ledger": { "budget": 2053 },
-    "busbar-kernel-wal": { "budget": 3050 },
-    "busbar-migrations": { "budget": 17867 },
-    "busbar-plugin-loader": { "budget": 39005 },
-    "busbar-yaml": { "budget": 10277 }
+    "busbar-kernel-wal": { "budget": 642 },
+    "busbar-migrations": { "budget": 15628 },
+    "busbar-plugin-loader": { "budget": 39005 }
   },
   "generated": [
-    "crates/busbar/src/main.rs:273",
-    "crates/busbar/src/main.rs:275",
     "crates/busbar/src/root/migration_table.rs:4"
   ]
 }
