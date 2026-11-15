@@ -2698,7 +2698,9 @@ fn auth_refusals_describe_the_current_schema_and_source_location() {
         .to_string()
         .contains("auth.policy.slef_mint: unknown field `slef_mint`"));
     assert_eq!(typo.location().unwrap().line(), 5);
-    assert!(refusal("auth: 5\n").to_string().contains("expected mapping start"));
+    assert!(refusal("auth: 5\n")
+        .to_string()
+        .contains("expected mapping start"));
     assert!(refusal("auth:\n  policy: {}\n  policy: {}\n")
         .to_string()
         .contains("duplicate field `policy`"));
