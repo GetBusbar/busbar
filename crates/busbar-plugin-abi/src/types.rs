@@ -304,7 +304,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "UNSAFE-MIN: a non-empty view read is from_raw_parts, held by the owner's no-unsafe ruling"]
     fn a_view_reads_back_what_it_borrows() {
         assert_eq!(Bytes::new(b"abc").get(), b"abc");
         assert_eq!(Str::new("h\u{e9}").get(), "h\u{e9}");
