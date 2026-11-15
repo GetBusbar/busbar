@@ -507,6 +507,9 @@ pub struct RootCfg {
     /// The grammar the deployment document was read under, copied by [`resolve`]: what every
     /// check of this configuration reads its secret shorthand by. Never persisted.
     pub grammar: grammar::GrammarField,
+    /// The MIN-3 keys (`upstreams`, `routes`, per-instance `limits`, `provisioning`; ABI-MIN3-INTERFACE §12).
+    /// W0-ABI: always the empty default; W1-K7 fills it in [`resolve`] through [`min3::parse_min3`].
+    pub min3: min3::Min3Config,
 }
 
 impl RootCfg {
@@ -2088,6 +2091,7 @@ pub fn resolve(
             export_defs: deploy.export.clone(),
             plane_sections,
             grammar: deploy.grammar.clone(),
+            min3: min3::Min3Config::default(),
         })
     } else {
         Err(errors)
@@ -2126,6 +2130,7 @@ pub mod auth;
 pub mod credentials;
 pub mod hooks;
 pub mod limits;
+pub mod min3;
 pub mod plane_sections;
 pub mod pools;
 pub mod providers;

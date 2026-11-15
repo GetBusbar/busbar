@@ -36,6 +36,7 @@ pub(crate) fn make_root_cfg(
         plane_pools: Default::default(),
         plane_sections: Default::default(),
         grammar: busbar_kernel::config::GrammarField::bound(busbar_kernel::config::Grammar::empty()),
+        min3: Default::default(),
         listen: busbar_kernel::config::DEFAULT_LISTEN_ADDR.into(),
         listen_explicit: false,
 

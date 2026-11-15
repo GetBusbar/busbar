@@ -38,6 +38,7 @@
       "crates/busbar-kernel-ledger/src/lib.rs",
       "crates/busbar-kernel-ledger/src/usage/mod.rs",
       "crates/busbar-kernel-wal/src/lib.rs",
+      "crates/busbar-plugin-bench/src/lib.rs",
       "crates/busbar-plugin-test/src/lib.rs",
       "crates/busbar/src/main.rs",
       "tools/ci-checks/src/main.rs"

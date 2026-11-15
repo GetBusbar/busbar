@@ -217,6 +217,7 @@ fn walk_secret_refs_with_boot_token<'a>(
         plane_defs,
 
         plane_pools: _,
+        min3: _,
     } = cfg;
 
     let mut refs: Vec<(String, &crate::config::SecretRef)> = Vec::new();

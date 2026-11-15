@@ -500,6 +500,7 @@ dependencies = [
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
+ "busbar-plugin-abi",
  "busbar-plugin-loader",
  "bytes",
  "foldhash",
@@ -610,12 +611,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-plugin-abi"
+version = "1.6.0"
+dependencies = [
+ "zerocopy",
+]
+
+[[package]]
+name = "busbar-plugin-bench"
+version = "1.6.0"
+
+[[package]]
 name = "busbar-plugin-loader"
 version = "1.6.0"
 dependencies = [
  "arc-swap",
  "base64 0.22.1",
  "busbar-contract",
+ "busbar-plugin-abi",
  "flate2",
  "foldhash",
  "futures",

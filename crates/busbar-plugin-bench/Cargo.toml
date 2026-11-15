@@ -1,0 +1,39 @@
+[package]
+name = "busbar-plugin-bench"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2024"
+rust-version = "1.97"
+description = "The MIN-3 plugin interface benches (B-SLOTS, B-OPEN, B-CHAIN, B-STORE-LANE, B-SYNC, B-HOLD); one file per bench, each written by its owner."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_plugin_bench"
+path = "src/lib.rs"
+
+[[bench]]
+name = "b_slots"
+path = "benches/b_slots.rs"
+
+[[bench]]
+name = "b_open"
+path = "benches/b_open.rs"
+
+[[bench]]
+name = "b_chain"
+path = "benches/b_chain.rs"
+
+[[bench]]
+name = "b_store_lane"
+path = "benches/b_store_lane.rs"
+
+[[bench]]
+name = "b_sync"
+path = "benches/b_sync.rs"
+
+[[bench]]
+name = "b_hold"
+path = "benches/b_hold.rs"
+
+[lints]
+workspace = true
