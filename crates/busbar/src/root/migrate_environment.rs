@@ -4,8 +4,10 @@
 //! Capture retired launch inputs once, before plugin/config migration. Serving never reads them;
 //! boot and `--validate` only report, through `ignored_launch_env`, that a set one is ignored.
 use std::ffi::OsString;
+#[cfg(test)]
 use std::path::Path;
 
+#[cfg(test)]
 use busbar_contract::yaml::{MappingExt, Pairs, Value, ValueExt};
 
 /// Launch env vars 1.6.0 no longer reads. The ONLY place in the workspace that spells their names
@@ -64,12 +66,16 @@ pub(crate) fn ignored_launch_env(env: impl Fn(&str) -> Option<OsString>) -> Vec<
         .collect()
 }
 
+// The launch-env capture is migration input the boot's migrator takes over when package 4 binds it;
+// until then only its tests drive it.
+#[cfg(test)]
 pub(crate) struct Captured {
     pub yaml: String,
     pub changes: Vec<String>,
     pub warnings: Vec<String>,
 }
 
+#[cfg(test)]
 pub(crate) fn capture(
     raw: &str,
     working_directory: &Path,
@@ -152,6 +158,7 @@ pub(crate) fn capture(
     })
 }
 
+#[cfg(test)]
 fn advanced(root: &mut Pairs) -> Result<&mut Pairs, String> {
     root.entry_or_insert_with("advanced", || Value::Map(Pairs::new()))
         .as_mapping_mut()
@@ -372,7 +379,7 @@ mod tests {
     fn retired_names_are_spelled_only_in_the_retired_table() {
         let source = include_str!("migrate_environment.rs");
         let production = &source[..source
-            .find("\n#[cfg(test)]\n")
+            .find("\n#[cfg(test)]\nmod tests")
             .expect("this file has a test tail")];
         let literals = busbar_literals(production);
         let mut spelled: Vec<&str> = literals.iter().map(|(text, _)| text.as_str()).collect();

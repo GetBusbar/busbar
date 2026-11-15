@@ -143,7 +143,7 @@ keep an agent refused longer, never serve one sooner.
 - **The `5s` default** bounds drift-serving to a few seconds while single-flight keeps upstream load
   flat.
 - **A larger value is an explicit security downgrade.** It widens the window in which a rug-pulled
-  tool can be dispatched before the next call re-verifies. `busbar --migrate-config` carries an old
+  tool can be dispatched before the next call re-verifies. the first-boot migration carries an old
   MCP `refresh_ttl:` value over to `verify_ttl:` unchanged and warns loudly that its meaning changed
   from a background cadence (old default `6h`) to a request-path staleness bound — a `6h` value that
   was a fine sweep cadence is a six-hour drift-serving window as a `verify_ttl`.

@@ -118,10 +118,10 @@ The thousands digit is the area.
 | [BUSBAR-3148](/docs/1.6/errors/BUSBAR-3148/) | An advanced.tls destination entry is invalid | 1.6.0 |
 | [BUSBAR-3149](/docs/1.6/errors/BUSBAR-3149/) | Outbound connections go through a proxy | 1.6.0 |
 | [BUSBAR-3170](/docs/1.6/errors/BUSBAR-3170/) | A configuration word, section or style changed its owner after it was read | 1.6.0 |
-| [BUSBAR-3401](/docs/1.6/errors/BUSBAR-3401/) | --migrate-config was given no file to migrate | 1.6.0 |
-| [BUSBAR-3402](/docs/1.6/errors/BUSBAR-3402/) | --migrate-config could not read the file it was given | 1.6.0 |
-| [BUSBAR-3403](/docs/1.6/errors/BUSBAR-3403/) | --migrate-config could not resolve its working directory | 1.6.0 |
-| [BUSBAR-3404](/docs/1.6/errors/BUSBAR-3404/) | --migrate-config refused the file | 1.6.0 |
+| [BUSBAR-3401](/docs/1.6/errors/BUSBAR-3401/) | The retired migration command was given no file to migrate — RETIRED *(retired)* | 1.6.0 |
+| [BUSBAR-3402](/docs/1.6/errors/BUSBAR-3402/) | The retired migration command could not read the file it was given — RETIRED *(retired)* | 1.6.0 |
+| [BUSBAR-3403](/docs/1.6/errors/BUSBAR-3403/) | The retired migration command could not resolve its working directory — RETIRED *(retired)* | 1.6.0 |
+| [BUSBAR-3404](/docs/1.6/errors/BUSBAR-3404/) | The retired migration command refused the file — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-3405](/docs/1.6/errors/BUSBAR-3405/) | Migration carried refresh_ttl over to verify_ttl, whose meaning differs | 1.6.0 |
 | [BUSBAR-3406](/docs/1.6/errors/BUSBAR-3406/) | Migration widened a retired delegated admin scope to full | 1.6.0 |
 | [BUSBAR-3407](/docs/1.6/errors/BUSBAR-3407/) | An empty allowed_pools list now means no pools | 1.6.0 |

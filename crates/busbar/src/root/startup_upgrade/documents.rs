@@ -1190,10 +1190,7 @@ pub(crate) fn explain_debt(
         detail.push('\n');
     }
     let config = config.display();
-    detail.push_str(&format!(
-        "Decide each item in {config}, then boot again (busbar --migrate-config {config} shows \
-         the converted document)."
-    ));
+    detail.push_str(&format!("Decide each item in {config}, then boot again."));
     detail
 }
 

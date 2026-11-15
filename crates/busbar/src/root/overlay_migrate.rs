@@ -1,46 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Offline import of the overlay selected by an actual 1.5.5 deployment.
-use busbar_contract::yaml::{MappingExt, ValueExt};
+//! The serve gate for the overlay a 1.5.5 deployment selected: serving never reads a file overlay, so a
+//! file that still holds settings is refused or warned about, never dropped silently.
+use busbar_contract::yaml::ValueExt;
 use busbar_kernel::config;
 use busbar_kernel::persistence::facade::CoreStore;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub(crate) const FLAG: &str = "--migrate-overlay";
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
-
-pub(crate) fn command(args: impl Iterator<Item = String>) -> Result<Option<PathBuf>, &'static str> {
-    let args: Vec<_> = args.collect();
-    if !args
-        .iter()
-        .any(|arg| arg == FLAG || arg.starts_with("--migrate-overlay="))
-    {
-        return Ok(None);
-    }
-    let mut input = None;
-    let mut args = args.iter();
-    while let Some(arg) = args.next() {
-        let (flag, assigned) = arg
-            .split_once('=')
-            .map_or((arg.as_str(), None), |(flag, value)| (flag, Some(value)));
-        if !matches!(flag, FLAG | "--config" | "-c" | "--providers") {
-            return Err(
-                "overlay migration accepts only --config and --providers alongside --migrate-overlay",
-            );
-        }
-        let value = assigned
-            .or_else(|| args.next().map(String::as_str))
-            .filter(|value| !value.is_empty() && !value.starts_with('-'))
-            .ok_or("overlay migration path flags require explicit values")?;
-        if flag == FLAG && input.replace(PathBuf::from(value)).is_some() {
-            return Err("duplicate --migrate-overlay flag");
-        }
-    }
-    Ok(input)
-}
 
 fn bounded_bytes(path: &Path) -> Result<busbar_contract::secure::SecureVec, String> {
     let metadata =
@@ -72,30 +42,6 @@ fn bounded_bytes(path: &Path) -> Result<busbar_contract::secure::SecureVec, Stri
         return Err("overlay migration input exceeds the size limit".into());
     }
     Ok(bytes)
-}
-
-fn old_document(raw: &str) -> Result<busbar_contract::yaml::Value, String> {
-    // Missing credentials elsewhere in the old document must not block overlay discovery.
-    // Its management selectors still require their actual values, never placeholders.
-    let document: busbar_contract::yaml::Value =
-        busbar_contract::yaml::from_str(raw).map_err(|_| "old configuration is not valid YAML")?;
-    if let Some(management) = document.get("config") {
-        let selector = busbar_contract::secure::SecureString::from(
-            busbar_contract::yaml::to_string(management)
-                .map_err(|_| "cannot encode old overlay selector")?,
-        );
-        let _resolved_selector =
-            busbar_contract::secure::SecureString::from(config::interpolate_env(&selector)?);
-    }
-    // Expand the original text, preserving quoted versus unquoted scalar semantics.
-    // This document is used only for selection; the migrator receives the original text.
-    let expanded = busbar_contract::secure::SecureString::from(config::interpolate_env_with(
-        raw,
-        config::EnvSubst::Lenient,
-        &mut Vec::new(),
-    )?);
-    busbar_contract::yaml::from_str(&expanded)
-        .map_err(|_| "old configuration is not valid YAML".into())
 }
 
 /// How 1.5.5 chose the overlay file it read and wrote.
@@ -168,25 +114,6 @@ pub(crate) fn legacy_selection(
             }
         }
         _ => LegacySelection::None,
-    }
-}
-
-fn source_path(old_config: &Path, raw: &str, env: Option<&Path>) -> Result<PathBuf, String> {
-    // Resolve exactly the historical selector, without opening plugins or serving old config.
-    let value = old_document(raw)?;
-    match legacy_selection(old_config, &value, env) {
-        LegacySelection::File { path, .. } => Ok(path),
-        LegacySelection::None => {
-            let management = value.at("config");
-            Err(if management.at("locked").as_bool() == Some(true) {
-                "the old deployment was locked and did not consume an overlay"
-            } else if management.at("overlay").is_mapping() {
-                "old config.overlay.file is missing or invalid"
-            } else {
-                "old config.overlay does not select a file backend"
-            }
-            .into())
-        }
     }
 }
 
@@ -298,27 +225,25 @@ fn subject(path: &Path, by: SelectedBy) -> String {
 fn text_a(subject: &str) -> String {
     format!(
         "{subject} holds admin-API settings that this Store has not imported; 1.6 serving never \
-         reads file overlays, so starting would silently drop them. Import them once with \
-         `busbar --config <config.yaml> --migrate-overlay <old-config.yaml>` before any admin-API \
-         config change is made, or move the file away to abandon them deliberately."
+         reads file overlays, so starting would silently drop them. The upgrade boot folds a 1.5.5 overlay into config.yaml, and this config.yaml is \
+         already migrated: re-apply the settings through the admin API, or move the file away to \
+         abandon them deliberately."
     )
 }
 
 fn text_e(subject: &str) -> String {
     format!(
         "{subject} holds admin-API settings that this Store has not imported; 1.6 serving never \
-         reads file overlays, so starting would silently drop them. This Store is ephemeral and \
-         cannot receive the import: configure a durable Store, then run \
-         `busbar --config <config.yaml> --migrate-overlay <old-config.yaml>`, or move the file \
-         away to abandon the settings deliberately."
+         reads file overlays, so starting would silently drop them. This Store is ephemeral: \
+         re-apply the settings through the admin API on a durable Store, or move the file away to \
+         abandon them deliberately."
     )
 }
 
 fn text_h(subject: &str) -> String {
     format!(
         "{subject} holds admin-API settings that this Store has not imported, and this Store \
-         already holds a 1.6 config overlay; `--migrate-overlay` only imports into an empty Store \
-         overlay, so it cannot import this file. 1.6 serving never reads file overlays, so \
+         already holds a 1.6 config overlay, so this file cannot be folded into it. 1.6 serving never reads file overlays, so \
          starting would silently drop them. Reconcile by hand: move the file away (keep a copy), \
          start, and re-apply through the admin API the settings from the copy that you still \
          want; or move it away to abandon them deliberately."
@@ -326,7 +251,7 @@ fn text_h(subject: &str) -> String {
 }
 
 const TEXT_S: &str = " Admin-API config changes made in this safe-mode session create a Store \
-     overlay, after which `--migrate-overlay` can no longer import this file; import it first.";
+     overlay; re-apply this file's settings through the admin API.";
 
 fn warn_not_read(text: &str) {
     eprintln!(
@@ -402,9 +327,8 @@ pub(crate) async fn admit_legacy(
             let text = format!(
                 "{subject} exists but cannot be read as a 1.5.5 overlay ({reason}); 1.6 serving \
                  never reads file overlays and cannot prove that starting would not silently drop \
-                 its settings. Make it a readable regular file and import it with \
-                 `busbar --config <config.yaml> --migrate-overlay <old-config.yaml>`, or move the \
-                 file away to abandon it deliberately.{env_note}"
+                 its settings. Make it a readable regular file and re-apply its settings through the \
+                 admin API, or move the file away to abandon it deliberately.{env_note}"
             );
             if safe_mode {
                 warn_not_imported(&text);
@@ -467,199 +391,9 @@ pub(crate) async fn admit_legacy(
     }
 }
 
-/// Capture the actual historical Store selection in the newly emitted base YAML. The Store
-/// must be known before recovery; the original configuration and overlay remain unchanged.
-pub(crate) fn capture_store(raw: &str, old_config: &Path) -> Result<(String, bool), String> {
-    let value: busbar_contract::yaml::Value =
-        busbar_contract::yaml::from_str(raw).map_err(|_| "old configuration is not valid YAML")?;
-    if old_document(raw)?.at("config").at("locked").as_bool() == Some(true) {
-        return Ok((raw.to_owned(), false));
-    }
-    let env = std::env::var_os("BUSBAR_CONFIG_OVERLAY").map(PathBuf::from);
-    let path = source_path(old_config, raw, env.as_deref())?;
-    match std::fs::symlink_metadata(&path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok((raw.to_owned(), false));
-        }
-        Err(_) => return Err("cannot inspect the old deployment's overlay".into()),
-        Ok(_) => {}
-    }
-    let bytes = bounded_bytes(&path)?;
-    let overlay = busbar_migrations::config::overlay_legacy::parse_legacy_overlay(&bytes)?;
-    let Some(store) = overlay
-        .get("root")
-        .and_then(|root| root.get("store"))
-        .filter(|store| !store.is_null())
-    else {
-        return Ok((raw.to_owned(), false));
-    };
-    let mut value = value;
-    let root = value
-        .as_mapping_mut()
-        .ok_or("old configuration is not a mapping")?;
-    root.insert_key(
-        busbar_contract::yaml::Value::from("store"),
-        busbar_migrations::config::migrate_plugins::yaml_value(store)
-            .map_err(|_| "cannot encode the historical Store selection")?,
-    );
-    let yaml = busbar_contract::yaml::to_string(&value)
-        .map_err(|_| "cannot encode the new base Store selection")?;
-    Ok((yaml, true))
-}
-
-pub(crate) async fn run(
-    old_config: &Path,
-    current_config: &Path,
-    mut deploy: config::DeployCfg,
-    defs: &std::collections::HashMap<String, config::ProviderDef>,
-    core: &Arc<CoreStore>,
-    locked: bool,
-) -> Result<(), String> {
-    let old_bytes = bounded_bytes(old_config)?;
-    let old_text = std::str::from_utf8(&old_bytes).map_err(|_| "old configuration is not UTF-8")?;
-    let old_document = old_document(old_text)?;
-    if old_document.at("config").at("locked").as_bool() == Some(true) {
-        println!(
-            "{{\"schema\":\"busbar.overlay-file-migration/1\",\"status\":\"not_required\",\"source_preserved\":true}}"
-        );
-        return Ok(());
-    }
-    let env = std::env::var_os("BUSBAR_CONFIG_OVERLAY").map(PathBuf::from);
-    let path = source_path(old_config, old_text, env.as_deref())?;
-    if std::fs::symlink_metadata(&path)
-        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
-    {
-        println!(
-            "{{\"schema\":\"busbar.overlay-file-migration/1\",\"status\":\"not_required\",\"source_preserved\":true}}"
-        );
-        return Ok(());
-    }
-    if locked {
-        return Err("migrate the overlay into a mutable current configuration before locking the deployment".into());
-    }
-    if core.info().durability == busbar_contract::persistence::Durability::Ephemeral {
-        return Err(
-            "overlay migration requires a Store instance that confirms durable persistence".into(),
-        );
-    }
-    let bytes = bounded_bytes(&path)?;
-    let current = bounded_bytes(current_config)?;
-    let current =
-        std::str::from_utf8(&current).map_err(|_| "current configuration is not UTF-8")?;
-    let host = super::config_migrate::RootHost::for_document(current, current_config);
-    let busbar_migrations::config::migrate_overlay::OverlayMigration { doc, changes, .. } =
-        busbar_migrations::config::migrate_overlay::migrate_overlay_with(&bytes, &host)?;
-    let changes = serde_json::to_string(&changes)
-        .map_err(|_| "cannot encode the overlay migration changes")?;
-    // The migrated definitions are read under the grammar the base document was read under.
-    let grammar = deploy.grammar.get().map_err(String::from)?.clone();
-    for (key, entries) in &doc.named_maps {
-        let section = config::named_map::NamedMapSection::sections()
-            .into_iter()
-            .find(|section| section.key() == key)
-            .ok_or("overlay names an unavailable definition section")?;
-        for (name, value) in entries {
-            section
-                .validate_def(name, value, &grammar)
-                .map_err(|_| "migrated overlay definition is invalid")?;
-        }
-    }
-    if let Some(store) = doc.root.as_ref().and_then(|root| root.store.as_ref()) {
-        let authoring_seal = busbar_kernel::seal::acquire();
-        let selected = serde_json::to_value(store.authoring(&authoring_seal))
-            .map_err(|_| "cannot compare the migrated Store selection")?;
-        let anchored = serde_json::to_value(
-            deploy
-                .store
-                .as_ref()
-                .map(|store| store.authoring(&authoring_seal)),
-        )
-        .map_err(|_| "cannot compare the base Store selection")?;
-        if selected != anchored {
-            return Err("the old overlay selects a different Store; rerun --migrate-config with the original overlay available so the new base YAML anchors the actual historical Store".into());
-        }
-    }
-    config::overlay::apply_root_to_deploy(&mut deploy, &doc)?;
-    let mut effective = config::resolve(&deploy, defs)
-        .map_err(|_| "migrated overlay cannot resolve against the current configuration")?;
-    config::overlay::merge_into(&mut effective, doc.clone());
-    busbar_kernel::config_validate::validate(&effective)
-        .map_err(|_| "migrated effective configuration failed validation")?;
-    const SOURCE_TAG: &[u8] = b"busbar.overlay.source.1.5.5\0";
-    let mut source = busbar_contract::secure::SecureVec::with_capacity(
-        SOURCE_TAG.len() + 8 + old_bytes.len() + bytes.len(),
-    )
-    .map_err(|_| "cannot digest overlay migration source")?;
-    source.extend_from_slice(SOURCE_TAG);
-    source.extend_from_slice(&(old_bytes.len() as u64).to_be_bytes());
-    source.extend_from_slice(&old_bytes);
-    source.extend_from_slice(&bytes);
-    let mut source_sha256 = [0; 32];
-    hex::decode_to_slice(busbar_contract::sha256_hex(&source), &mut source_sha256)
-        .map_err(|_| "cannot digest overlay migration source")?;
-    let store = config::overlay::OverlayStore::from_core(core.clone())?;
-    let applied = store.import_once_async(source_sha256, &doc).await?;
-    println!(
-        "{{\"schema\":\"busbar.overlay-file-migration/1\",\"status\":\"{}\",\"source_preserved\":true,\"source_sha256\":\"{}\",\"changes\":{changes}}}",
-        if applied {
-            "applied"
-        } else {
-            "already_applied"
-        },
-        hex::encode(source_sha256)
-    );
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn overlay_command_refuses_serving_or_principal_flags() {
-        assert!(command(
-            [FLAG, "old.yaml", "--ignore-overlay"]
-                .into_iter()
-                .map(str::to_owned)
-        )
-        .is_err());
-        assert!(command(
-            [FLAG, "old.yaml", "--principal-transition", "plan.json"]
-                .into_iter()
-                .map(str::to_owned)
-        )
-        .is_err());
-        assert_eq!(
-            command(
-                ["--config", "new.yaml", FLAG, "old.yaml"]
-                    .into_iter()
-                    .map(str::to_owned)
-            )
-            .unwrap(),
-            Some("old.yaml".into())
-        );
-    }
-    #[test]
-    fn old_overlay_selector_preserves_file_env_default_precedence() {
-        let old = Path::new("/deployment/config.yaml");
-        assert_eq!(
-            source_path(
-                old,
-                "config: { overlay: { file: state.json } }",
-                Some(Path::new("env.json"))
-            )
-            .unwrap(),
-            PathBuf::from("/deployment/state.json")
-        );
-        assert_eq!(
-            source_path(old, "{}", Some(Path::new("env.json"))).unwrap(),
-            PathBuf::from("env.json")
-        );
-        assert_eq!(
-            source_path(old, "{}", None).unwrap(),
-            PathBuf::from("/deployment/busbar-overlay.json")
-        );
-        assert!(source_path(old, "config: { locked: true }", None).is_err());
-    }
     #[test]
     fn legacy_selection_is_the_1_5_5_resolve_backend_outcome() {
         let config = Path::new("/deployment/config.yaml");
@@ -756,72 +490,5 @@ mod tests {
             FileState::Unreadable(_)
         ));
         std::fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn captured_store_numbers_remain_yaml_scalars() {
-        let mut random = [0; 16];
-        busbar_contract::crypto::fill(&mut random).unwrap();
-        let directory =
-            std::env::temp_dir().join(format!("busbar-overlay-test-{}", hex::encode(random)));
-        std::fs::create_dir(&directory).unwrap();
-        let overlay = directory.join("overlay.json");
-        std::fs::write(&overlay, r#"{"version":1,"root":{"store":{"backend":"sqlite","max_connections":17,"timeout_secs":1.25}}}"#).unwrap();
-        let raw = format!(
-            "config: {{ overlay: {{ file: '{}' }} }}\n",
-            overlay.display()
-        );
-        let (yaml, captured) = capture_store(&raw, &directory.join("config.yaml")).unwrap();
-        assert!(captured);
-        let value: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(&yaml).unwrap();
-        assert_eq!(value.at("store").at("max_connections").as_u64(), Some(17));
-        assert_eq!(value.at("store").at("timeout_secs").as_f64(), Some(1.25));
-        assert!(!yaml.contains("$serde_json::private::Number"));
-        std::fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn overlay_discovery_does_not_resolve_unrelated_legacy_credentials() {
-        let raw = "auth: {client_tokens: ['${BUSBAR_TEST_ABSENT_LEGACY_TOKEN_20261106}']}\n";
-        old_document(raw).unwrap();
-        old_document(&format!("{raw}config: {{locked: false}}\n")).unwrap();
-        assert_eq!(
-            source_path(Path::new("/deployment/config.yaml"), raw, None).unwrap(),
-            PathBuf::from("/deployment/busbar-overlay.json")
-        );
-        assert!(
-            source_path(
-                Path::new("/deployment/config.yaml"),
-                "config: {overlay: {file: '${BUSBAR_TEST_ABSENT_OVERLAY_PATH_20261106}'}}",
-                None,
-            )
-            .is_err(),
-            "the selected overlay path must still resolve strictly"
-        );
-    }
-
-    #[test]
-    fn expanded_locked_deployment_requires_no_overlay_capture() {
-        const KEY: &str = "BUSBAR_TEST_MIGRATE_OVERLAY_LOCKED_20261105";
-        std::env::set_var(KEY, "true");
-        // An unquoted interpolation scalar uses block YAML: braces in `${...}` are
-        // flow-map syntax before expansion, while migration also reads the raw document.
-        let raw =
-            format!("config:\n  locked: ${{{KEY}}}\n  overlay:\n    file: /missing/overlay.json\n");
-        let result = capture_store(&raw, Path::new("/missing/config.yaml"));
-        let locked = old_document(&raw)
-            .unwrap()
-            .at("config")
-            .at("locked")
-            .as_bool();
-        let quoted = old_document(&format!("config: {{locked: '${{{KEY}}}'}}"))
-            .unwrap()
-            .at("config")
-            .at("locked")
-            .clone();
-        std::env::remove_var(KEY);
-        assert_eq!(quoted.as_str(), Some("true"));
-        assert_eq!(locked, Some(true));
-        assert_eq!(result.unwrap(), (raw, false));
     }
 }

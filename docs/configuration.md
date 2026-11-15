@@ -195,7 +195,7 @@ providers:
   value never does.
 - A `providers.yaml` catalog entry follows the same rule: it may set options, and any other key
   fails startup, naming the file and the key. This applies to every entry, deployed or not.
-  `busbar --migrate-config` reports stray catalog keys.
+  the first-boot migration reports stray catalog keys.
 
 ### Catalog fields
 
@@ -876,7 +876,7 @@ Declares which catalog providers this deployment uses and supplies the env var h
 | `scope` | string | no | Catalog value | OAuth scope for `oauth-client-credentials`. |
 | `subject` | string | no | Catalog value | JWT-bearer assertion `sub` claim (RFC 7523 §3) for `jwt-bearer`. Opt-in. See the catalog `subject` row above; unset means no `sub` claim, the correct default for a plain Vertex AI service account. |
 | `health` | object | no | Catalog value | Override the catalog's health probe config. |
-| `allow_metadata_hosts` | list<string> | no | — | **Retired in 1.6.0 and refused** (BUSBAR-3136): cloud metadata is refused for every outbound connection and no configuration admits it. `busbar --migrate-config` removes it (BUSBAR-3411). |
+| `allow_metadata_hosts` | list<string> | no | — | **Retired in 1.6.0 and refused** (BUSBAR-3136): cloud metadata is refused for every outbound connection and no configuration admits it. the first-boot migration removes it (BUSBAR-3411). |
 
 **Credential format by protocol** (the VALUE the `api_key` reference resolves to):
 
@@ -1200,7 +1200,7 @@ chosen lane.
 
 Circuit-breaker tuning for one target. On the LLM plane a target is a `(pool, lane)` cell, and the state is independent per pool: a lane open in pool A can be closed in pool B. Lane-global state (hard-down, lifetime budget, concurrency semaphore) is shared across all pools.
 
-**This block is accepted on a pool, and only on a pool.** On the LLM plane that is an entry of the top-level `pools:` map. MCP and A2A failover pools are NOT in the top-level `pools:` map: each plane's pools live under the reserved `pools` sub-key of that plane's own section (`tools.pools.<name>`, `agents.pools.<name>`), and the section a pool is written in is its plane. Such a pool takes `members:` (bare registration names from the same section; a member from another section, or one the section does not define, fails boot), `repeatable:` (the operations that may be performed twice; default none) and the same `breaker:` block with the same keys, validation and defaults as below. A plane pool written in the top-level `pools:` is read as an LLM pool, so its members are refused as unknown models; `busbar --migrate-config` moves such pools under their section. A `breaker:` on a registration itself (`tools.<server>.breaker:`, `agents.<agent>.breaker:`) is not accepted: `tools:` and `agents:` entries reject unknown keys, so it fails at boot rather than running with the block ignored. The complete MCP and A2A grammar, with every boot refusal, is in [MCP](https://getbusbar.com/docs/mcp/) and [A2A](https://getbusbar.com/docs/a2a/). The fourth plane noun, `streams:` (live voice), is a singular section rather than a named-definition registry, so it has no pools and no `breaker:` block of its own; its complete grammar is in [voice.md](voice.md). The same is true of `tools.<server>.sampling_bounds`, the per-upstream bounds on a server-initiated `sampling/createMessage` ask (`max_messages`, `max_prompt_bytes`, `max_stop_sequences`, `max_stop_sequence_bytes`, `temperature_min_milli`/`temperature_max_milli`, `max_input_response_bytes`): each defaults to a shipped ceiling and an ask past a bound is refused by name, never relayed; the full grammar is in [MCP](https://getbusbar.com/docs/mcp/).
+**This block is accepted on a pool, and only on a pool.** On the LLM plane that is an entry of the top-level `pools:` map. MCP and A2A failover pools are NOT in the top-level `pools:` map: each plane's pools live under the reserved `pools` sub-key of that plane's own section (`tools.pools.<name>`, `agents.pools.<name>`), and the section a pool is written in is its plane. Such a pool takes `members:` (bare registration names from the same section; a member from another section, or one the section does not define, fails boot), `repeatable:` (the operations that may be performed twice; default none) and the same `breaker:` block with the same keys, validation and defaults as below. A plane pool written in the top-level `pools:` is read as an LLM pool, so its members are refused as unknown models; the first-boot migration moves such pools under their section. A `breaker:` on a registration itself (`tools.<server>.breaker:`, `agents.<agent>.breaker:`) is not accepted: `tools:` and `agents:` entries reject unknown keys, so it fails at boot rather than running with the block ignored. The complete MCP and A2A grammar, with every boot refusal, is in [MCP](https://getbusbar.com/docs/mcp/) and [A2A](https://getbusbar.com/docs/a2a/). The fourth plane noun, `streams:` (live voice), is a singular section rather than a named-definition registry, so it has no pools and no `breaker:` block of its own; its complete grammar is in [voice.md](voice.md). The same is true of `tools.<server>.sampling_bounds`, the per-upstream bounds on a server-initiated `sampling/createMessage` ask (`max_messages`, `max_prompt_bytes`, `max_stop_sequences`, `max_stop_sequence_bytes`, `temperature_min_milli`/`temperature_max_milli`, `max_input_response_bytes`): each defaults to a shipped ceiling and an ask past a bound is refused by name, never relayed; the full grammar is in [MCP](https://getbusbar.com/docs/mcp/).
 
 ```yaml
 tools:
@@ -1472,7 +1472,7 @@ absent at boot remains unavailable until restart. Export definitions are not par
 
 **OTLP credential hygiene.** If your OTLP endpoint requires auth, supply credentials in the URL userinfo (`https://user:pass@collector.example.com/…`): Busbar moves them to an `Authorization: Basic` header and strips them from the URL before logging, so they do not appear in logs or spans.
 
-**Response headers moved.** `Server-Timing: busbar;dur=<ms>` (formerly `observability.emit_server_timing`) and the `x-busbar-route-policy` / `x-busbar-route-target` headers are now both `advanced.response_headers` toggles, default `false`. See [`advanced`](#advanced) below and [observability.md#response-headers](observability.md#response-headers) for the full catalogue. `busbar --migrate-config` moves an old `observability.emit_server_timing` key for you; the old key is otherwise an `unknown field` boot error.
+**Response headers moved.** `Server-Timing: busbar;dur=<ms>` (formerly `observability.emit_server_timing`) and the `x-busbar-route-policy` / `x-busbar-route-target` headers are now both `advanced.response_headers` toggles, default `false`. See [`advanced`](#advanced) below and [observability.md#response-headers](observability.md#response-headers) for the full catalogue. the first-boot migration moves an old `observability.emit_server_timing` key for you; the old key is otherwise an `unknown field` boot error.
 
 ---
 
@@ -1592,8 +1592,8 @@ security:
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `blocked_metadata_hosts` | list<string> | `[]` | Additional hosts/IPs appended to the hardcoded denylist. Entries may be IP literals or DNS hostnames. Matched with the same obfuscation-aware canonicalization as the built-in list. |
-| `allow_metadata_hosts` | list<string> | — | **Retired in 1.6.0 and refused** (BUSBAR-3136). `busbar --migrate-config` removes it, naming each removed entry (BUSBAR-3411). |
-| `allow_all_metadata` | bool | — | **Retired in 1.6.0 and refused** when `true` (BUSBAR-3136). `busbar --migrate-config` removes it. |
+| `allow_metadata_hosts` | list<string> | — | **Retired in 1.6.0 and refused** (BUSBAR-3136). the first-boot migration removes it, naming each removed entry (BUSBAR-3411). |
+| `allow_all_metadata` | bool | — | **Retired in 1.6.0 and refused** when `true` (BUSBAR-3136). the first-boot migration removes it. |
 
 A workload that needs cloud credentials uses workload-identity federation (IRSA, AKS workload identity, GKE workload identity federation) through a projected token file, never the instance metadata endpoint.
 
@@ -1886,8 +1886,8 @@ Busbar validates the merged config before accepting any traffic. Fatal errors ab
 | `error_map` value unknown | A value in `error_map` is not one of the nine canonical disposition classes |
 | `auth` value unknown | `auth` field value not `bearer`, `api-key`, `jwt-bearer`, or `oauth-client-credentials` |
 | `affinity.mode` value unknown | `affinity.mode` not `session` (the only supported value) |
-| 1.x config detected | A 1.x structural marker is present (a `governance:` block, `auth.group_map:`, `auth.mode:`, a top-level `hooks:` **REGISTRY** block (one with `socket:`/`webhook:` entries, or any entry lacking `module:`; the 1.5.3 `hooks:` DEFINITION map is valid and passes straight through), `api_key_env`, `target:` in a pool member): boot refuses with "this looks like a Busbar 1.x config; run `busbar --migrate-config`" |
-| Retired 1.5.3 key present | A retired grammar key is present (`global_hooks:`, `observability:`, a top-level `metrics:` block, `admin_insecure:`, `auth.upstream_credentials:`, `auth.methods:`, `otlp_url`/`otlp_endpoint`): boot refuses, naming the key AND its 1.5.3 home, with the `busbar --migrate-config` breadcrumb |
+| 1.x config detected | A 1.x structural marker is present (a `governance:` block, `auth.group_map:`, `auth.mode:`, a top-level `hooks:` **REGISTRY** block (one with `socket:`/`webhook:` entries, or any entry lacking `module:`; the 1.5.3 `hooks:` DEFINITION map is valid and passes straight through), `api_key_env`, `target:` in a pool member): an unstamped 1.x config is migrated by the first boot, and a stamped config holding one is refused by the strict parse (`unknown field`) |
+| Retired 1.5.3 key present | A retired grammar key is present (`global_hooks:`, `observability:`, a top-level `metrics:` block, `admin_insecure:`, `auth.upstream_credentials:`, `auth.methods:`, `otlp_url`/`otlp_endpoint`): the first boot of an unstamped config migrates it; a stamped config holding one is refused by the strict parse (`unknown field`) |
 | Provider `api_key` unresolvable | A provider's `api_key` reference does not resolve (unset variable, missing or empty file, unknown module, secret-plugin error). `BUSBAR-8020` names the provider and the reference (`env:VAR`, `file:/path`), never the value. Declare `api_key: none` for an upstream that takes no credential |
 | `api_key: none` where a credential is required | `none` on any secret other than a provider `api_key`, or on a provider using `auth: jwt-bearer` / `auth: oauth-client-credentials` (both mint their token FROM the credential) |
 | `path` malformed | `path` does not begin with `/` |
@@ -2049,7 +2049,7 @@ open only the address it checked. So `block_private_addresses` and `allow_destin
 export sink (OTLP, webhook), a hook's outbound call (`webrequest`), an identity provider fetch
 (OIDC), a plane's upstream (an MCP server, an A2A agent) and every other plugin dial alike; there
 is no per-plugin private-address switch (the 1.5.x `tools.<server>.allow_private` and
-`agents.<agent>.allow_private` are refused, BUSBAR-3135; `busbar --migrate-config` moves them here). The scheme a destination may use is part of the
+`agents.<agent>.allow_private` are refused, BUSBAR-3135; the first-boot migration moves them here). The scheme a destination may use is part of the
 same check: an export sink or hook on the `loopback-allowed` class takes `https://`, or plaintext
 `http://` only to loopback; an `open-web` destination (a webhook sink, an identity provider's
 documents) takes `https://` only.
@@ -2150,7 +2150,7 @@ may make one cleartext write of at most 64 bytes before its upgrade; anything el
 non-admitted host is refused. Credentials are never sent in clear to a host that is not loopback,
 whatever an entry says (BUSBAR-3146). Postgres `sslmode=prefer`, `sslmode=allow` and a missing
 sslmode are refused (BUSBAR-3142, owner sign-off 2026-11-13: encryption required); valkey
-`#insecure` is refused (BUSBAR-3143). `busbar --migrate-config` rewrites them (BUSBAR-3412,
+`#insecure` is refused (BUSBAR-3143). the first-boot migration rewrites them (BUSBAR-3412,
 BUSBAR-3413) and moves every plugin `ca_cert_pem` to an exact-host entry here (BUSBAR-3415).
 
 Every refused dial writes one rate-limited BUSBAR-5046 line and one `egress.dial_refused` audit
@@ -2176,9 +2176,8 @@ providers_file: providers.yaml
 The config format is an operator artifact outside the SemVer freeze; it changed shape in 1.5.0
 WITH tooling:
 
-1. `busbar --migrate-config old-config.yaml > config-1.5.yaml`: mechanically converts every
-   deterministic change and prints `# TODO(migrate)` / `# WARNING(migrate)` comments where a human
-   must decide. The loudest warning: every `allowed_pools: []` occurrence, whose meaning FLIPPED
+1. Upgrade to 1.5.5 first, then start 1.6.0 on the result: the first boot mechanically converts every
+   deterministic change and reports where a human must decide. The loudest warning: every `allowed_pools: []` occurrence, whose meaning FLIPPED
    (it used to mean all pools, it now means NO pools).
 2. Review the TODO/WARNING items, then `busbar --validate` the result.
 3. Re-mint every virtual key (`POST /api/v1/admin/keys`): 1.4.x bearer secrets and static

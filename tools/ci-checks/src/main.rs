@@ -13,7 +13,8 @@
 //!   the root workspace's feature-resolved graph (`cargo tree`: every feature, target and edge
 //!   kind), `ring`, `sha2` and `ed25519-dalek` are built only beneath `busbar-crypto*`. Dev edges
 //!   count: tests use the facade too.
-//! - `migrate-flag-text`, `migrate-anchors`: the migrate-on-boot checks (`migrate.rs`).
+//! - `migrate-flag-text`, `migrate-retired-words`, `migrate-anchors`: the migrate-on-boot checks
+//!   (`migrate.rs`).
 //! - `migrate-overlay-separation`, `migrate-overlay-keys`, `migrate-overlay-docs`: the 1.5.5
 //!   overlay's separation, key and upgrade-page checks (`migrate_overlay.rs`).
 //!
@@ -35,10 +36,11 @@ use syn::{
 mod migrate;
 mod migrate_overlay;
 
-const CHECKS: [&str; 7] = [
+const CHECKS: [&str; 8] = [
     "no-getrandom",
     "crypto-graph",
     "migrate-flag-text",
+    "migrate-retired-words",
     "migrate-anchors",
     "migrate-overlay-separation",
     "migrate-overlay-keys",
@@ -63,6 +65,7 @@ fn main() -> ExitCode {
             "no-getrandom" => no_getrandom(&root),
             "crypto-graph" => crypto_graph(&root),
             "migrate-flag-text" => migrate::flag_text(&root),
+            "migrate-retired-words" => migrate::retired_words(&root),
             "migrate-anchors" => migrate::anchors(&root),
             "migrate-overlay-separation" => migrate_overlay::separation(&root),
             "migrate-overlay-keys" => migrate_overlay::hook_keys(&root),
