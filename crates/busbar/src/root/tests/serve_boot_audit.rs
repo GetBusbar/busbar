@@ -306,10 +306,12 @@ pub(super) async fn run() {
         models: None,
         upgrades: Vec::new(),
     };
-    let sections = BTreeMap::from([(
+    let sections = [(
         "decisions",
         busbar_contract::yaml::from_str("models: {m: {provider: typesafe}}").unwrap(),
-    )]);
+    )]
+    .into_iter()
+    .collect::<BTreeMap<_, _>>();
     let mut served = super::super::compose_planes(
         &[("boot-audit-decisions".into(), Arc::new(plane))],
         &dispatcher,

@@ -13,7 +13,7 @@ use crate::root::linked::LinkedClaims;
 /// Every arm is a statement about the composition, not about a request: an operator sees it once,
 /// at start-up, with both offending names in the message, and the process does not go on to serve.
 #[derive(Debug)]
-pub enum BootRefusal {
+pub(crate) enum BootRefusal {
     /// Two planes claim bytes that could both match.
     ClaimOverlap(Box<ClaimConflict>),
     /// A plane claims bytes on a transport no crate in the tree provides.
@@ -63,7 +63,7 @@ fn core_claims() -> impl Iterator<Item = PlaneClaim> {
 }
 
 #[must_use]
-pub fn plane_claims(planes: &[LinkedClaims]) -> Vec<PlaneClaim> {
+pub(crate) fn plane_claims(planes: &[LinkedClaims]) -> Vec<PlaneClaim> {
     planes
         .iter()
         .flat_map(|row| {
@@ -80,7 +80,7 @@ pub fn plane_claims(planes: &[LinkedClaims]) -> Vec<PlaneClaim> {
 /// A transport DOOR dropped into `plugins.dir`: a memory-ABI entry admitted through the one
 /// dispatcher's door validation and served over the host's sockets (`crate::root::doors`).
 #[derive(Clone)]
-pub struct DroppedDoor {
+pub(crate) struct DroppedDoor {
     /// Its registry key: its own claim.
     pub key: &'static str,
     /// Every scheme it claims, its own first (each is registered under its own key).
@@ -101,7 +101,7 @@ pub struct DroppedDoor {
 
 /// The transports a plugins directory contributes.
 #[derive(Clone)]
-pub struct Dropped {
+pub(crate) struct Dropped {
     /// A snapshot of the memory-ABI transport doors. An owned inventory may be replaced after
     /// Store recovery without invalidating a reader or permanently retaining obsolete doors.
     pub doors: std::borrow::Cow<'static, [DroppedDoor]>,
@@ -109,7 +109,7 @@ pub struct Dropped {
 
 impl Dropped {
     #[cfg(test)]
-    pub const NONE: Self = Self {
+    pub(crate) const NONE: Self = Self {
         doors: std::borrow::Cow::Borrowed(&[]),
     };
 }
@@ -118,7 +118,10 @@ impl Dropped {
 /// twice within their kind, plane claims that overlap, and claims on a transport `served` does not
 /// answer. Transport keys and claims are refused at the connector's boot (`Transports::new`), and a
 /// transport naming a layer where its door opens (`wire::unlayered`).
-pub fn check(planes: &[LinkedClaims], served: &dyn Fn(&str) -> bool) -> Result<(), BootRefusal> {
+pub(crate) fn check(
+    planes: &[LinkedClaims],
+    served: &dyn Fn(&str) -> bool,
+) -> Result<(), BootRefusal> {
     let mut keys = HashSet::new();
     for row in planes {
         let plane = (row.plane)();
@@ -139,7 +142,7 @@ pub fn check(planes: &[LinkedClaims], served: &dyn Fn(&str) -> bool) -> Result<(
 }
 
 /// [`check`] against the installed connector, or an explained exit 2.
-pub fn check_or_exit(planes: &[LinkedClaims]) {
+pub(crate) fn check_or_exit(planes: &[LinkedClaims]) {
     let connector = crate::root::connector::the();
     check(planes, &|scheme| connector.framer_for(scheme).is_some()).unwrap_or_else(|refusal| {
         eprintln!("busbar: the composition root did not seal: {refusal}");

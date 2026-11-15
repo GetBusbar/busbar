@@ -19,7 +19,7 @@ use crate::root::model_egress::{
 
 impl ModelPools {
     #[must_use]
-    pub fn of(cfg: &busbar_kernel::config::RootCfg) -> Self {
+    pub(crate) fn of(cfg: &busbar_kernel::config::RootCfg) -> Self {
         use busbar_kernel::config::pools::OnExhaustedCfg;
         let mut lanes: BTreeMap<String, ModelLane> = cfg
             .models
@@ -163,7 +163,7 @@ impl ModelPools {
 
 impl ModelServing {
     #[must_use]
-    pub fn probe_members(
+    pub(crate) fn probe_members(
         &self,
     ) -> (
         usize,
