@@ -1,15 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Transport request encoders and answer decoders (IF §8.8). W0-ABI stub: frozen signatures, `todo!()` bodies;
-//! A11 fills it.
+//! Transport request encoders and answer decoders (IF §8.8). `decode_offer` is written; `encode_path` and
+//! `encode_keying` are held on GitLab busbar#256 (the event argument has no record tag in the frozen table).
 
 use busbar_plugin_abi::host_side::answer::Answer;
-use busbar_plugin_abi::records::{Full, RecErr, Records, Writer};
+use busbar_plugin_abi::records::{tag as generic, Full, RecErr, Records, Writer};
+use busbar_plugin_abi::transport::{tag, ROLE_CLIENT, ROLE_SERVER};
+
+/// The most ALPN ids, and the most default lines, one `offer` answer may carry (§8.7).
+const OFFER_MAX: usize = 8;
+/// An ALPN protocol id is 1..=255 bytes (RFC 7301 §3.1).
+const ALPN_MAX: usize = 255;
 
 pub fn encode_path(w: &mut impl Writer, path: u32, flags: u32, addr: &str) -> Result<(), Full> {
     let _ = (w, path, flags, addr);
-    todo!()
+    todo!("busbar#256: the EV_PATH argument has no record tag in the frozen table (IF §8.7, §8.8)")
 }
 
 pub fn encode_keying(
@@ -19,12 +25,19 @@ pub fn encode_keying(
     material: &[u8],
 ) -> Result<(), Full> {
     let _ = (w, path, profile, material);
-    todo!()
+    todo!(
+        "busbar#256: the EV_KEYING argument has no record tag in the frozen table (IF §8.7, §8.8)"
+    )
 }
 
 /// Round 9: the `offer` answer (ALPN*, each 1..=255 bytes, at most 8). Round 22: then, for ROLE_CLIENT only,
 /// PAIR* (at most 8, names lowercase token characters, values without CR/LF) as `defaults`; anything else,
 /// or PAIR for ROLE_SERVER, BadRecords.
+///
+/// W1-A11: every grammar breach (role, tag, order, count, length, charset) is `RecErr::Size`, never
+/// `RecErr::Unknown`, because §8.7 makes any other tag BadRecords, not UnknownTag. Text that is not UTF-8 is
+/// `RecErr::Utf8`, and a framing error is returned as the reader gave it. A METRIC record (allowed in any OK
+/// answer, §3) is passed over; `decode_metrics` reads it.
 pub fn decode_offer(a: &Answer<'_>, role: u32) -> Result<Offer, RecErr> {
     offer_from(a.records(), role)
 }
@@ -36,15 +49,70 @@ pub struct Offer {
 
 /// `decode_offer` over the answer's records (the seam the tests drive, since only W1-H1 builds an `Answer`).
 fn offer_from(recs: Records<'_>, role: u32) -> Result<Offer, RecErr> {
-    let _ = (recs, role);
-    todo!()
+    if role != ROLE_SERVER && role != ROLE_CLIENT {
+        return Err(RecErr::Size);
+    }
+    let mut alpn: Vec<Box<str>> = Vec::new();
+    let mut defaults: Vec<(Box<str>, Box<str>)> = Vec::new();
+    for rec in recs {
+        let rec = rec?;
+        match rec.tag {
+            generic::METRIC => {}
+            tag::ALPN if defaults.is_empty() && alpn.len() < OFFER_MAX => {
+                let id = rec.text()?;
+                if id.is_empty() || id.len() > ALPN_MAX {
+                    return Err(RecErr::Size);
+                }
+                alpn.push(Box::from(id));
+            }
+            generic::PAIR if role == ROLE_CLIENT && defaults.len() < OFFER_MAX => {
+                let (name, value) = rec.pair()?;
+                let value = core::str::from_utf8(value).map_err(|_| RecErr::Utf8)?;
+                if !is_default_name(name) || value.contains(['\r', '\n']) {
+                    return Err(RecErr::Size);
+                }
+                defaults.push((Box::from(name), Box::from(value)));
+            }
+            _ => return Err(RecErr::Size),
+        }
+    }
+    Ok(Offer {
+        alpn: alpn.into(),
+        defaults: defaults.into(),
+    })
+}
+
+/// A default line's name: one or more RFC 9110 token characters, no uppercase letter.
+fn is_default_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.bytes().all(|b| {
+            b.is_ascii_lowercase()
+                || b.is_ascii_digit()
+                || matches!(
+                    b,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use busbar_plugin_abi::records::{tag as generic, Reply};
-    use busbar_plugin_abi::transport::{tag, ROLE_CLIENT, ROLE_DATAGRAM, ROLE_SERVER};
+    use busbar_plugin_abi::records::Reply;
+    use busbar_plugin_abi::transport::ROLE_DATAGRAM;
 
     /// One `offer` answer's records, written by the codec's own writer.
     fn answer(f: impl FnOnce(&mut Reply) -> Result<(), Full>) -> Reply {

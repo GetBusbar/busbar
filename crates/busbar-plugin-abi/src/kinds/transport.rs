@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The transport kind: the `Transport` trait and the `transport` module (IF §8.7, §10.4). W0-ABI stub: frozen
-//! signatures, `todo!()` bodies; A11 (the block) and W1-A4 (the `kind!` expansion) fill it.
+//! The transport kind: the `Transport` trait and the `transport` module (IF §8.7, §10.4). W1-A11 owns the block
+//! (its views, pods, tags, consts, method docs and default bodies); W1-A4 owns the `kind!` expansion (the raw
+//! `Vt`, its shims, `Proxy` and `SessionHandle`, whose bodies stay W0-ABI stubs here) and `FP`.
 
 // The trait is what `kind!` emits for the IF §8.7 block (IF §7.6); W0-ABI writes it inside the pass-through
 // `kind_stub!` (CONVENTIONS rule 3).
@@ -35,7 +36,7 @@ crate::kind::kind_stub! {
             out: &mut crate::records::Out<'_>,
         ) -> Result<(), crate::fail::Fail> {
             let _ = (h, s, bytes, out);
-            todo!()
+            Err(crate::fail::Fail::unsupported())
         }
 
         /// Core sends a piece on `stream` (stream 0 + E_HEAD in ROLE_CLIENT opens a new stream: answer STREAM_OPENED).
@@ -68,7 +69,7 @@ crate::kind::kind_stub! {
             out: &mut crate::records::Out<'_>,
         ) -> Result<(), crate::fail::Fail> {
             let _ = (h, s, stream, piece, arg, bytes, out);
-            todo!()
+            Err(crate::fail::Fail::unsupported())
         }
 
         /// The WAKE_AT time passed. Answer: as ingest (datagram sessions: as datagram), STREAM_WRITABLE* included.
@@ -79,7 +80,7 @@ crate::kind::kind_stub! {
             out: &mut crate::records::Out<'_>,
         ) -> Result<(), crate::fail::Fail> {
             let _ = (h, s, out);
-            todo!()
+            Err(crate::fail::Fail::unsupported())
         }
 
         /// One datagram on `path` (flags = DG_SECURED if core's DTLS layer opened it). Answer: SEND_TO*,
@@ -95,7 +96,7 @@ crate::kind::kind_stub! {
             out: &mut crate::records::Out<'_>,
         ) -> Result<(), crate::fail::Fail> {
             let _ = (h, s, path, flags, bytes, out);
-            todo!()
+            Err(crate::fail::Fail::unsupported())
         }
 
         /// Core-side datagram events: EV_PATH (arg = PathRec + addr: path added, gone, bound, verified, rejected
@@ -111,7 +112,7 @@ crate::kind::kind_stub! {
             out: &mut crate::records::Out<'_>,
         ) -> Result<(), crate::fail::Fail> {
             let _ = (h, s, ev, arg, out);
-            todo!()
+            Err(crate::fail::Fail::unsupported())
         }
 
         /// Round 9. Cold, pure: the ALPN ids this instance offers on `role` (ROLE_SERVER: what core's listener
@@ -134,7 +135,7 @@ crate::kind::kind_stub! {
             out: &mut crate::records::Out<'_>,
         ) -> Result<(), crate::fail::Fail> {
             let _ = (h, role, out);
-            todo!()
+            Err(crate::fail::Fail::unsupported())
         }
     }
 }
@@ -291,6 +292,21 @@ pub mod transport {
         pub path: u32,
         pub from: u32,
     }
+
+    // W1-A11: the `Pod` impl `kind!` writes for each `pods {}` struct (records.rs), so plugins and the adapter
+    // read and write these records before W1-A4 lands the macro.
+    impl crate::records::Pod for CloseRec {}
+    impl crate::records::Pod for WakeAt {}
+    impl crate::records::Pod for StreamHead {}
+    impl crate::records::Pod for StreamBody {}
+    impl crate::records::Pod for StreamReset {}
+    impl crate::records::Pod for StreamFlow {}
+    impl crate::records::Pod for SendTo {}
+    impl crate::records::Pod for PathRec {}
+    impl crate::records::Pod for KeyingRec {}
+    impl crate::records::Pod for SecureRec {}
+    impl crate::records::Pod for IceTermsRec {}
+    impl crate::records::Pod for PathReqRec {}
 
     pub mod tag {
         pub const WRITE: u16 = 0x0100;
@@ -565,4 +581,159 @@ pub mod transport {
 
     // W0-ABI: `impl Drop for SessionHandle` (if not ended: cancel(inst, tok) inside the entry guard, ENTRY_CANCEL;
     // FAULT => quarantine) is omitted: Drop is the only cancel and lands with W1-A4 (rule 3: no todo!() drop).
+}
+
+#[cfg(test)]
+mod tests {
+    use super::transport::{self as t, tag};
+    use crate::records::{Pod, Records, Reply, Writer};
+    use crate::types::{Bytes, KindCode, Str};
+    use zerocopy::IntoBytes;
+
+    /// Every transport tag, in table order.
+    const TAGS: [u16; 24] = [
+        tag::WRITE,
+        tag::CLOSE,
+        tag::WAKE_AT,
+        tag::UPGRADE,
+        tag::LEFTOVER,
+        tag::STREAM_HEAD,
+        tag::STREAM_BODY,
+        tag::STREAM_END,
+        tag::STREAM_RESET,
+        tag::STREAM_TRAILERS,
+        tag::STREAM_OPENED,
+        tag::PAUSE,
+        tag::RESUME,
+        tag::SEND_TO,
+        tag::SECURE,
+        tag::RENDEZVOUS,
+        tag::ICE_TERMS,
+        tag::ICE_CANDIDATE,
+        tag::PATH_BIND,
+        tag::PATH_REBIND,
+        tag::ALPN,
+        tag::STREAM_FULL,
+        tag::STREAM_WRITABLE,
+        tag::D_PROTOCOL,
+    ];
+
+    /// The call records are 0x0100..=0x0116 in table order; the one describe item is D_PROTOCOL 0x0181, and
+    /// round 8's D_ALPN (0x0180) stays retired.
+    #[test]
+    fn the_tags_keep_their_numbers_and_d_alpn_stays_retired() {
+        assert!(TAGS[..23].iter().copied().eq(0x0100..=0x0116));
+        assert_eq!(tag::D_PROTOCOL, 0x0181);
+        assert!(!TAGS.contains(&0x0180));
+    }
+
+    #[test]
+    fn the_method_bits_follow_declaration_order() {
+        let bits = [
+            t::M_BEGIN,
+            t::M_INGEST,
+            t::M_EMIT,
+            t::M_TIMER,
+            t::M_DATAGRAM,
+            t::M_EVENT,
+            t::M_OFFER,
+        ];
+        assert_eq!(bits, [1, 2, 4, 8, 16, 32, 64]);
+        assert_eq!(t::ALL, 0x7F);
+        assert_eq!(t::KIND, KindCode::Transport);
+        assert_eq!(t::ABI, crate::versions::TRANSPORT);
+        assert_eq!(t::KIND.abi(), t::ABI);
+    }
+
+    /// E_REFUSE's arg is a status in bits 0..=15 plus E_REFUSE_HEAD_SENT, so the flag never touches a status.
+    #[test]
+    fn the_refuse_flag_sits_above_the_status_bits() {
+        assert_eq!(t::E_REFUSE_HEAD_SENT & 0xFFFF, 0);
+        assert_eq!((599 | t::E_REFUSE_HEAD_SENT) & 0xFFFF, 599);
+    }
+
+    /// The view is its fields back to back (the size assert `kind!` writes, IF §7.6).
+    #[test]
+    fn conn_info_has_no_padding() {
+        let strs = 5 * size_of::<Str<'_>>();
+        let bytes = 3 * size_of::<Bytes<'_>>();
+        assert_eq!(size_of::<t::ConnInfo<'_>>(), 2 * 4 + strs + bytes + 8);
+    }
+
+    fn round_trip<T: Pod>(v: T, size: usize) {
+        assert_eq!(size_of::<T>(), size);
+        let mut out = Reply::new();
+        out.put_pod_tail(tag::SEND_TO, &v, b"tail")
+            .expect("one record fits");
+        let rec = Records::new(out.as_bytes())
+            .next_rec()
+            .expect("one record")
+            .expect("well framed");
+        let (back, tail) = rec.pod_tail::<T>().expect("the pod and its tail");
+        assert_eq!(back.as_bytes(), v.as_bytes());
+        assert_eq!(tail, b"tail");
+    }
+
+    #[test]
+    fn every_pod_has_its_frozen_size_and_reads_back() {
+        round_trip(
+            t::CloseRec {
+                how: t::CLOSE_ABORT,
+                _r: 0,
+            },
+            8,
+        );
+        round_trip(t::WakeAt { mono_ns: u64::MAX }, 8);
+        let head = t::StreamHead {
+            stream: 1,
+            flags: t::SH_END_STREAM,
+            _r: 0,
+        };
+        round_trip(head, 16);
+        let body = t::StreamBody {
+            stream: 3,
+            flags: t::MSG_TEXT | t::MSG_FIN,
+            _r: 0,
+        };
+        round_trip(body, 16);
+        let reset = t::StreamReset {
+            stream: 5,
+            code: t::RESET_STALLED,
+            _r: 0,
+        };
+        round_trip(reset, 16);
+        round_trip(t::StreamFlow { stream: 7 }, 8);
+        round_trip(
+            t::SendTo {
+                path: 1,
+                flags: t::DG_SECURED,
+            },
+            8,
+        );
+        let path = t::PathRec {
+            path: 2,
+            flags: t::PATH_NEW | t::PATH_VERIFIED,
+        };
+        round_trip(path, 8);
+        round_trip(
+            t::KeyingRec {
+                path: 2,
+                profile: 1,
+            },
+            8,
+        );
+        let secure = t::SecureRec {
+            path: 2,
+            role: t::DTLS_CLIENT,
+            alg: t::FP_SHA256,
+            digest_len: 32,
+        };
+        round_trip(secure, 16);
+        let terms = t::IceTermsRec {
+            flags: t::ICE_CONTROLLING,
+            _r: 0,
+        };
+        round_trip(terms, 8);
+        round_trip(t::PathReqRec { path: 3, from: 2 }, 8);
+    }
 }
