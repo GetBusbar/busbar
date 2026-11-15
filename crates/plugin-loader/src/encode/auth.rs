@@ -438,11 +438,12 @@ mod tests {
             caller_cred: &[],
             scope: Some("s1 s2"),
             caller_grant: Some(b"grant"),
+            min_valid_s: 30,
         }
     }
 
     #[test]
-    fn outbound_writes_the_binding_inputs_and_no_margin() {
+    fn outbound_writes_the_binding_inputs_and_the_margin_fact() {
         let mut w = Reply::new();
         encode_outbound(&mut w, &upstream()).unwrap();
         assert_eq!(
@@ -453,19 +454,9 @@ mod tests {
                 (t::O_BODY_SHA256, vec![7; 32]),
                 (t::O_SCOPE, b"s1 s2".to_vec()),
                 (t::O_CALLER_GRANT, b"grant".to_vec()),
+                (tag::FACT, fact(abi::F_MIN_VALID_S, 30)),
             ]
         );
-    }
-
-    #[test]
-    fn outbound_min_valid_appends_the_margin_fact() {
-        let mut w = Reply::new();
-        encode_outbound_min_valid(&mut w, &upstream(), 30).unwrap();
-        assert_eq!(
-            recs(&w).last().unwrap(),
-            &(tag::FACT, fact(abi::F_MIN_VALID_S, 30))
-        );
-        assert_eq!(tags(&w).len(), 6);
     }
 
     #[test]
