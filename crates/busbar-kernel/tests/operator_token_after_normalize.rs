@@ -9,10 +9,49 @@
 
 const FIXTURE: &str = include_str!("fixtures/operator_token_after_normalize.yaml");
 
+/// The 1.5.5 configuration spells its secrets `{ env: … }` and `{ file: … }`. Core declares no
+/// source shorthand itself: an admitted secret module does. Read the fixture as a deployment whose
+/// admitted secret module declares both words.
+fn fixture_sources() -> busbar_contract::secret_ref::Sugars {
+    use busbar_contract::abi::mechanism::door::REWRITE_SUGAR;
+    let mut sources = busbar_contract::secret_ref::Sugars::default();
+    sources
+        .declare(
+            "fixture-source",
+            &[
+                (REWRITE_SUGAR, "env".into(), "slot".into()),
+                (REWRITE_SUGAR, "file".into(), "path".into()),
+            ],
+        )
+        .expect("the fixture source declares its shorthand");
+    sources
+}
+
+/// One provider definition per configured provider, as a providers.yaml would give.
+fn defs_for(
+    deploy: &busbar_kernel::config::DeployCfg,
+) -> std::collections::HashMap<String, busbar_kernel::config::ProviderDef> {
+    deploy
+        .providers
+        .keys()
+        .map(|name| {
+            let def: busbar_kernel::config::ProviderDef = busbar_contract::yaml::from_str(
+                "{ protocol: proto-a, base_url: \"https://provider.invalid\" }",
+            )
+            .expect("the fixed ProviderDef literal parses");
+            (name.clone(), def)
+        })
+        .collect()
+}
+
 #[test]
 fn a_normalized_1_5_5_token_config_is_refused_with_its_named_remedy() {
-    let deploy = busbar_kernel::config::deploy_from_yaml_str(FIXTURE).expect("the fixture parses");
-    let errors = match busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new()) {
+    let sources = fixture_sources();
+    let deploy = busbar_contract::yaml::with_deserializer(FIXTURE, |d| {
+        busbar_kernel::config::deploy_with_sources(d, &sources)
+    })
+    .expect("the fixture parses");
+    let errors = match busbar_kernel::config::resolve(&deploy, &defs_for(&deploy)) {
         Err(errors) => errors,
         Ok(cfg) => busbar_kernel::config_validate::validate(&cfg)
             .err()
