@@ -191,10 +191,10 @@ fn spawn_lends_owned_strings_and_nested_lists_until_the_slot_returns() {
         ..TABLE
     };
     let mut io = Io::new(HostCtx::NONE, &table, TICKET);
-    let program = "/usr/bin/tool".to_owned();
-    let argument = "argument with spaces".to_owned();
-    let name = "NAME".to_owned();
-    let value = "value".to_owned();
+    let program = String::from("/usr/bin/tool");
+    let argument = String::from("argument with spaces");
+    let name = String::from("NAME");
+    let value = String::from("value");
     assert_eq!(
         io.spawn(
             &program,

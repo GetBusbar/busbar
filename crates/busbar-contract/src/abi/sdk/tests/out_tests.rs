@@ -167,7 +167,7 @@ fn static_text_and_lists_are_named_where_they_live() {
 fn a_published_value_is_the_sdks_until_its_retire() {
     let gens: Generations<PlaneSnapshot> = Generations::new();
     let mut o: PlaneOpenOut = zeroed();
-    let target = "/x".to_owned();
+    let target = String::from("/x");
     let spec = SnapshotSpec {
         claims: vec![ClaimSpec::new("GET", &target, "c", 0)],
         ..SnapshotSpec::default()
@@ -222,7 +222,7 @@ fn a_failure_names_its_text_where_its_instance_keeps_it() {
     let reporting: Reporting = std::cell::Cell::new(None);
     let mut o: CancelOut = zeroed();
     let answered =
-        Out::kept(&mut o, &kept, &reporting, holders()).fail(Refusal::failed("no".to_owned()));
+        Out::kept(&mut o, &kept, &reporting, holders()).fail(Refusal::failed(String::from("no")));
     kept.keep(
         ReplyKey::of(Ticket::NONE),
         reporting.take().expect("owned reply"),
@@ -248,7 +248,7 @@ fn codeaudit_a_retired_thread_does_not_strand_its_unticketed_reply() {
                     let reporting: Reporting = std::cell::Cell::new(None);
                     let mut o: CancelOut = zeroed();
                     let _ = Out::kept(&mut o, &kept, &reporting, holders())
-                        .fail(Refusal::failed("owned".to_owned()));
+                        .fail(Refusal::failed(String::from("owned")));
                     kept.keep(
                         ReplyKey::of(Ticket::NONE),
                         reporting.take().expect("owned reply"),
@@ -275,7 +275,7 @@ fn unrelated_tickets_cannot_evict_owned_texts_and_one_reply_keeps_all_of_its_tex
     let reporting: Reporting = std::cell::Cell::new(None);
     let mut first: CancelOut = zeroed();
     let _ = Out::kept(&mut first, &kept, &reporting, holders())
-        .fail(Refusal::failed("first".to_owned()));
+        .fail(Refusal::failed(String::from("first")));
     kept.keep(first_key, reporting.take().expect("first reply"));
     for i in 0..=KEPT_RING {
         let reporting = std::cell::Cell::new(kept.begin(other_key));
@@ -297,8 +297,8 @@ fn unrelated_tickets_cannot_evict_owned_texts_and_one_reply_keeps_all_of_its_tex
     let reporting = std::cell::Cell::new(kept.begin(first_key));
     let mut o: CancelOut = zeroed();
     let mut out = Out::kept(&mut o, &kept, &reporting, holders());
-    out.reason("one".to_owned());
-    out.reason("two".to_owned());
+    out.reason(String::from("one"));
+    out.reason(String::from("two"));
     kept.keep(first_key, reporting.take().unwrap());
     assert_eq!(
         kept.replies.with(first_key, |r| r
@@ -370,7 +370,8 @@ fn an_instance_less_failure_writes_the_hosts_lent_buffer_and_else_a_fixed_text()
         open: false,
     };
     let mut v: OutHead = zeroed();
-    let answered = Out::lent(&mut v, Some(lent), holders()).fail(Refusal::failed("aéé".to_owned()));
+    let answered =
+        Out::lent(&mut v, Some(lent), holders()).fail(Refusal::failed(String::from("aéé")));
     assert_eq!(answered, Outcome::Failed);
     assert_eq!((v.error.ptr, v.error.len), (buf.as_ptr(), 3));
     assert_eq!(&buf, b"a\xc3\xa9\0");
@@ -383,7 +384,7 @@ fn an_instance_less_failure_writes_the_hosts_lent_buffer_and_else_a_fixed_text()
     };
     let mut o: OpenOut = zeroed();
     let answered =
-        Out::lent(&mut o, Some(lent), holders()).fail(Refusal::refused("boom: x".to_owned()));
+        Out::lent(&mut o, Some(lent), holders()).fail(Refusal::refused(String::from("boom: x")));
     assert_eq!(answered, Outcome::Refused);
     assert_eq!(o.err_len, 7);
     assert_eq!(&buf[..7], b"boom: x");
@@ -460,7 +461,7 @@ fn an_arrival_names_its_route_and_keeps_the_name() {
     let kept = Kept::default();
     let reporting: Reporting = std::cell::Cell::new(None);
     let mut o: ArriveOut = zeroed();
-    let name = "entry".to_owned();
+    let name = String::from("entry");
     Out::kept(&mut o, &kept, &reporting, holders()).route(ROUTE_DIRECT, &name);
     drop(name);
     assert_eq!((o.route, read(o.pool)), (ROUTE_DIRECT, b"entry".to_vec()));
@@ -478,7 +479,7 @@ fn a_route_entry_already_kept_is_named_without_allocating() {
     let mut first: ArriveOut = zeroed();
     Out::kept(&mut first, &kept, &reporting, holders()).route(ROUTE_DIRECT, "entry");
     let mut again: ArriveOut = zeroed();
-    let name = "entry".to_owned();
+    let name = String::from("entry");
     let mut out = Out::kept(&mut again, &kept, &reporting, holders());
     crate::alloc_counter::reset();
     out.route(ROUTE_DIRECT, &name);
@@ -500,7 +501,7 @@ fn an_arrival_states_its_trust_facts_and_keeps_them() {
     let kept = Kept::default();
     let reporting: Reporting = std::cell::Cell::new(None);
     let mut o: ArriveOut = zeroed();
-    let (cp, item) = ("peer".to_owned(), "tool".to_owned());
+    let (cp, item) = (String::from("peer"), String::from("tool"));
     Out::kept(&mut o, &kept, &reporting, holders()).trust(&cp, Some(&item), Some("d1"));
     drop((cp, item));
     assert_eq!(
