@@ -111,6 +111,17 @@ pub trait HookJournal: Send + Sync {
     fn hooks_ran(&self, record: &HooksRan);
 }
 
+thread_local! {
+    /// The thread's spare hook-facts buffer: a unit's hook stage takes it and its report hands it
+    /// back cleared, so units on one thread reuse one allocation.
+    static RAN_SPARE: std::cell::Cell<Vec<HookApplied>> = const { std::cell::Cell::new(Vec::new()) };
+}
+
+/// The buffer a unit's hook stage records the hooks that ran into: the thread's spare.
+pub(crate) fn ran_buffer() -> Vec<HookApplied> {
+    RAN_SPARE.with(std::cell::Cell::take)
+}
+
 fn head_of(decided: &Decided) -> HookHead {
     match decided {
         Decided::Reject | Decided::RejectRequest { .. } => HookHead::Veto,
@@ -675,7 +686,7 @@ pub struct Projection<'a> {
 /// is wiped by its owner.
 fn wipe_owned(text: &mut Cow<'_, str>) {
     if let Cow::Owned(owned) = text {
-        zeroize::Zeroize::zeroize(owned);
+        crate::host_chains::wipe(owned);
     }
 }
 
@@ -860,16 +871,7 @@ fn veto(status: u16, text: impl Into<String>) -> Stopped {
 }
 
 fn veto_by(status: u16, text: impl Into<String>, hook: &str) -> Stopped {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a vetoed request names its vetoing hook once, in the refusal"
-    )]
-    let veto = Stopped::Veto(Veto {
-        status: u32::from(status),
-        text: text.into(),
-        hook: Some(hook.to_string()),
-    });
-    veto
+    crate::cold::hooks_veto_by(status, text, hook)
 }
 
 fn stage_at<'a>(
@@ -926,32 +928,19 @@ enum Decided {
 /// The `(policy, pool)` pairs inside a failure window: a pair's first failure warns, its repeats are
 /// debug, and its next answer closes the window. Keyed by policy, then pool, so a lookup composes
 /// nothing.
-static FAULT_WINDOW: LazyLock<Mutex<foldhash::HashMap<String, foldhash::HashSet<String>>>> =
-    LazyLock::new(Mutex::default);
+static FAULT_WINDOW: LazyLock<Mutex<PairWindow>> = LazyLock::new(Mutex::default);
+
+/// `(policy, pool)` pairs, keyed by policy, then pool, so a lookup composes nothing.
+pub(crate) type PairWindow = foldhash::HashMap<String, foldhash::HashSet<String>>;
 
 fn fault_enter(policy: &str, pool: &str) -> bool {
     let mut window = FAULT_WINDOW
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(pools) = window.get_mut(policy) {
-        if pools.contains(pool) {
-            return false;
-        }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a failing (policy, pool) pair is recorded once, when its window opens"
-        )]
-        pools.insert(pool.to_string());
-        return true;
+    if window.get(policy).is_some_and(|pools| pools.contains(pool)) {
+        return false;
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a failing (policy, pool) pair is recorded once, when its window opens"
-    )]
-    window.insert(
-        policy.to_string(),
-        std::iter::once(pool.to_string()).collect(),
-    );
+    crate::cold::hooks_pair_first_seen(&mut window, policy, pool);
     true
 }
 
@@ -1004,7 +993,7 @@ fn trimmed_tags(mut tags: Vec<String>) -> Vec<String> {
     tags
 }
 
-static UNRANKED_WARNED: LazyLock<Mutex<foldhash::HashSet<String>>> = LazyLock::new(Mutex::default);
+static UNRANKED_WARNED: LazyLock<Mutex<PairWindow>> = LazyLock::new(Mutex::default);
 
 /// The ordering policy answered and made no choice: the walk is SWRR. Say so once per
 /// policy@pool when no shown member carries a fully priced routing-cost recipe.
@@ -1013,10 +1002,14 @@ fn note_unranked(policy: &str, pool: &str, shown: &[Candidate<'_>]) -> bool {
     if shown.is_empty() || shown.iter().any(has_known_cost) {
         return false;
     }
-    let fresh = UNRANKED_WARNED
+    let mut warned = UNRANKED_WARNED
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(format!("{policy}@{pool}"));
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let fresh = !warned.get(policy).is_some_and(|pools| pools.contains(pool));
+    if fresh {
+        crate::cold::hooks_pair_first_seen(&mut warned, policy, pool);
+    }
+    drop(warned);
     if fresh {
         crate::diag_warn!(
             ROUTING_POLICY_ABSTAINED_UNPRICED,
@@ -1045,8 +1038,8 @@ fn unranked_clear(policy: &str, pool: &str) {
     let mut set = UNRANKED_WARNED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if !set.is_empty() {
-        set.remove(&format!("{policy}@{pool}"));
+    if let Some(pools) = set.get_mut(policy) {
+        pools.remove(pool);
     }
 }
 
@@ -1093,10 +1086,6 @@ fn coerce_on_error(
     }
     match on_error {
         PolicyOnError::First => {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a failed policy falls back to the candidates' own order, once"
-            )]
             let order = candidates.iter().map(|c| c.idx).collect();
             Decided::Order { order, name }
         }
@@ -1385,6 +1374,20 @@ fn narrow(all: &mut Vec<CandidateFacts>, tags_any: &[String]) -> bool {
     true
 }
 
+/// `set`, kept in order where it names one of the unit's members, compacted in place.
+fn members_only(mut set: Vec<usize>, all: &[CandidateFacts]) -> Vec<usize> {
+    let mut kept = 0;
+    for i in 0..set.len() {
+        let idx = set[i];
+        if all.iter().any(|c| c.idx == idx) {
+            set[kept] = idx;
+            kept += 1;
+        }
+    }
+    set.truncate(kept);
+    set
+}
+
 fn rewrite_bytes(rw: &busbar_contract::hooks::RewriteReply) -> Vec<u8> {
     #[derive(serde::Serialize)]
     struct Crossing<'a> {
@@ -1483,7 +1486,7 @@ impl ProjectArena {
     /// `Vec` (whose `Zeroize` would clear it to length 0 and cost a SHORT answer and a fresh
     /// allocation on every reuse), so the allocation and its length are kept.
     fn reset(&mut self) {
-        zeroize::Zeroize::zeroize(&mut self[..]);
+        crate::host_chains::wipe(&mut self[..]);
     }
 }
 
@@ -1904,7 +1907,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
     where
         S: super::DriverSteps,
     {
-        let mut ran = Vec::new();
+        let mut ran = ran_buffer();
         let scope =
             crate::hook_child::Scope::new(Arc::clone(&self.driver.services), self.lock().unit);
         let stage = crate::hook_child::SCOPE
@@ -1914,15 +1917,18 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         stage
     }
 
-    pub(crate) fn report_hooks(&self, hooks: Vec<HookApplied>) {
-        let Some(journal) = self.driver.hook_journal.as_ref() else {
-            return;
-        };
-        if hooks.is_empty() {
-            return;
+    /// Journal the hooks that ran for the unit, then hand the buffer back as the thread's spare.
+    pub(crate) fn report_hooks(&self, mut hooks: Vec<HookApplied>) {
+        if let Some(journal) = self.driver.hook_journal.as_ref() {
+            if !hooks.is_empty() {
+                let unit = busbar_contract::UnitKey::new(self.lock().unit);
+                let record = HooksRan { unit, hooks };
+                journal.hooks_ran(&record);
+                hooks = record.hooks;
+            }
         }
-        let unit = busbar_contract::UnitKey::new(self.lock().unit);
-        journal.hooks_ran(&HooksRan { unit, hooks });
+        hooks.clear();
+        RAN_SPARE.with(|spare| spare.set(hooks));
     }
 
     async fn run_request_stage(
@@ -1949,22 +1955,17 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         }
         let facts = self.far.candidates(token);
         let named = facts.is_some();
-        let walk_pool = facts.as_ref().map(|c| c.pool.clone()).unwrap_or_default();
-        let principal = self
-            .lock()
-            .principal
-            .as_ref()
-            .map(|p| p.as_str().to_string());
-        let (dialect, request_id) = {
+        let (walk_pool, members) = facts.map(|c| (c.pool, c.members)).unwrap_or_default();
+        let bound = {
             let st = self.lock();
-            (st.decoded.as_ref().map_or(0, |d| d.dialect), st.request_id)
+            binder.bind(&Bind {
+                pool: &walk_pool,
+                principal: st.principal.as_ref().map(|p| p.as_str()),
+                dialect: st.decoded.as_ref().map_or(0, |d| d.dialect),
+                request_id: st.request_id,
+            })
         };
-        let Some(hooks) = binder.bind(&Bind {
-            pool: &walk_pool,
-            principal: principal.as_deref(),
-            dialect,
-            request_id,
-        }) else {
+        let Some(hooks) = bound else {
             return Ok(());
         };
         self.lock().hooked_pool.clone_from(&walk_pool);
@@ -2085,7 +2086,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         fire_request_taps(&hooks, &view, &pool);
 
         // The unit's own member list, narrowed in place by the gates' and the policy's restricts.
-        let mut all: Vec<CandidateFacts> = facts.map(|c| c.members).unwrap_or_default();
+        let mut all: Vec<CandidateFacts> = members;
         let members = all.len();
         let mut constraint = Constraint::default();
         let decided = self
@@ -2145,19 +2146,14 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 candidates: &shown,
                 named,
             };
-            let judged =
+            let mut judged =
                 futures::future::join_all(hooks.gates.iter().map(|(_, gate)| asked.decide(gate)))
                     .await;
+            for (_, hook) in &mut judged {
+                ran.extend(hook.take());
+            }
 
-            let outcomes: Vec<Decided> = judged
-                .into_iter()
-                .map(|(decided, hook)| {
-                    ran.extend(hook);
-                    decided
-                })
-                .collect();
-
-            for outcome in &outcomes {
+            for (outcome, _) in &judged {
                 match outcome {
                     Decided::RejectRequest {
                         status,
@@ -2191,7 +2187,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 }
             }
 
-            for outcome in &outcomes {
+            for (outcome, _) in &judged {
                 if let Decided::Restrict {
                     tags_any,
                     name,
@@ -2242,30 +2238,26 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 }
             }
 
-            for outcome in outcomes {
-                if let Decided::Prioritize { candidates, name } = &outcome {
-                    let filtered: Vec<usize> = candidates
-                        .iter()
-                        .copied()
-                        .filter(|i| all.iter().any(|c| c.idx == *i))
-                        .collect();
-                    if !filtered.is_empty() {
-                        constraint.prioritize = Some(filtered);
-                        constraint.policy = Some(Arc::clone(name));
-                        metrics::counter!(
-                            ROUTE_POLICY_SELECTIONS_TOTAL,
-                            "policy" => Arc::clone(name),
-                            "pool" => pool.to_string(),
-                        )
-                        .increment(1);
+            for (outcome, _) in judged {
+                match outcome {
+                    Decided::Prioritize { candidates, name } => {
+                        let filtered = members_only(candidates, all);
+                        if !filtered.is_empty() {
+                            constraint.prioritize = Some(filtered);
+                            constraint.policy = Some(Arc::clone(&name));
+                            metrics::counter!(
+                                ROUTE_POLICY_SELECTIONS_TOTAL,
+                                "policy" => Arc::clone(&name),
+                                "pool" => pool.to_string(),
+                            )
+                            .increment(1);
+                        }
                     }
-                }
-                if let Decided::Order { order, name } = outcome {
-                    let filtered: Vec<usize> = order
-                        .into_iter()
-                        .filter(|i| all.iter().any(|c| c.idx == *i))
-                        .collect();
-                    gate_order = (!filtered.is_empty()).then_some((filtered, name));
+                    Decided::Order { order, name } => {
+                        let filtered = members_only(order, all);
+                        gate_order = (!filtered.is_empty()).then_some((filtered, name));
+                    }
+                    _ => {}
                 }
             }
             if let Some((_, name)) = &gate_order {
@@ -2481,18 +2473,18 @@ fn fire_request_taps(hooks: &UnitHooks, view: &Projection<'_>, pool: &str) {
     if taps.is_empty() {
         return;
     }
-    let firing: Vec<&TapEntry> = taps.iter().filter(|t| (hooks.groups)(&t.3)).collect();
+    let firing = || taps.iter().filter(|t| (hooks.groups)(&t.3));
     let frame = |with_prompt: bool| {
         let req = view.request(hooks.request_id, pool, with_prompt, None, &hooks.requested);
         busbar_contract::abi::host::hook::NotifyFrame::build(&req, None, with_prompt)
     };
-    let shape_only = firing.iter().any(|t| !t.1).then(|| frame(false));
-    let with_prompt = firing.iter().any(|t| t.1).then(|| frame(true));
+    let shape_only = firing().any(|t| !t.1).then(|| frame(false));
+    let with_prompt = firing().any(|t| t.1).then(|| frame(true));
     // Taps handed the prompt are recorded together: one access amendment each, one durable commit
     // for the fan-out, confirmed before any of them is notified. Every one of them fires, so the
     // recorded set is exact.
     let mut content = Vec::new();
-    for (timeout, send_prompt, hook, _) in firing {
+    for (timeout, send_prompt, hook, _) in firing() {
         let tap = if *send_prompt {
             with_prompt.clone()
         } else {
@@ -2516,8 +2508,7 @@ fn fire_request_taps(hooks: &UnitHooks, view: &Projection<'_>, pool: &str) {
     let reads = hooks.reads.clone();
     let dialect = view.dialect.to_string();
     crate::detached::spawn_detached(async move {
-        let names: Vec<String> = content.iter().map(|t| t.1.name().to_owned()).collect();
-        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let names: Vec<&str> = content.iter().map(|t| t.1.name()).collect();
         if (reads)(&names, None, &dialect, false).await.is_err() {
             return;
         }
@@ -2717,7 +2708,7 @@ impl SessionStage {
             {
                 return StageAnswer::Stop {
                     status: 503,
-                    words: "content access audit is unconfirmed".into(),
+                    words: crate::cold::hooks_audit_unconfirmed(),
                 };
             }
             let ctx = RoutingContext {
@@ -2744,13 +2735,9 @@ impl SessionStage {
                     );
 
                     if failed_call_refuses(on_error) {
-                        #[expect(
-                            clippy::disallowed_methods,
-                            reason = "error: an unavailable required gate stops the stage once, in fixed words"
-                        )]
                         return StageAnswer::Stop {
                             status: REQUIRED_HOOK_UNAVAILABLE_STATUS,
-                            words: REQUIRED_HOOK_UNAVAILABLE_MESSAGE.to_string(),
+                            words: crate::cold::hooks_required_unavailable(),
                         };
                     }
                 }
@@ -2780,7 +2767,7 @@ impl SessionStage {
             {
                 return StageAnswer::Stop {
                     status: 503,
-                    words: "content access audit is unconfirmed".into(),
+                    words: crate::cold::hooks_audit_unconfirmed(),
                 };
             }
             match hook.transform(&req, *timeout).await {
@@ -2849,7 +2836,7 @@ impl crate::host_units::UnitHookStage for SessionStage {
             let text = match std::str::from_utf8(&content) {
                 Ok(text) => text,
                 Err(_) => {
-                    lossy = SecureString::from(String::from_utf8_lossy(&content).into_owned());
+                    lossy = crate::cold::hooks_lossy_content(&content);
                     lossy.as_str()
                 }
             };
