@@ -638,6 +638,7 @@ dependencies = [
  "arc-swap",
  "base64 0.22.1",
  "busbar-crypto",
+ "busbar-ffi",
  "hex",
  "percent-encoding",
  "zerocopy",

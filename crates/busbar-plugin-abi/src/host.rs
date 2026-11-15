@@ -1,111 +1,34 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Host services: the raw `Host` vtable, the crypto request shapes and consts, and the safe API plugins call (IF §5, §5.1, §5.2). W0-ABI stub: frozen signatures, `todo!()` bodies; A2 fills it.
+//! Host services: the raw `Host` vtable, the crypto request shapes and consts, and the safe API plugins call (IF §5, §5.1, §5.2).
+//!
+//! The `Host` table, `HostFns`, `CryptoReq`, `CryptoRet`, `DeploymentId` and the entry brand `Ctx` are busbar-ffi's
+//! (UNSAFE-MIN r3.1) and re-exported here; their `mechanism!` blocks are busbar-ffi's. This module keeps the
+//! algorithm, key-form, status and level numbers, the safe value types and `HostExt`, the §5.1 safe methods
+//! (W1-A2 fills the crypto ones).
 
-use crate::fail::Fail;
-use crate::types::Bytes;
+use busbar_ffi::{Status, Str};
+
+use crate::fail::{Fail, refused};
+
+pub use busbar_ffi::{CryptoReq, CryptoRet, Ctx, DeploymentId, Host, HostFns, RawLent};
+
+/// The most bytes one `random` call returns (IF §5).
+const RANDOM_MAX: usize = 65_536;
+
+/// A host `crypto_status` as the error a plugin sees (IF §5.2).
+fn crypto_err(status: u32) -> CryptoErr {
+    match status {
+        crypto_status::BAD => CryptoErr::Bad,
+        crypto_status::INVALID => CryptoErr::Invalid,
+        crypto_status::UNAVAILABLE => CryptoErr::Unavailable,
+        crypto_status::LIMIT => CryptoErr::Limit,
+        _ => CryptoErr::Rng,
+    }
+}
 
 mechanism! {
-/// The host vtable. One process-wide static; plugins get `&'static Host`. The raw fields are private to abi.
-/// Round 20: every fn field is panic-contained host-side (I10, §10.7 `contain`): a host bug answers crypto
-/// and random RNG (out EMPTY; round 24: FAILED, never REFUSED), grow false, now/mono/log_level 0, deployment all
-/// zero (round 28), or drops the log line; never an unwind.
-#[repr(C)]
-pub struct Host {
-    // W0-ABI: fields ctx, now, mono, random, crypto, log, log_level, grow, deployment, migrate_admit are the
-    // unsafe extern "C" fn pointers and their private context; they land with W1-A2 under an escapes.json
-    // admission. The frozen fields with their docs (IF §5), verbatim:
-    // ctx: *const c_void,
-    //   UTC nanoseconds since the Unix epoch, from the host clock.
-    // now: unsafe extern "C" fn(ctx: *const c_void) -> u64,
-    //   Monotonic nanoseconds, same clock as WAKE_AT.
-    // mono: unsafe extern "C" fn(ctx: *const c_void) -> u64,
-    //   `len` (1..=65_536) random bytes from `busbar_crypto::fill_checked` (round 21; the backend's DRBG, its error
-    //   through the facade's `map`, §5.2), in this thread's scratch
-    //   arena (r4 H3, owned by host_vt.rs §10.7: allocated once at its cap, never grown, **append-only for the
-    //   whole outermost entry**: every `random`/`crypto` output in one entry gets fresh space after the previous
-    //   ones and never clobbers them; zeroed over what was written when the outermost entry-guard exits and on
-    //   thread exit, I11). `out` stays valid and unchanged until the outermost entry on this thread returns, and
-    //   no longer. status OK, or INVALID (len 0 or > 65,536), or LIMIT (the entry's outputs would pass the arena
-    //   cap), or RNG (the crypto module failed: the DRBG failed, or, round 23, the backend's self-test failed,
-    //   §5.2, reachable here through `fill_checked`); on every
-    //   non-OK status `out` is EMPTY, never zero bytes. This is
-    //   the only randomness a plugin has (§15.4 bans getrandom/rand and every other RNG crate outright).
-    // random: unsafe extern "C" fn(ctx: *const c_void, len: usize) -> CryptoRet,
-    //   One crypto operation: exactly one `busbar-crypto` call (§5.2). Output in the thread's scratch arena
-    //   (fixed 1 MiB + 64 for the whole outermost entry, never grown; an output that does not fit after the
-    //   entry's earlier outputs is LIMIT, written nowhere, and the earlier outputs stay intact). r4 H3: append-only,
-    //   so two calls in one entry return distinct, non-overlapping buffers and the first is still intact after
-    //   the second; `out` is valid until the outermost entry on this thread returns. AEAD_OPEN plaintext, PBKDF2
-    //   and HMAC outputs land here and are zeroed by the arena rule (I11).
-    // crypto: unsafe extern "C" fn(ctx: *const c_void, req: *const CryptoReq<'static>) -> CryptoRet,
-    //   Emit a log line, attributed by the host to the owner of the entry running on this thread (round 24: the
-    //   entry guard's host-side `OWNER` cell, §10.7, set by every FFI entry whether or not the thread holds a
-    //   watchdog word), so attribution holds in polls, describe, cancel and close too, and on an unwatched thread. The host scrubs the
-    //   line against that instance's scrub set before it is written (I14, §12.16); plugins never mask.
-    //   Round 34 (PLUGIN-ERROR-CODES): `error` is one of this image's declared numbers (D_ERRORS), 0 = none. The
-    //   host checks it as the `u32` it arrives as (above 9999 = not declared, before any narrowing) and renders a
-    //   declared one as `BUSBAR-<identity>-NNNN` in its own `plugin_diag` field (§10.7, §11.2). Widened in place:
-    //   no slot is appended, and an image built against the round-33 `log` has the old CORE_FP (stamp refusal).
-    // log: unsafe extern "C" fn(ctx: *const c_void, level: u32, error: u32, msg: Str<'static>),
-    //   The most verbose level currently enabled (0 = off). Check before formatting.
-    // log_level: unsafe extern "C" fn(ctx: *const c_void) -> u32,
-    //   Grow this thread's ACTIVE OutBuf (set by the entry guard for every entry that has an `out`, I10) to hold
-    //   `need` more bytes, up to max_out. Rewrites out.ptr/out.cap from host state. False if no ACTIVE buffer,
-    //   if `out` is not the ACTIVE buffer's RawOut, if `len + need` overflows, or over max_out (round 13: the host
-    //   computes `len + need` with `checked_add` and clamps its high-water mark to its own capacity, §10.1). Growth moves to a larger pooled block and
-    //   zeroes the old one before release (I11, §10.1); the plugin must reload ptr/cap after every grow.
-    // grow: unsafe extern "C" fn(ctx: *const c_void, out: *mut RawOut, need: usize) -> bool,
-    //   Round 28 (the generic deployment-id read). The stable 16-byte install identity: the
-    //   keep-once Store row `busbar.deployment.v1`/`id` of ADMIN-API-1.6 (`dep_` + 32 hex there; these are the 16
-    //   bytes the hex spells). Not the `deployment` keyset seed (boot_identity.rs:18), which never leaves core. Opaque
-    //   to the plugin: stable across restarts, nodes and replicas of one deployment, never a secret, never a verdict.
-    //   All zero until core has read or written the row at boot (§11.2 `BootPlan`: only during the open/migrate of
-    //   the secret and store instances the store needs, steps 2a/2b); non-zero and unchanging for the rest of the
-    //   process. Round 29: lock-free, one Acquire load of a `OnceLock<DeploymentId>` published once with all 16
-    //   bytes (§10.7 `set_deployment`), so a reader sees either all zero or the whole id, never half; no allocation.
-    //   Panic fallback (I10): all zero. Plugins use it to bind their own state to this install and for object keys;
-    //   core never reads what they do with it. Round 29, the boot ordering rule: an instance opened in
-    //   steps 2a/2b reads all zero there; core re-runs that instance's `check` (OPEN_DRY_RUN, `Open::check`) once
-    //   after `set_deployment` and before step 2c starts, and a REFUSED there refuses the boot exactly as a step-2c
-    //   `open` refusal does (§11.2 `BootPlan`). A plugin that binds to the deployment does the binding in `check`.
-    // deployment: unsafe extern "C" fn(ctx: *const c_void) -> DeploymentId,
-    //   Round 31 (owner ruling; MIGRATE-ON-BOOT r42 §4): the recoverable gate. Valid only inside an entry of a
-    //   **store** instance's non-DRY_RUN `open` (its first poll or any resume of its chain), on every load path.
-    //   `recoverable` = how many older rows this store is about to hand core that hold a recoverable secret (its
-    //   own count of its own column). OK: core can seal them (n == 0, or an at-rest key resolves). REFUSED: it
-    //   cannot; core records its own text (how to add the key) against the instance and reports that text when
-    //   the open refuses. Any other entry or kind: FAULT (`NeedNotAllowed`), and the entry is faulted. Panic
-    //   fallback (I10): REFUSED.
-    // migrate_admit: unsafe extern "C" fn(ctx: *const c_void, recoverable: u64) -> Status,
-    // W0-ABI: `unsafe impl Sync for Host {}` lands with W1-A2 (this stub is Sync without it).
-    _stub: (),
-}
-
-/// Round 28. A deployment id by value (16 bytes, align 1; `bb_deployment_id` in C, §7.8).
-#[repr(C)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct DeploymentId(pub [u8; 16]);
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct CryptoReq<'a> {
-    pub alg: u32,
-    pub key_form: u32,
-    pub param: u64,
-    pub key: Bytes<'a>,
-    pub data: Bytes<'a>,
-    pub aux: Bytes<'a>,
-    pub aad: Bytes<'a>,
-}
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct CryptoRet {
-    pub status: u32,
-    pub _r: u32,
-    pub out: Bytes<'static>,
-}
 
 /// Algorithm numbers. Each is exactly one `busbar-crypto` function (§5.2 table). Whether the linked backend
 /// offers it is the backend's answer alone (`Error::Unsupported` => UNAVAILABLE); the ABI keeps no FIPS column.
@@ -249,42 +172,154 @@ impl Digest {
 }
 // W0-ABI: `impl Drop for Digest` (zeroize) lands with W1-A2; a todo!() drop would panic.
 
-impl Host {
-    pub fn now_ns(&self) -> u64 {
-        todo!()
-    }
-    pub fn now_s(&self) -> u64 {
-        todo!()
-    }
-    pub fn mono_ns(&self) -> u64 {
-        todo!()
-    }
+/// The safe host methods of IF §5.1, as an extension trait over busbar-ffi's `Host` (coordinator ruling on
+/// W1-U0: busbar-ffi owns the `Host` table and cannot name this crate's `CryptoErr`, `Digest`, `Fail` or `Key`,
+/// and an inherent method cannot be added to a foreign type). Call syntax is unchanged with the trait in scope:
+/// `use busbar_plugin_abi::host::HostExt;`. Every answer is read from `HostFns`' safe fn pointers under
+/// `Host::scoped`, so nothing lent by the host outlives the call. A null (None) entry reads as its panic
+/// fallback (round 20, I10): crypto and random Err(Rng), grow false, now/mono/log_level 0, deployment all
+/// zero, a dropped log line, `migrate_admit` REFUSED.
+///
+/// The crypto methods (digest through rsa_oaep) are held for W1-A2, which marshals them onto `Host::crypto`.
+pub trait HostExt {
+    fn now_ns(&self) -> u64;
+    fn now_s(&self) -> u64;
+    fn mono_ns(&self) -> u64;
     /// N outside 1..=65_536 is a compile error (`const { assert!(N >= 1 && N <= 65_536) }` in the body).
     /// A DRBG failure is Err(Rng): there is no path that returns a zero-filled array.
-    pub fn random<const N: usize>(&self) -> Result<[u8; N], CryptoErr> {
-        todo!()
-    }
+    fn random<const N: usize>(&self) -> Result<[u8; N], CryptoErr>;
     /// len 0 or > 65,536: Err(Invalid). DRBG failure: Err(Rng). Round 23, every fallible method here: the
     /// backend's self-test failed is Err(Rng) (§5.2; round 20's Err(Unavailable) became a REFUSED verdict
     /// through `?`); the backend refuses the alg is Err(Unavailable); the entry's arena is full is Err(Limit) (r4 H3).
-    pub fn random_vec(&self, len: usize) -> Result<Vec<u8>, CryptoErr> {
-        let _ = len;
-        todo!()
-    }
+    fn random_vec(&self, len: usize) -> Result<Vec<u8>, CryptoErr>;
     /// Fills `buf` (1..=65,536 bytes) in place, no allocation. On Err, `buf` is zeroed and must not be used.
-    pub fn random_into(&self, buf: &mut [u8]) -> Result<(), CryptoErr> {
-        let _ = buf;
-        todo!()
+    fn random_into(&self, buf: &mut [u8]) -> Result<(), CryptoErr>;
+    fn digest(&self, h: Hash, data: &[u8]) -> Result<Digest, CryptoErr>;
+    fn hmac(&self, h: Hash, key: &[u8], data: &[u8]) -> Result<Digest, CryptoErr>;
+    fn pbkdf2_sha256(
+        &self,
+        password: &[u8],
+        salt: &[u8],
+        iterations: u32,
+    ) -> Result<Digest, CryptoErr>;
+    /// Ok(true) valid, Ok(false) invalid signature.
+    fn verify(
+        &self,
+        sig: Sig,
+        key: Key<'_>,
+        msg: &[u8],
+        signature: &[u8],
+    ) -> Result<bool, CryptoErr>;
+    fn sign(&self, alg: SignAlg, pkcs8: &[u8], msg: &[u8]) -> Result<Vec<u8>, CryptoErr>;
+    /// Host-generated nonce (F1). Returns nonce(12) || ciphertext || tag(16). key.len() is 16 or 32, else Invalid.
+    fn aead_seal(&self, key: &[u8], aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, CryptoErr>;
+    /// Appends ciphertext || tag to `out` (no allocation once `out` has capacity). Unavailable on a backend that
+    /// allows only module-generated IVs.
+    fn aead_seal_explicit_into(
+        &self,
+        key: &[u8],
+        nonce: &[u8; 12],
+        aad: &[u8],
+        plaintext: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<(), CryptoErr>;
+    /// Like aead_open, appending to `out` (the per-packet path for SRTP).
+    fn aead_open_into(
+        &self,
+        key: &[u8],
+        nonce: &[u8; 12],
+        aad: &[u8],
+        sealed: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<(), CryptoErr>;
+    /// Appends the AES-CTR transform of `data` to `out`. key.len() is 16 or 32, else Invalid.
+    fn aes_ctr_into(
+        &self,
+        key: &[u8],
+        iv: &[u8; 16],
+        data: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<(), CryptoErr>;
+    /// `public` must be `Key::SpkiDer`, else Invalid.
+    fn rsa_oaep_sha1_encrypt(
+        &self,
+        public: Key<'_>,
+        plaintext: &[u8],
+    ) -> Result<Vec<u8>, CryptoErr>;
+    /// Round 34: passes `error` = 0, so no existing call site changes.
+    fn log(&self, level: u32, msg: &str);
+    /// Round 34 (PLUGIN-ERROR-CODES): the same entry with one declared error number (D_ERRORS; 0 = none).
+    fn log_error(&self, level: u32, error: u16, msg: &str);
+    fn log_enabled(&self, level: u32) -> bool;
+    /// Round 28: the raw `deployment` read. `None` while it is all zero (boot steps 2a/2b only, and `busbar
+    /// --check-config`, which opens no store), else the whole id (round 29: never a partial one). A `None` seen in
+    /// `check` during 2a/2b is always followed by a second `check` that sees `Some` before the instance serves
+    /// anything outside boot (§5 `deployment`, §11.2); a binding check skips only on `None` and decides on `Some`.
+    fn deployment_id(&self) -> Option<DeploymentId>;
+    /// Round 31: the raw `migrate_admit`. Ok(()) on OK. REFUSED → Err(`Fail::refused(R_CONFIG)`), which the store
+    /// returns unchanged from `open` before its first data, DDL or marker write; core substitutes its own text.
+    fn migrate_admit(&self, recoverable: u64) -> Result<(), Fail>;
+}
+
+impl HostExt for Host {
+    fn now_ns(&self) -> u64 {
+        match self.fns().now {
+            Some(now) => self.scoped(now),
+            None => 0,
+        }
     }
-    pub fn digest(&self, h: Hash, data: &[u8]) -> Result<Digest, CryptoErr> {
+    fn now_s(&self) -> u64 {
+        self.now_ns() / 1_000_000_000
+    }
+    fn mono_ns(&self) -> u64 {
+        match self.fns().mono {
+            Some(mono) => self.scoped(mono),
+            None => 0,
+        }
+    }
+    fn random<const N: usize>(&self) -> Result<[u8; N], CryptoErr> {
+        const { assert!(N != 0 && N <= RANDOM_MAX) };
+        let mut out = [0u8; N];
+        self.random_into(&mut out)?;
+        Ok(out)
+    }
+    fn random_vec(&self, len: usize) -> Result<Vec<u8>, CryptoErr> {
+        let mut out = vec![0u8; len.min(RANDOM_MAX + 1)];
+        self.random_into(&mut out)?;
+        Ok(out)
+    }
+    fn random_into(&self, buf: &mut [u8]) -> Result<(), CryptoErr> {
+        buf.fill(0);
+        if buf.is_empty() || buf.len() > RANDOM_MAX {
+            return Err(CryptoErr::Invalid);
+        }
+        let Some(random) = self.fns().random else {
+            return Err(CryptoErr::Rng);
+        };
+        let len = buf.len();
+        self.scoped(|ctx| {
+            let ret = random(ctx, len);
+            if ret.status != crypto_status::OK {
+                return Err(crypto_err(ret.status));
+            }
+            // The host lends exactly `len` bytes on OK; any other length is a host bug, never random bytes.
+            let lent = ret.out.get();
+            if lent.len() != len {
+                return Err(CryptoErr::Rng);
+            }
+            buf.copy_from_slice(lent);
+            Ok(())
+        })
+    }
+    fn digest(&self, h: Hash, data: &[u8]) -> Result<Digest, CryptoErr> {
         let _ = (h, data);
         todo!()
     }
-    pub fn hmac(&self, h: Hash, key: &[u8], data: &[u8]) -> Result<Digest, CryptoErr> {
+    fn hmac(&self, h: Hash, key: &[u8], data: &[u8]) -> Result<Digest, CryptoErr> {
         let _ = (h, key, data);
         todo!()
     }
-    pub fn pbkdf2_sha256(
+    fn pbkdf2_sha256(
         &self,
         password: &[u8],
         salt: &[u8],
@@ -293,8 +328,7 @@ impl Host {
         let _ = (password, salt, iterations);
         todo!()
     }
-    /// Ok(true) valid, Ok(false) invalid signature.
-    pub fn verify(
+    fn verify(
         &self,
         sig: Sig,
         key: Key<'_>,
@@ -304,17 +338,11 @@ impl Host {
         let _ = (sig, key, msg, signature);
         todo!()
     }
-    pub fn sign(&self, alg: SignAlg, pkcs8: &[u8], msg: &[u8]) -> Result<Vec<u8>, CryptoErr> {
+    fn sign(&self, alg: SignAlg, pkcs8: &[u8], msg: &[u8]) -> Result<Vec<u8>, CryptoErr> {
         let _ = (alg, pkcs8, msg);
         todo!()
     }
-    /// Host-generated nonce (F1). Returns nonce(12) || ciphertext || tag(16). key.len() is 16 or 32, else Invalid.
-    pub fn aead_seal(
-        &self,
-        key: &[u8],
-        aad: &[u8],
-        plaintext: &[u8],
-    ) -> Result<Vec<u8>, CryptoErr> {
+    fn aead_seal(&self, key: &[u8], aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, CryptoErr> {
         let _ = (key, aad, plaintext);
         todo!()
     }
@@ -322,9 +350,7 @@ impl Host {
     // `Result<zeroize::Zeroizing<Vec<u8>>, CryptoErr>` and the stubs may not use zeroize. W1-A2 adds it:
     //   /// `sealed` = ciphertext || tag; the nonce is passed separately (split it off `aead_seal`'s output).
     //   pub fn aead_open(&self, key: &[u8], nonce: &[u8; 12], aad: &[u8], sealed: &[u8]) -> Result<zeroize::Zeroizing<Vec<u8>>, CryptoErr>;
-    /// Appends ciphertext || tag to `out` (no allocation once `out` has capacity). Unavailable on a backend that
-    /// allows only module-generated IVs.
-    pub fn aead_seal_explicit_into(
+    fn aead_seal_explicit_into(
         &self,
         key: &[u8],
         nonce: &[u8; 12],
@@ -335,8 +361,7 @@ impl Host {
         let _ = (key, nonce, aad, plaintext, out);
         todo!()
     }
-    /// Like aead_open, appending to `out` (the per-packet path for SRTP).
-    pub fn aead_open_into(
+    fn aead_open_into(
         &self,
         key: &[u8],
         nonce: &[u8; 12],
@@ -347,8 +372,7 @@ impl Host {
         let _ = (key, nonce, aad, sealed, out);
         todo!()
     }
-    /// Appends the AES-CTR transform of `data` to `out`. key.len() is 16 or 32, else Invalid.
-    pub fn aes_ctr_into(
+    fn aes_ctr_into(
         &self,
         key: &[u8],
         iv: &[u8; 16],
@@ -358,8 +382,7 @@ impl Host {
         let _ = (key, iv, data, out);
         todo!()
     }
-    /// `public` must be `Key::SpkiDer`, else Invalid.
-    pub fn rsa_oaep_sha1_encrypt(
+    fn rsa_oaep_sha1_encrypt(
         &self,
         public: Key<'_>,
         plaintext: &[u8],
@@ -367,32 +390,36 @@ impl Host {
         let _ = (public, plaintext);
         todo!()
     }
-    /// Round 34: passes `error` = 0, so no existing call site changes.
-    pub fn log(&self, level: u32, msg: &str) {
-        let _ = (level, msg);
-        todo!()
+    fn log(&self, level: u32, msg: &str) {
+        self.log_error(level, 0, msg);
     }
-    /// Round 34 (PLUGIN-ERROR-CODES): the same entry with one declared error number (D_ERRORS; 0 = none).
-    pub fn log_error(&self, level: u32, error: u16, msg: &str) {
-        let _ = (level, error, msg);
-        todo!()
+    fn log_error(&self, level: u32, error: u16, msg: &str) {
+        let Some(log) = self.fns().log else {
+            return;
+        };
+        self.scoped(|ctx| log(ctx, level, u32::from(error), Str::new(msg)));
     }
-    pub fn log_enabled(&self, level: u32) -> bool {
-        let _ = level;
-        todo!()
+    fn log_enabled(&self, level: u32) -> bool {
+        let Some(log_level) = self.fns().log_level else {
+            return false;
+        };
+        level != 0 && level <= self.scoped(log_level)
     }
-    /// Round 28: the raw `deployment` read. `None` while it is all zero (boot steps 2a/2b only, and `busbar
-    /// --check-config`, which opens no store), else the whole id (round 29: never a partial one). A `None` seen in
-    /// `check` during 2a/2b is always followed by a second `check` that sees `Some` before the instance serves
-    /// anything outside boot (§5 `deployment`, §11.2); a binding check skips only on `None` and decides on `Some`.
-    pub fn deployment_id(&self) -> Option<DeploymentId> {
-        todo!()
+    fn deployment_id(&self) -> Option<DeploymentId> {
+        let deployment = self.fns().deployment?;
+        let id = self.scoped(deployment);
+        (id.0 != [0; 16]).then_some(id)
     }
-    /// Round 31: the raw `migrate_admit`. Ok(()) on OK. REFUSED → Err(`Fail::refused(R_CONFIG)`), which the store
-    /// returns unchanged from `open` before its first data, DDL or marker write; core substitutes its own text.
-    pub fn migrate_admit(&self, recoverable: u64) -> Result<(), Fail> {
-        let _ = recoverable;
-        todo!()
+    fn migrate_admit(&self, recoverable: u64) -> Result<(), Fail> {
+        let admitted = match self.fns().migrate_admit {
+            Some(admit) => self.scoped(|ctx| admit(ctx, recoverable)) == Status::OK,
+            None => false,
+        };
+        if admitted {
+            Ok(())
+        } else {
+            Err(Fail::refused(refused::R_CONFIG))
+        }
     }
 }
 /// Constant-time compare, pure code (not a crypto primitive), for token and signature checks.
