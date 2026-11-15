@@ -34,7 +34,7 @@ pub(crate) fn unrendered(e: RenderError) -> LoadError {
 /// A library that exports no door.
 #[cold]
 pub(crate) fn no_door(e: &libloading::Error) -> LoadError {
-    LoadError::NoDoor(e.to_string())
+    LoadError::NoDoor(crate::stage::loader_error(e))
 }
 
 /// A hook's routes, read once at admission.
@@ -281,7 +281,7 @@ pub(crate) fn migrate_outside() -> String {
 /// A migration library with no door.
 #[cold]
 pub(crate) fn migration_no_door(display: &str, e: &libloading::Error) -> String {
-    format!("{display}: no door: {e}")
+    format!("{display}: no door: {}", crate::stage::loader_error(e))
 }
 
 // ---------------------------------------------------------------------------------------------

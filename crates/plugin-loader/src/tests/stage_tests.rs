@@ -628,3 +628,79 @@ fn an_embedding_host_guard_runs_before_any_native_staging() {
     assert_eq!(error, "host archive/floor policy refused");
     assert_eq!(STAGED_HERE.with(|counter| counter.get()), before);
 }
+
+/// A file that is not a shared object, at `path` (its parents made).
+#[cfg(target_os = "linux")]
+fn not_a_shared_object(path: &std::path::Path) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, b"this is not an ELF image, only text").unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_refused_open_carries_the_loaders_reason() {
+    let root = private_root("dlerror-reason");
+    let bad = root.join("plain.so");
+    not_a_shared_object(&bad);
+    let error = dlopen_on_worker(bad.as_os_str())
+        .err()
+        .expect("text is not a library");
+    assert!(
+        error.contains("ELF") || error.contains("too short"),
+        "the loader's own reason must reach the operator: {error}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_refused_opens_text_is_one_bounded_line() {
+    let root = private_root("dlerror-forge");
+    let forged = root.join("x\n[ERROR] forged line\r\u{202e}.so");
+    not_a_shared_object(&forged);
+    let error = dlopen_on_worker(forged.as_os_str())
+        .err()
+        .expect("text is not a library");
+    assert!(
+        !error.chars().any(|c| c.is_control() || c == '\u{202e}'),
+        "a crafted path must not forge a log line: {error:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+
+    let long = root
+        .join("d".repeat(200))
+        .join("d".repeat(200))
+        .join("d".repeat(200))
+        .join("x.so");
+    not_a_shared_object(&long);
+    let error = dlopen_on_worker(long.as_os_str())
+        .err()
+        .expect("text is not a library");
+    assert!(
+        error.chars().count() <= 513,
+        "the text is bounded, not {} chars",
+        error.chars().count()
+    );
+    assert!(
+        error.contains("ELF") || error.contains("too short") || error.ends_with('\u{2026}'),
+        "{error}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_refused_open_is_more_than_the_bare_label() {
+    let root = private_root("dlerror-label");
+    let bad = root.join("plain.so");
+    not_a_shared_object(&bad);
+    let error = dlopen_on_worker(bad.as_os_str())
+        .err()
+        .expect("text is not a library");
+    assert_ne!(error, "dlopen failed", "the loader's text was dropped");
+    assert!(
+        error.starts_with("dlopen failed: ") && error.len() > "dlopen failed: ".len() + 8,
+        "libloading's Display is only the label; the dlerror text is its source: {error}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
