@@ -1152,8 +1152,8 @@ tungstenite = { git = "https://github.com/MattJackson/tungstenite-rs", rev = "89
 # YAML: serde-saphyr and granit-parser carry busbar's opt-in serde_yaml-compatibility options
 # (null_scalars_as_text, lowercase_radix_prefixes_only, bom_inside_document_as_content), offered
 # upstream; forks of the exact published versions plus those commits.
-serde-saphyr = { git = "https://github.com/MattJackson/serde-saphyr", rev = "61b12ca45482dbecb3b8461ead62ae05d3777493" }
-granit-parser = { git = "https://github.com/MattJackson/granit-parser", rev = "8c5ec50275a0056501615a039ca1a8e6be103da3" }
+serde-saphyr = { git = "https://github.com/MattJackson/serde-saphyr", rev = "8ec56f9acc93e8f2f2c30f4e52497acc76cce86a" }
+granit-parser = { git = "https://github.com/MattJackson/granit-parser", rev = "e62d0c9a92189d705642ebebe48545e2a556fa62" }
 
 [profile.dev]
 # The assembled distribution links every first-party plugin into one `busbar` test executable.

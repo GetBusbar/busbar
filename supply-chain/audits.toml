@@ -51,9 +51,9 @@ notes = "Full exact fixed Git snapshot review, not human owner approval. All 279
 
 [[audits.granit-parser]]
 criteria = "safe-to-deploy"
-delta = "2.1.0 -> 2.1.0@git:8c5ec50275a0056501615a039ca1a8e6be103da3"
+delta = "2.1.0 -> 2.1.0@git:e62d0c9a92189d705642ebebe48545e2a556fa62"
 importable = false
-notes = "busbar's own patch, reviewed by us (parser input-safety review before pinning): upstream tag 2.1.0 (f8d30ef6, byte-identical src to the published crate) plus two commits adding Options::bom_inside_document_as_content (default false; when true a U+FEFF where a token would begin inside a document starts a plain scalar, as libyaml reads it; BOM before content still skipped) and its doc. scanner.rs +4/-1, options.rs +10, tests. No unsafe, no new dependencies, no I/O; default behaviour unchanged. Offered upstream. Covers only this exact revision."
+notes = "busbar's own patch, reviewed by us (parser input-safety review before pinning): upstream tag 2.1.0 (f8d30ef6, byte-identical src to the published crate) plus two commits adding Options::bom_inside_document_as_content (default false; when true a U+FEFF where a token would begin inside a document starts a plain scalar, as libyaml reads it; BOM before content still skipped) and its doc, plus a backport of upstream #53 (5eacd651: under-indented quoted-scalar continuations in block context accepted by default, still refused under strict_indentation; scanner.rs condition sharing, no new state). scanner.rs, options.rs, lib.rs docs, tests. No unsafe, no new dependencies, no I/O; default behaviour unchanged. Offered upstream. Covers only this exact revision."
 
 [[audits.h2]]
 criteria = "safe-to-deploy"
@@ -88,9 +88,9 @@ notes = "Actual source review, not human approval or executed tests. Exact crate
 
 [[audits.serde-saphyr]]
 criteria = "safe-to-deploy"
-delta = "2.1.1 -> 2.1.1@git:61b12ca45482dbecb3b8461ead62ae05d3777493"
+delta = "2.1.1 -> 2.1.1@git:8ec56f9acc93e8f2f2c30f4e52497acc76cce86a"
 importable = false
-notes = "busbar's own patch, reviewed by us (parser input-safety review before pinning, both should-fix findings fixed in the second commit): upstream tag 2.1.1 (07bfc26a, byte-identical src to the published crate) plus opt-in Options null_scalars_as_text, lowercase_radix_prefixes_only and bom_inside_document_as_content (all default false), mirroring serde_yaml 0.9's reading; deserializer.rs, key_nodes.rs, parse_scalars.rs, options.rs, cfg.rs, tests. No unsafe (crate forbids it), no new dependencies, no I/O; default behaviour unchanged. Offered upstream. Covers only this exact revision."
+notes = "busbar's own patch, reviewed by us (parser input-safety review before pinning, both should-fix findings fixed in the second commit): upstream tag 2.1.1 (07bfc26a, byte-identical src to the published crate) plus opt-in Options null_scalars_as_text, lowercase_radix_prefixes_only and bom_inside_document_as_content (all default false), mirroring serde_yaml 0.9's reading; with null_scalars_as_text the live event source reports granit-parser's empty node (plain `~` over a zero-length span) as the empty plain scalar (live_events.rs, one flag); and a backport of upstream #272 (c680e061: plain +.nan/-.nan infer as strings); and opt-in quoted_scalars_are_strings (default false; boolean/integer/float targets refuse an untagged quoted scalar, one helper over the existing scalar take). deserializer.rs, key_nodes.rs, parse_scalars.rs, options.rs, cfg.rs, tests. No unsafe (crate forbids it), no new dependencies, no I/O; default behaviour unchanged. Offered upstream. Covers only this exact revision."
 
 [[audits.sseer]]
 criteria = "safe-to-deploy"
