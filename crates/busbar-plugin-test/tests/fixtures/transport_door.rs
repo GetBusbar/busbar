@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The host's own transport fixture: an SDK-authored carrier whose `write` answers the bytes it
-//! was lent plus the connection it names, and refuses every other kind op.
+//! The host's own transport fixture: an SDK-authored carrier whose `write` takes every byte it
+//! was lent on connection 7 (refusing any other connection), and refuses every other kind op.
 
 use busbar_contract::abi::mechanism::call::{AbiStr, OutHead, Outcome};
 use busbar_contract::abi::sdk::door::{abi_str, statement, AbiIn, AbiOut};
@@ -56,7 +56,10 @@ impl SafeSlot for Echo {
         i: Lent<'_, WriteIn>,
         mut o: Out<'_, IoOut>,
     ) -> Outcome {
-        o.set(|o| &o.len, i.bytes().len() as u64 + i.conn());
+        if i.conn() != 7 {
+            return Outcome::Refused;
+        }
+        o.set(|o| &o.len, i.bytes().len() as u64);
         Outcome::Ready
     }
 }
