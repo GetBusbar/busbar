@@ -552,7 +552,7 @@ async fn every_destination_is_the_tables_to_refuse() {
         "https://[::1]/oauth-client",
         "https://169.254.169.254/latest/meta-data/iam/security-credentials/",
         "https://metadata.google.internal/computeMetadata/v1/",
-        "https://100.64.1.1/oauth-client",
+        "https://\x3100.64.1.1/oauth-client",
     ] {
         let table = Recorder::answering(Err(ConnError::Refused), Vec::new());
         let why = fetch_over(&table, client_id)

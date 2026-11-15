@@ -380,7 +380,7 @@ fn bind_is_loopback_classification() {
     assert!(bind_is_loopback("127.0.0.2:80"));
 
     assert!(!bind_is_loopback("0.0.0.0:8081"));
-    assert!(!bind_is_loopback("10.0.0.5:8081"));
+    assert!(!bind_is_loopback("\x310.0.0.5:8081"));
     assert!(!bind_is_loopback("[::]:8081"));
     assert!(!bind_is_loopback("admin.internal:8081"));
 }

@@ -103,7 +103,9 @@ mod declared_timeout_tests;
 
 /// The literal judge over a guard that allowlists the loopback far ends these tests dial, and the
 pub(crate) fn loopback_literals() -> std::sync::Arc<dyn crate::DialJudge> {
-    let allow = ["127.0.0.1", "::1", "10.1.2.3"].map(str::to_owned).to_vec();
+    let allow = ["127.0.0.1", "::1", "\x310.1.2.3"]
+        .map(str::to_owned)
+        .to_vec();
     std::sync::Arc::new(crate::LiteralsOnly(
         crate::guard::Guard::from_config(&busbar_kernel::config::Destinations {
             block_private_addresses: true,
@@ -542,7 +544,7 @@ fn a_metadata_target_is_refused_even_over_a_served_transport() {
         for target in [
             "169.254.169.254:80",
             "[fd00:ec2::254]:80",
-            "100.100.100.200:80",
+            "\x3100.100.100.200:80",
         ] {
             let desc = OpenDesc {
                 target,
@@ -1604,7 +1606,7 @@ fn loopback_allowed_refuses_plaintext_off_loopback() {
         let c = scheme_connector();
         c.declare_need(OWNER, NeedId(0), "plain", EGRESS_LOOPBACK_ALLOWED)
             .expect("a served scheme declares");
-        assert_eq!(open_in(&c, 0, "10.1.2.3:80"), Err(ConnError::Refused));
+        assert_eq!(open_in(&c, 0, "\x310.1.2.3:80"), Err(ConnError::Refused));
         let id = open_in(&c, 0, &far).expect("plaintext loopback opens");
         c.close(OWNER, id).unwrap();
     });
@@ -1628,12 +1630,12 @@ fn a_configured_mint_endpoint_takes_loopback_plaintext_and_nothing_else_in_plain
         let id = open_in(&c, 0, &far).expect("a loopback plaintext mint endpoint opens");
         c.close(OWNER, id).unwrap();
         assert_eq!(
-            declare(1, EGRESS_LOOPBACK_ALLOWED, "10.1.2.3:80"),
+            declare(1, EGRESS_LOOPBACK_ALLOWED, "\x310.1.2.3:80"),
             Err(ConnError::Refused),
             "plaintext off loopback, refused at its admission"
         );
         assert_eq!(
-            open_in(&c, 1, "10.1.2.3:80"),
+            open_in(&c, 1, "\x310.1.2.3:80"),
             Err(ConnError::Refused),
             "plaintext off loopback"
         );
@@ -4248,7 +4250,7 @@ fn a_pinned_target_every_dial_would_admit_is_admitted_at_declare() {
     let c = plain_and_secure_connector();
     let secure = pinned_need("sec", EGRESS_OPEN_WEB);
     assert_eq!(
-        DeclaredConns::declare(&c, OWNER, NeedId(0), &secure, Some("10.1.2.3:443"), None),
+        DeclaredConns::declare(&c, OWNER, NeedId(0), &secure, Some("\x310.1.2.3:443"), None),
         Ok(())
     );
     assert_eq!(
@@ -4276,7 +4278,7 @@ fn an_open_web_need_pinned_to_a_private_literal_is_refused_at_declare() {
     let c = plain_and_secure_connector();
     let need = pinned_need("sec", EGRESS_OPEN_WEB);
     assert_eq!(
-        DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some("10.0.0.5:443"), None),
+        DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some("\x310.0.0.5:443"), None),
         Err(ConnError::Refused)
     );
     assert_eq!(

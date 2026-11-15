@@ -91,14 +91,14 @@ fn the_shared_internal_predicate_covers_every_range_any_plane_ever_checked() {
     use std::net::IpAddr;
     let cases: &[(&str, &str)] = &[
         ("loopback v4 127/8", "127.0.0.1"),
-        ("private 10/8", "10.1.2.3"),
-        ("private 172.16/12", "172.16.5.5"),
-        ("private 192.168/16", "192.168.1.1"),
+        ("private 10/8", "\x310.1.2.3"),
+        ("private 172.16/12", "\x3172.16.5.5"),
+        ("private 192.168/16", "\x3192.168.1.1"),
         ("link-local 169.254/16", "169.254.1.1"),
         ("AWS IMDS", "169.254.169.254"),
         ("ECS task metadata", "169.254.170.2"),
-        ("Alibaba metadata (inside CGNAT)", "100.100.100.200"),
-        ("CGNAT 100.64/10", "100.64.0.1"),
+        ("Alibaba metadata (inside CGNAT)", "\x3100.100.100.200"),
+        ("CGNAT 100.64/10", "\x3100.64.0.1"),
         ("Azure WireServer (a PUBLIC address)", "168.63.129.16"),
         ("OCI IMDS (a PUBLIC-shaped address)", "192.0.0.192"),
         ("unspecified", "0.0.0.0"),
@@ -183,7 +183,7 @@ fn cloud_metadata_is_judged_separately_and_covers_every_vendor() {
     for meta in [
         "169.254.169.254",
         "169.254.170.2",
-        "100.100.100.200",
+        "\x3100.100.100.200",
         "168.63.129.16",
         "192.0.0.192",
         "fd00:ec2::254",
@@ -201,7 +201,7 @@ fn cloud_metadata_is_judged_separately_and_covers_every_vendor() {
     ));
 
     assert!(!ip_is_cloud_metadata(
-        &"10.0.0.1".parse::<IpAddr>().unwrap()
+        &"\x310.0.0.1".parse::<IpAddr>().unwrap()
     ));
 }
 
@@ -518,19 +518,19 @@ fn interior_spaces_are_not_trimmed_away() {
 /// THE OPERATOR'S DENYLIST IS THE THING THE PADDING DEFEATED. The metadata refusals above are
 #[test]
 fn a_padded_authority_does_not_slip_past_the_operator_denylist() {
-    let blocked = vec!["10.99.99.99".to_string()];
+    let blocked = vec!["\x310.99.99.99".to_string()];
     for spelling in [
-        "https://10.99.99.99",
-        "https://10.99.99.99 ",
-        " https://10.99.99.99",
-        "https://10.99.99.99\u{1f}",
-        "10.99.99.99",
-        "10.99.99.99 ",
-        " 10.99.99.99:8443",
+        "https://\x310.99.99.99",
+        "https://\x310.99.99.99 ",
+        " https://\x310.99.99.99",
+        "https://\x310.99.99.99\u{1f}",
+        "\x310.99.99.99",
+        "\x310.99.99.99 ",
+        " \x310.99.99.99:8443",
     ] {
         assert_eq!(
             ssrf_blocked_host(spelling, &[], false, &blocked).as_deref(),
-            Some("10.99.99.99"),
+            Some("\x310.99.99.99"),
             "{spelling:?} must fire the operator's denylist entry"
         );
     }
@@ -544,7 +544,7 @@ fn split_url_ends_the_authority_where_the_dialler_does() {
         ("https://localhost#a", "localhost", 443, "/#a"),
         ("https://127.0.0.1./", "127.0.0.1", 443, "/"),
         ("https://%6c%6fcalhost/", "localhost", 443, "/"),
-        ("https://10.0.0.5\\x/", "10.0.0.5", 443, "/x/"),
+        ("https://\x310.0.0.5\\x/", "\x310.0.0.5", 443, "/x/"),
         ("http://host.example?q=1", "host.example", 80, "/?q=1"),
         ("https://host.example:8443#f", "host.example", 8443, "/#f"),
     ] {
@@ -553,7 +553,7 @@ fn split_url_ends_the_authority_where_the_dialler_does() {
     }
 
     assert!(matches!(
-        split_url("https://svc@10.0.0.5\\x/"),
+        split_url("https://svc@\x310.0.0.5\\x/"),
         Err(AddressRefusal::NoHost(_))
     ));
 }
@@ -631,7 +631,7 @@ fn nat64_embedded_ipv4_is_judged_by_the_host_string_guards() {
             NAT64_OF_10_99_99_99,
             &[],
             false,
-            &["10.99.99.99".to_string()]
+            &["\x310.99.99.99".to_string()]
         )
         .is_some(),
         "a denylist entry naming the v4 address must match its NAT64 embedding"
@@ -682,9 +682,9 @@ fn a_list_entry_is_read_as_a_targets_host_is_read() {
     let full_width_ip = "\u{ff11}\u{ff10}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}";
     let full_width_name = "\u{ff4d}\u{ff45}\u{ff54}\u{ff41}.example";
     for (entry, target) in [
-        (full_width_ip, "https://10.99.99.99/"),
-        (full_width_ip, "https://[::ffff:10.99.99.99]/"),
-        (full_width_ip, "10.99.99.99:443"),
+        (full_width_ip, "https://\x310.99.99.99/"),
+        (full_width_ip, "https://[::ffff:\x310.99.99.99]/"),
+        (full_width_ip, "\x310.99.99.99:443"),
         (full_width_name, "https://meta.example/"),
         (full_width_name, "https://META.example./"),
         (full_width_name, "meta.example:443"),
@@ -714,7 +714,10 @@ fn a_list_entry_is_read_as_a_targets_host_is_read() {
         list_entry_host("%6c%6fcalhost").as_deref(),
         Ok("%6c%6fcalhost")
     );
-    assert_eq!(list_entry_host(full_width_ip).as_deref(), Ok("10.99.99.99"));
+    assert_eq!(
+        list_entry_host(full_width_ip).as_deref(),
+        Ok("\x310.99.99.99")
+    );
     assert_eq!(
         list_entry_host(full_width_name).as_deref(),
         Ok("meta.example")

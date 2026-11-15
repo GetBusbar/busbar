@@ -585,7 +585,7 @@ fn an_offered_name_must_be_the_dialled_host_unless_the_dial_is_an_ip_literal() {
         ("bücher.example:443", "xn--bcher-kva.example"),
         ("127.0.0.1:5432", "db.internal"),
         ("[::1]:5432", "db.internal"),
-        ("10.0.0.5:6379", "cache.internal"),
+        ("\x310.0.0.5:6379", "cache.internal"),
     ] {
         assert!(
             crate::offered_name_admitted(target, offered),

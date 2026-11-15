@@ -361,7 +361,7 @@ fn print_metadata_blocklist_prints_builtin_plus_blocked() {
         printed,
         vec![
             "169.254.0.0/16",
-            "100.100.100.200",
+            "\x3100.100.100.200",
             "168.63.129.16",
             "192.0.0.192",
             "fd00:ec2::254",

@@ -145,7 +145,7 @@ impl ProxyChoice {
         } else {
             target_host
         };
-        // `x@10.0.0.1` parses with host() == "10.0.0.1": the read-back refuses it, so userinfo,
+        // `x@192.0.2.1` parses with host() == "192.0.2.1": the read-back refuses it, so userinfo,
         // a path or a port smuggled into the host never turns into an exemption.
         http::Uri::builder()
             .scheme("http")
