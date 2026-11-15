@@ -624,6 +624,7 @@ async fn a_pools_refresh_whose_snapshot_the_host_refuses_is_retired() {
     let pools = Arc::new(super::DoorApply {
         instance: Arc::clone(&composed.instance),
         observations_supported: composed.observations_supported,
+        listen_targets: composed.listen_targets.clone(),
         plugin: Arc::clone(&composed.plugin),
         dispatcher: Arc::clone(&composed.dispatcher),
         served_facts: ServedFacts {

@@ -990,7 +990,7 @@ pub async fn build_app_from_config_with_store(
     let limits = cfg.limits.clone();
     in_build_scope(
         limits,
-        build_app_native(
+        Box::pin(build_app_native(
             cfg,
             plugins_cfg,
             overlay_path,
@@ -1002,7 +1002,7 @@ pub async fn build_app_from_config_with_store(
             boot_store,
             recover_usage_before_hydration,
             None,
-        ),
+        )),
     )
     .await
 }
@@ -1029,7 +1029,7 @@ pub async fn build_boot_app(
     let limits = boot.cfg.limits.clone();
     in_build_scope(
         limits,
-        build_app_native(
+        Box::pin(build_app_native(
             boot.cfg,
             boot.plugins_cfg,
             boot.overlay_path,
@@ -1041,7 +1041,7 @@ pub async fn build_boot_app(
             Some(boot.boot_store),
             true,
             boot.judged,
-        ),
+        )),
     )
     .await
 }

@@ -6,7 +6,7 @@ use crate::abi::sdk::door::blank_in;
 use crate::abi::sdk::store::v4::response::{self, ResponseError};
 use crate::redacted::Secret;
 
-crate::own_seal!(Own);
+use crate::support::Own;
 
 fn observed() -> owned::ClockObservation {
     owned::ClockObservation {

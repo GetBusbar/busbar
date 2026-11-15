@@ -48,20 +48,9 @@ pub fn metadata_rendered(m: &Metadata<'_>) -> crate::plane_driver::Rendered {
         resource: m.resource.as_ref(),
         scopes_supported: m.scopes_supported,
     };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the protected-resource metadata publishes this node's auth configuration; the plane head type owns its field bytes"
-    )]
-    let fields = vec![
-        (b"cache-control".to_vec(), b"public, max-age=3600".to_vec()),
-        (
-            b"content-type".to_vec(),
-            b"application/json; charset=utf-8".to_vec(),
-        ),
-    ];
     let mut rendered = crate::plane_driver::Rendered {
         status: 200,
-        fields,
+        fields: crate::cold::host::ingress_metadata_fields(),
         body: Vec::with_capacity(128),
     };
     serde_json::to_writer(&mut rendered.body, &doc).expect("metadata is a JSON value");

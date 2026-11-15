@@ -257,22 +257,18 @@ pub fn price_at_card(
 pub fn price_fail_closed(view: &HistoryView<'_>, posting: &Posting) -> Result<Priced, Unpriceable> {
     let priced = price(view, posting)?;
     if priced.lane_unpriced {
-        return Err(Unpriceable::LaneUnpriced {
-            card_seq: priced.card_seq,
-            lane: posting.lane.clone(),
-        });
+        return Err(crate::cold::posting_lane_unpriced(
+            priced.card_seq,
+            &posting.lane,
+        ));
     }
 
     if let Some(line) = priced.lines.iter().find(|l| l.unpriced) {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a refusal owns the class it names; a priced posting never reaches it"
-        )]
-        return Err(Unpriceable::ClassUnpriced {
-            card_seq: priced.card_seq,
-            lane: posting.lane.clone(),
-            class: line.class.to_owned(),
-        });
+        return Err(crate::cold::posting_class_unpriced(
+            priced.card_seq,
+            &posting.lane,
+            line.class,
+        ));
     }
     Ok(priced)
 }

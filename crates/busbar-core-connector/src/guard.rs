@@ -12,9 +12,13 @@ use busbar_contract::abi::host::service::{
 };
 use busbar_contract::net::{
     embedded_ipv4, host_ip, ip_is_cloud_metadata, ip_is_internal, is_alternate_ipv4_encoding,
-    is_link_local_v6, judged_host, IpNet, IpNetError, METADATA_HOSTS,
+    is_link_local_v6, judged_host, IpNet, METADATA_HOSTS,
 };
 use busbar_kernel::config::Destinations;
+use foldhash::HashSet;
+
+#[cfg(test)]
+use crate::off_path::egress::guard::entry;
 
 /// THE DEFAULT POLICY, ONE TABLE: the egress classes whose dials the private address refusal holds
 pub const PRIVATE_REFUSED_IN: &[u32] = &[
@@ -123,7 +127,7 @@ impl std::error::Error for Refusal {}
 
 /// One allowlist (or extra-refusal) entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Entry {
+pub(crate) enum Entry {
     /// An exact host, lowercased, no trailing dot.
     Host(String),
     /// A `*.domain` wildcard, held as `.domain`: names under it, on a label boundary.
@@ -147,15 +151,33 @@ impl Entry {
         };
         net.covers(addr)
     }
+}
 
-    /// Whether this entry NAMES `addr` itself: a bare IP, or a /32 or /128, equal to it (in any
-    fn pins(&self, addr: IpAddr) -> bool {
-        matches!(self, Entry::Net(net) if net.is_host()) && self.covers(addr)
+/// THE ALLOWLIST, INDEXED once per config commit: an exact host and a `*.domain` suffix are looked
+/// up by key (one lookup per label of the judged name, never a sweep of the list); a network is
+/// held as its entry.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Allow {
+    /// Exact hosts, lowercased, no trailing dot.
+    pub(crate) hosts: HashSet<String>,
+    /// `*.domain` wildcards, each held as `.domain`.
+    pub(crate) under: HashSet<String>,
+    /// IP networks ([`Entry::Net`]).
+    pub(crate) nets: Vec<Entry>,
+}
+
+impl Allow {
+    /// Whether an entry names `host`: an exact host, or a wildcard on one of its label boundaries.
+    fn names(&self, host: &str) -> bool {
+        self.hosts.contains(host)
+            || host
+                .match_indices('.')
+                .any(|(at, _)| self.under.contains(&host[at..]))
     }
 }
 
 /// An IPv4-mapped, -compatible or NAT64 IPv6 address is its IPv4 address.
-fn canonical(addr: IpAddr) -> IpAddr {
+pub(crate) fn canonical(addr: IpAddr) -> IpAddr {
     match addr {
         IpAddr::V6(v6) => embedded_ipv4(&v6).map_or(addr, IpAddr::V4),
         v4 => v4,
@@ -163,136 +185,16 @@ fn canonical(addr: IpAddr) -> IpAddr {
 }
 
 /// THE ONE MAPPING every name the guard compares goes through, a target's and a configured
-fn norm(host: &str) -> Option<String> {
+pub(crate) fn norm(host: &str) -> Option<String> {
     judged_host(host).ok()
-}
-
-/// An `advanced.allow_destinations` entry as [`strict`] reads it: unbracketed, lowercased, one
-fn fold(entry: &str) -> String {
-    let h = entry.trim_start_matches('[').trim_end_matches(']');
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the destination lists are read once per config commit, off every request path"
-    )]
-    let folded = h.strip_suffix('.').unwrap_or(h).to_ascii_lowercase();
-    folded
-}
-
-/// A 1.5.5 list entry (`allow_metadata_hosts`, `blocked_metadata_hosts`), read as 1.5.5 read it:
-fn legacy(entry: &str) -> Option<Entry> {
-    let e = norm(entry.trim())?;
-    if e.is_empty() {
-        return None;
-    }
-    Some(match host_ip(&e) {
-        Some(ip) => Entry::Net(IpNet::host(ip)),
-        None => Entry::Host(e),
-    })
-}
-
-/// A name label the allowlist accepts: letters, digits, `-` and `_`, never empty.
-fn is_name(n: &str) -> bool {
-    !n.is_empty()
-        && n.len() <= 253
-        && n.split('.').all(|l| {
-            !l.is_empty()
-                && l.bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-        })
-        && !is_alternate_ipv4_encoding(n)
-}
-
-/// An entry as a refusal shows it: userinfo before an `@` redacted.
-fn shown(entry: &str) -> String {
-    match entry.rfind('@') {
-        Some(at) => format!("<redacted>@{}", &entry[at + 1..]),
-        None => entry.to_owned(),
-    }
-}
-
-/// One `advanced.allow_destinations` entry, or the boot refusal naming it: a malformed entry, or one
-/// naming a cloud-metadata destination ([`refuse_metadata_entry`], BUSBAR-3134).
-fn strict(i: usize, written: &str) -> Result<Entry, String> {
-    let e = entry(i, written)?;
-    refuse_metadata_entry(i, written, &e)?;
-    Ok(e)
-}
-
-/// Whether `addr` is a cloud-metadata destination the guard refuses in every class: a metadata
-/// address (link-local IPv4 included) or IPv6 link-local `fe80::/10`, in any embedded form.
-fn is_metadata_address(addr: IpAddr) -> bool {
-    ip_is_cloud_metadata(&addr)
-        || matches!(canonical(addr), IpAddr::V6(v6) if is_link_local_v6(&v6))
-}
-
-/// BUSBAR-3134: an allowlist entry that NAMES a cloud-metadata destination (a built-in metadata host
-/// name, a metadata literal, or a /32 or /128 equal to a metadata address) is refused at boot rather
-/// than silently ignored: no configuration ever admits metadata. A wider network that merely covers a
-/// metadata address loads, and never admits it.
-fn refuse_metadata_entry(i: usize, written: &str, e: &Entry) -> Result<(), String> {
-    let names_metadata = match e {
-        Entry::Host(h) => METADATA_HOSTS.contains(&h.as_str()),
-        Entry::Net(net) => net.is_host() && is_metadata_address(net.addr()),
-        Entry::Under(_) => false,
-    };
-    if !names_metadata {
-        return Ok(());
-    }
-    let code = busbar_kernel::diagnostics::CONFIG_DESTINATION_NAMES_METADATA.banner();
-    Err(format!(
-        "{ALLOW_KEY}[{i}]: `{}` names a cloud-metadata destination, which is refused \
-         unconditionally ({code}); no configuration admits it. Remove the entry; an instance \
-         credential comes from workload-identity federation, never from the metadata endpoint",
-        shown(written)
-    ))
-}
-
-/// One `advanced.allow_destinations` entry parsed, or the refusal naming a malformed one.
-fn entry(i: usize, entry: &str) -> Result<Entry, String> {
-    let shown = shown(entry);
-    let bad = || {
-        format!("{ALLOW_KEY}[{i}]: `{shown}` is not a host, a `*.domain` wildcard, an IP or a CIDR")
-    };
-    let e = fold(entry.trim());
-    let e = e.as_str();
-    match IpNet::read(e) {
-        Ok(Some(net)) => return Ok(Entry::Net(net)),
-        Ok(None) => {}
-        Err(IpNetError::HostBitsSet) => {
-            return Err(format!(
-                "{ALLOW_KEY}[{i}]: `{shown}` sets address bits past its prefix length; write the \
-                 network address"
-            ))
-        }
-        Err(IpNetError::NotNetwork) if e.contains('/') => return Err(bad()),
-        Err(IpNetError::NotNetwork) => {}
-    }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the destination lists are read once per config commit, off every request path"
-    )]
-    let entry = match e.strip_prefix("*.") {
-        Some(domain) if is_name(domain) => Ok(Entry::Under(format!(".{domain}"))),
-        None if is_name(e) => Ok(Entry::Host(e.to_owned())),
-        _ => Err(bad()),
-    };
-    entry
 }
 
 /// The 1.5.5 metadata lists one config commit states: the carve-outs (read in the provider class
 /// only) and the extra refusals.
 #[derive(Debug, Default)]
-struct Metadata {
+pub(crate) struct Metadata {
     /// `security.blocked_metadata_hosts`.
-    blocked: Vec<Entry>,
-}
-
-impl Metadata {
-    fn from_config(d: &Destinations) -> Metadata {
-        Metadata {
-            blocked: d.blocked.iter().filter_map(|e| legacy(e)).collect(),
-        }
-    }
+    pub(crate) blocked: Vec<Entry>,
 }
 
 /// THE GUARD, built at boot from a deployment's [`Destinations`]; its metadata lists are
@@ -302,7 +204,7 @@ impl Metadata {
 pub struct Guard {
     block_private: bool,
     /// `advanced.allow_destinations`.
-    allow: Vec<Entry>,
+    allow: Allow,
     /// The 1.5.5 metadata lists in force, replaced whole at a commit.
     metadata: Arc<RwLock<Arc<Metadata>>>,
 }
@@ -312,7 +214,7 @@ impl Default for Guard {
     fn default() -> Self {
         Guard {
             block_private: true,
-            allow: Vec::new(),
+            allow: Allow::default(),
             metadata: Arc::default(),
         }
     }
@@ -321,19 +223,9 @@ impl Default for Guard {
 impl Guard {
     /// The guard a deployment states.
     pub fn from_config(d: &Destinations) -> Result<Guard, String> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the destination lists are read once per config commit, off every request path"
-        )]
-        let allow = d
-            .allow
-            .iter()
-            .enumerate()
-            .map(|(i, e)| strict(i, e))
-            .collect::<Result<_, _>>()?;
         Ok(Guard {
             block_private: d.block_private_addresses,
-            allow,
+            allow: crate::off_path::egress::guard::allow_list(d)?,
             metadata: Arc::new(RwLock::new(Arc::new(Metadata::from_config(d)))),
         })
     }
@@ -385,24 +277,13 @@ impl Guard {
         strict: bool,
         reach: bool,
     ) -> Result<Option<IpAddr>, Refusal> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a refusal names the host it refused"
-        )]
-        let refuse = |verdict| {
-            Err(Refusal {
-                verdict,
-                host: host.to_owned(),
-                addr: None,
-            })
-        };
+        let refuse = |verdict| Err(crate::cold::egress::refusal(verdict, host, None));
 
         let Some(name) = norm(host) else {
             return refuse(DEST_NO_HOST);
         };
         let m = self.metadata();
-        // busbar:expect(bp::state_scan, reason = "config: the operator's allow_destinations list, fixed per config commit; no request grows it")
-        let allowed = self.allow.iter().any(|e| e.names(&name));
+        let allowed = self.allow.names(&name);
         if METADATA_HOSTS.iter().any(|h| name == *h) || m.blocked.iter().any(|e| e.names(&name)) {
             return refuse(DEST_METADATA);
         }
@@ -439,15 +320,7 @@ impl Guard {
         reach: bool,
     ) -> Result<(), Refusal> {
         if addrs.is_empty() {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a refusal names the host it refused"
-            )]
-            return Err(Refusal {
-                verdict: DEST_NO_ADDRESSES,
-                host: host.to_owned(),
-                addr: None,
-            });
+            return Err(crate::cold::egress::refusal(DEST_NO_ADDRESSES, host, None));
         }
         addrs
             .iter()
@@ -464,40 +337,22 @@ impl Guard {
         reach: bool,
     ) -> Result<(), Refusal> {
         let Some(name) = norm(host) else {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a refusal names the host it refused"
-            )]
-            return Err(Refusal {
-                verdict: DEST_NO_HOST,
-                host: host.to_owned(),
-                addr: Some(addr),
-            });
+            return Err(crate::cold::egress::refusal(DEST_NO_HOST, host, Some(addr)));
         };
         let m = self.metadata();
         let metadata = ip_is_cloud_metadata(&addr);
 
         let link_local = matches!(canonical(addr), IpAddr::V6(v6) if is_link_local_v6(&v6));
         let listed = |l: &[Entry]| l.iter().any(|e| e.covers(addr));
-        let named = |l: &[Entry]| l.iter().any(|e| e.names(&name));
 
         let denied = metadata || listed(&m.blocked);
-        let allowlisted = !denied && !link_local && listed(&self.allow);
-        let admitted = allowlisted || (!denied && !link_local && (named(&self.allow) || reach));
+        let allowlisted = !denied && !link_local && listed(&self.allow.nets);
+        let admitted =
+            allowlisted || (!denied && !link_local && (self.allow.names(&name) || reach));
         if admitted {
             return Ok(());
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a refusal names the host it refused"
-        )]
-        let refuse = |verdict| {
-            Err(Refusal {
-                verdict,
-                host: host.to_owned(),
-                addr: Some(addr),
-            })
-        };
+        let refuse = |verdict| Err(crate::cold::egress::refusal(verdict, host, Some(addr)));
         if denied || link_local {
             return refuse(DEST_METADATA);
         }
@@ -533,11 +388,9 @@ impl Resolve for SystemResolver {
             crate::compose::MAX_PENDING_LOOKUPS,
             &RESOLVING,
             |host: &str| {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: a failed lookup is answered with its sentence"
-                )]
-                let found = (host, 0).to_socket_addrs().map_err(|e| e.to_string());
+                let found = (host, 0)
+                    .to_socket_addrs()
+                    .map_err(|e| crate::cold::egress::lookup_failed(&e));
                 found.map(|a| a.map(|s| s.ip()).collect())
             },
         );
@@ -559,11 +412,7 @@ pub(crate) fn resolve_capped<F>(
 {
     use std::sync::Mutex;
     let Some(place) = crate::hostio::LookupPlace::take(cap, in_flight) else {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a lookup refused at the in-flight cap is answered with its sentence"
-        )]
-        done(Err(format!("name lookup: {cap} lookups already in flight")));
+        done(Err(crate::cold::egress::lookups_in_flight(cap)));
         return;
     };
     let cell = Arc::new(Mutex::new(Some(done)));

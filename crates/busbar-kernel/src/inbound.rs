@@ -6,7 +6,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
-use busbar_contract::abi::auth::{AuthPoint, POINT_HEAD_BODY};
+use busbar_contract::abi::auth::AuthPoint;
+#[cfg(test)]
+use busbar_contract::abi::auth::POINT_HEAD_BODY;
 use busbar_contract::abi::host::service::{
     UnitRef, FLOW_CONTINUE, FLOW_STOP, REFUSE_CHECK_FAILED, REFUSE_METHOD_MISS, REFUSE_NO_ROUTE,
     REFUSE_OVER_GATE, REFUSE_STOPPED,
@@ -21,6 +23,8 @@ use crate::state::App;
 
 mod derived;
 mod handin;
+#[cfg(test)]
+use crate::off_path::inbound::checked_line_ids;
 pub(crate) use derived::Derived;
 use handin::handin_state_matches;
 
@@ -86,13 +90,17 @@ impl std::fmt::Debug for Head {
 
 impl Drop for Head {
     fn drop(&mut self) {
-        use zeroize::Zeroize as _;
-        self.target.zeroize();
-        if let Some(query) = &mut self.query {
-            query.zeroize();
+        // Each credential-bearing part goes into custody, whose drop wipes it.
+        drop(busbar_contract::secure::SecureString::from(std::mem::take(
+            &mut self.target,
+        )));
+        if let Some(query) = self.query.take() {
+            drop(busbar_contract::secure::SecureString::from(query));
         }
         for (_, value) in &mut self.fields {
-            value.zeroize();
+            drop(busbar_contract::secure::SecureVec::from(std::mem::take(
+                value,
+            )));
         }
     }
 }
@@ -107,7 +115,7 @@ impl Clone for Head {
 }
 
 impl Head {
-    /// The copy behind [`Clone`], uncounted: the strip builds a different head from it.
+    /// The copy behind [`Clone`], uncounted.
     fn duplicate(&self) -> Self {
         Self {
             method: self.method.clone(),
@@ -118,15 +126,9 @@ impl Head {
         }
     }
 
+    /// A refused request's target, rendered once into its refusal (cold text).
     fn path_and_query(&self) -> String {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a refused request's target is rendered once into its refusal"
-        )]
-        return match &self.query {
-            Some(query) => format!("{}?{query}", self.target),
-            None => self.target.clone(),
-        };
+        crate::cold::host::inbound_path_and_query(&self.target, self.query.as_deref())
     }
 
     fn is_empty(&self) -> bool {
@@ -248,33 +250,8 @@ pub struct Refusal {
 impl Refusal {
     #[must_use]
     pub fn of(resp: axum::response::Response) -> Self {
-        use futures::FutureExt as _;
-        use http_body_util::BodyExt as _;
-        let (parts, body) = resp.into_parts();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a refusal response is copied once into its owned wire refusal"
-        )]
-        let body = body
-            .collect()
-            .now_or_never()
-            .and_then(Result::ok)
-            .map(|c| c.to_bytes().to_vec())
-            .unwrap_or_default();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a refusal response is copied once into its owned wire refusal"
-        )]
-        let fields = parts
-            .headers
-            .iter()
-            .map(|(n, v)| (n.as_str().to_string(), v.as_bytes().to_vec()))
-            .collect();
-        Self {
-            status: u32::from(parts.status.as_u16()),
-            fields,
-            body,
-        }
+        // A refusal response is copied once into its owned wire refusal: cold.
+        crate::cold::host::inbound_refusal_of(resp)
     }
 }
 
@@ -317,6 +294,18 @@ struct PendingUnit {
 }
 
 impl PendingUnit {
+    /// Keep the verified principal for the unit's audit row, written into the unit's own slot
+    /// (cleared per use) rather than a fresh copy.
+    fn set_principal(&self, principal: &str) {
+        let mut slot = self
+            .principal
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let held = slot.get_or_insert_with(String::new);
+        held.clear();
+        held.push_str(principal);
+    }
+
     fn refuse(
         &self,
         step: busbar_contract::caps::StepName,
@@ -510,32 +499,6 @@ pub struct LineSpec {
     pub body_limit: u64,
 }
 
-impl Listener {
-    #[must_use]
-    pub fn specs(&self) -> Vec<LineSpec> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a listener's line specs are listed when it is published"
-        )]
-        return (0u32..)
-            .zip(self.guests.lines().iter().zip(&self.ids))
-            .map(|(i, (l, id))| {
-                let points = l.auth.points().bits();
-                LineSpec {
-                    line: i,
-                    auth: *id,
-                    points,
-                    body_limit: if points & POINT_HEAD_BODY != 0 {
-                        self.body_limit
-                    } else {
-                        0
-                    },
-                }
-            })
-            .collect();
-    }
-}
-
 /// One position's answer as the unit holds it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Judged {
@@ -578,7 +541,6 @@ pub(crate) struct AdmittedRequest {
     owner: u64,
     line: u32,
     binding: RequestBinding,
-    upgrade: Option<String>,
     upgrade_used: std::sync::atomic::AtomicBool,
     table: Arc<Table>,
     pub(crate) admitted: Option<Admitted>,
@@ -594,6 +556,18 @@ pub(crate) struct AdmittedRequest {
     replay: Option<Arc<ReplayAdmission>>,
     deadline: Option<std::time::Instant>,
     alive: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl AdmittedRequest {
+    /// The sealed route's upgrade claim, read off the table the request holds, never copied.
+    fn upgrade(&self) -> Option<&str> {
+        self.table
+            .listener
+            .guests
+            .lines()
+            .get(self.line as usize)
+            .and_then(|line| line.upgrade.as_deref())
+    }
 }
 
 struct ReplayAdmission {
@@ -636,7 +610,7 @@ impl UpgradePermit {
         {
             return None;
         }
-        let claim = request.upgrade.as_deref()?;
+        let claim = request.upgrade()?;
         request
             .upgrade_used
             .compare_exchange(
@@ -736,17 +710,7 @@ impl RequestAdmission {
     }
 
     pub(crate) fn principal(&self, principal: &str) {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the verified principal is kept once per admitted request, for its audit row"
-        )]
-        let principal = principal.to_owned();
-        *self
-            .inner
-            .pending
-            .principal
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(principal);
+        self.inner.pending.set_principal(principal);
     }
 
     /// Finish a host refusal before the teller has taken ownership.
@@ -788,7 +752,7 @@ impl RequestAdmission {
     /// Derive authority only when the exact sealed route declares an upgrade.
     #[must_use]
     pub fn upgrade_permit(&self) -> Option<UpgradePermit> {
-        self.inner.upgrade.as_ref()?;
+        self.inner.upgrade()?;
         Some(UpgradePermit {
             request: Arc::clone(&self.inner),
         })
@@ -1198,14 +1162,10 @@ fn peer_capacity(existing: bool, held: usize) -> Result<(), &'static str> {
 }
 
 fn take_framing_peers<T>(peers: &mut HashMap<(u64, u64, u64), T>, framing: u64) -> Vec<T> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a framing's close releases its peer rows once"
-    )]
-    return peers
+    peers
         .extract_if(|(_, _, f), _| *f == framing)
         .map(|(_, peer)| peer)
-        .collect();
+        .collect()
 }
 
 fn peer_payload_empty(unit: UnitRef, head: &Head, body: Option<&[u8]>) -> bool {
@@ -1213,10 +1173,6 @@ fn peer_payload_empty(unit: UnitRef, head: &Head, body: Option<&[u8]>) -> bool {
 }
 
 fn inbound_answer(fixed: Option<Fixed>, unit: UnitRef, peer: bool, strips: &[Strip]) -> Answer {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: busbar-contract owns this per-request auth exchange; borrowing it needs a contract change (reported)"
-    )]
     let strips = if peer { Vec::new() } else { strips.to_vec() };
     Answer {
         flow: match fixed {
@@ -1226,18 +1182,6 @@ fn inbound_answer(fixed: Option<Fixed>, unit: UnitRef, peer: bool, strips: &[Str
         unit,
         strips,
     }
-}
-
-fn checked_line_ids(ids: &[u64], lines: usize) -> Result<HashMap<u64, u32>, &'static str> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a listener's line ids are indexed once, when it is installed"
-    )]
-    let lines_by_id: HashMap<u64, u32> = ids.iter().copied().zip(0u32..).collect();
-    if ids.len() != lines || lines_by_id.len() != lines || !ids.iter().all(|id| is_line_id(*id)) {
-        return Err(IDS_REFUSED);
-    }
-    Ok(lines_by_id)
 }
 
 fn connection_allows_key_prestep(answers: &[Option<Judged>]) -> bool {
@@ -1270,10 +1214,6 @@ fn matched_handin_line<'a>(
     if auth_line != Some(requested) {
         return None;
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: guest matching takes a borrowed field list; guest.rs owns that signature (reported)"
-    )]
     let fields: Vec<(&str, &[u8])> = head
         .fields
         .iter()
@@ -1320,10 +1260,6 @@ fn deadline_passed(deadline: Option<std::time::Instant>) -> bool {
     let Some(deadline) = deadline else {
         return false;
     };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a request deadline is an opt-in line policy; each walk stage checks it at its own moment"
-    )]
     let now = std::time::Instant::now();
     now >= deadline
 }
@@ -1336,16 +1272,16 @@ fn overloaded_refusal(cause: u32, overloaded: bool) -> Option<axum::response::Re
     }
 }
 
-struct Table {
-    listener: Listener,
-    doors: crate::core_routes::CoreRouteTable,
+pub(crate) struct Table {
+    pub(crate) listener: Listener,
+    pub(crate) doors: crate::core_routes::CoreRouteTable,
 
     /// Each line's auth chain in walk order (the keys module last), ordered once at install.
-    providers: Vec<Arc<[String]>>,
+    pub(crate) providers: Vec<Arc<[String]>>,
 
-    lines_by_id: HashMap<u64, u32>,
+    pub(crate) lines_by_id: HashMap<u64, u32>,
 
-    request_auths: HashSet<String>,
+    pub(crate) request_auths: HashSet<String>,
 }
 
 struct FramingListener {
@@ -1369,6 +1305,14 @@ struct PendingAdoption {
     unit: UnitState,
 }
 
+/// The pending session adoptions, by destination framing, and the source leg of each (one
+/// pending adoption per leg), so the duplicate check reads the leg by key.
+#[derive(Default)]
+struct Adoptions {
+    by_destination: HashMap<(u64, u64), PendingAdoption>,
+    legs: HashSet<u64>,
+}
+
 impl Table {
     fn line_of(&self, id: u64) -> Option<u32> {
         self.lines_by_id.get(&id).copied()
@@ -1378,13 +1322,13 @@ impl Table {
 type StreamGrants = HashMap<(u64, u64, u64), (u64, Arc<Table>)>;
 
 pub struct Inbound {
-    tables: RwLock<HashMap<(u64, u64, u64), Arc<Table>>>,
+    pub(crate) tables: RwLock<HashMap<(u64, u64, u64), Arc<Table>>>,
 
     framing_listeners: Mutex<HashMap<(u64, u64), FramingListener>>,
 
     stream_grants: Mutex<StreamGrants>,
     units: Mutex<HashMap<u64, UnitState>>,
-    adoptions: Mutex<HashMap<(u64, u64), PendingAdoption>>,
+    adoptions: Mutex<Adoptions>,
 
     framing_conns: Mutex<HashMap<(u64, u64), u64>>,
 
@@ -1431,11 +1375,7 @@ fn verify_request(
     body: Option<&[u8]>,
     candidate: Option<&Secret<String>>,
 ) -> VerifyRequest {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: busbar-contract owns this per-request auth exchange; borrowing it needs a contract change (reported)"
-    )]
-    return VerifyRequest {
+    VerifyRequest {
         point,
         conn,
         unit,
@@ -1454,7 +1394,7 @@ fn verify_request(
         path: head.target.clone(),
         query: head.query.clone(),
         timestamp: crate::store::now(),
-    };
+    }
 }
 
 async fn until_deadline<F: Future>(
@@ -1486,10 +1426,24 @@ enum PositionKind {
     Keys,
 }
 
-struct Position {
+struct Position<'a> {
     index: usize,
-    provider: String,
+    provider: &'a str,
     kind: PositionKind,
+}
+
+/// Position `index` of a line's ordered chain, read off the installed table as the walk reaches
+/// it: the keys arm, or the plugin `provider` names.
+fn walk_position<'a>(table: &Table, index: usize, provider: &'a str) -> Position<'a> {
+    Position {
+        index,
+        provider,
+        kind: if provider == crate::config::KEYS_MODULE {
+            PositionKind::Keys
+        } else {
+            PositionKind::Plugin(table.listener.auths.get(provider).cloned())
+        },
+    }
 }
 
 enum Judging<'a> {
@@ -1543,20 +1497,6 @@ fn build_header_map(head: &Head) -> axum::http::HeaderMap {
     headers
 }
 
-fn ordered(names: &[String]) -> Arc<[String]> {
-    let keys = crate::config::KEYS_MODULE;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a line's auth chain is ordered once, when its listener is installed"
-    )]
-    return names
-        .iter()
-        .filter(|n| *n != keys)
-        .chain(names.iter().filter(|n| *n == keys).take(1))
-        .cloned()
-        .collect();
-}
-
 fn signed_then_keys(
     app: &App,
     gov: Option<&crate::governance::GovState>,
@@ -1570,50 +1510,58 @@ fn signed_then_keys(
     Vec<Strip>,
     Option<Arc<crate::governance::VirtualKey>>,
 ) {
-    // busbar:expect(bp::fresh_buffer, reason = "config: busbar-contract owns this per-request auth exchange; borrowing it needs a contract change (reported)")
-    let mut named = Vec::new();
-    if let Some(s) = signed {
-        named.extend(s.answer.strips);
-        let verified = if s.faulted {
-            Verified::Failed
-        } else {
-            s.answer.verified
-        };
-        match verified {
-            Verified::Identity(id) => {
-                let key = gov.and_then(|g| {
-                    s.kinds.iter().find_map(|kind| {
-                        let (key, cred) = g.lookup_credential(kind, &id.subject)?;
-                        (key.enabled
-                            && !crate::governance::key_row_expired(&key, now)
-                            && cred.meta.is_live(now)
-                            && !g.is_revoked(&key.id))
-                        .then_some(key)
-                    })
-                });
-                return match key {
-                    Some(key) => (
-                        Judged::Identity,
-                        Some(VerifiedIdentity {
-                            subject: key.id.clone(),
-                            key_id: Some(key.id.clone()),
-                            key_name: Some(key.name.clone()),
-                            replay: id.replay,
-                            ..VerifiedIdentity::default()
-                        }),
-                        named,
-                        Some(key),
-                    ),
-                    None => (Judged::Denied, None, named, None),
-                };
+    // The signed answer's own strips are moved, never copied; the keys arm's follow them.
+    let signed_strips = match signed {
+        Some(s) => {
+            let named = s.answer.strips;
+            let verified = if s.faulted {
+                Verified::Failed
+            } else {
+                s.answer.verified
+            };
+            match verified {
+                Verified::Identity(id) => {
+                    let key = gov.and_then(|g| {
+                        s.kinds.iter().find_map(|kind| {
+                            let (key, cred) = g.lookup_credential(kind, &id.subject)?;
+                            (key.enabled
+                                && !crate::governance::key_row_expired(&key, now)
+                                && cred.meta.is_live(now)
+                                && !g.is_revoked(&key.id))
+                            .then_some(key)
+                        })
+                    });
+                    return match key {
+                        Some(key) => (
+                            Judged::Identity,
+                            Some(VerifiedIdentity {
+                                subject: key.id.clone(),
+                                key_id: Some(key.id.clone()),
+                                key_name: Some(key.name.clone()),
+                                replay: id.replay,
+                                ..VerifiedIdentity::default()
+                            }),
+                            named,
+                            Some(key),
+                        ),
+                        None => (Judged::Denied, None, named, None),
+                    };
+                }
+                Verified::Pass => Some(named),
+                Verified::Reject | Verified::Failed => return (Judged::Denied, None, named, None),
+                Verified::Overloaded => return (Judged::Overloaded, None, named, None),
             }
-            Verified::Pass => {}
-            Verified::Reject | Verified::Failed => return (Judged::Denied, None, named, None),
-            Verified::Overloaded => return (Judged::Overloaded, None, named, None),
         }
-    }
+        None => None,
+    };
     let (judged, identity, strips, resolved) = keys_judged(app, gov, candidate, now, expected_aud);
-    named.extend(strips);
+    let named = match signed_strips {
+        Some(mut named) => {
+            named.extend(strips);
+            named
+        }
+        None => strips,
+    };
     (judged, identity, named, resolved)
 }
 
@@ -1685,74 +1633,6 @@ impl Inbound {
         self.install_at(owner, 0, generation, listener)
     }
 
-    pub fn install_at(
-        &self,
-        owner: u64,
-        listener_id: u64,
-        generation: u64,
-        listener: Listener,
-    ) -> Result<(), &'static str> {
-        let lines_by_id = checked_line_ids(&listener.ids, listener.guests.lines().len())?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: each line's auth chain is ordered once, when its listener is installed"
-        )]
-        let providers: Vec<Arc<[String]>> = listener
-            .guests
-            .lines()
-            .iter()
-            .map(|line| match &line.auth {
-                LineAuth::Chain(names, _) => ordered(names),
-                LineAuth::None => Arc::default(),
-            })
-            .collect();
-        // busbar:expect(bp::clone_alloc, reason = "config: a listener's door refusals are kept once, when it is installed")
-        let doors = crate::core_routes::CoreRouteTable::default()
-            .with_door_refusals(listener.door_refusals.clone());
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a listener's request-point auths are listed once, when it is installed"
-        )]
-        let request_auths = listener
-            .auths
-            .iter()
-            .filter(|(_, auth)| {
-                let points = auth.inbound_points();
-                points.has(AuthPoint::Head) || points.has(AuthPoint::HeadBody)
-            })
-            .map(|(name, _)| name.clone())
-            .chain(std::iter::once(crate::config::KEYS_MODULE.to_owned()))
-            .collect();
-        let mut tables = self.tables.write().unwrap_or_else(PoisonError::into_inner);
-        // busbar:expect(bp::fresh_buffer, reason = "config: installing a listener generation retires the ones it replaces")
-        let mut retired = Vec::new();
-        let replaced = tables.insert(
-            (owner, listener_id, generation),
-            Arc::new(Table {
-                listener,
-                doors,
-                providers,
-                lines_by_id,
-                request_auths,
-            }),
-        );
-        retired.extend(replaced);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: installing a listener generation retires the ones it replaces"
-        )]
-        tables.retain(|(o, listener, g), table| {
-            let keep = *o != owner || *listener != listener_id || g.saturating_add(1) >= generation;
-            if !keep {
-                retired.push(Arc::clone(table));
-            }
-            keep
-        });
-        drop(tables);
-        drop(retired);
-        Ok(())
-    }
-
     #[must_use]
     pub fn specs(&self, owner: u64, generation: u64) -> Option<Vec<LineSpec>> {
         self.table(owner, generation).map(|t| t.listener.specs())
@@ -1774,46 +1654,6 @@ impl Inbound {
     pub fn specs_at(&self, owner: u64, listener: u64, generation: u64) -> Option<Vec<LineSpec>> {
         self.table_at(owner, listener, generation)
             .map(|t| t.listener.specs())
-    }
-
-    pub fn retire_before(&self, generation: u64) {
-        let mut tables = self.tables.write().unwrap_or_else(PoisonError::into_inner);
-        // busbar:expect(bp::fresh_buffer, reason = "config: retiring listener generations runs on a config publish")
-        let mut retired = Vec::new();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: retiring listener generations runs on a config publish"
-        )]
-        tables.retain(|(_, _, old), table| {
-            if old.saturating_add(1) < generation {
-                retired.push(Arc::clone(table));
-                false
-            } else {
-                true
-            }
-        });
-        drop(tables);
-        drop(retired);
-    }
-
-    pub fn forget_listener(&self, owner: u64, listener: u64) {
-        let mut tables = self.tables.write().unwrap_or_else(PoisonError::into_inner);
-        // busbar:expect(bp::fresh_buffer, reason = "config: forgetting a listener runs once, as it is removed")
-        let mut retired = Vec::new();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: forgetting a listener runs once, as it is removed"
-        )]
-        tables.retain(|(o, l, _), table| {
-            if *o == owner && *l == listener {
-                retired.push(Arc::clone(table));
-                false
-            } else {
-                true
-            }
-        });
-        drop(tables);
-        drop(retired);
     }
 
     pub fn framing_started(
@@ -1945,9 +1785,8 @@ impl Inbound {
             .adoptions
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        // busbar:expect(bp::state_scan, reason = "config: a session adoption (a reconnecting framing) checks the pending adoptions, bounded by open framings")
-        if pending.contains_key(&(owner, framing))
-            || pending.values().any(|p| p.source.leg == source.leg)
+        if pending.by_destination.contains_key(&(owner, framing))
+            || pending.legs.contains(&source.leg)
         {
             return Err(UNIT_FOREIGN);
         }
@@ -1962,7 +1801,10 @@ impl Inbound {
         let mut unit = units.remove(&id).ok_or(UNIT_FOREIGN)?;
         unit.owner = owner;
         unit.secret = secret;
-        pending.insert((owner, framing), PendingAdoption { source, id, unit });
+        pending.legs.insert(source.leg);
+        pending
+            .by_destination
+            .insert((owner, framing), PendingAdoption { source, id, unit });
         held.insert(
             (owner, framing),
             FramingListener {
@@ -1998,7 +1840,10 @@ impl Inbound {
             .adoptions
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let stage = pending.get(&(owner, framing)).ok_or(UNIT_FOREIGN)?;
+        let stage = pending
+            .by_destination
+            .get(&(owner, framing))
+            .ok_or(UNIT_FOREIGN)?;
         if !held
             .get(&(stage.source.owner, stage.source.leg))
             .is_some_and(|source| source.status == FramingStatus::Detached)
@@ -2019,7 +1864,11 @@ impl Inbound {
         if units.contains_key(&stage.id) {
             return Err(UNIT_FOREIGN);
         }
-        let mut stage = pending.remove(&(owner, framing)).ok_or(UNIT_FOREIGN)?;
+        let mut stage = pending
+            .by_destination
+            .remove(&(owner, framing))
+            .ok_or(UNIT_FOREIGN)?;
+        pending.legs.remove(&stage.source.leg);
         stage.unit.binding.conn = conn;
         stage.unit.binding.framing = Some(framing);
         units.insert(stage.id, stage.unit);
@@ -2194,27 +2043,19 @@ impl Inbound {
             return Err(UNIT_FOREIGN);
         }
         if let (Some(pending), Some(admitted)) = (&unit.pending, &unit.admitted) {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: the verified principal is kept once per admitted request, for its audit row"
-            )]
-            let principal = admitted.resolved.as_ref().map_or_else(
-                || admitted.identity.subject.clone(),
-                |key| key.id.to_string(),
+            pending.set_principal(
+                admitted
+                    .resolved
+                    .as_ref()
+                    .map_or(admitted.identity.subject.as_str(), |key| key.id.as_str()),
             );
-            *pending
-                .principal
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner) = Some(principal);
         }
-        // busbar:expect(bp::clone_alloc, reason = "config: busbar-contract owns this per-request auth exchange; borrowing it needs a contract change (reported)")
         let admission = RequestAdmission {
             inner: Arc::new(AdmittedRequest {
                 pending: Arc::clone(unit.pending.as_ref().ok_or(UNIT_FOREIGN)?),
                 owner,
                 line: unit.line,
                 binding: unit.binding,
-                upgrade: line.upgrade.clone(),
                 upgrade_used: std::sync::atomic::AtomicBool::new(false),
                 table: Arc::clone(&unit.table),
                 admitted: unit.admitted.clone(),
@@ -2254,29 +2095,25 @@ impl Inbound {
             .framing_listeners
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a framing's close releases its rows once (a per-framing index is reported)"
-        )]
         let retired_bindings: Vec<_> = held
             .extract_if(|(_, f), _| *f == framing)
             .map(|(_, binding)| binding)
             .collect();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a framing's close releases its rows once (a per-framing index is reported)"
-        )]
-        let retired_adoptions: Vec<_> = self
-            .adoptions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .extract_if(|(_, leg), stage| *leg == framing || stage.source.leg == framing)
-            .map(|(_, stage)| stage)
-            .collect();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a framing's close releases its rows once (a per-framing index is reported)"
-        )]
+        let retired_adoptions: Vec<_> = {
+            let mut adoptions = self
+                .adoptions
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let retired: Vec<_> = adoptions
+                .by_destination
+                .extract_if(|(_, leg), stage| *leg == framing || stage.source.leg == framing)
+                .map(|(_, stage)| stage)
+                .collect();
+            for stage in &retired {
+                adoptions.legs.remove(&stage.source.leg);
+            }
+            retired
+        };
         let retired_grants: Vec<_> = self
             .stream_grants
             .lock()
@@ -2284,20 +2121,12 @@ impl Inbound {
             .extract_if(|(_, f, _), _| *f == framing)
             .map(|(_, grant)| grant)
             .collect();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a framing's close releases its rows once (a per-framing index is reported)"
-        )]
         let retired_units: Vec<_> = self
             .units()
             .extract_if(|_, u| u.binding.framing == Some(framing))
             .map(|(_, u)| u)
             .collect();
         let retired_peers = take_framing_peers(&mut self.peers(), framing);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a framing's close releases its rows once (a per-framing index is reported)"
-        )]
         self.framing_conns
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -2325,10 +2154,6 @@ impl Inbound {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&(owner, framing, stream));
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: NOT COLD, a stream end sweeps the unit table; needs a per-stream index (reported)"
-        )]
         let retired_units: Vec<_> = self
             .units()
             .extract_if(|_, unit| {
@@ -2675,24 +2500,6 @@ impl Inbound {
             }
             (Target::Unit(unit.id), unit)
         };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: busbar-contract owns this per-request auth exchange; borrowing it needs a contract change (reported)"
-        )]
-        let positions: Vec<Position> = providers
-            .iter()
-            .enumerate()
-            .map(|(index, name)| Position {
-                index,
-                provider: name.clone(),
-                kind: if name == crate::config::KEYS_MODULE {
-                    PositionKind::Keys
-                } else {
-                    PositionKind::Plugin(table.listener.auths.get(name).cloned())
-                },
-            })
-            .collect();
-
         let points = *points;
         let keys_point = if points.has(AuthPoint::HeadBody) {
             AuthPoint::HeadBody
@@ -2730,9 +2537,11 @@ impl Inbound {
                     .as_ref()
                     .and_then(|method| table.doors.door_ticket(&head.target, method));
                 let token = candidate.map(|c| c.expose(&crate::seal::lend()).as_str());
-                let keys = positions
+                let keys_position = providers
                     .iter()
-                    .find(|p| matches!(p.kind, PositionKind::Keys));
+                    .position(|name| name == crate::config::KEYS_MODULE)
+                    .map(|index| walk_position(&table, index, &providers[index]));
+                let keys = keys_position.as_ref();
                 // On the first request `call.head` is the original just recorded, so its
                 // admission is the unit's; a continuation call's head has earlier strips applied.
                 let unadmitted = match original.as_ref() {
@@ -2854,10 +2663,6 @@ impl Inbound {
                                 } else {
                                     Judged::Denied
                                 });
-                                #[expect(
-                                    clippy::disallowed_methods,
-                                    reason = "config: busbar-contract owns this per-request auth exchange; borrowing it needs a contract change (reported)"
-                                )]
                                 let admitted = key.map(|key| Admitted {
                                     provider: crate::config::KEYS_MODULE.to_string(),
                                     identity: VerifiedIdentity {
@@ -2870,16 +2675,11 @@ impl Inbound {
                                 });
                                 u.admitted = admitted;
                                 for carrier in table.listener.app.auth.carriers() {
-                                    #[expect(
-                                        clippy::disallowed_methods,
-                                        reason = "config: busbar-contract owns this per-request auth exchange; borrowing it needs a contract change (reported)"
-                                    )]
                                     let strip = Strip::field(carrier.as_str().to_string());
                                     if !u.strips.contains(&strip) {
                                         u.strips.push(strip);
                                     }
                                 }
-                                // busbar:expect(bp::clone_alloc, reason = "config: busbar-contract owns this per-request auth exchange; borrowing it needs a contract change (reported)")
                                 (retired, u.strips.clone())
                             })
                             .ok_or(UNIT_FOREIGN)?;
@@ -2888,7 +2688,8 @@ impl Inbound {
                     }
                 }
             }
-            for p in positions {
+            for (index, name) in providers.iter().enumerate() {
+                let p = walk_position(&table, index, name);
                 let position = me
                     .with_state(target, |u| {
                         position_work(u.fixed_at(peer), u.answers.get(p.index).copied().flatten())
@@ -3014,15 +2815,13 @@ impl Inbound {
         let now = crate::store::now();
         let signed_identity = matches!(&judging, Judging::Keys(_, _, Some(signed))
             if !signed.faulted && matches!(&signed.answer.verified, Verified::Identity(_)));
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: busbar-contract owns this per-request auth exchange; borrowing it needs a contract change (reported)"
-        )]
-        let replay_provider = match &judging {
-            Judging::Keys(_, _, Some(signed)) => &*signed.provider,
-            _ => provider,
-        }
-        .to_owned();
+        // The signed reader's provider is shared (a refcount), not copied: the judging is moved
+        // below, and the replay claim reads the name after it.
+        let signed_provider = match &judging {
+            Judging::Keys(_, _, Some(signed)) => Some(Arc::clone(&signed.provider)),
+            _ => None,
+        };
+        let replay_provider = signed_provider.as_deref().unwrap_or(provider);
         let (judged, identity, strips, resolved) = match judging {
             Judging::Nothing => (Judged::Denied, None, Vec::new(), None),
             Judging::Keys(head, derived, signed) => signed_then_keys(
@@ -3047,7 +2846,7 @@ impl Inbound {
         };
         let replay = identity.as_ref().and_then(|id| {
             crate::auth::PendingClaim::for_identity(
-                &replay_provider,
+                replay_provider,
                 id,
                 table.listener.app.governance.clone(),
                 now,
@@ -3265,16 +3064,15 @@ impl Inbound {
             Some((head, derived)) => (Some(head), derived),
             None => (r.request, Arc::default()),
         };
-        let path = head
+        let path: &str = head
             .as_ref()
-            .map(|h| h.target.clone())
-            .or_else(|| line.map(|l| l.route.path.clone()))
-            .unwrap_or_else(|| "/".to_string());
-        let target = busbar_contract::secure::SecureString::from(
-            head.as_ref()
-                .map(Head::path_and_query)
-                .unwrap_or_else(|| path.clone()),
-        );
+            .map(|h| h.target.as_str())
+            .or_else(|| line.map(|l| l.route.path.as_str()))
+            .unwrap_or("/");
+        let target = busbar_contract::secure::SecureString::from(match head.as_ref() {
+            Some(head) => head.path_and_query(),
+            None => crate::cold::host::inbound_path_and_query(path, None),
+        });
         let app = &table.listener.app;
         if let Some(renderer) = table
             .listener
@@ -3346,7 +3144,7 @@ impl Inbound {
                         reason,
                         status,
                         text,
-                        path: &path,
+                        path,
                         target: &target,
                         selected_line: line,
                     },
@@ -3359,23 +3157,7 @@ impl Inbound {
                             fields: Vec::new(),
                             body: Vec::new(),
                         });
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: a unit refusal moves its rendered fields into the wire refusal"
-                )]
-                let refusal = Refusal {
-                    status: rendered.status,
-                    fields: rendered
-                        .fields
-                        .into_iter()
-                        .map(|(name, value)| {
-                            String::from_utf8(name)
-                                .map(|name| (name, value))
-                                .map_err(|_| "a unit refusal field name is not text")
-                        })
-                        .collect::<Result<_, _>>()?,
-                    body: rendered.body,
-                };
+                let refusal = crate::cold::host::inbound_unit_refusal(rendered)?;
                 self.finish_refusal(
                     unit,
                     r.owner,
@@ -3430,7 +3212,7 @@ impl Inbound {
                                 reason,
                                 status: status.as_u16(),
                                 text,
-                                path: &path,
+                                path,
                                 target: &target,
                                 selected_line: line,
                             })
@@ -3443,21 +3225,21 @@ impl Inbound {
             Ok(match r.cause {
                 REFUSE_NO_ROUTE => crate::router::fallback_error_response(
                     &app.planes,
-                    &path,
+                    path,
                     StatusCode::NOT_FOUND,
                     busbar_contract::protocol::ERR_TYPE_NOT_FOUND,
                     "the requested resource was not found",
                 ),
                 REFUSE_METHOD_MISS => crate::router::fallback_error_response(
                     &app.planes,
-                    &path,
+                    path,
                     StatusCode::METHOD_NOT_ALLOWED,
                     busbar_contract::protocol::ERR_TYPE_INVALID_REQUEST,
                     "method not allowed for this resource",
                 ),
                 REFUSE_OVER_GATE => crate::router::fallback_error_response(
                     &app.planes,
-                    &path,
+                    path,
                     StatusCode::PAYLOAD_TOO_LARGE,
                     busbar_contract::protocol::KIND_REQUEST_TOO_LARGE,
                     "request body exceeds the maximum allowed size",
@@ -3467,7 +3249,7 @@ impl Inbound {
                         .as_ref()
                         .and_then(|h| axum::http::Method::from_bytes(h.method.as_bytes()).ok());
                     let door = method
-                        .and_then(|m| table.doors.door_refusal(&path, &m).cloned())
+                        .and_then(|m| table.doors.door_refusal(path, &m).cloned())
                         .map(|refuse| (refuse, target));
                     let admission = head
                         .as_ref()
@@ -3477,7 +3259,7 @@ impl Inbound {
                         .is_some_and(|head| derived.candidate(app, head).is_some());
                     crate::auth::scoped_unauthorized_with_completion_taps(
                         app,
-                        &path,
+                        path,
                         door.as_ref(),
                         admission,
                         client_token_present,

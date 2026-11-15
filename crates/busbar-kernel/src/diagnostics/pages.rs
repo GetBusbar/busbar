@@ -17,13 +17,13 @@ use busbar_contract::diagnostic::{error_docs_version, Class, Diagnostic, ErrorTe
 
 /// The page's file name in the version directory: `BUSBAR-NNNN.md`.
 #[must_use]
-pub fn page_file(d: &Diagnostic) -> String {
+fn page_file(d: &Diagnostic) -> String {
     format!("{}.md", d.banner())
 }
 
 /// The route a page serves at (no leading or trailing slash).
 #[must_use]
-pub fn page_slug(d: &Diagnostic) -> String {
+fn page_slug(d: &Diagnostic) -> String {
     format!("docs/{}/errors/{}", error_docs_version(), d.banner())
 }
 
@@ -55,7 +55,7 @@ fn shown_template(text: &str) -> String {
 
 /// One code's page.
 #[must_use]
-pub fn render_page(d: &Diagnostic, text: Option<&ErrorText>) -> String {
+fn render_page(d: &Diagnostic, text: Option<&ErrorText>) -> String {
     let mut out = String::new();
     out.push_str("---\n");
     out.push_str(&format!(
@@ -121,7 +121,7 @@ fn cell(s: &str) -> String {
 
 /// The index page: every code, grouped by class, linking each page.
 #[must_use]
-pub fn render_index(catalog: &[&Diagnostic]) -> String {
+fn render_index(catalog: &[&Diagnostic]) -> String {
     let version = error_docs_version();
     let mut out = String::new();
     out.push_str("---\n");

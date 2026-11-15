@@ -4,7 +4,6 @@
 //! The signature over a sealed record's digest, minted in the process that sealed it.
 
 use busbar_contract::crypto::ed25519::{SigningKey, VerifyingKey};
-use zeroize::Zeroize as _;
 
 /// The domain this signature is FOR, and the first bytes of every preimage.
 pub const SIGNATURE_DOMAIN: &str = "busbar.audit.record.v1";
@@ -18,16 +17,8 @@ pub const SIGNATURE_ALGORITHM: &str = "ed25519";
 /// How many bytes of the public key's SHA-256 make a key identifier. Eight — sixteen hex
 const KEY_ID_BYTES: usize = 8;
 
-/// The exact bytes an ed25519 signature over one record's digest is computed over.
-#[must_use]
-pub fn signing_preimage(digest_hex: &str) -> Vec<u8> {
-    // busbar:expect(bp::fresh_buffer, reason = "error: only a digest longer than a SHA-256 in hex is framed here; sealing frames on the stack")
-    let mut preimage = Vec::with_capacity(SIGNATURE_DOMAIN.len() + 1 + digest_hex.len());
-    preimage.extend_from_slice(SIGNATURE_DOMAIN.as_bytes());
-    preimage.push(0);
-    preimage.extend_from_slice(digest_hex.as_bytes());
-    preimage
-}
+// A digest longer than a SHA-256 in hex is framed out of line, in the cold module.
+pub use crate::cold::signing_preimage;
 
 /// How long a record preimage over a SHA-256 in hex is: the domain, a NUL, and 64 characters.
 const RECORD_PREIMAGE_BYTES: usize = SIGNATURE_DOMAIN.len() + 1 + 64;
@@ -119,6 +110,13 @@ impl std::error::Error for KeyError {}
 
 /// Decode lowercase hex into exactly `N` bytes, saying nothing about WHAT was wrong with it.
 fn from_hex_exact<const N: usize>(text: &str) -> Result<[u8; N], KeyError> {
+    from_hex_secret::<N>(text).map(|secret| *secret)
+}
+
+/// [`from_hex_exact`], the bytes held where they are wiped when dropped: for a secret seed.
+pub(crate) fn from_hex_secret<const N: usize>(
+    text: &str,
+) -> Result<busbar_contract::secure::SecureArray<N>, KeyError> {
     if text.len() != N * 2 {
         return Err(KeyError::WrongLength);
     }
@@ -127,7 +125,7 @@ fn from_hex_exact<const N: usize>(text: &str) -> Result<[u8; N], KeyError> {
     }
     let mut out = busbar_contract::secure::SecureArray::<N>::zeroed();
     hex::decode_to_slice(text, &mut out[..]).map_err(|_| KeyError::NotHex)?;
-    Ok(*out)
+    Ok(out)
 }
 
 /// The identifier for one public key: the first [`KEY_ID_BYTES`] bytes of its SHA-256, in lowercase
@@ -156,24 +154,10 @@ impl std::fmt::Debug for AuditSigningKey {
 }
 
 impl AuditSigningKey {
-    /// Build one from a 32-byte ed25519 seed.
-    #[must_use]
-    pub fn from_seed(seed: &[u8; 32]) -> Self {
-        // PANIC: any 32-byte seed is a valid RFC 8032 seed; only a backend refusing Ed25519 outright
-        // can fail here, and a node without its audit signature cannot run.
-        let inner = SigningKey::from_seed(seed)
-            .unwrap_or_else(|e| panic!("crypto backend refused an Ed25519 seed: {e}"));
-        // busbar:expect(bp::into_alloc, reason = "config: the signing key is loaded once, when the node is configured")
-        let key_id = std::sync::Arc::from(key_id_of(&inner.verifying_key()));
+    /// A key from its parts, as loading one built them (see `AuditSigningKey::from_seed`, which runs
+    /// once, when the node is configured).
+    pub(crate) fn from_parts(inner: SigningKey, key_id: std::sync::Arc<str>) -> Self {
         AuditSigningKey { inner, key_id }
-    }
-
-    /// Build one from 64 lowercase hex characters.
-    pub fn from_hex_seed(text: &str) -> Result<Self, KeyError> {
-        let mut seed = from_hex_exact::<32>(text.trim())?;
-        let key = AuditSigningKey::from_seed(&seed);
-        seed.zeroize();
-        Ok(key)
     }
 
     /// This key's identifier — the only thing about it that goes into a record.
@@ -336,7 +320,6 @@ impl AuditKeySet {
             .try_into()
             .map_err(|_| KeyError::MalformedSignature)?;
         let preimage = checkpoint_preimage(body);
-        // busbar:expect(bp::state_scan, reason = "config: a checkpoint names no key, so each configured verifying key is tried")
         if self
             .keys
             .iter()

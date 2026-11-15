@@ -10,7 +10,7 @@ use tokio::sync::{mpsc, Mutex as AsyncMutex};
 use super::{DoorRequest, Served};
 
 pub(crate) use crate::root::off_path::serve_lines::session;
-pub use crate::root::off_path::serve_lines::{env_credential, line_carrier};
+pub(crate) use crate::root::off_path::serve_lines::{env_credential, line_carrier};
 
 fn installed() -> &'static Result<Option<&'static str>, String> {
     static CARRIER: std::sync::OnceLock<Result<Option<&'static str>, String>> =
@@ -19,12 +19,12 @@ fn installed() -> &'static Result<Option<&'static str>, String> {
 }
 
 #[must_use]
-pub fn carrier() -> Option<&'static str> {
+pub(crate) fn carrier() -> Option<&'static str> {
     installed().as_ref().ok().copied().flatten()
 }
 
 #[must_use]
-pub fn refusal() -> Option<&'static str> {
+pub(crate) fn refusal() -> Option<&'static str> {
     installed().as_ref().err().map(String::as_str)
 }
 
@@ -44,11 +44,11 @@ pub(crate) fn line_claim(served: &Served) -> Option<(usize, u32)> {
     })
 }
 
-pub fn refuse(plane: &str, carrier: &str, sentence: &str) {
+pub(crate) fn refuse(plane: &str, carrier: &str, sentence: &str) {
     eprintln!("busbar: {plane} {carrier} serve refused to start: {sentence}");
 }
 
-pub struct LineCaller<R> {
+pub(crate) struct LineCaller<R> {
     lines: AsyncMutex<tokio::io::BufReader<R>>,
     max_line: usize,
     out: mpsc::UnboundedSender<Vec<u8>>,
@@ -145,8 +145,10 @@ fn terminated(bytes: &[u8]) -> Vec<u8> {
 impl<R: AsyncRead + Unpin + Send> SessionCaller for LineCaller<R> {
     async fn read(&self) -> Option<Vec<u8>> {
         let mut reader = self.lines.lock().await;
+        // A handed-back line buffer when one is spare; a blank line reuses it for the next read.
+        let mut buf = self.spare.take();
         loop {
-            let mut buf = Vec::new();
+            buf.clear();
             match read_line(&mut *reader, &mut buf, self.max_line).await {
                 Ok(0) => return None,
                 Err(error) => {
@@ -164,7 +166,7 @@ impl<R: AsyncRead + Unpin + Send> SessionCaller for LineCaller<R> {
     }
 }
 
-pub async fn serve_lines(
+pub(crate) async fn serve_lines(
     served: Served,
     app: Arc<busbar_kernel::state::AppHandle>,
     pin: fn() -> Option<crate::root::kernel::PinnedHistory>,

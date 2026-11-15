@@ -22,6 +22,7 @@ use busbar_contract::abi::transport::{
     PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED,
     YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
 };
+use busbar_contract::secure::SecureVec;
 
 /// One framer op, its `in` and its `out`, as the connector hands it to a [`FramerDoor`].
 #[expect(missing_docs, reason = "each variant is the framer op of its own name")]
@@ -101,15 +102,10 @@ impl DoorFacts {
         if self.supports_dial() {
             Ok(())
         } else {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: the refusal text names the transport"
-            )]
-            let error = format!("transport `{}` does not declare dialing support", self.name);
-            Err(Refused {
-                outcome: Outcome::Refused,
-                error,
-            })
+            Err(crate::cold::framing::refusal(
+                Outcome::Refused,
+                format_args!("transport `{}` does not declare dialing support", self.name),
+            ))
         }
     }
 }
@@ -269,12 +265,7 @@ pub(crate) fn refused(c: Crossed) -> Refused {
 
 /// `bytes` that are not UTF-8, as text with each bad sequence replaced (a refusal's text).
 pub(crate) fn lossy(bytes: &[u8]) -> String {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a refusal whose bytes are not UTF-8 is rewritten once"
-    )]
-    let text = String::from_utf8_lossy(bytes).into_owned();
-    text
+    crate::cold::framing::lossy(bytes)
 }
 
 /// One frame piece the framer answered, copied out of the host's buffers.
@@ -383,7 +374,8 @@ pub struct Yielded {
 
 impl Drop for Yielded {
     fn drop(&mut self) {
-        zeroize::Zeroize::zeroize(&mut self.wire);
+        // Adopted without a copy: the secure buffer wipes the wire bytes as it is dropped.
+        drop(SecureVec::from(std::mem::take(&mut self.wire)));
     }
 }
 
@@ -398,11 +390,10 @@ impl Yielded {
         if required > self.wire.capacity() {
             let capacity = required.max(self.wire.capacity().saturating_mul(2));
             // A fresh block of the final capacity (no reallocation of live bytes), then the old
-            // one wiped (LINT-RULES LR-117).
-            let mut grown = Vec::with_capacity(capacity);
-            grown.extend_from_slice(&self.wire);
-            zeroize::Zeroize::zeroize(&mut self.wire);
-            self.wire = grown;
+            // one wiped (LINT-RULES LR-117) by the secure buffer that adopts it.
+            let old = std::mem::replace(&mut self.wire, Vec::with_capacity(capacity));
+            self.wire.extend_from_slice(&old);
+            drop(SecureVec::from(old));
         }
         self.wire.extend_from_slice(bytes);
     }
@@ -490,8 +481,9 @@ pub struct Buffers {
 
 impl Drop for Buffers {
     fn drop(&mut self) {
-        zeroize::Zeroize::zeroize(&mut self.wire);
-        zeroize::Zeroize::zeroize(&mut self.frame);
+        // Adopted without a copy: the secure buffers wipe the bytes as they are dropped.
+        drop(SecureVec::from(std::mem::take(&mut self.wire)));
+        drop(SecureVec::from(std::mem::take(&mut self.frame)));
     }
 }
 
@@ -778,24 +770,19 @@ impl Buffers {
             check_framer_fields(pieces, frame)?;
             check_head_slots_with_pieces(out, &self.heads, self.heads.len() as u64, pieces)
         };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a broken answer's fault text names the rule and field"
-        )]
-        checked().map_err(|f| Refused {
-            outcome: Outcome::Fault,
-            error: format!(
+        checked().map_err(|f| {
+            crate::cold::framing::fault(format_args!(
                 "the framer's sink answer breaks {:?} at {}",
                 f.rule, f.field
-            ),
+            ))
         })?;
         Ok(())
     }
 
     /// Discard a retirement batch in place, including descriptions containing credentials.
     pub(crate) fn wipe_output(&mut self) {
-        zeroize::Zeroize::zeroize(&mut self.wire[..]);
-        zeroize::Zeroize::zeroize(&mut self.frame[..]);
+        self.wire.fill(0);
+        self.frame.fill(0);
         self.pieces.fill(EMPTY_PIECE);
         self.heads.fill(HeadSlots::default());
     }
@@ -813,13 +800,10 @@ impl Buffers {
     /// Take what one READY answer wrote; `false` = it owes more (`YIELD_MORE`).
     pub(crate) fn take(&mut self, o: &FramerOut, into: &mut Yielded) -> Result<bool, Refused> {
         let y = &o.yielded;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: an out-of-bounds answer's fault text names what overran"
-        )]
-        let bad = |what: &str| Refused {
-            outcome: Outcome::Fault,
-            error: format!("the framer's answer is out of bounds: {what}"),
+        let bad = |what: &str| {
+            crate::cold::framing::fault(format_args!(
+                "the framer's answer is out of bounds: {what}"
+            ))
         };
         let wire = self
             .wire
@@ -859,16 +843,11 @@ impl Buffers {
             } else {
                 FieldPiece::Payload
             };
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a refused field block's fault text names why"
-            )]
-            self.lines
-                .take(p.stream, kind, bytes)
-                .map_err(|why| Refused {
-                    outcome: Outcome::Fault,
-                    error: format!("the framer's field block is refused: {why}"),
-                })?;
+            self.lines.take(p.stream, kind, bytes).map_err(|why| {
+                crate::cold::framing::fault(format_args!(
+                    "the framer's field block is refused: {why}"
+                ))
+            })?;
             let got = Got {
                 stream: p.stream,
                 bytes: bytes.to_vec(),
@@ -986,9 +965,6 @@ impl Default for Buffers {
     }
 }
 
-/// The one instant every host-clock reading ([`now_ns`]) and every instant it names
-static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-
 /// The host's monotonic clock, nanoseconds since this process first read it, plus one (never `0`:
 #[must_use]
 pub fn now_ns() -> u64 {
@@ -1004,14 +980,9 @@ pub fn now() -> Instant {
     instant_of(now_ns())
 }
 
-/// [`EPOCH`], fixed by the process's first reading.
+/// The host clock's epoch, fixed once per process by its first reading.
 fn epoch() -> Instant {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the process's clock epoch is fixed once, by its first reading"
-    )]
-    let epoch = *EPOCH.get_or_init(Instant::now);
-    epoch
+    crate::off_path::framing::epoch()
 }
 
 /// The host's monotonic instant `ns` names: the exact inverse of [`now_ns`], so one reading names
@@ -1496,17 +1467,12 @@ pub struct Located {
 
 /// A protocol offer in the handshake's ProtocolNameList encoding (each name led by its one-byte
 fn protocol_names(mut b: &[u8]) -> Option<Vec<Vec<u8>>> {
-    // busbar:expect(bp::fresh_buffer, reason = "boot: a dial's protocol offer is parsed once, at its locate, into the owned list rustls takes")
     let mut names = Vec::new();
     while let Some((&len, rest)) = b.split_first() {
         let len = usize::from(len);
         if len == 0 || rest.len() < len {
             return None;
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a dial's protocol offer is parsed once, at its locate, into the owned list rustls takes"
-        )]
         names.push(rest[..len].to_vec());
         b = &rest[len..];
     }
@@ -1576,20 +1542,13 @@ fn locate_as(
             || o.alpn_needed > alpn_cap as u64
             || o.defaults_needed > defaults_cap as u64;
         if c.outcome == Outcome::Failed && short {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: an oversized locate answer's fault text names the buffer"
-            )]
             let grow = |needed: u64, cap: usize, what: &str| -> Result<usize, Refused> {
                 match usize::try_from(needed) {
                     Ok(n) if n <= LOCATE_CAP => Ok(n.max(cap)),
-                    _ => Err(Refused {
-                        outcome: Outcome::Fault,
-                        error: format!(
-                            "the framer's locate answer asks {needed} bytes for its {what}, past \
-                             the host's {LOCATE_CAP}"
-                        ),
-                    }),
+                    _ => Err(crate::cold::framing::fault(format_args!(
+                        "the framer's locate answer asks {needed} bytes for its {what}, past \
+                         the host's {LOCATE_CAP}"
+                    ))),
                 }
             };
             auth_cap = grow(o.authority_needed, auth_cap, "authority")?;
@@ -1602,17 +1561,14 @@ fn locate_as(
         // The answer's text, kept in the locate buffer it was written into: the buffer is cut to
         // the written length and becomes the String in place (only bytes that are not UTF-8 are
         // rewritten, lossily, as before).
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: an overrunning locate answer's fault text names the buffer"
-        )]
         let text = |mut b: Vec<u8>, n: u64, what: &str| -> Result<String, Refused> {
             let n = usize::try_from(n)
                 .ok()
                 .filter(|n| *n <= b.len())
-                .ok_or_else(|| Refused {
-                    outcome: Outcome::Fault,
-                    error: format!("the framer's {what} overruns its locate buffer"),
+                .ok_or_else(|| {
+                    crate::cold::framing::fault(format_args!(
+                        "the framer's {what} overruns its locate buffer"
+                    ))
                 })?;
             b.truncate(n);
             Ok(String::from_utf8(b).unwrap_or_else(|e| lossy(e.as_bytes())))
@@ -1698,20 +1654,14 @@ pub fn encode_head(
     let mut y = Yielded::default();
 
     let taken = bufs.take(&o, &mut y);
-    let wire = busbar_contract::secure::SecureVec::from(std::mem::take(&mut y.wire));
+    let wire = SecureVec::from(std::mem::take(&mut y.wire));
     #[cfg(test)]
     crate::support::watch_encoded_wire(&wire);
     if !taken? {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the fault text of an encode that owed more"
-        )]
-        return Err(Refused {
-            outcome: Outcome::Fault,
-            error: "the framer answered `encode` with YIELD_MORE: an encode renders the whole \
-                    message into one buffer sized for it"
-                .to_owned(),
-        });
+        return Err(crate::cold::framing::fault(format_args!(
+            "the framer answered `encode` with YIELD_MORE: an encode renders the whole \
+             message into one buffer sized for it"
+        )));
     }
     Ok(wire.into_vec())
 }
@@ -1759,16 +1709,9 @@ impl Recalls {
         self.bytes = self.bytes.saturating_add(bufs.output_work(o));
         self.control_progress(control_progress)?;
         if self.stalls >= MORE_STALLS {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a stalled framer's fault text"
-            )]
-            return Err(Refused {
-                outcome: Outcome::Fault,
-                error: format!(
-                    "the framer owed more {MORE_STALLS} times in a row and wrote nothing"
-                ),
-            });
+            return Err(crate::cold::framing::fault(format_args!(
+                "the framer owed more {MORE_STALLS} times in a row and wrote nothing"
+            )));
         }
         Ok(())
     }
@@ -1782,16 +1725,9 @@ impl Recalls {
             >() as u64);
         }
         if self.bytes > MORE_BYTES {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: an overworked framer's fault text"
-            )]
-            return Err(Refused {
-                outcome: Outcome::Fault,
-                error: format!(
-                    "the framer's output/control work for one op ran past {MORE_BYTES} bytes"
-                ),
-            });
+            return Err(crate::cold::framing::fault(format_args!(
+                "the framer's output/control work for one op ran past {MORE_BYTES} bytes"
+            )));
         }
         Ok(())
     }
@@ -1958,10 +1894,6 @@ impl Framing {
             idle: Vec::new(),
             parked: ParkedOps::default(),
         };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a framing's begin is built once per connection, owned so it may park on its ticket"
-        )]
         let op = Ticketed::Begin {
             side,
             target: target.to_owned(),
@@ -2048,14 +1980,9 @@ impl Framing {
             return Ok(Some(t));
         }
         if self.parked.len() >= MAX_PARKED {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: an over-parked framing's fault text"
-            )]
-            return Err(Refused {
-                outcome: Outcome::Fault,
-                error: format!("more than {MAX_PARKED} ops are parked on the framing"),
-            });
+            return Err(crate::cold::framing::fault(format_args!(
+                "more than {MAX_PARKED} ops are parked on the framing"
+            )));
         }
         self.door.framing_side().map(Some).ok_or_else(|| Refused {
             outcome: Outcome::Fault,
@@ -2104,18 +2031,10 @@ impl Framing {
                     Some(g) if *side != SIDE_DIAL => g.lines(),
                     _ => &[],
                 };
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "boot: a listener's guest lines are lent once per connection's begin"
-                )]
                 let predicates: Vec<Vec<FieldPredicate>> = lent
                     .iter()
                     .map(|l| l.fields.iter().map(predicate_of).collect())
                     .collect();
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "boot: a listener's guest lines are lent once per connection's begin"
-                )]
                 let entries: Vec<LineEntry> = lent
                     .iter()
                     .zip(&predicates)
@@ -2736,7 +2655,6 @@ impl Framing {
     pub fn try_detach(&mut self) -> Result<Detached, Refused> {
         self.quiet()?;
         let mut crossed = false;
-        // busbar:expect(bp::fresh_buffer, reason = "boot: a handoff carries its leftover bytes owned to the adopter, once per detached connection")
         let mut left = Vec::new();
         let mut recalls = Recalls::default();
         loop {
@@ -2830,16 +2748,11 @@ impl Framing {
         i.final_details = span(message_len, details_len)?;
         i.final_bytes = bytes.as_ptr();
         i.final_bytes_len = bytes.len();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a broken final status's fault text names the rule and field"
-        )]
-        check_final_status(&i, rows, claim).map_err(|f| Refused {
-            outcome: Outcome::Fault,
-            error: format!(
+        check_final_status(&i, rows, claim).map_err(|f| {
+            crate::cold::framing::fault(format_args!(
                 "the stream's final status breaks {:?} at {}",
                 f.rule, f.field
-            ),
+            ))
         })?;
         if self.token == 0 {
             return Err(Refused {

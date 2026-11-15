@@ -14,11 +14,12 @@ use std::{
     pin::Pin,
 };
 
-pub type CheckpointCall<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
+pub(crate) type CheckpointCall<'a, T> =
+    Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
 /// The adapter uses one exact native checkpoint candidate and previous-value predicate.
 /// Unknown/cancellation retains that candidate. `confirm` returns authoritative readback only
 /// after matching Applied, with the protected original payload unchanged. It never returns a bool.
-pub trait Checkpoints: Send + Sync {
+pub(crate) trait Checkpoints: Send + Sync {
     fn durability(&self) -> busbar_contract::persistence::Durability;
     fn load(&self, migration: [u8; 16]) -> CheckpointCall<'_, Option<Secret<Vec<u8>>>>;
     fn confirm<'a>(
@@ -35,7 +36,7 @@ pub trait Checkpoints: Send + Sync {
     ) -> CheckpointCall<'a, Secret<Vec<u8>>>;
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Phase {
+pub(crate) enum Phase {
     Intent,
     Validated,
     PendingReplace(u32),
@@ -48,36 +49,36 @@ struct Document {
     metadata: Option<SecureVec>,
     read_only: bool,
 }
-pub struct Inventory {
+pub(crate) struct Inventory {
     documents: Vec<Document>,
     secrets: Vec<SecretPublication>,
     digest: [u8; 32],
 }
 /// Constructed only after the checkpoint adapter confirms and returns exact native bytes.
-pub struct IntentProof {
+pub(crate) struct IntentProof {
     migration: [u8; 16],
     digest: [u8; 32],
     phase: Phase,
 }
-pub struct EphemeralIntentProof {
+pub(crate) struct EphemeralIntentProof {
     digest: [u8; 32],
 }
 /// Read-only access to checkpoint material, constructed only from confirmed custody.
-pub struct RestoredDocuments<'a> {
+pub(crate) struct RestoredDocuments<'a> {
     inventory: &'a Inventory,
     phase: Phase,
 }
 impl RestoredDocuments<'_> {
-    pub fn publications(&self) -> impl Iterator<Item = &Publication> {
+    pub(crate) fn publications(&self) -> impl Iterator<Item = &Publication> {
         self.inventory
             .documents
             .iter()
             .map(|held| &held.publication)
     }
-    pub fn secrets(&self) -> impl Iterator<Item = &SecretPublication> {
+    pub(crate) fn secrets(&self) -> impl Iterator<Item = &SecretPublication> {
         self.inventory.secrets.iter()
     }
-    pub fn recoverable_missing(&self, path: &Path) -> bool {
+    pub(crate) fn recoverable_missing(&self, path: &Path) -> bool {
         let Phase::PendingReplace(index) = self.phase else {
             return false;
         };
@@ -94,23 +95,23 @@ impl RestoredDocuments<'_> {
 }
 /// Only the startup validation owner calls `validated`, after its actual candidate is validated.
 /// This proof is distinct from the earlier intent that authorizes private secret artifacts.
-pub struct ValidatedProof {
+pub(crate) struct ValidatedProof {
     migration: [u8; 16],
     digest: [u8; 32],
     phase: Phase,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FileOutcome {
+pub(crate) enum FileOutcome {
     Published,
     AlreadyConverted,
     InMemoryOnly,
 }
 /// Test probe: what each document's publication came to.
 #[cfg(test)]
-pub struct FileReport {
+pub(crate) struct FileReport {
     pub outcome: FileOutcome,
 }
-pub struct Report {
+pub(crate) struct Report {
     #[cfg(test)]
     pub files: Vec<FileReport>,
     /// False keeps a native replacement's security and namespace recovery authority pending.
@@ -118,7 +119,7 @@ pub struct Report {
 }
 /// A host/location locator is stable across partial conversion and excludes document contents.
 /// The caller supplies its existing stable host identity, never a boot-random node identifier.
-pub fn custody_locator(documents: &Documents, host: &str) -> Result<[u8; 32], String> {
+pub(crate) fn custody_locator(documents: &Documents, host: &str) -> Result<[u8; 32], String> {
     if host.is_empty() {
         return Err("document custody requires a stable host identity".into());
     }
@@ -232,7 +233,7 @@ impl<'a> Reader<'a> {
     }
 }
 impl Inventory {
-    pub fn digest(&self) -> [u8; 32] {
+    pub(crate) fn digest(&self) -> [u8; 32] {
         self.digest
     }
     fn capture(documents: &Documents, fs: &dyn DurableFs) -> Result<Self, String> {
@@ -277,7 +278,7 @@ impl Inventory {
             digest: [0; 32],
         };
         inventory.check()?;
-        inventory.digest = busbar_contract::crypto::sha256(&inventory.material()?).into();
+        inventory.digest = busbar_contract::crypto::sha256(&inventory.material()?);
         Ok(inventory)
     }
     fn check(&self) -> Result<(), String> {
@@ -533,7 +534,7 @@ impl Inventory {
     }
     /// Load the retained original inventory on restart, recognizing only original or converted files.
     /// Otherwise capture the complete inventory and confirm its protected intent before artifacts.
-    pub async fn prepare(
+    pub(crate) async fn prepare(
         documents: &Documents,
         fs: &dyn DurableFs,
         checkpoints: &dyn Checkpoints,
@@ -568,14 +569,14 @@ impl Inventory {
         Ok((inventory, proof))
     }
     /// Private retry-safe artifacts may be materialized after intent Applied, before full App validation.
-    pub fn materialize_secrets(&self, proof: &IntentProof) -> Result<(), String> {
+    pub(crate) fn materialize_secrets(&self, proof: &IntentProof) -> Result<(), String> {
         if proof.digest != self.digest {
             return Err(failure());
         }
         self.materialize_artifacts()
     }
     /// Ephemeral deployments keep authored originals intact and retain only wiping memory intent.
-    pub fn prepare_ephemeral(
+    pub(crate) fn prepare_ephemeral(
         documents: &Documents,
         fs: &dyn DurableFs,
     ) -> Result<(Self, EphemeralIntentProof), String> {
@@ -585,7 +586,7 @@ impl Inventory {
         };
         Ok((inventory, proof))
     }
-    pub fn materialize_ephemeral_secrets(
+    pub(crate) fn materialize_ephemeral_secrets(
         &self,
         proof: &EphemeralIntentProof,
     ) -> Result<(), String> {
@@ -594,7 +595,7 @@ impl Inventory {
         }
         self.materialize_artifacts()
     }
-    pub fn ephemeral_report(&self, proof: &EphemeralIntentProof) -> Result<Report, String> {
+    pub(crate) fn ephemeral_report(&self, proof: &EphemeralIntentProof) -> Result<Report, String> {
         if proof.digest != self.digest {
             return Err(failure());
         }
@@ -626,7 +627,7 @@ impl Inventory {
         Ok(())
     }
     /// Invoke only after the actual selected target and candidate App pass their validation boundary.
-    pub async fn validated(
+    pub(crate) async fn validated(
         &self,
         proof: IntentProof,
         checkpoints: &dyn Checkpoints,
@@ -647,7 +648,7 @@ impl Inventory {
             phase,
         })
     }
-    pub async fn publish(
+    pub(crate) async fn publish(
         &self,
         proof: ValidatedProof,
         checkpoints: &dyn Checkpoints,

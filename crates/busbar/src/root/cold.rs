@@ -198,3 +198,78 @@ pub(crate) fn session_book_refused(error: &dyn std::fmt::Debug) -> String {
 pub(crate) fn cut_short_status(message: &[u8], details: &[u8]) -> (Vec<u8>, Vec<u8>) {
     (message.to_vec(), details.to_vec())
 }
+
+/// `serve::serve_datagram`: caller input that arrived before the caller's channel opened, held as
+/// its own copy until the channel is ready.
+#[cold]
+pub(crate) fn early_input(bytes: &[u8]) -> Vec<u8> {
+    bytes.to_vec()
+}
+
+/// `serve`: the refusal of a media offer on a carrier no listener is configured for, naming the
+/// setting to set: `<section>.<target>.listen` when an inbound need names the carrier, else the
+/// carrier's own `listen`.
+#[cold]
+pub(crate) fn media_unlistened(section: &str, target: Option<&str>, carrier: &str) -> String {
+    let setting = match target {
+        Some(target) => format!("{section}.{target}.listen"),
+        None => format!("the `{carrier}` listener's `listen`"),
+    };
+    format!(
+        "this deployment serves no media for the offer: no listener is configured for its \
+         `{carrier}` carrier (set `{setting}`)"
+    )
+}
+
+/// `serve`: the refusal of a media offer its claim door could not open.
+#[cold]
+pub(crate) fn media_unopened(why: &str) -> String {
+    format!("the offer cannot open a media session: {why}")
+}
+
+/// `serve`: a refused media offer, rendered by its plane (or as its plain text when the plane
+/// renders none) and audited as rejected.
+#[cold]
+pub(crate) fn refused_open(
+    served: &crate::root::serve::ServedPlane,
+    principal: &str,
+    arrival: &busbar_kernel::plane_driver::Arrival,
+    carrier: &str,
+    reason: busbar_contract::caps::ReasonCode,
+    text: &str,
+) -> busbar_kernel::plane_driver::Rendered {
+    let status = busbar_kernel::plane_driver::refusal_status(reason);
+    let dialect = served
+        .snapshot
+        .claims
+        .get(arrival.claim as usize)
+        .map_or(0, |c| u32::from(c.refusal_dialect));
+    let rendered = served
+        .driver
+        .refuse_kernel(reason, status, text, dialect, &arrival.target)
+        .unwrap_or_else(|| busbar_kernel::plane_driver::Rendered {
+            status,
+            fields: Vec::new(),
+            body: text.as_bytes().to_vec(),
+        });
+    busbar_kernel::audit::auditlog::emit_admin_hostless_now(
+        "door.session_open",
+        &format!("{}:{carrier}", served.instance),
+        busbar_contract::vocab::OUTCOME_REJECTED,
+        principal,
+    );
+    rendered
+}
+
+/// `serve`: a pool name a plane decoded that is not UTF-8, replaced lossily.
+#[cold]
+pub(crate) fn lossy_name(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// `serve`: a datagram admission refused with its fixed reason, in the admission callback's owned
+/// error.
+#[cold]
+pub(crate) fn admission_refused(reason: &'static str) -> String {
+    reason.to_owned()
+}

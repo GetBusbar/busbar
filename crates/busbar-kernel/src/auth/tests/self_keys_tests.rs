@@ -307,6 +307,8 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
             .secret
     }
 
+    let mint_now = busbar_kernel::store::now();
+    let now = mint_now;
     for contender_refresh in [false, true] {
         let store = Arc::new(RefreshOverlapStore {
             inner: crate::real_store::native_backend().await,
@@ -326,7 +328,6 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
             .unwrap(),
         );
 
-        let mint_now = busbar_kernel::store::now();
         let original = issued(
             mint_provisioned_self_key(
                 gov.clone(),
@@ -339,7 +340,6 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
             )
             .await,
         );
-        let now = busbar_kernel::store::now();
         let original_id = gov
             .verify_token(original.expose(&crate::seal::lend()), now, None)
             .expect("the initial token verifies")
@@ -443,7 +443,6 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
             "the same subject must wait for its refresh transfer"
         );
 
-        let now = busbar_kernel::store::now();
         assert!(gov
             .verify_token(original.expose(&crate::seal::lend()), now, None)
             .is_none());
@@ -853,7 +852,7 @@ async fn resolve_then_issue_via_real_seam() {
         crate::governance::SelfMintOp::Issue,
         p,
         "corp",
-        pools,
+        pools.as_deref(),
         mint_now.saturating_add(3600),
         mint_now,
     )
@@ -865,7 +864,7 @@ async fn resolve_then_issue_via_real_seam() {
         .starts_with("bbk_"));
     assert_eq!(issued.group, "user:sam");
 
-    let now = busbar_kernel::store::now();
+    let now = mint_now;
     assert!(gov
         .verify_token(issued.secret.expose(&crate::seal::lend()), now, None)
         .is_some());
@@ -889,7 +888,7 @@ async fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
         crate::governance::SelfMintOp::Issue,
         p,
         "corp",
-        pools,
+        pools.as_deref(),
         mint_now.saturating_add(3600),
         mint_now,
     )
@@ -1360,7 +1359,7 @@ async fn a_second_provider_asserting_the_same_subject_is_refused() {
         after.generation_hash, before.generation_hash,
         "corp's key is untouched"
     );
-    let now = busbar_kernel::store::now();
+    let now = mint_now;
     assert!(gov
         .verify_token(issued.secret.expose(&crate::seal::lend()), now, None)
         .is_some());

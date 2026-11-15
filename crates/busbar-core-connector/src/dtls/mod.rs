@@ -81,12 +81,8 @@ impl SessionCert {
     /// Mint a fresh self-signed ECDSA P-256 certificate: the crypto backend generates the key and
     /// keeps it (`busbar_contract::crypto::dtls::dtls_self_signed`); dropping the cert forgets it.
     pub fn mint() -> Result<Self, Failure> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the minting failure's text"
-        )]
-        let cert =
-            crypto::dtls::dtls_self_signed().map_err(|e| Failure::Certificate(e.to_string()))?;
+        let cert = crypto::dtls::dtls_self_signed()
+            .map_err(|e| crate::cold::datagram::certificate_failed(&e))?;
         Ok(SessionCert {
             fingerprint: sha256(cert.der()),
             cert,
@@ -106,7 +102,6 @@ impl SessionCert {
     }
 
     fn dimpl(&self) -> dimpl::DtlsCertificate {
-        // busbar:expect(bp::clone_alloc, reason = "boot: dimpl takes the certificate owned, once per association handshake")
         let certificate = self.cert.der().to_vec();
         dimpl::DtlsCertificate {
             certificate,
@@ -228,18 +223,21 @@ pub struct Association {
     remote_fingerprint: [u8; 32],
     dtls: Option<dimpl::Dtls>,
     /// Paths a verified check came from, and when the last one did.
-    heard: HashMap<SocketAddr, Instant>,
+    pub(crate) heard: HashMap<SocketAddr, Instant>,
     /// Far-end candidates the host's destination guard admitted (the dialling side).
     candidates: HashSet<SocketAddr>,
     /// Core's probes say ICE-CONTROLLING (the dialling side) rather than ICE-CONTROLLED.
     controlling: bool,
     /// The dialling side: only admitted candidates may be heard or bound.
     dialling: bool,
-    proven: HashMap<SocketAddr, Instant>,
-    probes: HashMap<[u8; 12], (SocketAddr, Instant)>,
+    pub(crate) proven: HashMap<SocketAddr, Instant>,
+    pub(crate) probes: HashMap<[u8; 12], (SocketAddr, Instant)>,
+    /// The probes in flight indexed by path: when each one to the path was sent (kept with
+    /// `probes`, so a path's probes are found by key, not by a sweep).
+    pub(crate) probed: HashMap<SocketAddr, smallvec::SmallVec<[Instant; 2]>>,
     tie_breaker: [u8; 8],
-    bound: Option<SocketAddr>,
-    wanted: Option<SocketAddr>,
+    pub(crate) bound: Option<SocketAddr>,
+    pub(crate) wanted: Option<SocketAddr>,
     next_consent: Option<Instant>,
     /// DTLS datagrams from a heard-but-unbound path: each one's path and its span of
     /// `early_bytes`, the one buffer they are all held in (cleared, never shrunk, on replay).
@@ -289,6 +287,7 @@ impl Association {
             dialling: false,
             proven: HashMap::new(),
             probes: HashMap::new(),
+            probed: HashMap::new(),
             tie_breaker,
             bound: None,
             wanted: None,
@@ -317,7 +316,7 @@ impl Association {
             Class::Stun => {
                 if let Some(txid) = stun::verified_probe_answer(datagram, &self.keys) {
                     if self.probes.get(&txid).is_some_and(|(to, _)| *to == path) {
-                        self.probes.remove(&txid);
+                        self.probe_gone(&txid);
                         self.proven.insert(path, now);
                         self.on_proof(path, now);
                         return Verdict::Kept;
@@ -486,13 +485,7 @@ impl Association {
             return;
         }
 
-        let keep = [self.bound, self.wanted];
-        let fresh = |t: &Instant| now.saturating_duration_since(*t) < CONSENT_TIMEOUT;
-        self.heard
-            .retain(|p, t| keep.contains(&Some(*p)) || fresh(t));
-        self.proven
-            .retain(|p, t| keep.contains(&Some(*p)) || fresh(t));
-        self.probes.retain(|_, (_, sent)| fresh(sent));
+        self.expire(now);
         if let Some(bound) = self.bound {
             let last = self.proven.get(&bound).copied();
             if last.is_some_and(|t| now.saturating_duration_since(t) >= CONSENT_TIMEOUT) {
@@ -505,11 +498,10 @@ impl Association {
             }
         }
         if let Some(wanted) = self.wanted.filter(|w| Some(*w) != self.bound) {
+            // Every probe to `wanted` is stale exactly when its latest one is.
             let stale = self
-                .probes
-                .values()
-                .filter(|(to, _)| *to == wanted)
-                .all(|(_, sent)| now.saturating_duration_since(*sent) >= PROBE_RETRY);
+                .latest_probe(wanted)
+                .is_none_or(|sent| now.saturating_duration_since(sent) >= PROBE_RETRY);
             if stale {
                 self.send_probe(wanted, now);
             }
@@ -582,44 +574,26 @@ impl Association {
 
     /// Record a verified check from `path`. At the cap the oldest heard path that is neither bound
     fn hear(&mut self, path: SocketAddr, now: Instant) {
-        if !self.heard.contains_key(&path) && self.heard.len() >= MAX_HEARD_PATHS {
-            let keep = [self.bound, self.wanted];
-            let oldest = self
-                .heard
-                .iter()
-                .filter(|(p, _)| !keep.contains(&Some(**p)))
-                .min_by_key(|(_, t)| **t)
-                .map(|(p, _)| *p);
-            match oldest {
-                Some(p) => {
-                    self.heard.remove(&p);
-                    self.proven.remove(&p);
-                }
-                None => return,
-            }
+        if !self.heard.contains_key(&path)
+            && self.heard.len() >= MAX_HEARD_PATHS
+            && !self.let_go_oldest_heard()
+        {
+            return;
         }
         self.heard.insert(path, now);
     }
 
     /// Probe `path` unless a probe to it is already in flight.
     fn probe(&mut self, path: SocketAddr, now: Instant) {
-        if !self.probes.values().any(|(to, _)| *to == path) {
+        if !self.probed.contains_key(&path) {
             self.send_probe(path, now);
         }
     }
 
     fn send_probe(&mut self, path: SocketAddr, now: Instant) {
         if self.probes.len() >= MAX_PROBES {
-            let keep = [self.bound, self.wanted];
-            let oldest = |spare: bool| {
-                self.probes
-                    .iter()
-                    .filter(|(_, (to, _))| !spare || !keep.contains(&Some(*to)))
-                    .min_by_key(|(_, (_, sent))| *sent)
-                    .map(|(id, _)| *id)
-            };
-            if let Some(id) = oldest(true).or_else(|| oldest(false)) {
-                self.probes.remove(&id);
+            if let Some(id) = self.oldest_probe() {
+                self.probe_gone(&id);
             }
         }
         let mut txid = [0_u8; 12];
@@ -629,8 +603,25 @@ impl Association {
         let Some(probe) = stun::probe(&self.keys, txid, self.tie_breaker, self.controlling) else {
             return;
         };
-        self.probes.insert(txid, (path, now));
+        if let Some((to, sent)) = self.probes.insert(txid, (path, now)) {
+            unindex_probe(&mut self.probed, to, sent);
+        }
+        self.probed.entry(path).or_default().push(now);
         self.wire.push_back((path, probe));
+    }
+
+    /// The probe `txid` is out of flight (answered or let go): removed with its path index entry.
+    fn probe_gone(&mut self, txid: &[u8; 12]) {
+        if let Some((to, sent)) = self.probes.remove(txid) {
+            unindex_probe(&mut self.probed, to, sent);
+        }
+    }
+
+    /// When the latest probe in flight to `path` was sent.
+    fn latest_probe(&self, path: SocketAddr) -> Option<Instant> {
+        self.probed
+            .get(&path)
+            .and_then(|sents| sents.iter().max().copied())
     }
 
     /// A probe to `path` was answered: apply a bind waiting on it.
@@ -648,12 +639,7 @@ impl Association {
         }
         self.bound = Some(path);
         let mut due = proved.map_or(now + CONSENT_INTERVAL, |proved| proved + CONSENT_INTERVAL);
-        if let Some(sent) = self
-            .probes
-            .values()
-            .filter_map(|(to, sent)| (*to == path).then_some(*sent))
-            .max()
-        {
+        if let Some(sent) = self.latest_probe(path) {
             due = due.max(sent + CONSENT_INTERVAL);
         }
         if due <= now {
@@ -664,7 +650,7 @@ impl Association {
         if self.dtls.is_none() {
             let provider = match crypto::dtls::dtls_provider() {
                 Ok(p) => p,
-                Err(e) => return self.fail(Failure::Dtls(e.to_string())),
+                Err(e) => return self.fail(dtls_failed(&e)),
             };
             let config = match dimpl::Config::builder()
                 .with_crypto_provider(provider)
@@ -714,19 +700,10 @@ impl Association {
             dimpl::SrtpProfile::AEAD_AES_128_GCM => SrtpProfile::AeadAes128Gcm,
             dimpl::SrtpProfile::AEAD_AES_256_GCM => SrtpProfile::AeadAes256Gcm,
             other => {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: a refused profile fails the association, naming it"
-                )]
-                let named = other.to_string();
-                self.fail(Failure::Profile(named));
+                self.fail(crate::cold::datagram::profile_refused(&other));
                 return;
             }
         };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the SRTP keying is exported once per association, zeroed on drop"
-        )]
         let material = SecureVec::from(material);
         self.up
             .push_back(Up::Keyed(SrtpKeying { profile, material }));
@@ -779,12 +756,7 @@ impl Association {
                     break;
                 }
                 other => {
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "error: an output the engine never owes fails the association, naming it"
-                    )]
-                    let reason = format!("{other:?}");
-                    self.fail(Failure::Dtls(reason));
+                    self.fail(crate::cold::datagram::output_unowed(&other));
                     break;
                 }
             }
@@ -813,15 +785,24 @@ impl std::fmt::Debug for Hex<'_> {
     }
 }
 
-/// A failure of the DTLS layer itself, with its text.
-fn dtls_failed(e: &dyn std::fmt::Display) -> Failure {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a failed association keeps the DTLS layer's failure text"
-    )]
-    let text = e.to_string();
-    Failure::Dtls(text)
+/// Drop one probe sent at `sent` from `path`'s entry in the probe index (the entry goes with its
+/// last probe).
+fn unindex_probe(
+    probed: &mut HashMap<SocketAddr, smallvec::SmallVec<[Instant; 2]>>,
+    path: SocketAddr,
+    sent: Instant,
+) {
+    if let Some(sents) = probed.get_mut(&path) {
+        if let Some(at) = sents.iter().position(|s| *s == sent) {
+            sents.swap_remove(at);
+        }
+        if sents.is_empty() {
+            probed.remove(&path);
+        }
+    }
 }
+
+use crate::cold::datagram::dtls_failed;
 
 #[cfg(test)]
 mod tests;
