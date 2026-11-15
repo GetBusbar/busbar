@@ -75,8 +75,11 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
-        .expect("the product deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document.clone(),
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
@@ -264,7 +267,11 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
     // not merely at the final pointer swap. This exercises the existing String builder error
     // path and verifies that the transaction retains its typed Forbidden admission result.
     let cfg = busbar_kernel::config::resolve(
-        &busbar_kernel::config::deploy_from_deserializer(document.clone()).unwrap(),
+        &busbar_kernel::config::deploy_from_deserializer(
+            document.clone(),
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .unwrap(),
         &Default::default(),
     )
     .unwrap();

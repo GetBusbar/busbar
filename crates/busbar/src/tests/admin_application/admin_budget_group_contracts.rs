@@ -168,8 +168,11 @@ async fn test_admin_v1_patch_no_op_on_an_already_counted_key_is_not_an_admission
     document["groups"] =
         serde_json::to_value(&groups).expect("the original group definitions serialize");
     document["limits"] = serde_json::json!({"max_keys_per_principal": 1});
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())

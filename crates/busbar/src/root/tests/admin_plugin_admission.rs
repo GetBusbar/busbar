@@ -155,12 +155,15 @@ async fn serve_admission_with_inputs(
         &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
     )
     .expect("actual store settings are JSON");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {}, "models": {},
-        "auth": {"chain": [], "admin_auth": [busbar_kernel::config::operator_provider()]},
-        "store": {"module": module, "settings": settings},
-        "advanced": {"allow_destinations": ["127.0.0.1"]}
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {}, "models": {},
+            "auth": {"chain": [], "admin_auth": [busbar_kernel::config::operator_provider()]},
+            "store": {"module": module, "settings": settings},
+            "advanced": {"allow_destinations": ["127.0.0.1"]}
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the admission deployment parses");
     let mut resolved = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
     let admin_token_file = dir.with_extension("admin-token");

@@ -93,8 +93,11 @@ async fn build_with_hook_makes_a_plane_attach_live() {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
         document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
-        let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-            .expect("the actual admin deployment parses");
+        let deploy = busbar_kernel::config::deploy_from_deserializer(
+            document,
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("the actual admin deployment parses");
         let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the actual admin deployment resolves");
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
