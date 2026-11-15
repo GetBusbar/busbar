@@ -1040,11 +1040,14 @@ fn check_secret_module_claim(
     Ok(())
 }
 
+/// The secret resolver of one generation: its `secret_modules` opened over `registry`, serving the
+/// shorthand `sources` that generation was read under (SECRET-SHORTHAND-BOOT §3.4).
 pub(crate) fn build_secret_resolver(
     registry: Arc<dyn PluginRows>,
     secret_modules: &std::collections::BTreeMap<String, config::SecretModuleCfg>,
+    sources: &busbar_contract::secret_ref::Sugars,
 ) -> Result<config::secret::SecretResolver, String> {
-    let builtins = config::secret::SecretResolver::builtins_only();
+    let builtins = config::secret::SecretResolver::builtins_only().with_sources(sources.clone());
 
     let mut raw_config: std::collections::BTreeMap<
         String,
@@ -1071,32 +1074,32 @@ pub(crate) fn build_secret_resolver(
     }
 
     let opened = OpenedSecrets::default();
-    Ok(config::secret::SecretResolver::with_scoped_plugin(
-        Box::new(
-            move |module: &str,
-                  settings: &busbar_contract::plugin_settings::Settings,
-                  scope: Option<&busbar_contract::config_time::ConfigScope>|
-                  -> Result<config::secret::Held, config::secret::SecretRefused> {
-                if let Some(axis) = config::secret::axis().filter(|a| a.answers(module)) {
-                    let canonical = registry.resolve(module).map(|p| p.key);
-                    let key = canonical.as_deref().unwrap_or(module);
-                    return opened.resolve(key, settings, scope, || {
-                        let raw = canonical.as_ref().and_then(|name| raw_config.get(name));
-                        let linked = config::secret::SecretResolver::builtins_only();
-                        axis.open(module, raw, &|r| match scope {
-                            Some(scope) => linked.resolve_at_config(r, scope),
-                            None => linked.resolve(r),
-                        })
-                    });
-                }
+    let sources = sources.clone();
+    Ok(config::secret::SecretResolver::with_scoped_plugin(Box::new(
+        move |module: &str,
+              settings: &busbar_contract::plugin_settings::Settings,
+              scope: Option<&busbar_contract::config_time::ConfigScope>|
+              -> Result<config::secret::Held, config::secret::SecretRefused> {
+            if let Some(axis) = config::secret::axis().filter(|a| a.answers(module)) {
+                let canonical = registry.resolve(module).map(|p| p.key);
+                let key = canonical.as_deref().unwrap_or(module);
+                return opened.resolve(key, settings, scope, || {
+                    let raw = canonical.as_ref().and_then(|name| raw_config.get(name));
+                    let linked = config::secret::SecretResolver::builtins_only();
+                    axis.open(module, raw, &|r| match scope {
+                        Some(scope) => linked.resolve_at_config(r, scope),
+                        None => linked.resolve(r),
+                    })
+                });
+            }
 
-                Err(config::secret::SecretRefused {
-                    error_kind: busbar_contract::abi::secret::ERROR_KIND_INVALID,
-                    text: registry.secret_refusal(module),
-                })
-            },
-        ),
+            Err(config::secret::SecretRefused {
+                error_kind: busbar_contract::abi::secret::ERROR_KIND_INVALID,
+                text: registry.secret_refusal(module),
+            })
+        },
     ))
+    .with_sources(sources))
 }
 
 /// THE SECRET PLUGINS A RESOLVER OPENED, one SOURCE per plugin (audit kernel-K1 #6).

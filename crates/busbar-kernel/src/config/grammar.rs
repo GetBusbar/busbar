@@ -142,6 +142,17 @@ impl Grammar {
         &self.report
     }
 
+    /// This grammar as an admin response may show it (SECRET-SHORTHAND-BOOT §3.9): a refusal names
+    /// the item and its cause class, never a file, a trust setting or the inventory; the report
+    /// is one pointer to the plugin listing, which a caller reads under its own authority.
+    #[must_use]
+    pub fn trimmed(mut self) -> Self {
+        if !self.report.is_empty() {
+            self.report = vec![ADMIN_REPORT.to_owned()];
+        }
+        self
+    }
+
     /// Add one report line (the first-boot fetch limit, §3.9), within the cap.
     pub fn push_report(&mut self, line: String) {
         if self.report.len() < REPORT_LINES {
@@ -252,6 +263,9 @@ impl Grammar {
         refusal
     }
 }
+
+/// What an admin response shows in place of a grammar's report (§3.9).
+pub const ADMIN_REPORT: &str = "see GET /api/v1/admin/plugins for what plugins.dir admitted";
 
 /// The most report lines a grammar carries; the scan's own cap leaves room for the fetch lines.
 const REPORT_LINES: usize = 24;
@@ -502,18 +516,6 @@ impl<'a> PhaseOneIn<'a> {
             fetch: Fetch::None,
         }
     }
-}
-
-/// The words the live secret axis declares, as a grammar: what the serving generation admitted.
-/// For an admin request body decoded before its own read is computed (SECRET-SHORTHAND-BOOT MR-B3
-/// moves admin bodies to their own phase 1), never for a configuration read.
-#[must_use]
-pub fn admitted() -> Grammar {
-    Grammar::new(
-        super::secret::admitted_sugars(),
-        BTreeMap::new(),
-        Vec::new(),
-    )
 }
 
 /// The composition root's phase 1 ([`crate::preflight::RootInstall::grammar`]).

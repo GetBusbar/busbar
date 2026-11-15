@@ -578,13 +578,21 @@ pub fn catalog_from_str_used(
     busbar_contract::yaml::with_deserializer(text, |d| catalog_used(d, grammar))
 }
 
-/// An admin request body's catalog, decoded with the body before its own read is computed: under
-/// the words the serving generation admitted (the live axis), as the body's decode always has.
-/// SECRET-SHORTHAND-BOOT MR-B3 reads admin bodies under their own phase 1.
-pub fn catalog_admitted<'de, D: serde::Deserializer<'de>>(
+/// An admin request body's provider catalog, decoded with the body. A catalog entry holds no secret
+/// reference position (its options are carried raw and judged at resolve), so the catalog reads the
+/// same under every grammar: it is read under none, never under what the live secret axis holds,
+/// and the body's deployment is read under its own phase 1 (SECRET-SHORTHAND-BOOT §3.12).
+pub fn catalog_canonical<'de, D: serde::Deserializer<'de>>(
     de: D,
 ) -> Result<HashMap<String, ProviderDef>, D::Error> {
-    catalog(de, &super::grammar::admitted())
+    catalog(
+        de,
+        &super::Grammar::new(
+            busbar_contract::secret_ref::Sugars::default(),
+            std::collections::BTreeMap::new(),
+            Vec::new(),
+        ),
+    )
 }
 
 fn unique_entries<'de, D, T>(de: D) -> Result<HashMap<String, T>, D::Error>
@@ -664,11 +672,12 @@ macro_rules! provider_entry {
                         de.deserialize_map(EntryVisitor).map(Written)
                     }
                 }
-                // An entry read on its own reads the admitted source shorthand; read inside a
-                // document, the document's own source context governs.
+                // Read inside a document, the document's own source context governs. An entry read
+                // on its own belongs to no read, so it has no grammar: canonical references only
+                // (SECRET-SHORTHAND-BOOT §3.4), never what the live axis holds now.
                 busbar_contract::secret_ref::context::deserialize::<Written, _>(
                     de,
-                    &super::secret::admitted_sugars(),
+                    &busbar_contract::secret_ref::Sugars::default(),
                 )
                 .map(|written| written.0)
             }

@@ -360,6 +360,8 @@ pub(crate) fn collect_refs(
     use std::fmt::Write as _;
     let Some(path) = path else {
         if value.is_mapping() {
+            // Door section references are judged by the process-lifetime plane machinery: the
+            // shorthand admission last published (SECRET-SHORTHAND-BOOT OQ3).
             if let Ok(r) = busbar_contract::secret_ref::context::deserialize::<
                 busbar_contract::secret_ref::SecretRef,
                 _,

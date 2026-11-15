@@ -1176,40 +1176,70 @@ impl AdminService {
         })
     }
 
+    /// `POST config/validate` (SECRET-SHORTHAND-BOOT §3.12): the body read exactly as apply reads
+    /// it, without changing anything. The authority pre-check runs first, with the caller's
+    /// authority: where apply would answer forbidden, validate answers `needs full operator` with
+    /// the field classes and scans nothing. Then, as ONE unit behind the plugin scan gate on a
+    /// blocking worker: the body's phase 1 over the SERVER's `plugins.dir` with the Store's version
+    /// pins (no fetch), the typed parse under that grammar, and the checks. `Ok(Err(_))` is the
+    /// operator-file-policy refusal apply answers too.
     pub(crate) async fn validate_config(
         &self,
-        deploy: DeployCfg,
-        defs: std::collections::HashMap<String, ProviderDef>,
-    ) -> Result<ConfigValidateView, AdminError> {
-        let gate = match tokio::time::timeout(CATALOG_SCAN_GATE_WAIT, CATALOG_SCAN_GATE.lock())
-            .await
-        {
-            Ok(guard) => guard,
-            Err(_elapsed) => {
-                diag_warn!(
-                    PLUGIN_CATALOG_SCAN_GATE_TIMEOUT,
-                    operation = "config.validate",
-                    wait = ?CATALOG_SCAN_GATE_WAIT,
-                    "plugin scan gate could not be acquired within the wait bound; a prior scan \
-                     is not returning (e.g. a stale/hung plugins_dir mount). Answering with a \
-                     retryable error rather than hanging this request too."
-                );
-                return Err(AdminError::Unavailable(
-                    "the plugin directory scan is taking too long; try again shortly".to_string(),
-                ));
-            }
+        config: serde_json::Value,
+        providers: std::collections::HashMap<String, busbar_kernel::config::ProviderDef>,
+        parse: crate::v1::json::BodyParser,
+    ) -> Result<Result<ConfigValidateView, AdminError>, AdminError> {
+        let overlay = match self.app.overlay_path.as_deref() {
+            Some(store) => store
+                .read_required_async()
+                .await
+                .map_err(AdminError::Validation)?,
+            None => None,
         };
-        let plugins_dir = self.app.plugins_dir.to_string_lossy().into_owned();
-
+        let mut candidate = busbar_kernel::config::security_policy::Candidate::of_json(
+            &config,
+            &super::running_grammar(&self.app),
+            overlay.as_ref(),
+        )
+        .map_err(AdminError::Validation)?;
+        let authority = match busbar_kernel::auth::effect::current() {
+            Some(context) => Some(context.revalidate(&self.app).await.unwrap_or(
+                busbar_kernel::auth::effect::Authority {
+                    full_operator: false,
+                },
+            )),
+            None => None,
+        };
+        if let Some(classes) = busbar_kernel::config::security_policy::needs_full_operator(
+            &self.app, &candidate, authority,
+        ) {
+            return Ok(Ok(ConfigValidateView {
+                ok: false,
+                errors: vec![format!(
+                    "needs full operator: this configuration changes {}; config/apply refuses \
+                     it without full-operator authority, so nothing was read from plugins.dir",
+                    classes.join(", ")
+                )],
+            }));
+        }
+        candidate.plugins.dir = self.app.plugins_dir.to_string_lossy().into_owned();
+        let gate = super::scan_gate("config.validate").await?;
         let rules = std::sync::Arc::clone(&self.app.root_rules);
         let reference = std::sync::Arc::clone(&self.app.operator_file_defs);
         match tokio::task::spawn_blocking(move || {
             let _gate = gate;
-            validate_config_blocking(deploy, &defs, plugins_dir, &rules, reference)
+            validate_config_blocking(
+                config,
+                providers,
+                parse,
+                candidate.plugins,
+                &rules,
+                reference,
+            )
         })
         .await
         {
-            Ok(view) => Ok(view),
+            Ok(view) => view,
             Err(join_err) => {
                 diag_error!(
                     ADMIN_STORE_TASK_JOIN_FAILED,
@@ -1835,27 +1865,42 @@ fn rollup_refused(error: &'static str) -> AdminError {
     AdminError::Internal
 }
 
+/// The validate unit, behind the plugin scan gate: phase 1 over `plugins` (the body's policy with
+/// the server's directory and the Store's pins), the body typed under that grammar, then the same
+/// operator-file-policy pre-check and configuration checks apply runs. `Ok(Err(_))` is the
+/// operator-file-policy refusal.
 fn validate_config_blocking(
-    mut deploy: DeployCfg,
-    defs: &std::collections::HashMap<String, ProviderDef>,
-    plugins_dir: String,
+    config: serde_json::Value,
+    defs: std::collections::HashMap<String, busbar_kernel::config::ProviderDef>,
+    parse: crate::v1::json::BodyParser,
+    plugins: busbar_kernel::config::PluginsCfg,
     rules: &std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>,
     reference: std::sync::Arc<busbar_kernel::config::OperatorFileDefs>,
-) -> ConfigValidateView {
-    let mut root = match busbar_kernel::config::resolve(&deploy, defs) {
+) -> Result<Result<ConfigValidateView, AdminError>, AdminError> {
+    let grammar = super::phase_one(
+        &plugins,
+        busbar_kernel::config::grammar::Fetch::None,
+        "config.validate",
+    )?;
+    let deploy = crate::v1::json::typed_body(config, &grammar, parse)?;
+    // A dry run never says yes to what apply refuses: the same pre-check, status and text.
+    if let Some(refusal) =
+        crate::v1::json::config_body_refusal(&deploy, &reference, "config.validate")
+    {
+        return Ok(Err(refusal));
+    }
+    let mut root = match busbar_kernel::config::resolve(&deploy, &defs) {
         Ok(root) => root,
-        Err(errors) => return ConfigValidateView { ok: false, errors },
+        Err(errors) => return Ok(Ok(ConfigValidateView { ok: false, errors })),
     };
     // A body is held to the running generation's disk reference (OPERATOR-FROM-ADMITTED-AUTH §3.6.1).
     root.operator_file_defs = Some(reference);
-
-    deploy.plugins.dir = plugins_dir;
 
     let root_rules = |c: &busbar_kernel::config::RootCfg| rules.check(c);
     let checked = busbar_kernel::config_validate::check(
         &root,
         busbar_kernel::config_validate::Check {
-            plugins: &deploy.plugins,
+            plugins: &plugins,
             unset_env_vars: &[],
             root: &root_rules,
             fetch: None,
@@ -1873,7 +1918,7 @@ fn validate_config_blocking(
             | busbar_kernel::config_validate::Refusal::Unresolved(e),
         ) => vec![e],
     };
-    ConfigValidateView { ok, errors }
+    Ok(Ok(ConfigValidateView { ok, errors }))
 }
 
 fn read_guarded_archive(

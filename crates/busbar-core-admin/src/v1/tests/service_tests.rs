@@ -2002,3 +2002,31 @@ fn observation_export_detail_preserves_decimal_strings_above_js_integer_range() 
     assert_eq!(wire["observations"][0]["accounting_time"], "100");
     assert_eq!(wire["observations"][0]["spend_micros"], "0");
 }
+
+/// G24 (SECRET-SHORTHAND-BOOT §3.12): a reload-class read whose phase 1 cannot have the plugin
+/// scan gate within its bound (another scan holds it past 5 s) is refused as the retryable
+/// `Unavailable`, before its directory is read and before anything changed.
+#[tokio::test(start_paused = true)]
+async fn a_reload_class_read_behind_a_held_scan_gate_is_unavailable() {
+    let held = CATALOG_SCAN_GATE.lock().await;
+    let plugins = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: std::env::temp_dir()
+            .join("busbar-ssb-g24-must-not-be-scanned")
+            .to_string_lossy()
+            .into_owned(),
+        ..Default::default()
+    };
+    let refused = read_grammar(
+        plugins,
+        Vec::new(),
+        busbar_kernel::config::grammar::Fetch::None,
+        "config.reload",
+    )
+    .await;
+    assert!(
+        matches!(refused, Err(AdminError::Unavailable(_))),
+        "a held scan gate answers the retryable Unavailable"
+    );
+    drop(held);
+}
