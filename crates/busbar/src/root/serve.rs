@@ -1594,7 +1594,7 @@ impl DoorRequest {
         }
     }
 
-    fn of(ctx: PlaneReqCtx) -> Option<Self> {
+    pub(crate) fn of(ctx: PlaneReqCtx) -> Option<Self> {
         let app = match ctx.engine.downcast::<busbar_kernel::state::App>() {
             Ok(app) => app,
             Err(engine) => engine

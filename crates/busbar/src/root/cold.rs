@@ -145,8 +145,7 @@ pub(crate) fn native_journal_refused(error: &dyn std::fmt::Debug) -> String {
     format!("native journal: {error:?}")
 }
 
-/// `plane_node`: a unit's terminal audit could not be confirmed durable (its test-only late body).
-#[cfg(test)]
+/// `plane_node`: a unit's terminal audit could not be confirmed durable.
 #[cold]
 pub(crate) fn terminal_audit_unconfirmed(error: &dyn std::fmt::Debug) -> String {
     format!("terminal audit is unconfirmed: {error:?}")
