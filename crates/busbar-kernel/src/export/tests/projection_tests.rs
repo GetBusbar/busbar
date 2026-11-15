@@ -6,7 +6,8 @@ use crate::export::projection::{
     produced_fields, resolve_projection, FieldValue, ProjectedRecord, Projection, ProjectionUnion,
     PRODUCED_STREAMS,
 };
-use busbar_contract::abi::export::{ExportField, ExportStream};
+use busbar_contract::abi::export::ExportField;
+use busbar_contract::export_stream::ExportStream;
 
 fn resolve_errs(yaml: &str, carries: &[ExportStream]) -> Vec<String> {
     let defs: ExportDefs = busbar_contract::yaml::from_str(yaml).expect("fixture parses");

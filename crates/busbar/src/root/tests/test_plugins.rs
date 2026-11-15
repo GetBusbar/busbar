@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::abi::export::ExportStream;
+use busbar_contract::export_stream::ExportStream;
 use busbar_plugin_loader::{
     dispatch::{
         kinds::export::{Export, ExportFacts},

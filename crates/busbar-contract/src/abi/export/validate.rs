@@ -5,12 +5,13 @@
 
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
-use super::{CheckOut, ExportStream, Route, ScrapeOut, ServeOut, StatusOut, Tail};
+use super::{CheckOut, Route, ScrapeOut, ServeOut, StatusOut, Tail};
 use super::{ROUTE_AUTH_ADMIN, ROUTE_AUTH_NONE};
 use crate::abi::mechanism::call::OutHead;
 use crate::abi::mechanism::check::{
     code, failed_error, fault, leased_blob, listed, result, served, text, HARD_MAX_BYTES,
 };
+use crate::export_stream::ExportStream;
 
 /// The most entries `serve`'s `headers_out` may carry: 64 headers, as (name, value) pairs.
 pub const HARD_MAX_HEADERS_OUT_LEN: u64 = 128;

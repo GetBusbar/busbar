@@ -24,6 +24,7 @@ pub const SOURCES: &[(&str, &str, &str, bool)] = &[
     ("auth", "Auth", "auth", true),
     ("hook", "Hook", "hook", true),
     ("export", "Export", "export", true),
+    ("export", "Export", "../export_stream.rs", false),
     ("plane", "pkind::", "plane", true),
     ("transport", "tkind::", "transport", true),
     ("hconn", "hconn::", "host/conn/connector.rs", false),

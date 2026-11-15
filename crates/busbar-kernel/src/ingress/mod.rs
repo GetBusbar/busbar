@@ -313,7 +313,7 @@ fn finish_inner(
 
     if app
         .export_projections
-        .wants_stream(busbar_contract::abi::export::ExportStream::Logs)
+        .wants_stream(busbar_contract::export_stream::ExportStream::Logs)
     {
         export_request_log(ingress_protocol, pool, outcome, elapsed.as_millis() as u64);
     }

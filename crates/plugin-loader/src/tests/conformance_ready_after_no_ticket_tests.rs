@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use busbar_contract::abi::export::{CheckIn, CheckOut, DeliverIn, ExportStream, Tail};
+use busbar_contract::abi::export::{CheckIn, CheckOut, DeliverIn, Tail};
 use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome, BLOB_JSON, BLOB_JSONL};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
 use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut};
@@ -19,6 +19,7 @@ use busbar_contract::abi::sdk::door::{blank_in, blank_out, statement};
 use busbar_contract::abi::sdk::export::{tail, NoScrape, NoServe, Quiet};
 use busbar_contract::abi::sdk::life::{Held, Life, Refusal};
 use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
+use busbar_contract::export_stream::ExportStream;
 use busbar_contract::plugin::markers::ExportKind;
 
 use crate::dispatch::kinds::export::Export;
