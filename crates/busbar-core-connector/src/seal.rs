@@ -4,6 +4,7 @@
 //! SEALED CREDENTIAL VALUES (TSEAL; the "plane never sees credential bytes" family): the bound
 
 use busbar_contract::secure::SecureVec;
+use foldhash::HashMap;
 
 use crate::compose::Opening;
 
@@ -25,9 +26,22 @@ struct Seal {
     value: SecureVec,
 }
 
-/// THE SEALS A CONNECTION HOLDS: those not yet spliced into its wire.
+/// THE SEALS A CONNECTION HOLDS: those not yet spliced into its wire, the connection's reused list
+/// of where each seal's filler stands, and how many seals wait on each stream (kept current as a
+/// seal is held, spliced or cleared, so asking after a stream is no scan).
 #[derive(Default)]
-pub(crate) struct Seals(Vec<Seal>, Vec<Option<usize>>);
+pub(crate) struct Seals(Vec<Seal>, Vec<Option<usize>>, HashMap<u64, usize>);
+
+/// One seal on `stream` is no longer pending: its count drops, and a stream with none left is
+/// forgotten.
+fn released(counts: &mut HashMap<u64, usize>, stream: u64) {
+    if let std::collections::hash_map::Entry::Occupied(mut held) = counts.entry(stream) {
+        *held.get_mut() -= 1;
+        if *held.get() == 0 {
+            held.remove();
+        }
+    }
+}
 
 impl std::fmt::Debug for Seals {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -64,6 +78,12 @@ fn filler(len: usize) -> Option<Vec<u8>> {
 }
 
 impl Seals {
+    /// Hold `seal` until it is spliced or cleared.
+    fn hold(&mut self, seal: Seal) {
+        *self.2.entry(seal.stream).or_default() += 1;
+        self.0.push(seal);
+    }
+
     /// Remove the host's query metadata before framing and append it only to the wire target.
     pub(crate) fn seal_queries(
         &mut self,
@@ -134,7 +154,7 @@ impl Seals {
             if sealing && !value.is_empty() {
                 let fill = filler(value.len()).ok_or("the host's random source failed")?;
                 target.extend_from_slice(&fill);
-                self.0.push(Seal {
+                self.hold(Seal {
                     stream,
                     filler: fill,
                     value: SecureVec::from(value),
@@ -189,7 +209,7 @@ impl Seals {
         for (_, v) in fields.iter_mut().filter(|(n, v)| named(n) && !v.is_empty()) {
             let fill = filler(v.len()).ok_or("the host's random source failed")?;
             let value = SecureVec::from(std::mem::replace(v, fill.clone()));
-            self.0.push(Seal {
+            self.hold(Seal {
                 stream,
                 filler: fill,
                 value,
@@ -204,7 +224,7 @@ impl Seals {
     }
 
     pub(crate) fn pending_on(&self, stream: u64) -> bool {
-        self.0.iter().any(|seal| seal.stream == stream)
+        self.2.contains_key(&stream)
     }
 
     pub(crate) fn streams(&self) -> Vec<u64> {
@@ -218,6 +238,7 @@ impl Seals {
     }
 
     pub(crate) fn clear_on(&mut self, stream: u64) {
+        self.2.remove(&stream);
         self.0.retain(|seal| seal.stream != stream);
     }
 
@@ -239,9 +260,11 @@ impl Seals {
             }
         }
         let mut at = positions.iter();
+        let counts = &mut self.2;
         self.0.retain(|s| match at.next().copied().flatten() {
             Some(i) => {
                 wire[i..i + s.filler.len()].copy_from_slice(&s.value);
+                released(counts, s.stream);
                 false
             }
             None => true,
