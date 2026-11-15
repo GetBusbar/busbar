@@ -48,6 +48,10 @@ pub struct Linked {
     pub transports: &'static [LinkedTransport],
 
     pub claims: &'static [LinkedClaims],
+
+    /// The former names each linked store, auth, secret and plane door declares
+    /// (`DoorDecl::FORMER_NAMES`), read by [`words_of`].
+    pub former: &'static std::sync::LazyLock<Vec<LinkedFormer>>,
 }
 
 pub mod node {
@@ -197,6 +201,48 @@ pub(crate) fn door_words(former: &[&str], rewrites: &[(u32, String, String)]) ->
         .collect()
 }
 
+/// One linked door's declared former names, on a kind axis that registers by key or by name.
+/// The generated table holds one per row that declares any (and one per store row).
+#[derive(Clone, Copy)]
+pub struct LinkedFormer {
+    /// The axis: `store`, `auth`, `secret` or `plane`.
+    pub axis: &'static str,
+    /// The registry key the row answers on, or empty when the door's Statement name is the key.
+    pub key: &'static str,
+    /// The row's door: its Statement's `REWRITE_ALIAS` words join the former names.
+    pub door: busbar_contract::abi::mechanism::door::DoorFn,
+    /// The door's `FORMER_NAMES`.
+    pub former_names: &'static [&'static str],
+}
+
+/// A door's Statement name and the rewrites it states; `None` when it does not read back.
+fn door_statement(
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+) -> Option<(String, Vec<(u32, String, String)>)> {
+    let bytes = crate::root::loader::dispatch::rendering_of(door).ok()?;
+    let statement = busbar_contract::abi::mechanism::rendering::read(&bytes).ok()?;
+    Some((statement.name, statement.rewrites))
+}
+
+/// The words the linked row `key` on `axis` answers to besides its own: for each matching
+/// [`LinkedFormer`], its door's `FORMER_NAMES` then its `REWRITE_ALIAS` words (`door_words`).
+pub(crate) fn words_of(former: &[LinkedFormer], axis: &str, key: &str) -> Vec<String> {
+    former
+        .iter()
+        .filter(|f| f.axis == axis)
+        .filter_map(|f| {
+            let (name, rewrites) = door_statement(f.door).unwrap_or_default();
+            let row = if f.key.is_empty() {
+                name.as_str()
+            } else {
+                f.key
+            };
+            (row == key).then(|| door_words(f.former_names, &rewrites))
+        })
+        .flatten()
+        .collect()
+}
+
 fn export_abi() -> u32 {
     crate::root::loader::supported_abi("export").unwrap_or_default()
 }
@@ -280,7 +326,7 @@ pub fn register_protocols(linked: &Linked) {
 }
 
 pub fn register_stores(linked: &Linked) {
-    match link_secrets(linked.secrets, linked.secret_declares) {
+    match link_secrets(linked.secrets, linked.secret_declares, linked.former) {
         Ok(secrets) => busbar_kernel::preflight::install_linked_rows(RootInstall {
             stores: linked.stores,
             registry_build: Some(crate::root::boot::registry_rows),
@@ -338,10 +384,21 @@ static SECRETS: std::sync::OnceLock<crate::root::loader::secret_calls::SecretRow
 pub(crate) fn link_secrets(
     doors: &[busbar_contract::abi::mechanism::door::DoorFn],
     declares: &[(busbar_contract::abi::mechanism::door::DoorFn, &str)],
+    former: &[LinkedFormer],
 ) -> Result<&'static crate::root::loader::secret_calls::SecretRows, String> {
     if let Some(rows) = SECRETS.get() {
         return Ok(rows);
     }
+    let rows = build_secrets(doors, declares, former)?;
+    Ok(SECRETS.get_or_init(|| rows))
+}
+
+/// The secret rows over `doors`, each answering also to the words its [`LinkedFormer`] row gives.
+pub(crate) fn build_secrets(
+    doors: &[busbar_contract::abi::mechanism::door::DoorFn],
+    declares: &[(busbar_contract::abi::mechanism::door::DoorFn, &str)],
+    former: &[LinkedFormer],
+) -> Result<crate::root::loader::secret_calls::SecretRows, String> {
     let mut rows = crate::root::loader::secret_calls::SecretRows::new(
         crate::root::dispatch::dispatcher,
         conns,
@@ -349,13 +406,16 @@ pub(crate) fn link_secrets(
     .with_logs(|| crate::root::boot::plugin_logs().clone())
     .with_disk_lane(disk_run);
     for door in doors {
-        rows.link(*door)
+        let name = door_statement(*door)
+            .map(|(name, _)| name)
+            .unwrap_or_default();
+        rows.link_with_former(*door, &words_of(former, "secret", &name))
             .map_err(|e| format!("a linked secret plugin does not state itself: {e}"))?;
     }
     for (door, json) in declares {
         rows.declare_linked(*door, json)?;
     }
-    Ok(SECRETS.get_or_init(|| rows))
+    Ok(rows)
 }
 
 static DISK: std::sync::OnceLock<std::sync::Arc<busbar_kernel::host_disk::DiskLane>> =
@@ -381,7 +441,12 @@ fn conns() -> Option<busbar_contract::conn::admissions::AdmissionAuthority> {
 /// It is never an unlinked set, so a reader that runs before boot publishes the axis reads the
 /// same admitted source declarations boot does.
 pub fn secret_rows() -> &'static crate::root::loader::secret_calls::SecretRows {
-    link_secrets(crate::LINKED.secrets, crate::LINKED.secret_declares).unwrap_or_else(|refusal| {
+    link_secrets(
+        crate::LINKED.secrets,
+        crate::LINKED.secret_declares,
+        crate::LINKED.former,
+    )
+    .unwrap_or_else(|refusal| {
         eprintln!("busbar: {refusal}");
         crate::root::exit::exit(2);
     })
@@ -699,7 +764,13 @@ fn catalogue_registry(
     let mut rows: Vec<_> = linked
         .auths
         .iter()
-        .map(|(key, canonical, door)| LinkedPlugin::auth_door_named(canonical, key, *door))
+        .map(|(key, canonical, door)| {
+            LinkedPlugin::auth_door_named(canonical, key, *door).with_former_names(words_of(
+                linked.former,
+                "auth",
+                key,
+            ))
+        })
         .collect();
     for door in linked.hook_doors {
         let stated =
