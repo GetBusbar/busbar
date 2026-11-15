@@ -478,3 +478,96 @@ async fn an_adopter_deciding_after_the_mark_is_listed_at_exit() {
     }
     assert_eq!(adopter.retained(), 0);
 }
+
+/// #258 (1): two closers in one process (F5's and an adopter's `WriterRetirements`) race one
+/// open W. Both read W's open row and retain their close. The winner's close applies but its
+/// reply is lost, so it stays retained and in doubt. The loser's close, built from the same open
+/// row, is then decided as a condition conflict. The loser's decision must not drop the
+/// winner's retained entry from the ledger: W stays listed at exit until the winner's own attempt
+/// is decided, and then it is recorded exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_losing_closer_never_drops_the_winners_retained_close() {
+    crate::audit::auditlog::ensure_global_audit_stream_registered().await;
+    let rig = rig(false).await;
+    let other = writer_id();
+    rig.store.admit(other);
+    let other_core = attach(&rig.store, other).await;
+    let loser = Arc::new(WriterRetirements::default());
+    let held = Arc::new(TestHold::default());
+    rig.store.hold_next_fence(held.clone());
+    let losing = {
+        let (loser, core, writer) = (loser.clone(), other_core.clone(), rig.writer);
+        let seen = seen(writer, "dead-w", 77, ObservedBy::Adopter);
+        tokio::spawn(async move {
+            loser
+                .retire_after(&core, EPOCH, writer, LEASE_TTL_MS, Some(seen))
+                .await
+                .map(|answer| matches!(answer, WriterRetirement::Pending))
+        })
+    };
+    reached(&held).await;
+    assert_eq!(
+        loser.retained(),
+        1,
+        "the loser built its close from the open row"
+    );
+
+    rig.store.lose_fence_reply.store(true, Ordering::SeqCst);
+    assert!(matches!(
+        rig.fence
+            .retirements
+            .retire_after(
+                &rig.fence.core,
+                EPOCH,
+                rig.writer,
+                LEASE_TTL_MS,
+                Some(rig.seen.clone())
+            )
+            .await,
+        Ok(WriterRetirement::Pending)
+    ));
+    assert_eq!(
+        rig.fence.retained(),
+        1,
+        "the winner's lost reply is retained"
+    );
+    assert_eq!(rig.store.control(rig.writer), Some(CLOSED));
+
+    held.release.notify_one();
+    assert!(
+        losing.await.unwrap().unwrap(),
+        "the loser's conflict answers Pending"
+    );
+    assert_eq!(
+        loser.retained(),
+        0,
+        "the loser's decided conflict leaves pending"
+    );
+    assert!(!loser.take_closed_open(EPOCH, rig.writer));
+    assert!(
+        placement(rig.writer).retained,
+        "the winner's close may still apply: {:?}",
+        placement(rig.writer)
+    );
+    assert!(undrained_records()
+        .exit_report()
+        .unconfirmed
+        .iter()
+        .any(|listed| listed.target() == rig.seen.target()));
+
+    tokio::time::timeout(Duration::from_secs(10), rig.fence.settle())
+        .await
+        .expect("settle decides the winner's attempt");
+    let recorded = placement(rig.writer);
+    assert!(
+        recorded.recorded.is_some()
+            && !recorded.retained
+            && !recorded.record_failed
+            && !recorded.unconfirmed,
+        "{recorded:?}"
+    );
+    assert!(rig.fence.retirements.take_closed_open(EPOCH, rig.writer));
+    let records = durable_records().await;
+    assert_eq!(records_for(&records, rig.writer), 1, "{records:?}");
+    assert_eq!(rig.store.fence_applies(rig.writer), 1);
+}
