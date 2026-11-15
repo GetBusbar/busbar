@@ -1601,14 +1601,14 @@ impl PendingMetering {
         }
         PROBE.with(|probe| {
             let mut probe = probe.borrow_mut();
-            key.fill(&mut *probe);
+            key.fill(&mut probe);
             let mut map = self
                 .shard_for(key.key_id)
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             accrue_pending_checked(
                 &mut map,
-                PendingKey::Probe(&*probe),
+                PendingKey::Probe(&probe),
                 add,
                 MAX_PENDING_METERING_PER_SHARD,
                 &self.coalesce_warn,

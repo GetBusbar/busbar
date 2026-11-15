@@ -665,18 +665,21 @@ pub(crate) fn identity_runtime_rewrap_resource(kid: &str, rows: impl std::fmt::D
     format!("kid:{kid} rows:{rows}")
 }
 
+/// The identity cache maps: key revisions, credential revisions, live keys by id, credentials.
+pub(crate) type IdentityCacheMaps = (
+    foldhash::HashMap<String, u64>,
+    foldhash::HashMap<String, u64>,
+    foldhash::HashMap<String, std::sync::Arc<VirtualKey>>,
+    CredentialIndex,
+);
+
 /// `identity_runtime`: the identity cache's revision, key and credential maps, rebuilt from a
 /// confirmed snapshot (boot and refresh).
 pub(crate) fn identity_runtime_cache_maps(
     keys: Vec<VirtualKey>,
     credentials: Vec<CredentialSecret>,
     now: u64,
-) -> (
-    foldhash::HashMap<String, u64>,
-    foldhash::HashMap<String, u64>,
-    foldhash::HashMap<String, std::sync::Arc<VirtualKey>>,
-    CredentialIndex,
-) {
+) -> IdentityCacheMaps {
     let key_revisions = keys
         .iter()
         .map(|key| (key.id.clone(), key.revision))

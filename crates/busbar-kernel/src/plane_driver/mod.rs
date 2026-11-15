@@ -754,7 +754,7 @@ static EMPTY_FRAME: std::sync::LazyLock<Arc<[u8]>> =
 fn rendered_of(
     status: u32,
     mut reply: Vec<u8>,
-    reply_written: u32,
+    reply_written: u64,
     out_fields: &[OutField],
     fields_written: u32,
     arena: &[u8],
