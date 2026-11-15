@@ -11,7 +11,7 @@ use crate::host::Host;
 use crate::need::ChainBytes;
 use crate::records::{Full, Nested, Out};
 use crate::stamp::Stamp;
-use crate::types::{Bytes, RawOut, Status, Str, Token};
+use crate::types::Str;
 
 mechanism! {
 /// The only thing `busbar_plugin` returns. Identical for every kind. All pointers point into the image's .rodata.
@@ -21,25 +21,28 @@ pub struct Plugin {
     pub stamp: *const Stamp,
     /// &'static <kind>::Vt. The host picks the type from stamp.kind, never from anything the plugin says.
     pub kind_vt: *const c_void,
-    /// Cold. Writes describe items only (D_METHODS, D_FACTS, D_SCHEMA, D_MAX_OUT, D_CEILING and kind 0x018x items).
-    pub describe: unsafe extern "C" fn(h: *const Host, out: *mut RawOut) -> Status,
-    /// Cold. config = JSON bytes as core's config binder wrote them (§12.7): secret and trust positions are
-    /// `{"$secret": n}` / `{"$trust": n}`, and no other plugin's identity appears anywhere. flags: DRY_RUN.
-    /// DRY_RUN: validate only, never NEED, never INSTANCE. Otherwise OK + INSTANCE (+ CONFIG + CORE_CFG*, round
-    /// 31: the plugin's own migration, §7.2), or NEED (an open chain), or REFUSED/FAILED.
-    /// Round 31: the header has no `migrate` slot (owner ruling, §47). Every `open`, on every load path (boot,
-    /// reload, admin install), brings the plugin's own data and settings to its current format before INSTANCE.
-    pub open: unsafe extern "C" fn(h: *const Host, config: Bytes<'static>, flags: u32, out: *mut RawOut) -> Status,
-    /// Continue a chain (§6.4). inst is null for open chains (the process-global slab).
-    pub resume: unsafe extern "C" fn(inst: *const c_void, h: *const Host, tok: Token, results: Bytes<'static>, out: *mut RawOut) -> Status,
-    /// Drop a chain (bit 63 clear) or a session (bit 63 set). inst null = a chain on the process-global
-    /// open slab (a session token with null inst is a no-op OK); the shim never dereferences null.
-    /// Idempotent. OK, or FAULT if a Drop panicked.
-    pub cancel: unsafe extern "C" fn(inst: *const c_void, tok: Token) -> Status,
-    /// Drops the instance with any chains and sessions still in its slots: chains and sessions first, the plugin
-    /// value last (round 11, §6.4 step 9). inst is never used again.
-    /// OK, or FAULT if a Drop panicked.
-    pub close: unsafe extern "C" fn(inst: *const c_void) -> Status,
+    // W0-ABI: fields describe, open, resume, cancel, close are unsafe extern "C" fn pointers; they land with
+    // W1-A4 under an escapes.json admission. The frozen fields with their docs (IF §7.1), verbatim:
+    //   Cold. Writes describe items only (D_METHODS, D_FACTS, D_SCHEMA, D_MAX_OUT, D_CEILING and kind 0x018x items).
+    // describe: unsafe extern "C" fn(h: *const Host, out: *mut RawOut) -> Status,
+    //   Cold. config = JSON bytes as core's config binder wrote them (§12.7): secret and trust positions are
+    //   `{"$secret": n}` / `{"$trust": n}`, and no other plugin's identity appears anywhere. flags: DRY_RUN.
+    //   DRY_RUN: validate only, never NEED, never INSTANCE. Otherwise OK + INSTANCE (+ CONFIG + CORE_CFG*, round
+    //   31: the plugin's own migration, §7.2), or NEED (an open chain), or REFUSED/FAILED.
+    //   Round 31: the header has no `migrate` slot (owner ruling, §47). Every `open`, on every load path (boot,
+    //   reload, admin install), brings the plugin's own data and settings to its current format before INSTANCE.
+    // open: unsafe extern "C" fn(h: *const Host, config: Bytes<'static>, flags: u32, out: *mut RawOut) -> Status,
+    //   Continue a chain (§6.4). inst is null for open chains (the process-global slab).
+    // resume: unsafe extern "C" fn(inst: *const c_void, h: *const Host, tok: Token, results: Bytes<'static>, out: *mut RawOut) -> Status,
+    //   Drop a chain (bit 63 clear) or a session (bit 63 set). inst null = a chain on the process-global
+    //   open slab (a session token with null inst is a no-op OK); the shim never dereferences null.
+    //   Idempotent. OK, or FAULT if a Drop panicked.
+    // cancel: unsafe extern "C" fn(inst: *const c_void, tok: Token) -> Status,
+    //   Drops the instance with any chains and sessions still in its slots: chains and sessions first, the plugin
+    //   value last (round 11, §6.4 step 9). inst is never used again.
+    //   OK, or FAULT if a Drop panicked.
+    // close: unsafe extern "C" fn(inst: *const c_void) -> Status,
+    _stub: core::marker::PhantomData<()>,
     /// Round 9: **every other word an operator's `module:` may use for this plugin**, comma-separated, each
     /// `[a-z0-9-]{1,64}`, at most 8; EMPTY for none. Two sources, one list, no distinction on the wire: the
     /// names this plugin answered to in earlier releases, and its own short aliases. **Round 11, the rule for
@@ -56,13 +59,13 @@ pub struct Plugin {
     pub former_names: Str<'static>,
 }
 
+// W0-ABI: `unsafe impl Sync for Plugin {}` lands with W1-A4 under an escapes.json admission.
 pub const OPEN_DRY_RUN: u32 = 1;
 /// The one exported symbol, emitted by `export!` only.
 pub const SYMBOL: &[u8] = b"busbar_plugin\0";
-pub type EntryFn = unsafe extern "C" fn() -> *const Plugin;
 }
-
-// W0-ABI: `unsafe impl Sync for Plugin {}` lands with W1-A4 under an escapes.json admission.
+// W0-ABI: `pub type EntryFn = unsafe extern "C" fn() -> *const Plugin;` lands with W1-A4 (an unsafe fn pointer
+// type).
 
 /// Every plugin type implements its kind trait and this.
 pub trait Open: Sized + Send + Sync + 'static {

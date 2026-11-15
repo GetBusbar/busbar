@@ -3,10 +3,8 @@
 
 //! Host services: the raw `Host` vtable, the crypto request shapes and consts, and the safe API plugins call (IF §5, §5.1, §5.2). W0-ABI stub: frozen signatures, `todo!()` bodies; A2 fills it.
 
-use core::ffi::c_void;
-
 use crate::fail::Fail;
-use crate::types::{Bytes, RawOut, Status, Str};
+use crate::types::Bytes;
 
 mechanism! {
 /// The host vtable. One process-wide static; plugins get `&'static Host`. The raw fields are private to abi.
@@ -15,69 +13,74 @@ mechanism! {
 /// zero (round 28), or drops the log line; never an unwind.
 #[repr(C)]
 pub struct Host {
-    pub(crate) ctx: *const c_void,
-    /// UTC nanoseconds since the Unix epoch, from the host clock.
-    pub(crate) now: unsafe extern "C" fn(ctx: *const c_void) -> u64,
-    /// Monotonic nanoseconds, same clock as WAKE_AT.
-    pub(crate) mono: unsafe extern "C" fn(ctx: *const c_void) -> u64,
-    /// `len` (1..=65_536) random bytes from `busbar_crypto::fill_checked` (round 21; the backend's DRBG, its error
-    /// through the facade's `map`, §5.2), in this thread's scratch
-    /// arena (r4 H3, owned by host_vt.rs §10.7: allocated once at its cap, never grown, **append-only for the
-    /// whole outermost entry**: every `random`/`crypto` output in one entry gets fresh space after the previous
-    /// ones and never clobbers them; zeroed over what was written when the outermost entry-guard exits and on
-    /// thread exit, I11). `out` stays valid and unchanged until the outermost entry on this thread returns, and
-    /// no longer. status OK, or INVALID (len 0 or > 65,536), or LIMIT (the entry's outputs would pass the arena
-    /// cap), or RNG (the crypto module failed: the DRBG failed, or, round 23, the backend's self-test failed,
-    /// §5.2, reachable here through `fill_checked`); on every
-    /// non-OK status `out` is EMPTY, never zero bytes. This is
-    /// the only randomness a plugin has (§15.4 bans getrandom/rand and every other RNG crate outright).
-    pub(crate) random: unsafe extern "C" fn(ctx: *const c_void, len: usize) -> CryptoRet,
-    /// One crypto operation: exactly one `busbar-crypto` call (§5.2). Output in the thread's scratch arena
-    /// (fixed 1 MiB + 64 for the whole outermost entry, never grown; an output that does not fit after the
-    /// entry's earlier outputs is LIMIT, written nowhere, and the earlier outputs stay intact). r4 H3: append-only,
-    /// so two calls in one entry return distinct, non-overlapping buffers and the first is still intact after
-    /// the second; `out` is valid until the outermost entry on this thread returns. AEAD_OPEN plaintext, PBKDF2
-    /// and HMAC outputs land here and are zeroed by the arena rule (I11).
-    pub(crate) crypto: unsafe extern "C" fn(ctx: *const c_void, req: *const CryptoReq<'static>) -> CryptoRet,
-    /// Emit a log line, attributed by the host to the owner of the entry running on this thread (round 24: the
-    /// entry guard's host-side `OWNER` cell, §10.7, set by every FFI entry whether or not the thread holds a
-    /// watchdog word), so attribution holds in polls, describe, cancel and close too, and on an unwatched thread. The host scrubs the
-    /// line against that instance's scrub set before it is written (I14, §12.16); plugins never mask.
-    /// Round 34 (PLUGIN-ERROR-CODES): `error` is one of this image's declared numbers (D_ERRORS), 0 = none. The
-    /// host checks it as the `u32` it arrives as (above 9999 = not declared, before any narrowing) and renders a
-    /// declared one as `BUSBAR-<identity>-NNNN` in its own `plugin_diag` field (§10.7, §11.2). Widened in place:
-    /// no slot is appended, and an image built against the round-33 `log` has the old CORE_FP (stamp refusal).
-    pub(crate) log: unsafe extern "C" fn(ctx: *const c_void, level: u32, error: u32, msg: Str<'static>),
-    /// The most verbose level currently enabled (0 = off). Check before formatting.
-    pub(crate) log_level: unsafe extern "C" fn(ctx: *const c_void) -> u32,
-    /// Grow this thread's ACTIVE OutBuf (set by the entry guard for every entry that has an `out`, I10) to hold
-    /// `need` more bytes, up to max_out. Rewrites out.ptr/out.cap from host state. False if no ACTIVE buffer,
-    /// if `out` is not the ACTIVE buffer's RawOut, if `len + need` overflows, or over max_out (round 13: the host
-    /// computes `len + need` with `checked_add` and clamps its high-water mark to its own capacity, §10.1). Growth moves to a larger pooled block and
-    /// zeroes the old one before release (I11, §10.1); the plugin must reload ptr/cap after every grow.
-    pub(crate) grow: unsafe extern "C" fn(ctx: *const c_void, out: *mut RawOut, need: usize) -> bool,
-    /// Round 28 (the generic deployment-id read). The stable 16-byte install identity: the
-    /// keep-once Store row `busbar.deployment.v1`/`id` of ADMIN-API-1.6 (`dep_` + 32 hex there; these are the 16
-    /// bytes the hex spells). Not the `deployment` keyset seed (boot_identity.rs:18), which never leaves core. Opaque
-    /// to the plugin: stable across restarts, nodes and replicas of one deployment, never a secret, never a verdict.
-    /// All zero until core has read or written the row at boot (§11.2 `BootPlan`: only during the open/migrate of
-    /// the secret and store instances the store needs, steps 2a/2b); non-zero and unchanging for the rest of the
-    /// process. Round 29: lock-free, one Acquire load of a `OnceLock<DeploymentId>` published once with all 16
-    /// bytes (§10.7 `set_deployment`), so a reader sees either all zero or the whole id, never half; no allocation.
-    /// Panic fallback (I10): all zero. Plugins use it to bind their own state to this install and for object keys;
-    /// core never reads what they do with it. Round 29, the boot ordering rule: an instance opened in
-    /// steps 2a/2b reads all zero there; core re-runs that instance's `check` (OPEN_DRY_RUN, `Open::check`) once
-    /// after `set_deployment` and before step 2c starts, and a REFUSED there refuses the boot exactly as a step-2c
-    /// `open` refusal does (§11.2 `BootPlan`). A plugin that binds to the deployment does the binding in `check`.
-    pub(crate) deployment: unsafe extern "C" fn(ctx: *const c_void) -> DeploymentId,
-    /// Round 31 (owner ruling; MIGRATE-ON-BOOT r42 §4): the recoverable gate. Valid only inside an entry of a
-    /// **store** instance's non-DRY_RUN `open` (its first poll or any resume of its chain), on every load path.
-    /// `recoverable` = how many older rows this store is about to hand core that hold a recoverable secret (its
-    /// own count of its own column). OK: core can seal them (n == 0, or an at-rest key resolves). REFUSED: it
-    /// cannot; core records its own text (how to add the key) against the instance and reports that text when
-    /// the open refuses. Any other entry or kind: FAULT (`NeedNotAllowed`), and the entry is faulted. Panic
-    /// fallback (I10): REFUSED.
-    pub(crate) migrate_admit: unsafe extern "C" fn(ctx: *const c_void, recoverable: u64) -> Status,
+    // W0-ABI: fields ctx, now, mono, random, crypto, log, log_level, grow, deployment, migrate_admit are the
+    // unsafe extern "C" fn pointers and their private context; they land with W1-A2 under an escapes.json
+    // admission. The frozen fields with their docs (IF §5), verbatim:
+    // ctx: *const c_void,
+    //   UTC nanoseconds since the Unix epoch, from the host clock.
+    // now: unsafe extern "C" fn(ctx: *const c_void) -> u64,
+    //   Monotonic nanoseconds, same clock as WAKE_AT.
+    // mono: unsafe extern "C" fn(ctx: *const c_void) -> u64,
+    //   `len` (1..=65_536) random bytes from `busbar_crypto::fill_checked` (round 21; the backend's DRBG, its error
+    //   through the facade's `map`, §5.2), in this thread's scratch
+    //   arena (r4 H3, owned by host_vt.rs §10.7: allocated once at its cap, never grown, **append-only for the
+    //   whole outermost entry**: every `random`/`crypto` output in one entry gets fresh space after the previous
+    //   ones and never clobbers them; zeroed over what was written when the outermost entry-guard exits and on
+    //   thread exit, I11). `out` stays valid and unchanged until the outermost entry on this thread returns, and
+    //   no longer. status OK, or INVALID (len 0 or > 65,536), or LIMIT (the entry's outputs would pass the arena
+    //   cap), or RNG (the crypto module failed: the DRBG failed, or, round 23, the backend's self-test failed,
+    //   §5.2, reachable here through `fill_checked`); on every
+    //   non-OK status `out` is EMPTY, never zero bytes. This is
+    //   the only randomness a plugin has (§15.4 bans getrandom/rand and every other RNG crate outright).
+    // random: unsafe extern "C" fn(ctx: *const c_void, len: usize) -> CryptoRet,
+    //   One crypto operation: exactly one `busbar-crypto` call (§5.2). Output in the thread's scratch arena
+    //   (fixed 1 MiB + 64 for the whole outermost entry, never grown; an output that does not fit after the
+    //   entry's earlier outputs is LIMIT, written nowhere, and the earlier outputs stay intact). r4 H3: append-only,
+    //   so two calls in one entry return distinct, non-overlapping buffers and the first is still intact after
+    //   the second; `out` is valid until the outermost entry on this thread returns. AEAD_OPEN plaintext, PBKDF2
+    //   and HMAC outputs land here and are zeroed by the arena rule (I11).
+    // crypto: unsafe extern "C" fn(ctx: *const c_void, req: *const CryptoReq<'static>) -> CryptoRet,
+    //   Emit a log line, attributed by the host to the owner of the entry running on this thread (round 24: the
+    //   entry guard's host-side `OWNER` cell, §10.7, set by every FFI entry whether or not the thread holds a
+    //   watchdog word), so attribution holds in polls, describe, cancel and close too, and on an unwatched thread. The host scrubs the
+    //   line against that instance's scrub set before it is written (I14, §12.16); plugins never mask.
+    //   Round 34 (PLUGIN-ERROR-CODES): `error` is one of this image's declared numbers (D_ERRORS), 0 = none. The
+    //   host checks it as the `u32` it arrives as (above 9999 = not declared, before any narrowing) and renders a
+    //   declared one as `BUSBAR-<identity>-NNNN` in its own `plugin_diag` field (§10.7, §11.2). Widened in place:
+    //   no slot is appended, and an image built against the round-33 `log` has the old CORE_FP (stamp refusal).
+    // log: unsafe extern "C" fn(ctx: *const c_void, level: u32, error: u32, msg: Str<'static>),
+    //   The most verbose level currently enabled (0 = off). Check before formatting.
+    // log_level: unsafe extern "C" fn(ctx: *const c_void) -> u32,
+    //   Grow this thread's ACTIVE OutBuf (set by the entry guard for every entry that has an `out`, I10) to hold
+    //   `need` more bytes, up to max_out. Rewrites out.ptr/out.cap from host state. False if no ACTIVE buffer,
+    //   if `out` is not the ACTIVE buffer's RawOut, if `len + need` overflows, or over max_out (round 13: the host
+    //   computes `len + need` with `checked_add` and clamps its high-water mark to its own capacity, §10.1). Growth moves to a larger pooled block and
+    //   zeroes the old one before release (I11, §10.1); the plugin must reload ptr/cap after every grow.
+    // grow: unsafe extern "C" fn(ctx: *const c_void, out: *mut RawOut, need: usize) -> bool,
+    //   Round 28 (the generic deployment-id read). The stable 16-byte install identity: the
+    //   keep-once Store row `busbar.deployment.v1`/`id` of ADMIN-API-1.6 (`dep_` + 32 hex there; these are the 16
+    //   bytes the hex spells). Not the `deployment` keyset seed (boot_identity.rs:18), which never leaves core. Opaque
+    //   to the plugin: stable across restarts, nodes and replicas of one deployment, never a secret, never a verdict.
+    //   All zero until core has read or written the row at boot (§11.2 `BootPlan`: only during the open/migrate of
+    //   the secret and store instances the store needs, steps 2a/2b); non-zero and unchanging for the rest of the
+    //   process. Round 29: lock-free, one Acquire load of a `OnceLock<DeploymentId>` published once with all 16
+    //   bytes (§10.7 `set_deployment`), so a reader sees either all zero or the whole id, never half; no allocation.
+    //   Panic fallback (I10): all zero. Plugins use it to bind their own state to this install and for object keys;
+    //   core never reads what they do with it. Round 29, the boot ordering rule: an instance opened in
+    //   steps 2a/2b reads all zero there; core re-runs that instance's `check` (OPEN_DRY_RUN, `Open::check`) once
+    //   after `set_deployment` and before step 2c starts, and a REFUSED there refuses the boot exactly as a step-2c
+    //   `open` refusal does (§11.2 `BootPlan`). A plugin that binds to the deployment does the binding in `check`.
+    // deployment: unsafe extern "C" fn(ctx: *const c_void) -> DeploymentId,
+    //   Round 31 (owner ruling; MIGRATE-ON-BOOT r42 §4): the recoverable gate. Valid only inside an entry of a
+    //   **store** instance's non-DRY_RUN `open` (its first poll or any resume of its chain), on every load path.
+    //   `recoverable` = how many older rows this store is about to hand core that hold a recoverable secret (its
+    //   own count of its own column). OK: core can seal them (n == 0, or an at-rest key resolves). REFUSED: it
+    //   cannot; core records its own text (how to add the key) against the instance and reports that text when
+    //   the open refuses. Any other entry or kind: FAULT (`NeedNotAllowed`), and the entry is faulted. Panic
+    //   fallback (I10): REFUSED.
+    // migrate_admit: unsafe extern "C" fn(ctx: *const c_void, recoverable: u64) -> Status,
+    // W0-ABI: `unsafe impl Sync for Host {}` lands with W1-A2 (this stub is Sync without it).
+    _stub: (),
 }
 
 /// Round 28. A deployment id by value (16 bytes, align 1; `bb_deployment_id` in C, §7.8).
@@ -182,11 +185,6 @@ pub mod level {
     pub const TRACE: u32 = 5;
 }
 }
-
-// SAFETY: the host builds one process-wide `Host` (§10.7) and never mutates it; `ctx` is the host's own
-// context, read only by the host's fns, each of which is thread-safe and panic-contained (I10).
-#[allow(unsafe_code)]
-unsafe impl Sync for Host {}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Hash {

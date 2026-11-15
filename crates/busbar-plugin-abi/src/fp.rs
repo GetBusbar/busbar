@@ -80,7 +80,7 @@ mod tests {
         // Every block is hashed: each one holds its frozen items (a doc line or token change moves CORE_FP).
         assert!(crate::types::MECHANISM_BLOCK.contains("TOKEN_SESSION"));
         assert!(crate::records::MECHANISM_BLOCK.contains("D_ERRORS"));
-        assert!(crate::host::MECHANISM_BLOCK.contains("migrate_admit"));
+        assert!(crate::host::MECHANISM_BLOCK.contains("crypto_status"));
         assert!(crate::need::MECHANISM_BLOCK.contains("NeedResRec"));
         assert!(crate::plugin::MECHANISM_BLOCK.contains("former_names"));
     }

@@ -83,15 +83,14 @@ impl<'a> Bytes<'a> {
     }
     /// The slice. `len == 0` returns `&[]` and never reads `ptr` (the empty rule above); otherwise
     /// `from_raw_parts(ptr, len)`. A plugin may receive `{NULL, 0}` from a C producer or a host `EMPTY`.
-    #[allow(unsafe_code)]
     pub fn get(self) -> &'a [u8] {
         if self.len == 0 {
             return &[];
         }
-        // SAFETY: a `Bytes` with `len > 0` is built by `new` from a `&'a [u8]` or handed over the FFI by a producer
-        // bound by the §2 contract: `ptr` is non-null and points at `len` initialised bytes that stay valid and
-        // unchanged for `'a`.
-        unsafe { core::slice::from_raw_parts(self.ptr, self.len) }
+        // W1-A1: the `len > 0` arm is `from_raw_parts`, which is `unsafe`; the owner's "no unsafe" ruling holds it
+        // until UNSAFE-MIN decides how the boundary reads a view.
+        let _ = self.ptr;
+        todo!("UNSAFE-MIN: a non-empty view read")
     }
     pub const fn len(self) -> usize {
         self.len
@@ -107,12 +106,12 @@ impl<'a> Str<'a> {
         Str(Bytes::new(s.as_bytes()))
     }
     /// `len == 0` returns `""` without reading `ptr` (round 17 empty rule); otherwise unchecked UTF-8 view.
-    #[allow(unsafe_code)]
     pub fn get(self) -> &'a str {
-        let bytes = self.0.get();
-        // SAFETY: the producer guarantees UTF-8 (§2: core builds every `Str` a plugin receives from `&str`, and
-        // `new` takes a `&str`); `get` does not re-validate, and core re-validates every `Str` it keeps.
-        unsafe { core::str::from_utf8_unchecked(bytes) }
+        if self.0.is_empty() {
+            return "";
+        }
+        // W1-A1: the unchecked UTF-8 view is `unsafe`; held for UNSAFE-MIN as `Bytes::get`'s non-empty arm.
+        todo!("UNSAFE-MIN: a non-empty view read")
     }
     pub const fn len(self) -> usize {
         self.0.len()
@@ -135,14 +134,13 @@ impl<'a, T: View> Slice<'a, T> {
         }
     }
     /// `len == 0` returns `&[]` without reading `ptr` (round 17 empty rule); otherwise `from_raw_parts`.
-    #[allow(unsafe_code)]
     pub fn get(self) -> &'a [T] {
         if self.len == 0 {
             return &[];
         }
-        // SAFETY: as `Bytes::get`: with `len > 0`, `ptr` is non-null, aligned for `T` and points at `len`
-        // initialised `T` valid for `'a` (built by `new` from a `&'a [T]`, or by a producer bound by §2).
-        unsafe { core::slice::from_raw_parts(self.ptr, self.len) }
+        // W1-A1: held for UNSAFE-MIN as `Bytes::get`'s non-empty arm.
+        let _ = self.ptr;
+        todo!("UNSAFE-MIN: a non-empty view read")
     }
 }
 
@@ -159,8 +157,10 @@ pub mod sealed {
 /// Marker for types allowed inside an input view. Sealed: implemented only for Bytes, Str, Slice, Pair,
 /// u32, u64 and the `views {}` structs that `kind!` declares. A view struct is `#[repr(C)]` and `Copy`, its
 /// fields are only `View` types, and it has no implicit padding (`kind!` asserts the size equals the sum).
-#[allow(unsafe_code)]
-pub unsafe trait View: Copy + sealed::Seal {}
+// W1-A1: the IF declares `pub unsafe trait View` (and `unsafe impl View`). Under the owner's "no unsafe" ruling it
+// is a safe trait, as W0-ABI left it, until UNSAFE-MIN decides the boundary; nothing reads a view through a raw
+// pointer yet (`get`'s non-empty arm is held), so the safe form promises nothing it cannot keep.
+pub trait View: Copy + sealed::Seal {}
 
 impl sealed::Seal for Bytes<'_> {}
 impl sealed::Seal for Str<'_> {}
@@ -171,21 +171,14 @@ impl sealed::Seal for u64 {}
 impl<V: View> sealed::Seal for &V {}
 impl sealed::Seal for ChainBytes {}
 
-// SAFETY (every `View` impl below): the type is `Copy`, `#[repr(C)]` or `#[repr(transparent)]` (or a primitive),
-// its fields are pointers, lengths and other `View` types only, and it has no implicit padding (a pointer and a
-// `usize`, or two such pairs), so a C producer and the Rust reader agree on every byte.
-#[allow(unsafe_code)]
-unsafe impl View for Bytes<'_> {}
-#[allow(unsafe_code)]
-unsafe impl View for Str<'_> {}
-#[allow(unsafe_code)]
-unsafe impl<T: View> View for Slice<'_, T> {}
-#[allow(unsafe_code)]
-unsafe impl View for Pair<'_> {}
-#[allow(unsafe_code)]
-unsafe impl View for u32 {}
-#[allow(unsafe_code)]
-unsafe impl View for u64 {}
+// Each is `Copy`, `#[repr(C)]`/`#[repr(transparent)]` or a primitive, with only pointer, length and `View` fields
+// and no implicit padding: the contract the IF's `unsafe impl` states.
+impl View for Bytes<'_> {}
+impl View for Str<'_> {}
+impl<T: View> View for Slice<'_, T> {}
+impl View for Pair<'_> {}
+impl View for u32 {}
+impl View for u64 {}
 
 impl Status {
     /// Answer records are in Out.
@@ -311,6 +304,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "UNSAFE-MIN: a non-empty view read is from_raw_parts, held by the owner's no-unsafe ruling"]
     fn a_view_reads_back_what_it_borrows() {
         assert_eq!(Bytes::new(b"abc").get(), b"abc");
         assert_eq!(Str::new("h\u{e9}").get(), "h\u{e9}");

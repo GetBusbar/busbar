@@ -703,86 +703,29 @@ pub struct Out<'a> {
     raw: &'a mut RawOut,
     host: &'a Host,
 }
-impl<'a> Out<'a> {
-    /// The writer over the host buffer an entry received. Only the shims call it (§6.4, §7.6).
-    ///
-    /// # Safety
-    /// `raw` is the RawOut the host passed to this entry: `raw.ptr` points at `raw.cap` writable bytes of the
-    /// host's ACTIVE buffer (§10.1), the first `raw.len` of them written, and `host` is the vtable whose `grow`
-    /// moves that buffer. Both stay valid while the `Out` lives.
-    #[doc(hidden)]
-    #[allow(unsafe_code)]
-    pub unsafe fn from_raw(raw: &'a mut RawOut, host: &'a Host) -> Self {
-        Out { raw, host }
-    }
-}
-// SAFETY (the blocks below): `from_raw`'s contract makes `[0, raw.cap)` at `raw.ptr` writable host memory, and
-// `grow` is the only thing that moves it (it rewrites `ptr`/`cap`, which are re-read after every call). Every
-// write is bounds-checked against `raw.cap` or `raw.len` first.
-#[allow(unsafe_code)]
+// W1-A1: the IF's Out writes straight into the host buffer (`raw.ptr`) and grows it through `Host::grow`, a raw
+// `unsafe extern "C"` field. Both are `unsafe`; the owner's "no unsafe" ruling holds them (and the constructor the
+// shims need) until UNSAFE-MIN decides the boundary. The `Writer` impl below is the real one, over this stub
+// sink, so only the four sink operations change when the boundary lands.
 impl RawWrite for Out<'_> {
     fn written(&self) -> usize {
         self.raw.len
     }
     fn room(&mut self, need: usize) -> Result<(), Full> {
-        if self.raw.cap.saturating_sub(self.raw.len) >= need {
-            return Ok(());
-        }
-        // SAFETY: `grow` is the host's own entry (§5); it takes the RawOut it gave this entry and answers false
-        // when it cannot grow it (no ACTIVE buffer, not that buffer, overflow, over max_out).
-        let grown = unsafe {
-            (self.host.grow)(
-                self.host.ctx,
-                core::ptr::from_mut::<RawOut>(&mut *self.raw),
-                need,
-            )
-        };
-        if grown && self.raw.cap.saturating_sub(self.raw.len) >= need {
-            Ok(())
-        } else {
-            Err(Full)
-        }
+        let _ = (need, self.host);
+        todo!("UNSAFE-MIN: Out grows the host buffer through Host::grow")
     }
     fn append(&mut self, bytes: &[u8]) {
-        if bytes.is_empty() {
-            return;
-        }
-        let at = self.raw.len;
-        let end = at.checked_add(bytes.len());
-        assert!(
-            end.is_some_and(|end| end <= self.raw.cap),
-            "a record write past the room it made"
-        );
-        // SAFETY: `[at, at + bytes.len())` lies inside `[0, raw.cap)` (checked above); `bytes` is plugin memory,
-        // never the host buffer, so the two do not overlap.
-        unsafe {
-            core::ptr::copy_nonoverlapping(bytes.as_ptr(), self.raw.ptr.add(at), bytes.len());
-        }
-        self.raw.len = at + bytes.len();
+        let _ = bytes;
+        todo!("UNSAFE-MIN: Out writes the host buffer in place")
     }
     fn patch(&mut self, at: usize, bytes: &[u8]) {
-        if bytes.is_empty() {
-            return;
-        }
-        let end = at.checked_add(bytes.len());
-        assert!(
-            end.is_some_and(|end| end <= self.raw.len),
-            "a patch outside the written bytes"
-        );
-        // SAFETY: `[at, at + bytes.len())` lies inside the written `[0, raw.len)` (checked above).
-        unsafe {
-            core::ptr::copy_nonoverlapping(bytes.as_ptr(), self.raw.ptr.add(at), bytes.len());
-        }
+        let _ = (at, bytes);
+        todo!("UNSAFE-MIN: Out writes the host buffer in place")
     }
     fn truncate(&mut self, len: usize) {
-        if len >= self.raw.len {
-            return;
-        }
-        // SAFETY: `[len, raw.len)` lies inside the written bytes.
-        unsafe {
-            core::ptr::write_bytes(self.raw.ptr.add(len), 0, self.raw.len - len);
-        }
-        self.raw.len = len;
+        let _ = len;
+        todo!("UNSAFE-MIN: Out zeroes the host buffer in place")
     }
 }
 impl Writer for Out<'_> {
@@ -927,158 +870,5 @@ impl Writer for Reply {
 impl Drop for Reply {
     fn drop(&mut self) {
         self.buf.zeroize();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use core::ffi::c_void;
-
-    use super::*;
-    use crate::host::{CryptoReq, CryptoRet, DeploymentId, crypto_status};
-    use crate::types::{Bytes, Status, Str};
-
-    extern "C" fn zero_u64(_: *const c_void) -> u64 {
-        0
-    }
-    extern "C" fn no_random(_: *const c_void, _: usize) -> CryptoRet {
-        CryptoRet {
-            status: crypto_status::RNG,
-            _r: 0,
-            out: Bytes::EMPTY,
-        }
-    }
-    extern "C" fn no_crypto(_: *const c_void, _: *const CryptoReq<'static>) -> CryptoRet {
-        CryptoRet {
-            status: crypto_status::RNG,
-            _r: 0,
-            out: Bytes::EMPTY,
-        }
-    }
-    extern "C" fn drop_log(_: *const c_void, _: u32, _: u32, _: Str<'static>) {}
-    extern "C" fn log_off(_: *const c_void) -> u32 {
-        0
-    }
-    extern "C" fn never_grow(_: *const c_void, _: *mut RawOut, _: usize) -> bool {
-        false
-    }
-    extern "C" fn no_deployment(_: *const c_void) -> DeploymentId {
-        DeploymentId([0; 16])
-    }
-    extern "C" fn refuse_admit(_: *const c_void, _: u64) -> Status {
-        Status::REFUSED
-    }
-
-    /// A host whose buffer never grows (`grow` answers false, as over max_out).
-    fn fixed_host() -> Host {
-        Host {
-            ctx: core::ptr::null(),
-            now: zero_u64,
-            mono: zero_u64,
-            random: no_random,
-            crypto: no_crypto,
-            log: drop_log,
-            log_level: log_off,
-            grow: never_grow,
-            deployment: no_deployment,
-            migrate_admit: refuse_admit,
-        }
-    }
-
-    /// `Out` writes records straight into the host buffer; a record that does not fit and cannot grow is Full
-    /// with nothing written, and a nested record that fails half-way is rolled back and its bytes zeroed (I11).
-    #[test]
-    fn out_writes_in_place_and_leaves_nothing_of_a_record_that_does_not_fit() {
-        let host = fixed_host();
-        let mut buf = [0u8; 40];
-        let mut raw = RawOut {
-            ptr: buf.as_mut_ptr(),
-            len: 0,
-            cap: buf.len(),
-        };
-        {
-            let mut out = Out {
-                raw: &mut raw,
-                host: &host,
-            };
-            out.put_pod(tag::TOKEN, &TokenRec { token: 9 })
-                .expect("token fits");
-            out.put_text(tag::TEXT, "abc").expect("text fits");
-            assert!(out.put_text(tag::TEXT, "x").is_err());
-            assert!(
-                out.put_nested(0x0101, |n| n.put_text(tag::TEXT, "y"))
-                    .is_err()
-            );
-            assert!(out.put_metric(1, metric::MX_SET, 2.0, &["l"]).is_err());
-            settled::config(&mut out, b"").expect("an empty CONFIG fits");
-        }
-        assert_eq!(raw.len, 40);
-        assert!(buf[40..].is_empty());
-        let recs: Vec<_> = Records::new(&buf)
-            .collect::<Result<_, _>>()
-            .expect("records");
-        assert_eq!(
-            recs.iter().map(|rec| rec.tag).collect::<Vec<_>>(),
-            [tag::TOKEN, tag::TEXT, tag::CONFIG]
-        );
-        assert_eq!(recs[1].text().expect("text"), "abc");
-    }
-
-    #[test]
-    fn a_failed_nested_record_is_wiped_from_the_host_buffer() {
-        let host = fixed_host();
-        let mut buf = [0u8; 32];
-        let mut raw = RawOut {
-            ptr: buf.as_mut_ptr(),
-            len: 0,
-            cap: buf.len(),
-        };
-        {
-            let mut out = Out {
-                raw: &mut raw,
-                host: &host,
-            };
-            // Head (8) + a nested TEXT "secret" (16) fit; the second one (16 more) does not.
-            let done = out.put_nested(0x0101, |n| {
-                n.put_text(tag::TEXT, "secret")?;
-                n.put_text(tag::TEXT, "secret")
-            });
-            assert!(done.is_err());
-        }
-        assert_eq!(raw.len, 0);
-        assert!(buf.iter().all(|&byte| byte == 0));
-    }
-
-    #[test]
-    fn settled_writes_config_then_core_cfg() {
-        let host = fixed_host();
-        let mut buf = [0u8; 96];
-        let mut raw = RawOut {
-            ptr: buf.as_mut_ptr(),
-            len: 0,
-            cap: buf.len(),
-        };
-        {
-            let mut out = Out {
-                raw: &mut raw,
-                host: &host,
-            };
-            settled::config(&mut out, br#"{"a":1}"#).expect("config");
-            settled::core_cfg(&mut out, core_cfg::LIMITS, "", br#"{"timeout_ms":5}"#)
-                .expect("core cfg");
-        }
-        let len = raw.len;
-        let recs: Vec<_> = Records::new(&buf[..len])
-            .collect::<Result<_, _>>()
-            .expect("records");
-        assert_eq!(recs.len(), 2);
-        assert_eq!(
-            (recs[0].tag, recs[0].body),
-            (tag::CONFIG, &br#"{"a":1}"#[..])
-        );
-        assert_eq!(recs[1].tag, tag::CORE_CFG);
-        let (head, tail) = recs[1].pod_tail::<CoreCfgRec>().expect("core cfg pod");
-        assert_eq!((head.section, head.name_len), (core_cfg::LIMITS, 0));
-        assert_eq!(tail, br#"{"timeout_ms":5}"#);
     }
 }

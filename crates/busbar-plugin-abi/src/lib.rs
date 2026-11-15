@@ -7,8 +7,9 @@
 //!
 //! Wave 0 (W0-ABI) landed every frozen signature as a compiling stub; each wave-1 task replaces the stubs in
 //! the files it owns. W1-A1 owns this file, `types.rs`, `records.rs`, `fail.rs`, `fp.rs`, `versions.rs` and the
-//! `mechanism!` block. Production `unsafe` lives only at the IF-named sites, each listed in the kernel's
-//! `arch/escapes.json`.
+//! `mechanism!` block. The crate has no `unsafe` (owner ruling); every IF item that needs it (the Host and
+//! header fn pointers, the `Vt` tables, `unsafe impl`s, the non-empty view read, `Out`'s in-place writes) is
+//! held as a stub or a signature comment until the UNSAFE-MIN design decides the boundary.
 
 #![deny(unsafe_code)]
 
