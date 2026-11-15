@@ -432,7 +432,8 @@ fn a_tail_list_counted_behind_null_faults() {
 
 #[test]
 fn a_tail_with_more_streams_than_exist_faults() {
-    let many = [0u8; 10];
+    // One past the frozen vocabulary (ExportStream::ALL: ten, with Content = 9).
+    let many = vec![0u8; ExportStream::ALL.len() + 1];
     assert_eq!(
         check_tail(&tail(&many, &[])),
         red(Rule::OverMax, "tail.streams_len")
@@ -449,11 +450,22 @@ fn a_tail_with_too_many_routes_faults() {
 }
 
 #[test]
+fn the_content_stream_byte_is_in_the_frozen_list() {
+    assert_eq!(
+        {
+            // SAFETY: no routes are passed, so there is no pointer to read.
+            unsafe { check_tail_entries(&[9], &[]) }
+        },
+        Ok(())
+    );
+}
+
+#[test]
 fn a_stream_byte_outside_the_frozen_list_faults() {
     assert_eq!(
         {
             // SAFETY: every non-NULL path in this fixture borrows a live string literal; nulls are rejected before reading.
-            unsafe { check_tail_entries(&[9], &[]) }
+            unsafe { check_tail_entries(&[10], &[]) }
         },
         red(Rule::UnknownCode, "tail.streams.code")
     );

@@ -1262,9 +1262,9 @@ dependencies = [
 
 [[package]]
 name = "const-oid"
-version = "0.10.2"
+version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
+checksum = "be95d4a884358a21a199689323c29e9256b4a1b315e22f183d155422041d3a9a"
 
 [[package]]
 name = "constant_time_eq"
@@ -1490,9 +1490,9 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "either"
-version = "1.16.0"
+version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
+checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 
 [[package]]
 name = "email_address"
@@ -1562,9 +1562,9 @@ checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
 
 [[package]]
 name = "fancy-regex"
-version = "0.19.2"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d301f5bf187b3c295fce6468d3875037a0bccc5f6b151c63cac2f85babf21912"
+checksum = "476de73bddf2ef8490aa4ee8f1cf40b430bf1d56c48c22080e5186952cd580e6"
 dependencies = [
  "bit-set",
  "regex-automata",
@@ -1837,7 +1837,7 @@ dependencies = [
 [[package]]
 name = "granit-parser"
 version = "2.1.0"
-source = "git+https://github.com/MattJackson/granit-parser?rev=e62d0c9a92189d705642ebebe48545e2a556fa62#e62d0c9a92189d705642ebebe48545e2a556fa62"
+source = "git+https://github.com/MattJackson/granit-parser?rev=d31e9292a0be49de7d3a85ee07555bb9d0afce20#d31e9292a0be49de7d3a85ee07555bb9d0afce20"
 dependencies = [
  "arraydeque",
  "smallvec",
@@ -3450,7 +3450,7 @@ dependencies = [
 [[package]]
 name = "serde-saphyr"
 version = "2.1.1"
-source = "git+https://github.com/MattJackson/serde-saphyr?rev=8ec56f9acc93e8f2f2c30f4e52497acc76cce86a#8ec56f9acc93e8f2f2c30f4e52497acc76cce86a"
+source = "git+https://github.com/MattJackson/serde-saphyr?rev=a94d2da01a448d348b5d14945e29192e511b8452#a94d2da01a448d348b5d14945e29192e511b8452"
 dependencies = [
  "annotate-snippets",
  "base64 0.23.1",

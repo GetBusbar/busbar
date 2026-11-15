@@ -6,7 +6,7 @@
 //! counts what a scope frees without ever aborting.
 
 use busbar_contract::abi::sdk::test_support::loans::Loans;
-use busbar_contract::abi::sdk::test_support::watch::Watch;
+use busbar_contract::abi::sdk::test_support::watch::{Block, Watch};
 use busbar_contract::abi::transport::{IngestIn, ReadIn, WriteIn};
 
 #[global_allocator]
@@ -102,4 +102,85 @@ fn a_panic_inside_an_armed_scope_propagates_and_disarms() {
         freed.blocks_containing_canary >= 1,
         "the watch arms again: {freed:?}"
     );
+}
+
+#[test]
+fn an_armed_here_scope_counts_this_thread_s_allocations_exactly() {
+    let here = A.armed_here(b"", || drop(std::hint::black_box(vec![0u8; 100])));
+    assert_eq!(
+        (here.allocs, here.alloc_bytes, here.largest_alloc),
+        (1, 100, 100),
+        "{here:?}"
+    );
+    assert_eq!((here.count, here.bytes), (1, 100), "{here:?}");
+}
+
+#[test]
+fn a_watched_realloc_is_a_new_block_and_the_old_one_freed() {
+    let here = A.armed_here(b"", || {
+        let mut v = Vec::<u8>::with_capacity(8);
+        v.extend_from_slice(&[1; 8]);
+        v.reserve_exact(64);
+        drop(std::hint::black_box(v));
+    });
+    assert_eq!(
+        here.allocs, 2,
+        "with_capacity and the grown block: {here:?}"
+    );
+    assert!(here.largest_alloc >= 72, "{here:?}");
+    assert_eq!(here.count, 2, "the old block, then the grown one: {here:?}");
+    assert!(
+        here.nonzero_blocks >= 1,
+        "the old block still held its bytes: {here:?}"
+    );
+}
+
+#[test]
+fn a_watched_block_is_read_as_it_is_freed() {
+    let wiped = A.armed(CANARY, || {
+        let mut v = CANARY.to_vec();
+        A.block(v.as_ptr(), v.len());
+        v.fill(0);
+        drop(std::hint::black_box(v));
+    });
+    assert_eq!(
+        wiped.block,
+        Some(Block {
+            nonzero: false,
+            canary: false
+        })
+    );
+    let kept = A.armed(CANARY, || {
+        let v = CANARY.to_vec();
+        A.block(v.as_ptr(), v.len());
+        drop(std::hint::black_box(v));
+    });
+    assert_eq!(
+        kept.block,
+        Some(Block {
+            nonzero: true,
+            canary: true
+        })
+    );
+    let v = CANARY.to_vec();
+    let live = A.armed(CANARY, || A.block(v.as_ptr(), v.len()));
+    assert_eq!(
+        live.block, None,
+        "a block not freed in the scope reads nothing"
+    );
+    drop(v);
+}
+
+#[cfg(unix)]
+#[test]
+#[cfg_attr(miri, ignore = "Miri has no thread CPU clock")]
+fn the_thread_cpu_clock_moves_with_work() {
+    use busbar_contract::abi::sdk::test_support::cpu;
+    let before = cpu::thread_ns();
+    let mut x = 0u64;
+    for i in 0..2_000_000u64 {
+        x = std::hint::black_box(x.wrapping_mul(31).wrapping_add(i));
+    }
+    std::hint::black_box(x);
+    assert!(cpu::thread_ns() > before);
 }

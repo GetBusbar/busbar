@@ -6,7 +6,7 @@
 //! helper until its non-breakaway, kill-on-close Job contains it.
 
 use std::path::Path;
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::process::{Child, Command};
 
 /// Content-free process-containment failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,7 +40,7 @@ pub struct ContainedChild {
     // Rust drops fields in declaration order: stop the tree before Child's
     // kill-on-drop guard hands the leader to Tokio's orphan reaper. Held for its drop alone.
     _job: platform::Job,
-    child: Child,
+    _child: Child,
 }
 
 impl std::fmt::Debug for ContainedChild {
@@ -63,17 +63,10 @@ impl ContainedChild {
             let _ = child.wait().await;
             return Err(error);
         }
-        Ok(Self { _job: job, child })
-    }
-
-    /// Take the configured stdin pipe, without exposing process ownership.
-    pub fn take_stdin(&mut self) -> Option<ChildStdin> {
-        self.child.stdin.take()
-    }
-
-    /// Take the configured stdout pipe, without exposing process ownership.
-    pub fn take_stdout(&mut self) -> Option<ChildStdout> {
-        self.child.stdout.take()
+        Ok(Self {
+            _job: job,
+            _child: child,
+        })
     }
 }
 

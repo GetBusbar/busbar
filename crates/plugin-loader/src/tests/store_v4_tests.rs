@@ -215,6 +215,12 @@ mod linked {
     }
     static SCANS: Mutex<Vec<ScanCrossing>> = Mutex::new(Vec::new());
 
+    /// Settings of the instance whose commit takes `SLOW_COMMIT` to answer (instance 4).
+    const SLOW_SETTINGS: &[u8] = br#"{"slowcommit":true}"#;
+    const SLOW_COMMIT: std::time::Duration = std::time::Duration::from_millis(400);
+    /// Read and commit crossings the slow instance has received.
+    static SLOW_CROSSINGS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
     /// Settings the fixture refuses to open with, carrying a secret it never echoes.
     const REFUSING_SETTINGS: &[u8] = br#"{"url":"rediss://u:hunter2@db#insecure"}"#;
     /// The fixture's own open refusal, with its BUSBAR code.
@@ -248,7 +254,18 @@ mod linked {
         unsafe {
             let slot = (*input.cast::<busbar_contract::abi::mechanism::call::InHead>()).op;
             let mut outcome = Outcome::Ready;
+            if instance as usize == 4 && matches!(slot, wire::slot::READ | wire::slot::COMMIT) {
+                SLOW_CROSSINGS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             match slot {
+                wire::slot::COMMIT if instance as usize == 4 => {
+                    // A durable commit stalled on its disk: slow, then applied.
+                    std::thread::sleep(SLOW_COMMIT);
+                    let out = &mut *output.cast::<wire::CommitOut>();
+                    out.code = wire::COMMIT_APPLIED;
+                    out.authority = info().clock_authority;
+                    out.observed_at = 1;
+                }
                 life::OPEN => {
                     let out = &mut *output.cast::<OpenOut>();
                     let input =
@@ -271,7 +288,9 @@ mod linked {
                             state = OPEN_GATE.1.wait(state).unwrap();
                         }
                     }
-                    out.instance = if settings == br#"{"openhold":true}"# {
+                    out.instance = if settings == SLOW_SETTINGS {
+                        std::ptr::without_provenance_mut::<c_void>(4)
+                    } else if settings == br#"{"openhold":true}"# {
                         std::ptr::without_provenance_mut::<c_void>(3)
                     } else if settings == br#"{"hold":true}"# {
                         std::ptr::without_provenance_mut::<c_void>(2)
@@ -935,6 +954,103 @@ mod linked {
                 .await,
             Err(Failure::Unknown)
         ));
+    }
+
+    /// The Store watches its crossings for the deadline its caller already waits (30 s), not the
+    /// 1 s call budget: a commit slower than the call budget is applied, never FAULTed to
+    /// `Unknown`, and the only Store is not quarantined.
+    #[tokio::test]
+    async fn a_store_commit_slower_than_the_call_budget_is_applied_and_the_store_serves_on() {
+        use std::sync::atomic::Ordering;
+        let dispatcher = Arc::new(Dispatcher::new(
+            DispatchConfig {
+                budgets: crate::dispatch::Budgets {
+                    call: std::time::Duration::from_millis(100),
+                    ..crate::dispatch::Budgets::default()
+                },
+                ..DispatchConfig::default()
+            },
+            busbar_contract::services::test_caller_binding(),
+        ));
+        extern "C" fn raw_door() -> *const Door {
+            door()
+        }
+        // SAFETY: the fixture statement is permanent checked metadata.
+        let statement =
+            unsafe { busbar_contract::abi::mechanism::rendering::render(&*door().statement()) }
+                .unwrap();
+        let row = LinkedRow {
+            statement,
+            door: raw_door,
+        };
+        let plugin = load_linked::<StoreV4>(
+            &row,
+            Bind {
+                instance: crate::cold::store_v4::instance("v4-slow-commit"),
+                max_inflight_cap: 32,
+                sink: Arc::new(NoSink),
+                dispatcher: dispatcher.adopter(),
+                conns: ConnTable::NoNeeds,
+            },
+        )
+        .unwrap();
+        let backend = LoadedPersistence::open(plugin, dispatcher.clone(), SLOW_SETTINGS, limits())
+            .await
+            .unwrap();
+        let candidate = owned::PreparedCandidate::new(owned::Candidate {
+            id: owned::AttemptId {
+                dataset: info().dataset,
+                writer_epoch: 1,
+                writer: [5; 16],
+                execution_epoch: 1,
+                operation: [6; 16],
+            },
+            codec: owned::CANDIDATE_VERSION,
+            predicates: vec![],
+            mutations: vec![owned::Mutation::Delete(owned::Address {
+                namespace: [4; 16],
+                key: b"key".to_vec(),
+            })],
+            time: None,
+            result: busbar_contract::redacted::Secret::new(vec![]),
+        })
+        .unwrap();
+        let decision = backend
+            .commit(
+                candidate,
+                owned::CommitKey::slotted(
+                    0,
+                    1,
+                    &busbar_contract::caps::SlotSeal::acquire_for_tests(),
+                )
+                .unwrap(),
+            )
+            .await;
+        assert!(
+            matches!(decision, Ok(owned::Decision::Applied(_))),
+            "a slow commit inside the Store deadline must be applied: {decision:?}"
+        );
+        assert_eq!(
+            dispatcher.stats().quarantined,
+            0,
+            "the Store was quarantined"
+        );
+        let crossed = SLOW_CROSSINGS.load(Ordering::SeqCst);
+        backend
+            .read(Arc::new(owned::Read {
+                dataset: info().dataset,
+                addresses: vec![owned::Address {
+                    namespace: [4; 16],
+                    key: b"key".to_vec(),
+                }],
+                time: None,
+            }))
+            .await
+            .unwrap();
+        assert!(
+            SLOW_CROSSINGS.load(Ordering::SeqCst) > crossed,
+            "the read after the slow commit never crossed"
+        );
     }
 }
 

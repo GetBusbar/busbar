@@ -46,8 +46,8 @@ impl AuthHandleHost for LoanHost {
                 generation: 3,
                 lines: Vec::new(),
             }),
-            full: Arc::from(b"full".as_slice()),
-            current: Arc::from(b"current".as_slice()),
+            full: Arc::new(*b"full"),
+            current: Arc::new(*b"current"),
         })
     }
     fn stream_ended(&self, _: u64, _: u64, stream: u64) {

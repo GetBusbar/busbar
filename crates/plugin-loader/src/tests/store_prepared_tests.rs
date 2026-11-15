@@ -29,6 +29,7 @@ struct Stats {
     target_effects: AtomicUsize,
     short: AtomicUsize,
     bootstrap_calls: AtomicUsize,
+    bootstrap_delay_ms: AtomicU64,
     fences: AtomicUsize,
     hold: AtomicBool,
     release: Mutex<bool>,
@@ -221,6 +222,10 @@ extern "C" fn call(instance: *mut c_void, input: *const c_void, output: *mut c_v
                 out.instance = state.cast();
                 let state = &*state;
                 state.stats.bootstrap_calls.fetch_add(1, Ordering::SeqCst);
+                let delay = state.stats.bootstrap_delay_ms.load(Ordering::SeqCst);
+                if delay != 0 {
+                    std::thread::sleep(Duration::from_millis(delay));
+                }
                 if state.stats.hold.swap(false, Ordering::SeqCst) {
                     state.stats.entered.notify_one();
                     let mut released = state.stats.release.lock().unwrap();
@@ -366,6 +371,14 @@ extern "C" fn door() -> &'static Door {
     unsafe { &*(address as *const Door) }
 }
 fn fixture(legacy: bool, hold: bool) -> (Arc<LoadedPrepared>, Arc<Stats>) {
+    let (prepared, stats, _) = fixture_with(legacy, hold, DispatchConfig::default());
+    (prepared, stats)
+}
+fn fixture_with(
+    legacy: bool,
+    hold: bool,
+    config: DispatchConfig,
+) -> (Arc<LoadedPrepared>, Arc<Stats>, Arc<Dispatcher>) {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let id = NEXT.fetch_add(1, Ordering::SeqCst) + 1;
     let stats = Arc::new(Stats {
@@ -375,7 +388,7 @@ fn fixture(legacy: bool, hold: bool) -> (Arc<LoadedPrepared>, Arc<Stats>) {
     stats.hold.store(hold, Ordering::SeqCst);
     registry().lock().unwrap().insert(id, stats.clone());
     let dispatcher = Arc::new(Dispatcher::new(
-        DispatchConfig::default(),
+        config,
         busbar_contract::services::test_caller_binding(),
     ));
     let plugin = load_linked::<StoreV4>(
@@ -395,7 +408,7 @@ fn fixture(legacy: bool, hold: bool) -> (Arc<LoadedPrepared>, Arc<Stats>) {
             .unwrap();
     let prepared = LoadedPrepared::new(
         plugin,
-        dispatcher,
+        dispatcher.clone(),
         &settings,
         Limits {
             descriptor_bytes: 128 * 1024,
@@ -405,7 +418,7 @@ fn fixture(legacy: bool, hold: bool) -> (Arc<LoadedPrepared>, Arc<Stats>) {
         },
     )
     .unwrap();
-    (Arc::new(prepared), stats)
+    (Arc::new(prepared), stats, dispatcher)
 }
 fn proof(phase: native::CompletionPhase) -> native::FinishDecision {
     native::FinishDecision {
@@ -508,6 +521,37 @@ async fn prepared_upgrade_short_target_recovery_and_completion_use_one_native_in
         .await
         .expect("the one native instance closes after its last owner drops");
     assert_eq!(stats.closed.load(Ordering::SeqCst), 1);
+}
+
+/// The Store watches its crossings for the 30 s deadline its caller waits, not the call budget:
+/// a bootstrap slower than the call budget completes and the Store is not quarantined.
+#[tokio::test]
+async fn a_store_bootstrap_slower_than_the_call_budget_completes() {
+    let (prepared, stats, dispatcher) = fixture_with(
+        false,
+        false,
+        DispatchConfig {
+            budgets: crate::dispatch::Budgets {
+                call: Duration::from_millis(100),
+                ..crate::dispatch::Budgets::default()
+            },
+            ..DispatchConfig::default()
+        },
+    );
+    stats.bootstrap_delay_ms.store(400, Ordering::SeqCst);
+    let reply = prepared
+        .bootstrap(Arc::new(native::Request::Inspect { bounds: bounds() }))
+        .await;
+    assert!(
+        reply.is_ok(),
+        "a slow bootstrap inside the deadline failed: {reply:?}"
+    );
+    assert_eq!(
+        dispatcher.stats().quarantined,
+        0,
+        "the Store was quarantined"
+    );
+    assert_eq!(stats.bootstrap_calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

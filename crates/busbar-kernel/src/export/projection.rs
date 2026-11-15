@@ -71,7 +71,8 @@ pub(crate) fn produced_fields(stream: ExportStream) -> &'static [ExportField] {
         | ExportStream::Decisions
         | ExportStream::Identity
         | ExportStream::Prompts
-        | ExportStream::Completions => &[],
+        | ExportStream::Completions
+        | ExportStream::Content => &[],
     }
 }
 

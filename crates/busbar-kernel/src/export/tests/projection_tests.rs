@@ -42,7 +42,7 @@ fn producerless_stream_is_a_loud_config_error() {
         .collect();
     assert_eq!(
         producerless.len(),
-        5,
+        6,
         "this release produces {} of the {} frozen streams; the producerless set is {producerless:?}",
         PRODUCED_STREAMS.len(),
         ExportStream::ALL.len()
