@@ -661,6 +661,8 @@ impl Custody {
                 "audited correction has no explicit quiescence attestations",
             ));
         }
+        let (actor, reason) =
+            crate::off_path::governance::ledger::operator_provenance(&audit.actor, &audit.reason);
         Ok(RecoveryResolution {
             operation_id: event.operation_id,
             body_fingerprint: event.body_fingerprint,
@@ -670,8 +672,8 @@ impl Custody {
             } else {
                 RecoveryVerdict::NotLanded
             },
-            actor: audit.actor.clone(),
-            reason: audit.reason.clone(),
+            actor,
+            reason,
             sender_quiesced: audit.sender_quiesced,
             backend_quiesced: audit.backend_quiesced,
         })
@@ -724,9 +726,13 @@ impl Custody {
             RecoveryVerdict::Landed => RawDecision::Applied,
             RecoveryVerdict::NotLanded => RawDecision::ConditionConflict,
         });
+        let (actor, reason) = crate::off_path::governance::ledger::operator_provenance(
+            &resolution.actor,
+            &resolution.reason,
+        );
         self.audit = Some(OperatorAudit {
-            actor: resolution.actor.clone(),
-            reason: resolution.reason.clone(),
+            actor,
+            reason,
             expected_revision: resolution.expected_revision,
             landed: resolution.verdict == RecoveryVerdict::Landed,
             sender_quiesced: resolution.sender_quiesced,
