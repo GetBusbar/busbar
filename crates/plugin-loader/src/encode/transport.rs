@@ -137,6 +137,36 @@ mod tests {
             .collect()
     }
 
+
+    /// R6b (busbar#256): an EV_PATH argument is exactly one record, tag 0x0117, body PathRec + address text.
+    #[test]
+    fn a_path_event_argument_is_one_event_path_record() {
+        use busbar_plugin_abi::transport::PathRec;
+        let mut out = Reply::new();
+        encode_path(&mut out, 7, 3, "192.0.2.1:4000").expect("fits");
+        let mut recs = Records::new(out.as_bytes());
+        let rec = recs.next().expect("one record").expect("well framed");
+        assert_eq!(rec.tag, 0x0117);
+        let (p, tail) = rec.pod_tail::<PathRec>().expect("PathRec then tail");
+        assert_eq!((p.path, p.flags), (7, 3));
+        assert_eq!(tail, b"192.0.2.1:4000");
+        assert!(recs.next().is_none(), "the argument is exactly one record");
+    }
+
+    /// R6b (busbar#256): an EV_KEYING argument is exactly one record, tag 0x0118, body KeyingRec + material.
+    #[test]
+    fn a_keying_event_argument_is_one_event_keying_record() {
+        use busbar_plugin_abi::transport::KeyingRec;
+        let mut out = Reply::new();
+        encode_keying(&mut out, 9, 1, &[0xAB; 60]).expect("fits");
+        let mut recs = Records::new(out.as_bytes());
+        let rec = recs.next().expect("one record").expect("well framed");
+        assert_eq!(rec.tag, 0x0118);
+        let (k, tail) = rec.pod_tail::<KeyingRec>().expect("KeyingRec then tail");
+        assert_eq!((k.path, k.profile), (9, 1));
+        assert_eq!(tail, [0xAB; 60]);
+        assert!(recs.next().is_none(), "the argument is exactly one record");
+    }
     #[test]
     fn an_offer_reads_alpn_then_client_defaults() {
         let out = answer(|w| {
