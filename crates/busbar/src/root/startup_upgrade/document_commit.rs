@@ -246,6 +246,28 @@ impl Inventory {
             {
                 return Err(failure());
             }
+            if publication.absent {
+                // The intent binds the absence itself: there is no file to retain or replace.
+                match fs.inspect_document(
+                    &publication.path,
+                    &publication.original,
+                    &publication.converted,
+                ) {
+                    Ok(DocumentInspection::Missing) | Err(_) => {}
+                    Ok(_) => {
+                        return Err(
+                            "configuration changed before its migration intent was confirmed"
+                                .into(),
+                        );
+                    }
+                }
+                captured.push(Document {
+                    publication,
+                    metadata: None,
+                    read_only: false,
+                });
+                continue;
+            }
             let (metadata, read_only) = match fs.inspect_document(
                 &publication.path,
                 &publication.original,
@@ -299,6 +321,16 @@ impl Inventory {
             {
                 return Err(failure());
             }
+            // An absent default is its empty form on both sides, with no file metadata to keep.
+            if p.absent
+                && (document.metadata.is_some()
+                    || document.read_only
+                    || p.original.as_slice()
+                        != busbar_kernel::config::providers::ABSENT_CATALOG.as_bytes()
+                    || p.converted.as_slice() != p.original.as_slice())
+            {
+                return Err(failure());
+            }
         }
         for secret in &self.secrets {
             if !self
@@ -330,11 +362,13 @@ impl Inventory {
                 &mut out,
                 &[u8::from(p.locked), u8::from(document.read_only)],
             )?;
+            // 0: no retained metadata; 1: the original file's metadata; 2: the file is absent.
             match &document.metadata {
                 Some(bytes) => {
                     raw(&mut out, &[1])?;
                     put(&mut out, bytes)?;
                 }
+                None if p.absent => raw(&mut out, &[2])?,
                 None => raw(&mut out, &[0])?,
             };
             put(&mut out, &p.original)?;
@@ -417,9 +451,10 @@ impl Inventory {
                 1 => true,
                 _ => return Err(failure()),
             };
-            let metadata = match r.take(1)?[0] {
-                0 => None,
-                1 => Some(SecureVec::from(r.field()?)),
+            let (metadata, absent) = match r.take(1)?[0] {
+                0 => (None, false),
+                1 => (Some(SecureVec::from(r.field()?)), false),
+                2 => (None, true),
                 _ => return Err(failure()),
             };
             let original = SecureVec::from(r.field()?);
@@ -433,6 +468,7 @@ impl Inventory {
                     target_digest,
                     transform_id,
                     locked,
+                    absent,
                 },
                 metadata,
                 read_only,
@@ -491,8 +527,9 @@ impl Inventory {
                 .find(|held| held.publication.path == document.path)
                 .ok_or_else(failure)?;
             let original = document.original.as_slice();
-            if (original != held.publication.original.as_slice()
-                && original != held.publication.converted.as_slice())
+            if document.absent != held.publication.absent
+                || (original != held.publication.original.as_slice()
+                    && original != held.publication.converted.as_slice())
                 || document.converted.as_slice() != held.publication.converted.as_slice()
             {
                 return Err("configuration was edited outside its retained startup upgrade".into());
@@ -671,6 +708,17 @@ impl Inventory {
             let observed = fs.inspect_document(&p.path, &p.original, &p.converted);
             let missing = matches!(observed, Ok(DocumentInspection::Missing));
             let outcome = match observed {
+                // An absent default is already in its target form; it is never created.
+                Ok(DocumentInspection::Missing) | Err(_) if p.absent => {
+                    documents.mark_published(p)?;
+                    FileOutcome::AlreadyConverted
+                }
+                Ok(_) if p.absent => {
+                    return Err(
+                        "configuration changed after target validation; serving remains blocked"
+                            .into(),
+                    );
+                }
                 Ok(DocumentInspection::Changed) => {
                     return Err(
                         "configuration changed after target validation; serving remains blocked"

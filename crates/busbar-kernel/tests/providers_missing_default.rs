@@ -134,3 +134,43 @@ fn a_present_default_providers_file_is_handed_to_custody_verbatim() {
     assert_eq!(custody.providers(), vec![(providers, "{}\n".to_owned())]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Records the absences the loader reports to custody.
+#[derive(Default)]
+struct Absences(Mutex<Vec<(ConfigDocument, PathBuf)>>);
+
+impl RootRules for Absences {
+    fn check(&self, _: &RootCfg) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn absent_document(&self, kind: ConfigDocument, path: &Path) -> Result<(), String> {
+        self.0
+            .lock()
+            .expect("absence record")
+            .push((kind, path.to_path_buf()));
+        Ok(())
+    }
+}
+
+/// Custody is told of the absent default file, at the path it would occupy, once per load; a
+/// present file is never reported absent.
+#[test]
+fn custody_is_told_the_default_providers_file_is_absent() {
+    let dir = scratch("custody-told");
+    let config = dir.join("config.yaml");
+    std::fs::write(&config, DEPLOYMENT).expect("config");
+    let absences = Absences::default();
+    load_config_from_disk_judged(&config, None, false, EnvSubst::Lenient, &absences)
+        .expect("loads");
+    assert_eq!(
+        *absences.0.lock().expect("absence record"),
+        vec![(ConfigDocument::Providers, dir.join("providers.yaml"))]
+    );
+
+    std::fs::write(dir.join("providers.yaml"), "{}\n").expect("providers");
+    let present = Absences::default();
+    load_config_from_disk_judged(&config, None, false, EnvSubst::Lenient, &present).expect("loads");
+    assert!(present.0.lock().expect("absence record").is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
