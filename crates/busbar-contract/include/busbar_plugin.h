@@ -174,7 +174,7 @@ extern "C" {
 #define BB_AUTH_IDENTITY_GROUPS_HARD_MAX UINT32_C(0x10000) /* The hard maximum of `needed_groups`: no identity asserts more groups than this. */
 #define BB_AUTH_FIELDS_HARD_MAX UINT32_C(64) /* The hard maximum of `needed_fields`: no style writes more auth fields than this. Also the */
 #define BB_AUTH_EXT_OUTBOUND_SETTINGS_CHECK "auth.outbound-settings-check" /* Pure outbound settings validation support: Statement value `b"\x01"`; on lifecycle */
-#define BB_AUTH_ABI_VERSION UINT32_C(4) /* The auth kind's ABI version: v1.5.5 shipped `2` (`AUTH_ABI_VERSION`); 1.6.0 ships `4`, which */
+#define BB_AUTH_ABI_VERSION UINT32_C(3) /* The auth kind's ABI version: v1.5.5 shipped `2` (`AUTH_ABI_VERSION`), so 1.6.0 ships `3`. */
 #define BB_AUTH_LAYOUT_FINGERPRINT UINT64_C(0x5b57a4ca0d0cd422) /* The auth kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_AUTH_SLOT_VERIFY UINT32_C(9) /* `verify`. */
 #define BB_AUTH_SLOT_BEGIN_LOGIN UINT32_C(10) /* `begin_login`. */
@@ -228,6 +228,9 @@ extern "C" {
 #define BB_AUTH_MODE_PASSTHROUGH UINT32_C(2) /* [`FieldsIn::mode`]: pass the caller's verified credential ([`FieldsIn::caller_credential`]). */
 #define BB_AUTH_EXT_SCOPE "scope" /* `fields`' EXTENSIONS KEY ([`crate::abi::mechanism::extensions`], carried in */
 #define BB_AUTH_EXT_RETRY_AFTER "retry_after" /* `complete_login`'s REPLY EXTENSIONS KEY: on a [`LOGIN_OUTAGE`], the IdP's `Retry-After`. */
+#define BB_AUTH_EXT_REJECT_HINT "reject_hint" /* `complete_login`'s REPLY EXTENSIONS KEY: on a [`LOGIN_BAD_CREDENTIAL`], why the credential was */
+#define BB_AUTH_REJECT_HINT_ACCOUNT_LOCKED "account_locked" /* [`EXT_REJECT_HINT`]: the directory reports the account locked. */
+#define BB_AUTH_REJECT_HINT_THROTTLED "throttled" /* [`EXT_REJECT_HINT`]: the plugin's own attempt limiter refused the attempt. */
 #define BB_AUTH_SCOPE_REQUEST_FIELD "busbar-auth-scope" /* THE REQUEST FIELD BY WHICH A PLUGIN STATES ITS PER-CALL SCOPE to the host: a field of this name */
 #define BB_AUTH_NO_MEMBER_AUTH_FIELD "busbar-no-member-auth" /* THE REQUEST FIELD BY WHICH A PLUGIN WAIVES ITS MEMBER'S BINDING FOR ONE REQUEST: a field of this */
 #define BB_AUTH_FIELD_SENSITIVE UINT32_C(1) /* [`FieldSpan::flags`]: when SET, an h2 encoder sends the field never-indexed. Every credential */
@@ -254,15 +257,6 @@ extern "C" {
 #define BB_HOOK_SLOT_DESCRIBE UINT32_C(14) /* `describe`. */
 #define BB_HOOK_SLOT_SERVE UINT32_C(15) /* `serve`. */
 #define BB_HOOK_SLOTS UINT32_C(16) /* How many slots the hook kind's whole table holds (the lifecycle plus its seven own ops). */
-#define BB_HOOK_SIGNAL_REQUESTED_MODEL UINT32_C(0) /* The model the request asked for. */
-#define BB_HOOK_SIGNAL_REQUEST_TOTAL_CHARS UINT32_C(1) /* The request's total text size, in characters. */
-#define BB_HOOK_SIGNAL_REQUEST_MESSAGE_COUNT UINT32_C(2) /* How many messages the request carries. */
-#define BB_HOOK_SIGNAL_REQUEST_TOOL_COUNT UINT32_C(3) /* How many tools the request declares. */
-#define BB_HOOK_SIGNAL_REQUEST_SYSTEM_CHARS UINT32_C(4) /* The request's system text size, in characters. */
-#define BB_HOOK_SIGNAL_CANDIDATE_BREAKER_STATE UINT32_C(5) /* The candidate's circuit-breaker state. */
-#define BB_HOOK_SIGNAL_CANDIDATE_ERROR_RATE UINT32_C(6) /* The candidate's error rate. */
-#define BB_HOOK_SIGNAL_CANDIDATE_LATENCY_P95_MS UINT32_C(7) /* The candidate's p95 latency, milliseconds. */
-#define BB_HOOK_SIGNAL_ROUTING_POLICY UINT32_C(8) /* The pool's routing policy. */
 #define BB_HOOK_SIGNAL_RESPONSE_TOKENS_OUT UINT32_C(9) /* The response's output tokens. */
 #define BB_HOOK_SIGNAL_TAG_U64 UINT32_C(0) /* [`SignalEntry::tag`]: the payload is [`SignalValue::u64_`]. */
 #define BB_HOOK_SIGNAL_TAG_I64 UINT32_C(1) /* [`SignalEntry::tag`]: the payload is [`SignalValue::i64_`]. */
@@ -312,7 +306,6 @@ extern "C" {
 #define BB_HOOK_USER_NO UINT32_C(0) /* [`Tail::user_access`]: no user view (the default). */
 #define BB_HOOK_USER_RO UINT32_C(1) /* [`Tail::user_access`]: read-only user view. */
 #define BB_HOOK_CANCEL_ABORTED UINT32_C(0) /* The pending op was aborted before it produced a verdict/response; `on_error` runs as */
-#define BB_HOOK_CANCEL_RACED_TO_COMPLETION UINT32_C(1) /* The op had already completed when the cancel arrived (a race with the deadline); its */
 #define BB_HOOK_HARD_MAX_ORDER_SLOTS UINT64_C(0x10000) /* The most `order_buf` slots (`u32` entries, not bytes) one answer may state. */
 #define BB_HOOK_HARD_MAX_HEADERS_OUT_LEN UINT64_C(128) /* The most entries `serve`'s `headers_out` may carry: 64 headers, as (name, value) pairs. */
 #define BB_HOOK_HARD_MAX_MESSAGES UINT64_C(0x10000) /* The most messages one [`PromptView`] may carry (a FAULT ceiling far above any real request). */
@@ -340,7 +333,6 @@ extern "C" {
 #define BB_EXPORT_ROUTE_AUTH_KEY UINT32_C(1) /* [`Route::auth`]: a data-plane key required before `serve` — OLD `RouteAuth::Key`. */
 #define BB_EXPORT_ROUTE_AUTH_ADMIN UINT32_C(2) /* [`Route::auth`]: admin auth required, reachable only on the admin listener — OLD */
 #define BB_EXPORT_CANCEL_ABORTED UINT32_C(0) /* The pending op was aborted before it produced anything (deliver: the batch was not */
-#define BB_EXPORT_CANCEL_RACED_TO_COMPLETION UINT32_C(1) /* The op had already completed when the cancel arrived (a race with the deadline); its */
 #define BB_EXPORT_HARD_MAX_HEADERS_OUT_LEN UINT64_C(128) /* The most entries `serve`'s `headers_out` may carry: 64 headers, as (name, value) pairs. */
 #define BB_EXPORT_HARD_MAX_ROUTES UINT64_C(64) /* The most routes one export instance may declare. */
 
@@ -459,7 +451,7 @@ extern "C" {
 #define BB_PLANE_TRUST_PIN UINT32_C(1) /* [`TrustKey::role`]: the key holds the registration's pin object, `{mechanism, key?, */
 #define BB_PLANE_TRUST_REVERIFY_TTL UINT32_C(2) /* [`TrustKey::role`]: the key holds the longest a verification may be reused before the */
 #define BB_PLANE_TRUST_RECOVERY_BACKOFF UINT32_C(3) /* [`TrustKey::role`]: the key holds how long after a drift a clean answer is disbelieved, a */
-#define BB_PLANE_TRUST_PRIVATE_REACH UINT32_C(4) /* [`TrustKey::role`]: the key holds a boolean, the registration's PRIVATE REACH: `true` admits a */
+#define BB_PLANE_TRUST_PRIVATE_REACH UINT32_C(4) /* [`TrustKey::role`] RESERVED, RETIRED in 1.6.0: once a registration's PRIVATE REACH. A plane */
 #define BB_PLANE_TRUST_ITEM_APPROVALS UINT32_C(5) /* [`TrustKey::role`]: the key holds the registration's CONFIGURED ITEM APPROVALS, a map of item to */
 #define BB_PLANE_PIN_FINGERPRINT UINT32_C(1) /* [`TrustKey::flags`], on a [`TRUST_PIN`] key only: the pin object may also carry `fingerprint`. */
 #define BB_PLANE_MECHANISM_ROOT UINT32_C(1) /* [`PinMechanism::flags`]: the mechanism is an authenticity root, so a pin naming it needs key */
@@ -565,10 +557,8 @@ extern "C" {
 #define BB_TRANSPORT_FAULT_HARD UINT8_C(3) /* Fault reading: the destination itself is down for every caller (its credential or its account */
 #define BB_TRANSPORT_FAULT_HEALTHY UINT8_C(4) /* Fault reading: the destination is HEALTHY. It answered; the breaker records a SUCCESS against */
 #define BB_TRANSPORT_FAULT_RATE_LIMIT UINT8_C(5) /* The destination throttled the request: transient health, rate-limit retry policy. */
-#define BB_TRANSPORT_STATUS_AT_NONE UINT8_C(0) /* [`Claim::status_at`]: no status. */
 #define BB_TRANSPORT_STATUS_AT_FIRST_FRAME UINT8_C(1) /* [`Claim::status_at`]: the first frame carries the status. */
 #define BB_TRANSPORT_STATUS_AT_TERMINAL UINT8_C(2) /* [`Claim::status_at`]: the terminal frame carries the status. */
-#define BB_TRANSPORT_UNIT0_NONE UINT8_C(0) /* [`Claim::unit0_trigger`]: none. */
 #define BB_TRANSPORT_UNIT0_FIRST_BYTES UINT8_C(1) /* [`Claim::unit0_trigger`]: the first bytes. */
 #define BB_TRANSPORT_UNIT0_FIRST_LINE UINT8_C(2) /* [`Claim::unit0_trigger`]: the first line. */
 #define BB_TRANSPORT_UNIT0_FIRST_MESSAGE UINT8_C(3) /* [`Claim::unit0_trigger`]: the first message. */
@@ -663,9 +653,6 @@ extern "C" {
 #define BB_HCONN_CAUSE_AUTH_FAILED UINT64_C(8) /* `ServiceOut::value` on a failure: the request's auth call failed; nothing was sent. */
 #define BB_HCONN_UPGRADE_VERIFY_OFF UINT32_C(1) /* [`UpgradeIn::flags`]: run the handshake WITHOUT verifying the far end's certificate (1.5.5's */
 #define BB_HCONN_UPGRADE_IN_V1_SIZE ((size_t)64) /* The size of an [`UpgradeIn`] from before [`UpgradeIn::flags`]: the host reads its flags as `0`. */
-#define BB_HCONN_CHECKIN_REUSE UINT32_C(0) /* [`CheckinIn::disposition`]: return the stream to the pool as is. */
-#define BB_HCONN_CHECKIN_RESET UINT32_C(1) /* [`CheckinIn::disposition`]: return it after the plugin kind's reset op. */
-#define BB_HCONN_CHECKIN_DROP UINT32_C(2) /* [`CheckinIn::disposition`]: close it; it is not fit for reuse. */
 #define BB_HCONN_REPLY_ACK UINT32_C(1) /* [`ReplyPiece::kind`]: the terminal piece of a reply with no head — what became of what the */
 #define BB_HCONN_REPLY_HEAD UINT32_C(2) /* [`ReplyPiece::kind`]: the reply's head: its code, its reason and its fields. */
 #define BB_HCONN_REPLY_BODY UINT32_C(3) /* [`ReplyPiece::kind`]: body bytes of the reply. */
@@ -732,6 +719,7 @@ extern "C" {
 #define BB_HSVC_DEST_RESOLVE UINT32_C(1) /* [`DestJudgeIn::flags`]: resolve a name and judge every address it answers, and write the */
 #define BB_HSVC_DEST_REFUSE_PRIVATE UINT32_C(2) /* [`DestJudgeIn::flags`]: refuse every private address (and loopback name) under this judgement, */
 #define BB_HSVC_DEST_EXPLAIN UINT32_C(4) /* [`DestJudgeIn::flags`], with [`DEST_RESOLVE`]: on a refusal an address or the resolution */
+#define BB_HSVC_DEST_PLAINTEXT_INTENT UINT32_C(8) /* [`DestJudgeIn::flags`] (appended in 1.6.0): judge only THE PLAINTEXT RULE for `dest`, the */
 #define BB_HSVC_DEST_ALLOWED UINT64_C(0) /* `dest.judge` verdict: admissible. */
 #define BB_HSVC_DEST_SCHEME UINT64_C(1) /* `dest.judge` verdict: not an admitted scheme. */
 #define BB_HSVC_DEST_NO_HOST UINT64_C(2) /* `dest.judge` verdict: no usable host. */

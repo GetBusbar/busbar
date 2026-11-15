@@ -150,21 +150,30 @@ async fn admit_exchange_mint<'a>(
     Ok((admitted, provider.as_str(), gov))
 }
 
-/// The once-shown mint response, borrowed from the issued key, in member order.
+/// The once-shown mint response, borrowed from the issued key, in member order. The key stays
+/// sealed in the body; it is exposed only as the response is written.
 #[derive(serde::Serialize)]
 struct ExchangeOk<'a> {
-    api_key: &'a str,
+    #[serde(serialize_with = "shown_once")]
+    api_key: &'a busbar_contract::redacted::Secret<String>,
     base_url: &'a str,
     exp: u64,
     group: &'a str,
     key_id: &'a str,
 }
 
+/// The issued key written into the once-shown mint response: the intended, documented plaintext
+/// egress of the issued token (`Secret` has no `Serialize`).
+fn shown_once<S: serde::Serializer>(
+    secret: &&busbar_contract::redacted::Secret<String>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(secret.expose(&crate::seal::lend()))
+}
+
 fn exchange_ok_body<'a>(issued: &'a IssuedKey, base_url: &'a str) -> ExchangeOk<'a> {
     ExchangeOk {
-        // `.expose(&crate::seal::lend())`: the once-shown mint response is the intended, documented
-        // plaintext egress of the issued token (Secret has no Serialize).
-        api_key: issued.secret.expose(&crate::seal::lend()),
+        api_key: &issued.secret,
         base_url,
         exp: issued.exp,
         group: &issued.group,

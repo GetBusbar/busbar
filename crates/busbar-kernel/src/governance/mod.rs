@@ -279,23 +279,7 @@ impl BudgetCell {
     fn accrue(&mut self, model: &str, era: u64, units: &std::collections::BTreeMap<String, u64>) {
         let era = RawRateEra::legacy(era);
         let counts = whole_counts(units);
-        if !has_units(&counts)
-            && !self
-                .models
-                .iter()
-                .any(|m| &*m.model == model && m.era == era)
-        {
-            // A zero-count row, as `durable_cell` hydrates one, for the prune fixtures.
-            // `accrue_raw` never creates one (LINT-RULES R35).
-            self.models.extend(ModelCell::new(
-                model.into(),
-                era,
-                counts,
-                Default::default(),
-                Default::default(),
-            ));
-            return;
-        }
+        // The real accrual path: an all-zero report interns no row (UPG-H2, LINT-RULES R35).
         self.accrue_raw(model, era, &counts)
             .expect("test count accrual");
     }

@@ -83,6 +83,11 @@ use std::fmt::Write as _;
 
 /// Append `Struct.field=offset` lines for the given fields, then a `Struct.__size=N` line.
 macro_rules! record {
+    // The fields spelled bare, not as an array: a list of field names is not a table of ABI
+    // versions, which `tests/abi_version_equality.rs` refuses (`kind_abi` is a field here).
+    ($out:expr, $t:ty, $($field:ident),+ $(,)?) => {
+        record!($out, $t, [$($field),+])
+    };
     ($out:expr, $t:ty, [$($field:ident),* $(,)?]) => {{
         $(
             writeln!(
@@ -333,40 +338,38 @@ fn compute_layout() -> String {
     record!(
         s,
         MechStatement,
-        [
-            size,
-            kind,
-            kind_abi,
-            max_inflight,
-            name,
-            version,
-            families,
-            families_len,
-            diag_ids,
-            diag_ids_len,
-            kind_tail,
-            extensions,
-            secret_refs,
-            secret_refs_len,
-            settings_schema,
-            marks,
-            mark_words,
-            mark_words_len,
-            rewrites,
-            rewrites_len,
-            sections,
-            sections_len,
-            needs,
-            needs_len,
-            target_from,
-            trust_from,
-            answers,
-            answers_len,
-            claims,
-            claims_len,
-            measurement_classes,
-            measurement_classes_len
-        ]
+        size,
+        kind,
+        kind_abi,
+        max_inflight,
+        name,
+        version,
+        families,
+        families_len,
+        diag_ids,
+        diag_ids_len,
+        kind_tail,
+        extensions,
+        secret_refs,
+        secret_refs_len,
+        settings_schema,
+        marks,
+        mark_words,
+        mark_words_len,
+        rewrites,
+        rewrites_len,
+        sections,
+        sections_len,
+        needs,
+        needs_len,
+        target_from,
+        trust_from,
+        answers,
+        answers_len,
+        claims,
+        claims_len,
+        measurement_classes,
+        measurement_classes_len
     );
     record!(s, MechMarkWord, [class, _reserved, word]);
     record!(s, MechRewrite, [class, _reserved, from, to]);

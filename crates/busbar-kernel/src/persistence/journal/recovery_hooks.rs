@@ -339,7 +339,7 @@ impl<'a> StoreJournal<'a> {
         Ok(Record::new(
             self.node,
             sequence,
-            value.expose(&crate::seal::lend()).to_vec(),
+            value.into_exposed(&crate::seal::lend()),
         ))
     }
 

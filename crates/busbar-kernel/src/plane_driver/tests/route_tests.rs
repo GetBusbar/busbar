@@ -147,7 +147,9 @@ fn every_piece_says_whether_the_attempts_member_relays_the_callers_credential() 
 #[test]
 fn test_stable_hash_is_deterministic() {
     use crate::plane_driver::sticky_hash;
-    assert_eq!(sticky_hash(b"session-abc"), 0xe909_c864_ab05_9bea);
+    // foldhash FixedState seed 0 (LR-113, ruling 311), not the dropped FNV-1a: the value is
+    // stable across runs of one build, which is what sticky routing needs.
+    assert_eq!(sticky_hash(b"session-abc"), 0x4812_2772_5165_b570);
     assert_eq!(sticky_hash(b"session-abc"), sticky_hash(b"session-abc"));
     assert_ne!(sticky_hash(b"session-abc"), sticky_hash(b"session-xyz"));
 }

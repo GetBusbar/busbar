@@ -859,7 +859,7 @@ async fn confirm_returns_at_own_ticket_while_a_later_driver_holds_the_lock() {
         store,
         7,
         BufferBudget {
-            records: 4,
+            records: 5,
             bytes: 4096,
         },
     )
@@ -871,11 +871,15 @@ async fn confirm_returns_at_own_ticket_while_a_later_driver_holds_the_lock() {
             vec![1],
         )])
         .unwrap();
+    // Grouping (0a360f025) folds pending runs into one append up to the scan limit (`attach`'s
+    // 4 items), so the later run is four entries: it cannot share the earlier run's append and
+    // the earlier ticket commits on its own, as this lock-order case needs.
     let second = owner
-        .stage_run(&[busbar_kernel_wal::Entry::new(
-            RecordClass::Transaction,
-            vec![2],
-        )])
+        .stage_run(
+            &(0..4u8)
+                .map(|n| busbar_kernel_wal::Entry::new(RecordClass::Transaction, vec![2, n]))
+                .collect::<Vec<_>>(),
+        )
         .unwrap();
     backend.hold_first.store(true, Ordering::SeqCst);
     backend.hang_from.store(2, Ordering::SeqCst);
