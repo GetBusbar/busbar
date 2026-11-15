@@ -729,6 +729,16 @@ impl PluginRegistry {
         &self.skipped
     }
 
+    /// The image the dropped-in row of `kind` that is the module `name` is bound from: its
+    /// archive's SHA-256. `None`: this registry admits no such dropped-in row.
+    #[must_use]
+    pub fn dropped_image(&self, kind: &str, name: &str) -> Option<String> {
+        self.loadable()
+            .iter()
+            .find(|row| !row.linked() && row.manifest.kind == kind && row.manifest.name == name)
+            .map(|row| row.archive_sha256.clone().unwrap_or_default())
+    }
+
     pub fn dropped_hooks(&self) -> impl Iterator<Item = &LoadablePlugin> {
         self.loadable()
             .iter()
