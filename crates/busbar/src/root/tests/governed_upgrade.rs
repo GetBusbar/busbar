@@ -323,8 +323,8 @@ async fn exercise(case: Case) {
     } else {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                let mut bytes = [0; 1024];
-                match client.read(&mut bytes).await {
+                let mut bytes = vec![0u8; 1024];
+                match client.read(&mut bytes[..]).await {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
                         wire.extend_from_slice(&bytes[..n]);

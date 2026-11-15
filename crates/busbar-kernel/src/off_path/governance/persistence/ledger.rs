@@ -61,10 +61,6 @@ impl From<Failure> for Error {
         if e == Failure::StaleScan {
             Self::Conflict
         } else {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: the refusal text is built only when the store operation fails"
-            )]
             let message = format!("ledger backend: {e:?}");
             invalid(message)
         }
@@ -72,10 +68,6 @@ impl From<Failure> for Error {
 }
 impl From<crate::persistence::facade::AccessError> for Error {
     fn from(e: crate::persistence::facade::AccessError) -> Self {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the refusal text is built only when the store operation fails"
-        )]
         let message = format!("ledger access: {e:?}");
         invalid(message)
     }
@@ -87,10 +79,6 @@ impl From<keys::KeyError> for Error {
 }
 impl From<busbar_contract::count::CountError> for Error {
     fn from(e: busbar_contract::count::CountError) -> Self {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the refusal text is built only when the store operation fails"
-        )]
         let message = e.to_string();
         invalid(message)
     }
@@ -295,12 +283,7 @@ struct Record<T> {
     record: T,
 }
 fn encode<T: Serialize>(record: &T) -> Result<Vec<u8>> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: ledger rows are read and written only by the background budget and metering flush, operator usage views and corrections, never inline with a request"
-    )]
-    let encoded = serde_json::to_vec(&Record { version: 1, record }).map_err(|_| corrupt());
-    encoded
+    serde_json::to_vec(&Record { version: 1, record }).map_err(|_| corrupt())
 }
 trait Canonical {
     /// The record's canonical member names (checked on the stored bytes, no DOM).
@@ -386,10 +369,6 @@ impl<'a> Tx<'a> {
     async fn prefetch(&mut self, mut addresses: Vec<Address>) -> Result<()> {
         addresses.sort();
         addresses.dedup();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: ledger rows are read and written only by the background budget and metering flush, operator usage views and corrections, never inline with a request"
-        )]
         addresses.retain(|at| !self.observed.contains_key(at) && !self.changes.contains_key(at));
         if addresses.is_empty() {
             return Ok(());
@@ -494,10 +473,6 @@ impl<'a> Tx<'a> {
             address,
             expected: v.map_or(ExpectedValue::Absent, ExpectedValue::Exact),
         }));
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: ledger rows are read and written only by the background budget and metering flush, operator usage views and corrections, never inline with a request"
-        )]
         let candidate = PreparedCandidate::new(Candidate {
             id: self.store.next_id()?,
             codec: CANDIDATE_VERSION,
@@ -1039,10 +1014,6 @@ fn submission_result(submission: Submission) -> Result<u8> {
         },
         SubmitResult::NoEffect(f) => Err(f.into()),
         SubmitResult::Uncertain | SubmitResult::Reconcile | SubmitResult::Busy => {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: the refusal text is built only when the store operation fails"
-            )]
             let message = format!(
                 "ledger outcome unresolved; retained operation {}",
                 hex::encode(submission.id.0)

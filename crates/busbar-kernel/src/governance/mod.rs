@@ -9,13 +9,13 @@ use std::sync::{Arc, RwLock};
 
 type RawFeeEras = busbar_kernel_ledger::usage::FeeEras<RawRateEra>;
 
-mod exact_debt;
+pub(crate) mod exact_debt;
 pub mod persistence;
 pub mod principal_transition;
 pub mod recovery;
 use exact_debt::{BudgetFlushFlight, BudgetFlushRunner, ExactUsageDelta};
 mod metering_flush;
-mod raw_recovery;
+pub(crate) mod raw_recovery;
 pub mod unit_checkpoint;
 mod unit_checkpoint_counts;
 pub mod unit_checkpoint_store;
@@ -45,12 +45,7 @@ pub const SELF_KEY_BINDING_MODE: &str = "user-bound";
 pub const SELF_KEY_BINDING_MODE_APP: &str = "time-bound";
 
 pub fn binding_marker(id: &str, generation: &str) -> String {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a binding marker is minted once per key mint, rotation or revocation (control plane)"
-    )]
-    let marker = format!("{BINDING_MARKER_PREFIX}{id}:{generation}");
-    marker
+    crate::off_path::governance::state::mod_binding_marker(BINDING_MARKER_PREFIX, id, generation)
 }
 
 pub fn binding_generation(generation_hash: &str) -> Option<&str> {
@@ -79,19 +74,19 @@ pub(crate) fn generate_binding_generation() -> Result<String, busbar_contract::c
 /// accrual after that is a linear scan over the few models the bucket actually used plus integer
 /// adds - no hashing, no allocation.
 #[derive(Clone)]
-struct ModelCell {
-    model: std::sync::Arc<str>,
+pub(crate) struct ModelCell {
+    pub(crate) model: std::sync::Arc<str>,
     /// The card start and optional exact entry identity captured for these counts (Q14, #79).
     /// Only legacy zero is undated; a known opening entry remains distinct. One cell per
     /// (model, era), including distinct entries that share a start.
-    era: RawRateEra,
+    pub(crate) era: RawRateEra,
     /// (1.6.0 M1b) The name-keyed CURRENT unit counters — the reserved four
     /// (`input`/`output`/`cache_read`/`cache_write`) are ordinary keys beside any open unit, the
     /// sole representation now that `TierTokens` is dissolved. Sparse (a zero unit is absent).
-    cur: std::collections::BTreeMap<String, Count>,
+    pub(crate) cur: std::collections::BTreeMap<String, Count>,
     /// The last durably-ACKNOWLEDGED (flushed) unit counters — the additive-flush baseline.
-    flushed: std::collections::BTreeMap<String, Count>,
-    flushed_era: std::collections::BTreeMap<String, Count>,
+    pub(crate) flushed: std::collections::BTreeMap<String, Count>,
+    pub(crate) flushed_era: std::collections::BTreeMap<String, Count>,
     /// Zero-sized and never read: only [`ModelCell::new`] can build one, so only it writes a
     /// `ModelCell` literal. The leading `_` marks it a marker field, like a `PhantomData`.
     _seal: model_cell_seal::Seal,
@@ -111,7 +106,7 @@ mod model_cell_seal {
         /// A NAMED model with all-empty maps is allowed (dated-era split on load; correction
         /// baselines). An unnamed lane WITH counts is still built: it must stay visible and fail
         /// closed as LaneUnpriced, never be dropped (UPG-H2, lint `laneless-ledger-row`).
-        pub(super) fn new(
+        pub(crate) fn new(
             model: std::sync::Arc<str>,
             era: super::RawRateEra,
             cur: BTreeMap<String, Count>,
@@ -146,58 +141,58 @@ mod model_cell_seal {
 /// layer flushed off the request path. One cell per bucket (current window only; reset on
 /// rollover), so growth is bucket-count-bounded (keys + group-window buckets).
 #[derive(Clone, Default)]
-struct BudgetCell {
-    group_owners: std::collections::BTreeSet<String>,
-    flushing: usize,
+pub(crate) struct BudgetCell {
+    pub(crate) group_owners: std::collections::BTreeSet<String>,
+    pub(crate) flushing: usize,
     /// Window identities still owned by off-lock flush snapshots.
-    flushing_windows: std::collections::BTreeMap<u64, usize>,
+    pub(crate) flushing_windows: std::collections::BTreeMap<u64, usize>,
     /// Both possible raw states of an unresolved correction. Ordinary mutations update both.
-    correction: Option<Box<CorrectionBranch>>,
-    window_start: u64,
+    pub(crate) correction: Option<Box<CorrectionBranch>>,
+    pub(crate) window_start: u64,
     /// ADMISSION count: incremented once per admitted request, NEVER refunded. This backs the
     /// `requests`-LIMIT metric, so a caller cannot escape the requests cap by hammering failing
     /// requests (each still consumed a request slot at admission).
-    requests: u64,
+    pub(crate) requests: u64,
     /// BILLABLE request count: admitted requests MINUS non-2xx refunds. This backs the flat
     /// per-request-FEE component of the `budget` metric (the fee bills 2xx only), so budget spend
     /// derives from this, never from `requests`. Charged with `requests` at admission; a non-2xx
     /// outcome decrements ONLY this via `refund_bucket`.
-    billable_requests: u64,
+    pub(crate) billable_requests: u64,
     /// The additive-flush watermark: durably acknowledged counts, or counts whose exact outbound
     /// debt has transferred to `budget_flushes`. That owner retains every unconfirmed chunk. Each
     /// flush transfers only the delta (current - flushed) into an owned native ledger request.
     /// Unknown outcomes retain the original operation, body and first-send custody; retries
     /// resolve that same logical receipt before publishing acknowledgement.
-    flushed_requests: u64,
+    pub(crate) flushed_requests: u64,
     /// The billable-request flush watermark (twin of `flushed_requests` for the fee-base counter).
-    flushed_billable_requests: u64,
+    pub(crate) flushed_billable_requests: u64,
     /// Per-(model, era, tier) token counters + flush baselines. Small Vec (the models this bucket
     /// actually used), scanned linearly.
-    models: Vec<ModelCell>,
+    pub(crate) models: Vec<ModelCell>,
     /// The fee base split by the card era each billable request was admitted under, so each fee
     /// prices at the card in force when that request was admitted.
-    fee_eras: RawFeeEras,
+    pub(crate) fee_eras: RawFeeEras,
     /// The fee eras' flush watermark (twin of `flushed_billable_requests`, per dated era).
-    flushed_fee_eras: RawFeeEras,
+    pub(crate) flushed_fee_eras: RawFeeEras,
     /// THE ROLLED WINDOWS' UNACKNOWLEDGED DELTAS, each under the window it was earned in. A roll to
     /// a newer window moves what the old window held past its last acknowledged flush here
     /// ([`BudgetCell::roll`]) instead of discarding it; `flush_budgets` drains them to the store
     /// under their OWN window and parks a failed one back, so a store outage across a boundary
     /// loses nothing. Empty in steady state.
-    rolled: Vec<(u64, ExactUsageDelta)>,
-    rolled_eras: Vec<(u64, ExactUsageDelta)>,
-    dirty: bool,
+    pub(crate) rolled: Vec<(u64, ExactUsageDelta)>,
+    pub(crate) rolled_eras: Vec<(u64, ExactUsageDelta)>,
+    pub(crate) dirty: bool,
     /// Wall-clock of the last accrual or admission charge. The eviction sweep ages cells by
     /// `window_start`, but a key's own bucket and a synthesized SSO principal's bucket both live in
     /// the all-time window (`window_start == 0`), which never ages — so those cells were retained
     /// for the process lifetime even after the key was deleted or the principal stopped appearing.
     /// `dirty` alone cannot substitute: the flusher clears it every 100ms, so a busy cell is
     /// legitimately clean and would be swept mid-use.
-    last_touch: u64,
+    pub(crate) last_touch: u64,
 }
 
 #[derive(Clone)]
-struct CorrectionBranch {
+pub(crate) struct CorrectionBranch {
     op_id: busbar_contract::records::OpId,
     window: u64,
     accepted: BudgetCell,
@@ -213,7 +208,7 @@ impl BudgetCell {
         self.correction = branch;
     }
 
-    fn fresh(window_start: u64) -> Self {
+    pub(crate) fn fresh(window_start: u64) -> Self {
         Self {
             window_start,
             ..Self::default()
@@ -406,12 +401,10 @@ impl BudgetCell {
         price_dated_counts_raw(rows, fees, start_ms, cost.card(), dated)
     }
 
+    /// The periodic shard sweep's model prune, on one cell (the sweep itself is off-path).
+    #[cfg(test)]
     fn prune_dead_models(&mut self) {
-        if self.correction.is_some() {
-            return;
-        }
-        self.models
-            .retain(|m| has_units(&m.cur) || has_units(&m.flushed) || has_units(&m.flushed_era));
+        crate::off_path::governance::state::mod_prune_dead_models(self);
     }
 
     #[cfg(test)]
@@ -462,11 +455,11 @@ impl BudgetCell {
     }
 }
 
-const ERA_FEE_UNIT: &str = "billable_requests";
+pub(crate) const ERA_FEE_UNIT: &str = "billable_requests";
 
 const ERA_BUCKET_PREFIX: &str = "e:";
 
-const ERA_MODEL_SEP: char = '\u{1f}';
+pub(crate) const ERA_MODEL_SEP: char = '\u{1f}';
 
 const RAW_ERA_PREFIX: &str = "busbar.raw-era.v1:";
 
@@ -482,22 +475,17 @@ impl std::fmt::Display for EraTag {
     }
 }
 
-fn era_tag(era: RawRateEra) -> String {
+pub(crate) fn era_tag(era: RawRateEra) -> String {
     era_text(EraTag(era))
 }
 
 /// The one owned rendering of a stored ledger name (era tag, era-qualified model, dated bucket).
 /// Each is a key of a durable ledger row, built when that row is written, read or corrected.
-fn era_text(name: impl std::fmt::Display) -> String {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a ledger row's stored name is rendered once per durable row write"
-    )]
-    let text = name.to_string();
-    text
+pub(crate) fn era_text(name: impl std::fmt::Display) -> String {
+    crate::off_path::governance::state::mod_era_text(&name)
 }
 
-fn parse_era_tag(tag: &str) -> RecordStoreResult<Option<RawRateEra>> {
+pub(crate) fn parse_era_tag(tag: &str) -> RecordStoreResult<Option<RawRateEra>> {
     if let Some(body) = tag.strip_prefix(RAW_ERA_PREFIX) {
         let parsed = body.split_once(':').and_then(|(at, id)| {
             Some(RawRateEra::entry(at.parse().ok()?, EntryId::parse_hex(id)?))
@@ -509,36 +497,12 @@ fn parse_era_tag(tag: &str) -> RecordStoreResult<Option<RawRateEra>> {
     Ok(tag.parse::<u64>().ok().map(RawRateEra::legacy))
 }
 
-fn era_model(era: RawRateEra, model: &str) -> String {
+pub(crate) fn era_model(era: RawRateEra, model: &str) -> String {
     era_text(format_args!("{}{ERA_MODEL_SEP}{model}", EraTag(era)))
 }
 
 fn dated_delta(delta: &UsageDelta, era: RawRateEra) -> UsageDelta {
-    if era == RawRateEra::legacy(0) {
-        return UsageDelta::default();
-    }
-    let mut models: Vec<_> = delta
-        .models
-        .iter()
-        .map(|model| busbar_contract::records::ModelTokensDelta {
-            model: era_model(era, &model.model),
-            scale: model.scale,
-            usage_units: model.usage_units.clone(),
-        })
-        .collect();
-    if delta.billable_requests != 0 {
-        let mut usage_units = std::collections::BTreeMap::new();
-        usage_units.insert(era_text(ERA_FEE_UNIT), i128::from(delta.billable_requests));
-        models.push(busbar_contract::records::ModelTokensDelta {
-            model: era_tag(era),
-            scale: 0,
-            usage_units,
-        });
-    }
-    UsageDelta {
-        models,
-        ..UsageDelta::default()
-    }
+    crate::off_path::governance::state::mod_dated_delta(delta, era)
 }
 
 fn park_window(parked: &mut Vec<(u64, ExactUsageDelta)>, window: u64, delta: ExactUsageDelta) {
@@ -548,14 +512,15 @@ fn park_window(parked: &mut Vec<(u64, ExactUsageDelta)>, window: u64, delta: Exa
     if let Some(index) = parked.iter().position(|(at, _)| *at == window) {
         parked[index].1.merge(&delta);
         if parked[index].1.is_zero() {
-            parked.remove(index);
+            // Order is immaterial: every reader selects a parked window by its identity.
+            parked.swap_remove(index);
         }
     } else {
         parked.push((window, delta));
     }
 }
 
-fn era_bucket(bucket: &str) -> String {
+pub(crate) fn era_bucket(bucket: &str) -> String {
     let digest = busbar_contract::crypto::sha256(bucket.as_bytes());
     era_text(EraBucket(&digest[..16]))
 }
@@ -614,7 +579,7 @@ pub fn class_total(
     )
 }
 
-fn class_owner(lane: &str) -> Option<&'static crate::plane_driver::registry::PlaneDecl> {
+pub(crate) fn class_owner(lane: &str) -> Option<&'static crate::plane_driver::registry::PlaneDecl> {
     let (plane, _) = busbar_kernel_ledger::cost::split_plane_lane(lane);
     crate::plane_driver::registry::plane_decls()
         .iter()
@@ -634,28 +599,7 @@ pub fn token_series(
     lane: &str,
     counts: &std::collections::BTreeMap<String, Count>,
 ) -> Vec<(String, Count)> {
-    use crate::plane_driver::registry::TOKEN_FAMILY;
-    let owner = class_owner(lane);
-    let mut series: Vec<(String, Count)> = owner
-        .into_iter()
-        .flat_map(|d| {
-            (d.billable_classes.iter())
-                .filter(|c| c.family == TOKEN_FAMILY && !d.fee_units.contains(&c.class))
-                .map(|c| c.class)
-        })
-        .map(|class| {
-            (
-                class.to_string(),
-                class_total(lane, counts, class).expect("validated class total"),
-            )
-        })
-        .collect();
-    for (class, n) in counts {
-        if is_token_class(class) && !series.iter().any(|(named, _)| named == class) {
-            series.push((class.clone(), *n));
-        }
-    }
-    series
+    crate::off_path::governance::state::mod_token_series(lane, counts)
 }
 
 fn token_total<'a>(
@@ -669,20 +613,17 @@ fn token_total<'a>(
     .expect("total raw counts exceed Count range")
 }
 
-fn has_units(units: &std::collections::BTreeMap<String, Count>) -> bool {
+pub(crate) fn has_units(units: &std::collections::BTreeMap<String, Count>) -> bool {
     units.values().any(|count| !count.is_zero())
 }
 
-fn whole_count(n: u64) -> Count {
+pub(crate) fn whole_count(n: u64) -> Count {
     Count::from_integer(i128::from(n)).expect("u64 whole units fit Count")
 }
 fn whole_counts(
     units: &std::collections::BTreeMap<String, u64>,
 ) -> std::collections::BTreeMap<String, Count> {
-    units
-        .iter()
-        .map(|(k, v)| (k.clone(), whole_count(*v)))
-        .collect()
+    crate::off_path::governance::state::mod_whole_counts(units)
 }
 
 /// Why an admission was refused by the group limit chain - carried to ingress so the rejection
@@ -799,7 +740,9 @@ struct GovCaches {
 pub(crate) type CredentialIndex = HashMap<(String, String), (Arc<VirtualKey>, CredentialSecret)>;
 
 pub struct GovState {
-    observation_view: RwLock<HashMap<(String, u64), crate::persistence::observations::BudgetTotal>>,
+    /// The last authoritative observation total per bucket, per window.
+    observation_view:
+        RwLock<HashMap<String, HashMap<u64, crate::persistence::observations::BudgetTotal>>>,
     core: Arc<crate::persistence::facade::CoreStore>,
     identity_claims: claims::AsyncClaimSet<IdentityClaimKey>,
 
@@ -960,7 +903,7 @@ pub use state::{
     UsageAdjustment, ADJUST_DOWN_BUCKET, ADJUST_UP_BUCKET,
 };
 
-mod tickets;
+pub(crate) mod tickets;
 pub(crate) use tickets::{
     legacy_ticket_authorizes, legacy_ticket_expiry, legacy_ticket_record, legacy_ticket_token,
     VerifiedTicket,
@@ -1108,7 +1051,13 @@ pub fn synthesize_principal_key(
     principal: &crate::auth::Principal,
     bindings: Option<&std::collections::BTreeMap<String, crate::config::RoleBindingCfg>>,
 ) -> Option<Arc<VirtualKey>> {
-    synthesize_key(principal, bindings).map(Arc::new)
+    synthesize_key(principal, bindings).map(|mut key| {
+        key.generation_hash = crate::off_path::governance::state::mod_principal_marker(
+            PRINCIPAL_MARKER_PREFIX,
+            &principal.id,
+        );
+        Arc::new(key)
+    })
 }
 
 pub const PRINCIPAL_MARKER_PREFIX: &str = "principal:";
@@ -1126,11 +1075,10 @@ pub fn synthesize_bound_key(
         roles: &'a [String],
     }
     let mut key = synthesize_key(principal, role_bindings.get(module))?;
-    // The synthesized key's generation text already starts with the marker prefix: keep that
-    // prefix and serialize the marker straight after it, into the same buffer.
+    // The synthesized key carries no marker yet: write the prefix and serialize the marker
+    // straight after it, into the key's own generation text.
     let mut marker = std::mem::take(&mut key.generation_hash).into_bytes();
-    marker.truncate(PRINCIPAL_MARKER_PREFIX.len());
-    debug_assert_eq!(marker, PRINCIPAL_MARKER_PREFIX.as_bytes());
+    marker.extend_from_slice(PRINCIPAL_MARKER_PREFIX.as_bytes());
     let fields = Marker {
         id: &principal.id,
         module,
@@ -1187,23 +1135,32 @@ impl crate::trust::validate::GovResolve for LiveResolve<'_> {
 pub(crate) fn granting_bindings<'a>(
     principal: &crate::auth::Principal,
     table: &'a std::collections::BTreeMap<String, crate::config::RoleBindingCfg>,
-) -> Vec<&'a crate::config::RoleBindingCfg> {
+) -> GrantingBindings<'a> {
     let ungoverned = crate::config::auth::UNGOVERNED_ROLE;
     let named = |role: &&String| role.as_str() != ungoverned;
-    let granting: Vec<_> = principal
-        .roles
-        .iter()
-        .filter(named)
-        .filter_map(|role| table.get(role))
-        .collect();
+    // A principal holds a handful of roles: the granting list stays inline on the stack.
+    let mut granting = GrantingBindings::new();
+    granting.extend(
+        principal
+            .roles
+            .iter()
+            .filter(named)
+            .filter_map(|role| table.get(role)),
+    );
 
     let roleless = !principal.roles.iter().any(|r| named(&r));
     let only_ungoverned = table.keys().all(|r| r == ungoverned);
     match table.get(ungoverned) {
-        Some(binding) if granting.is_empty() && (roleless || only_ungoverned) => vec![binding],
+        Some(binding) if granting.is_empty() && (roleless || only_ungoverned) => {
+            granting.push(binding);
+            granting
+        }
         _ => granting,
     }
 }
+
+/// The role bindings that grant a principal access, inline for ordinary role counts.
+pub(crate) type GrantingBindings<'a> = smallvec::SmallVec<[&'a crate::config::RoleBindingCfg; 4]>;
 
 pub(crate) fn grant_union(
     granting: &[&crate::config::RoleBindingCfg],
@@ -1223,20 +1180,7 @@ pub fn grant_scopes(
     pools: Option<Vec<String>>,
     plane: Option<Vec<busbar_contract::records::ScopeRef>>,
 ) -> Option<Vec<busbar_contract::records::ScopeRef>> {
-    if pools.is_none() && plane.is_none() {
-        return None;
-    }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a key's grant list is built once per key mint or binding load (control plane)"
-    )]
-    let mut list: Vec<busbar_contract::records::ScopeRef> = pools
-        .into_iter()
-        .flatten()
-        .map(busbar_contract::records::ScopeRef::pool)
-        .collect();
-    list.extend(plane.into_iter().flatten());
-    Some(list)
+    crate::off_path::governance::state::mod_grant_scopes(pools, plane)
 }
 
 pub fn plane_grant_kind(field: &str) -> Option<String> {
@@ -1252,15 +1196,7 @@ pub(crate) fn pool_scopes(
     allowed_pools: Option<Vec<String>>,
 ) -> Option<Vec<busbar_contract::records::ScopeRef>> {
     let list = allowed_pools?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a self-serve key's pool grant is built once per mint (control plane)"
-    )]
-    let scopes = list
-        .into_iter()
-        .map(busbar_contract::records::ScopeRef::pool)
-        .collect();
-    Some(scopes)
+    Some(crate::off_path::governance::state::mod_pool_scopes(list))
 }
 
 fn synthesize_key(
@@ -1292,7 +1228,8 @@ fn synthesize_key(
     Some(VirtualKey {
         id: principal.id.clone(),
 
-        generation_hash: format!("principal:{}", principal.id),
+        // Each caller writes its own marker: the principal marker or the bound marker.
+        generation_hash: String::new(),
         name: principal
             .name
             .clone()
@@ -1313,45 +1250,10 @@ pub use busbar_contract::records::PlaneRequestCtx;
 
 pub type GovCtx = busbar_contract::records::PlaneRequestCtx;
 
-fn draw(alphabet: &str, n: usize) -> Result<String, busbar_contract::crypto::RngError> {
-    let symbols = alphabet.as_bytes();
-    if symbols.is_empty() {
-        return Ok(String::new());
-    }
-    let mut buf = vec![0u8; n];
-    busbar_contract::crypto::fill(&mut buf)?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the minted credential text is built once per credential mint (control plane)"
-    )]
-    let drawn = buf
-        .iter()
-        .map(|&b| char::from(symbols[usize::from(b) % symbols.len()]))
-        .collect();
-    Ok(drawn)
-}
-
 pub(crate) fn issue_credential(
     shape: &busbar_contract::auth_calls::IssuedShape,
 ) -> Result<(String, String), busbar_contract::crypto::RngError> {
-    let tail = shape.id_len.saturating_sub(shape.id_prefix.len());
-    let tail = draw(&shape.id_alphabet, tail)?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the public credential id is built once per credential mint (control plane)"
-    )]
-    let id = format!("{}{tail}", shape.id_prefix);
-    Ok((id, draw(&shape.secret_alphabet, shape.secret_len)?))
-}
-
-/// Exercise the production issued-shape generator with a fixture verifier's declared shape.
-/// This hook carries no fixture format or implementation; those belong to the external kit.
-#[cfg(any(test, feature = "test-support"))]
-#[doc(hidden)]
-pub fn issue_credential_for_test(
-    shape: &busbar_contract::auth_calls::IssuedShape,
-) -> Result<(String, String), busbar_contract::crypto::RngError> {
-    issue_credential(shape)
+    crate::off_path::governance::state::mod_issue_credential(shape)
 }
 
 pub fn pool_allowed(key: &VirtualKey, pool: &str) -> bool {
@@ -1512,44 +1414,87 @@ pub(crate) const METERING_OVERFLOW_KEY_ID: &str = "__busbar_pending_overflow__";
 
 pub(crate) const METERING_OVERFLOW_LABEL: &str = "__aggregated__";
 
+/// A metering cell's identity, borrowed from the request that accrues to it.
+#[derive(Clone, Copy)]
+pub(crate) struct MeterKeyRef<'a> {
+    pub(crate) key_id: &'a str,
+    pub(crate) bucket: u64,
+    pub(crate) model: &'a str,
+    pub(crate) provider: &'a str,
+    pub(crate) priced_from_ms: u64,
+    pub(crate) key_group_at_use: &'a str,
+    pub(crate) version: Option<EntryId>,
+}
+
+impl MeterKeyRef<'_> {
+    /// Write this identity into `probe`, reusing its buffers (`version` as
+    /// `EntryId::metering_version` spells it).
+    fn fill(self, probe: &mut MeterKey) {
+        use std::fmt::Write as _;
+        probe.0.clear();
+        probe.0.push_str(self.key_id);
+        probe.1 = self.bucket;
+        probe.2.clear();
+        probe.2.push_str(self.model);
+        probe.3.clear();
+        probe.3.push_str(self.provider);
+        probe.4 = self.priced_from_ms;
+        probe.5.clear();
+        probe.5.push_str(self.key_group_at_use);
+        probe.6.clear();
+        if let Some(id) = self.version {
+            let _ = write!(probe.6, "{}{id}", EntryId::METERING_VERSION_PREFIX);
+        }
+    }
+}
+
+/// The key an accrual looks its cell up by: an owned key, or the thread's reused probe, which is
+/// copied only when its cell is first created.
+enum PendingKey<'a> {
+    Owned(MeterKey),
+    Probe(&'a MeterKey),
+}
+
+impl PendingKey<'_> {
+    fn get(&self) -> &MeterKey {
+        match self {
+            Self::Owned(key) => key,
+            Self::Probe(key) => key,
+        }
+    }
+
+    fn into_key(self) -> MeterKey {
+        match self {
+            Self::Owned(key) => key,
+            Self::Probe(key) => crate::cold::governance::state::mod_meter_key_first(key),
+        }
+    }
+}
+
 fn accrue_pending_checked(
     pending: &mut HashMap<MeterKey, MeterCounts>,
-    key: MeterKey,
+    key: PendingKey<'_>,
     add: MeterCounts,
     cap: usize,
     warn: &CoalesceWarn,
 ) -> Result<(), CountError> {
     add.validate()?;
-    if let Some(cell) = pending.get_mut(&key) {
+    if let Some(cell) = pending.get_mut(key.get()) {
         cell.try_merge(&add)?;
         return Ok(());
     }
     if pending.len() < cap {
-        pending.insert(key, add);
+        pending.insert(key.into_key(), add);
         return Ok(());
     }
+    let key = key.get();
 
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the overflow sentinel is keyed only once the accumulator is at cap (store outage)"
-    )]
-    let sentinel: MeterKey = (
-        METERING_OVERFLOW_KEY_ID.to_string(),
-        key.1,
-        METERING_OVERFLOW_LABEL.to_string(),
-        METERING_OVERFLOW_LABEL.to_string(),
-        key.4,
-        String::new(),
-        key.6.clone(),
-    );
+    // The accumulator is at cap (a store outage): coalesce into the bucket's overflow sentinel.
+    let sentinel = crate::cold::governance::state::mod_overflow_sentinel(key);
     pending.entry(sentinel).or_default().try_merge(&add)?;
     metrics::counter!(crate::snapshot::METERING_PENDING_COALESCED_TOTAL).increment(1);
 
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the overflow warning throttle reads the clock only once the accumulator is at cap"
-    )]
-    let noted = warn.note(std::time::Instant::now());
+    let noted = warn.note(crate::cold::governance::state::mod_overflow_instant());
     if let Some(coalesced) = noted {
         crate::diagnostics::diag_warn!(
             crate::diagnostics::METERING_PENDING_OVERFLOW_COALESCED,
@@ -1620,18 +1565,55 @@ impl PendingMetering {
             .expect("metering accumulation exceeds Count range");
     }
 
-    pub fn try_accrue(&self, key: MeterKey, add: MeterCounts) -> Result<(), CountError> {
+    fn try_accrue(&self, key: MeterKey, add: MeterCounts) -> Result<(), CountError> {
         let mut map = self
             .shard_for(&key.0)
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         accrue_pending_checked(
             &mut map,
-            key,
+            PendingKey::Owned(key),
             add,
             MAX_PENDING_METERING_PER_SHARD,
             &self.coalesce_warn,
         )
+    }
+
+    /// [`Self::try_accrue`] for an identity borrowed from the request: the lookup key is this
+    /// thread's reused probe, and an owned key is made only when the cell is first created.
+    pub(crate) fn try_accrue_ref(
+        &self,
+        key: MeterKeyRef<'_>,
+        add: MeterCounts,
+    ) -> Result<(), CountError> {
+        thread_local! {
+            static PROBE: std::cell::RefCell<MeterKey> = const {
+                std::cell::RefCell::new((
+                    String::new(),
+                    0,
+                    String::new(),
+                    String::new(),
+                    0,
+                    String::new(),
+                    String::new(),
+                ))
+            };
+        }
+        PROBE.with(|probe| {
+            let mut probe = probe.borrow_mut();
+            key.fill(&mut *probe);
+            let mut map = self
+                .shard_for(key.key_id)
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            accrue_pending_checked(
+                &mut map,
+                PendingKey::Probe(&*probe),
+                add,
+                MAX_PENDING_METERING_PER_SHARD,
+                &self.coalesce_warn,
+            )
+        })
     }
 
     /// Take every shard's pending counts, one shard at a time as the caller consumes them, so
@@ -1685,12 +1667,7 @@ pub(crate) fn rendered_error<E>(
     wrap: impl FnOnce(String) -> E,
     error: impl std::fmt::Display,
 ) -> E {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: an owned-message error renders its text once, on the failure path"
-    )]
-    let text = error.to_string();
-    wrap(text)
+    wrap(crate::cold::governance::state::mod_error_text(&error))
 }
 
 /// The ascending, de-duplicated union of two ascending streams (two maps' keys), merged lazily:

@@ -4,6 +4,7 @@
 //! Raw branch custody for a conditional correction. This contains no priced projection.
 
 use super::*;
+use crate::off_path::governance::ledger::{ModelRef, RawCell, RawDebt, RawTarget};
 
 fn change_unit(debt: &mut ExactUsageDelta, model: &str, unit: &str, change: i128) {
     if change == 0 {
@@ -19,7 +20,7 @@ fn change_unit(debt: &mut ExactUsageDelta, model: &str, unit: &str, change: i128
             .push(crate::governance::exact_debt::ExactModelDelta {
                 model: model.into(),
                 scale: COUNT_SCALE,
-                usage_units: BTreeMap::from([(unit.into(), change)]),
+                usage_units: ledger_off_path::ledger_correction_unit_map(unit, change),
             });
     }
 }
@@ -134,11 +135,7 @@ fn take_positives_mode(
                 } else {
                     &mut branch.rolled
                 };
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
-                )]
-                windows.retain(|(at, _)| *at != window);
+                ledger_off_path::ledger_correction_release_window(&mut *windows, window);
                 if !remaining.is_zero() {
                     windows.push((window, remaining));
                 }
@@ -168,7 +165,10 @@ fn positive_current(
 ) -> RecordStoreResult<(ExactUsageDelta, ExactUsageDelta)> {
     let mut plain = ExactUsageDelta::default();
     let mut dated = ExactUsageDelta::default();
-    let mut transfers = Vec::new();
+    // At most one transfer per (model, unit) of the accepted branch.
+    let mut transfers = ledger_off_path::ledger_correction_staging(
+        accepted.models.iter().map(|model| model.cur.len()).sum(),
+    );
     for model in &accepted.models {
         if model.era != RawRateEra::legacy(0) && model.flushed != model.flushed_era {
             return Err(unresolved("common raw model baselines diverged"));
@@ -217,29 +217,14 @@ fn positive_current(
             before.requests.saturating_sub(before.flushed_requests),
         ));
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
-    )]
-    let fees: BTreeMap<_, _> = accepted.fee_eras.dated().iter().copied().collect();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
-    )]
-    let flushed: BTreeMap<_, _> = accepted.flushed_fee_eras.dated().iter().copied().collect();
+    let fees = ledger_off_path::ledger_correction_fee_eras(accepted.fee_eras.dated());
+    let flushed = ledger_off_path::ledger_correction_fee_eras(accepted.flushed_fee_eras.dated());
     let mut legacy_fee =
         i128::from(accepted.billable_requests) - i128::from(accepted.flushed_billable_requests);
     let mut fee_transfers = BTreeMap::new();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
-    )]
-    let before_fees: BTreeMap<_, _> = before.fee_eras.dated().iter().copied().collect();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
-    )]
-    let before_flushed: BTreeMap<_, _> = before.flushed_fee_eras.dated().iter().copied().collect();
+    let before_fees = ledger_off_path::ledger_correction_fee_eras(before.fee_eras.dated());
+    let before_flushed =
+        ledger_off_path::ledger_correction_fee_eras(before.flushed_fee_eras.dated());
     let before_legacy_fee = i128::from(before.billable_requests)
         - i128::from(before.flushed_billable_requests)
         - before_fees
@@ -297,12 +282,8 @@ fn positive_current(
                 *baseline = baseline.checked_add(*amount).map_err(unresolved)?;
             }
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
-        )]
-        let mut baseline: BTreeMap<_, _> =
-            branch.flushed_fee_eras.dated().iter().copied().collect();
+        let mut baseline =
+            ledger_off_path::ledger_correction_fee_eras(branch.flushed_fee_eras.dated());
         for (era, amount) in &fee_transfers {
             let count = baseline.entry(*era).or_default();
             *count = exact(checked_move(*count, *amount))?;
@@ -312,221 +293,87 @@ fn positive_current(
     Ok((plain, dated))
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawEra {
-    effective_from: u64,
-    entry_id: Option<[u8; 12]>,
-}
-
-impl From<RawRateEra> for RawEra {
-    fn from(era: RawRateEra) -> Self {
-        Self {
-            effective_from: era.effective_from,
-            entry_id: era.entry_id.map(|id| id.0),
-        }
-    }
-}
-
-impl From<RawEra> for RawRateEra {
-    fn from(era: RawEra) -> Self {
-        Self {
-            effective_from: era.effective_from,
-            entry_id: era.entry_id.map(EntryId),
-        }
-    }
-}
-
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawModel {
-    model: String,
-    era: RawEra,
-    current: BTreeMap<String, Count>,
-    flushed: BTreeMap<String, Count>,
-    flushed_era: BTreeMap<String, Count>,
-}
-
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawDebt {
-    #[serde(default)]
-    scale: u32,
-    requests: String,
-    billable_requests: String,
-    models: BTreeMap<String, BTreeMap<String, String>>,
-}
-
 impl RawDebt {
     fn capture(debt: &ExactUsageDelta) -> RecordStoreResult<Self> {
-        let mut models = BTreeMap::new();
-        for model in &debt.models {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
-            )]
-            let units = model
-                .usage_units
+        RawDebt::of_models(
+            debt.requests,
+            debt.billable_requests,
+            debt.models
                 .iter()
-                .map(|(unit, count)| (unit.clone(), count.to_string()))
-                .collect();
-            if models.insert(model.model.clone(), units).is_some() {
-                return Err(unresolved("duplicate raw debt model in custody"));
-            }
-        }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
-        )]
-        let built = Ok(Self {
-            scale: COUNT_SCALE,
-            requests: debt.requests.to_string(),
-            billable_requests: debt.billable_requests.to_string(),
-            models,
-        });
-        built
+                .map(|model| (model.model.as_str(), &model.usage_units)),
+        )
+        .ok_or_else(|| unresolved("duplicate raw debt model in custody"))
     }
 
     fn restore(self) -> RecordStoreResult<ExactUsageDelta> {
-        let signed = |count: &str| {
-            count
-                .parse::<i128>()
-                .map_err(|_| unresolved("invalid signed raw debt in custody"))
-        };
-        #[expect(clippy::disallowed_methods, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")]
-        let built = Ok(ExactUsageDelta {
-            requests: signed(&self.requests)?,
-            billable_requests: signed(&self.billable_requests)?,
-            models: self
-                .models
-                .into_iter()
-                .map(|(model, units)| {
-                    #[expect(clippy::disallowed_methods, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")]
-                    let built = Ok(crate::governance::exact_debt::ExactModelDelta {
-                        model,
-                        scale: COUNT_SCALE,
-                        usage_units: units
-                            .into_iter()
-                            .map(|(unit, count)| {
-                                Ok((
-                                    unit,
-                                    Count::from_stored(signed(&count)?, self.scale)
-                                        .map_err(unresolved)?
-                                        .micros(),
-                                ))
-                            })
-                            .collect::<RecordStoreResult<_>>()?,
-                    });
-                    built
-                })
-                .collect::<RecordStoreResult<_>>()?,
-        });
-        built
+        let (requests, billable_requests, models) = self.restore_with(
+            |reason| unresolved(reason),
+            |model, usage_units| crate::governance::exact_debt::ExactModelDelta {
+                model,
+                scale: COUNT_SCALE,
+                usage_units,
+            },
+        )?;
+        Ok(ExactUsageDelta {
+            requests,
+            billable_requests,
+            models,
+        })
     }
-}
-
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawCell {
-    group_owners: std::collections::BTreeSet<String>,
-    window_start: u64,
-    requests: u64,
-    billable_requests: u64,
-    flushed_requests: u64,
-    flushed_billable_requests: u64,
-    models: Vec<RawModel>,
-    fee_eras: Vec<(RawEra, u64)>,
-    flushed_fee_eras: Vec<(RawEra, u64)>,
-    rolled: Vec<(u64, RawDebt)>,
-    rolled_eras: Vec<(u64, RawDebt)>,
-    last_touch: u64,
 }
 
 impl RawCell {
     fn capture(cell: &BudgetCell) -> RecordStoreResult<Self> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
-        )]
-        let built = Ok(Self {
-            group_owners: cell.group_owners.clone(),
+        Ok(Self {
+            group_owners: ledger_off_path::ledger_correction_recovery_owners(&cell.group_owners),
             window_start: cell.window_start,
             requests: cell.requests,
             billable_requests: cell.billable_requests,
             flushed_requests: cell.flushed_requests,
             flushed_billable_requests: cell.flushed_billable_requests,
-            models: cell
-                .models
-                .iter()
-                .map(|model| RawModel {
-                    model: model.model.to_string(),
-                    era: model.era.into(),
-                    current: model.cur.clone(),
-                    flushed: model.flushed.clone(),
-                    flushed_era: model.flushed_era.clone(),
-                })
-                .collect(),
-            fee_eras: cell
-                .fee_eras
-                .dated()
-                .iter()
-                .filter(|(_, count)| *count != 0)
-                .map(|(era, count)| ((*era).into(), *count))
-                .collect(),
-            flushed_fee_eras: cell
-                .flushed_fee_eras
-                .dated()
-                .iter()
-                .filter(|(_, count)| *count != 0)
-                .map(|(era, count)| ((*era).into(), *count))
-                .collect(),
-            rolled: cell
-                .rolled
-                .iter()
-                .map(|(window, debt)| Ok((*window, RawDebt::capture(debt)?)))
-                .collect::<RecordStoreResult<_>>()?,
-            rolled_eras: cell
-                .rolled_eras
-                .iter()
-                .map(|(window, debt)| Ok((*window, RawDebt::capture(debt)?)))
-                .collect::<RecordStoreResult<_>>()?,
+            models: ledger_off_path::ledger_correction_recovery_models(cell.models.iter().map(
+                |model| ModelRef {
+                    model: &model.model,
+                    era: model.era,
+                    current: &model.cur,
+                    flushed: &model.flushed,
+                    flushed_era: &model.flushed_era,
+                },
+            )),
+            fee_eras: ledger_off_path::ledger_correction_recovery_fee_eras(cell.fee_eras.dated()),
+            flushed_fee_eras: ledger_off_path::ledger_correction_recovery_fee_eras(
+                cell.flushed_fee_eras.dated(),
+            ),
+            rolled: ledger_off_path::ledger_correction_recovery_capture_rolled(
+                &cell.rolled,
+                RawDebt::capture,
+            )?,
+            rolled_eras: ledger_off_path::ledger_correction_recovery_capture_rolled(
+                &cell.rolled_eras,
+                RawDebt::capture,
+            )?,
             last_touch: cell.last_touch,
-        });
-        built
+        })
     }
 
     fn restore(self, bucket: &str) -> RecordStoreResult<BudgetCell> {
         let mut identities = std::collections::BTreeSet::new();
-        let mut dropped = 0usize;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
-        )]
-        let models = self
-            .models
-            .into_iter()
-            .map(|model| -> RecordStoreResult<Option<ModelCell>> {
-                let era = model.era.into();
-                if !identities.insert((model.model.clone(), era)) {
-                    return Err(unresolved("duplicate raw model era in custody"));
-                }
-                Ok(ModelCell::new(
-                    model.model.into(),
-                    era,
-                    model.current,
-                    model.flushed,
-                    model.flushed_era,
-                ))
-            })
-            .filter_map(|row| match row {
-                Ok(None) => {
-                    dropped += 1;
-                    None
-                }
-                Ok(Some(row)) => Some(Ok(row)),
-                Err(e) => Some(Err(e)),
-            })
-            .collect::<RecordStoreResult<_>>()?;
+        let (models, dropped) =
+            ledger_off_path::ledger_correction_recovery_named_models(self.models.into_iter().map(
+                |model| -> RecordStoreResult<Option<ModelCell>> {
+                    let era = model.era.into();
+                    if !identities.insert((model.model.clone(), era)) {
+                        return Err(unresolved("duplicate raw model era in custody"));
+                    }
+                    Ok(ModelCell::new(
+                        model.model.into(),
+                        era,
+                        model.current,
+                        model.flushed,
+                        model.flushed_era,
+                    ))
+                },
+            ))?;
         if dropped != 0 {
             tracing::warn!(
                 bucket,
@@ -534,28 +381,11 @@ impl RawCell {
                 "correction custody: dropped {dropped} unnamed-lane rows with no counts (UPG-H2)"
             );
         }
-        let fees = |rows: Vec<(RawEra, u64)>| -> RecordStoreResult<RawFeeEras> {
-            let mut identities = std::collections::BTreeSet::new();
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
-            )]
-            let rows = rows
-                .into_iter()
-                .map(|(era, count)| {
-                    let era: RawRateEra = era.into();
-                    if !identities.insert(era) || era == RawRateEra::legacy(0) || count == 0 {
-                        return Err(unresolved("invalid raw fee era in custody"));
-                    }
-                    Ok((era, count))
-                })
-                .collect::<RecordStoreResult<Vec<_>>>()?;
-            Ok(RawFeeEras::of(rows))
-        };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
-        )]
+        let fee_eras = ledger_off_path::ledger_correction_recovery_fee_rows(self.fee_eras)
+            .ok_or_else(|| unresolved("invalid raw fee era in custody"))?;
+        let flushed_fee_eras =
+            ledger_off_path::ledger_correction_recovery_fee_rows(self.flushed_fee_eras)
+                .ok_or_else(|| unresolved("invalid raw fee era in custody"))?;
         let mut cell = BudgetCell {
             group_owners: self.group_owners,
             window_start: self.window_start,
@@ -564,18 +394,16 @@ impl RawCell {
             flushed_requests: self.flushed_requests,
             flushed_billable_requests: self.flushed_billable_requests,
             models,
-            fee_eras: fees(self.fee_eras)?,
-            flushed_fee_eras: fees(self.flushed_fee_eras)?,
-            rolled: self
-                .rolled
-                .into_iter()
-                .map(|(window, debt)| Ok((window, debt.restore()?)))
-                .collect::<RecordStoreResult<_>>()?,
-            rolled_eras: self
-                .rolled_eras
-                .into_iter()
-                .map(|(window, debt)| Ok((window, debt.restore()?)))
-                .collect::<RecordStoreResult<_>>()?,
+            fee_eras: RawFeeEras::of(fee_eras),
+            flushed_fee_eras: RawFeeEras::of(flushed_fee_eras),
+            rolled: ledger_off_path::ledger_correction_recovery_restore_rolled(
+                self.rolled,
+                RawDebt::restore,
+            )?,
+            rolled_eras: ledger_off_path::ledger_correction_recovery_restore_rolled(
+                self.rolled_eras,
+                RawDebt::restore,
+            )?,
             last_touch: self.last_touch,
             ..Default::default()
         };
@@ -583,19 +411,6 @@ impl RawCell {
         cell.dirty = has_debt(&cell);
         Ok(cell)
     }
-}
-
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawTarget {
-    bucket: String,
-    window: u64,
-    before: RawCell,
-    accepted: RawCell,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    absorbed_plain: Option<RawDebt>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    absorbed_dated: Option<RawDebt>,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -773,10 +588,21 @@ impl Custody {
 
     pub(super) fn repost_descriptor(&self) -> Option<&RecoveryChild> {
         self.repost_operation_id.and_then(|operation_id| {
-            self.handoffs.iter().find(|child| {
+            ledger_off_path::ledger_correction_recovery_handoff(&self.handoffs, |child| {
                 child.operation_id == operation_id && child.kind == RecoveryKind::Correction
             })
         })
+    }
+
+    /// The index of the custody target at (bucket, window). Targets are kept in strictly
+    /// ascending (bucket, window) order: capture takes them from the correction's ordered target
+    /// list and decode refuses any other order.
+    fn target_at(&self, bucket: &str, window: u64) -> Option<usize> {
+        self.targets
+            .binary_search_by(|target| {
+                (target.bucket.as_str(), target.window).cmp(&(bucket, window))
+            })
+            .ok()
     }
 
     pub(super) fn intent_applied(&self) -> bool {
@@ -835,6 +661,8 @@ impl Custody {
                 "audited correction has no explicit quiescence attestations",
             ));
         }
+        let (actor, reason) =
+            crate::off_path::governance::ledger::operator_provenance(&audit.actor, &audit.reason);
         Ok(RecoveryResolution {
             operation_id: event.operation_id,
             body_fingerprint: event.body_fingerprint,
@@ -844,8 +672,8 @@ impl Custody {
             } else {
                 RecoveryVerdict::NotLanded
             },
-            actor: audit.actor.clone(),
-            reason: audit.reason.clone(),
+            actor,
+            reason,
             sender_quiesced: audit.sender_quiesced,
             backend_quiesced: audit.backend_quiesced,
         })
@@ -890,11 +718,7 @@ impl Custody {
     }
 
     pub(super) fn owns_quarantined_target(&self, bucket: &str, window: u64) -> bool {
-        !self.intent_applied
-            && self
-                .targets
-                .iter()
-                .any(|target| target.bucket == bucket && target.window == window)
+        !self.intent_applied && self.target_at(bucket, window).is_some()
     }
 
     pub(super) fn record_verdict(&mut self, resolution: &RecoveryResolution) {
@@ -902,9 +726,13 @@ impl Custody {
             RecoveryVerdict::Landed => RawDecision::Applied,
             RecoveryVerdict::NotLanded => RawDecision::ConditionConflict,
         });
+        let (actor, reason) = crate::off_path::governance::ledger::operator_provenance(
+            &resolution.actor,
+            &resolution.reason,
+        );
         self.audit = Some(OperatorAudit {
-            actor: resolution.actor.clone(),
-            reason: resolution.reason.clone(),
+            actor,
+            reason,
             expected_revision: resolution.expected_revision,
             landed: resolution.verdict == RecoveryVerdict::Landed,
             sender_quiesced: resolution.sender_quiesced,
@@ -920,23 +748,11 @@ impl Custody {
         let decision = self
             .decision
             .ok_or_else(|| unresolved("selected correction has no decision"))?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
-        )]
-        let built = self
-            .targets
-            .into_iter()
-            .map(|target| {
-                let cut = match decision {
-                    RawDecision::Applied => target.accepted,
-                    RawDecision::ConditionConflict => target.before,
-                };
-                let cell = cut.restore(&target.bucket)?;
-                Ok((target.bucket, target.window, cell))
-            })
-            .collect();
-        built
+        ledger_off_path::ledger_correction_recovery_cuts(
+            self.targets,
+            matches!(decision, RawDecision::Applied),
+            RawCell::restore,
+        )
     }
 
     pub(super) fn capture(gov: &GovState, pending: &PendingCorrection) -> RecordStoreResult<Self> {
@@ -947,44 +763,30 @@ impl Custody {
             .as_ref()
             .map(|event| Self::decode(&event.payload))
             .transpose()?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
-        )]
-        let mut order: Vec<_> = pending
-            .targets
-            .iter()
-            .map(|(bucket, _)| gov.budget.shard_index(bucket))
-            .collect();
-        order.sort();
-        order.dedup();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
-        )]
-        let guards: Vec<_> = order
-            .iter()
-            .map(|shard| gov.budget.shard_at(*shard).read())
-            .collect();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
-        )]
-        let targets = pending
-            .targets
-            .iter()
-            .map(|(bucket, window)| {
+        let order = ledger_off_path::ledger_correction_shard_order(
+            pending
+                .targets
+                .iter()
+                .map(|(bucket, _)| gov.budget.shard_index(bucket)),
+        );
+        let guards = ledger_off_path::ledger_correction_hold_shards(&order, |shard| {
+            gov.budget.shard_at(shard).read()
+        });
+        let targets = ledger_off_path::ledger_correction_recovery_capture_targets(
+            &pending.targets,
+            |bucket, window| {
                 let index = order
                     .binary_search(&gov.budget.shard_index(bucket))
                     .expect("target shard held");
                 let cell = guards[index]
+                    .1
                     .get(bucket)
                     .ok_or_else(|| unresolved("raw custody cell missing"))?;
                 let branch = cell
                     .correction
                     .as_ref()
                     .filter(|branch| {
-                        branch.op_id == pending.request.op_id && branch.window == *window
+                        branch.op_id == pending.request.op_id && branch.window == window
                     })
                     .ok_or_else(|| unresolved("raw custody branch missing"))?;
                 if branch.accepted.correction.is_some() {
@@ -992,14 +794,14 @@ impl Custody {
                 }
                 Ok(RawTarget {
                     bucket: bucket.clone(),
-                    window: *window,
+                    window,
                     before: RawCell::capture(cell)?,
                     accepted: RawCell::capture(&branch.accepted)?,
                     absorbed_plain: None,
                     absorbed_dated: None,
                 })
-            })
-            .collect::<RecordStoreResult<_>>()?;
+            },
+        )?;
         Ok(Self {
             version: 1,
             request: pending.request.clone(),
@@ -1027,13 +829,8 @@ impl Custody {
     }
 
     pub(super) fn encode(&self) -> RecordStoreResult<Vec<u8>> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
-        )]
-        let built = serde_json::to_vec(self)
-            .map_err(|_| unresolved("cannot encode raw correction custody"));
-        built
+        ledger_off_path::ledger_correction_recovery_encode(self)
+            .ok_or_else(|| unresolved("cannot encode raw correction custody"))
     }
 
     pub(super) fn decode(bytes: &[u8]) -> RecordStoreResult<Self> {
@@ -1052,7 +849,8 @@ impl Custody {
                 return Err(unresolved("invalid raw correction custody targets"));
             }
             previous = Some(identity);
-            for bucket in [target.bucket.clone(), era_bucket(&target.bucket)] {
+            let dated = era_bucket(&target.bucket);
+            for bucket in [target.bucket.as_str(), dated.as_str()] {
                 if !custody.request.usage.iter().any(|row| {
                     row.address.bucket_id == bucket && row.address.window_start == target.window
                 }) {
@@ -1075,17 +873,16 @@ impl Custody {
             .as_ref()
             .filter(|branch| branch.op_id == self.request.op_id && branch.window == window)
             .ok_or_else(|| unresolved("correction handoff target does not match its parent"))?;
-        let target = self
-            .targets
-            .iter_mut()
-            .find(|target| target.bucket == bucket && target.window == window)
+        let index = self
+            .target_at(bucket, window)
             .ok_or_else(|| unresolved("correction handoff target is outside raw custody"))?;
+        let target = &mut self.targets[index];
         target.before = RawCell::capture(cell)?;
         target.accepted = RawCell::capture(&branch.accepted)?;
-        if let Some(existing) = self
-            .handoffs
-            .iter()
-            .find(|existing| existing.operation_id == child.operation_id)
+        if let Some(existing) =
+            ledger_off_path::ledger_correction_recovery_handoff(&self.handoffs, |existing| {
+                existing.operation_id == child.operation_id
+            })
         {
             if existing != &child {
                 return Err(unresolved(
@@ -1107,12 +904,17 @@ impl Custody {
         if self.terminal || !self.owns_quarantined_target(bucket, window) {
             return Ok((ExactUsageDelta::default(), ExactUsageDelta::default()));
         }
+        // The request's usage rows are strictly ascending by address (validated at decode).
         let capacity = |bucket: &str| -> RecordStoreResult<ExactUsageDelta> {
             let row = self
                 .request
                 .usage
-                .iter()
-                .find(|row| row.address.bucket_id == bucket && row.address.window_start == window)
+                .binary_search_by(|row| {
+                    (row.address.bucket_id.as_str(), row.address.window_start)
+                        .cmp(&(bucket, window))
+                })
+                .ok()
+                .map(|index| &self.request.usage[index])
                 .ok_or_else(|| unresolved("quarantined target has no original raw row"))?;
             let mut capacity = ExactUsageDelta {
                 requests: i128::from(row.replacement.requests) - i128::from(row.expected.requests),
@@ -1173,9 +975,8 @@ impl Custody {
         let plain_capacity = capacity(bucket)?;
         let dated_capacity = capacity(&era_bucket(bucket))?;
         let target = self
-            .targets
-            .iter()
-            .find(|target| target.bucket == bucket && target.window == window)
+            .target_at(bucket, window)
+            .map(|index| &self.targets[index])
             .ok_or_else(|| unresolved("negative capacity is outside correction targets"))?;
         let mut remaining = SegmentedUsage::of(&plain_capacity, &dated_capacity)?.positive();
         let held_plain = target
@@ -1212,11 +1013,10 @@ impl Custody {
         dated: &ExactUsageDelta,
     ) -> RecordStoreResult<Option<(ExactUsageDelta, ExactUsageDelta)>> {
         let (plain_capacity, dated_capacity) = self.negative_capacity(bucket, window)?;
-        let target = self
-            .targets
-            .iter_mut()
-            .find(|target| target.bucket == bucket && target.window == window)
+        let index = self
+            .target_at(bucket, window)
             .ok_or_else(|| unresolved("quarantined negative is outside correction targets"))?;
+        let target = &mut self.targets[index];
         let mut held_plain = target
             .absorbed_plain
             .clone()
@@ -1260,22 +1060,16 @@ impl Custody {
         {
             return Err(unresolved("raw correction custody event identity mismatch"));
         }
-        let mut targets = Vec::new();
-        for target in self.targets {
-            target.before.restore(&target.bucket)?;
-            target.accepted.restore(&target.bucket)?;
-            targets.push((target.bucket, target.window));
-        }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a retained correction custody is restored once, at recovery"
-        )]
-        let built = Ok(PendingCorrection {
+        let targets = ledger_off_path::ledger_correction_recovery_restore_targets(
+            self.targets,
+            |cell, bucket| cell.restore(bucket).map(|_| ()),
+        )?;
+        Ok(PendingCorrection {
             request: self.request,
             intent: self.intent,
             targets,
             sent_at: self.sent_at,
-            started: std::time::Instant::now(),
+            started: ledger_off_path::ledger_correction_started(),
             running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             receipt: Arc::new(std::sync::Mutex::new(self.decision.map(Into::into))),
             settled: Arc::new(std::sync::Mutex::new(None)),
@@ -1287,8 +1081,7 @@ impl Custody {
                 event.state,
                 RecoveryState::VerdictLanded | RecoveryState::VerdictNotLanded
             ))),
-        });
-        built
+        })
     }
 }
 
@@ -1316,11 +1109,7 @@ pub(super) fn apply_selected_cut(
         } else {
             &mut live.rolled
         };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
-        )]
-        rolled.retain(|(at, _)| *at != window);
+        ledger_off_path::ledger_correction_release_window(&mut *rolled, window);
         if !remaining.is_zero() {
             rolled.push((window, remaining));
         }
@@ -1335,8 +1124,8 @@ pub(super) fn apply_selected_cut(
                 .iter()
                 .find(|base| base.model == model.model && base.era == model.era)
             {
-                model.flushed = base.cur.clone();
-                model.flushed_era = base.cur.clone();
+                model.flushed.clone_from(&base.cur);
+                model.flushed_era.clone_from(&base.cur);
             }
         }
 
@@ -1346,12 +1135,14 @@ pub(super) fn apply_selected_cut(
                 .iter()
                 .any(|model| model.model == base.model && model.era == base.era)
             {
+                let (flushed, flushed_era) =
+                    ledger_off_path::ledger_correction_baselines(&base.cur);
                 live.models.extend(ModelCell::new(
                     base.model.clone(),
                     base.era,
                     BTreeMap::new(),
-                    base.cur.clone(),
-                    base.cur.clone(),
+                    flushed,
+                    flushed_era,
                 ));
             }
         }

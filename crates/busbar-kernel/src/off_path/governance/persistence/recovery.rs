@@ -194,28 +194,16 @@ impl AdoptionProof {
 }
 
 fn unavailable(why: impl std::fmt::Debug) -> RecoveryError {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the refusal text is built only when recovery custody is unavailable"
-    )]
     let why = format!("{why:?}");
     RecoveryError::Unavailable(why)
 }
 
 fn invalid(why: &str) -> RecoveryError {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the refusal text is built only when a recovery record is invalid"
-    )]
     let why = why.to_owned();
     RecoveryError::Invalid(why)
 }
 
 fn invalid_from(error: &dyn std::fmt::Display) -> RecoveryError {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the refusal text is built only when a recovery record is invalid"
-    )]
     let why = error.to_string();
     RecoveryError::Invalid(why)
 }
@@ -366,10 +354,6 @@ async fn bucket_heads(
     let mut after = None;
     let mut generation = None;
     loop {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: recovery heads are read only by startup replay and operator inspection"
-        )]
         let page = store
             .backend()
             .scan(Arc::new(Scan {
@@ -554,10 +538,6 @@ impl<'a> History<'a> {
         }
         let journal = StoreJournal::new(self.store, node).map_err(unavailable)?;
         let local = self.live.is_some_and(|live| live.node() == node);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "recovery and read-only observation: one cached proof per node"
-        )]
         let mut cursor = match self.base.as_deref().filter(|_| local) {
             Some(base) => journal.historical_replay_after(base).await,
             None => journal.historical_replay().await,
@@ -595,10 +575,6 @@ impl<'a> History<'a> {
                 .map_err(unavailable)?;
             return Self::decode_candidate(record);
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "recovery: a record the cached replay did not retain"
-        )]
         let record = journal
             .read_verified_record(&proof, at.sequence)
             .await
@@ -1188,10 +1164,6 @@ impl StoreRecovery {
                 .await
                 .map_err(unavailable)?;
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: recovery custody is written only by the background flush, unit checkpoint and correction drivers, never inline with a request"
-        )]
         let selection = Selection {
             operation_id: event.operation_id,
             address: address(&event.operation_id),
@@ -1392,10 +1364,6 @@ impl StoreRecovery {
                 records.push(record);
                 runs.push(run);
             }
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: operator adoption of an unresolved recovery operation"
-            )]
             let pending = PendingAdoption {
                 proof,
                 guards_digest,
@@ -1419,10 +1387,6 @@ impl StoreRecovery {
                 self.journal.confirm(run).await.map_err(unavailable)?;
             }
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: operator adoption of an unresolved recovery operation"
-        )]
         let selection = Selection {
             operation_id: resolution.operation_id,
             address: address(&resolution.operation_id),
