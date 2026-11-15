@@ -1242,6 +1242,33 @@ impl StoreRecovery {
             ));
         }
         if !selected {
+            // (SHUTDOWN-HANG F2.1) Classify the definitive no-effect by one read of the selection
+            // row. Unchanged: the CAS ran under the driver against the live head, so it failed on
+            // our custody (fenced, epoch moved) or on one of our originals; neither is another
+            // selector, and the entry is kept.
+            let current = head(&self.store, &event.operation_id).await?;
+            let unchanged = match (current.as_ref(), pending.predecessor.as_ref()) {
+                (None, None) => true,
+                (Some((_, row)), Some(previous)) => {
+                    row.expose(&crate::seal::lend()) == previous.expose(&crate::seal::lend())
+                }
+                _ => false,
+            };
+            if unchanged {
+                if let Some(saved) = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .pending
+                    .get_mut(&event.operation_id)
+                {
+                    saved.selection_proof = None;
+                }
+                return Err(match self.journal.confirm_with(&[]).await {
+                    Err(lost) => unavailable(lost),
+                    Ok(()) => invalid("journal original differs at computed ordinal (Corrupt)"),
+                });
+            }
             // A definitive no-effect may coincide with another exact selector.
             // Its complete current ancestry remains the only acceptable proof.
             // This node's ownership is re-proved first, then the selection.
