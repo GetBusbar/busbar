@@ -61,7 +61,7 @@ pub const PIECES_CAP: usize = 64;
 /// The head slots every framer op is lent: the connector's initial count.
 pub const HEADS_CAP: usize = 16;
 /// The default bound on one message under assembly (§11.3): Autobahn's largest case is 16 MiB.
-pub const MAX_MESSAGE: usize = 64 * 1024 * 1024;
+const MAX_MESSAGE: usize = 64 * 1024 * 1024;
 /// `YIELD_MORE` answers in a row that write nothing before the run fails: the connector's bound.
 pub const MORE_STALLS: usize = 64;
 /// One socket read.
@@ -135,7 +135,7 @@ impl Framer {
     /// The framer `door`, whose cdylib is built from `lib_name`, opened on the host `host` builds
     /// (`Host::new(test_caller_binding())`, the binding behind the contract's dev-only
     /// `test-seal`, which the repository enables in its own `[dev-dependencies]`). OPEN settings
-    /// `{}`, scheme plain, no facts, [`echo`], and [`MAX_MESSAGE`].
+    /// `{}`, scheme plain, no facts, [`echo`], and a 64 MiB message bound.
     #[must_use]
     pub fn new(
         lib_name: &str,
@@ -229,7 +229,7 @@ impl Framer {
         };
         let host = Arc::clone(&self.host);
         let plugin = PluginThread::open(
-            move || make_host(&host),
+            move || make_host(&*host),
             img,
             &format!("{image}-framer"),
             &self.settings,
