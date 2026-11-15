@@ -117,7 +117,7 @@ mod imp {
     /// node's monotonic clock (nanoseconds since its first reading in this process).
     #[inline(always)]
     fn now() -> u64 {
-        crate::store::vocab::monotonic_ns()
+        crate::store::monotonic_ns()
     }
 
     /// One method's accumulated stats. `count`/`total_ns`/`min_ns`/`max_ns` are exact; the histogram

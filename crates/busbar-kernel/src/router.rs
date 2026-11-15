@@ -73,7 +73,7 @@ impl ServerTiming {
 
     fn now() -> Self {
         Self {
-            start_ns: crate::store::vocab::monotonic_ns(),
+            start_ns: crate::store::monotonic_ns(),
             upstream_us: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(NO_UPSTREAM_RTT)),
         }
     }
@@ -95,7 +95,7 @@ impl ServerTiming {
     /// The header's value as of now: `busbar;dur=<ms>`, written on the stack.
     #[must_use]
     pub(crate) fn value(&self) -> ServerTimingValue {
-        let total_us = crate::store::vocab::monotonic_ns().saturating_sub(self.start_ns) / 1000;
+        let total_us = crate::store::monotonic_ns().saturating_sub(self.start_ns) / 1000;
         let upstream_us = self.upstream_us.load(std::sync::atomic::Ordering::Relaxed);
         let mut value = ServerTimingValue::default();
         // `busbar;dur=` plus at most 20 integer digits and `.NNN` fits the buffer.
