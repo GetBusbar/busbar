@@ -20,18 +20,23 @@ use std::time::Duration;
 
 use busbar_contract::abi::transport::{slot, WriteIn};
 use busbar_plugin_test::target::carrier::{
-    dial_h1, dial_h2, Dial, Gone, Pieces, Reply, Request, Route, Routes, HEAD_MAX,
+    dial_h1, dial_h2, Dial, Gone, Pieces, Reply, Request, Routes, HEAD_MAX,
 };
 use busbar_plugin_test::target::{
     self, Caller, Images, PluginThread, Refused, Target, Unserved, SUBJECT,
 };
-use busbar_plugin_test::{Called, Loans, Transport};
+use busbar_plugin_test::{Called, Host, Loans, Transport};
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Incoming};
 use sonic_rs::JsonValueTrait;
 
 /// The driver's bearer: it flows in, and must never come out.
 const TOKEN: &str = "tkn-7f3c9a1e-never-written-anywhere";
+
+/// Each image's host, on the contract's dev-only test caller binding.
+fn host() -> Host {
+    Host::new(busbar_contract::services::test_caller_binding())
+}
 
 fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
@@ -97,7 +102,9 @@ async fn h2(
 
 /// `POST /write`: crosses WRITE on the image's own plugin thread with the request body, and
 /// answers what the plugin took, on which HTTP version, for which caller.
-fn write_route(plugins: Arc<Vec<(&'static str, PluginThread<Transport>)>>) -> impl Route {
+type Plugins = Arc<[(&'static str, PluginThread<Transport>)]>;
+
+fn write_route(plugins: Plugins) -> impl Fn(Request) -> Reply + Send + Sync + 'static {
     move |req: Request| {
         let image = req.image();
         let (_, plugin) = plugins
@@ -135,20 +142,21 @@ fn a_route_answers_through_hyper_on_h1_and_h2c_on_each_image() {
         .iter()
         .map(|&image| {
             let img = target::image::<Transport>(image, "transport_fixture", transport_door::door);
-            let opened = PluginThread::open(target::host, img, "carrier-fixture", b"{}")
+            let opened = PluginThread::open(host, img, "carrier-fixture", b"{}")
                 .unwrap_or_else(|e| panic!("{image}: {e:?}"));
             (image, opened)
         })
         .collect();
-    let served = Target::new(Routes::new().route("POST", "/write", write_route(Arc::new(plugins))))
-        .caller(
-            Caller::new("conformance")
-                .token(TOKEN.as_bytes())
-                .entries(&["/write"]),
-        )
-        .seed(3)
-        .serve()
-        .expect("the target serves");
+    let served =
+        Target::new(Routes::new().route("POST", "/write", write_route(Arc::from(plugins))))
+            .caller(
+                Caller::new("conformance")
+                    .token(TOKEN.as_bytes())
+                    .entries(&["/write"]),
+            )
+            .seed(3)
+            .serve()
+            .expect("the target serves");
     let rt = runtime();
     for image in ["linked", "cdylib"] {
         let addr = served.addr(image);

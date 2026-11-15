@@ -26,10 +26,10 @@ path = "tests/fixtures/carrier_target.rs"
 [features]
 # Host targets (SDK-SAFE-TEST-HOST §10.2), off by default and never in a release build: a plugin
 # repository enables one in its [dev-dependencies]. `target` is the shared code (std::net only, so
-# a stream framer's test graph gains no hyper and no tokio net); it opens images on the contract's
-# test caller binding. `target-http` adds the carrier: hyper and hyper-util, no hand-written codec,
+# a stream framer's test graph gains no hyper and no tokio net; the driver supplies the host and
+# its test caller binding). `target-http` adds the carrier: hyper and hyper-util, no hand-written codec,
 # no direct h2, no tonic. Every crate here is already in core's lock.
-target = ["dep:sonic-rs", "busbar-contract/test-seal"]
+target = ["dep:sonic-rs"]
 target-http = ["target", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio"]
 
 [dependencies]

@@ -17,7 +17,6 @@
 //! **Fail closed.** Anything the target was asked and does not serve is recorded; the run then
 //! fails with no allow-list: [`Served::finish`] answers [`Unserved`], `main` exits non-zero, and a
 //! [`Served`] dropped unfinished with a non-empty list panics.
-#![forbid(unsafe_code)]
 
 #[cfg(feature = "target-http")]
 pub mod carrier;
@@ -33,6 +32,7 @@ use std::thread::JoinHandle;
 
 use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::redacted::constant_time_eq;
+use busbar_contract::secure::SecureVec;
 use busbar_plugin_loader::dispatch::Kind;
 use busbar_plugin_loader::test_host::{Host, Image, Openable, Opened, Refused as HostRefused};
 use sonic_rs::{JsonContainerTrait, JsonValueTrait};
@@ -90,13 +90,6 @@ pub fn image<K: Kind>(image: &str, lib_name: &str, door: DoorFn) -> Image<K> {
     }
 }
 
-/// A host whose dispatcher binds callers with the contract's test binding: the host every target
-/// image is opened on.
-#[must_use]
-pub fn host() -> Host {
-    Host::new(busbar_contract::services::test_caller_binding())
-}
-
 /// Why a target refused to start.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refused {
@@ -125,7 +118,7 @@ impl fmt::Display for Refused {
 /// leaves it out, and neither the ready file nor stdout carries it (§10.3, SEC-1).
 pub struct Caller {
     name: String,
-    token: Vec<u8>,
+    token: SecureVec,
     entries: Vec<String>,
 }
 
@@ -135,7 +128,7 @@ impl Caller {
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_owned(),
-            token: Vec::new(),
+            token: SecureVec::new(),
             entries: Vec::new(),
         }
     }
@@ -143,7 +136,7 @@ impl Caller {
     /// The bearer token this caller presents.
     #[must_use]
     pub fn token(mut self, bytes: &[u8]) -> Self {
-        self.token = bytes.to_vec();
+        self.token = SecureVec::from(bytes);
         self
     }
 
@@ -186,7 +179,7 @@ impl Callers {
     pub fn find(&self, token: &[u8]) -> Option<Arc<Caller>> {
         self.0
             .iter()
-            .find(|c| !c.token.is_empty() && constant_time_eq(&c.token, token))
+            .find(|c| !c.token.is_empty() && constant_time_eq(c.token.as_slice(), token))
             .cloned()
     }
 }
@@ -717,7 +710,8 @@ pub struct PluginThread<K: Openable> {
 
 impl<K: Openable> PluginThread<K> {
     /// Opens `img` as instance `name` with `settings` on a new thread, on the host `make_host`
-    /// builds there (usually [`host`]).
+    /// builds there: `Host::new(test_caller_binding())`, the binding behind the contract's
+    /// dev-only `test-seal`, which the repository enables in its own `[dev-dependencies]`.
     ///
     /// # Errors
     /// The host's refusal when the image does not load, open or ready.

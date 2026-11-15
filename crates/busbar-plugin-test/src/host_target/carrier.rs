@@ -13,7 +13,6 @@
 //! `--max-body`, a route that panics, and a [`Reply::unserved`] answer are each answered
 //! `501 not served by the host target: <what>` and recorded, which fails the run. A streamed
 //! answer's [`Pieces`] learn when the client has gone.
-#![forbid(unsafe_code)]
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -44,18 +43,12 @@ const PIECES_QUEUE: usize = 16;
 /// How long a stopping image waits for routes still running.
 const STOP_GRACE: Duration = Duration::from_secs(5);
 
-/// A route's handler: one request in, one answer out. It runs on a blocking thread, so it may
-/// wait on the image's plugin thread; a closure `Fn(Request) -> Reply` is a route.
-pub trait Route: Send + Sync + 'static {
-    /// Answers `req`.
-    fn answer(&self, req: Request) -> Reply;
-}
+/// A route's handler, `Fn(Request) -> Reply`: one request in, one answer out. It runs on a
+/// blocking thread, so it may wait on the image's plugin thread.
+type RouteFn = dyn Fn(Request) -> Reply + Send + Sync;
 
-impl<F: Fn(Request) -> Reply + Send + Sync + 'static> Route for F {
-    fn answer(&self, req: Request) -> Reply {
-        self(req)
-    }
-}
+/// Stops one image's listener and waits for it.
+type Stopper = Box<dyn FnOnce() + Send>;
 
 /// One request, as a route sees it: its head and its whole body (bounded by `--max-body`).
 pub struct Request {
@@ -245,7 +238,7 @@ impl HttpBody for Body {
 struct Mount {
     verb: Method,
     path: String,
-    route: Arc<dyn Route>,
+    route: Arc<RouteFn>,
 }
 
 impl Mount {
@@ -289,7 +282,12 @@ impl Routes {
     /// # Panics
     /// When `verb` is not an HTTP method.
     #[must_use]
-    pub fn route(mut self, verb: &str, path: &str, f: impl Route) -> Self {
+    pub fn route(
+        mut self,
+        verb: &str,
+        path: &str,
+        f: impl Fn(Request) -> Reply + Send + Sync + 'static,
+    ) -> Self {
         let verb = Method::from_bytes(verb.as_bytes())
             .unwrap_or_else(|_| panic!("`{verb}` is not an HTTP method"));
         self.table.push(Mount {
@@ -300,7 +298,7 @@ impl Routes {
         self
     }
 
-    fn find(&self, verb: &Method, path: &str) -> Result<Arc<dyn Route>, String> {
+    fn find(&self, verb: &Method, path: &str) -> Result<Arc<RouteFn>, String> {
         let mut hits = self
             .table
             .iter()
@@ -363,10 +361,7 @@ impl Shared {
 
 /// Binds `at` and serves `shared`'s routes on it, on a current-thread runtime of its own thread.
 /// The stopper ends the accept loop, drops every connection and waits for the thread.
-fn serve_on(
-    at: SocketAddr,
-    shared: Arc<Shared>,
-) -> Result<(SocketAddr, Box<dyn FnOnce() + Send>), Refused> {
+fn serve_on(at: SocketAddr, shared: Arc<Shared>) -> Result<(SocketAddr, Stopper), Refused> {
     let image = shared.image;
     let bind = |e: std::io::Error| Refused::Bind(format!("{image} on {at}: {e}"));
     let std_listener = std::net::TcpListener::bind(at).map_err(bind)?;
@@ -465,7 +460,7 @@ async fn answer(
         body,
         caller,
     };
-    match tokio::task::spawn_blocking(move || route.answer(request)).await {
+    match tokio::task::spawn_blocking(move || route(request)).await {
         Ok(reply) => Ok(shared.respond(reply)),
         Err(_) => Ok(shared.respond(Reply::unserved(&format!("the route for {asked} panicked")))),
     }
