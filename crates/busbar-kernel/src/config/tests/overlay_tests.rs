@@ -234,7 +234,7 @@ fn clear_root_section_only() {
 #[test]
 fn apply_root_to_deploy_noop_and_active() {
     let mut deploy = minimal_deploy();
-    apply_root_to_deploy(&mut deploy, &OverlayDoc::default());
+    apply_root_to_deploy(&mut deploy, &OverlayDoc::default()).expect("the overlay applies");
     assert_eq!(
         deploy.per_request_fee, 0,
         "no root override → base unchanged"
@@ -243,7 +243,7 @@ fn apply_root_to_deploy_noop_and_active() {
         root: Some(sample_root()),
         ..Default::default()
     };
-    apply_root_to_deploy(&mut deploy, &doc);
+    apply_root_to_deploy(&mut deploy, &doc).expect("the overlay applies");
     assert_eq!(deploy.per_request_fee, 7, "root override applied");
 }
 
@@ -307,7 +307,7 @@ fn plugin_versions_pins_lower_the_floors() {
 #[test]
 fn no_pins_leaves_first_party_floor_none() {
     let mut deploy = minimal_deploy();
-    apply_root_to_deploy(&mut deploy, &OverlayDoc::default());
+    apply_root_to_deploy(&mut deploy, &OverlayDoc::default()).expect("the overlay applies");
     assert!(
         deploy.plugins.first_party_floors.is_empty(),
         "with no pins the automatic first-party floor stands"

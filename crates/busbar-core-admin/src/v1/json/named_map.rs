@@ -550,7 +550,8 @@ async fn apply(
 
 
             loaded.overlay_doc = Some(doc.clone());
-            busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, &doc);
+            busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, &doc)
+                .map_err(AdminError::Validation)?;
             if let Some(rejection) =
                 operator_file_rejection(txn_section, &loaded.deploy, txn_section.key())
             {

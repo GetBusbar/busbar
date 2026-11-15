@@ -242,7 +242,8 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
             "base config.json has no fee (the override lives only in the overlay)"
         );
         if let Some(doc) = loaded.overlay_doc.as_ref() {
-            busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
+            busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc)
+                .expect("the overlay applies");
         }
         assert_eq!(
             loaded.deploy.per_request_fee, 7,

@@ -81,7 +81,10 @@ pub struct RootSettings {
     pub routing: Option<crate::config::patch::RoutingPatch>,
 }
 /// Root settings read through serde, by any caller (the admin `config/settings` body, the stored
-/// overlay), read the source shorthand the admitted owners declare, as `config.yaml` does.
+/// overlay), decode with no grammar (SECRET-SHORTHAND-BOOT §3.7): they hold no secret reference
+/// position, only settings bags, whose shorthand is read when the root is applied under the
+/// grammar of the read it joins ([`apply_root_to_deploy`]). So the Store overlay decodes the same
+/// whatever the live secret axis holds.
 impl<'de> Deserialize<'de> for RootSettings {
     fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
         struct Written(RootSettings);
@@ -92,7 +95,7 @@ impl<'de> Deserialize<'de> for RootSettings {
         }
         busbar_contract::secret_ref::context::deserialize::<Written, _>(
             de,
-            &super::secret::admitted_sugars(),
+            &busbar_contract::secret_ref::Sugars::default(),
         )
         .map(|written| written.0)
     }
@@ -529,11 +532,27 @@ pub fn from_state(hooks: &HashMap<String, HookCfg>, global_hooks: &[String]) -> 
     }
 }
 
-pub fn apply_root_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
+/// The overlay's root settings and pre-resolve sections, applied to `deploy` under the grammar it
+/// was read under (SECRET-SHORTHAND-BOOT §3.7, §3.11). A stored definition whose parse fails
+/// because of that grammar (a shorthand no module the read admits declares) refuses the read.
+pub fn apply_root_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) -> Result<(), String> {
     if let Some(root) = &doc.root {
         root.apply_to_deploy(deploy);
+        // The stored root's settings bags are read under this read's grammar: record their words.
+        if let Some(store) = root.store.as_ref() {
+            record_bag(deploy, &store.settings);
+        }
     }
-    apply_pre_resolve_sections(deploy, doc);
+    apply_pre_resolve_sections(deploy, doc)
+}
+
+/// Record the words a stored settings bag may hold into the read `deploy` carries (§3.8).
+fn record_bag(deploy: &mut DeployCfg, settings: &busbar_contract::plugin_settings::Settings) {
+    let words = busbar_contract::secret_ref::context::UsedWords::default();
+    settings.record_words(&words);
+    let mut used = super::grammar::Used::default();
+    used.absorb(words);
+    deploy.grammar.record(&used);
 }
 
 pub fn apply_plugin_versions_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
@@ -550,7 +569,7 @@ pub fn apply_plugin_versions_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc)
     }
 }
 
-pub fn apply_named_maps_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
+pub fn apply_named_maps_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) -> Result<(), String> {
     use crate::config::named_map::NamedMapSection;
     for section in NamedMapSection::sections() {
         let Some(entries) = doc.named_maps.get(section.key()) else {
@@ -558,6 +577,18 @@ pub fn apply_named_maps_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
         };
         for (name, def) in entries {
             if let Err(e) = section.insert(deploy, name, def) {
+                // A definition that no longer parses because its read does not admit the module
+                // that declares its shorthand is refused, never skipped: applying the rest would
+                // run without it, silently (§3.11). Every other parse failure keeps the skip.
+                if e.contains(busbar_contract::secret_ref::context::UNDECLARED_MARKER) {
+                    return Err(format!(
+                        "the config overlay's `{}.{name}` definition cannot be read under this \
+                         configuration's plugins: block: {e}. Restore the module that declares the \
+                         word, or edit or remove the definition (a boot recovers with \
+                         --ignore-overlay)",
+                        section.key()
+                    ));
+                }
                 diag_error!(
                     CONFIG_OVERLAY_PATCH_UNPARSABLE,
                     section = section.key(), entry = %name, error = %e,
@@ -580,6 +611,7 @@ pub fn apply_named_maps_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
             }
         }
     }
+    Ok(())
 }
 
 /// One overlay named-map definition this binary cannot parse: the parse ERROR plus the RAW stored
@@ -591,7 +623,7 @@ pub struct UnparseableNamedDef {
     pub raw: serde_json::Value,
 }
 
-pub fn apply_pre_resolve_sections(deploy: &mut DeployCfg, doc: &OverlayDoc) {
+pub fn apply_pre_resolve_sections(deploy: &mut DeployCfg, doc: &OverlayDoc) -> Result<(), String> {
     // Plane/config references must see overlay-owned hooks during resolution, just as they
     // already see overlay-owned named definitions. The full HookCfg (including runtime-only
     // global/default fields) is installed by merge_into after resolution.
@@ -602,6 +634,7 @@ pub fn apply_pre_resolve_sections(deploy: &mut DeployCfg, doc: &OverlayDoc) {
         if doc.deleted.contains(name) {
             continue;
         }
+        record_bag(deploy, &hook.settings);
         deploy.hooks.insert(
             name.clone(),
             super::HookDefCfg {
@@ -628,7 +661,7 @@ pub fn apply_pre_resolve_sections(deploy: &mut DeployCfg, doc: &OverlayDoc) {
         );
     }
     apply_plugin_versions_to_deploy(deploy, doc);
-    apply_named_maps_to_deploy(deploy, doc);
+    apply_named_maps_to_deploy(deploy, doc)
 }
 pub fn merge_into(cfg: &mut RootCfg, doc: OverlayDoc) {
     for (name, hook) in doc.hooks {

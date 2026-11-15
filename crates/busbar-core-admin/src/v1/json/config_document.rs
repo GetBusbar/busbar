@@ -206,7 +206,8 @@ pub(super) async fn put(
             if loaded.deploy.advanced.worker_threads == Some(0) {
                 return Err(AdminError::Validation("advanced.worker_threads must be positive".into()));
             }
-            busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, &doc);
+            busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, &doc)
+                .map_err(AdminError::Validation)?;
             if let Some(patch) = request.providers_patch.as_ref() {
                 if let Some(path) = patch.shadowed_catalog_path(&loaded.deploy.providers)
                     .map_err(|error| AdminError::Validation(error.to_string()))? {

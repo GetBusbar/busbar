@@ -52,7 +52,7 @@ fn complete_resolution_sees_recovered_named_definitions_and_hook_controls() {
             "overlay-admin":{"module":"approved-admin"}
         }}
     })).unwrap();
-    super::super::overlay::apply_root_to_deploy(&mut deploy, &doc);
+    super::super::overlay::apply_root_to_deploy(&mut deploy, &doc).expect("the overlay applies");
     let mut cfg = super::super::resolve(&deploy, &Default::default()).unwrap();
     super::super::overlay::merge_into(&mut cfg, doc);
     assert_eq!(cfg.auth.as_ref().unwrap().chain[0].module, "approved-corp");

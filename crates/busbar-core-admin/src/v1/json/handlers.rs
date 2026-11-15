@@ -479,6 +479,15 @@ pub(crate) async fn rollback_plugin(
             let (manifest, pins) = AdminService::new(snapshot.clone())
                 .resolve_plugin_rollback_if_archive(&file, &prior_pins, req.expected_archive_sha256.as_deref())?;
 
+            // A pin the next restart would refuse is refused now, before it is persisted
+            // (SECRET-SHORTHAND-BOOT §3.7): the next start reads config.yaml's block alone first.
+            if let (Some(config_path), Ok(used)) =
+                (snapshot.config_path.as_deref(), snapshot.grammar.used())
+            {
+                busbar_kernel::appbuild::pin_write_refusal(config_path, &pins, used)
+                    .map_err(AdminError::Validation)?;
+            }
+
 
 
 
@@ -1344,7 +1353,7 @@ pub(crate) async fn reset_overlay_section(
 
 
                 if let Some(doc) = cleared_doc.as_ref() {
-                    busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
+                    busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc)?;
                 }
                 let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
                     .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
@@ -2252,7 +2261,8 @@ pub(crate) async fn apply_config(
             };
             let (mut deploy, providers) = (req_deploy, req_providers);
             if let Some(doc) = overlay_doc.as_ref() {
-                busbar_kernel::config::overlay::apply_root_to_deploy(&mut deploy, doc);
+                busbar_kernel::config::overlay::apply_root_to_deploy(&mut deploy, doc)
+                    .map_err(AdminError::Validation)?;
 
                 busbar_kernel::config::overlay::apply_plugin_versions_to_deploy(&mut deploy, doc);
             }
@@ -2677,7 +2687,7 @@ pub(crate) async fn put_config_settings(
                     busbar_kernel::config::overlay::apply_pre_resolve_sections(
                         &mut loaded.deploy,
                         doc,
-                    );
+                    )?;
                 }
                 let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
                     .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;

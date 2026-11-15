@@ -22,23 +22,116 @@ pub fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
 ) -> Result<T, D::Error> {
     T::deserialize(Context {
         inner: deserializer,
-        sugars,
+        ctx: Ctx { sugars, used: None },
     })
+}
+
+/// [`deserialize`], recording into `used` every word the document uses (SECRET-SHORTHAND-BOOT
+/// §3.8): the one-entry key of each reference position, declared or not, the fill role of each
+/// template, and every one-entry key of a plugin settings bag outside `{literal: …}` and canonical
+/// `{module, settings}` subtrees (the positions settings resolution reads shorthand at).
+pub fn deserialize_recording<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
+    deserializer: D,
+    sugars: &Sugars,
+    used: &UsedWords,
+) -> Result<T, D::Error> {
+    T::deserialize(Context {
+        inner: deserializer,
+        ctx: Ctx {
+            sugars,
+            used: Some(used),
+        },
+    })
+}
+
+/// What one read's parse used of the secret grammar: the shorthand words and the core grammar
+/// roles. Filled by [`deserialize_recording`]; positions the parse does not read as a reference or
+/// a settings bag (core's own TLS source grammar, `plugins.fetch`) record nothing.
+#[derive(Debug, Default)]
+pub struct UsedWords {
+    words: std::cell::RefCell<std::collections::BTreeSet<String>>,
+    roles: std::cell::RefCell<std::collections::BTreeSet<String>>,
+}
+
+impl UsedWords {
+    fn word(&self, word: &str) {
+        self.words.borrow_mut().insert(word.to_owned());
+    }
+
+    fn role(&self, role: &str) {
+        self.roles.borrow_mut().insert(role.to_owned());
+    }
+
+    /// The words and roles recorded, in order.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        std::collections::BTreeSet<String>,
+        std::collections::BTreeSet<String>,
+    ) {
+        (self.words.into_inner(), self.roles.into_inner())
+    }
+
+    /// Record the words of a settings bag read outside a recording parse (a stored definition
+    /// typed later): the same positions [`deserialize_recording`] records.
+    pub fn bag(&self, tree: &serde_json::Value) {
+        record_bag(tree, self);
+    }
+}
+
+/// Every one-entry key of a settings tree outside `{literal: …}` and canonical `{module,
+/// settings}` subtrees: the positions `plugin_settings::canonicalize` reads shorthand at.
+fn record_bag(tree: &serde_json::Value, used: &UsedWords) {
+    match tree {
+        serde_json::Value::Object(object) => {
+            if object.len() == 1 && object.contains_key(crate::secret_fields::LITERAL_KEY) {
+                return;
+            }
+            if object.contains_key("module")
+                && object
+                    .keys()
+                    .all(|key| key == "module" || key == "settings")
+            {
+                return;
+            }
+            if object.len() == 1 {
+                if let Some(word) = object.keys().next() {
+                    used.word(word);
+                }
+            }
+            for child in object.values() {
+                record_bag(child, used);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                record_bag(child, used);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Ctx<'a> {
+    sugars: &'a Sugars,
+    used: Option<&'a UsedWords>,
 }
 
 struct Context<'a, D> {
     inner: D,
-    sugars: &'a Sugars,
+    ctx: Ctx<'a>,
 }
 struct Wrapped<'a, V> {
     inner: V,
-    sugars: &'a Sugars,
+    ctx: Ctx<'a>,
 }
 
 macro_rules! delegate {
     ($($method:ident),* $(,)?) => {$(
         fn $method<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-            self.inner.$method(Wrapped { inner: visitor, sugars: self.sugars })
+            self.inner.$method(Wrapped { inner: visitor, ctx: self.ctx })
         }
     )*};
 }
@@ -80,7 +173,7 @@ impl<'de, D: Deserializer<'de>> Deserializer<'de> for Context<'_, D> {
             name,
             Wrapped {
                 inner: visitor,
-                sugars: self.sugars,
+                ctx: self.ctx,
             },
         )
     }
@@ -97,7 +190,17 @@ impl<'de, D: Deserializer<'de>> Deserializer<'de> for Context<'_, D> {
                 REFERENCE,
                 Reference {
                     inner: visitor,
-                    sugars: self.sugars,
+                    ctx: self.ctx,
+                },
+            )
+        } else if name == crate::plugin_settings::BAG {
+            // A plugin settings bag: its shorthand is read at resolution, so the read records the
+            // words it may hold here, where the bag is parsed.
+            self.inner.deserialize_newtype_struct(
+                crate::plugin_settings::BAG,
+                Bag {
+                    inner: visitor,
+                    ctx: self.ctx,
                 },
             )
         } else {
@@ -105,7 +208,7 @@ impl<'de, D: Deserializer<'de>> Deserializer<'de> for Context<'_, D> {
                 name,
                 Wrapped {
                     inner: visitor,
-                    sugars: self.sugars,
+                    ctx: self.ctx,
                 },
             )
         }
@@ -119,7 +222,7 @@ impl<'de, D: Deserializer<'de>> Deserializer<'de> for Context<'_, D> {
             len,
             Wrapped {
                 inner: visitor,
-                sugars: self.sugars,
+                ctx: self.ctx,
             },
         )
     }
@@ -134,7 +237,7 @@ impl<'de, D: Deserializer<'de>> Deserializer<'de> for Context<'_, D> {
             len,
             Wrapped {
                 inner: visitor,
-                sugars: self.sugars,
+                ctx: self.ctx,
             },
         )
     }
@@ -149,7 +252,7 @@ impl<'de, D: Deserializer<'de>> Deserializer<'de> for Context<'_, D> {
             fields,
             Wrapped {
                 inner: visitor,
-                sugars: self.sugars,
+                ctx: self.ctx,
             },
         )
     }
@@ -164,7 +267,7 @@ impl<'de, D: Deserializer<'de>> Deserializer<'de> for Context<'_, D> {
             variants,
             Wrapped {
                 inner: visitor,
-                sugars: self.sugars,
+                ctx: self.ctx,
             },
         )
     }
@@ -214,7 +317,7 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for Wrapped<'_, V> {
     fn visit_some<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
         self.inner.visit_some(Context {
             inner: deserializer,
-            sugars: self.sugars,
+            ctx: self.ctx,
         })
     }
     fn visit_newtype_struct<D: Deserializer<'de>>(
@@ -223,25 +326,25 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for Wrapped<'_, V> {
     ) -> Result<Self::Value, D::Error> {
         self.inner.visit_newtype_struct(Context {
             inner: deserializer,
-            sugars: self.sugars,
+            ctx: self.ctx,
         })
     }
     fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
         self.inner.visit_seq(Wrapped {
             inner: seq,
-            sugars: self.sugars,
+            ctx: self.ctx,
         })
     }
     fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
         self.inner.visit_map(Wrapped {
             inner: map,
-            sugars: self.sugars,
+            ctx: self.ctx,
         })
     }
     fn visit_enum<A: EnumAccess<'de>>(self, data: A) -> Result<Self::Value, A::Error> {
         self.inner.visit_enum(Wrapped {
             inner: data,
-            sugars: self.sugars,
+            ctx: self.ctx,
         })
     }
 }
@@ -250,7 +353,7 @@ impl<'de, S: DeserializeSeed<'de>> DeserializeSeed<'de> for Wrapped<'_, S> {
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
         self.inner.deserialize(Context {
             inner: deserializer,
-            sugars: self.sugars,
+            ctx: self.ctx,
         })
     }
 }
@@ -262,7 +365,7 @@ impl<'de, A: SeqAccess<'de>> SeqAccess<'de> for Wrapped<'_, A> {
     ) -> Result<Option<T::Value>, A::Error> {
         self.inner.next_element_seed(Wrapped {
             inner: seed,
-            sugars: self.sugars,
+            ctx: self.ctx,
         })
     }
     fn size_hint(&self) -> Option<usize> {
@@ -277,13 +380,13 @@ impl<'de, A: MapAccess<'de>> MapAccess<'de> for Wrapped<'_, A> {
     ) -> Result<Option<K::Value>, A::Error> {
         self.inner.next_key_seed(Wrapped {
             inner: seed,
-            sugars: self.sugars,
+            ctx: self.ctx,
         })
     }
     fn next_value_seed<T: DeserializeSeed<'de>>(&mut self, seed: T) -> Result<T::Value, A::Error> {
         self.inner.next_value_seed(Wrapped {
             inner: seed,
-            sugars: self.sugars,
+            ctx: self.ctx,
         })
     }
     fn size_hint(&self) -> Option<usize> {
@@ -299,13 +402,13 @@ impl<'de, 'a, A: EnumAccess<'de>> EnumAccess<'de> for Wrapped<'a, A> {
     ) -> Result<(V::Value, Self::Variant), A::Error> {
         let (value, variant) = self.inner.variant_seed(Wrapped {
             inner: seed,
-            sugars: self.sugars,
+            ctx: self.ctx,
         })?;
         Ok((
             value,
             Wrapped {
                 inner: variant,
-                sugars: self.sugars,
+                ctx: self.ctx,
             },
         ))
     }
@@ -318,7 +421,7 @@ impl<'de, A: VariantAccess<'de>> VariantAccess<'de> for Wrapped<'_, A> {
     fn newtype_variant_seed<T: DeserializeSeed<'de>>(self, seed: T) -> Result<T::Value, A::Error> {
         self.inner.newtype_variant_seed(Wrapped {
             inner: seed,
-            sugars: self.sugars,
+            ctx: self.ctx,
         })
     }
     fn tuple_variant<V: Visitor<'de>>(self, len: usize, visitor: V) -> Result<V::Value, A::Error> {
@@ -326,7 +429,7 @@ impl<'de, A: VariantAccess<'de>> VariantAccess<'de> for Wrapped<'_, A> {
             len,
             Wrapped {
                 inner: visitor,
-                sugars: self.sugars,
+                ctx: self.ctx,
             },
         )
     }
@@ -339,7 +442,7 @@ impl<'de, A: VariantAccess<'de>> VariantAccess<'de> for Wrapped<'_, A> {
             fields,
             Wrapped {
                 inner: visitor,
-                sugars: self.sugars,
+                ctx: self.ctx,
             },
         )
     }
@@ -375,7 +478,7 @@ fn undeclared(word: &str) -> String {
 
 struct Reference<'a, V> {
     inner: V,
-    sugars: &'a Sugars,
+    ctx: Ctx<'a>,
 }
 impl<'de, V: Visitor<'de>> Visitor<'de> for Reference<'_, V> {
     type Value = V::Value;
@@ -447,7 +550,11 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for Reference<'_, V> {
         let object = held.0.as_object().expect("reference map");
         if !object.contains_key("module") && !object.contains_key("template") && object.len() == 1 {
             let (word, value) = object.iter().next().expect("one entry");
+            if let Some(used) = self.ctx.used {
+                used.word(word);
+            }
             let sugar = self
+                .ctx
                 .sugars
                 .get(word)
                 .ok_or_else(|| de::Error::custom(undeclared(word)))?;
@@ -462,15 +569,68 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for Reference<'_, V> {
             .expect("reference map")
             .contains_key("template")
         {
+            if let Some(used) = self.ctx.used {
+                used.role(crate::abi::mechanism::door::SUGAR_ROLE_FILL);
+            }
             let reference: super::SecretRef = serde::Deserialize::deserialize(held.clone())
                 .map_err(|_| de::Error::custom("malformed core template (value not echoed)"))?;
             reference
-                .admitted_template(self.sugars)
+                .admitted_template(self.ctx.sugars)
                 .map_err(de::Error::custom)?;
         }
         self.inner
             .visit_newtype_struct(held.into_deserializer())
             .map_err(de::Error::custom)
+    }
+}
+
+/// A plugin settings bag read inside a context: read whole, its shorthand positions recorded, then
+/// handed on as read. Any other shape reaches the settings reader unchanged, which refuses it
+/// without echoing it.
+struct Bag<'a, V> {
+    inner: V,
+    ctx: Ctx<'a>,
+}
+impl<'de, V: Visitor<'de>> Visitor<'de> for Bag<'_, V> {
+    type Value = V::Value;
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.inner.expecting(f)
+    }
+    fn visit_newtype_struct<D: Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        let tree = crate::plugin_settings::Tree::deserialize(deserializer)?;
+        if let Some(used) = self.ctx.used {
+            record_bag(&tree.0, used);
+        }
+        self.inner
+            .visit_newtype_struct(tree.into_deserializer())
+            .map_err(de::Error::custom)
+    }
+    visit_scalar!(
+        visit_bool(bool),
+        visit_i64(i64),
+        visit_i128(i128),
+        visit_u64(u64),
+        visit_u128(u128),
+        visit_f64(f64),
+        visit_char(char),
+        visit_str(&str),
+        visit_string(String),
+        visit_bytes(&[u8])
+    );
+    fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+        self.inner.visit_unit()
+    }
+    fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+        self.inner.visit_none()
+    }
+    fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
+        self.inner.visit_seq(seq)
+    }
+    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+        self.inner.visit_map(map)
     }
 }
 
@@ -555,6 +715,42 @@ mod tests {
         assert!(
             alone.to_string().contains("is a secret shorthand"),
             "{alone}"
+        );
+    }
+
+    /// SECRET-SHORTHAND-BOOT §3.8 (G7, G22): a recording read records the word of each reference
+    /// position, declared or not, and every one-entry key of a settings bag outside `{literal: …}`
+    /// and canonical `{module, settings}` subtrees. An ordinary map records nothing, and the
+    /// settings still read as written.
+    #[test]
+    fn a_recording_read_records_reference_and_bag_words() {
+        #[derive(Deserialize)]
+        struct Doc {
+            credential: SecretRef,
+            bag: crate::plugin_settings::Settings,
+            ordinary: serde_json::Value,
+        }
+        let sugars = declared("cabinet", "owner-one", "entry");
+        let used = UsedWords::default();
+        let raw = r#"{"credential":{"cabinet":"item"},"bag":{"nested":{"drawer":"x"},"kept":{"literal":{"shelf":"y"}},"canon":{"module":"m","settings":{"box":"z"}}},"ordinary":{"crate":"w"}}"#;
+        let mut decoder = serde_json::Deserializer::from_str(raw);
+        let read: Doc = deserialize_recording(&mut decoder, &sugars, &used).unwrap();
+        assert_eq!(read.ordinary["crate"], "w");
+        let mut keys = read.bag.key_names();
+        keys.sort();
+        assert_eq!(keys, ["canon", "kept", "nested"]);
+        let (words, roles) = used.into_parts();
+        assert_eq!(
+            words.into_iter().collect::<Vec<_>>(),
+            vec!["cabinet".to_owned(), "drawer".to_owned()]
+        );
+        assert!(roles.is_empty());
+        let mut undeclared = serde_json::Deserializer::from_str(r#"{"vault":"item"}"#);
+        let used = UsedWords::default();
+        assert!(deserialize_recording::<SecretRef, _>(&mut undeclared, &sugars, &used).is_err());
+        assert!(
+            used.into_parts().0.contains("vault"),
+            "an undeclared word is recorded too"
         );
     }
 

@@ -485,7 +485,8 @@ pub(crate) fn validate_judged(
     let unset_env_vars = loaded.unset_env_vars.clone();
 
     if let Some(doc) = loaded.overlay_doc.as_ref() {
-        config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
+        config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc)
+            .map_err(ValidateRefusal::Load)?;
     }
     let mut cfg =
         config::resolve(&loaded.deploy, &loaded.defs).map_err(ValidateRefusal::Resolve)?;

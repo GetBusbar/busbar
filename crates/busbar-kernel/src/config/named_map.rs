@@ -111,7 +111,13 @@ impl NamedMapSection {
         def: &serde_json::Value,
     ) -> Result<(), String> {
         let grammar = deploy.grammar.get()?.clone();
-        self.parse_def(name, def, &grammar)?.install(deploy, name)
+        // A stored definition joins the read it is applied to: its words are that read's (§3.8).
+        let words = busbar_contract::secret_ref::context::UsedWords::default();
+        let parsed = self.parse_def_with(name, def, &grammar, Some(&words))?;
+        let mut used = super::grammar::Used::default();
+        used.absorb(words);
+        deploy.grammar.record(&used);
+        parsed.install(deploy, name)
     }
 
     /// One definition, read under `grammar`: the grammar of the read it belongs to.
@@ -121,31 +127,33 @@ impl NamedMapSection {
         def: &serde_json::Value,
         grammar: &super::Grammar,
     ) -> Result<NamedDef, String> {
-        match self {
-            NamedMapSection::IdentityProviders => {
-                busbar_contract::secret_ref::context::deserialize(def.clone(), &grammar.sugars)
-                    .map_err(|e| format!("invalid `identity-providers.{name}` definition: {e}"))
-                    .and_then(|cfg: IdentityProviderCfg| {
-                        if let Some(token) = cfg.max_admin_scope.as_deref() {
-                            crate::config::parse::parse_ceiling(
-                                &format!("`identity-providers.{name}`"),
-                                token,
-                            )?;
-                        }
+        self.parse_def_with(name, def, grammar, None)
+    }
 
-                        super::validate_token_placement(
-                            name,
-                            cfg.module.trim(),
-                            cfg.token.is_some(),
+    fn parse_def_with(
+        self,
+        name: &str,
+        def: &serde_json::Value,
+        grammar: &super::Grammar,
+        used: Option<&busbar_contract::secret_ref::context::UsedWords>,
+    ) -> Result<NamedDef, String> {
+        match self {
+            NamedMapSection::IdentityProviders => read_def(def, &grammar.sugars, used)
+                .map_err(|e| format!("invalid `identity-providers.{name}` definition: {e}"))
+                .and_then(|cfg: IdentityProviderCfg| {
+                    if let Some(token) = cfg.max_admin_scope.as_deref() {
+                        crate::config::parse::parse_ceiling(
+                            &format!("`identity-providers.{name}`"),
+                            token,
                         )?;
-                        Ok(NamedDef::IdentityProvider(cfg))
-                    })
-            }
-            NamedMapSection::Export => {
-                busbar_contract::secret_ref::context::deserialize(def.clone(), &grammar.sugars)
-                    .map(NamedDef::Export)
-                    .map_err(|e| format!("invalid `export.{name}` definition: {e}"))
-            }
+                    }
+
+                    super::validate_token_placement(name, cfg.module.trim(), cfg.token.is_some())?;
+                    Ok(NamedDef::IdentityProvider(cfg))
+                }),
+            NamedMapSection::Export => read_def(def, &grammar.sugars, used)
+                .map(NamedDef::Export)
+                .map_err(|e| format!("invalid `export.{name}` definition: {e}")),
 
             NamedMapSection::Plane(_) => {
                 if crate::plane_driver::registry::plane_decl_for_config_section(self.key())
@@ -207,6 +215,20 @@ impl NamedMapSection {
             NamedMapSection::Export => None,
             NamedMapSection::Plane(_) => None,
         }
+    }
+}
+
+/// One stored definition under `sugars`, recording into `used` what it uses when given.
+fn read_def<T: serde::de::DeserializeOwned>(
+    def: &serde_json::Value,
+    sugars: &busbar_contract::secret_ref::Sugars,
+    used: Option<&busbar_contract::secret_ref::context::UsedWords>,
+) -> Result<T, serde_json::Error> {
+    match used {
+        Some(used) => {
+            busbar_contract::secret_ref::context::deserialize_recording(def.clone(), sugars, used)
+        }
+        None => busbar_contract::secret_ref::context::deserialize(def.clone(), sugars),
     }
 }
 

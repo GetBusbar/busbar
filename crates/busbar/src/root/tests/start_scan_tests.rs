@@ -223,3 +223,99 @@ fn historical_plugins_block_still_boots() {
         "a historical plugins block is deferred to the startup upgrade: {logs}"
     );
 }
+
+/// A signed, manifest-only `kind: plane` archive of `name` at `file` in `dir`, holding `lib`.
+fn staged_plane(dir: &Path, file: &str, name: &str, lib: &[u8]) {
+    let release = test_plugins::key(0x5b);
+    std::fs::write(
+        dir.join(file),
+        test_plugins::signed(
+            &release,
+            test_plugins::manifest("plane", name, "busbar"),
+            lib,
+        ),
+    )
+    .unwrap();
+}
+
+fn scanned(dir: &Path) -> crate::root::loader::PluginRegistry {
+    test_plugins::boot_with(dir, &test_plugins::release_policy(&test_plugins::key(0x5b)))
+}
+
+/// R17 (§3.6, audit E): a running plane's archive replaced in place counts under the running
+/// image (so the running generation keeps serving it) and is listed restart-to-apply; it is not
+/// refused. R16: the same plane's archive removed is refused when used, naming the cause.
+#[test]
+fn plane_replaced_in_place_is_reported_restart_to_apply() {
+    use busbar_kernel::config::grammar::{ItemKind, Standing};
+    const FILE: &str = "fixture-plane.tar.gz";
+    const MODULE: &str = "fixture-plane-module";
+    let dir = test_plugins::scratch("grammar-plane-replaced");
+    staged_plane(&dir, FILE, MODULE, b"the running image");
+    let start = scanned(&dir);
+    assert_eq!(
+        start.loadable().len(),
+        1,
+        "the signed plane archive is admitted ({} skipped)",
+        start.skipped().len()
+    );
+    let registered = crate::root::boot::Registered {
+        planes: vec![(
+            MODULE.to_owned(),
+            vec!["fixture-plane".to_owned()],
+            Some(FILE.to_owned()),
+        )],
+        linked_styles: Vec::new(),
+        start: Some(&start),
+    };
+    let section = |items: Vec<busbar_kernel::config::grammar::Item>| {
+        items
+            .into_iter()
+            .find(|item| item.kind == ItemKind::Section && item.name == "fixture-plane")
+            .expect("the registered plane's section is judged")
+    };
+
+    let same = section(crate::root::boot::classify_against(
+        &registered,
+        &start,
+        None,
+    ));
+    assert_eq!(same.standing, Standing::Counts);
+
+    staged_plane(&dir, FILE, MODULE, b"a replacement image");
+    let replaced = scanned(&dir);
+    let item = section(crate::root::boot::classify_against(
+        &registered,
+        &replaced,
+        None,
+    ));
+    assert_eq!(item.standing, Standing::Replaced, "{item:?}");
+    assert_eq!(item.image, same.image, "it counts under the running image");
+    let grammar = busbar_kernel::config::Grammar::empty().with_items(vec![item]);
+    assert_eq!(
+        grammar.item_refusal(ItemKind::Section, "fixture-plane"),
+        None
+    );
+    assert_eq!(grammar.replaced().count(), 1, "listed restart-to-apply");
+
+    std::fs::remove_file(dir.join(FILE)).unwrap();
+    let removed = scanned(&dir);
+    let item = section(crate::root::boot::classify_against(
+        &registered,
+        &removed,
+        None,
+    ));
+    assert_eq!(
+        item.standing,
+        Standing::NotAdmitted(format!("\"{FILE}\" is no longer in plugins.dir")),
+    );
+    let refusal = busbar_kernel::config::Grammar::empty()
+        .with_items(vec![item])
+        .item_refusal(ItemKind::Section, "fixture-plane")
+        .expect("a removed running plane's section is refused when used");
+    assert!(
+        refusal.contains("which this read's plugins: block does not admit"),
+        "{refusal}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}

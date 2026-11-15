@@ -136,7 +136,7 @@ impl LoadedConfig {
     #[inline(never)]
     pub fn disk_candidate(&mut self) -> Result<config::RootCfg, String> {
         if let Some(doc) = self.overlay_doc.as_ref() {
-            config::overlay::apply_root_to_deploy(&mut self.deploy, doc);
+            config::overlay::apply_root_to_deploy(&mut self.deploy, doc)?;
         }
         let mut cfg = config::resolve(&self.deploy, &self.defs)
             .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
@@ -269,6 +269,36 @@ pub fn load_config_from_disk_compacting_document_patches(
     raw.typed(&grammar)
 }
 
+/// THE BOOT POST-STORE RECOMPUTE (SECRET-SHORTHAND-BOOT §3.7): once the Store is open, the
+/// generation's documents are `config.yaml` and the providers catalog with the Store's durable
+/// document patches applied, and its grammar is phase 1 over that read's own block with the
+/// overlay's plugin version pins. The documents are typed under that grammar, never under the
+/// start grammar. The caller compares the two on what the documents use (BUSBAR-3170).
+pub fn load_config_under_store(
+    config_path: &std::path::Path,
+    providers_override: Option<&std::path::Path>,
+    env_mode: config::EnvSubst,
+    rules: &dyn RootRules,
+    doc: &config::overlay::OverlayDoc,
+) -> Result<LoadedConfig, String> {
+    let mut patch = doc.document_patch.clone();
+    let mut providers_patch = doc.providers_patch.clone();
+    let raw = read_config_documents(
+        config_path,
+        providers_override,
+        false,
+        env_mode,
+        rules,
+        DocumentPatchLoad {
+            patch: patch.as_mut(),
+            providers_patch: providers_patch.as_mut(),
+            admission: None,
+        },
+    )?;
+    let grammar = raw.grammar_with_pins(&doc.plugin_versions)?;
+    raw.typed(&grammar)
+}
+
 /// The deployment document as one read sees it before its typed parse: read, normalized,
 /// interpolated in the read's env mode, judged for legacy markers and unloaded plane sections, and
 /// with the durable document patch applied. What the read's grammar is computed from
@@ -324,6 +354,22 @@ impl RawDocuments<'_> {
             .map_err(|refusal| format!("config.yaml: {refusal}"))
     }
 
+    /// Phase 1 over this read's own block with the Store's plugin version pins: the boot
+    /// post-Store recompute (SECRET-SHORTHAND-BOOT §3.7). No fetch: bootstrap already fetched.
+    pub fn grammar_with_pins(
+        &self,
+        pins: &std::collections::BTreeMap<String, String>,
+    ) -> Result<config::Grammar, String> {
+        let plugins = self.plugins_block()?;
+        config::grammar::grammar_for(&config::grammar::PhaseOneIn {
+            plugins: &plugins,
+            dir: std::path::Path::new(&plugins.dir),
+            pins,
+            fetch: config::grammar::Fetch::None,
+        })
+        .map_err(|refusal| format!("config.yaml: {refusal}"))
+    }
+
     /// The typed read under `grammar`: the deployment document, then the providers catalog it
     /// names. A refused word carries the grammar's report (one line per file not admitted).
     pub fn typed(self, grammar: &config::Grammar) -> Result<LoadedConfig, String> {
@@ -335,6 +381,9 @@ impl RawDocuments<'_> {
             operator_patched,
             mut unset_env_vars,
         } = self;
+        if let Some(refusal) = process_lifetime_refusal(config_text.as_ref(), grammar, false) {
+            return Err(format!("config.yaml: {refusal}"));
+        }
         let mut deploy =
             config::deploy_from_yaml_str(config_text.as_ref(), grammar).map_err(|e| {
                 grammar.with_report(if patched {
@@ -540,20 +589,69 @@ fn typed_rest(
     if let Some(admission) = admission {
         admission.check_catalog(&interpolated_providers)?;
     }
+    if let Some(refusal) = process_lifetime_refusal(&interpolated_providers, grammar, true) {
+        return Err(format!("providers.yaml: {refusal}"));
+    }
     deploy.document_source_fingerprints =
         Some(config::document_patch::SourceFingerprints::from_sources(
             source_text,
             &interpolated_providers,
         ));
-    let defs: HashMap<String, config::ProviderDef> =
+    let (defs, mut used): (HashMap<String, config::ProviderDef>, config::grammar::Used) =
         if let Some(patch) = providers_patch.filter(|_| !ignore_overlay) {
             *patch = patch.compacted_against_yaml(&interpolated_providers)?;
-            patch.parse_catalog_yaml(&interpolated_providers, grammar)?
+            patch.parse_catalog_yaml_used(&interpolated_providers, grammar)?
         } else {
-            config::providers::catalog_from_str(&interpolated_providers, grammar)
+            config::providers::catalog_from_str_used(&interpolated_providers, grammar)
                 .map_err(|e| grammar.with_report(format!("providers.yaml: invalid YAML: {e}")))?
         };
+    // The read's use of its grammar covers both documents (§3.8): the catalog's words and styles,
+    // and the deployment's own provider styles.
+    used.styles.extend(
+        deploy
+            .providers
+            .values()
+            .filter_map(|provider| provider.auth.as_ref())
+            .map(|style| style.as_str().to_owned()),
+    );
+    deploy.grammar.record(&used);
     Ok((defs, providers_path))
+}
+
+/// The refusal for a document that writes a process-lifetime item its read does not let count
+/// (SECRET-SHORTHAND-BOOT §3.6): a top-level plane section, or a provider's `auth:` style, whose
+/// module this process did not register at start, or registered but the read no longer admits.
+/// Judged before the typed parse, so the refusal names the module and the cause instead of an
+/// unknown field. `catalog`: `text` is a providers catalog (each top-level entry is a provider).
+fn process_lifetime_refusal(
+    text: &str,
+    grammar: &config::Grammar,
+    catalog: bool,
+) -> Option<String> {
+    use busbar_contract::yaml::{MappingExt as _, Value, ValueExt as _};
+    if grammar.items.is_empty() {
+        return None;
+    }
+    let doc = busbar_contract::yaml::from_str::<Value>(text).ok()?;
+    let root = doc.as_mapping()?;
+    let providers = if catalog {
+        Some(root)
+    } else {
+        if let Some(refusal) = root
+            .keys()
+            .filter_map(Value::as_str)
+            .find_map(|key| grammar.item_refusal(config::grammar::ItemKind::Section, key))
+        {
+            return Some(refusal);
+        }
+        doc.get("providers").and_then(Value::as_mapping)
+    };
+    providers?.values().find_map(|entry| {
+        entry
+            .get("auth")
+            .and_then(Value::as_str)
+            .and_then(|style| grammar.item_refusal(config::grammar::ItemKind::Style, style))
+    })
 }
 
 pub async fn load_config_from_disk_with_store(
@@ -909,6 +1007,7 @@ async fn bootstrap_store_inputs(
     if let Some(admit) = crate::preflight::root_rows().secret_admit {
         admit(&registry, plugins).await?;
     }
+    admitted_pin(cfg, registry.as_ref())?;
     let bootstrap_secrets = cfg
         .secrets
         .iter()
@@ -924,6 +1023,65 @@ async fn bootstrap_store_inputs(
     let _signer = resolve_signing_key(cfg.auth.as_ref(), &resolver)?;
     let _at_rest = resolve_at_rest_keys(&cfg.credentials, &resolver)?;
     Ok((registry, resolver))
+}
+
+/// THE GRAMMAR PIN after admission (SECRET-SHORTHAND-BOOT §3.8, BUSBAR-3170): every item the
+/// configuration used declares the same in the grammar it was read under and in the grammar of the
+/// registry admission just put on the axis. It closes the window between the read's scan and
+/// admission's: a module replaced in between with a different declaration refuses the build (the
+/// old generation keeps serving; at boot the process exits and the next start reads again). A
+/// configuration decoded without a grammar has no read to pin; reading it refuses elsewhere.
+fn admitted_pin(
+    cfg: &config::RootCfg,
+    rows: &dyn busbar_contract::plugin_rows::PluginRows,
+) -> Result<(), String> {
+    let Some(admitted) = crate::preflight::root_rows().admitted_grammar else {
+        return Ok(());
+    };
+    let (Ok(read), Ok(used)) = (cfg.grammar.get(), cfg.grammar.used()) else {
+        return Ok(());
+    };
+    match admitted(rows).map_err(String::from)? {
+        Some(now) => config::grammar::pin(read, &now, used, config::grammar::Pin::Admission),
+        None => Ok(()),
+    }
+}
+
+/// THE WRITE-TIME CHECK for a plugin version pin (SECRET-SHORTHAND-BOOT §3.7): a pin written to the
+/// Store is applied by every later read, but the next start's first read is `config.yaml`'s own
+/// `plugins:` block alone. If the two would judge an item the configuration uses differently, the
+/// next restart would refuse (BUSBAR-3170), so the write is refused now, before it is persisted.
+/// `used` is what the serving generation's documents use. A document patch cannot move the plugin
+/// admission set (the operator file policy refuses `/plugins` paths), so the pins are the only
+/// difference to judge.
+pub fn pin_write_refusal(
+    config_path: &std::path::Path,
+    pins: &std::collections::BTreeMap<String, String>,
+    used: &config::grammar::Used,
+) -> Result<(), String> {
+    let rules = AcceptAll;
+    let raw = read_config_documents(
+        config_path,
+        None,
+        false,
+        config::EnvSubst::Strict,
+        &rules,
+        DocumentPatchLoad {
+            patch: None,
+            providers_patch: None,
+            admission: None,
+        },
+    )?;
+    let plugins = raw.plugins_block()?;
+    let next_start = raw.own_grammar()?;
+    let pinned = config::grammar::grammar_for(&config::grammar::PhaseOneIn {
+        plugins: &plugins,
+        dir: std::path::Path::new(&plugins.dir),
+        pins,
+        fetch: config::grammar::Fetch::None,
+    })
+    .map_err(|refusal| format!("config.yaml: {refusal}"))?;
+    config::grammar::pin(&next_start, &pinned, used, config::grammar::Pin::NextBoot)
 }
 
 pub fn bootstrap_dependency_names(
@@ -1363,6 +1521,7 @@ async fn build_app_native(
     if let Some(admit) = crate::preflight::root_rows().secret_admit {
         admit(&plugin_registry, &plugins_cfg).await?;
     }
+    admitted_pin(&cfg, plugin_registry.as_ref())?;
 
     let transition_requirements =
         governance::principal_transition::requirements(&cfg, plugin_registry.as_ref())?;
@@ -2142,10 +2301,29 @@ async fn build_app_native(
         },
         |p| p.request_id_counter.clone(),
     );
-    let planes_awaiting_restart = planes_awaiting_restart
+    let mut planes_awaiting_restart: Vec<String> = planes_awaiting_restart
         .iter()
         .map(|section| (*section).to_string())
         .collect();
+    // A used plane section or auth style whose file was replaced in place keeps serving under the
+    // running image; the new image takes effect at the next restart (SECRET-SHORTHAND-BOOT §3.6).
+    if let (Ok(grammar), Ok(used)) = (cfg.grammar.get(), cfg.grammar.used()) {
+        for item in grammar.replaced() {
+            let entry = match item.kind {
+                config::grammar::ItemKind::Section if used.sections.contains(&item.name) => {
+                    item.name.clone()
+                }
+                config::grammar::ItemKind::Style if used.styles.contains(&item.name) => {
+                    format!("auth style {}", item.name)
+                }
+                _ => continue,
+            };
+            if !planes_awaiting_restart.contains(&entry) {
+                planes_awaiting_restart.push(entry);
+            }
+        }
+        planes_awaiting_restart.sort();
+    }
     let mut app = App::assemble(
         crate::state::AppParts {
             limits,

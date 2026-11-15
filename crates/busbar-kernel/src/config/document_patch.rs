@@ -459,6 +459,27 @@ impl DocumentPatch {
             .map_err(|_| "patched provider catalog failed boot parsing".to_owned())
     }
 
+    /// [`Self::parse_catalog_yaml`], with what the patched catalog used of `grammar` (§3.8).
+    pub fn parse_catalog_yaml_used(
+        &self,
+        yaml: &str,
+        grammar: &super::Grammar,
+    ) -> Result<
+        (
+            std::collections::HashMap<String, super::ProviderDef>,
+            super::grammar::Used,
+        ),
+        String,
+    > {
+        let mut document = source::SourceDocument::parse(yaml)?;
+        document.apply(self)?;
+        let bytes = document.to_yaml_bytes()?;
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|_| "patched provider catalog encoding failed".to_owned())?;
+        super::providers::catalog_from_str_used(text, grammar)
+            .map_err(|_| "patched provider catalog failed boot parsing".to_owned())
+    }
+
     /// Deployment values have established precedence over catalog defaults. Refuse a catalog
     /// edit that overlaps one rather than claim the shadowed value was installed. No raw copied
     /// deployment leaves the wiping guard, including credential references.

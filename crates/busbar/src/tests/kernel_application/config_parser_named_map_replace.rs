@@ -46,7 +46,7 @@ fn an_overlay_entry_replaces_the_same_named_base_entry_whole() {
             "settings": { "issuer": "https://other.example.com" }
         }),
     );
-    apply_named_maps_to_deploy(&mut deploy, &doc);
+    apply_named_maps_to_deploy(&mut deploy, &doc).expect("the overlay applies");
 
     let corp = deploy.identity_providers.get("corp").expect("present");
     assert_eq!(corp.max_admin_scope.as_deref(), Some("full"));
@@ -79,8 +79,8 @@ fn an_explicit_null_in_an_overlay_definition_is_delivered() {
             "settings": { "issuer": "https://other.example.com", "audience": null }
         }),
     );
-    apply_named_maps_to_deploy(&mut deploy, &doc);
-    apply_named_maps_to_deploy(&mut deploy, &doc);
+    apply_named_maps_to_deploy(&mut deploy, &doc).expect("the overlay applies");
+    apply_named_maps_to_deploy(&mut deploy, &doc).expect("the overlay applies");
 
     let added = deploy
         .identity_providers
@@ -105,7 +105,7 @@ fn an_unparseable_overlay_definition_leaves_the_base_entry() {
         "corp",
         serde_json::json!({ "module": "test-idp-double", "max_admin_scop": "full" }),
     );
-    apply_named_maps_to_deploy(&mut deploy, &doc);
+    apply_named_maps_to_deploy(&mut deploy, &doc).expect("the overlay applies");
 
     let corp = deploy.identity_providers.get("corp").expect("present");
     assert_eq!(corp.max_admin_scope.as_deref(), Some("read-only"));
@@ -127,10 +127,10 @@ fn replaying_the_overlay_is_idempotent() {
         serde_json::json!({ "module": "test-idp-double", "settings": { "client_id": "rotated" } }),
     );
     let mut once = deploy_with_a_base_provider();
-    apply_named_maps_to_deploy(&mut once, &doc);
+    apply_named_maps_to_deploy(&mut once, &doc).expect("the overlay applies");
     let mut twice = deploy_with_a_base_provider();
-    apply_named_maps_to_deploy(&mut twice, &doc);
-    apply_named_maps_to_deploy(&mut twice, &doc);
+    apply_named_maps_to_deploy(&mut twice, &doc).expect("the overlay applies");
+    apply_named_maps_to_deploy(&mut twice, &doc).expect("the overlay applies");
     assert_eq!(
         once.identity_providers.get("corp"),
         twice.identity_providers.get("corp")

@@ -1800,6 +1800,13 @@ diagnostics! {
         "An `advanced.tls.destinations` `match` is a wildcard over a single label (for example `*.com` or `*.internal`), which would scope the entry's CAs, pins or identity to names nobody named. Public-suffix-list wildcards (for example `*.co.uk`) are not detected in 1.6.0.",
         "Name the domain you own: `*.corp.example.com`.";
 
+    /// A used config word, section or style is declared differently by what admission (or the
+    /// Store's plugin version pins) gives than by the grammar the configuration was read under.
+    CONFIG_GRAMMAR_CHANGED = 3170, Config, Fatal, "config-grammar-changed", "1.6.0", false,
+        "A configuration word, section or style changed its owner after it was read",
+        "The configuration was read under the grammar its admitted modules declared at that moment. A secret shorthand word, a core grammar role, a plane section or an outbound auth style the configuration uses is declared differently by what admission now gives (plugins.dir changed after the read), or by the Store's plugin version pins at boot, or would be at the next start after a pin. Busbar refuses rather than read a value under one declaration and resolve it under another: a reload or apply is refused and the running generation keeps serving, a boot exits, and a pin is not written. The message names the item and both owners with their files. A module upgraded with an equal declaration never refuses, and an item the configuration does not use never refuses.",
+        "Reload (or restart) to read the configuration again. At boot, make config.yaml's plugins: block admit the same module, write the canonical `{ module: ..., settings: ... }` reference, or start once with --ignore-overlay and remove the pin with POST /api/v1/admin/plugins/rollback.";
+
     /// An outbound dial was refused (destination guard, plaintext rule or trust store).
     EGRESS_DIAL_REFUSED = 5051, Proxy, BenignRecurring, "egress-dial-refused", "1.6.0", false,
         "An outbound dial was refused",

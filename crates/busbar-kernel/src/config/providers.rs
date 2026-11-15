@@ -541,6 +541,43 @@ pub fn catalog<'de, D: serde::Deserializer<'de>>(
         .map(|entries| entries.0)
 }
 
+/// [`catalog`], also returning what the catalog used of `grammar` (§3.8): its shorthand words and
+/// every provider's outbound auth style.
+pub fn catalog_used<'de, D: serde::Deserializer<'de>>(
+    de: D,
+    grammar: &super::Grammar,
+) -> Result<(HashMap<String, ProviderDef>, super::grammar::Used), D::Error> {
+    struct Entries(HashMap<String, ProviderDef>);
+    impl<'de> Deserialize<'de> for Entries {
+        fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+            unique_entries(de).map(Entries)
+        }
+    }
+    let words = busbar_contract::secret_ref::context::UsedWords::default();
+    let entries = busbar_contract::secret_ref::context::deserialize_recording::<Entries, _>(
+        de,
+        &grammar.sugars,
+        &words,
+    )?
+    .0;
+    let mut used = super::grammar::Used::default();
+    used.absorb(words);
+    used.styles = entries
+        .values()
+        .filter_map(|def| def.auth.as_ref())
+        .map(|style| style.as_str().to_owned())
+        .collect();
+    Ok((entries, used))
+}
+
+/// [`catalog_from_str`] with what the catalog used ([`catalog_used`]).
+pub fn catalog_from_str_used(
+    text: &str,
+    grammar: &super::Grammar,
+) -> Result<(HashMap<String, ProviderDef>, super::grammar::Used), busbar_contract::yaml::Error> {
+    busbar_contract::yaml::with_deserializer(text, |d| catalog_used(d, grammar))
+}
+
 /// An admin request body's catalog, decoded with the body before its own read is computed: under
 /// the words the serving generation admitted (the live axis), as the body's decode always has.
 /// SECRET-SHORTHAND-BOOT MR-B3 reads admin bodies under their own phase 1.

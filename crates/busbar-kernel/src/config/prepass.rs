@@ -82,6 +82,8 @@ pub(crate) struct Lifted {
     /// registered plane requires. A key is struck as the document is seen to carry it, so what is
     /// left once the document is read is what it omitted.
     watch: Vec<&'static str>,
+    /// The plane sections the document wrote, in document order: what the read used (§3.8).
+    sections: Vec<&'static str>,
 }
 
 impl Lifted {
@@ -251,6 +253,7 @@ impl<'de, M: MapAccess<'de>> MapAccess<'de> for LiftingMap<'_, M> {
                         return Err(Self::Error::duplicate_field(key));
                     }
                     self.seen_lifted.push(key);
+                    self.lifted.sections.push(key);
                     self.inner.next_value_seed(LiftedSeed {
                         key,
                         dest,
@@ -274,7 +277,7 @@ impl<'de, M: MapAccess<'de>> MapAccess<'de> for LiftingMap<'_, M> {
     }
 }
 
-struct SplitDocument(DeployCfg);
+struct SplitDocument(DeployCfg, Vec<&'static str>);
 
 /// The document body as its fields declare it, read under whatever source context encloses it.
 struct Body(DeployCfg);
@@ -317,9 +320,10 @@ impl<'de> Visitor<'de> for DocumentVisitor {
             .flat_map(|d| d.required_config_sections.iter().copied())
             .collect();
         let table = lift_table();
-        let (Body(mut deploy), lifted) = read_document::<_, Body>(map, watch, &table)?;
+        let (Body(mut deploy), mut lifted) = read_document::<_, Body>(map, watch, &table)?;
+        let sections = std::mem::take(&mut lifted.sections);
         lifted.install(&mut deploy);
-        Ok(SplitDocument(deploy))
+        Ok(SplitDocument(deploy, sections))
     }
 }
 
@@ -362,10 +366,24 @@ pub fn deploy_from_deserializer<'de, D: Deserializer<'de>>(
     de: D,
     grammar: &Grammar,
 ) -> Result<DeployCfg, D::Error> {
-    let mut deploy =
-        busbar_contract::secret_ref::context::deserialize::<SplitDocument, _>(de, &grammar.sugars)
-            .map(|d| d.0)?;
-    deploy.grammar = super::grammar::GrammarField::bound(grammar.clone());
+    let words = busbar_contract::secret_ref::context::UsedWords::default();
+    let SplitDocument(mut deploy, sections) =
+        busbar_contract::secret_ref::context::deserialize_recording::<SplitDocument, _>(
+            de,
+            &grammar.sugars,
+            &words,
+        )?;
+    // What this read used of its grammar, recorded by the parse itself (§3.8): the grammar pin
+    // compares exactly these items.
+    let mut used = super::grammar::Used::default();
+    used.absorb(words);
+    used.sections = sections.into_iter().map(str::to_owned).collect();
+    if !used.sections.is_empty() {
+        // A plane section's `${VAR}` fills read through the fill role (`filled::plane_bound`).
+        used.roles
+            .insert(busbar_contract::abi::mechanism::door::SUGAR_ROLE_FILL.to_owned());
+    }
+    deploy.grammar = super::grammar::GrammarField::bound_used(grammar.clone(), used);
     Ok(deploy)
 }
 

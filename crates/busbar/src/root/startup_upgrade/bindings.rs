@@ -306,7 +306,8 @@ impl Resolver {
                     }
                 }
             }
-            config::overlay::apply_root_to_deploy(&mut deploy, doc);
+            config::overlay::apply_root_to_deploy(&mut deploy, doc)
+                .map_err(|_| "frozen named definition parsing refused")?;
         }
         let mut cfg = config::resolve(&deploy, &defs)
             .map_err(|_| "frozen effective configuration resolution refused")?;

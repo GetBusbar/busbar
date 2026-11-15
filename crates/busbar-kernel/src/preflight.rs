@@ -242,7 +242,16 @@ pub struct RootInstall {
     /// `plugins:` block admits declare, judged by the registry build's own scan, pure. `None` = a
     /// read that loads no plugin admits nothing and one that would scan `plugins.dir` is refused.
     pub grammar: Option<config::grammar::GrammarFn>,
+    /// The grammar of the registry a build admits: the same judgement as [`Self::grammar`], over
+    /// the registry admission put on the axis, so the grammar pin (BUSBAR-3170) compares the read's
+    /// grammar with what was admitted. `None` (or `Ok(None)` for rows that are not the root's
+    /// registry): nothing to pin against.
+    pub admitted_grammar: Option<AdmittedGrammar>,
 }
+
+/// [`RootInstall::admitted_grammar`].
+pub type AdmittedGrammar =
+    fn(&dyn PluginRows) -> Result<Option<config::Grammar>, config::GrammarRefusal>;
 
 /// Puts the live dropped-in secret set back as it was when it was taken, if the live set differs
 /// from it (by name, version and image). An unchanged set is left alone, with its cached checkers.

@@ -117,6 +117,7 @@ The thousands digit is the area.
 | [BUSBAR-3147](/docs/1.6/errors/BUSBAR-3147/) | System CA bundle entries were not used | 1.6.0 |
 | [BUSBAR-3148](/docs/1.6/errors/BUSBAR-3148/) | An advanced.tls destination entry is invalid | 1.6.0 |
 | [BUSBAR-3149](/docs/1.6/errors/BUSBAR-3149/) | Outbound connections go through a proxy | 1.6.0 |
+| [BUSBAR-3170](/docs/1.6/errors/BUSBAR-3170/) | A configuration word, section or style changed its owner after it was read | 1.6.0 |
 | [BUSBAR-3401](/docs/1.6/errors/BUSBAR-3401/) | --migrate-config was given no file to migrate | 1.6.0 |
 | [BUSBAR-3402](/docs/1.6/errors/BUSBAR-3402/) | --migrate-config could not read the file it was given | 1.6.0 |
 | [BUSBAR-3403](/docs/1.6/errors/BUSBAR-3403/) | --migrate-config could not resolve its working directory | 1.6.0 |

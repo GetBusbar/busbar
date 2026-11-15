@@ -89,6 +89,12 @@ impl Settings {
     pub(crate) fn writing(&self) -> Authoring<'_> {
         Authoring { settings: self }
     }
+    /// Record into `used` the shorthand words this bag may hold, at the positions settings
+    /// resolution reads shorthand at: a stored bag typed outside a recording parse (an overlay
+    /// root or hook) joins its read's used words this way. Names only; no value is read out.
+    pub fn record_words(&self, used: &crate::secret_ref::context::UsedWords) {
+        used.bag(&self.0 .0);
+    }
     /// Public configuration member names, for diagnostics and redacted admin projections.
     pub fn key_names(&self) -> Vec<String> {
         self.0
@@ -610,13 +616,56 @@ impl Serialize for Authoring<'_> {
         self.settings.0 .0.serialize(serializer)
     }
 }
+/// The newtype name a settings bag is read through: what lets a seeded read
+/// ([`crate::secret_ref::context`]) recognise a bag and record the shorthand it may hold, as
+/// `REFERENCE` marks a reference position. Every other reader sees an ordinary newtype.
+pub(crate) const BAG: &str = "busbar.plugin-settings";
+
+const NOT_AN_OBJECT: &str = "plugin settings must be an object (values not echoed)";
+
 impl<'de> Deserialize<'de> for Settings {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let tree = Tree::deserialize(deserializer)?;
+        struct Bag;
+        impl<'de> Visitor<'de> for Bag {
+            type Value = Tree;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a plugin settings object")
+            }
+            fn visit_newtype_struct<D: Deserializer<'de>>(self, de: D) -> Result<Tree, D::Error> {
+                Tree::deserialize(de)
+            }
+            // A reader that does not keep newtypes hands the bag over as it is.
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Tree, A::Error> {
+                Tree::deserialize(de::value::MapAccessDeserializer::new(map))
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Tree, A::Error> {
+                Tree::deserialize(de::value::SeqAccessDeserializer::new(seq))
+            }
+            fn visit_str<E: de::Error>(self, _: &str) -> Result<Tree, E> {
+                Err(E::custom(NOT_AN_OBJECT))
+            }
+            fn visit_bool<E: de::Error>(self, _: bool) -> Result<Tree, E> {
+                Err(E::custom(NOT_AN_OBJECT))
+            }
+            fn visit_i64<E: de::Error>(self, _: i64) -> Result<Tree, E> {
+                Err(E::custom(NOT_AN_OBJECT))
+            }
+            fn visit_u64<E: de::Error>(self, _: u64) -> Result<Tree, E> {
+                Err(E::custom(NOT_AN_OBJECT))
+            }
+            fn visit_f64<E: de::Error>(self, _: f64) -> Result<Tree, E> {
+                Err(E::custom(NOT_AN_OBJECT))
+            }
+            fn visit_unit<E: de::Error>(self) -> Result<Tree, E> {
+                Err(E::custom(NOT_AN_OBJECT))
+            }
+            fn visit_none<E: de::Error>(self) -> Result<Tree, E> {
+                Err(E::custom(NOT_AN_OBJECT))
+            }
+        }
+        let tree = deserializer.deserialize_newtype_struct(BAG, Bag)?;
         if !tree.0.is_object() {
-            return Err(de::Error::custom(
-                "plugin settings must be an object (values not echoed)",
-            ));
+            return Err(de::Error::custom(NOT_AN_OBJECT));
         }
         Ok(Self(tree))
     }

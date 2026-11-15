@@ -113,7 +113,8 @@ fn named_map_candidate(name: &str, def: serde_json::Value) -> DeployCfg {
         NamedMapSection::IdentityProviders.key().to_owned(),
         BTreeMap::from([(name.to_owned(), def)]),
     );
-    busbar_kernel::config::overlay::apply_root_to_deploy(&mut deploy, &doc);
+    busbar_kernel::config::overlay::apply_root_to_deploy(&mut deploy, &doc)
+        .expect("the overlay applies");
     deploy
 }
 

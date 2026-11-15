@@ -1195,7 +1195,21 @@ pub(crate) fn install_start(
 /// and the boot reader run after it.
 pub(crate) fn bind_start_grammar() {
     if let Some(judged) = START_JUDGED.get() {
-        let _ = START.set(judged.grammar.clone());
+        // The plane list is installed now: the start grammar's sections and styles are what this
+        // process registered, judged by the same rule every later read is (§3.6).
+        let empty;
+        let registry = match REGISTRY.get() {
+            Some(registry) => registry,
+            None => {
+                empty = crate::root::loader::PluginRegistry::empty();
+                &empty
+            }
+        };
+        let grammar = judged
+            .grammar
+            .clone()
+            .map(|grammar| grammar.with_items(classify(registry, BASE_BOOTSTRAP_PLUGINS.get())));
+        let _ = START.set(grammar);
     }
 }
 
@@ -1257,11 +1271,11 @@ pub(crate) fn phase_one(
     linked.extend(linked_exports(crate::LINKED.export_doors).map_err(refused)?);
     let judged = judge(linked, &pinned).map_err(refused)?;
     let report = skip_lines(judged.registry.skipped());
-    Ok(busbar_kernel::config::Grammar::new(
-        judged.sugars,
-        owners_of(&judged.registry),
-        report,
-    ))
+    let items = classify(&judged.registry, Some(&pinned));
+    Ok(
+        busbar_kernel::config::Grammar::new(judged.sugars, owners_of(&judged.registry), report)
+            .with_items(items),
+    )
 }
 
 /// Phase 1 over the `plugins:` block of an interpolated deployment `text` (a retained or migrated
@@ -1365,6 +1379,213 @@ fn owners_of(
             )
         })
         .collect()
+}
+
+/// The image a dropped-in row of `registry` named `name` and of `kind` is bound from: its archive's
+/// SHA-256. `None`: the registry admits no such dropped-in row.
+fn dropped_image(registry: &PluginRegistry, kind: &str, name: &str) -> Option<String> {
+    registry
+        .loadable()
+        .iter()
+        .find(|row| !row.linked() && row.manifest.kind == kind && row.manifest.name == name)
+        .map(|row| row.archive_sha256.clone().unwrap_or_default())
+}
+
+/// Why a read does not admit the dropped-in file `file` a running module came from: the scan's own
+/// fixed reason class when it skipped the file, else that the file is gone or the scan is off.
+fn not_admitted(registry: &PluginRegistry, plugins: Option<&PluginsCfg>, file: &str) -> String {
+    if plugins.is_some_and(|p| !p.enabled) {
+        return "plugins.enabled is false".to_owned();
+    }
+    registry
+        .skipped()
+        .iter()
+        .find(|skipped| skipped.file == file)
+        .and_then(crate::root::loader::SkippedPlugin::skip_line)
+        .unwrap_or_else(|| format!("\"{}\" is no longer in plugins.dir", file.escape_debug()))
+}
+
+/// The outbound auth styles a dropped-in auth row's signed statement declares.
+fn row_styles(row: &crate::root::loader::LoadablePlugin) -> Vec<String> {
+    row.manifest
+        .stated_rendering()
+        .ok()
+        .flatten()
+        .and_then(|stated| crate::root::loader::dispatch::kinds::auth::rendered_facts(&stated).ok())
+        .map(|facts| facts.styles.into_iter().map(|style| style.name).collect())
+        .unwrap_or_default()
+}
+
+/// What this process registered at start (SECRET-SHORTHAND-BOOT §3.6): its plane doors (name,
+/// declaring sections, and the dropped-in file, `None` for a linked one), its linked auth rows'
+/// outbound styles, and the start registry the dropped-in images and auth rows are read from.
+pub(crate) struct Registered<'a> {
+    pub(crate) planes: Vec<(String, Vec<String>, Option<String>)>,
+    pub(crate) linked_styles: Vec<(String, Vec<String>)>,
+    pub(crate) start: Option<&'a PluginRegistry>,
+}
+
+/// This process's start registration, once process start registered its planes.
+fn registered() -> Option<Registered<'static>> {
+    let candidates = DOOR_CANDIDATES.get()?;
+    let planes = candidates
+        .iter()
+        .filter(|c| c.kind == KindCode::Plane)
+        .map(|c| {
+            let file = match &c.origin {
+                Origin::Linked(_) => None,
+                Origin::Dropped { file, .. } => Some(file.clone()),
+            };
+            (c.name.clone(), c.verbs.clone(), file)
+        })
+        .collect();
+    let linked_styles = crate::LINKED
+        .auths
+        .iter()
+        .filter_map(|(_, canonical, door)| {
+            let facts = crate::root::loader::dispatch::kinds::auth::stated_facts(*door).ok()?;
+            Some((
+                (*canonical).to_string(),
+                facts.styles.into_iter().map(|style| style.name).collect(),
+            ))
+        })
+        .collect();
+    Some(Registered {
+        planes,
+        linked_styles,
+        start: REGISTRY.get(),
+    })
+}
+
+/// The process-lifetime items of one read (SECRET-SHORTHAND-BOOT §3.6): every plane section and
+/// outbound auth style, judged by `registry` (the read's scan, or the registry a build admits)
+/// against what this process registered at start. Before process start registered its planes
+/// there is nothing to judge against, and no item is listed.
+fn classify(
+    registry: &PluginRegistry,
+    plugins: Option<&PluginsCfg>,
+) -> Vec<busbar_kernel::config::grammar::Item> {
+    registered().map_or_else(Vec::new, |registered| {
+        classify_against(&registered, registry, plugins)
+    })
+}
+
+/// [`classify`] against an explicit start registration. A linked module always counts. A
+/// dropped-in one counts when `registry` admits the same image, counts under the running image when
+/// its file was replaced in place (restart-to-apply), and is refused when used if `registry` no
+/// longer admits it, or if start did not register it.
+pub(crate) fn classify_against(
+    registered: &Registered<'_>,
+    registry: &PluginRegistry,
+    plugins: Option<&PluginsCfg>,
+) -> Vec<busbar_kernel::config::grammar::Item> {
+    use busbar_kernel::config::grammar::{Item, ItemKind, Standing};
+    let judged = |kind: &str, name: &str, file: &str| -> (String, Standing) {
+        let running = registered
+            .start
+            .and_then(|start| dropped_image(start, kind, name))
+            .unwrap_or_default();
+        let standing = match dropped_image(registry, kind, name) {
+            Some(now) if now == running => Standing::Counts,
+            Some(_) => Standing::Replaced,
+            None => Standing::NotAdmitted(not_admitted(registry, plugins, file)),
+        };
+        (running, standing)
+    };
+    let mut items = Vec::new();
+    let mut push =
+        |kind: ItemKind, names: Vec<String>, module: &str, image: &str, standing: &Standing| {
+            for name in names {
+                items.push(Item {
+                    kind,
+                    name,
+                    module: module.to_owned(),
+                    image: image.to_owned(),
+                    standing: standing.clone(),
+                });
+            }
+        };
+    let mut known = std::collections::BTreeSet::new();
+    for (name, sections, file) in &registered.planes {
+        known.insert(name.clone());
+        let (image, standing) = match file {
+            None => ("linked".to_owned(), Standing::Counts),
+            Some(file) => judged("plane", name, file),
+        };
+        push(ItemKind::Section, sections.clone(), name, &image, &standing);
+    }
+    for (module, styles) in &registered.linked_styles {
+        push(
+            ItemKind::Style,
+            styles.clone(),
+            module,
+            "linked",
+            &Standing::Counts,
+        );
+    }
+    for row in registered
+        .start
+        .map_or(&[][..], PluginRegistry::loadable)
+        .iter()
+        .filter(|row| !row.linked() && row.manifest.kind == "auth")
+    {
+        known.insert(row.manifest.name.clone());
+        let (image, standing) = judged("auth", &row.manifest.name, &row.file);
+        push(
+            ItemKind::Style,
+            row_styles(row),
+            &row.manifest.name,
+            &image,
+            &standing,
+        );
+    }
+    for row in registry.loadable().iter().filter(|row| {
+        !row.linked()
+            && (row.manifest.kind == "plane" || row.manifest.kind == "auth")
+            && !known.contains(&row.manifest.name)
+    }) {
+        let image = row.archive_sha256.clone().unwrap_or_default();
+        if row.manifest.kind == "auth" {
+            let styles = row_styles(row);
+            push(
+                ItemKind::Style,
+                styles,
+                &row.manifest.name,
+                &image,
+                &Standing::Unregistered,
+            );
+        } else if let Ok(Some(candidate)) = row.candidate() {
+            let sections = candidate.verbs;
+            push(
+                ItemKind::Section,
+                sections,
+                &row.manifest.name,
+                &image,
+                &Standing::Unregistered,
+            );
+        }
+    }
+    items
+}
+
+/// The grammar of a registry a build admits (`RootInstall.admitted_grammar`): the same judgement
+/// phase 1 makes, over the registry admission put on the axis, so the grammar pin (BUSBAR-3170)
+/// compares like with like. `None`: the rows are not a registry this root built.
+pub(crate) fn admitted_grammar(
+    rows: &dyn PluginRows,
+) -> Result<Option<busbar_kernel::config::Grammar>, busbar_kernel::config::GrammarRefusal> {
+    let refused = busbar_kernel::config::GrammarRefusal;
+    let Some(registry) = super::loader::rows::registry_of(rows) else {
+        return Ok(None);
+    };
+    let secrets = discovered(registry, |kind| kind == "secret").map_err(refused)?;
+    let sugars = super::linked::secret_rows()
+        .grammar_of(secrets)
+        .map_err(refused)?;
+    Ok(Some(
+        busbar_kernel::config::Grammar::new(sugars, owners_of(registry), Vec::new())
+            .with_items(classify(registry, None)),
+    ))
 }
 
 pub(crate) static REGISTRY: std::sync::OnceLock<crate::root::loader::PluginRegistry> =

@@ -958,18 +958,21 @@ async fn run(
 
         // The base Store remains the bootstrap anchor. Its durable document layer is parsed with
         // boot's schema before the established typed overlays, never substituted for the anchor.
-        if let Some(doc) = overlay_doc
-            .as_ref()
-            .filter(|doc| doc.document_patch.is_some() || doc.providers_patch.is_some())
-        {
-            let patched = busbar_kernel::appbuild::load_config_from_disk_with_document_patches(
+        // The post-Store recompute (SECRET-SHORTHAND-BOOT §3.7): the Store's patches and plugin
+        // version pins are part of this generation's read, so its grammar is phase 1 over the
+        // patched documents with the pins, and the documents are typed under that grammar. It must
+        // declare every item the documents use as the start grammar did (BUSBAR-3170).
+        if let Some(doc) = overlay_doc.as_ref().filter(|doc| {
+            doc.document_patch.is_some()
+                || doc.providers_patch.is_some()
+                || !doc.plugin_versions.is_empty()
+        }) {
+            let patched = busbar_kernel::appbuild::load_config_under_store(
                 &config_path,
                 providers_override.as_deref(),
-                false,
                 config::EnvSubst::Strict,
                 &bootstrap_rules,
-                doc.document_patch.as_ref(),
-                doc.providers_patch.as_ref(),
+                doc,
             )
             .unwrap_or_else(|error| {
                 die(boot_error(
@@ -977,6 +980,17 @@ async fn run(
                     format!("Store document overlay refused: {error}"),
                 ))
             });
+            let start = root::boot::start_grammar()
+                .unwrap_or_else(|refusal| die(boot_error("plugins directory refused", refusal)));
+            let pinned = match (patched.deploy.grammar.get(), patched.deploy.grammar.used()) {
+                (Ok(generation), Ok(used)) => {
+                    config::grammar::pin(start, generation, used, config::grammar::Pin::Store)
+                }
+                (Err(refusal), _) | (_, Err(refusal)) => Err(refusal.0),
+            };
+            if let Err(refusal) = pinned {
+                die(boot_error("Store plugin pins refused", refusal));
+            }
             // A stored patch that moves the operator credential or the plugin admission set is
             // refused here, naming its paths and remedies: never applied or dropped silently.
             if let Some(patch) = doc.document_patch.as_ref() {
@@ -1003,7 +1017,12 @@ async fn run(
         let base_group_names: std::collections::HashSet<String> =
             deploy.groups.keys().cloned().collect();
         if let Some(doc) = overlay_doc.as_ref() {
-            config::overlay::apply_root_to_deploy(&mut deploy, doc);
+            config::overlay::apply_root_to_deploy(&mut deploy, doc).unwrap_or_else(|error| {
+                die(boot_error(
+                    "Store overlay refused",
+                    format!("Store overlay refused: {error}"),
+                ))
+            });
         }
 
         let mut fresh_record_bootstrap = None;

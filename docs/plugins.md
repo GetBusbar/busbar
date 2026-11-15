@@ -215,7 +215,20 @@ auth` file the read did not admit, naming the file and why. `plugins.fetch` entr
 shorthand: `{ env: NAME }` there is the fetch list's own form. A plugin that arrives only through
 `plugins.fetch` cannot declare a shorthand for the start that first fetches it, because the boot
 fetch runs after the configuration is read: pre-seed `plugins.dir`, or write the canonical form
-for that first start.
+for that first start. The refusal names each `plugins.fetch` file not yet in `plugins.dir`.
+
+Plane sections and outbound auth styles are process-lifetime: their code is bound once, at start.
+A read lets one count only if its module was registered at start and the read's `plugins:` block
+still admits it. A plane or auth plugin dropped in after start needs a restart; a running one whose
+file is removed, or that the block no longer admits, is refused where the configuration uses it
+(the running generation keeps serving); a running one whose file was replaced in place keeps
+serving under the running image and is listed in `reload_to_apply`. A stored definition (an
+identity provider, an exporter) whose shorthand the read no longer admits refuses the reload
+instead of being skipped. If a word, section or style the configuration uses is declared
+differently by what admission admits than by the read (the directory changed in between), by the
+Store's plugin version pins at boot, or would be at the next start after a rollback pin, busbar
+refuses with BUSBAR-3170 and names both owners; a version change with an equal declaration never
+refuses.
 
 A secret plugin implements the secret kind's typed lifecycle and `resolve`/`check` slots under
 `busbar_contract::abi`. Per-reference settings describe the requested secret; instance settings

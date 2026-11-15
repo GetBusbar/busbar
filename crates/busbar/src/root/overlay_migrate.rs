@@ -579,7 +579,7 @@ pub(crate) async fn run(
             return Err("the old overlay selects a different Store; rerun --migrate-config with the original overlay available so the new base YAML anchors the actual historical Store".into());
         }
     }
-    config::overlay::apply_root_to_deploy(&mut deploy, &doc);
+    config::overlay::apply_root_to_deploy(&mut deploy, &doc)?;
     let mut effective = config::resolve(&deploy, defs)
         .map_err(|_| "migrated overlay cannot resolve against the current configuration")?;
     config::overlay::merge_into(&mut effective, doc.clone());

@@ -98,6 +98,8 @@ impl ConfiguredView {
 
     #[must_use]
     pub fn from_root(cfg: &RootCfg, plugins: &PluginsCfg) -> Self {
+        let sources = generation_sources(&cfg.grammar);
+        let sources = &sources;
         let mut sections = BTreeMap::new();
         macro_rules! put {
             ($key:literal, $value:expr) => {
@@ -177,17 +179,17 @@ impl ConfiguredView {
             "store",
             cfg.store
                 .as_ref()
-                .map(|s| plugin_view(&s.module, &s.settings))
+                .map(|s| plugin_view(&s.module, &s.settings, sources))
         );
         let secrets: BTreeMap<_, _> = cfg
             .secrets
             .iter()
-            .map(|(name, def)| (name, plugin_view(name, &def.settings)))
+            .map(|(name, def)| (name, plugin_view(name, &def.settings, sources)))
             .collect();
         put!("secrets", secrets);
         put!(
             "identity-providers",
-            identities_view(&cfg.identity_providers)
+            identities_view(&cfg.identity_providers, sources)
         );
         put!(
             "auth",
@@ -202,8 +204,8 @@ impl ConfiguredView {
         put!("credentials", presence(cfg.credentials.at_rest.is_some()));
         put!("oauth_as", presence(cfg.oauth_as.is_some()));
 
-        put!("export", exporters_view(&cfg.export_defs));
-        put!("hooks", hooks_view(&cfg.hooks));
+        put!("export", exporters_view(&cfg.export_defs, sources));
+        put!("hooks", hooks_view(&cfg.hooks, sources));
         put!("global_hooks", cfg.global_hooks);
 
         // No provider URL, credential reference or plane-owned value is serialized. The names of
@@ -291,18 +293,20 @@ impl ConfiguredView {
     /// The caller must use the same captured `App` generation for this refresh and its version.
     /// Root configuration values remain the build-time projection, never a fresh disk/Store read.
     pub fn refresh_mutable_registries(&mut self, app: &crate::state::App) {
+        let sources = generation_sources(&app.grammar);
+        let sources = &sources;
         self.sections
             .insert("groups".into(), json!(app.groups_registry));
         self.sections
-            .insert("hooks".into(), hooks_view(&app.hook_registry));
+            .insert("hooks".into(), hooks_view(&app.hook_registry, sources));
         self.sections
             .insert("global_hooks".into(), json!(app.global_hooks));
         self.sections.insert(
             "identity-providers".into(),
-            identities_view(&app.identity_providers),
+            identities_view(&app.identity_providers, sources),
         );
         self.sections
-            .insert("export".into(), exporters_view(&app.export_defs));
+            .insert("export".into(), exporters_view(&app.export_defs, sources));
         // PUT admin-auth is a live App clone/swap, not a RootCfg rebuild. Only this known safe
         // member is refreshed; data-auth configuration remains the captured build-time view.
         if let Some(Value::Object(auth)) = self.sections.get_mut("auth") {
@@ -383,11 +387,14 @@ fn pool_view(pool: &super::PoolCfg) -> Value {
     })
 }
 
-fn identities_view(defs: &super::IdentityProviders) -> Value {
+fn identities_view(
+    defs: &super::IdentityProviders,
+    sources: &busbar_contract::secret_ref::Sugars,
+) -> Value {
     let views: BTreeMap<_, _> = defs
         .iter()
         .map(|(name, def)| {
-            let mut view = plugin_view(&def.module, &def.settings);
+            let mut view = plugin_view(&def.module, &def.settings, sources);
             view["max_admin_scope"] = json!(def.max_admin_scope);
             view["token"] = presence(def.token.is_some());
             view["browser_login"] = presence(def.browser_login.is_some());
@@ -397,11 +404,14 @@ fn identities_view(defs: &super::IdentityProviders) -> Value {
     json!(views)
 }
 
-fn exporters_view(defs: &super::ExportDefs) -> Value {
+fn exporters_view(
+    defs: &super::ExportDefs,
+    sources: &busbar_contract::secret_ref::Sugars,
+) -> Value {
     let views: BTreeMap<_, _> = defs
         .iter()
         .map(|(name, def)| {
-            let mut view = plugin_view(&def.module, &def.settings);
+            let mut view = plugin_view(&def.module, &def.settings, sources);
             view["streams"] = json!(def.streams);
             view["fields"] = json!(def.fields);
             view["durable"] = json!(def.durable);
@@ -411,11 +421,14 @@ fn exporters_view(defs: &super::ExportDefs) -> Value {
     json!(views)
 }
 
-fn hooks_view(defs: &std::collections::HashMap<String, super::HookCfg>) -> Value {
+fn hooks_view(
+    defs: &std::collections::HashMap<String, super::HookCfg>,
+    sources: &busbar_contract::secret_ref::Sugars,
+) -> Value {
     let views: BTreeMap<_, _> = defs
         .iter()
         .map(|(name, def)| {
-            let mut view = plugin_view(&def.plugin, &def.settings);
+            let mut view = plugin_view(&def.plugin, &def.settings, sources);
             view["kind"] = json!(def.kind);
             view["timeout_ms"] = json!(def.timeout_ms);
             view["priority"] = json!(def.priority);
@@ -448,12 +461,27 @@ fn tls_view(tls: Option<&super::TlsCfg>) -> Value {
     }
 }
 
-fn plugin_view(module: &str, settings: &busbar_contract::plugin_settings::Settings) -> Value {
+/// The shorthand a generation was read under: what its readback treats as a reference (§3.17). A
+/// generation decoded without a grammar (a fixture) redacts by what the live axis admitted.
+fn generation_sources(
+    grammar: &super::grammar::GrammarField,
+) -> busbar_contract::secret_ref::Sugars {
+    grammar.get().map_or_else(
+        |_| super::secret::admitted_sugars(),
+        |grammar| grammar.sugars.clone(),
+    )
+}
+
+fn plugin_view(
+    module: &str,
+    settings: &busbar_contract::plugin_settings::Settings,
+    sources: &busbar_contract::secret_ref::Sugars,
+) -> Value {
     plugin_view_with(
         module,
         settings,
         &super::settings_public::public(module),
-        &super::secret::admitted_sugars(),
+        sources,
     )
 }
 
