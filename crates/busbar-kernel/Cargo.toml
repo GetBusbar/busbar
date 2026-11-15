@@ -23,8 +23,6 @@ busbar-kernel-identity = { path = "../busbar-kernel-identity" }
 # The MIN-3 plugin interface, core side: `Caller`, `BoxFut`, the Need types the §12 kernel contracts name
 # (ABI-MIN3-INTERFACE §10, §12). A leaf crate; never plugin-loader here (wave 0).
 busbar-plugin-abi = { path = "../busbar-plugin-abi", features = ["host"] }
-# Only under the non-default `timing` feature.
-libc = { workspace = true, optional = true }
 axum = { workspace = true }
 tower = { workspace = true }
 # No `net`: the kernel opens no socket; its external dev-only kit enables socket tests.
@@ -61,7 +59,7 @@ loom-model = ["dep:loom"]
 # Never on in a normal build; dependents enable it from [dev-dependencies].
 test-support = ["busbar-kernel-identity/test-support"]
 # Default off: `timeit!` expands to `()`.
-timing = ["dep:libc"]
+timing = []
 
 [dev-dependencies]
 busbar-plugin-loader = { path = "../plugin-loader", features = ["test-support"] }
@@ -86,13 +84,10 @@ busbar-kernel-audit = { path = "../busbar-kernel-audit", features = ["test-suppo
 busbar-kernel-ledger = { path = "../busbar-kernel-ledger", features = ["test-support"] }
 busbar-kernel-egress = { path = "../busbar-kernel-egress", features = ["test-support"] }
 
-[target.'cfg(not(target_env = "msvc"))'.dependencies]
-# `busbar_kernel::mallctl` calls jemalloc directly.
-tikv-jemalloc-sys = { workspace = true }
-libc = { workspace = true }
-
 [target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
 tikv-jemallocator = { workspace = true }
+stats_alloc = { workspace = true }
+tikv-jemalloc-ctl = { workspace = true }
 
 [lints]
 workspace = true

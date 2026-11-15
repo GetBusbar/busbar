@@ -11,7 +11,8 @@
 //! header fn pointers, the `Vt` tables, `unsafe impl`s, the non-empty view read, `Out`'s in-place writes) is
 //! held as a stub or a signature comment until the UNSAFE-MIN design decides the boundary.
 
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]
 
 /// The `mechanism!` block (IF §7.5). It emits its items unchanged and records their tokens, doc comments
 /// included, as `stringify!` spells them; `fp::CORE_FP` folds the five blocks (types.rs, records.rs, host.rs,

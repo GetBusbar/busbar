@@ -5434,7 +5434,6 @@ async fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() 
 #[tokio::test]
 async fn asking_whether_a_name_is_configured_allocates_nothing() {
     use busbar_kernel::door::PoolView as _;
-    use busbar_kernel::mallctl;
     let mut yaml = "m: {}\npools:\n".to_owned();
     for i in 0..8 {
         yaml.push_str(&format!("  p{i}:\n    members: [m]\n"));
@@ -5514,7 +5513,7 @@ async fn asking_whether_a_name_is_configured_allocates_nothing() {
         app: &app,
     };
     let allocated = || {
-        mallctl::thread_allocated()
+        tikv_jemalloc_ctl::thread::allocatedp::read()
             .map(|m| m.get())
             .expect("jemalloc's per-thread counter reads")
     };

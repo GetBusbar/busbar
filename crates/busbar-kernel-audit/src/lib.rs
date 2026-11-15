@@ -3,6 +3,7 @@
 //! # busbar-kernel-audit — the audit unit
 
 #![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 

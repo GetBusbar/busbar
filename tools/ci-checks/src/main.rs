@@ -18,6 +18,7 @@
 //! one line; any finding or error fails the run.
 
 #![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]
 
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode};

@@ -303,6 +303,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2f6c7dbe95a6ed67ad9f18e57daf93a2f034c524b99fd2b76d18fdfeb6660aa"
 dependencies = [
  "hybrid-array",
+ "zeroize",
 ]
 
 [[package]]
@@ -546,8 +547,8 @@ name = "busbar-crypto-backend"
 version = "1.6.0"
 dependencies = [
  "aws-lc-rs",
- "aws-lc-sys",
  "dimpl",
+ "md-5",
  "rcgen",
  "rustls",
  "rustls-webpki",
@@ -778,7 +779,6 @@ dependencies = [
  "http",
  "http-body-util",
  "indexmap",
- "libc",
  "loom",
  "metrics",
  "metrics-util",
@@ -787,7 +787,6 @@ dependencies = [
  "serde_json",
  "smallvec",
  "sonic-rs",
- "tikv-jemalloc-sys",
  "tokio",
  "tokio-util",
  "tower",
@@ -1455,6 +1454,7 @@ dependencies = [
  "const-oid",
  "crypto-common 0.2.2",
  "ctutils",
+ "zeroize",
 ]
 
 [[package]]

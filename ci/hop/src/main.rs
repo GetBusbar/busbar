@@ -19,7 +19,8 @@
 //!
 //! Usage: `busbar-ci-hop` from anywhere in the checkout. Each finding prints as one line and fails the run.
 
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

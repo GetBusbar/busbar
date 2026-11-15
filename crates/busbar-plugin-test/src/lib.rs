@@ -5,7 +5,9 @@
 //! no `unsafe`. The host is the loader's `test_host`; the reviewed boundary is the SDK's
 //! `test_support`; R131's scan is `abi_scan`. A plugin repository's one test dev-dependency.
 #![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]
 
+pub mod canary_scan;
 pub mod services;
 /// Host targets (SDK-SAFE-TEST-HOST §10): a plugin repository's conformance subject, behind the
 /// facade features `target` (shared code, `std::net`) and `target-http` (the hyper carrier). Its

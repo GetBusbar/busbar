@@ -10,7 +10,8 @@
 //! This backend refuses nothing: `supports` is `true` for every algorithm and the `approve_*` hooks always
 //! succeed. The error type is still fallible everywhere a backend may refuse (FIPS findings F1-F3).
 
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]
 
 mod aead;
 #[cfg(feature = "tls")]

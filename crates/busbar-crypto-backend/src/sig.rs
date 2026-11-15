@@ -120,8 +120,9 @@ pub mod ed25519 {
     pub struct VerifyingKey([u8; 32]);
 
     impl VerifyingKey {
-        /// The key encoded as `bytes`: `Err(Invalid)` unless it is the canonical encoding of a
-        /// curve point (small-order points decode; see `is_weak`).
+        /// The key encoded as `bytes`: `Err(Invalid)` unless the encoding is canonical (`y < p`, and no sign
+        /// bit on the two `x = 0` points). Small-order points decode (see `is_weak`), and so does a `y` with
+        /// no point on the curve: it verifies nothing, so it fails closed at the first verify.
         pub fn from_bytes(bytes: &[u8; 32]) -> Result<Self, Error> {
             if crate::weak::decodes(bytes) {
                 Ok(Self(*bytes))

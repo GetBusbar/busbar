@@ -10,10 +10,12 @@
 # written justification and a tracking link — never blanket-ignore.
 version = 2
 ignore = [
-    # Empty. RUSTSEC-2024-0436 (`paste`, via tikv-jemalloc-ctl) and RUSTSEC-2024-0449
-    # (`unsafe-libyaml`, via serde_yaml_ng) were accepted here until both crates left the graph:
-    # busbar-kernel's `mallctl` calls jemalloc directly, and YAML is serde-saphyr (forbid(unsafe_code),
-    # no advisory). The bans below keep them out.
+    # RUSTSEC-2024-0449 (`unsafe-libyaml`, via serde_yaml_ng) left the graph with serde-saphyr (forbid(unsafe_code),
+    # no advisory); the ban below keeps it out.
+    # RUSTSEC-2024-0436: `paste`, unmaintained, a proc-macro with no unsafe and no runtime code. It comes only
+    # through tikv-jemalloc-ctl, a dev-dependency of busbar-kernel and busbar that reads the per-thread
+    # allocation counters in tests (UNSAFE-MIN QJ, rung 3). Tracking: the owner-approved UNSAFE-MIN r3.1.
+    "RUSTSEC-2024-0436",
 ]
 
 [licenses]
@@ -84,8 +86,8 @@ deny = [
     { crate = "unsafe-libyaml", reason = "unmaintained C translation (RUSTSEC-2024-0449); YAML is serde-saphyr through busbar_contract::yaml" },
     { crate = "yaml_serde", reason = "rests on libyaml-rs, a c2rust translation; YAML is serde-saphyr through busbar_contract::yaml" },
     { crate = "libyaml-rs", reason = "c2rust translation of libyaml (renamed unsafe-libyaml); YAML is serde-saphyr through busbar_contract::yaml" },
-    { crate = "tikv-jemalloc-ctl", reason = "pulls unmaintained `paste`; jemalloc control is busbar-kernel's `mallctl`" },
-    { crate = "paste", reason = "unmaintained (RUSTSEC-2024-0436)" },
+    { crate = "tikv-jemalloc-ctl", wrappers = ["busbar", "busbar-kernel"], reason = "test-only per-thread counters (UNSAFE-MIN QJ); dev-dependencies of those two crates alone" },
+    { crate = "paste", wrappers = ["tikv-jemalloc-ctl"], reason = "unmaintained (RUSTSEC-2024-0436); only tikv-jemalloc-ctl carries it, a recorded exception" },
     # THE CRYPTO SEAM (CRYPTO-SEAM r15 §2.7, decisions 210, 224, 229): one backend, reached only through
     # the facade; AWS-LC (aws-lc-rs) is the one provider. Wrappers are the third-party parents allowed
     # to carry a banned crate. Not yet on: `ring` (busbar-auth-oauth, -oidc, -sigv4 and
@@ -107,7 +109,7 @@ deny = [
     { crate = "num-rational", wrappers = ["num"], reason = "jsonschema's number type only" },
     { crate = "fraction", wrappers = ["jsonschema", "jsonschema-value"], reason = "jsonschema's number type only" },
     { crate = "sha1", wrappers = ["tungstenite"], reason = "SHA-1 is the facade's legacy::sha1" },
-    { crate = "md-5", wrappers = ["postgres-protocol"], reason = "MD5 is the facade's legacy::md5" },
+    { crate = "md-5", wrappers = ["busbar-crypto-backend", "postgres-protocol"], reason = "MD5 is the facade's legacy::md5; the backend's pure-Rust MD5 is the DEP-3 exception for Q9a (no unsafe, Postgres connect only)" },
     { crate = "hmac", wrappers = ["postgres-protocol"], reason = "HMAC is the facade's" },
     { crate = "digest", wrappers = ["curve25519-dalek", "hmac", "md-5", "sha1", "sha2"], reason = "any new RustCrypto hash/MAC depends on it" },
     { crate = "signature", wrappers = ["ed25519"], reason = "any new RustCrypto signature crate depends on it" },

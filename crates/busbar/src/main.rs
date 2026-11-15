@@ -24,8 +24,8 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 /// Test builds count every allocation for the per-request work-budget gate (`perf/work-budget.toml`).
 #[cfg(all(not(target_env = "msvc"), test))]
 #[global_allocator]
-static GLOBAL: busbar_contract::work_count::Counting<tikv_jemallocator::Jemalloc> =
-    busbar_contract::work_count::Counting(tikv_jemallocator::Jemalloc);
+static GLOBAL: stats_alloc::StatsAlloc<tikv_jemallocator::Jemalloc> =
+    stats_alloc::StatsAlloc::new(tikv_jemallocator::Jemalloc);
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,7 +40,6 @@ use busbar_core_connector::listen::DEFAULT_HANDSHAKE_TIMEOUT;
 use busbar_core_connector::listen::{AcceptLimits, Listening};
 
 #[cfg(not(target_env = "msvc"))]
-use busbar_kernel::REQUEST_ACTIVITY_TICKS;
 
 pub(crate) fn build_info_line() -> String {
     format!(
@@ -380,35 +379,6 @@ fn main() {
         Err(busbar_kernel::observability::LoggingError::RustLog(e)) => die(e),
         Err(e @ busbar_kernel::observability::LoggingError::AlreadyInitialized(_)) => {
             eprintln!("busbar: {e}");
-        }
-    }
-
-    #[cfg(not(target_env = "msvc"))]
-    {
-        use busbar_kernel::mallctl;
-        let enabled = match mallctl::write(c"background_thread", true)
-            .and_then(|()| mallctl::read::<bool>(c"background_thread"))
-        {
-            Ok(true) => true,
-            Ok(false) => {
-                eprintln!(
-                    "[warn] jemalloc background purge thread did NOT enable on this target (no \
-                     background-thread support); enabling busbar's idle purge fallback so RSS still \
-                     returns to idle after a load burst"
-                );
-                false
-            }
-            Err(e) => {
-                eprintln!(
-                    "[warn] could not enable jemalloc background purge thread ({e}); enabling \
-                     busbar's idle purge fallback so RSS still returns to idle after a load burst"
-                );
-                false
-            }
-        };
-
-        if !enabled {
-            spawn_jemalloc_idle_purge_fallback();
         }
     }
 
@@ -2472,69 +2442,6 @@ async fn shutdown_signal() {
     // outage).
     busbar_kernel::refresh::begin_stopping();
     tracing::info!("shutdown signal received; draining in-flight requests");
-}
-
-#[cfg(not(target_env = "msvc"))]
-const IDLE_PURGE_SWEEP_SECS: u64 = 15;
-
-#[cfg(not(target_env = "msvc"))]
-fn spawn_jemalloc_idle_purge_fallback() {
-    use busbar_kernel::mallctl;
-
-    let spawned = std::thread::Builder::new()
-        .name("busbar-idle-purge".into())
-        .spawn(move || {
-            match mallctl::read::<isize>(c"opt.dirty_decay_ms") {
-                Ok(_) => {}
-                Err(e) => {
-                    eprintln!(
-                        "[warn] {}",
-                        diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE.coded(format_args!(
-                            "jemalloc idle-purge fallback disabled: could not read \
-                             opt.dirty_decay_ms ({e})"
-                        ))
-                    );
-                    return;
-                }
-            };
-            let mut last = REQUEST_ACTIVITY_TICKS.load(std::sync::atomic::Ordering::Relaxed);
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(IDLE_PURGE_SWEEP_SECS));
-                let cur = REQUEST_ACTIVITY_TICKS.load(std::sync::atomic::Ordering::Relaxed);
-                let idle = cur == last;
-                last = cur;
-                if !idle {
-                    continue;
-                }
-                purge_idle_arenas();
-            }
-        });
-    if let Err(e) = spawned {
-        eprintln!(
-            "[warn] {}",
-            diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE.coded(format_args!(
-                "could not spawn the jemalloc idle-purge fallback thread ({e})"
-            ))
-        );
-    }
-}
-
-#[cfg(not(target_env = "msvc"))]
-fn purge_idle_arenas() {
-    use busbar_kernel::mallctl;
-    let narenas: u32 = mallctl::read(c"arenas.narenas").unwrap_or(0);
-    for i in 0..narenas {
-        let Ok(name) = std::ffi::CString::new(format!("arena.{i}.dirty_decay_ms")) else {
-            continue;
-        };
-        let Ok(prior) = mallctl::read::<isize>(&name) else {
-            continue;
-        };
-        if prior == 0 {
-            continue;
-        }
-        let _ = mallctl::write(&name, 0isize).and_then(|()| mallctl::write(&name, prior));
-    }
 }
 
 mod root;

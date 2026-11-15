@@ -168,6 +168,11 @@ async fn counted(rig: &NodeRig, fixture: Fixture) -> Tally {
         .header("content-type", "application/json")
         .body(axum::body::Body::from(fixture.body().to_string()))
         .expect("a request");
+    #[cfg(not(target_env = "msvc"))]
+    busbar_contract::work_count::count_allocations_through(|| {
+        let stats = crate::GLOBAL.stats();
+        stats.allocations as u64 + stats.reallocations as u64
+    });
     let before = Tally::now();
     let resp = rig
         .router

@@ -10,6 +10,9 @@
 //! cargo run -p busbar-system-hammer --release -- --list
 //! ```
 
+#![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]
+
 mod driver;
 mod gateway;
 mod mock;

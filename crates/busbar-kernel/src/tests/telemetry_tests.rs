@@ -595,15 +595,13 @@ fn test_observations_are_released_after_the_load_stops() {
 
 #[cfg(not(target_env = "msvc"))]
 fn measure_on_a_fresh_thread() {
-    use crate::mallctl;
-
     let _drain_serial = crate::telemetry::drain_serial::lock();
 
     fn retained() -> u64 {
-        let a = mallctl::thread_allocated()
+        let a = tikv_jemalloc_ctl::thread::allocatedp::read()
             .map(|m| m.get())
             .unwrap_or_default();
-        let d = mallctl::thread_deallocated()
+        let d = tikv_jemalloc_ctl::thread::deallocatedp::read()
             .map(|m| m.get())
             .unwrap_or_default();
         a.saturating_sub(d)
@@ -709,15 +707,13 @@ fn test_off_metrics_never_materializes_the_histogram_chunk() {
 #[cfg(not(target_env = "msvc"))]
 #[test]
 fn test_off_metrics_retains_effectively_nothing_below_the_drain_threshold() {
-    use crate::mallctl;
-
     let _drain_serial = crate::telemetry::drain_serial::lock();
 
     fn retained() -> u64 {
-        let a = mallctl::thread_allocated()
+        let a = tikv_jemalloc_ctl::thread::allocatedp::read()
             .map(|m| m.get())
             .unwrap_or_default();
-        let d = mallctl::thread_deallocated()
+        let d = tikv_jemalloc_ctl::thread::deallocatedp::read()
             .map(|m| m.get())
             .unwrap_or_default();
         a.saturating_sub(d)
@@ -945,7 +941,7 @@ fn phase_observations_follow_callsites_and_survive_reload_without_off_metrics_bu
     assert!(!bank_internals::hist_chunk_materialized(producer));
     assert!(!bank_internals::hist_chunk_materialized(mounted));
     #[cfg(not(target_env = "msvc"))]
-    let allocation = crate::mallctl::thread_allocated().unwrap();
+    let allocation = tikv_jemalloc_ctl::thread::allocatedp::read().unwrap();
     #[cfg(not(target_env = "msvc"))]
     let before_allocated = allocation.get();
     for _ in 0..1000 {
@@ -1129,7 +1125,7 @@ fn mounted_plane_request_series_are_banked_and_allocation_free() {
     finish("ok", 0.001);
     #[cfg(not(target_env = "msvc"))]
     {
-        let allocation = crate::mallctl::thread_allocated().expect("thread.allocatedp");
+        let allocation = tikv_jemalloc_ctl::thread::allocatedp::read().expect("thread.allocatedp");
         let before = allocation.get();
         for _ in 0..1000 {
             finish("ok", 0.001);

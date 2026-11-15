@@ -11,7 +11,8 @@
 //! `link::Hasher` and [`ct_eq`] are infallible. A refused algorithm is [`Error::Unsupported`] with a
 //! reason; a bad MAC, tag or signature is [`Error::Mismatch`], never `Unsupported`.
 
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]
 #![deny(missing_docs)]
 #![deny(missing_debug_implementations)]
 
