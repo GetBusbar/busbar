@@ -1586,3 +1586,60 @@ fn an_inventory_row_lists_every_conflict_it_is_in() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// SECRET-SHORTHAND-BOOT §3.9: a skip line names the file and a fixed reason class, never the
+/// plugin's own text or manifest name. Only kinds that declare config grammar get one, and the
+/// file name is escaped and capped.
+#[test]
+fn a_skip_line_names_the_file_and_a_fixed_class() {
+    use crate::sign::RejectKind;
+    let skipped = |kind: &str, file: &str, reject: RejectKind| SkippedPlugin {
+        file: file.into(),
+        manifest: Manifest {
+            name: "chosen-by-the-plugin".into(),
+            kind: kind.into(),
+            ..Default::default()
+        },
+        reason: "plugin-controlled text".into(),
+        kind: reject,
+        trusted_keys: Vec::new(),
+    };
+    assert_eq!(
+        skipped(
+            "plane",
+            "busbar-plane-decisions.tar.gz",
+            RejectKind::EgressGrant
+        )
+        .skip_line()
+        .as_deref(),
+        Some(
+            "\"busbar-plane-decisions.tar.gz\" (kind plane) was not admitted: provider egress \
+             refused: not first-party"
+        )
+    );
+    let line = skipped("secret", "s.tar.gz", RejectKind::Unsigned)
+        .skip_line()
+        .unwrap();
+    assert_eq!(
+        line,
+        "\"s.tar.gz\" (kind secret) was not admitted: unsigned"
+    );
+    assert_eq!(
+        skipped("hook", "h.tar.gz", RejectKind::Unsigned).skip_line(),
+        None
+    );
+    let long = format!("{}.tar.gz", "x".repeat(300));
+    let line = skipped("auth", &long, RejectKind::Tampered)
+        .skip_line()
+        .unwrap();
+    assert!(
+        line.starts_with(&format!("\"{}\u{2026}\" (kind auth)", "x".repeat(96))),
+        "{line}"
+    );
+    assert_eq!(
+        skipped("auth", "a\"b\n.tar.gz", RejectKind::Revoked)
+            .skip_line()
+            .unwrap(),
+        "\"a\\\"b\\n.tar.gz\" (kind auth) was not admitted: revoked"
+    );
+}
