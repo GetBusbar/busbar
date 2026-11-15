@@ -205,6 +205,23 @@ impl Documents {
                             _ => None,
                         })
                         .unwrap_or(false);
+                // OPERATOR-FROM-ADMITTED-AUTH §3.4.1: a deferred start binds the operator from
+                // pass 1's converted `plugins:` view (a fresh host, the same inputs) before pass 2.
+                if crate::root::boot::plugins_block_is_historical()
+                    && busbar_kernel_identity::operator::judged().is_err()
+                {
+                    let pass1 = crate::root::config_migrate::RootHost::for_startup_document(
+                        &original,
+                        &detection,
+                        path,
+                        self.clone(),
+                    )?;
+                    crate::root::auth_bindings::bind_from_upgraded_view(&original, &pass1)
+                        .map_err(|_| {
+                            "the startup upgrade could not bind the operator credential from its \
+                             converted plugins: view"
+                        })?;
+                }
                 let host = crate::root::config_migrate::RootHost::for_startup_document(
                     &original,
                     &detection,

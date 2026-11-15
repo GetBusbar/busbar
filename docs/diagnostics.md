@@ -549,6 +549,17 @@ busbar 1.6 no longer reads BUSBAR_PROVIDERS, BUSBAR_WORKER_THREADS, BUSBAR_UPSTR
 
 **What to do:** Run busbar --migrate-config in the old launch environment to write the value into config.yaml, validate, then remove the variable from the launcher.
 
+<a id="config-operator-inert"></a>
+### BUSBAR-3030 — An auth plugin states the operator credential but is not first-party (ignored)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `config-operator-inert`
+
+An admitted auth plugin states the operator credential, but it is not first-party (not signed by a busbar release key), so it never becomes the operator credential. Nothing in the configuration references it, so it is ignored and the boot continues; each boot also writes an auth.operator.inert audit row naming it.
+
+**What to do:** Remove the plugin from plugins.dir, or narrow plugins.trust so it is not admitted. To make a plugin the operator credential, install the first-party operator credential plugin.
+
 ## 4xxx — Auth & identity
 
 <a id="token-exchange-mint-failed"></a>

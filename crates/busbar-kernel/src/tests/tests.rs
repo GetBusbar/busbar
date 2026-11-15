@@ -4,7 +4,7 @@ use crate::appbuild::{
     inert_durable_keys_banner, open_relay_banner, resolve_model_context_max,
     stateful_plane_ephemeral_store_warn,
 };
-use crate::preflight::{is_real_auth_plugin_ref, resolve_admin_token};
+use crate::preflight::is_real_auth_plugin_ref;
 use crate::router::{
     apply_inbound_concurrency_limit, project_auth_scope_caps, reshape_oversized_413, server_timing,
     server_timing_dur_ms, AXUM_BODY_LIMIT_413_MARKER, HEADER_SERVER_TIMING, NO_UPSTREAM_RTT,
@@ -828,23 +828,4 @@ async fn unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect() {
         "the kernel's envelope states the agnostic kind verbatim"
     );
     assert_eq!(v["error"]["message"], "everything is on fire");
-}
-
-#[test]
-fn blank_admin_token_keeps_the_operator_blank_token_refusal() {
-    use crate::config::secret::{fixed_reference, fixed_value};
-    for blank in [&b""[..], b"   ", b"\n\t "] {
-        let mut entry = crate::config::AuthChainEntry::bare(crate::config::operator_provider());
-        entry.token = Some(fixed_reference("admin-source"));
-        let auth = crate::config::AuthCfg {
-            admin_auth: vec![entry],
-            ..crate::config::AuthCfg::default_none()
-        };
-        let err = resolve_admin_token(Some(&auth), &fixed_value("admin-source", blank))
-            .expect_err("a blank admin token refuses to start");
-        assert!(
-            err.contains("digest would be taken over the blank string"),
-            "{blank:?}: the operator's blank-token refusal: {err}"
-        );
-    }
 }

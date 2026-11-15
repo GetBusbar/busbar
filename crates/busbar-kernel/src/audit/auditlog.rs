@@ -957,7 +957,8 @@ pub fn plugin_refusal_resource(kind: &str, subject: &str, reason: &str) -> Strin
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HeldRefusal {
     ts: u64,
-    refusal: PluginRefusal,
+    action: &'static str,
+    outcome: &'static str,
     resource: String,
     origin: EventOrigin,
 }
@@ -1052,9 +1053,9 @@ static PLUGIN_REFUSALS: RefusalHold = RefusalHold::new();
 fn seal_refusal(row: &HeldRefusal) {
     emit_admin_hostless_from(
         row.ts,
-        row.refusal.action(),
+        row.action,
         &row.resource,
-        row.refusal.outcome(),
+        row.outcome,
         PLUGIN_REFUSAL_PRINCIPAL,
         row.origin,
     );
@@ -1065,7 +1066,8 @@ pub fn record_plugin_refusal(refusal: PluginRefusal, kind: &str, subject: &str, 
     PLUGIN_REFUSALS.raise(
         HeldRefusal {
             ts: busbar_kernel::store::now(),
-            refusal,
+            action: refusal.action(),
+            outcome: refusal.outcome(),
             resource: plugin_refusal_resource(kind, subject, reason),
             origin,
         },
@@ -1074,6 +1076,7 @@ pub fn record_plugin_refusal(refusal: PluginRefusal, kind: &str, subject: &str, 
 }
 
 pub(crate) fn open_plugin_refusals() {
+    open_operator_rows();
     PLUGIN_REFUSALS.open(seal_refusal, |over| {
         emit_admin_hostless_now(
             HELD_OVER_ACTION,
@@ -1495,3 +1498,100 @@ async fn drain_native(
 #[cfg(test)]
 #[path = "tests/auditlog_native_tests.rs"]
 mod native_tests;
+
+/// THE `auth.operator` AUDIT FAMILY (OPERATOR-FROM-ADMITTED-AUTH §3.10): which operator credential a
+/// boot accepted, which claimant it ignored, and every refusal. Held like a plugin refusal until the
+/// audit chain opens, so process start can raise them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperatorAudit {
+    /// The first boot build accepted the operator credential (one row per backed definition).
+    Accepted,
+    /// A claimant that is not first-party and that nothing references: ignored.
+    Inert,
+    /// A referenced claimant that is not first-party.
+    RefusedThirdParty,
+    /// Two first-party claimants.
+    RefusedAmbiguous,
+    /// A row whose Statement does not read.
+    RefusedUnreadable,
+    /// A build or validate whose judged operator differs from the bound one.
+    RefusedChanged,
+    /// An operator-backed definition held anywhere but config.yaml.
+    RefusedFilePolicy,
+    /// A 1.5 `token:` on the operator credential.
+    RefusedToken,
+}
+
+impl OperatorAudit {
+    const fn action(self) -> &'static str {
+        match self {
+            Self::Accepted => "auth.operator.accepted",
+            Self::Inert => "auth.operator.inert",
+            _ => "auth.operator.refused",
+        }
+    }
+
+    const fn outcome(self) -> &'static str {
+        match self {
+            Self::Accepted => busbar_contract::vocab::OUTCOME_APPLIED,
+            Self::Inert => busbar_contract::vocab::OUTCOME_DEGRADED,
+            _ => busbar_contract::vocab::OUTCOME_REFUSED,
+        }
+    }
+
+    const fn reason(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::Inert => "inert",
+            Self::RefusedThirdParty => "third_party",
+            Self::RefusedAmbiguous => "ambiguous",
+            Self::RefusedUnreadable => "unreadable",
+            Self::RefusedChanged => "changed",
+            Self::RefusedFilePolicy => "file_policy",
+            Self::RefusedToken => "token",
+        }
+    }
+}
+
+static OPERATOR_ROWS: RefusalHold = RefusalHold::new();
+
+/// Raise one `auth.operator` row naming `subject` (a row, a definition or `operator`) and `detail`
+/// (the referrer, the door, the principal and signer): held until the audit chain opens.
+pub fn record_operator(event: OperatorAudit, subject: &str, detail: &str) {
+    OPERATOR_ROWS.raise(
+        HeldRefusal {
+            ts: busbar_kernel::store::now(),
+            action: event.action(),
+            outcome: event.outcome(),
+            resource: plugin_refusal_resource(event.reason(), subject, detail).replacen(
+                "plugin:",
+                "operator:",
+                1,
+            ),
+            origin: EventOrigin::Mutation,
+        },
+        seal_refusal,
+    );
+}
+
+fn open_operator_rows() {
+    OPERATOR_ROWS.open(seal_refusal, |over| {
+        emit_admin_hostless_now(
+            OperatorAudit::RefusedChanged.action(),
+            &format!("operator:held/over#{over}"),
+            busbar_contract::vocab::OUTCOME_REJECTED,
+            PLUGIN_REFUSAL_PRINCIPAL,
+        );
+    });
+}
+
+/// The `auth.operator` rows still held for the audit chain, as `"<action> <resource>"`.
+#[cfg(test)]
+pub(crate) fn held_operator_rows() -> Vec<String> {
+    OPERATOR_ROWS
+        .lock()
+        .rows
+        .iter()
+        .map(|row| format!("{} {}", row.action, row.resource))
+        .collect()
+}

@@ -13,6 +13,7 @@ use busbar_contract::auth_calls::InboundStyle;
 use crate::auth_axis::{AuthRows, NO_DOOR};
 use crate::dispatch::LinkedRow;
 use crate::registry::{LoadablePlugin, RowRefusal};
+use crate::sign::Verdict;
 
 /// Boot: names the auth plugin that did not load.
 #[cold]
@@ -44,13 +45,51 @@ pub(crate) fn linked_names(rows: &AuthRows) -> Vec<String> {
         .collect()
 }
 
-/// Config: names the operator auth plugin when config is read.
+/// Config: the operator claims among the auth `rows`, read from each row's Statement with no
+/// dlopen. A row whose Statement does not decode is listed as unreadable, never dropped. One
+/// canonical plugin is one claim (two keys of it, or a dropped-in copy of a linked row); the
+/// linked row is the one kept, as `cross_claim` keeps it.
 #[cold]
-pub(crate) fn operator(rows: &AuthRows) -> Option<(String, String)> {
-    rows.auth_rows().find_map(|row| {
-        let principal = rows.stated(row)?.operator_principal?;
-        Some((row.manifest.alias.clone(), principal))
-    })
+pub(crate) fn operator_claims<'a>(
+    rows: impl Iterator<Item = &'a LoadablePlugin>,
+) -> busbar_contract::auth_calls::OperatorClaims {
+    let mut kept: Vec<(bool, busbar_contract::auth_calls::OperatorClaim)> = Vec::new();
+    let mut unreadable = Vec::new();
+    rows.for_each(|row| {
+        let facts = match crate::auth_axis::stated_of(row) {
+            Ok(facts) => facts,
+            Err(e) => {
+                unreadable.push((row.manifest.alias.clone(), e));
+                return;
+            }
+        };
+        let Some(principal) = facts.and_then(|f| f.operator_principal) else {
+            return;
+        };
+        let claim = busbar_contract::auth_calls::OperatorClaim {
+            provider: row.manifest.alias.clone(),
+            canonical: row.manifest.name.clone(),
+            principal,
+            first_party: row.first_party(),
+            version: row.manifest.version.clone(),
+            signer: match &row.verdict {
+                Verdict::Trusted { publisher, .. } => publisher.clone(),
+                Verdict::Allowed { reason, .. } => reason.clone(),
+            },
+        };
+        match kept
+            .iter_mut()
+            .find(|(_, c)| c.canonical == claim.canonical)
+        {
+            Some(slot) if row.linked() && !slot.0 => *slot = (true, claim),
+            Some(_) => {}
+            None => kept.push((row.linked(), claim)),
+        }
+    });
+    busbar_contract::auth_calls::OperatorClaims {
+        claims: kept.into_iter().map(|(_, claim)| claim).collect(),
+        unreadable,
+    }
 }
 
 /// Config: lists the credential-reading auth plugins when config is read.

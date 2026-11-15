@@ -43,8 +43,6 @@ pub struct Linked {
 
     pub auths: &'static [LinkedAuth],
 
-    pub operator_auth: &'static str,
-
     pub transports: &'static [LinkedTransport],
 
     pub claims: &'static [LinkedClaims],

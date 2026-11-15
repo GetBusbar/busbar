@@ -16,29 +16,6 @@ use crate::config::AuthCfg;
 use crate::diagnostics::{diag_warn, AUTH_CHAIN_OPEN_RELAY};
 use busbar_contract::auth_calls::AuthCalls;
 
-pub fn open_operator(
-    registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
-    digest: Option<String>,
-    providers: &crate::config::IdentityProviders,
-) -> Result<Operator, String> {
-    let op = crate::config::operator_provider();
-    let axis = crate::preflight::auth_axis(registry.clone());
-    let answered = axis.as_ref().is_some_and(|axis| axis.answers(op));
-    let defs = providers.iter().map(|(n, d)| (n.as_str(), d.module.trim()));
-    let is_op = |m: &str| crate::config::names_operator(m);
-
-    let carriers = axis.as_ref().map(|a| a.carriers(op)).unwrap_or_default();
-    Operator::open(op, defs, &is_op, answered, digest, |d| {
-        let axis = axis.ok_or_else(|| format!("no `kind: auth` plugin answers to '{op}'"))?;
-        axis.open(
-            op,
-            op,
-            &busbar_contract::plugin_settings::ResolvedSettings::from(serde_json::Value::String(d)),
-        )
-    })
-    .map(|operator| operator.with_carriers(carriers))
-}
-
 /// How an auth instance's settings are re-resolved for a re-lend: `None` when its plugin lends no
 /// secret reference (nothing it holds can rotate).
 pub(crate) fn relender(
@@ -104,9 +81,13 @@ impl AdminAuthChain {
         let op = crate::config::operator_provider();
         let is_op = |m: &str| crate::config::names_operator(m);
         let mut axis: Option<std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>> = None;
+        let mut opened: foldhash::HashMap<String, std::sync::Arc<dyn AuthCalls>> =
+            foldhash::HashMap::default();
         for entry in &cfg.admin_auth {
+            let backed = Operator::backed(op, &entry.name, Some(entry.module.as_str()), &is_op);
             match entry.module.as_str() {
-                module if Operator::backed(op, &entry.name, Some(module), &is_op) => {}
+                // An operator-backed entry with no settings is unset: nothing opens.
+                _ if backed && entry.settings.is_empty() => {}
                 other => {
                     let name = entry.name.as_str();
                     let refused = |e: String| {
@@ -170,13 +151,33 @@ impl AdminAuthChain {
                         refused,
                     )?;
 
-                    modules.insert(name.to_string(), AdminModule { calls });
+                    // The operator row is an ordinary auth instance opened with its own settings,
+                    // judged in the operator arm (OPERATOR-FROM-ADMITTED-AUTH §3.8).
+                    if backed {
+                        opened.insert(name.to_string(), calls);
+                    } else {
+                        modules.insert(name.to_string(), AdminModule { calls });
+                    }
                 }
             }
         }
+        let operator_axis = match axis {
+            Some(axis) => Some(axis),
+            None if op.is_empty() => None,
+            None => open_axis(),
+        };
+        let answered = !op.is_empty() && operator_axis.as_ref().is_some_and(|a| a.answers(op));
+        let carriers = match (&operator_axis, answered) {
+            (Some(axis), true) => axis.carriers(op),
+            _ => Vec::new(),
+        };
+        let defs = cfg
+            .methods
+            .iter()
+            .map(|(n, m)| (n.as_str(), m.module.trim()));
         Ok(Self {
             modules,
-            operator: Operator::new(op),
+            operator: Operator::open(op, defs, &is_op, answered, opened).with_carriers(carriers),
         })
     }
 }

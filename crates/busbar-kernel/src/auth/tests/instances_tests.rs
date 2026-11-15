@@ -113,8 +113,8 @@ impl AuthAxis for Axis {
     fn linked(&self, module: &str) -> bool {
         module == MODULE
     }
-    fn operator(&self) -> Option<(String, String)> {
-        None
+    fn operator_claims(&self) -> busbar_contract::auth_calls::OperatorClaims {
+        busbar_contract::auth_calls::OperatorClaims::default()
     }
     fn open(
         &self,
@@ -428,4 +428,310 @@ fn a_failed_build_keeps_the_prior_instances() {
     assert!(Arc::strong_count(live) >= 2, "the live App still holds it");
     assert_eq!(first.reused().len() + first.opened().len(), 1);
     assert_eq!(opens(&counts), 1);
+}
+
+/// OPERATOR-FROM-ADMITTED-AUTH R14: the operator row as an ordinary auth instance, opened with its
+/// own `settings` and judged through the same bounded admission call as every admin module.
+mod operator_instance {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use busbar_contract::auth::AuthVerdict;
+    use busbar_contract::auth_calls::{
+        AuthAxis, AuthCalls, Verified, VerifiedIdentity, VerifyAnswer, VerifyRequest, Verifying,
+    };
+
+    use crate::auth::instances::AuthInstances;
+    use crate::auth::AdminAuthChain;
+    use crate::config::{AuthCfg, AuthChainEntry};
+
+    const OP: &str = "op-row";
+    const DIGEST: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+
+    #[derive(Default)]
+    struct Opened {
+        count: AtomicUsize,
+        settings: Mutex<Vec<String>>,
+    }
+
+    struct Admin;
+
+    fn admin() -> VerifyAnswer {
+        Verified::Identity(VerifiedIdentity {
+            subject: "admin".into(),
+            key_id: None,
+            key_name: None,
+            user: None,
+            provider: None,
+            name: None,
+            groups: Vec::new(),
+            ttl_secs: None,
+            replay: None,
+            credential: None,
+        })
+        .into()
+    }
+
+    struct Ready(Option<VerifyAnswer>);
+
+    impl std::future::Future for Ready {
+        type Output = VerifyAnswer;
+        fn poll(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<VerifyAnswer> {
+            std::task::Poll::Ready(self.0.take().unwrap_or_else(admin))
+        }
+    }
+
+    impl Verifying for Ready {
+        fn settled(&mut self) -> Option<VerifyAnswer> {
+            self.0.take()
+        }
+    }
+
+    impl AuthCalls for Admin {
+        fn name(&self) -> &str {
+            OP
+        }
+        fn facts(&self) -> u32 {
+            0
+        }
+        fn verify_now(&self, _: &VerifyRequest) -> Option<VerifyAnswer> {
+            Some(admin())
+        }
+        fn verify(&self, _: VerifyRequest) -> Box<dyn Verifying> {
+            Box::new(Ready(Some(admin())))
+        }
+        fn refresh(&self) -> Result<u64, String> {
+            Ok(0)
+        }
+    }
+
+    struct OpAxis(Arc<Opened>);
+
+    impl AuthAxis for OpAxis {
+        fn linked_names(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn answers(&self, module: &str) -> bool {
+            module == OP
+        }
+        fn linked(&self, _: &str) -> bool {
+            false
+        }
+        fn operator_claims(&self) -> busbar_contract::auth_calls::OperatorClaims {
+            busbar_contract::auth_calls::OperatorClaims::default()
+        }
+        fn open(
+            &self,
+            _: &str,
+            _: &str,
+            settings: &busbar_contract::plugin_settings::ResolvedSettings,
+        ) -> Result<Arc<dyn AuthCalls>, String> {
+            self.0.count.fetch_add(1, Ordering::SeqCst);
+            let encoded = settings.encode().map_err(|e| e.to_string())?;
+            let text = String::from_utf8(encoded.expose(&crate::seal::lend()).clone())
+                .map_err(|e| e.to_string())?;
+            self.0
+                .settings
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(text);
+            Ok(Arc::new(Admin))
+        }
+    }
+
+    #[derive(Debug)]
+    struct OpRows;
+
+    impl busbar_contract::plugin_rows::PluginRows for OpRows {
+        fn resolve(&self, name: &str) -> Option<busbar_contract::plugin_rows::Row> {
+            (name == OP).then(|| crate::tests::dropped(OP, OP, "auth"))
+        }
+        fn archive_sha256(&self, name: &str) -> Option<String> {
+            (name == OP).then(|| "a1".to_string())
+        }
+        fn unresolved_reason(&self, _: &str) -> Option<busbar_contract::plugin_rows::Skipped> {
+            None
+        }
+        fn loadable(&self) -> Vec<busbar_contract::plugin_rows::Row> {
+            Vec::new()
+        }
+        fn linked(&self) -> Vec<busbar_contract::plugin_rows::Row> {
+            Vec::new()
+        }
+        fn skipped(&self) -> Vec<busbar_contract::plugin_rows::Skipped> {
+            Vec::new()
+        }
+        fn store_door(
+            &self,
+            name: &str,
+        ) -> Result<busbar_contract::persistence::axis::StoreDoor, String> {
+            Err(format!("no store '{name}'"))
+        }
+        fn secret_refusal(&self, name: &str) -> String {
+            format!("no secret '{name}'")
+        }
+        fn kind_refusal(&self, kind: &str, _: &str, name: &str) -> String {
+            format!("no {kind} '{name}'")
+        }
+        fn secret_slots(&self, _: &str) -> Vec<String> {
+            Vec::new()
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn into_any(self: Arc<Self>) -> Arc<dyn std::any::Any + Send + Sync> {
+            self
+        }
+    }
+
+    fn install_words() {
+        busbar_kernel_identity::operator::install_operator(
+            busbar_kernel_identity::operator::OperatorBinding::Bound(
+                busbar_kernel_identity::operator::Judged {
+                    words: Ok(Some(busbar_contract::auth_calls::OperatorClaim {
+                        provider: OP.to_owned(),
+                        canonical: OP.to_owned(),
+                        principal: "admin".to_owned(),
+                        first_party: true,
+                        version: "1.6.0".to_owned(),
+                        signer: "busbar".to_owned(),
+                    })),
+                    inert: Vec::new(),
+                },
+            ),
+        );
+    }
+
+    fn admin_auth(settings: serde_json::Value) -> AuthCfg {
+        let mut entry = AuthChainEntry::bare(OP);
+        entry.settings = match settings {
+            serde_json::Value::Object(map) => map.into(),
+            _ => serde_json::Map::new().into(),
+        };
+        let mut cfg = AuthCfg::default_none();
+        cfg.admin_auth = vec![entry];
+        cfg
+    }
+
+    fn built(cfg: &AuthCfg) -> (Arc<Opened>, AdminAuthChain) {
+        install_words();
+        let opened = Arc::new(Opened::default());
+        let axis: Arc<dyn AuthAxis> = Arc::new(OpAxis(Arc::clone(&opened)));
+        let open_axis = || Some(Arc::clone(&axis));
+        let secrets = crate::config::secret::SecretResolver::builtins_only();
+        let admin = AdminAuthChain::build_on(
+            cfg,
+            &OpRows,
+            &secrets,
+            &mut AuthInstances::default(),
+            &open_axis,
+        )
+        .expect("admin_auth builds");
+        (opened, admin)
+    }
+
+    fn head() -> VerifyRequest {
+        VerifyRequest {
+            lines: Vec::new(),
+            point: busbar_contract::abi::auth::AuthPoint::Head,
+            conn: 0,
+            unit: 0,
+            credential: None,
+            peer: None,
+            body: None,
+            method: "GET".into(),
+            authority: String::new(),
+            path: "/api/v1/admin/keys".into(),
+            query: None,
+            timestamp: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_operator_instance_opened_with_settings_is_the_one_judged() {
+        let (opened, admin) = built(&admin_auth(serde_json::json!({ "sha256": DIGEST })));
+        assert_eq!(
+            opened.count.load(Ordering::SeqCst),
+            1,
+            "the operator entry with settings opens one instance"
+        );
+        let seen = opened
+            .settings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert_eq!(
+            seen.iter()
+                .map(|s| serde_json::from_str::<serde_json::Value>(s).expect("settings json"))
+                .collect::<Vec<_>>(),
+            vec![serde_json::json!({ "sha256": DIGEST })],
+            "it opens over its own settings, verbatim"
+        );
+        assert!(admin.operator.is(OP));
+        let calls = admin
+            .operator
+            .instance(OP)
+            .expect("the backed provider has its opened instance");
+        let judged = crate::auth::judge_admin_calls(calls, head(), true).await;
+        let principal = match judged.verdict {
+            AuthVerdict::Identify(p) => p,
+            other => panic!("the operator instance identifies the operator: {other:?}"),
+        };
+        assert_eq!(principal.id, "admin");
+        let async_judged = crate::auth::judge_admin_calls(calls, head(), false).await;
+        assert!(matches!(async_judged.verdict, AuthVerdict::Identify(_)));
+        let grants = crate::auth::admin_scope_from_bindings(
+            &crate::config::RoleBindings::new(),
+            &admin.operator,
+            "admin",
+            Some(OP),
+            Some(&principal),
+        );
+        assert_eq!(
+            grants,
+            busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full),
+            "the role-less operator principal holds Full"
+        );
+    }
+
+    #[test]
+    fn an_operator_entry_without_settings_is_unset_and_opens_nothing() {
+        let (opened, admin) = built(&admin_auth(serde_json::json!({})));
+        assert_eq!(opened.count.load(Ordering::SeqCst), 0, "nothing opens");
+        assert!(admin.operator.instance(OP).is_none());
+        assert!(
+            admin.operator.unset(OP),
+            "an operator entry with no settings is unset"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_operator_call_is_refused_through_the_saturated_admission_permit() {
+        let (_, admin) = built(&admin_auth(serde_json::json!({ "sha256": DIGEST })));
+        let calls = admin
+            .operator
+            .instance(OP)
+            .expect("the backed provider has its opened instance");
+        let refused = {
+            tokio::time::pause();
+            let held = crate::auth::ADMIN_ADMISSION_PERMITS
+                .acquire_many(
+                    u32::try_from(crate::auth::ADMIN_ADMISSION_MAX_INFLIGHT)
+                        .expect("the admission budget fits a u32"),
+                )
+                .await
+                .expect("the admission permits");
+            let judged = crate::auth::judge_admin_calls(calls, head(), false).await;
+            drop(held);
+            judged
+        };
+        assert!(
+            matches!(refused.verdict, AuthVerdict::Reject),
+            "a saturated admission budget refuses the operator as it refuses any admin module: {:?}",
+            refused.verdict
+        );
+    }
 }

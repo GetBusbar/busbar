@@ -28,7 +28,6 @@ pub mod relend;
 #[cfg(test)]
 use crate::off_path::auth::chain::admin_head;
 pub(crate) use crate::off_path::auth::chain::auth_refusal;
-pub use crate::off_path::auth::chain::open_operator;
 use crate::off_path::auth::chain::{admin_head_with, admin_verbs_named};
 pub use admitted::{admitted_context, AdmittedContext, AdmittedRefusal};
 
@@ -1166,12 +1165,17 @@ async fn run_admin_chain(
     for name in &app.admin_chain {
         let operator = app.admin_modules.operator.is(name);
         let outcome = match name.as_str() {
+            // The operator arm stays first. A backed provider with an opened instance is judged
+            // through the same bounded admission call as every admin module; an unset one passes.
             _ if operator => {
                 let operator = &app.admin_modules.operator;
-                let head = admin_head_with(method, target, headers, now, candidate);
-                match probe {
-                    true => operator.probe(&head),
-                    false => operator.judge(head).await,
+                match operator.instance(name) {
+                    Some(calls) => {
+                        let head = admin_head_with(method, target, headers, now, candidate);
+                        Some(judge_admin_calls(calls, head, probe).await)
+                    }
+                    None if operator.unset(name) => Some(Judgement::of(AuthVerdict::Pass)),
+                    None => None,
                 }
             }
 
@@ -1204,24 +1208,35 @@ async fn external_admin_module(
     probe: bool,
 ) -> Option<Judgement> {
     let module = app.admin_modules.modules.get(name)?;
+    Some(judge_admin_calls(&module.calls, request, probe).await)
+}
+
+/// One admin-chain position judged by its opened instance `calls`: the synchronous probe, or the
+/// bounded call that takes an admission permit and waits at most `ADMIN_ADMISSION_WAIT`. Every
+/// admin module and the operator credential share this one budget and this one timeout.
+pub(crate) async fn judge_admin_calls(
+    calls: &std::sync::Arc<dyn AuthCalls>,
+    request: VerifyRequest,
+    probe: bool,
+) -> Judgement {
     if probe {
-        return Some(module.calls.verify_now(&request).map_or_else(
+        return calls.verify_now(&request).map_or_else(
             || Judgement::without_verdict(Vec::new()),
             |answer| admin_verdict_of(answer, false),
-        ));
+        );
     }
 
     let permit = match admin_admission_permit().await {
         Ok(permit) => permit,
-        Err(refusal) => return Some(*refusal),
+        Err(refusal) => return *refusal,
     };
-    let mut call = module.calls.verify(request);
+    let mut call = calls.verify(request);
     let answered = tokio::time::timeout(ADMIN_ADMISSION_WAIT, &mut call).await;
     drop(permit);
-    Some(match answered {
+    match answered {
         Ok(answer) => admin_verdict_of(answer, call.faulted()),
         Err(elapsed) => admin_verification_timed_out(elapsed),
-    })
+    }
 }
 
 fn module_admin_scope_cap(

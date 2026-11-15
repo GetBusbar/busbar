@@ -69,19 +69,63 @@ impl RevocationView for GovernanceDirectory {
     }
 }
 
-pub(crate) const ADMIN_PRINCIPAL_ID: &str = "admin";
-
+/// THE OPERATOR CREDENTIAL, judged at process start from the auth rows the start scan admits:
+/// the linked rows and the dropped-in ones alike (OPERATOR-FROM-ADMITTED-AUTH §3.1, §3.4). A start
+/// whose `plugins:` block is in a pre-1.6 shape is `Deferred`: the startup upgrade binds it from
+/// its own converted view (§3.4.1).
 #[must_use]
-pub(crate) fn operator_auth_module() -> &'static str {
-    crate::LINKED.operator_auth
+pub(crate) fn operator_binding(
+    dropped: Option<&crate::root::loader::PluginRegistry>,
+) -> busbar_kernel::preflight::OperatorBinding {
+    if crate::root::boot::plugins_block_is_historical() {
+        return busbar_kernel::preflight::OperatorBinding::Deferred;
+    }
+    busbar_kernel::preflight::OperatorBinding::Bound(judged_operator(dropped))
 }
 
+/// The operator judged from the linked rows and the rows of `dropped`.
 #[must_use]
-pub(crate) fn operator_words() -> busbar_kernel_identity::operator::OperatorWords {
-    busbar_kernel_identity::operator::OperatorWords {
-        provider: operator_auth_module(),
-        principal_id: ADMIN_PRINCIPAL_ID,
+pub(crate) fn judged_operator(
+    dropped: Option<&crate::root::loader::PluginRegistry>,
+) -> busbar_kernel::preflight::Judged {
+    let linked = crate::root::boot::linked_registry();
+    let dropped = dropped.map_or(&[][..], crate::root::loader::PluginRegistry::loadable);
+    let claims =
+        crate::root::loader::auth_axis::operator_claims(linked.linked().iter().chain(dropped));
+    busbar_kernel::preflight::choose_operator(&claims)
+}
+
+/// THE STARTUP UPGRADE'S PASS 1 (OPERATOR-FROM-ADMITTED-AUTH §3.4.1): on a start whose `plugins:`
+/// block is in a pre-1.6 shape, the operator credential is judged from the upgrade's own converted
+/// `plugins:` view (`original` normalized through `host` with no auth host check), scanned exactly
+/// as the start scan scans config.yaml, and bound before pass 2 and before the build. The build
+/// then scans the same view, so its restart check compares equal on this start and every later
+/// one. Any other start returns at once.
+pub(crate) fn bind_from_upgraded_view(
+    original: &str,
+    host: &dyn busbar_migrations::config::migrate_plugins::MigrateHost,
+) -> Result<(), String> {
+    if !crate::root::boot::plugins_block_is_historical()
+        || busbar_kernel_identity::operator::judged().is_ok()
+    {
+        return Ok(());
     }
+    let view = busbar_migrations::config::normalize_plugins_view(original, host)?;
+    let plugins = view
+        .map(busbar_contract::yaml::from_value::<busbar_kernel::config::PluginsCfg>)
+        .transpose()
+        .map_err(|e| crate::root::cold::upgraded_plugins_unreadable(&e))?;
+    let data_dir = busbar_kernel::preflight::fleet_data_dir();
+    let registry = match &plugins {
+        Some(p) if p.enabled => Some(crate::root::boot::registry(
+            Vec::new(),
+            Some(p),
+            data_dir.as_deref(),
+            &mut |_| {},
+        )?),
+        _ => None,
+    };
+    busbar_kernel::preflight::bind_deferred(judged_operator(registry.as_ref()))
 }
 
 #[cfg(test)]
