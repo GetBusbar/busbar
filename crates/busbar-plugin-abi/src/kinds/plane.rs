@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The plane kind: the `Plane` trait and the `plane` module (IF §8.6, §10.4). W0-ABI stub: frozen signatures,
-//! `todo!()` bodies; A10 (the block) and W1-A4 (the `kind!` expansion) fill it.
+//! The plane kind: the `Plane` trait and the `plane` module (IF §8.6, §10.4). W1-A10 filled the block: the
+//! optional methods answer REFUSED R_UNSUPPORTED (`Fail::unsupported`, as §8.6 writes them) and the pods are
+//! `Pod`. W1-A4 owns the `kind!` expansion (the Proxy and SessionHandle bodies below and `FP`).
 
 // The trait is what `kind!` emits for the IF §8.6 block (IF §7.6); W0-ABI writes it inside the pass-through
 // `kind_stub!` (CONVENTIONS rule 3).
@@ -107,7 +108,7 @@ crate::kind::kind_stub! {
             out: &mut crate::records::Out<'_>,
         ) -> Result<(), crate::fail::Fail> {
             let _ = (h, s, conversation, out);
-            todo!()
+            Err(crate::fail::Fail::unsupported())
         }
 
         /// Sessionless rendering of a core decision in the client's dialect (derived from route, path and
@@ -125,7 +126,7 @@ crate::kind::kind_stub! {
             out: &mut crate::records::Out<'_>,
         ) -> Result<(), crate::fail::Fail> {
             let _ = (h, req, what, arg, out);
-            todo!()
+            Err(crate::fail::Fail::unsupported())
         }
 
         /// Cold. CATALOG: refresh catalog data (FETCH) into instance state. HYDRATE: arg = stored records the
@@ -142,7 +143,7 @@ crate::kind::kind_stub! {
             // Bound before the future: the stub `ChainBytes` is not `Send` until its `unsafe impl Send` lands
             // (rule 2), so the future captures nothing and stays `Send`.
             let _ = (h, op, arg);
-            async move { todo!() }
+            async move { Err(crate::fail::Fail::unsupported()) }
         }
 
         /// Health probe of one member (FB_PROBES). Opens a session like `request`; answer (after TOKEN) as
@@ -159,7 +160,7 @@ crate::kind::kind_stub! {
             out: &mut crate::records::Out<'_>,
         ) -> Result<Self::Session, crate::fail::Fail> {
             let _ = (h, target, out);
-            todo!()
+            Err(crate::fail::Fail::unsupported())
         }
 
         /// Sessionless and pure: which attachment does this one inbound channel message (already framed by core
@@ -174,7 +175,7 @@ crate::kind::kind_stub! {
             out: &mut crate::records::Out<'_>,
         ) -> Result<(), crate::fail::Fail> {
             let _ = (h, key, message, out);
-            todo!()
+            Err(crate::fail::Fail::unsupported())
         }
     }
 }

@@ -1,18 +1,29 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Plane request encoders and describe decoders (IF §8.8). W0-ABI stub: frozen signatures, `todo!()` bodies;
-//! A10 fills it.
+//! Plane request encoders and describe decoders (IF §8.8). Core builds every plane record it hands a plane here,
+//! and reads the plane describe items K6 and K7 need here; the L8 adapter and the K8 serving code call them.
 
-use busbar_plugin_abi::records::{Full, RecErr, Records, Writer};
+use busbar_plugin_abi::fail::{fact, refused};
+use busbar_plugin_abi::plane::{self, tag};
+use busbar_plugin_abi::records::{
+    tag as generic, Full, Pod, Rec, RecErr, Records, Reply, U32Rec, Writer,
+};
 use busbar_plugin_abi::types::Pair;
+use zeroize::Zeroize;
 
 use crate::ports::plane::{ObservedAnswer, TrustAnswer, WorkAnswer};
 
 /// Round 13: the D_PROVIDER_SCHEMA text (at most one; a second is RecErr), or None.
 pub fn decode_provider_schema<'o>(describe: Records<'o>) -> Result<Option<&'o str>, RecErr> {
-    let _ = describe;
-    todo!()
+    let mut schema = None;
+    for rec in describe {
+        let rec = rec?;
+        if rec.tag == tag::D_PROVIDER_SCHEMA && schema.replace(rec.text()?).is_some() {
+            return Err(RecErr::Size);
+        }
+    }
+    Ok(schema)
 }
 
 /// Round 15: every D_DIALECT_AUTH item as a typed presentation, in describe order. A dialect not among the
@@ -20,9 +31,35 @@ pub fn decode_provider_schema<'o>(describe: Records<'o>) -> Result<Option<&'o st
 /// not belong to the presentation, a missing DA_SIGN_SERVICE/DA_REGION_DEFAULT under PRESENT_SIGN, or a
 /// TEXT outside the charset/length of §8.6 is RecErr (the registry refuses DescribeInvalid). Borrowed; the
 /// registry copies it once at `add` into `DialectAuthOwned` (cold).
+///
+/// W1-A10: a misplaced tag is `Unknown(tag)` (a DA_* field outside D_DIALECT_AUTH or under the other
+/// presentation, a field record where the head's TEXT belongs, a third record in a DA_FAMILY); a missing,
+/// repeated or out-of-grammar value is `Size`; a non-zero reserved word is `Reserved`.
 pub fn decode_dialect_auth<'o>(describe: Records<'o>) -> Result<Vec<DialectAuth<'o>>, RecErr> {
-    let _ = describe;
-    todo!()
+    // The image's dialects first: a row may come before the D_DIALECT item it names.
+    let mut dialects = Vec::new();
+    for rec in describe {
+        let rec = rec?;
+        match rec.tag {
+            tag::D_DIALECT => dialects.push(rec.text()?),
+            // Round 15: the DA_* fields are only valid inside a D_DIALECT_AUTH (FAULT UnknownTag elsewhere).
+            tag::DA_KEY_HEADER..=tag::DA_REGION_DEFAULT => return Err(RecErr::Unknown(rec.tag)),
+            _ => {}
+        }
+    }
+    let mut rows: Vec<DialectAuth<'o>> = Vec::new();
+    for rec in describe {
+        let rec = rec?;
+        if rec.tag != tag::D_DIALECT_AUTH {
+            continue;
+        }
+        let row = dialect_auth_row(rec)?;
+        if !dialects.contains(&row.dialect) || rows.iter().any(|seen| seen.dialect == row.dialect) {
+            return Err(RecErr::Size);
+        }
+        rows.push(row);
+    }
+    Ok(rows)
 }
 
 /// Round 15: one D_DIALECT_AUTH row. Core vocabulary only: nothing in it is a plugin settings key.
@@ -75,8 +112,44 @@ pub enum PresentationOwned {
 
 impl DialectAuth<'_> {
     pub fn to_owned(&self) -> DialectAuthOwned {
-        let _ = self;
-        todo!()
+        let present = match &self.present {
+            Presentation::Header {
+                key_header,
+                own_header,
+                passthrough_header,
+                families,
+            } => {
+                let mut owned: Vec<(Box<str>, Box<str>, bool)> = Vec::with_capacity(families.len());
+                for &(prefix, header, trim_start) in families {
+                    owned.push((Box::from(prefix), Box::from(header), trim_start));
+                }
+                PresentationOwned::Header {
+                    key_header: key_header.map(Box::from),
+                    own_header: own_header.map(Box::from),
+                    passthrough_header: passthrough_header.map(Box::from),
+                    families: owned,
+                }
+            }
+            Presentation::Sign {
+                service,
+                region_after,
+                region_default,
+            } => {
+                let mut owned: Vec<Box<str>> = Vec::with_capacity(region_after.len());
+                for &label in region_after {
+                    owned.push(Box::from(label));
+                }
+                PresentationOwned::Sign {
+                    service: Box::from(*service),
+                    region_after: owned,
+                    region_default: Box::from(*region_default),
+                }
+            }
+        };
+        DialectAuthOwned {
+            dialect: Box::from(self.dialect),
+            present,
+        }
     }
 }
 
@@ -84,10 +157,179 @@ impl DialectAuth<'_> {
 pub const PRESENT_HEADER: &str = "header";
 pub const PRESENT_SIGN: &str = "request-signature";
 
+/// §8.6: every D_DIALECT_AUTH TEXT is at most this many bytes.
+const DA_TEXT_MAX: usize = 128;
+/// §8.6 RefusalRec: the status core chose is clamped into 400..=599, and its text is at most 300 bytes.
+const REFUSAL_STATUS_MIN: u16 = 400;
+const REFUSAL_STATUS_MAX: u16 = 599;
+const REFUSAL_TEXT_MAX: usize = 300;
+/// §8.6 TrustAns: the algorithm or critical member a TRUST_VERIFY verdict names, core-cut to 128 bytes.
+const TRUST_NAMED_MAX: usize = 128;
+
+/// One D_DIALECT_AUTH item: TEXT dialect, TEXT presentation word, then that presentation's fields.
+fn dialect_auth_row(rec: Rec<'_>) -> Result<DialectAuth<'_>, RecErr> {
+    let mut fields = rec.nested();
+    let dialect = da_text(head_text(&mut fields)?, Case::Any, false)?;
+    let present = match head_text(&mut fields)? {
+        PRESENT_HEADER => header_fields(fields)?,
+        PRESENT_SIGN => sign_fields(fields)?,
+        _ => return Err(RecErr::Size),
+    };
+    Ok(DialectAuth { dialect, present })
+}
+
+/// The next record, which must be a generic TEXT.
+fn head_text<'o>(fields: &mut Records<'o>) -> Result<&'o str, RecErr> {
+    let rec = fields.next().ok_or(RecErr::Size)??;
+    if rec.tag != generic::TEXT {
+        return Err(RecErr::Unknown(rec.tag));
+    }
+    rec.text()
+}
+
+fn header_fields(fields: Records<'_>) -> Result<Presentation<'_>, RecErr> {
+    let (mut key_header, mut own_header, mut passthrough_header) = (None, None, None);
+    let mut families = Vec::new();
+    for rec in fields {
+        let rec = rec?;
+        match rec.tag {
+            tag::DA_KEY_HEADER => once(&mut key_header, da_text(rec.text()?, Case::Lower, false)?)?,
+            tag::DA_OWN_HEADER => once(&mut own_header, da_text(rec.text()?, Case::Lower, false)?)?,
+            tag::DA_PASSTHROUGH_HEADER => {
+                once(
+                    &mut passthrough_header,
+                    da_text(rec.text()?, Case::Lower, false)?,
+                )?;
+            }
+            tag::DA_FAMILY => families.push(family(rec)?),
+            other => return Err(RecErr::Unknown(other)),
+        }
+    }
+    Ok(Presentation::Header {
+        key_header,
+        own_header,
+        passthrough_header,
+        families,
+    })
+}
+
+fn sign_fields(fields: Records<'_>) -> Result<Presentation<'_>, RecErr> {
+    let (mut service, mut region_default) = (None, None);
+    let mut region_after = Vec::new();
+    for rec in fields {
+        let rec = rec?;
+        match rec.tag {
+            tag::DA_SIGN_SERVICE => once(&mut service, da_text(rec.text()?, Case::Any, false)?)?,
+            tag::DA_REGION_AFTER => region_after.push(da_text(rec.text()?, Case::Any, false)?),
+            tag::DA_REGION_DEFAULT => {
+                once(&mut region_default, da_text(rec.text()?, Case::Any, false)?)?
+            }
+            other => return Err(RecErr::Unknown(other)),
+        }
+    }
+    Ok(Presentation::Sign {
+        service: service.ok_or(RecErr::Size)?,
+        region_after,
+        region_default: region_default.ok_or(RecErr::Size)?,
+    })
+}
+
+/// DA_FAMILY: DaFamilyRec, then exactly a nested TEXT key prefix and a TEXT header ("" = bearer).
+fn family(rec: Rec<'_>) -> Result<(&str, &str, bool), RecErr> {
+    let (head, tail) = rec.pod_tail::<plane::DaFamilyRec>()?;
+    if head._r != 0 {
+        return Err(RecErr::Reserved);
+    }
+    let trim_start = match head.trim_start {
+        0 => false,
+        1 => true,
+        _ => return Err(RecErr::Size),
+    };
+    let mut parts = Records::new(tail);
+    let prefix = da_text(head_text(&mut parts)?, Case::Any, false)?;
+    let header = da_text(head_text(&mut parts)?, Case::Lower, true)?;
+    match parts.next() {
+        None => Ok((prefix, header, trim_start)),
+        Some(Ok(extra)) => Err(RecErr::Unknown(extra.tag)),
+        Some(Err(e)) => Err(e),
+    }
+}
+
+/// A field stated at most once.
+fn once<'o>(slot: &mut Option<&'o str>, value: &'o str) -> Result<(), RecErr> {
+    match slot.replace(value) {
+        None => Ok(()),
+        Some(_) => Err(RecErr::Size),
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Case {
+    Any,
+    /// Header names: lowercase only.
+    Lower,
+}
+
+/// §8.6: ≤ 128 bytes of `[A-Za-z0-9._-]` (`[a-z0-9._-]` for a header name); empty only where `empty` allows.
+fn da_text(text: &str, case: Case, empty: bool) -> Result<&str, RecErr> {
+    let charset = |byte: u8| {
+        byte.is_ascii_lowercase()
+            || byte.is_ascii_digit()
+            || matches!(byte, b'.' | b'_' | b'-')
+            || (case == Case::Any && byte.is_ascii_uppercase())
+    };
+    if text.len() > DA_TEXT_MAX || (text.is_empty() && !empty) || !text.bytes().all(charset) {
+        return Err(RecErr::Size);
+    }
+    Ok(text)
+}
+
+/// `text` cut to at most `max` bytes, at a char boundary.
+fn cut(text: &str, max: usize) -> &str {
+    let mut end = text.len().min(max);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// One record: `head`, then `parts` back to back. The tail is staged in a block of exactly its size (never
+/// regrown, so never copied) and wiped before it is freed: plane record values may be credentials.
+fn put_head_parts<T: Pod>(
+    w: &mut impl Writer,
+    tag: u16,
+    head: &T,
+    parts: &[&[u8]],
+) -> Result<(), Full> {
+    let len = parts
+        .iter()
+        .try_fold(0usize, |len, part| len.checked_add(part.len()))
+        .ok_or(Full)?;
+    let mut tail = Vec::with_capacity(len);
+    for part in parts {
+        tail.extend_from_slice(part);
+    }
+    let put = w.put_pod_tail(tag, head, &tail);
+    tail.zeroize();
+    put
+}
+
 /// `code` < 0x100 (generic only, §12.15; a larger code is a core bug: debug_assert, then R_DENIED).
 pub fn encode_refusal(w: &mut impl Writer, status: u16, code: u32, text: &str) -> Result<(), Full> {
-    let _ = (w, status, code, text);
-    todo!()
+    debug_assert!(
+        code < 0x100,
+        "a REFUSAL carries a generic code only (§12.15), got {code:#x}"
+    );
+    let code = if code < 0x100 {
+        code
+    } else {
+        refused::R_DENIED
+    };
+    let head = plane::RefusalRec {
+        status: u32::from(status.clamp(REFUSAL_STATUS_MIN, REFUSAL_STATUS_MAX)),
+        code,
+    };
+    w.put_pod_tail(tag::REFUSAL, &head, cut(text, REFUSAL_TEXT_MAX).as_bytes())
 }
 
 /// FROM_UPSTREAM P_HEAD: H_STATUS, PAIR*, FACT(FACT_TLS_PIN)? and FACT(FACT_TLS_CLIENT_ID)?.
@@ -98,21 +340,90 @@ pub fn encode_upstream_head(
     pin_ok: Option<bool>,
     client_id: Option<bool>,
 ) -> Result<(), Full> {
-    let _ = (w, status, headers, pin_ok, client_id);
-    todo!()
+    let status = U32Rec {
+        value: u32::from(status),
+        _r: 0,
+    };
+    w.put_pod(generic::H_STATUS, &status)?;
+    for pair in headers {
+        w.put_pair(generic::PAIR, pair.name.get(), pair.value.get())?;
+    }
+    if let Some(ok) = pin_ok {
+        w.put_fact(fact::FACT_TLS_PIN, u64::from(ok))?;
+    }
+    if let Some(ok) = client_id {
+        w.put_fact(fact::FACT_TLS_CLIENT_ID, u64::from(ok))?;
+    }
+    Ok(())
 }
 
 /// (check, outcome, failed, status) per COMMIT, in answer order.
 pub fn encode_committed(w: &mut impl Writer, answers: &[(u32, u32, u32, u32)]) -> Result<(), Full> {
-    let _ = (w, answers);
-    todo!()
+    for &(check, outcome, failed, status) in answers {
+        let ans = plane::CommittedRec {
+            check,
+            outcome,
+            failed,
+            status,
+        };
+        w.put_pod(tag::COMMITTED, &ans)?;
+    }
+    Ok(())
 }
 
+/// One TRUST_ANS per TRUST, in intent order. TRUST_STATE: the tail is nested TR_ITEM_STATE* (TrustItemState,
+/// name, approved digest if TS_APPROVED, sighted digest if TS_SIGHTED). TRUST_VERIFY: the tail is `named`, cut
+/// to 128 bytes. An answer has one or the other (`items` wins); TRUST_SERVES has neither.
 pub fn encode_trust_answers(w: &mut impl Writer, answers: &[TrustAnswer<'_>]) -> Result<(), Full> {
-    let _ = (w, answers);
-    todo!()
+    for answer in answers {
+        debug_assert!(
+            answer.items.is_empty() || answer.named.is_empty(),
+            "a TRUST_ANS tail is item states or a named member, never both"
+        );
+        let ans = plane::TrustAns {
+            check: answer.check,
+            verdict: answer.verdict,
+        };
+        if answer.items.is_empty() {
+            w.put_pod_tail(
+                tag::TRUST_ANS,
+                &ans,
+                cut(answer.named, TRUST_NAMED_MAX).as_bytes(),
+            )?;
+            continue;
+        }
+        let mut states = Reply::new();
+        for item in answer.items {
+            let mut flags = 0;
+            if item.approved.is_some() {
+                flags |= plane::TS_APPROVED;
+            }
+            if item.sighted.is_some() {
+                flags |= plane::TS_SIGHTED;
+            }
+            let state = plane::TrustItemState {
+                verdict: item.verdict,
+                flags,
+                name_len: u32::try_from(item.name.len()).map_err(|_| Full)?,
+                _r: 0,
+            };
+            let approved = item.approved.as_ref().map_or(&[][..], |d| &d[..]);
+            let sighted = item.sighted.as_ref().map_or(&[][..], |d| &d[..]);
+            put_head_parts(
+                &mut states,
+                tag::TR_ITEM_STATE,
+                &state,
+                &[item.name.as_bytes(), approved, sighted],
+            )?;
+        }
+        w.put_pod_tail(tag::TRUST_ANS, &ans, states.as_bytes())?;
+    }
+    Ok(())
 }
 
+/// W1-A10 hold (GitLab #257): P_CHANNEL's bytes are an unframed ChanAttach + tail (§8.6), and a `Writer` writes
+/// only whole records; no tag carries ChanAttach. The lead designer rules on the wire form; until then this
+/// stays a stub.
 pub fn encode_chan_attach(
     w: &mut impl Writer,
     generation: u64,
@@ -121,17 +432,27 @@ pub fn encode_chan_attach(
     ready_tail: &[u8],
 ) -> Result<(), Full> {
     let _ = (w, generation, slot, greet, ready_tail);
-    todo!()
+    todo!("IF hole #257: P_CHANNEL's unframed ChanAttach cannot be written through a Writer")
 }
 
+/// One CAT_MODEL text per model, in the order core shows them (`render(RENDER_CATALOG)`'s arg).
 pub fn encode_catalog(w: &mut impl Writer, models: &[&str]) -> Result<(), Full> {
-    let _ = (w, models);
-    todo!()
+    for model in models {
+        w.put_text(tag::CAT_MODEL, model)?;
+    }
+    Ok(())
 }
 
+/// One LOOKUP_HIT per hit: (lookup index, key, value), body LookupHit + key + value.
 pub fn encode_lookup_hits(w: &mut impl Writer, hits: &[(u32, &[u8], &[u8])]) -> Result<(), Full> {
-    let _ = (w, hits);
-    todo!()
+    for &(lookup, key, value) in hits {
+        let hit = plane::LookupHit {
+            lookup,
+            key_len: u32::try_from(key.len()).map_err(|_| Full)?,
+        };
+        put_head_parts(w, tag::LOOKUP_HIT, &hit, &[key, value])?;
+    }
+    Ok(())
 }
 
 /// Round 12: one CHAIN_STATE after the LOOKUP_HITs of an LK_CHAIN lookup (§8.6).
@@ -141,43 +462,95 @@ pub fn encode_chain_state(
     len: u64,
     broken_at: u64,
 ) -> Result<(), Full> {
-    let _ = (w, lookup, len, broken_at);
-    todo!()
+    let state = plane::ChainState {
+        lookup,
+        _r: 0,
+        len,
+        broken_at,
+    };
+    w.put_pod(tag::CHAIN_STATE, &state)
 }
 
+/// One ENTITLE_ANS (check, granted 1 or 0) per ENTITLE, in intent order.
 pub fn encode_entitle_answers(w: &mut impl Writer, answers: &[(u32, bool)]) -> Result<(), Full> {
-    let _ = (w, answers);
-    todo!()
+    for &(check, granted) in answers {
+        let ans = plane::EntitleAns {
+            check,
+            granted: u32::from(granted),
+        };
+        w.put_pod(tag::ENTITLE_ANS, &ans)?;
+    }
+    Ok(())
 }
 
 /// Round 16, P_JUDGED: one JUDGE_ANS (check, verdict = DEST_*) per JUDGE, in intent order.
 pub fn encode_judged(w: &mut impl Writer, answers: &[(u32, u32)]) -> Result<(), Full> {
-    let _ = (w, answers);
-    todo!()
+    for &(check, verdict) in answers {
+        w.put_pod(tag::JUDGE_ANS, &plane::JudgeAns { check, verdict })?;
+    }
+    Ok(())
 }
 
 /// P_OBSERVED: OBS_SCOPE_ANS (check, status, scope id) and OBS_RECEIPT (check, status, receipt), in intent order.
 pub fn encode_observed(w: &mut impl Writer, answers: &[ObservedAnswer<'_>]) -> Result<(), Full> {
-    let _ = (w, answers);
-    todo!()
+    for answer in answers {
+        match answer {
+            ObservedAnswer::Scope {
+                check,
+                status,
+                scope,
+            } => {
+                let ans = plane::ObsScopeAns {
+                    check: *check,
+                    status: *status,
+                };
+                let id = scope.as_ref().map_or(&[][..], |id| &id[..]);
+                w.put_pod_tail(tag::OBS_SCOPE_ANS, &ans, id)?;
+            }
+            ObservedAnswer::Receipt {
+                check,
+                status,
+                receipt,
+            } => {
+                let ans = plane::ObsReceipt {
+                    check: *check,
+                    status: *status,
+                };
+                w.put_pod_tail(tag::OBS_RECEIPT, &ans, receipt)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Round 10, P_WORK: one WORK_ANS per WORK, in intent order (WK_REF for OPEN/FIND, then WK_TARGET for FIND).
+/// An empty `reference` or `target` writes no record (`WorkAnswer`: "" when refused, and except for FIND).
 pub fn encode_work_answers(w: &mut impl Writer, answers: &[WorkAnswer<'_>]) -> Result<(), Full> {
-    let _ = (w, answers);
-    todo!()
+    for answer in answers {
+        let ans = plane::WorkAns {
+            check: answer.check,
+            status: answer.status,
+            state: answer.state,
+            _r: 0,
+        };
+        let mut nested = Reply::new();
+        if !answer.reference.is_empty() {
+            nested.put_text(tag::WK_REF, answer.reference)?;
+        }
+        if !answer.target.is_empty() {
+            nested.put_text(tag::WK_TARGET, answer.target)?;
+        }
+        w.put_pod_tail(tag::WORK_ANS, &ans, nested.as_bytes())?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     //! W1-A10: the plane encoders and describe decoders of IF §8.8, read back with the generic reader (§3.1).
 
-    use busbar_plugin_abi::fail::{fact, refused};
-    use busbar_plugin_abi::plane::{self, tag};
-    use busbar_plugin_abi::records::{
-        tag as generic, FactRec, Full, Nested, PairRec, Rec, RecErr, Records, Reply, U32Rec, Writer,
-    };
-    use busbar_plugin_abi::types::{Bytes, Pair, Str};
+    use busbar_plugin_abi::records::{FactRec, Nested, PairRec};
+    use busbar_plugin_abi::types::{Bytes, Str};
 
     use super::*;
     use crate::ports::plane::TrustItem;
