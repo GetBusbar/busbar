@@ -14,13 +14,13 @@ use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::check::check_datagram;
 use busbar_contract::abi::transport::{
     BeginIn, ConnFacts, DatagramLane, DatagramPath, DatagramRoute, EmitIn, FinishIn, FramerOut,
-    FramingIn, IngestIn, KeyingMaterial, RendezvousTerms, CLOSE_NORMAL, EMIT_TEXT,
-    FINGERPRINT_BYTES, HANDSHAKE_ANSWERS, HANDSHAKE_INITIATES, HANDSHAKE_NONE, LANE_CLEAR,
+    FramingIn, IngestIn, KeyingMaterial, CLOSE_NORMAL, EMIT_TEXT, HANDSHAKE_NONE, LANE_CLEAR,
     LANE_RENDEZVOUS, LANE_SECURED, PATH_REQUEST_BIND, PATH_REQUEST_REBIND, SIDE_ACCEPT, SIDE_DIAL,
 };
 
 use crate::dtls::{Association, IceCredentials, Role, SessionCert, SrtpKeying, Up, Verdict};
 use crate::framer::{instant_of, ready, Buffers, Call, Crossed, FramerDoor, Refused, Yielded};
+use crate::off_path::datagram::head_value;
 use crate::publication::{Custody, Memory};
 use crate::DialJudge;
 
@@ -66,7 +66,7 @@ fn text(b: &[u8]) -> AbiStr {
     }
 }
 
-fn fault(why: impl Into<String>) -> Refused {
+pub(crate) fn fault(why: impl Into<String>) -> Refused {
     Refused {
         outcome: Outcome::Fault,
         error: why.into(),
@@ -509,13 +509,13 @@ struct Asked {
 }
 
 /// Rendezvous terms, owned.
-struct Terms {
-    role: Role,
-    local: IceCredentials,
-    remote: IceCredentials,
-    fingerprint: [u8; 32],
+pub(crate) struct Terms {
+    pub(crate) role: Role,
+    pub(crate) local: IceCredentials,
+    pub(crate) remote: IceCredentials,
+    pub(crate) fingerprint: [u8; 32],
     /// The far end's advertised addresses, one per line, as the framer wrote them.
-    candidates: Vec<String>,
+    pub(crate) candidates: Vec<String>,
 }
 
 /// ONE ASSOCIATION'S DATAGRAM FRAMER, driven over the host's port and secure layer (module docs).
@@ -1237,7 +1237,7 @@ impl DatagramFraming {
                 .bufs
                 .frame_written(o.yielded.frame_len)
                 .ok_or_else(|| fault("the framer's terms are out of bounds"))?;
-            asked.terms = Some(read_terms(&d.terms, frame)?);
+            asked.terms = Some(crate::off_path::datagram::read_terms(&d.terms, frame)?);
         }
         let done = self.bufs.take(o, y)?;
         self.ended |= y.ended;
@@ -1372,52 +1372,6 @@ impl DatagramFraming {
     }
 }
 
-/// The rendezvous terms a framer answered, read out of its frame (already judged by
-fn read_terms(t: &RendezvousTerms, frame: &[u8]) -> Result<Terms, Refused> {
-    let span = |s: busbar_contract::abi::transport::FrameSpan| -> Result<&[u8], Refused> {
-        let at = usize::try_from(s.offset).map_err(|_| fault("terms span"))?;
-        let len = usize::try_from(s.len).map_err(|_| fault("terms span"))?;
-        frame
-            .get(at..at.saturating_add(len))
-            .ok_or_else(|| fault("the framer's terms are out of bounds"))
-    };
-    let utf8 = |s| -> Result<String, Refused> {
-        let text = std::str::from_utf8(span(s)?)
-            .map_err(|_| fault("the framer's check credentials are not text"))?;
-        Ok(text.to_owned())
-    };
-    let role = match t.role {
-        HANDSHAKE_INITIATES => Role::Client,
-        HANDSHAKE_ANSWERS => Role::Server,
-        _ => return Err(fault("the framer's terms name no handshake role")),
-    };
-    let candidates = std::str::from_utf8(span(t.candidates)?)
-        .map_err(|_| fault("the far end's candidates are not text"))?
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(str::to_owned)
-        .collect();
-    let mut fingerprint = [0_u8; FINGERPRINT_BYTES as usize];
-    let stated = span(t.peer_fingerprint)?
-        .get(..fingerprint.len())
-        .ok_or_else(|| fault("the far end's fingerprint is short"))?;
-    fingerprint.copy_from_slice(stated);
-    Ok(Terms {
-        role,
-        local: IceCredentials {
-            ufrag: utf8(t.local_user)?,
-            pwd: utf8(t.local_secret)?,
-        },
-        remote: IceCredentials {
-            ufrag: utf8(t.remote_user)?,
-            pwd: utf8(t.remote_secret)?,
-        },
-        fingerprint,
-        candidates,
-    })
-}
-
 /// THE PORT'S ASSOCIATIONS: every association one host port carries, and the demultiplexer that
 /// finds the one a datagram belongs to. A connectivity check names its association by the user
 /// name its first USERNAME field carries (the association's own; the association still verifies
@@ -1441,6 +1395,16 @@ pub struct Associations {
     /// user name and paths still find them), their framing with the caller.
     pub(crate) out: HashMap<u64, Out>,
     emissions: HashMap<u64, Arc<Emission>>,
+    /// The deadline index: every association with a deadline, earliest first, so the port's next
+    /// deadline is read, not swept for. An entry may be stale (the clock clears an out's deadline in
+    /// place); [`Associations::deadline`] makes the entries it reads true.
+    deadlines: std::collections::BTreeSet<(Instant, u64)>,
+    /// Each indexed association's entry in `deadlines`.
+    indexed: HashMap<u64, Instant>,
+    /// Associations handed out by [`Associations::get_mut`]: their deadline may have moved.
+    touched: Vec<u64>,
+    /// Datagram and emit buffers a queued operation gave back, for the next one queued.
+    spare: Vec<Vec<u8>>,
 }
 
 /// The paths one association holds in its port's path map (a few inline).
@@ -1483,10 +1447,17 @@ pub(crate) enum Owed<'a> {
     Timer,
 }
 
+/// The most buffers an [`Associations`] keeps for queued operations.
+const SPARE_BUFFERS: usize = 16;
+
 impl Owed<'_> {
-    fn owned(self) -> Owed<'static> {
+    /// This operation as one that outlives its borrow, its bytes copied into a buffer from `spare`
+    /// (a buffer a finished queued operation gave back) rather than a fresh one.
+    fn owned(self, spare: &mut Vec<Vec<u8>>) -> Owed<'static> {
         match self {
-            Owed::Datagram(from, b) => Owed::Datagram(from, b.into_owned().into()),
+            Owed::Datagram(from, b) => {
+                Owed::Datagram(from, std::borrow::Cow::Owned(held(b, spare)))
+            }
             Owed::Emit {
                 stream,
                 bytes,
@@ -1494,11 +1465,24 @@ impl Owed<'_> {
                 text,
             } => Owed::Emit {
                 stream,
-                bytes: bytes.into_owned().into(),
+                bytes: std::borrow::Cow::Owned(held(bytes, spare)),
                 end_of_frame,
                 text,
             },
             Owed::Timer => Owed::Timer,
+        }
+    }
+}
+
+/// `bytes` as an owned buffer: itself when owned, else a copy into a spare buffer.
+fn held(bytes: std::borrow::Cow<'_, [u8]>, spare: &mut Vec<Vec<u8>>) -> Vec<u8> {
+    match bytes {
+        std::borrow::Cow::Owned(v) => v,
+        std::borrow::Cow::Borrowed(b) => {
+            let mut v = spare.pop().unwrap_or_default();
+            v.clear();
+            v.extend_from_slice(b);
+            v
         }
     }
 }
@@ -1541,7 +1525,7 @@ impl Associations {
 
     /// Whether `framing` may be carried: the user name it is found by.
     fn admits(&self, framing: &DatagramFraming) -> Result<String, NotAdded> {
-        let user = framing.user().ok_or(NotAdded::NoTerms)?.to_owned();
+        let user = crate::off_path::datagram::owned_user(framing.user().ok_or(NotAdded::NoTerms)?);
         if self.by_user.contains_key(&user) {
             return Err(NotAdded::UserTaken);
         }
@@ -1564,6 +1548,7 @@ impl Associations {
             }
         }
         self.framings.insert(id, framing);
+        self.reindex(id);
         self.emissions.insert(id, Arc::default());
         id
     }
@@ -1590,11 +1575,13 @@ impl Associations {
             }
         }
         self.out.remove(&id);
+        self.unindex(id);
         self.emissions.remove(&id);
     }
 
     /// The association `id`.
     pub fn get_mut(&mut self, id: u64) -> Option<&mut DatagramFraming> {
+        self.touched.push(id);
         self.framings.get_mut(&id)
     }
 
@@ -1627,6 +1614,7 @@ impl Associations {
             self.forget(id, f.user());
         } else {
             self.framings.insert(id, f);
+            self.reindex(id);
         }
         Some((id, answer))
     }
@@ -1681,12 +1669,59 @@ impl Associations {
 
     /// The earliest deadline of any association.
     #[must_use]
-    pub fn deadline(&self) -> Option<Instant> {
-        self.framings
-            .values()
-            .filter_map(DatagramFraming::deadline)
-            .chain(self.out.values().filter_map(|o| o.deadline))
-            .min()
+    pub fn deadline(&mut self) -> Option<Instant> {
+        while let Some(id) = self.touched.pop() {
+            self.reindex(id);
+        }
+        loop {
+            let &(at, id) = self.deadlines.first()?;
+            if self.deadline_of(id) == Some(at) {
+                return Some(at);
+            }
+            // A stale entry (the clock cleared the deadline, or the association is gone): the
+            // association's entry is made true, and the next earliest is looked at.
+            self.reindex(id);
+        }
+    }
+
+    /// Association `id`'s deadline as it stands: its framing's, or the one it went out with.
+    fn deadline_of(&self, id: u64) -> Option<Instant> {
+        match self.framings.get(&id) {
+            Some(f) => f.deadline(),
+            None => self.out.get(&id).and_then(|o| o.deadline),
+        }
+    }
+
+    /// Make association `id`'s entry in the deadline index true (replace its old entry).
+    pub(crate) fn reindex(&mut self, id: u64) {
+        let now = self.deadline_of(id);
+        let old = match now {
+            Some(at) => self.indexed.insert(id, at),
+            None => self.indexed.remove(&id),
+        };
+        if let Some(old) = old {
+            self.deadlines.remove(&(old, id));
+        }
+        if let Some(at) = now {
+            self.deadlines.insert((at, id));
+        }
+    }
+
+    /// A finished queued operation's buffer, kept for the next operation queued.
+    fn recycle(&mut self, spent: Option<std::borrow::Cow<'_, [u8]>>) {
+        if let Some(std::borrow::Cow::Owned(mut buffer)) = spent {
+            if self.spare.len() < SPARE_BUFFERS {
+                buffer.clear();
+                self.spare.push(buffer);
+            }
+        }
+    }
+
+    /// Association `id` is gone: its entry leaves the deadline index.
+    fn unindex(&mut self, id: u64) {
+        if let Some(old) = self.indexed.remove(&id) {
+            self.deadlines.remove(&(old, id));
+        }
     }
 }
 
@@ -1813,12 +1848,13 @@ impl PortAssociations {
     ) -> Result<Answered, BusyIngress> {
         let f = {
             let mut assocs = self.lock();
-            if let Some(out) = assocs.out.get_mut(&id) {
+            let held = &mut *assocs;
+            if let Some(out) = held.out.get_mut(&id) {
                 if drop_busy && !out.closing {
                     return Err(BusyIngress);
                 }
                 if !out.closing {
-                    out.owed.push_back(op.owned());
+                    out.owed.push_back(op.owned(&mut held.spare));
                 }
                 return Ok(Vec::new());
             }
@@ -1912,12 +1948,12 @@ impl PortAssociations {
         let mut yielded = match result.expect("the producer result was checked") {
             LineStep::Batch { yielded, .. } => yielded,
             LineStep::Credit => {
-                assocs
-                    .out
+                let held = &mut *assocs;
+                held.out
                     .get_mut(&id)
                     .expect("the producer's routing record")
                     .owed
-                    .push_front(op.owned());
+                    .push_front(op.owned(&mut held.spare));
                 let mut yielded = Yielded::default();
                 yielded.continuing = true;
                 yielded
@@ -1942,6 +1978,7 @@ impl PortAssociations {
                 id,
                 taken.framing.take().expect("the producer owns its framing"),
             );
+            assocs.reindex(id);
         }
         drop(assocs);
         yielded.continuing = pending;
@@ -2120,6 +2157,7 @@ impl PortAssociations {
                     id,
                     taken.framing.take().expect("the producer owns its framing"),
                 );
+                assocs.reindex(id);
             } else {
                 out.publishing = true;
                 out.continuing = taken.framing.take();
@@ -2374,14 +2412,15 @@ impl PortAssociations {
     ) -> std::task::Poll<(Option<bool>, Answered)> {
         let (f, emission) = {
             let mut assocs = self.lock();
-            if let Some(out) = assocs.out.get_mut(&id) {
+            let held = &mut *assocs;
+            if let Some(out) = held.out.get_mut(&id) {
                 if out.closing {
                     return std::task::Poll::Ready((None, Vec::new()));
                 }
                 if matches!(busy, WhileBusy::Wait) {
                     return std::task::Poll::Pending;
                 }
-                out.owed.push_back(first.owned());
+                out.owed.push_back(first.owned(&mut held.spare));
                 return std::task::Poll::Ready((Some(true), Vec::new()));
             }
             let Some(f) = assocs.framings.remove(&id) else {
@@ -2407,11 +2446,13 @@ impl PortAssociations {
         let mut answered = Vec::new();
         loop {
             let f = taken.framing.as_mut().expect("the association is out");
+            let mut spent = None;
             let (failed, routed) = match op {
                 Owed::Datagram(from, bytes) => {
                     let answer = f.datagram(from, &bytes, now);
                     let failed = answer.is_err();
                     answered.push((id, answer));
+                    spent = Some(bytes);
                     (failed, (!failed).then_some(from))
                 }
                 Owed::Timer => {
@@ -2430,6 +2471,7 @@ impl PortAssociations {
                     let failed = answer.is_err();
                     emitted.get_or_insert(!failed);
                     answered.push((id, answer));
+                    spent = Some(bytes);
                     (failed, None)
                 }
             };
@@ -2437,6 +2479,7 @@ impl PortAssociations {
                 send(to, &d);
             }
             let mut assocs = self.lock();
+            assocs.recycle(spent);
             if let Some(from) = routed {
                 assocs.route(id, from, f);
             }
@@ -2465,6 +2508,7 @@ impl PortAssociations {
             assocs.out.remove(&id);
             if let Some(f) = taken.framing.take() {
                 assocs.framings.insert(id, f);
+                assocs.reindex(id);
             }
             break;
         }
@@ -2544,11 +2588,6 @@ pub fn stream_head(block: &[u8]) -> Option<StreamHead> {
     })
 }
 
-/// A stream head's named value, trimmed and kept.
-fn head_value(value: &str) -> String {
-    value.trim().to_owned()
-}
-
 /// One frame a leg yielded on a line, for the paired line of the other leg.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Across {
@@ -2576,6 +2615,8 @@ pub struct Bridge {
     opening_pending: bool,
     stopped: bool,
     custody: Vec<Custody>,
+    /// The frames-across list a sort filled and its caller gave back, emptied, for the next sort.
+    across_spare: Vec<Across>,
 }
 
 /// How two legs' lines fail to mirror ([`Bridge::mirrored`]'s refusal, before its text).
@@ -2604,15 +2645,7 @@ impl Bridge {
     /// The upstream dial's opening fields: one `media` field per caller line, its kind, in order,
     #[must_use]
     pub fn opening<S: AsRef<str>>(&self, channels: &[S]) -> Vec<(String, Vec<u8>)> {
-        self.caller
-            .iter()
-            .map(|(_, kind)| ("media".to_owned(), kind.clone().into_bytes()))
-            .chain(
-                channels
-                    .iter()
-                    .map(|l| ("channel".to_owned(), l.as_ref().as_bytes().to_vec())),
-            )
-            .collect()
+        crate::off_path::datagram::opening(&self.caller, channels)
     }
 
     /// Whether the two legs' lines mirror: the same count, and the same kind at every position.
@@ -2644,6 +2677,13 @@ impl Bridge {
         None
     }
 
+    /// Take back the list a [`Bridge::sort`] returned once its frames are handed on: emptied, it
+    /// is the next sort's.
+    pub(crate) fn recycle(&mut self, mut across: Vec<Across>) {
+        across.clear();
+        self.across_spare = across;
+    }
+
     /// Stop the bridge: no frame crosses again, in either direction.
     pub fn stop(&mut self) {
         self.stopped = true;
@@ -2669,7 +2709,7 @@ impl Bridge {
         leg: Leg,
         mut pieces: Vec<crate::framer::Got>,
     ) -> (Vec<crate::framer::Got>, Vec<Across>) {
-        let mut across = Vec::new();
+        let mut across = std::mem::take(&mut self.across_spare);
         // The session's pieces are compacted, in order, to the front of `pieces` itself.
         let mut kept = 0;
         for at in 0..pieces.len() {
@@ -2894,7 +2934,7 @@ impl Pairing {
         pieces: Vec<crate::framer::Got>,
         now: Instant,
     ) -> Vec<crate::framer::Got> {
-        let (session, across, to) = {
+        let (session, mut across, to) = {
             let mut st = self.lock();
             let (session, across) = st.bridge.sort(leg, pieces);
             let to = match leg {
@@ -2905,10 +2945,11 @@ impl Pairing {
         };
         self.published.notify_waiters();
         if let Some(to) = to {
-            for a in across {
+            for a in across.drain(..) {
                 to.line(a, now);
             }
         }
+        self.lock().bridge.recycle(across);
         session
     }
 

@@ -16,109 +16,21 @@ use busbar_contract::transport::wire::{ConnectionSecurity, RawIo, SecuredIoFut};
 use busbar_kernel::config::secret::SecretResolver;
 use busbar_kernel::config::sections::TlsCfg;
 use busbar_kernel::config::SecretRef;
-
-use busbar_contract::crypto::tls as crypto_tls;
-use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls::{RootCertStore, ServerConfig};
+use rustls::ServerConfig;
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
-/// Resolve a TLS secret reference to its PEM bytes, mapping any resolve error into a clear,
-fn read_pem(
-    resolver: &dyn busbar_contract::secret::SecretResolve,
-    secret: &SecretRef,
-    what: &str,
-) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
-    let resolved = resolver
-        .resolve_at_config(
-            secret,
-            &busbar_contract::config_time::ConfigScope::config_time(),
-        )
-        .map_err(|e| format!("cannot resolve TLS {what} ({}): {e}", secret.describe()))?;
-    Ok(resolved)
-}
-
-/// Parse the PEM certificate chain (leaf first). Errors name the secret source; cert bytes are
-fn load_cert_chain(
-    resolver: &dyn busbar_contract::secret::SecretResolve,
-    secret: &SecretRef,
-) -> Result<Vec<CertificateDer<'static>>, String> {
-    let src = secret.describe();
-    let bytes = read_pem(resolver, secret, "cert")?;
-    let seal = busbar_kernel::seal::lend();
-    let bytes = bytes.expose(&seal);
-    let certs = CertificateDer::pem_slice_iter(bytes)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("cannot parse TLS cert ({src}): {e}"))?;
-    if certs.is_empty() {
-        return Err(format!(
-            "TLS cert ({src}) contains no certificates (expected a PEM chain, leaf first)"
-        ));
-    }
-    Ok(certs)
-}
-
-/// Parse the PEM private key, accepting PKCS#8, PKCS#1 (RSA), or SEC1 (EC) encodings. NEVER logs key
-fn load_private_key(
-    resolver: &dyn busbar_contract::secret::SecretResolve,
-    secret: &SecretRef,
-) -> Result<PrivateKeyDer<'static>, String> {
-    let src = secret.describe();
-    let bytes = read_pem(resolver, secret, "key")?;
-    let seal = busbar_kernel::seal::lend();
-    let bytes = bytes.expose(&seal);
-
-    use rustls::pki_types::pem::Error as PemError;
-    let key = PrivateKeyDer::from_pem_slice(bytes).map_err(|e| match e {
-        PemError::NoItemsFound => {
-            format!("TLS key ({src}) contains no private key (expected PKCS#8 / PKCS#1 / SEC1 PEM)")
-        }
-        other => format!("cannot parse TLS key ({src}): {other}"),
-    })?;
-    Ok(key)
-}
-
 /// BUSBAR'S CLIENT IDENTITY for one destination, from its two secret references: the PEM chain
+/// and the PEM private key, parsed once.
 pub fn client_identity(
     resolver: &dyn busbar_contract::secret::SecretResolve,
     cert: &SecretRef,
     key: &SecretRef,
 ) -> Result<busbar_contract::transport::trust::ClientIdentity, String> {
-    let chain = load_cert_chain(resolver, cert)?;
-    let key = load_private_key(resolver, key)?;
-    let identity = busbar_contract::transport::trust::ClientIdentity {
-        cert_chain: chain.into_iter().map(|c| c.as_ref().to_vec()).collect(),
-        private_key: key.secret_der().to_vec().into(),
-    };
-    Ok(identity)
-}
-
-/// Build the client-cert verifier root store from the operator's CA bundle (mTLS).
-fn load_client_roots(
-    resolver: &SecretResolver,
-    secret: &SecretRef,
-) -> Result<RootCertStore, String> {
-    let src = secret.describe();
-    let bytes = read_pem(resolver, secret, "client_ca")?;
-    let seal = busbar_kernel::seal::lend();
-    let bytes = bytes.expose(&seal);
-    let cas = CertificateDer::pem_slice_iter(bytes)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("cannot parse TLS client_ca ({src}): {e}"))?;
-    if cas.is_empty() {
-        return Err(format!("TLS client_ca ({src}) contains no CA certificates"));
-    }
-    let mut roots = RootCertStore::empty();
-    for ca in cas {
-        roots
-            .add(ca)
-            .map_err(|e| format!("invalid CA certificate in TLS client_ca ({src}): {e}"))?;
-    }
-    Ok(roots)
+    crate::off_path::tls::client_identity(resolver, cert, key)
 }
 
 /// The ALPN ids a TLS listener offers, in its order of preference. The listener's hyper builder
-const ALPN_OFFER: [&[u8]; 2] = [ALPN_H2, b"http/1.1"];
+pub(crate) const ALPN_OFFER: [&[u8]; 2] = [ALPN_H2, b"http/1.1"];
 
 /// The ALPN id of HTTP/2 over TLS (RFC 9113 §3.3).
 const ALPN_H2: &[u8] = b"h2";
@@ -202,41 +114,7 @@ pub fn build_server_config(
     tls: &TlsCfg,
     resolver: &SecretResolver,
 ) -> Result<Arc<ServerConfig>, String> {
-    let certs = load_cert_chain(resolver, &tls.cert)?;
-    let key = load_private_key(resolver, &tls.key)?;
-
-    let verifier = match &tls.client_ca {
-        Some(ca) => {
-            let roots = load_client_roots(resolver, ca)?;
-            let verifier = crypto_tls::client_verifier(Arc::new(roots), |b| b).map_err(|e| {
-                format!(
-                    "cannot build client-cert verifier from TLS client_ca ({}): {e}",
-                    ca.describe()
-                )
-            })?;
-            Some(verifier)
-        }
-        None => None,
-    };
-
-    let config = crypto_tls::server_config(|builder| {
-        let builder = match verifier {
-            Some(verifier) => builder.with_client_cert_verifier(verifier),
-            None => builder.with_no_client_auth(),
-        };
-        let mut config = builder.with_single_cert(certs, key)?;
-        config.alpn_protocols = ALPN_OFFER.iter().map(|p| p.to_vec()).collect();
-        Ok(config)
-    })
-    .map_err(|e| match e {
-        crypto_tls::TlsError::Rustls(e) => format!(
-            "TLS cert/key are not a valid pair (cert {}, key {}): {e}",
-            tls.cert.describe(),
-            tls.key.describe()
-        ),
-        other => format!("cannot build the TLS server configuration: {other}"),
-    })?;
-    Ok(config)
+    crate::off_path::tls::build_server_config(tls, resolver)
 }
 
 /// The plaintext connection-security wrap: a byte-for-byte no-op.
@@ -323,26 +201,14 @@ impl std::fmt::Display for FailClosed {
 impl std::error::Error for FailClosed {}
 
 /// Reconcile one binding's operator config against its transport's capability and build the opaque
+/// connection-security wrap.
 pub fn prepare(
     label: &str,
     tls_cfg: Option<&TlsCfg>,
     resolver: &SecretResolver,
     transport_capable: bool,
 ) -> Result<Arc<dyn ConnectionSecurity>, FailClosed> {
-    let Some(tls) = tls_cfg else {
-        return Ok(Arc::new(Identity));
-    };
-    if !transport_capable {
-        return Err(FailClosed::IncapableTransport {
-            label: label.to_string(),
-        });
-    }
-    let config =
-        build_server_config(tls, resolver).map_err(|reason| FailClosed::MaterialUnavailable {
-            label: label.to_string(),
-            reason,
-        })?;
-    Ok(Arc::new(Tls::new(config)))
+    crate::off_path::tls::prepare(label, tls_cfg, resolver, transport_capable)
 }
 
 #[cfg(test)]

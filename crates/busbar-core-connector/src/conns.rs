@@ -389,10 +389,7 @@ fn opening_fields(fields: &[(&str, &[u8])], owned: Option<OwnedHead>) -> Vec<(St
         return owned.into_fields();
     }
     busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::OutboundHead);
-    fields
-        .iter()
-        .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
-        .collect()
+    crate::off_path::conns::copied_fields(fields)
 }
 
 /// Host defaults remain in the signed wire head, but cannot authorize caller framing fields.
@@ -1594,14 +1591,14 @@ impl Connector {
         let located = framer::locate_request(door.as_ref(), target, timeout_ms)
             .map_err(|_| ConnError::Refused)?;
         let head = HeadDefaults {
-            lines: located.defaults.clone(),
+            lines: crate::off_path::conns::copied(&located.defaults),
             states_length: located.states_length,
         };
         let carried = (!datagram).then(|| {
             Arc::new(LocatedTarget::new(
                 owner,
                 need,
-                target.to_owned(),
+                crate::off_path::conns::owned(target),
                 located.authority,
                 located.name,
                 located.secure,
@@ -3227,11 +3224,14 @@ impl DeclaredConns for Connector {
                         None => self.tls_for(&named)?,
                     },
                     target: named,
-                    alpn: declared.alpn.clone(),
+                    alpn: crate::off_path::conns::copied(&declared.alpn),
                     open_timeout: held.open_timeout,
                     anchors: None,
                     opening: Some((opening_fields(desc.fields, None), desc.body.clone())),
-                    head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
+                    head_words: (
+                        crate::off_path::conns::copied(desc.method),
+                        crate::off_path::conns::copied(desc.head_target),
+                    ),
                 },
             )
             .map_err(|f| map(&f))?;
@@ -3885,15 +3885,15 @@ impl Connector {
         let carried = located
             .filter(|located| located.answers(caller, need, target))
             .map(|located| framer::Located {
-                authority: located.authority().to_owned(),
-                name: located.name().map(str::to_owned),
+                authority: crate::off_path::conns::owned(located.authority()),
+                name: crate::off_path::conns::owned_name(located.name()),
                 secure: located.secure(),
-                offer: located.offer().to_vec(),
-                defaults: located.defaults().to_vec(),
+                offer: crate::off_path::conns::copied(located.offer()),
+                defaults: crate::off_path::conns::copied(located.defaults()),
                 states_length: located.states_length(),
             });
         let dial = Dial {
-            target: target.to_owned(),
+            target: crate::off_path::conns::owned(target),
             tls: match tls {
                 Some(own) => Some(own),
                 None => self.tls_for(target)?,
@@ -3920,7 +3920,7 @@ impl Connector {
             return Err(ConnError::AuthRefused);
         }
 
-        let authority = planned.authority().to_ascii_lowercase();
+        let authority = crate::off_path::conns::lowered(planned.authority());
         let own = (!desc.member.is_empty())
             .then(|| {
                 self.member_anchored
@@ -3932,7 +3932,9 @@ impl Connector {
             })
             .flatten();
 
-        let anchored_as = own.is_some().then(|| desc.member.to_owned());
+        let anchored_as = own
+            .is_some()
+            .then(|| crate::off_path::conns::owned(desc.member));
 
         let anchors = match own {
             Some(sealed) => sealed,
@@ -4003,9 +4005,9 @@ impl Connector {
                     owner: caller,
                     need,
                     door: Arc::as_ptr(&door).cast::<()>() as usize,
-                    authority: planned.authority().to_ascii_lowercase(),
+                    authority: crate::off_path::conns::lowered(planned.authority()),
                     secure: planned.secure(),
-                    name: planned.name().map(str::to_owned),
+                    name: crate::off_path::conns::owned_name(planned.name()),
                     class: (judged_class, egress_class),
                     reach,
                     anchored_as,
@@ -4218,7 +4220,10 @@ impl Connector {
                 alpn: alpn.clone(),
                 open_timeout,
                 opening: Some((opening_fields(desc.fields, owned), desc.body.clone())),
-                head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
+                head_words: (
+                    crate::off_path::conns::copied(desc.method),
+                    crate::off_path::conns::copied(desc.head_target),
+                ),
             };
             let via = Via {
                 door: Arc::clone(door),
@@ -4273,12 +4278,15 @@ impl Connector {
             }
             let dial = Dial {
                 anchors: None,
-                target: target.to_owned(),
+                target: crate::off_path::conns::owned(target),
                 tls: None,
                 alpn: alpn.clone(),
                 open_timeout,
                 opening: Some((opening_fields(desc.fields, owned), desc.body.clone())),
-                head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
+                head_words: (
+                    crate::off_path::conns::copied(desc.method),
+                    crate::off_path::conns::copied(desc.head_target),
+                ),
             };
             let (framer, via) = self.ride_on(door).ok_or(ConnError::Refused)?;
             let conn = Connection::dial_unix(framer, &via, dial, path).map_err(|f| map(&f))?;
@@ -4307,10 +4315,10 @@ impl Connector {
         )?;
         if prepare {
             *held.prepared.lock().expect("prepared") = Some(Prepared {
-                target: desc.target.to_owned(),
-                member: desc.member.to_owned(),
+                target: crate::off_path::conns::owned(desc.target),
+                member: crate::off_path::conns::owned(desc.member),
                 started,
-                named: target.to_owned(),
+                named: crate::off_path::conns::owned(target),
             });
             held.uncommitted.store(true, Ordering::Release);
         }
@@ -4777,7 +4785,7 @@ mod unix_target_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
-#[path = "tests/support.rs"]
+#[path = "tests/support_lib.rs"]
 pub(crate) mod support;
 
 #[cfg(test)]

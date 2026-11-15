@@ -1357,7 +1357,7 @@ fn a_request_bound_times_out_a_far_end_that_never_answers() {
         .await
         .expect("the bound woke the reader before the far end ever answered");
         assert_eq!(read, Err(ConnError::Timeout));
-        let took = started.elapsed();
+        let took = crate::support::since(started);
         assert!(
             took >= std::time::Duration::from_millis(300)
                 && took < std::time::Duration::from_secs(2),

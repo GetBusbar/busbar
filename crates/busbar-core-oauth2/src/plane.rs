@@ -74,8 +74,8 @@ const REGISTRATIONS_PER_WINDOW: u64 = oauth_as::rate_limit::DEFAULT_CLIENT_REGIS
 
 const REGISTRATION_WINDOW: std::time::Duration = oauth_as::rate_limit::DEFAULT_WINDOW;
 
+#[derive(Default)]
 pub(crate) struct Registrations {
-    base: std::time::Instant,
     state: std::sync::Mutex<RegistrationWindow>,
 }
 
@@ -87,16 +87,6 @@ struct RegistrationWindow {
     admitted: u64,
     /// Registrations being answered now.
     in_flight: u64,
-}
-
-impl Default for Registrations {
-    fn default() -> Self {
-        let base = std::time::Instant::now();
-        Self {
-            base,
-            state: std::sync::Mutex::new(RegistrationWindow::default()),
-        }
-    }
 }
 
 impl super::shared::Shared {

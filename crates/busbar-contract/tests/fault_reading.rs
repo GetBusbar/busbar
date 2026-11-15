@@ -11,8 +11,7 @@ use busbar_contract::transport::wire::WireFault;
 #[test]
 fn an_unstated_fault_byte_reads_as_no_reading() {
     // The byte a transport that predates the reading writes: the zeroed padding.
-    // SAFETY: `FramePiece` is plain C data; all-zero is a valid value of it.
-    let piece: FramePiece = unsafe { std::mem::zeroed() };
+    let piece: FramePiece = busbar_contract::abi::sdk::test_support::zeroed();
     assert_eq!(piece.fault, FAULT_NONE);
     assert_eq!(WireFault::from_code(piece.fault), None);
 }

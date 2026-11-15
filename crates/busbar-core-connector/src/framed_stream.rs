@@ -11,6 +11,9 @@ use busbar_contract::abi::transport::{StatusRow, SIDE_ACCEPT_STREAM};
 use crate::compose::HeadWords;
 use crate::framer::{AuthBinding, Established, FramerDoor, Framing, Refused, Yielded};
 
+/// How many status rows a framed stream holds inline before they spill to the heap.
+const STATUS_ROWS_INLINE: usize = 8;
+
 /// The one stream a [`SIDE_ACCEPT_STREAM`] framing carries.
 pub const STREAM: u64 = 1;
 
@@ -29,7 +32,7 @@ pub struct Closing {
 pub struct FramedStream {
     framing: Framing,
     claim: u32,
-    rows: Vec<StatusRow>,
+    rows: smallvec::SmallVec<[StatusRow; STATUS_ROWS_INLINE]>,
     partial: Vec<u8>,
     opening: Vec<HeadWords>,
     deadline_ns: Option<u64>,
@@ -107,16 +110,13 @@ impl FramedStream {
                     facts.name
                 ))
             })?;
-        let rows = facts
-            .status_rows
-            .iter()
-            .map(|&(claim, lo, hi)| StatusRow {
-                claim,
-                lo,
-                hi,
-                class: 0,
-            })
-            .collect();
+        let mut rows = smallvec::SmallVec::new();
+        rows.extend(facts.status_rows.iter().map(|&(claim, lo, hi)| StatusRow {
+            claim,
+            lo,
+            hi,
+            class: 0,
+        }));
         let established = Established {
             claim: Some(claim.to_string()),
             scheme,

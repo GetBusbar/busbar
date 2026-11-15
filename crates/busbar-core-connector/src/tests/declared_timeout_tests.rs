@@ -83,41 +83,46 @@ fn declared_dial_inheritance_and_explicit_request_bounds_stay_independent() {
             crate::compose::DEFAULT_OPEN_TIMEOUT.as_millis() as u64,
         ),
     ] {
-        let (c, _, _) = pending(declared);
-        let before = Instant::now();
-        let id = c
-            .open_request(
-                OWNER,
-                NeedId(0),
-                &OpenDesc {
-                    target: "pending.test:443",
-                    timeout_ms: request,
-                    ..Default::default()
-                },
-                false,
-                dial,
-            )
-            .unwrap();
-        let after = Instant::now();
-        let held = c.slab.get(OWNER, id).unwrap().1;
-        let at = held.dial_due.lock().unwrap().as_ref().unwrap().at;
-        assert!(at >= before + Duration::from_millis(expected));
-        assert!(at <= after + Duration::from_millis(expected));
-        let request_at = held.due.lock().unwrap().as_ref().map(|due| due.at);
-        if request == 0 {
-            assert!(request_at.is_none());
-        } else {
-            assert!(request_at.unwrap() >= before + Duration::from_millis(request));
-        }
-        assert_eq!(c.landed(OWNER, id, 70), Err(ConnError::Pending));
-        assert_eq!(c.landed(OWNER, id, 70), Err(ConnError::Pending));
-        assert_eq!(
-            held.dial_due.lock().unwrap().as_ref().unwrap().at,
-            at,
-            "Pending keeps the original dial clock"
-        );
-        c.close(OWNER, id).unwrap();
+        one_declared_dial_bound(declared, dial, request, expected);
     }
+}
+
+/// One case of the test above: the dial bound the open fixes, against the clock around the open.
+fn one_declared_dial_bound(declared: u64, dial: u64, request: u64, expected: u64) {
+    let (c, _, _) = pending(declared);
+    let before = Instant::now();
+    let id = c
+        .open_request(
+            OWNER,
+            NeedId(0),
+            &OpenDesc {
+                target: "pending.test:443",
+                timeout_ms: request,
+                ..Default::default()
+            },
+            false,
+            dial,
+        )
+        .unwrap();
+    let after = before + crate::support::since(before);
+    let held = c.slab.get(OWNER, id).unwrap().1;
+    let at = held.dial_due.lock().unwrap().as_ref().unwrap().at;
+    assert!(at >= before + Duration::from_millis(expected));
+    assert!(at <= after + Duration::from_millis(expected));
+    let request_at = held.due.lock().unwrap().as_ref().map(|due| due.at);
+    if request == 0 {
+        assert!(request_at.is_none());
+    } else {
+        assert!(request_at.unwrap() >= before + Duration::from_millis(request));
+    }
+    assert_eq!(c.landed(OWNER, id, 70), Err(ConnError::Pending));
+    assert_eq!(c.landed(OWNER, id, 70), Err(ConnError::Pending));
+    assert_eq!(
+        held.dial_due.lock().unwrap().as_ref().unwrap().at,
+        at,
+        "Pending keeps the original dial clock"
+    );
+    c.close(OWNER, id).unwrap();
 }
 
 #[test]

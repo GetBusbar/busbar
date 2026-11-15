@@ -4,6 +4,7 @@
 //! THE PROXY ENVIRONMENT, AS EVERY CONNECTOR DIAL HONOURS IT (the engine's proxy behaviour moves
 
 pub use crate::off_path::egress::proxy::{from_env, parse_proxy, resolve_config};
+pub use crate::off_path::proxy::connect_request;
 pub use crate::proxy_route::{ProxyChoice, ProxyHop};
 
 use std::ffi::OsString;
@@ -65,26 +66,6 @@ pub const CONNECT_HEAD_CAP: usize = 8 * 1024;
 
 /// Wall-clock bound on the CONNECT handshake — the same 10s the socket connect itself carries.
 pub const CONNECT_HANDSHAKE: std::time::Duration = std::time::Duration::from_secs(10);
-
-/// `CONNECT host:port HTTP/1.1` (+ Host, + Proxy-Authorization when configured), the bytes the
-#[must_use]
-pub fn connect_request(target: &str, proxy: &ProxyHop) -> Vec<u8> {
-    // The connection owns these bytes until the tunnel is written: one exactly sized buffer, the
-    // hop's tail spelled once with the hop.
-    const CONNECT: &[u8] = b"CONNECT ";
-    const HOST: &[u8] = b" HTTP/1.1\r\nHost: ";
-    const EOL: &[u8] = b"\r\n";
-    let tail = proxy.connect_tail().as_bytes();
-    let mut req =
-        Vec::with_capacity(CONNECT.len() + HOST.len() + EOL.len() + 2 * target.len() + tail.len());
-    req.extend_from_slice(CONNECT);
-    req.extend_from_slice(target.as_bytes());
-    req.extend_from_slice(HOST);
-    req.extend_from_slice(target.as_bytes());
-    req.extend_from_slice(EOL);
-    req.extend_from_slice(tail);
-    req
-}
 
 /// What the proxy has answered so far to a CONNECT for `addr` (`host:port`): `Ok(None)` = its head is not
 pub fn connect_answer(head: &[u8], addr: &str) -> Result<Option<usize>, String> {
