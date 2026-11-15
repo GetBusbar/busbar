@@ -1794,7 +1794,8 @@ pub(crate) async fn put_auth(
         let operator = busbar_kernel::config::operator_provider();
         let in_process = busbar_kernel::preflight::root_rows().in_process_auth;
         for name in &req.admin_auth {
-            let known = current.admin_modules.operator.is(name)
+            let known = name == busbar_kernel::config::KEYS_MODULE
+                || current.admin_modules.operator.is(name)
                 || current.admin_modules.modules.contains_key(name)
                 || in_process.is_some_and(|answers| answers(name));
             if !known {
@@ -3988,6 +3989,9 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 if let Some(op) = op.as_object_mut() {
                     let scope = crate::v1::contract::required_scope(&m, path);
                     op.insert("x-busbar-required-scope".to_string(), json!(scope.as_str()));
+                    if let Some(verb) = crate::admin_codec::verbs::name_at(m.as_str(), path) {
+                        op.insert("x-busbar-verb".to_string(), json!(verb));
+                    }
 
                     op.insert(
                         "security".to_string(),

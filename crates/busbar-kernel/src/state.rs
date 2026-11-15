@@ -871,6 +871,17 @@ impl App {
         request_id::next(&self.request_id_counter)
     }
 
+    /// How much of its `class` budget `actor` has spent in the window `now` falls in (a read; it
+    /// charges nothing).
+    pub fn mutation_budget_used(
+        &self,
+        actor: &str,
+        class: crate::ratelimit::MutationClass,
+        now: u64,
+    ) -> u32 {
+        self.mutation_limiter.used(actor, class, now)
+    }
+
     pub fn plane_slot(&self, key: &str) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
         self.plane_slots.get(key)
     }

@@ -768,6 +768,23 @@ fn doc_for(
             errors: vec![unavailable_503("telemetry collection is disabled, unavailable, or could not produce a bounded snapshot")],
         },
 
+        KernelVerb::GetWhoami => VerbDoc {
+            summary: "Who the admin chain says the caller is, and what the caller may do",
+            description: "The caller's principal, the credential behind it (`operator`, `key`, \
+                `identity_provider` or `open`), its scope, and every verb of the closed table it \
+                may call, computed with the gate's own predicate. Any identified admin credential \
+                may read its own identity, whatever verbs it holds. A read: it mutates nothing. \
+                `rate.read.limit` is `0`: reads are not metered."
+                .to_string(),
+            success: Success::Json(
+                schema_of(gen.subschema_for::<super::whoami::WhoamiView>()),
+                "The caller's identity and authority",
+            ),
+            request: None,
+            query: Vec::new(),
+            errors: Vec::new(),
+        },
+
         KernelVerb::ChainBreak => VerbDoc {
             summary: "Deliberately break the journal chain (disaster recovery)",
             description: "Admitted through the same gates as every other new verb, then handed to \
@@ -1327,6 +1344,9 @@ pub(crate) fn operations(
             "x-busbar-since": SINCE,
             RESPONSES_KEY: by_status,
         });
+        if let Some(verb) = crate::admin_codec::verbs::name_at(http_method.as_str(), &path) {
+            op["x-busbar-verb"] = json!(verb);
+        }
         if !doc.query.is_empty() {
             op["parameters"] = Value::Array(doc.query);
         }

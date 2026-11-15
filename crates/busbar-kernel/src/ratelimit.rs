@@ -145,6 +145,19 @@ impl MutationLimiter {
         }
     }
 
+    /// How many admitted mutations of `class` `principal` has spent in the window `now` falls in.
+    /// A read: it charges nothing.
+    pub fn used(&self, principal: &str, class: MutationClass, now: u64) -> u32 {
+        let arrived_in = now - (now % MUTATION_RATE_WINDOW_SECS);
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if arrived_in != state.latest_window {
+            return 0;
+        }
+        state.windows[class.slot()]
+            .get(principal)
+            .map_or(0, |entry| entry.0)
+    }
+
     pub fn check(&self, principal: &str, class: MutationClass, now: u64) -> RateCheck {
         let arrived_in = now - (now % MUTATION_RATE_WINDOW_SECS);
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());

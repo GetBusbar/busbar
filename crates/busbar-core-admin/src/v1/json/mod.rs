@@ -48,6 +48,7 @@ impl AdminTransport for JsonV1 {
         let router = Router::new()
             .route("/info", get(info))
             .route("/telemetry", get(telemetry::get))
+            .route("/whoami", get(whoami::get))
             .route("/pools", get(list_pools))
             .route("/pools/{name}", get(get_pool))
             .route("/models", get(list_models))
@@ -652,7 +653,9 @@ mod handlers;
 mod replay_metadata;
 mod settings_edit;
 pub(super) mod telemetry;
+mod whoami;
 pub(crate) use handlers::*;
+pub(crate) use whoami::who_of as whoami_of;
 
 mod kernel_verbs;
 

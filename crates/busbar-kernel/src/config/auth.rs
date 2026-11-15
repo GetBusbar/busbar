@@ -727,10 +727,23 @@ pub fn is_builtin_identity_module(module: &str) -> bool {
 
 pub use busbar_contract::DEFAULT_MAX_ADMIN_SCOPE;
 
+/// The effective admin chain when `auth.admin_auth` is absent (ADMIN-API r5 section 2.1):
+/// `[<operator>, keys]`, the operator word read from the admitted row and never spelled here. With
+/// no operator row it is `[keys]`: a closed chain in which only a key carrying an `admin` grant is
+/// admitted, and with no operator no `full` principal can mint one. Never `[]` (open) and never
+/// the empty word.
 pub fn default_admin_auth_names() -> Vec<String> {
-    vec![operator_provider().to_string()]
+    let operator = operator_provider();
+    (!operator.is_empty())
+        .then(|| operator.to_string())
+        .into_iter()
+        .chain([KEYS_MODULE.to_string()])
+        .collect()
 }
 
 pub fn default_admin_auth() -> Vec<AuthChainEntry> {
-    vec![AuthChainEntry::bare(operator_provider())]
+    default_admin_auth_names()
+        .into_iter()
+        .map(AuthChainEntry::bare)
+        .collect()
 }
