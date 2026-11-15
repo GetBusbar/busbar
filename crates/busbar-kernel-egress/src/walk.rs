@@ -3,9 +3,8 @@
 
 //! THE WALK: the one stepper that answers, attempt by attempt, which member is next or what the
 
-use std::collections::HashMap;
-
 use busbar_contract::caps::{Pass, Route};
+use foldhash::HashMap;
 
 use crate::exhaustion::{least_bad, retry_after_secs};
 use crate::pool::{Member, OnExhausted, Pool};
