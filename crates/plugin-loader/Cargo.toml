@@ -90,6 +90,8 @@ arc-swap = { workspace = true }
 foldhash = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
 hex = { workspace = true }
+# The MIN-3 plugin interface, core side (ABI-MIN3-INTERFACE §10, §11).
+busbar-plugin-abi = { path = "../busbar-plugin-abi", features = ["host"] }
 libloading = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time", "sync"] }
 futures = { workspace = true }

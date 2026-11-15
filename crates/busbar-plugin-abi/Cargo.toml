@@ -1,0 +1,25 @@
+[package]
+name = "busbar-plugin-abi"
+version = "1.6.0"
+publish = false            # internal workspace crate; plugins name it by git
+edition = "2024"
+rust-version = "1.97"
+description = "The MIN-3 plugin interface: the records codec, Host services, Need steps, the plugin header and the seven kind traits (ABI-MIN3-INTERFACE §2-§10). Wave 0 lands it as compiling stubs."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_plugin_abi"
+path = "src/lib.rs"
+
+[features]
+default = []
+# Core's side: answers, the buffer pool, the Need driver, the entry guard, the Host static and the scrubber (§10).
+host = []
+# The in-memory hyper/tokio IO adapter transports use (§9).
+memio = []
+
+[dependencies]
+zerocopy = { version = "0.8", features = ["derive"] }
+
+[lints]
+workspace = true
