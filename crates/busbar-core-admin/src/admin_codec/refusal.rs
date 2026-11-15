@@ -1,5 +1,6 @@
-//! The admin error envelope: 1.5.5's `{"error":{"code":"<code>","message":"<message>"}}` plus the
-//! catalog code as a top-level `code` (owner decision 2026-11-12).
+//! The admin error envelope: 1.5.5's `{"error":{"code","message"}}` with the ADMIN-API-1.6 section 1.2
+//! additions (`reason`, `request_id`, `retryable`, `details`), plus the catalog code as a top-level
+//! `code` (owner decision 2026-11-12).
 
 /// The admin error envelope around one code and one message.
 #[must_use]

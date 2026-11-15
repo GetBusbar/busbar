@@ -1114,7 +1114,7 @@ diagnostics! {
     CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED = 6009, Plugins, Actionable, "cli-validate-plugin-preflight-failed", "1.6.0", false,
         "--validate plugin pre-flight failed (structure, trust, conflict, or store resolution)",
         "`busbar --validate` ran the same plugin pre-flight boot runs — consistency, trust-policy resolution, the three-phase scan of every tarball (structural → trust → conflict), and store resolution — and it FAILED. Because this is the boot pipeline (manifest-only, no dlopen), the same plugin set would fail the plugin half of boot.",
-        "Fix the reported plugin problem: a malformed manifest, a signature/trust-policy rejection, an ABI-floor or version-floor violation, a name/alias conflict, or an unresolvable `store.module`. Re-run `--validate` until it reports `ok`.";
+        "Fix the reported plugin problem: a malformed manifest, a signature/trust-policy rejection, an ABI-floor or version-floor violation, a name/alias conflict, or a `store.module` that names no installed store plugin (the published binary links no store: install a plugin of kind `store` and select it by its name). Re-run `--validate` until it reports `ok`.";
 
     /// `--list-plugins` could not build a trust policy from `plugins.trust` — the config is invalid.
     CLI_LIST_PLUGINS_TRUST_INVALID = 6010, Plugins, Actionable, "cli-list-plugins-trust-invalid", "1.6.0", false,

@@ -20,7 +20,7 @@ pub type LinkedStore = (
     &'static str,
 );
 
-pub type LinkedStoreDoor = (
+type LinkedStoreDoor = (
     &'static str,
     bool,
     busbar_contract::abi::sdk::door::MacroDoor,
@@ -28,7 +28,7 @@ pub type LinkedStoreDoor = (
 );
 
 /// ONE STORE-AXIS ROW as the store crate states it: its `linked::STORE`
-/// in either shape, a [`LinkedStore`] or a [`LinkedStoreDoor`], read as the [`LinkedStore`] the
+/// in either shape, a [`LinkedStore`] or the door-carrying tuple, read as the [`LinkedStore`] the
 /// root's install carries. The composition root's generated table wraps every `STORE` in it.
 #[derive(Debug, Clone, Copy)]
 pub struct StoreRow<T>(pub T);
@@ -449,6 +449,19 @@ pub(crate) fn builtin_ranking(
     ranking_on_axis(axis.as_ref(), name).ok()
 }
 
+/// Operator remedy shared by the store refusals.
+const STORE_REMEDY: &str =
+    "install a signed plugin of kind store and select it with store.module set to its name";
+
+fn store_needs_plugins_error(store_ref: &str, dir: &str) -> String {
+    format!(
+        "store.module: '{store_ref}' requires the plugin subsystem, but plugins.enabled is \
+         false (the default). Set plugins.enabled: true and place the signed \
+         '{store_ref}' store plugin tarball in the plugins directory ('{dir}'). The published \
+         binary links no store of its own: store.module selects a plugin of kind store by name."
+    )
+}
+
 struct PluginRef<'a> {
     kind: &'a str,
     names: String,
@@ -595,13 +608,7 @@ pub fn plugins_preflight(
     let has_hook_plugin = !hook_plugin_refs.is_empty();
 
     if store_is_plugin && !plugins_cfg.enabled {
-        return Err(format!(
-            "store.module: '{store_ref}' requires the plugin subsystem, but plugins.enabled is \
-             false (the default). Set plugins.enabled: true and place the signed \
-             '{store_ref}' store plugin tarball in the plugins directory ('{}'), or set \
-             store.module: memory.",
-            plugins_cfg.dir
-        ));
+        return Err(store_needs_plugins_error(&store_ref, &plugins_cfg.dir));
     }
 
     if !auth_plugin_refs.is_empty() && !plugins_cfg.enabled {
@@ -666,7 +673,7 @@ pub fn plugins_preflight(
                 missing: format!("no plugin matching store.module: '{store_ref}'"),
                 must_be: "a store plugin",
                 label: "",
-                remedy: "set store.module: memory",
+                remedy: STORE_REMEDY,
             },
         )?;
     }

@@ -61,6 +61,18 @@ impl ApiError {
         }
     }
 
+    /// The closed reason (`admin::reasons`) this error carries; `internal` carries none.
+    pub fn reason(&self) -> Option<&'static str> {
+        match self {
+            ApiError::NotFound => Some("unknown_resource"),
+            ApiError::Unauthorized => Some("credential_invalid"),
+            ApiError::MethodNotAllowed => Some("method_not_allowed"),
+            ApiError::RateLimited => Some("mutation_budget"),
+            ApiError::Internal => None,
+            ApiError::Unavailable(_) => Some("service_unavailable"),
+        }
+    }
+
     pub fn message(&self) -> String {
         match self {
             ApiError::NotFound => format!("{} not found", Self::NOT_FOUND_SUBJECT),
@@ -79,24 +91,20 @@ impl ApiError {
     pub(crate) const NOT_FOUND_SUBJECT: &'static str = "resource";
 }
 
-pub fn error_envelope(status: u16, code: &str, message: &str) -> Response {
-    let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    (
-        status,
-        [(CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON)],
-        serde_json::json!({"error": {"code": code, "message": message}}).to_string(),
-    )
-        .into_response()
-}
-
 pub fn err_json(e: &ApiError) -> Response {
-    admin_error_envelope(e.http_status(), e.code(), &e.message())
+    admin_error_envelope_with(
+        e.http_status(),
+        e.code(),
+        e.reason(),
+        &e.message(),
+        &serde_json::json!({}),
+    )
 }
 
 /// THE ADMIN ERROR'S CATALOG CODE (owner decision 2026-11-12): the admin envelope's `error.code`
 /// is a closed reason vocabulary; each reason reports one `BUSBAR-81xx` catalog code, carried in a
-/// top-level `code` field beside `error` (the envelope's own rule: additive changes go outside
-/// `error`, which stays exactly `code` + `message`). Error paths only.
+/// top-level `code` field beside `error` (the envelope's `error` object carries
+/// `code`, `reason`, `message`, `request_id`, `retryable` and `details`, section 1.2). Error paths only.
 #[must_use]
 fn admin_diag(code: &str) -> &'static busbar_contract::diagnostic::Diagnostic {
     use crate::diagnostics as d;
@@ -117,25 +125,140 @@ fn admin_diag(code: &str) -> &'static busbar_contract::diagnostic::Diagnostic {
     }
 }
 
-/// The admin error envelope body: 1.5.5's `{"error":{"code","message"}}`, unchanged, plus the
-/// catalog code as a top-level `code` (`{"code":"BUSBAR-8101","error":{...}}`).
+tokio::task_local! {
+    /// The id of the admin request in flight, set at the admin boundary (`router`): the one
+    /// `request_id` every envelope of that request carries and its `X-Request-Id` header repeats.
+    static REQUEST_ID: String;
+}
+
+/// The header that carries the request id on every admin response.
+pub const HEADER_REQUEST_ID: &str = "x-request-id";
+
+/// Run `future` as the admin request `id`.
+pub async fn with_request_id<F: std::future::Future>(id: String, future: F) -> F::Output {
+    REQUEST_ID.scope(id, future).await
+}
+
+/// Run `f` as the admin request `id` (for envelopes built after the request's future returned).
+pub fn in_request_scope<T>(id: &str, f: impl FnOnce() -> T) -> T {
+    REQUEST_ID.sync_scope(id.to_string(), f)
+}
+
+/// The id of the admin request in flight. Outside a request (a unit test calling a handler
+/// directly) a process-local id is minted, so an envelope always has one.
 #[must_use]
-pub fn admin_envelope_body(code: &str, message: &str) -> String {
+pub fn current_request_id() -> String {
+    static UNSCOPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    REQUEST_ID.try_with(Clone::clone).unwrap_or_else(|_| {
+        format!(
+            "r_{:016x}",
+            UNSCOPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
+    })
+}
+
+/// `r_` and the sixteen hex digits of a request counter value.
+#[must_use]
+pub fn request_id_of(counter: u64) -> String {
+    format!("r_{counter:016x}")
+}
+
+/// The `error` object of the admin envelope (ADMIN-API-1.6 section 1.2): `code`, `reason`
+/// (`null` only for `internal`), `message`, `request_id`, `retryable` and `details`. A `reason` the
+/// raiser did not name is the default of `code`.
+#[must_use]
+pub fn error_object(
+    code: &str,
+    reason: Option<&str>,
+    message: &str,
+    details: &serde_json::Value,
+    request_id: &str,
+) -> serde_json::Value {
+    let reason = if code == "internal" {
+        None
+    } else {
+        reason.or_else(|| super::reasons::default_reason(code))
+    };
+    serde_json::json!({
+        "code": code,
+        "reason": reason,
+        "message": message,
+        "request_id": request_id,
+        "retryable": super::reasons::retryable(code, reason),
+        "details": details,
+    })
+}
+
+fn envelope_text(
+    code: &str,
+    reason: Option<&str>,
+    message: &str,
+    details: &serde_json::Value,
+    request_id: &str,
+) -> String {
     serde_json::json!({
         "code": admin_diag(code).banner().to_string(),
-        "error": { "code": code, "message": message },
+        "error": error_object(code, reason, message, details, request_id),
     })
     .to_string()
 }
 
-/// [`error_envelope`] for the ADMIN surface: the same envelope plus the top-level `code`. The plain
-/// [`error_envelope`] stays as it is for the data-plane fallback, whose bodies are client-facing.
+/// The admin error envelope body: `{"code":"BUSBAR-8101","error":{code, reason, message,
+/// request_id, retryable, details}}`, with the reason that `code` defaults to.
+#[must_use]
+pub fn admin_envelope_body(code: &str, message: &str) -> String {
+    envelope_text(
+        code,
+        None,
+        message,
+        &serde_json::json!({}),
+        &current_request_id(),
+    )
+}
+
+/// The admin error envelope response, with the reason `code` defaults to and empty `details`.
 pub fn admin_error_envelope(status: u16, code: &str, message: &str) -> Response {
+    admin_error_envelope_with(status, code, None, message, &serde_json::json!({}))
+}
+
+/// [`admin_error_envelope`] with the raiser's reason and typed details. The response carries
+/// `X-Request-Id`, equal to the body's `request_id`.
+pub fn admin_error_envelope_with(
+    status: u16,
+    code: &str,
+    reason: Option<&str>,
+    message: &str,
+    details: &serde_json::Value,
+) -> Response {
     let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    (
+    let request_id = current_request_id();
+    let mut response = (
         status,
         [(CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON)],
-        admin_envelope_body(code, message),
+        envelope_text(code, reason, message, details, &request_id),
     )
-        .into_response()
+        .into_response();
+    if let Ok(value) = axum::http::HeaderValue::from_str(&request_id) {
+        response.headers_mut().insert(HEADER_REQUEST_ID, value);
+    }
+    response
+}
+
+/// The typed `details` of reason `scope_insufficient` (section 1.3): the scope the refused call
+/// needed, and the verb (`null` until per-verb authorization, MR2).
+#[must_use]
+pub fn scope_details(needed_scope: &str) -> serde_json::Value {
+    serde_json::json!({ "needed_scope": needed_scope, "needed_verb": null })
+}
+
+/// The admin 403 for a credential whose scope is below `needed_scope`: code `forbidden`, reason
+/// `scope_insufficient`, with [`scope_details`].
+pub fn scope_insufficient(needed_scope: &str) -> Response {
+    admin_error_envelope_with(
+        403,
+        "forbidden",
+        Some("scope_insufficient"),
+        &format!("this endpoint requires the `{needed_scope}` admin scope"),
+        &scope_details(needed_scope),
+    )
 }

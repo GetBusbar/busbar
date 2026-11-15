@@ -12,7 +12,7 @@ slug: docs/1.6/errors/BUSBAR-6009
 
 ## How to fix it
 
-Fix the reported plugin problem: a malformed manifest, a signature/trust-policy rejection, an ABI-floor or version-floor violation, a name/alias conflict, or an unresolvable `store.module`. Re-run `--validate` until it reports `ok`.
+Fix the reported plugin problem: a malformed manifest, a signature/trust-policy rejection, an ABI-floor or version-floor violation, a name/alias conflict, or a `store.module` that names no installed store plugin (the published binary links no store: install a plugin of kind `store` and select it by its name). Re-run `--validate` until it reports `ok`.
 
 ---
 
