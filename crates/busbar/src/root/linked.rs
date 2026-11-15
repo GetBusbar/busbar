@@ -186,8 +186,15 @@ pub struct LinkedDoorExport {
 /// The words a linked door answers to besides its alias: its `FORMER_NAMES`, then the `from` of
 /// each `REWRITE_ALIAS` rewrite its Statement states, as one list.
 pub(crate) fn door_words(former: &[&str], rewrites: &[(u32, String, String)]) -> Vec<String> {
-    let _ = (former, rewrites);
-    Vec::new()
+    let aliases = rewrites
+        .iter()
+        .filter(|(class, _, _)| *class == busbar_contract::abi::mechanism::door::REWRITE_ALIAS)
+        .map(|(_, from, _)| from.clone());
+    former
+        .iter()
+        .map(|word| (*word).to_string())
+        .chain(aliases)
+        .collect()
 }
 
 fn export_abi() -> u32 {
