@@ -121,6 +121,17 @@ fn rig_with_backend(
     bounds: WorkBounds,
     backend: Arc<dyn PersistenceBackend>,
 ) -> Rig {
+    // A second node over the same dataset waits (`Progress::Pending`) on a live first-start owner
+    // that has not published (FIRST-START-TAKEOVER §2.1, store kit K1). The first store is that
+    // owner here, so it publishes an empty first start before the wrapped backend attaches.
+    if let Some(first) = store
+        .first_start()
+        .filter(|first| !ready(first.published()))
+    {
+        use crate::persistence::startup::Progress;
+        assert_eq!(ready(first.freeze(Vec::new())), Ok(Progress::Advanced));
+        assert_eq!(ready(first.publish()), Ok(Progress::Advanced));
+    }
     let attached = ready(crate::real_store::core_over(backend));
     let mut rig = rig_with_core(attached, bounds);
     rig.store = store;
