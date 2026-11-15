@@ -360,14 +360,14 @@ const ADMIN_SUBJECT: &str = "busbar-operator";
 
 /// `?return=` on the consent screen.
 #[derive(serde::Deserialize)]
-struct ConsentQuery {
+pub(crate) struct ConsentQuery {
     #[serde(rename = "return")]
     return_to: Option<String>,
 }
 
 /// The consent form's fields: the pending request, and which button was pressed.
 #[derive(serde::Deserialize)]
-struct ConsentForm {
+pub(crate) struct ConsentForm {
     #[serde(rename = "return")]
     return_to: Option<String>,
     /// `approve` or `deny`.
