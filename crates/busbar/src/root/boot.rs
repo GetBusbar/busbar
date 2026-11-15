@@ -351,12 +351,15 @@ pub(crate) fn registry_rows(
 
 #[must_use]
 pub(crate) fn linked_row(row: &LinkedRow) -> LinkedPlugin {
+    let former = crate::LINKED.former;
     match *row {
         LinkedRow::Store((key, ephemeral, door, canonical)) => {
             LinkedPlugin::store_named(canonical, key, door, ephemeral)
+                .with_former_names(super::linked::words_of(former, "store", key))
         }
         LinkedRow::Auth((key, canonical, door)) => {
             LinkedPlugin::auth_door_named(canonical, key, door)
+                .with_former_names(super::linked::words_of(former, "auth", key))
         }
     }
 }
@@ -1183,6 +1186,18 @@ pub(crate) fn discover_planes(
         Some(registry) => registry.open_planes(linked.plane_doors),
         None => crate::root::loader::PluginRegistry::empty().open_planes(linked.plane_doors),
     };
+    let set = set.and_then(|mut set| {
+        let mut named = false;
+        for door in set.doors.iter_mut().take(linked.plane_doors.len()) {
+            let words = super::linked::words_of(linked.former, "plane", &door.name);
+            named |= !words.is_empty();
+            *door = door.clone().answering(words);
+        }
+        if named {
+            crate::root::loader::boot::one_owner(&set.doors)?;
+        }
+        Ok(set)
+    });
     let set = set.unwrap_or_else(|refusal| {
         eprintln!("busbar: {refusal}");
         crate::root::exit::exit(2);
