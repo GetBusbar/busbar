@@ -2,13 +2,14 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A route/lifetime ABI witness. Its constant response has no exporter format.
-use busbar_contract::abi::export::{self, CheckIn, CheckOut, DeliverIn, ExportStream, Tail};
+use busbar_contract::abi::export::{self, CheckIn, CheckOut, DeliverIn, Tail};
 use busbar_contract::abi::mechanism::call::{OutHead, Outcome};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
 use busbar_contract::abi::sdk::door::statement;
 use busbar_contract::abi::sdk::export::{NoScrape, Quiet};
 use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
 use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
+use busbar_contract::export_stream::ExportStream;
 use busbar_contract::plugin::markers::ExportKind;
 
 pub struct Witness;

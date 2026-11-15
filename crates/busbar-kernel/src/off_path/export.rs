@@ -17,9 +17,10 @@ use crate::export::projection::{
 };
 use crate::limits::admission::AdmissionGate;
 use crate::plugin_routes::{PluginHttpDispatch, RouteDecl, RouteKind};
-use busbar_contract::abi::export::{CheckPhase, ExportField, ExportStream};
+use busbar_contract::abi::export::{CheckPhase, ExportField};
 use busbar_contract::abi::mechanism::route::Route;
 use busbar_contract::export_calls::ExportAxis;
+use busbar_contract::export_stream::ExportStream;
 use std::sync::{Arc, OnceLock};
 
 // --- export (mod.rs) ---

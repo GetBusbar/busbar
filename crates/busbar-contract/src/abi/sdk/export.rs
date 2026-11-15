@@ -22,7 +22,7 @@ pub const NO_EXPOSITION: &str = "this sink carries no metrics stream, so it rend
 /// `serve`'s refusal on a sink that declares no route.
 pub const NO_ROUTE: &str = "this sink declares no route, so it serves no request";
 
-/// The export kind's Statement tail: `streams` (as [`ExportStream`](crate::abi::export::ExportStream)
+/// The export kind's Statement tail: `streams` (as [`ExportStream`](crate::export_stream::ExportStream)
 #[must_use]
 pub const fn tail(streams: &'static [u8], routes: &'static [Route]) -> Tail {
     Tail {

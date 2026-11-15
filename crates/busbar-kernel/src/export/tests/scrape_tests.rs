@@ -15,7 +15,7 @@ fn an_explicit_neutral_declaration_selects_the_recorder_consumer() {
         let projection = crate::export::projection::resolve_projection(
             &name,
             &def.module,
-            Some(&[busbar_contract::abi::export::ExportStream::Metrics]),
+            Some(&[busbar_contract::export_stream::ExportStream::Metrics]),
             def.streams.as_deref(),
             def.fields.as_deref(),
             def.durable,
@@ -23,7 +23,7 @@ fn an_explicit_neutral_declaration_selects_the_recorder_consumer() {
         );
         let (scrape, recorder) = super::super::plugin::scrape_instance(
             projection,
-            Some(&[busbar_contract::abi::export::ExportStream::Metrics]),
+            Some(&[busbar_contract::export_stream::ExportStream::Metrics]),
             Some(busbar_contract::export_calls::RecorderRequirements {
                 retention_seconds: 60,
                 key_gauge_limit: 7,
@@ -106,8 +106,8 @@ async fn nested_and_panicking_crossings_restore_the_prior_lend() {
 
 #[test]
 fn recorder_admission_needs_a_declaration_and_rejects_competing_or_invalid_requests() {
-    use busbar_contract::abi::export::ExportStream;
     use busbar_contract::export_calls::RecorderRequirements;
+    use busbar_contract::export_stream::ExportStream;
     let declared = [ExportStream::Metrics];
     let mut errors = Vec::new();
     let projection = crate::export::projection::resolve_projection(

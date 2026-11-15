@@ -7,7 +7,8 @@ pub(crate) mod scrape;
 pub mod traces;
 
 use crate::export::projection::{ProjectedRecord, Rendered};
-use busbar_contract::abi::export::{ExportField, ExportStream};
+use busbar_contract::abi::export::ExportField;
+use busbar_contract::export_stream::ExportStream;
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::Arc;
 

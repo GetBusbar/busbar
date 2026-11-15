@@ -2,14 +2,15 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_contract::abi::export::{
-    self, slot, validate, CheckIn, CheckOut, DeliverIn, ExportStream, ScrapeIn, ScrapeOut, ServeIn,
-    ServeOut, StatusOut, Tail,
+    self, slot, validate, CheckIn, CheckOut, DeliverIn, ScrapeIn, ScrapeOut, ServeIn, ServeOut,
+    StatusOut, Tail,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::check::Fault;
 use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
 use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::export_stream::ExportStream;
 
 use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
 

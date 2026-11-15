@@ -4,6 +4,7 @@
 //! ONE STREAM TYPE FOR BOTH LANES: the export kind's tail order (the discriminant) and the frozen
 
 use super::*;
+use crate::export_stream::ExportStream;
 
 /// The frozen stream words, in the order every export config, sink and tail has carried them.
 const FROZEN: [&str; 10] = [

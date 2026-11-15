@@ -3,12 +3,13 @@
 
 use super::*;
 use crate::dispatch::{Bind, ConnTable, DispatchConfig, LinkedRow, NoSink};
-use busbar_contract::abi::export::{CheckOut, ExportStream, Tail};
+use busbar_contract::abi::export::{CheckOut, Tail};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
 use busbar_contract::abi::sdk::door::statement;
 use busbar_contract::abi::sdk::export::{tail, NoScrape, NoServe, Quiet};
 use busbar_contract::abi::sdk::life::{Held, Life, Refusal};
 use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
+use busbar_contract::export_stream::ExportStream;
 use busbar_contract::plugin::markers::ExportKind;
 
 struct Neutral(Vec<u8>);
