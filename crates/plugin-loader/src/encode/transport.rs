@@ -5,7 +5,7 @@
 //! A11 fills it.
 
 use busbar_plugin_abi::host_side::answer::Answer;
-use busbar_plugin_abi::records::{Full, RecErr, Writer};
+use busbar_plugin_abi::records::{Full, RecErr, Records, Writer};
 
 pub fn encode_path(w: &mut impl Writer, path: u32, flags: u32, addr: &str) -> Result<(), Full> {
     let _ = (w, path, flags, addr);
@@ -26,11 +26,210 @@ pub fn encode_keying(
 /// PAIR* (at most 8, names lowercase token characters, values without CR/LF) as `defaults`; anything else,
 /// or PAIR for ROLE_SERVER, BadRecords.
 pub fn decode_offer(a: &Answer<'_>, role: u32) -> Result<Offer, RecErr> {
-    let _ = (a, role);
-    todo!()
+    offer_from(a.records(), role)
 }
 
 pub struct Offer {
     pub alpn: Box<[Box<str>]>,
     pub defaults: Box<[(Box<str>, Box<str>)]>,
+}
+
+/// `decode_offer` over the answer's records (the seam the tests drive, since only W1-H1 builds an `Answer`).
+fn offer_from(recs: Records<'_>, role: u32) -> Result<Offer, RecErr> {
+    let _ = (recs, role);
+    todo!()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use busbar_plugin_abi::records::{tag as generic, Reply};
+    use busbar_plugin_abi::transport::{tag, ROLE_CLIENT, ROLE_DATAGRAM, ROLE_SERVER};
+
+    /// One `offer` answer's records, written by the codec's own writer.
+    fn answer(f: impl FnOnce(&mut Reply) -> Result<(), Full>) -> Reply {
+        let mut out = Reply::new();
+        f(&mut out).expect("the test answer fits");
+        out
+    }
+
+    fn decode(out: &Reply, role: u32) -> Result<Offer, RecErr> {
+        offer_from(Records::new(out.as_bytes()), role)
+    }
+
+    fn alpn(offer: &Offer) -> Vec<&str> {
+        offer.alpn.iter().map(|id| &**id).collect()
+    }
+
+    fn defaults(offer: &Offer) -> Vec<(&str, &str)> {
+        offer
+            .defaults
+            .iter()
+            .map(|(name, value)| (&**name, &**value))
+            .collect()
+    }
+
+    #[test]
+    fn an_offer_reads_alpn_then_client_defaults() {
+        let out = answer(|w| {
+            w.put_text(tag::ALPN, "h2")?;
+            w.put_text(tag::ALPN, "http/1.1")?;
+            w.put_pair(generic::PAIR, "content-type", b"application/grpc")?;
+            w.put_pair(generic::PAIR, "te", b"trailers")
+        });
+        let offer = decode(&out, ROLE_CLIENT).expect("a valid client offer");
+        assert_eq!(alpn(&offer), ["h2", "http/1.1"]);
+        assert_eq!(
+            defaults(&offer),
+            [("content-type", "application/grpc"), ("te", "trailers")]
+        );
+    }
+
+    #[test]
+    fn a_server_offer_is_alpn_only() {
+        let out = answer(|w| w.put_text(tag::ALPN, "h2"));
+        let offer = decode(&out, ROLE_SERVER).expect("a valid server offer");
+        assert_eq!(alpn(&offer), ["h2"]);
+        assert!(offer.defaults.is_empty());
+
+        let out = answer(|w| {
+            w.put_text(tag::ALPN, "h2")?;
+            w.put_pair(generic::PAIR, "accept", b"*/*")
+        });
+        assert_eq!(decode(&out, ROLE_SERVER).err(), Some(RecErr::Size));
+    }
+
+    #[test]
+    fn an_empty_answer_offers_no_alpn_on_either_side() {
+        for role in [ROLE_SERVER, ROLE_CLIENT] {
+            let offer = decode(&Reply::new(), role).expect("zero ALPN is a valid offer");
+            assert!(offer.alpn.is_empty());
+            assert!(offer.defaults.is_empty());
+        }
+    }
+
+    #[test]
+    fn alpn_ids_are_1_to_255_bytes_and_at_most_8() {
+        let longest = "a".repeat(255);
+        let out = answer(|w| w.put_text(tag::ALPN, &longest));
+        assert_eq!(
+            alpn(&decode(&out, ROLE_SERVER).expect("255 bytes")),
+            [&*longest]
+        );
+
+        let too_long = "a".repeat(256);
+        let out = answer(|w| w.put_text(tag::ALPN, &too_long));
+        assert_eq!(decode(&out, ROLE_SERVER).err(), Some(RecErr::Size));
+
+        let out = answer(|w| w.put_text(tag::ALPN, ""));
+        assert_eq!(decode(&out, ROLE_CLIENT).err(), Some(RecErr::Size));
+
+        let eight = answer(|w| (0..8).try_for_each(|_| w.put_text(tag::ALPN, "h2")));
+        assert_eq!(
+            decode(&eight, ROLE_SERVER).expect("eight ids").alpn.len(),
+            8
+        );
+        let nine = answer(|w| (0..9).try_for_each(|_| w.put_text(tag::ALPN, "h2")));
+        assert_eq!(decode(&nine, ROLE_SERVER).err(), Some(RecErr::Size));
+
+        let out = answer(|w| w.put(tag::ALPN, &[0xFF]));
+        assert_eq!(decode(&out, ROLE_SERVER).err(), Some(RecErr::Utf8));
+    }
+
+    #[test]
+    fn defaults_are_at_most_8_lowercase_token_names_without_cr_or_lf() {
+        let names = ["x-a!#$%&'*+-.^_`|~09", "accept"];
+        let out = answer(|w| {
+            names
+                .iter()
+                .try_for_each(|name| w.put_pair(generic::PAIR, name, b"v a l u e\t"))
+        });
+        let offer = decode(&out, ROLE_CLIENT).expect("token names");
+        assert_eq!(defaults(&offer).len(), 2);
+
+        for name in ["", "Accept", "x a", "x:a", "x\u{e9}"] {
+            let out = answer(|w| w.put_pair(generic::PAIR, name, b"v"));
+            assert_eq!(
+                decode(&out, ROLE_CLIENT).err(),
+                Some(RecErr::Size),
+                "{name:?}"
+            );
+        }
+        for value in [&b"a\rb"[..], b"a\nb", b"\r\n"] {
+            let out = answer(|w| w.put_pair(generic::PAIR, "accept", value));
+            assert_eq!(decode(&out, ROLE_CLIENT).err(), Some(RecErr::Size));
+        }
+        let out = answer(|w| w.put_pair(generic::PAIR, "accept", &[0xFF]));
+        assert_eq!(decode(&out, ROLE_CLIENT).err(), Some(RecErr::Utf8));
+
+        let empty_value = answer(|w| w.put_pair(generic::PAIR, "accept", b""));
+        assert_eq!(
+            defaults(&decode(&empty_value, ROLE_CLIENT).expect("an empty value")),
+            [("accept", "")]
+        );
+
+        let eight = answer(|w| (0..8).try_for_each(|_| w.put_pair(generic::PAIR, "te", b"x")));
+        assert_eq!(
+            decode(&eight, ROLE_CLIENT)
+                .expect("eight lines")
+                .defaults
+                .len(),
+            8
+        );
+        let nine = answer(|w| (0..9).try_for_each(|_| w.put_pair(generic::PAIR, "te", b"x")));
+        assert_eq!(decode(&nine, ROLE_CLIENT).err(), Some(RecErr::Size));
+    }
+
+    #[test]
+    fn an_alpn_after_a_default_line_is_bad_records() {
+        let out = answer(|w| {
+            w.put_pair(generic::PAIR, "accept", b"*/*")?;
+            w.put_text(tag::ALPN, "h2")
+        });
+        assert_eq!(decode(&out, ROLE_CLIENT).err(), Some(RecErr::Size));
+    }
+
+    /// §8.7 `offer`: any other role or tag is FAULT BadRecords, so the decoder never answers `Unknown` (which an
+    /// adapter turns into UnknownTag).
+    #[test]
+    fn any_other_tag_or_role_is_bad_records() {
+        for other in [tag::WRITE, tag::D_PROTOCOL, generic::TEXT, generic::FACT] {
+            let out = answer(|w| {
+                w.put_text(tag::ALPN, "h2")?;
+                w.put(other, &[0; 16])
+            });
+            assert_eq!(
+                decode(&out, ROLE_CLIENT).err(),
+                Some(RecErr::Size),
+                "{other:#06x}"
+            );
+        }
+        let out = answer(|w| w.put_text(tag::ALPN, "h2"));
+        for role in [0, ROLE_DATAGRAM, 4] {
+            assert_eq!(decode(&out, role).err(), Some(RecErr::Size), "role {role}");
+        }
+    }
+
+    /// METRIC is allowed in any OK answer (§3); `decode_metrics` reads it, so the offer decoder passes over it.
+    #[test]
+    fn metric_records_are_left_to_decode_metrics() {
+        let out = answer(|w| {
+            w.put_text(tag::ALPN, "h2")?;
+            w.put_metric(1, 1, 1.0, &[])?;
+            w.put_pair(generic::PAIR, "accept", b"*/*")
+        });
+        let offer = decode(&out, ROLE_CLIENT).expect("METRIC is not an offer record");
+        assert_eq!(alpn(&offer), ["h2"]);
+        assert_eq!(defaults(&offer), [("accept", "*/*")]);
+    }
+
+    #[test]
+    fn a_framing_error_is_returned_as_read() {
+        let out = answer(|w| w.put_text(tag::ALPN, "h2"));
+        let cut = &out.as_bytes()[..out.len() - 8];
+        assert_eq!(
+            offer_from(Records::new(cut), ROLE_SERVER).err(),
+            Some(RecErr::Truncated)
+        );
+    }
 }
