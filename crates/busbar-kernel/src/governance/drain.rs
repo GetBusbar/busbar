@@ -526,7 +526,7 @@ impl GovState {
     pub fn drain_remaining(&self) -> DrainRemaining {
         let count = |n: usize| u64::try_from(n).unwrap_or(u64::MAX);
         DrainRemaining {
-            checkpoints: count(self.unit_checkpoint_states().len()),
+            checkpoints: count(self.unit_checkpoint_count()),
             terminal_checkpoints: self.admissions.terminal(),
             corrections: count(
                 self.corrections

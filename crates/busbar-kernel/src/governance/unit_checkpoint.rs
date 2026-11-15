@@ -199,6 +199,11 @@ impl GovState {
         self.unit_checkpoints.pending.lock().custody_states()
     }
 
+    /// Entries in custody, without copying them (the drain progress line).
+    pub(crate) fn unit_checkpoint_count(&self) -> usize {
+        self.unit_checkpoints.pending.lock().len()
+    }
+
     /// Whether a unit flush pass holds the book's flush lock right now.
     pub(crate) fn unit_checkpoints_flushing(&self) -> bool {
         self.unit_checkpoints.flushing.try_lock().is_err()

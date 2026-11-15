@@ -287,6 +287,10 @@ impl PendingGuard<'_> {
         self.inner.entries.is_empty()
     }
 
+    pub(super) fn len(&self) -> usize {
+        self.inner.entries.len()
+    }
+
     pub(super) fn insert(&mut self, id: Id, entry: Pending) -> Option<Pending> {
         // Index the new entry before unindexing the one it replaces, so a target that stays
         // recovered never reads as unblocked in between.
