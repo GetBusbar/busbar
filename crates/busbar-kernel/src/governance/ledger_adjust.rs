@@ -409,7 +409,6 @@ impl GovState {
         &self,
         day: u64,
     ) -> RecordStoreResult<Vec<UsageAdjustment<Count>>> {
-        // busbar:expect(bp::state_scan, reason = "config: operator-issued ledger adjustment, run once per adjustment (control plane)")
         if self
             .corrections
             .lock()
@@ -446,7 +445,6 @@ impl GovState {
                 }
             }
         }
-        // busbar:expect(bp::fresh_buffer, reason = "config: operator-issued ledger adjustment, run once per adjustment (control plane)")
         let mut result = Vec::new();
         for (slot, counts) in net {
             let mut parts = slot.splitn(3, SLOT_SEP);
