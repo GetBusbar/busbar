@@ -190,6 +190,29 @@ fn undeclared_datagram_dialing_refuses_before_begin_crosses() {
     );
 }
 
+#[test]
+fn dial_minted_begins_under_a_certificate_of_its_own() {
+    let door = scripted(Knobs::default());
+    let judged = Arc::new(Mutex::new(Vec::new()));
+    let begun =
+        DatagramFraming::dial_minted(door.clone(), p("198.51.100.1:3478"), &[], judge(judged), 0);
+    assert!(begun.is_ok(), "a minted dial did not begin");
+    assert!(!door.st.lock().unwrap().seen.is_empty(), "Begin crossed");
+
+    let mut undeclared = scripted(Knobs::default());
+    Arc::get_mut(&mut undeclared).unwrap().facts.dials = false;
+    match DatagramFraming::dial_minted(
+        undeclared,
+        p("198.51.100.1:3478"),
+        &[],
+        judge(Arc::new(Mutex::new(Vec::new()))),
+        0,
+    ) {
+        Err(crate::datagram::DialBegin::Dial(e)) => assert_eq!(e.outcome, Outcome::Refused),
+        _ => panic!("a refused dial was not DialBegin::Dial"),
+    }
+}
+
 fn scripted_as(knobs: Knobs, local: (&'static str, &'static str)) -> Arc<Scripted> {
     Arc::new(Scripted {
         facts: DoorFacts {

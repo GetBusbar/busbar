@@ -315,6 +315,13 @@ fn pended_verdict(v: Verdict) -> ConnError {
     }
 }
 
+/// WHAT A MINTED DIAL THAT DID NOT BEGIN ANSWERS THE CONNECTION'S CALLER: a certificate that would not mint is
+/// the host's fault; a refused dial is a refusal.
+fn dial_begin_error(failure: datagram::DialBegin) -> ConnError {
+    let _ = failure;
+    todo!()
+}
+
 /// THE REFUSAL TEXTS (host-only, [`NeedRefusal`]): static, naming no hop (the renderer names it)
 /// and only keys the operator can set.
 mod refusal_text {
@@ -4762,6 +4769,10 @@ pub(crate) mod callback_waker;
 #[cfg(test)]
 #[path = "tests/rest_callback_tests.rs"]
 mod rest_callback_tests;
+
+#[cfg(test)]
+#[path = "tests/dial_begin_error_tests.rs"]
+mod dial_begin_error_tests;
 
 #[cfg(test)]
 #[path = "tests/settled_dial_error_tests.rs"]
