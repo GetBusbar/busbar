@@ -289,6 +289,7 @@ pub mod startup_upgrade;
         clippy::allow_attributes_without_reason
     )
 )]
+#[cfg(test)]
 pub mod transports;
 pub mod units_admin;
 pub mod userinfo;
