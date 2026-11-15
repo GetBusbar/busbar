@@ -76,25 +76,23 @@ impl From<KeyMutationError> for RecordStoreError {
     fn from(error: KeyMutationError) -> Self {
         match error {
             KeyMutationError::Store(error) => error,
-            revoked @ KeyMutationError::Revoked { .. } => Self(revoked.to_string()),
+            revoked @ KeyMutationError::Revoked { .. } => rendered_error(Self, revoked),
             KeyMutationError::Applied {
                 key_id,
                 operation,
                 reconcile,
             } => {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: a credential mutation whose cache reconcile failed is reported once"
-                )]
-                let message = format!(
-                    "{}: {operation} applied to key '{key_id}'; cache reconciliation incomplete ({reconcile})",
-                    if operation == "key.rotate" {
-                        ROTATION_DURABLE_MARKER
-                    } else {
-                        REVOCATION_DURABLE_MARKER
-                    }
-                );
-                Self(message)
+                let marker = if operation == "key.rotate" {
+                    ROTATION_DURABLE_MARKER
+                } else {
+                    REVOCATION_DURABLE_MARKER
+                };
+                rendered_error(
+                    Self,
+                    format_args!(
+                        "{marker}: {operation} applied to key '{key_id}'; cache reconciliation incomplete ({reconcile})"
+                    ),
+                )
             }
         }
     }
@@ -142,14 +140,7 @@ impl From<MintError> for RecordStoreError {
     fn from(error: MintError) -> Self {
         match error {
             MintError::Store(error) => error,
-            applied => {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: an applied mint whose cache reconcile failed is reported once"
-                )]
-                let message = applied.to_string();
-                Self(message)
-            }
+            applied => rendered_error(Self, applied),
         }
     }
 }
@@ -174,16 +165,8 @@ impl serde::Serialize for SigningKid {
 fn signed_binding(spec: NewKeySpec, now: u64) -> RecordStoreResult<(VirtualKey, String)> {
     let mut raw = [0u8; 16];
     let drawn = busbar_contract::crypto::fill(&mut raw);
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the refusal is built only when the OS CSPRNG fails"
-    )]
-    drawn.map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a virtual key id is rendered only when a key is minted"
-    )]
-    let id = format!("{VK_ID_PREFIX}{}", hex::encode(raw));
+    drawn.map_err(|e| rendered_error(RecordStoreError, format_args!("CSPRNG unavailable: {e}")))?;
+    let id = crate::off_path::governance::state::state_vk_id(VK_ID_PREFIX, &raw);
     let generation = generate_binding_generation().store()?;
     let generation_hash = binding_marker(&id, &generation);
     let binding = VirtualKey {
@@ -407,11 +390,7 @@ impl GovState {
         let domain = decl.card_signing_domain?;
         let prefix = decl.card_kid_prefix?;
         let m = self.signing_material()?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the agent-card issuer is resolved once when the planes start"
-        )]
-        let kid = format!("{prefix}{}", m.signer.kid());
+        let kid = crate::off_path::governance::state::state_card_kid(prefix, m.signer.kid());
         Some(crate::plane_driver::registry::CardIssuer {
             kid,
             issuer_spki_base64: m.signer.subkey_key_info_base64(domain),
@@ -508,7 +487,10 @@ impl GovState {
 
     /// [`Self::record_counts_served_in_era`] over the budget chain the unit's admission resolved
     /// and carried ([`crate::governance::FeeCharge::chain`]), where it carried one.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the accrual inputs are distinct scalars of one request"
+    )]
     pub fn record_counts_served_on(
         &self,
         cost: &crate::cost::CostModel,
@@ -530,25 +512,29 @@ impl GovState {
         }
 
         let (_, pool) = split_plane_lane(pool);
-        let targets = match cost.chain_carried(key, chain) {
-            Ok(chain) => chain
-                .iter()
-                .filter(|b| b.applies_to_pool(pool))
-                .map(|b| {
-                    (
-                        b.bucket_id.to_string(),
-                        budget_window(b.window, now),
-                        b.group_name.map(str::to_owned),
-                    )
-                })
-                .collect::<Vec<_>>(),
+        // Chains are a handful of buckets deep: the borrowed targets live on the stack.
+        let mut targets: ChainScratch<ChainTarget<'_>> = ChainScratch::new();
+        match cost.chain_carried(key, chain) {
+            Ok(chain) => {
+                targets.extend(chain.iter().filter(|b| b.applies_to_pool(pool)).map(|b| {
+                    ChainTarget {
+                        bucket: b.bucket_id,
+                        window: budget_window(b.window, now),
+                        group: b.group_name,
+                    }
+                }))
+            }
             Err(missing) => {
                 diag_debug!(ACCRUAL_GROUP_MISSING, key = %key.id, group = missing,
                     "group missing at accrual; tokens ledgered to the key bucket only");
-                vec![(key.id.clone(), 0, None)]
+                targets.push(ChainTarget {
+                    bucket: &key.id,
+                    window: 0,
+                    group: None,
+                });
             }
-        };
-        self.accrue_count_targets(&targets, model, era, units, now, false, || {
+        }
+        self.accrue_count_targets(&targets[..], model, era, units, now, false, || {
             self.meter_classes(key, model, provider, units, era, now)
         })
     }
@@ -580,18 +566,16 @@ impl GovState {
         } else {
             (subject, plane)
         };
-        let key: MeterKey = (
-            key.id.clone(),
-            metering_bucket(now),
-            model.to_string(),
-            provider.to_string(),
-            era.effective_from,
-            key.group.clone().unwrap_or_default(),
-            era.entry_id
-                .map(|id| id.metering_version())
-                .unwrap_or_default(),
-        );
-        self.pending_metering.try_accrue(
+        let key = MeterKeyRef {
+            key_id: &key.id,
+            bucket: metering_bucket(now),
+            model,
+            provider,
+            priced_from_ms: era.effective_from,
+            key_group_at_use: key.group.as_deref().unwrap_or(""),
+            version: era.entry_id,
+        };
+        self.pending_metering.try_accrue_ref(
             key,
             MeterCounts {
                 usage_units,
@@ -842,19 +826,16 @@ impl GovState {
         now: u64,
         era: RawRateEra,
     ) -> Result<(), CountError> {
-        let key: MeterKey = (
-            key_id.to_string(),
-            metering_bucket(now),
-            model.to_string(),
-            provider.to_string(),
-            era.effective_from,
-            key_group_at_use.to_owned(),
-            era.entry_id
-                .map(|id| id.metering_version())
-                .unwrap_or_default(),
-        );
-
-        self.pending_metering.try_accrue(key, add)
+        let key = MeterKeyRef {
+            key_id,
+            bucket: metering_bucket(now),
+            model,
+            provider,
+            priced_from_ms: era.effective_from,
+            key_group_at_use,
+            version: era.entry_id,
+        };
+        self.pending_metering.try_accrue_ref(key, add)
     }
 
     #[cfg(test)]
@@ -899,31 +880,14 @@ impl GovState {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .is_empty()
-            || metering.shards.iter().any(|shard| {
-                shard
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .values()
-                    .any(|counts| !counts.is_zero())
-            })
+            || crate::off_path::governance::state::state_metering_nonzero(&metering.shards[..])
         {
             return true;
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: custody is inspected only at shutdown, after admission has stopped"
-        )]
-        let corrections: Vec<_> = self
-            .corrections
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values()
-            .cloned()
-            .collect();
-        corrections
-            .iter()
-            .any(|pending| pending.has_unsettled_persistence())
-            || self.has_unsettled_recovery()
+        crate::off_path::governance::state::state_any_unsettled(
+            &self.corrections,
+            ledger_adjust::PendingCorrection::has_unsettled_persistence,
+        ) || self.has_unsettled_recovery()
             || self.has_unsettled_unit_checkpoints()
             || self.has_unsettled_ticket_operations()
     }
@@ -1066,27 +1030,11 @@ impl GovState {
     }
 
     pub fn reclaim_group_cells(&self, group: &str) -> usize {
-        let mut dropped = 0usize;
-        for mut shard in self.budget.write_all() {
-            let before = shard.len();
-
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: runs only when an operator deletes a group"
-            )]
-            shard.retain(|_, cell| {
-                if cell.dirty
-                    || cell.flushing != 0
-                    || cell.correction.is_some()
-                    || !cell.group_owners.contains(group)
-                {
-                    return true;
-                }
-                cell.group_owners.remove(group);
-                !cell.group_owners.is_empty()
-            });
-            dropped += before - shard.len();
-        }
+        // Runs only when an operator deletes a group (control plane).
+        let dropped = crate::off_path::governance::state::state_reclaim_group_cells(
+            self.budget.write_all(),
+            group,
+        );
 
         self.concurrent
             .write()
@@ -1101,19 +1049,7 @@ impl GovState {
         now: u64,
     ) -> RecordStoreResult<()> {
         let keys = self.core_store()?.identity().list_keys().await?;
-        let mut buckets = Vec::new();
-        for key in &keys {
-            buckets.push((key.id.clone(), super::WINDOW_TOTAL, None));
-        }
-        for group in cost.groups() {
-            for bucket in &group.buckets {
-                buckets.push((
-                    bucket.bucket_id.clone(),
-                    bucket.window,
-                    Some(group.name.clone()),
-                ));
-            }
-        }
+        let buckets = crate::off_path::governance::state::state_hydration_buckets(&keys, cost);
         for (bucket_id, period, group) in buckets {
             let window = budget_window(period, now);
             let mut cell = self.stored_cell_async(&bucket_id, window).await?;
@@ -1196,24 +1132,18 @@ impl GovState {
         }
         let store = ObservationStore::open(self.core.clone()).expect("durability support checked");
         let (plane, pool) = split_plane_lane(pool);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the refusal is built only when admission is blocked"
-        )]
         let chain = cost
             .chain_carried(key, chain)
-            .map_err(|g| LimitBlocked::MissingGroup(g.to_string()))?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the refusal is built only when admission is blocked"
-        )]
-        let blocked = |bucket: &crate::cost::ChainBucket<'_>, metric| LimitBlocked::Limit {
-            group: bucket.group_name.unwrap_or(bucket.bucket_id).to_string(),
-            metric,
-            window: Some(bucket.window),
-            pool: bucket.scope.map(|s| s.value.clone()),
-            downgrade_to: None,
-            retry_after: None,
+            .map_err(crate::cold::governance::state::state_missing_group)?;
+        let blocked = |bucket: &crate::cost::ChainBucket<'_>, metric| {
+            crate::cold::governance::state::state_limit_blocked(
+                bucket.group_name.unwrap_or(bucket.bucket_id),
+                metric,
+                Some(bucket.window),
+                bucket.scope,
+                None,
+                None,
+            )
         };
         match store.has_accounting().await {
             Ok(false) => return Ok(()),
@@ -1325,10 +1255,18 @@ impl GovState {
         window: u64,
         total: crate::persistence::observations::BudgetTotal,
     ) {
-        self.observation_view
+        let mut view = self
+            .observation_view
             .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert((bucket.to_owned(), window), total);
+            .unwrap_or_else(|e| e.into_inner());
+        match view.get_mut(bucket) {
+            Some(windows) => {
+                windows.insert(window, total);
+            }
+            None => crate::cold::governance::state::state_observation_first(
+                &mut view, bucket, window, total,
+            ),
+        }
     }
 
     /// Synchronous hook/stream view uses the last authoritative read. Admission itself
@@ -1345,7 +1283,10 @@ impl GovState {
             .read()
             .unwrap_or_else(|e| e.into_inner());
         for state in &mut states {
-            if let Some(total) = observed.get(&(state.bucket_id.clone(), state.window_start)) {
+            let total = observed
+                .get(state.bucket_id.as_str())
+                .and_then(|windows| windows.get(&state.window_start));
+            if let Some(total) = total {
                 let liability = total
                     .liability_nanos()
                     .ok()
@@ -1436,18 +1377,7 @@ impl GovState {
         {
             return g.clone();
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a group's gauge is keyed once, the first time the group is admitted"
-        )]
-        let gauge = self
-            .concurrent
-            .write()
-            .unwrap_or_else(|p| p.into_inner())
-            .entry(group.to_string())
-            .or_default()
-            .clone();
-        gauge
+        crate::cold::governance::state::state_concurrent_gauge_first(&self.concurrent, group)
     }
 
     #[cfg(test)]
@@ -1571,12 +1501,9 @@ impl GovState {
     ) -> Result<AdmitGrant, LimitBlocked> {
         let (plane, pool) = split_plane_lane(pool);
 
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the refusal is built only when admission is blocked"
-        )]
-        let missing = |g: &str| LimitBlocked::MissingGroup(g.to_string());
-        let chain = cost.chain_carried(key, carried).map_err(missing)?;
+        let chain = cost
+            .chain_carried(key, carried)
+            .map_err(crate::cold::governance::state::state_missing_group)?;
 
         // Chains are a handful of buckets deep: the admission scratch lives on the stack.
         let mut buckets: ChainScratch<&crate::cost::ChainBucket<'_>> = ChainScratch::new();
@@ -1588,18 +1515,14 @@ impl GovState {
         for bucket in &buckets {
             let window = budget_window(bucket.window, now);
             if self.unresolved_unit_target(bucket.bucket_id, window) {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: the refusal is built only when admission is blocked"
-                )]
-                return Err(LimitBlocked::Limit {
-                    group: bucket.group_name.unwrap_or(bucket.bucket_id).to_string(),
-                    metric: "budget",
-                    window: Some(bucket.window),
-                    pool: bucket.scope.map(|scope| scope.value.clone()),
-                    downgrade_to: None,
-                    retry_after: None,
-                });
+                return Err(crate::cold::governance::state::state_limit_blocked(
+                    bucket.group_name.unwrap_or(bucket.bucket_id),
+                    "budget",
+                    Some(bucket.window),
+                    bucket.scope,
+                    None,
+                    None,
+                ));
             }
         }
 
@@ -1643,18 +1566,17 @@ impl GovState {
                 .iter()
                 .map(|bucket| self.budget.shard_index(bucket.bucket_id)),
         );
-        let mut order: ChainScratch<usize> = ChainScratch::new();
-        order.extend_from_slice(&shard_idx);
-        order.sort();
+        // The distinct shards in ascending index order (the canonical, deadlock-free lock order):
+        // one bit per shard, so the order needs no sort and the duplicates fold away.
+        let mut pending_shards = shard_idx.iter().fold(0u64, |mask, &sh| mask | (1u64 << sh));
         let mut guards: ChainScratch<Option<std::sync::RwLockWriteGuard<'_, _>>> =
             ChainScratch::new();
         guards.resize_with(n, || None);
         let mut guard_shards: ChainScratch<usize> = ChainScratch::from_elem(usize::MAX, n);
         let mut g = 0usize;
-        for &sh in order.iter() {
-            if g > 0 && guard_shards[g - 1] == sh {
-                continue;
-            }
+        while pending_shards != 0 {
+            let sh = pending_shards.trailing_zeros() as usize;
+            pending_shards &= pending_shards - 1;
             let shard = self.budget.shard_at(sh);
 
             let sweep_needed = shard
@@ -1664,25 +1586,8 @@ impl GovState {
                 .is_multiple_of(crate::limits::rate_sweep_interval());
             let mut map = shard.write();
             if sweep_needed {
-                let max_window = 31 * super::SECS_PER_DAY;
-                map.retain(|id, c| {
-                    if c.window_start != 0 {
-                        return c.correction.is_some()
-                            || c.dirty
-                            || c.flushing != 0
-                            || c.window_start.saturating_add(max_window) > now;
-                    }
-
-                    c.correction.is_some()
-                        || still_enforces_a_cap(cost, id)
-                        || c.dirty
-                        || c.flushing != 0
-                        || c.last_touch.saturating_add(max_window) > now
-                });
-
-                for c in map.values_mut() {
-                    c.prune_dead_models();
-                }
+                // Amortized housekeeping, once per `rate_sweep_interval` admissions on the shard.
+                crate::off_path::governance::state::state_sweep_budget_shard(&mut map, cost, now);
             }
             guards[g] = Some(map);
             guard_shards[g] = sh;
@@ -1780,25 +1685,16 @@ impl GovState {
             if let Some(metric) = blocked_metric {
                 drop(guards);
                 drop(grant);
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: the refusal is built only when admission is blocked"
-                )]
-                return Err(LimitBlocked::Limit {
-                    group: bucket
-                        .group_name
-                        .expect("only group buckets carry caps")
-                        .to_string(),
+                return Err(crate::cold::governance::state::state_limit_blocked(
+                    bucket.group_name.expect("only group buckets carry caps"),
                     metric,
-                    window: Some(bucket.window),
-                    pool: bucket.scope.map(|s| s.value.clone()),
-
-                    downgrade_to: (metric == "budget" && !refused)
-                        .then(|| bucket.downgrade_to.map(|s| s.value.clone()))
-                        .flatten(),
-                    retry_after: super::window_end(bucket.window, now)
-                        .map(|end| end.saturating_sub(now).max(1)),
-                });
+                    Some(bucket.window),
+                    bucket.scope,
+                    bucket
+                        .downgrade_to
+                        .filter(|_| metric == "budget" && !refused),
+                    super::window_end(bucket.window, now).map(|end| end.saturating_sub(now).max(1)),
+                ));
             }
         }
 
@@ -1807,12 +1703,8 @@ impl GovState {
         // One fee request on a plane's fee lane: the unit map is built once per process.
         static PER_REQUEST_ONE: std::sync::OnceLock<BTreeMap<String, Count>> =
             std::sync::OnceLock::new();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the one-fee-request unit map is built once per process"
-        )]
         let one =
-            PER_REQUEST_ONE.get_or_init(|| BTreeMap::from([(PER_REQUEST.to_string(), Count::ONE)]));
+            PER_REQUEST_ONE.get_or_init(crate::cold::governance::state::state_per_request_one);
         grant.charge.lane = (!plane.is_empty()).then(|| plane_fee_lane(plane));
         grant.charge.era = era;
         grant.charge.chain = Some(chain.plan(carried));
@@ -1829,24 +1721,16 @@ impl GovState {
                 }
                 Some(c) => c,
                 None => {
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "config: a bucket's cell is keyed once, the first time the bucket is charged"
-                    )]
-                    let fresh = map
-                        .entry(bucket.bucket_id.to_string())
-                        .or_insert_with(|| BudgetCell::fresh(window));
-                    fresh
+                    crate::cold::governance::state::state_fresh_cell(map, bucket.bucket_id, window)
                 }
             };
             cell.mutate(|cell| {
                 if let Some(group) = bucket.group_name {
                     if !cell.group_owners.contains(group) {
-                        #[expect(
-                            clippy::disallowed_methods,
-                            reason = "config: a bucket learns each owning group once, the first time it is charged"
-                        )]
-                        cell.group_owners.insert(group.to_string());
+                        crate::cold::governance::state::state_owner_first(
+                            &mut cell.group_owners,
+                            group,
+                        );
                     }
                 }
                 cell.requests = cell.requests.saturating_add(1);
@@ -1878,24 +1762,8 @@ impl GovState {
                 if cell.window_start == *window {
                     refund_in_place(cell, lane, charge.era);
                 } else if cell.window_start > *window {
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "error: a refund runs only for a request that failed"
-                    )]
-                    let taken_back = match lane {
-                        None => UsageDelta {
-                            billable_requests: -1,
-                            ..UsageDelta::default()
-                        },
-                        Some((lane, unit)) => UsageDelta {
-                            models: vec![busbar_contract::records::ModelTokensDelta {
-                                scale: COUNT_SCALE,
-                                model: lane.to_string(),
-                                usage_units: BTreeMap::from([(unit.to_string(), -1_000_000)]),
-                            }],
-                            ..UsageDelta::default()
-                        },
-                    };
+                    // A refund into a rolled window runs only for a request that failed.
+                    let taken_back = crate::cold::governance::state::state_refund_delta(lane);
                     cell.park_eras(*window, dated_delta(&taken_back, charge.era));
                     cell.park(*window, taken_back);
                     cell.dirty = true;
@@ -2017,11 +1885,7 @@ impl GovState {
                 let mut errors = self.retry_usage_corrections().await;
                 if self.recovery_enabled() {
                     if let Err(error) = self.resume_raw_recovery().await {
-                        #[expect(
-                            clippy::disallowed_methods,
-                            reason = "error: the message is built only when a flush step fails"
-                        )]
-                        errors.push(error.to_string());
+                        errors.push(rendered_error(std::convert::identity, error));
                     }
                 }
 
@@ -2029,7 +1893,10 @@ impl GovState {
                 // One flag swap per tick selects the shards written since the last tick (W6). Pass 2
                 // walks those again plus any written during the await between the passes, so a
                 // shard pass 1 selected is never dropped. Shutdown and the backstop walk them all.
-                let backstop = !shutdown && self.budget.backstop_due(std::time::Instant::now());
+                let backstop = !shutdown
+                    && self
+                        .budget
+                        .backstop_due(crate::off_path::governance::state::state_flush_instant());
                 let flagged = self.budget.take_flags();
                 let mask1 = if shutdown || backstop {
                     ALL_SHARDS
@@ -2057,23 +1924,25 @@ impl GovState {
                 // Include accrual that arrived while retained operations were awaiting their
                 // receipts. Capture is entirely in memory; each immutable flight owns its debt
                 // before any Store call can suspend this future.
-                let mut new_flights = Vec::new();
                 let mask2 = mask1 | self.budget.take_flags();
-                for (index, mut map) in self.budget.write_masked(mask2) {
-                    let mut left_dirty = false;
-                    for (id, cell) in map.iter_mut() {
+                // A cell still dirty (a capture refused while its flight is in flight, a
+                // retained correction, leftover deltas or rolled windows) is walked again on
+                // the next tick, not at the backstop: its shard is reflagged while its lock is
+                // held.
+                let new_flights = crate::off_path::governance::state::state_flush_walk(
+                    self.budget.write_masked(mask2),
+                    |id: &str, cell: &mut BudgetCell, flights: &mut Vec<Arc<BudgetFlushFlight>>| {
                         #[cfg(test)]
                         self.budget
                             .flush_cells_visited
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         if !cell.dirty {
-                            continue;
+                            return false;
                         }
                         if self.budget_bucket_deleting(id) {
-                            left_dirty = true;
-                            continue;
+                            return true;
                         }
-                        new_flights.extend(self.capture_budget_flushes(id, cell, &foreign_settled));
+                        flights.extend(self.capture_budget_flushes(id, cell, &foreign_settled));
                         cell.mutate(|cell| {
                             cell.dirty = cell.correction.is_some()
                                 || !ExactUsageDelta::of(cell, false).is_zero()
@@ -2081,15 +1950,10 @@ impl GovState {
                                 || !cell.rolled.is_empty()
                                 || !cell.rolled_eras.is_empty();
                         });
-                        left_dirty |= cell.dirty;
-                    }
-                    // A cell still dirty (a capture refused while its flight is in flight, a
-                    // retained correction, leftover deltas or rolled windows) is walked again on
-                    // the next tick, not at the backstop. Set while the shard's lock is held.
-                    if left_dirty {
-                        self.budget.reflag(index);
-                    }
-                }
+                        cell.dirty
+                    },
+                    |index| self.budget.reflag(index),
+                );
                 #[cfg(test)]
                 self.assert_dirty_cells_flagged();
                 let (late_flushed, late_errors) = if shutdown {
@@ -2129,10 +1993,20 @@ impl GovState {
         kind: &str,
         public_id: &str,
     ) -> Option<(Arc<VirtualKey>, CredentialSecret)> {
-        self.caches_read()
-            .by_credential
-            .get(&(kind.to_string(), public_id.to_string()))
-            .cloned()
+        thread_local! {
+            /// The credential index's lookup key, refilled per lookup on this thread: the index
+            /// is keyed by owned pairs, and the probe reuses its buffers instead of copying both.
+            static PROBE: std::cell::RefCell<(String, String)> =
+                const { std::cell::RefCell::new((String::new(), String::new())) };
+        }
+        PROBE.with(|probe| {
+            let mut probe = probe.borrow_mut();
+            probe.0.clear();
+            probe.0.push_str(kind);
+            probe.1.clear();
+            probe.1.push_str(public_id);
+            self.caches_read().by_credential.get(&*probe).cloned()
+        })
     }
 
     pub fn credential_secret(
@@ -2203,10 +2077,6 @@ impl GovState {
     }
 }
 
-fn still_enforces_a_cap(cost: &crate::cost::CostModel, bucket_id: &str) -> bool {
-    cost.bucket_enforces_a_cap(bucket_id)
-}
-
 fn refund_in_place(cell: &mut BudgetCell, lane: Option<(&str, &str)>, era: RawRateEra) {
     cell.mutate(|cell| {
         match lane {
@@ -2241,175 +2111,21 @@ fn take_one(counts: &mut BTreeMap<String, Count>, unit: &str) {
 }
 
 fn money_refusal(bucket_id: &str, e: &busbar_kernel_ledger::cost::MoneyError) -> RecordStoreError {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the refusal text is built only when a spend cannot be priced"
-    )]
-    let message = format!("the spend of bucket `{bucket_id}` cannot be priced: {e}");
-    RecordStoreError(message)
+    rendered_error(
+        RecordStoreError,
+        format_args!("the spend of bucket `{bucket_id}` cannot be priced: {e}"),
+    )
 }
 
+/// A bucket's cell rebuilt from its durable rows (hydration, recovery, corrections and usage
+/// views); the rebuild itself is off-path code.
 pub(super) fn durable_cell(
     bucket_id: &str,
     row: busbar_contract::records::UsageLedger,
     eras: busbar_contract::records::UsageLedger,
     window: u64,
 ) -> RecordStoreResult<BudgetCell> {
-    let mut cell = BudgetCell::fresh(window);
-    cell.requests = row.requests;
-    cell.billable_requests = row.billable_requests;
-    cell.flushed_requests = row.requests;
-    cell.flushed_billable_requests = row.billable_requests;
-    cell.models = durable_segments(bucket_id, row.models)?;
-    let (mut fees, mut undated_fees) = (Vec::new(), row.billable_requests);
-    for e in eras.models {
-        for raw in e.usage_units.values() {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: the refusal text is built only when a durable row is invalid"
-            )]
-            let count =
-                Count::from_stored(*raw, e.scale).map_err(|e| RecordStoreError(e.to_string()))?;
-            if count.is_negative() {
-                return Err(RecordStoreError("negative durable era usage total".into()));
-            }
-        }
-        let (era, model) = match e.model.split_once(ERA_MODEL_SEP) {
-            Some((era, model)) => (era, Some(model)),
-            None => (e.model.as_str(), None),
-        };
-        let Some(era) = parse_era_tag(era)? else {
-            continue;
-        };
-        if era == RawRateEra::legacy(0) {
-            continue;
-        }
-        let Some(model) = model else {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: the refusal text is built only when a durable row is invalid"
-            )]
-            let count = Count::from_stored(
-                e.usage_units.get(ERA_FEE_UNIT).copied().unwrap_or(0),
-                e.scale,
-            )
-            .map_err(|e| RecordStoreError(e.to_string()))?;
-            if count.micros() % 1_000_000 != 0 {
-                return Err(RecordStoreError("fractional fee count".into()));
-            }
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: the refusal text is built only when a durable row is invalid"
-            )]
-            let n = u64::try_from(count.micros() / 1_000_000)
-                .map_err(|e| RecordStoreError(e.to_string()))?
-                .min(undated_fees);
-            undated_fees -= n;
-            fees.push((era, n));
-            continue;
-        };
-        let rest =
-            (cell.models.iter_mut()).find(|m| m.era == RawRateEra::legacy(0) && *m.model == *model);
-        let Some(rest) = rest else {
-            continue;
-        };
-        let mut cur = BTreeMap::new();
-        for (unit, n) in e.usage_units {
-            let left = rest.cur.get(&unit).copied().unwrap_or_default();
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: the refusal text is built only when a durable row is invalid"
-            )]
-            let n = Count::from_stored(n, e.scale).map_err(|e| RecordStoreError(e.to_string()))?;
-            let n = n.min(left);
-            if n.is_zero() {
-                continue;
-            }
-            if left == n {
-                rest.cur.remove(&unit);
-            } else {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: the refusal text is built only when a durable row is invalid"
-                )]
-                rest.cur.insert(
-                    unit.clone(),
-                    left.checked_sub(n)
-                        .map_err(|e| RecordStoreError(e.to_string()))?,
-                );
-            }
-            cur.insert(unit, n);
-        }
-        let model = rest.model.clone();
-        cell.models.extend(ModelCell::new(
-            model,
-            era,
-            cur,
-            BTreeMap::new(),
-            BTreeMap::new(),
-        ));
-    }
-    for m in &mut cell.models {
-        m.flushed = m.cur.clone();
-        m.flushed_era = m.cur.clone();
-    }
-    cell.fee_eras = busbar_kernel_ledger::usage::FeeEras::of(fees);
-    cell.flushed_fee_eras = cell.fee_eras.clone();
-    Ok(cell)
-}
-
-fn durable_segments(
-    bucket_id: &str,
-    rows: Vec<busbar_contract::records::ModelTokens>,
-) -> RecordStoreResult<Vec<ModelCell>> {
-    let mut dropped = 0usize;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a cell is rebuilt from its durable row only for operator usage views, corrections and recovery"
-    )]
-    let cells = rows
-        .into_iter()
-        .map(|m| -> RecordStoreResult<Option<ModelCell>> {
-            let cur = m
-                .usage_units
-                .into_iter()
-                .map(|(unit, n)| {
-                    #[expect(clippy::disallowed_methods, reason = "error: the refusal text is built only when a durable row is invalid")]
-                    let count = Count::from_stored(n, m.scale)
-                        .map_err(|e| RecordStoreError(e.to_string()))?;
-                    if count.is_negative() {
-                        return Err(RecordStoreError("negative durable usage total".into()));
-                    }
-                    Ok((unit, count))
-                })
-                .collect::<RecordStoreResult<_>>()?;
-            Ok(ModelCell::new(
-                m.model.into(),
-                RawRateEra::legacy(0),
-                cur,
-                BTreeMap::new(),
-                BTreeMap::new(),
-            ))
-        })
-        .filter_map(|row| match row {
-            Ok(None) => {
-                dropped += 1;
-                None
-            }
-            Ok(Some(row)) => Some(Ok(row)),
-            Err(e) => Some(Err(e)),
-        })
-        .collect::<RecordStoreResult<Vec<_>>>()?;
-    if dropped != 0 {
-        // A Store written by a pre-fix 1.6.0 rc heals here: the row carries no count and no
-        // flushed baseline, so it owes no money and creates no correction debt (UPG-H2).
-        tracing::warn!(
-            bucket = bucket_id,
-            dropped,
-            "usage ledger load: dropped {dropped} unnamed-lane rows with no counts"
-        );
-    }
-    Ok(cells)
+    crate::off_path::governance::state::state_durable_cell(bucket_id, row, eras, window)
 }
 
 #[path = "money_view.rs"]
@@ -2423,6 +2139,25 @@ pub(crate) fn key_row_expired(key: &VirtualKey, now: u64) -> bool {
 
 /// Per-admission scratch sized to the key's chain depth; inline (no heap) for ordinary chains.
 type ChainScratch<T> = smallvec::SmallVec<[T; 8]>;
+
+/// One bucket a served unit's counts accrue to, borrowed from the key's chain (no copies).
+struct ChainTarget<'a> {
+    bucket: &'a str,
+    window: u64,
+    group: Option<&'a str>,
+}
+
+impl super::unit_checkpoint_counts::CountTarget for ChainTarget<'_> {
+    fn bucket(&self) -> &str {
+        self.bucket
+    }
+    fn window(&self) -> u64 {
+        self.window
+    }
+    fn group(&self) -> Option<&str> {
+        self.group
+    }
+}
 
 /// Flush failure messages rendered `a, b, c` straight into the log line.
 struct Joined<'a>(&'a [String]);

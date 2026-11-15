@@ -59,12 +59,7 @@ impl GovState {
             b"#",
             &digits[..written],
         ]);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a self-serve key id is derived once per self-serve mint (control plane)"
-        )]
-        let id = format!("{VK_ID_PREFIX}{}", hex::encode(&tag[..16]));
-        id
+        crate::off_path::governance::runtime::self_serve_key_id(VK_ID_PREFIX, &tag[..16])
     }
 
     /// The subject's current self-serve binding: its live (enabled, not tombstoned) row, in
@@ -174,10 +169,11 @@ impl GovState {
             provider = %provider,
             "self-serve mint refused: the subject's key is on hold"
         );
-        let resource = match key_id {
-            Some(id) => format!("key:{id}#{}", reason.token()),
-            None => format!("subject:{user_sub}#{}", reason.token()),
-        };
+        let resource = crate::cold::governance::runtime::self_serve_held_resource(
+            key_id,
+            user_sub,
+            reason.token(),
+        );
         crate::audit::auditlog::emit_admin_hostless_now(
             SELF_SERVE_MINT_ACTION,
             &resource,
@@ -239,26 +235,23 @@ impl GovState {
     ) -> RecordStoreResult<(VirtualKey, String)> {
         let seed = material.signer.secret_bytes();
         let (id, epoch) = self.first_free_self_epoch(&seed, user_sub, epoch).await?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a self-serve binding is written once per self-serve mint (control plane)"
-        )]
-        let generation = epoch.to_string();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a self-serve binding is written once per self-serve mint (control plane)"
-        )]
+        let generation = crate::off_path::governance::runtime::self_serve_generation(epoch);
         let binding = VirtualKey {
             id: id.clone(),
             generation_hash: binding_marker(&id, &generation),
-            name: format!("self-serve key ({user_sub})"),
+            name: crate::off_path::governance::runtime::self_serve_binding_name(user_sub),
 
             allowed_scopes,
             enabled: true,
             created_at: now,
             // A refresh keeps the group an admin moved the key to.
             group: previous.map_or_else(
-                || Some(format!("{SELF_KEY_GROUP_PREFIX}{user_sub}")),
+                || {
+                    Some(crate::off_path::governance::runtime::self_serve_group(
+                        SELF_KEY_GROUP_PREFIX,
+                        user_sub,
+                    ))
+                },
                 |previous| previous.group.clone(),
             ),
 
@@ -267,10 +260,16 @@ impl GovState {
             deleted_at: None,
             revision: 0,
 
-            idp_subject: Some(user_sub.to_string()),
-            binding_mode: Some(SELF_KEY_BINDING_MODE.to_string()),
+            idp_subject: Some(crate::off_path::governance::runtime::self_serve_owned(
+                user_sub,
+            )),
+            binding_mode: Some(crate::off_path::governance::runtime::self_serve_owned(
+                SELF_KEY_BINDING_MODE,
+            )),
 
-            idp_provider: Some(provider.to_string()),
+            idp_provider: Some(crate::off_path::governance::runtime::self_serve_owned(
+                provider,
+            )),
             ..Default::default()
         };
         // Claim the one or two key ids in ascending order (the shared lock order), each once.
@@ -355,18 +354,15 @@ impl GovState {
                 let existing = self
                     .read_self_binding(&existing.id, user_sub, provider)
                     .await?;
-                let new_scopes = allowed_scopes.clone();
+                let new_scopes = allowed_scopes;
 
                 let adopt = existing.idp_provider.is_none();
                 if new_scopes != existing.allowed_scopes || adopt {
                     let mut updated = (*existing).clone();
                     updated.allowed_scopes = new_scopes;
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "config: a self-serve binding adopts its provider once, on its first provider-named mint"
-                    )]
-                    let provider = provider.to_string();
-                    updated.idp_provider = Some(provider);
+                    updated.idp_provider = Some(
+                        crate::off_path::governance::runtime::self_serve_owned(provider),
+                    );
                     let commit = self
                         .core_store()?
                         .identity()
