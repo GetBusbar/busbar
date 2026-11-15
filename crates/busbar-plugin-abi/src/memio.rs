@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
 
-use crate::kinds::transport::tag;
+use crate::kinds::transport::transport::tag;
 use crate::records::{Full, Writer};
 
 /// The bytes of one WRITE record at most (a longer drain is several WRITE records, in order).
@@ -369,6 +369,8 @@ struct MemSleep {
     shared: Arc<Shared>,
     slot: Arc<Mutex<Slot>>,
 }
+impl hyper::rt::Sleep for MemSleep {}
+
 impl Future for MemSleep {
     type Output = ();
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
