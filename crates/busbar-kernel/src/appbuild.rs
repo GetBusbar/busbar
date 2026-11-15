@@ -312,6 +312,10 @@ pub fn load_config_from_disk_compacting_document_patches(
     let config_dir = config_path
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
+    // A providers file the operator NAMED (--providers / env, or `providers_file:`) must exist. The
+    // default one beside config.yaml is optional: absent means an empty catalog (an admin-only
+    // deployment configures no provider).
+    let providers_named = providers_override.is_some() || deploy.providers_file.is_some();
     let providers_path: std::path::PathBuf = match providers_override {
         Some(p) => p.to_path_buf(),
         None => match deploy.providers_file.as_deref() {
@@ -326,12 +330,23 @@ pub fn load_config_from_disk_compacting_document_patches(
             None => config_dir.join("providers.yaml"),
         },
     };
-    let raw_providers = std::fs::read_to_string(&providers_path).map_err(|e| {
-        format!(
-            "cannot read providers file '{}': {e} (set `providers_file:` in config.yaml, or --providers)",
-            providers_path.display()
-        )
-    })?;
+    let raw_providers = match std::fs::read_to_string(&providers_path) {
+        Ok(text) => text,
+        Err(e) if !providers_named && e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::info!(
+                path = %providers_path.display(),
+                "no providers file at the default location; running with an empty provider catalog"
+            );
+            "{}\n".to_string()
+        }
+        Err(e) => {
+            return Err(format!(
+                "cannot read providers file '{}': {e} (set `providers_file:` in config.yaml, or --providers; \
+                 an empty providers.yaml or `{{}}` is enough for a deployment that configures no provider)",
+                providers_path.display()
+            ));
+        }
+    };
     let normalized_providers =
         rules.normalize_document(ConfigDocument::Providers, &providers_path, &raw_providers)?;
     let interpolated_providers = config::interpolate_env_with(
