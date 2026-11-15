@@ -6,3 +6,7 @@
 //! refused, and the first-sight paths that key a name once and then share it. Every fn is
 //! `#[cold]` or `#[inline(never)]`; none holds a loop or sweeps request data (BP17). Each section
 //! is named for the request-path module it serves.
+
+// Sections as submodules (cold/<section>.rs), so the slices that fill them do not collide.
+pub(crate) mod auth;
+pub(crate) mod host;

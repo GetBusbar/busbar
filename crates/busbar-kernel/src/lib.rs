@@ -31,7 +31,6 @@ static GLOBAL: CountingJemalloc = CountingJemalloc;
 mod alloc_gate_instrument;
 
 pub mod canary;
-mod cold;
 // busbar:request-path
 #[cfg_attr(
     not(test),
