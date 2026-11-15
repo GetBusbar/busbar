@@ -160,7 +160,6 @@ fn fractional_counts_remain_exact_through_debt_and_mixed_scale_hydration() {
 
 #[test]
 fn exact_count_overflow_refuses_without_partial_model_update() {
-    use std::collections::BTreeMap;
     let era = RawRateEra::legacy(1);
     let mut cell = BudgetCell::fresh(0);
     cell.accrue_raw(

@@ -51,7 +51,7 @@ async fn recording_far_end() -> (u16, Arc<Mutex<Vec<Vec<u8>>>>) {
             let keep = Arc::clone(&keep);
             tokio::spawn(async move {
                 let mut got = Vec::new();
-                let mut buf = [0_u8; 4096];
+                let mut buf = vec![0_u8; 4096];
                 loop {
                     if let Some(at) = got.windows(4).position(|w| w == b"\r\n\r\n") {
                         let head = String::from_utf8_lossy(&got[..at]).to_ascii_lowercase();
@@ -70,7 +70,7 @@ async fn recording_far_end() -> (u16, Arc<Mutex<Vec<Vec<u8>>>>) {
                             continue;
                         }
                     }
-                    match s.read(&mut buf).await {
+                    match s.read(&mut buf[..]).await {
                         Ok(0) | Err(_) => return,
                         Ok(n) => got.extend_from_slice(&buf[..n]),
                     }

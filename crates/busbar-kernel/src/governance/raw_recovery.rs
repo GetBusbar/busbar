@@ -613,13 +613,17 @@ impl GovState {
             .ok_or_else(|| {
                 RecoveryError::Invalid("raw recovery operation does not exist".into())
             })?;
+        let (actor, reason) = crate::off_path::governance::ledger::operator_provenance(
+            &resolution.actor,
+            &resolution.reason,
+        );
         let verdict = RawVerdict {
             landed: resolution.verdict == RecoveryVerdict::Landed,
             expected_revision: resolution.expected_revision,
             sender_quiesced: resolution.sender_quiesced,
             backend_quiesced: resolution.backend_quiesced,
-            actor: resolution.actor.clone(),
-            reason: resolution.reason.clone(),
+            actor,
+            reason,
         };
         let map = |error: RecordStoreError| {
             crate::governance::rendered_error(RecoveryError::Unavailable, error)
@@ -1155,13 +1159,17 @@ impl GovState {
         } else {
             (None, event.clone())
         };
+        let (actor, reason) = crate::off_path::governance::ledger::operator_provenance(
+            &resolution.actor,
+            &resolution.reason,
+        );
         let verdict = RawVerdict {
             landed,
             expected_revision: resolution.expected_revision,
             sender_quiesced: resolution.sender_quiesced,
             backend_quiesced: resolution.backend_quiesced,
-            actor: resolution.actor.clone(),
-            reason: resolution.reason.clone(),
+            actor,
+            reason,
         };
         let payload = Self::raw_verdict_payload(&unknown, verdict)?;
         let state = if landed {
