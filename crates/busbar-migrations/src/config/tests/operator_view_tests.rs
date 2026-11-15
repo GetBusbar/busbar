@@ -68,9 +68,9 @@ fn body(text: &str) -> Value {
 #[test]
 fn view_only_answers_auth_ok_and_delegates_every_other_kind() {
     let settings = serde_json::json!({});
-    assert!(ShaHost
+    ShaHost
         .validate_migrated("auth", "admin-tokens", &settings)
-        .is_err());
+        .expect_err("the host itself refuses auth settings without sha256");
     let view = ViewOnly(&ShaHost);
     assert!(view
         .validate_migrated("auth", "admin-tokens", &settings)
@@ -78,12 +78,10 @@ fn view_only_answers_auth_ok_and_delegates_every_other_kind() {
     assert!(view
         .validate_current("auth", "admin-tokens", &settings)
         .is_ok());
-    assert!(view
-        .validate_migrated("store", "refused", &settings)
-        .is_err());
-    assert!(view
-        .validate_current("store", "refused", &settings)
-        .is_err());
+    view.validate_migrated("store", "refused", &settings)
+        .expect_err("a non-auth kind is delegated");
+    view.validate_current("store", "refused", &settings)
+        .expect_err("a non-auth kind is delegated");
     assert!(view.validate_migrated("store", "fine", &settings).is_ok());
 }
 

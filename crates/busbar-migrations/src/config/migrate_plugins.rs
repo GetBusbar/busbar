@@ -271,8 +271,10 @@ impl MigrateHost for NoPlugins {
     }
 }
 
-/// A host that delegates to `0` in everything. Pass 1 of the startup upgrade (see
-/// [`super::normalize_plugins_view`]) uses it before the operator words are bound.
+/// A host that answers every `kind: auth` settings check `Ok` and delegates every other kind and
+/// method to `0`. Pass 1 of the startup upgrade (see
+/// [`super::normalize_plugins_view`]) uses it before the operator words are bound, when the
+/// startup host cannot yet tell the operator module from any other auth module.
 pub struct ViewOnly<'a>(pub &'a dyn MigrateHost);
 
 impl MigrateHost for ViewOnly<'_> {
@@ -302,6 +304,9 @@ impl MigrateHost for ViewOnly<'_> {
         module: &str,
         settings: &serde_json::Value,
     ) -> Result<(), String> {
+        if kind == busbar_contract::abi::mechanism::kind::AUTH {
+            return Ok(());
+        }
         self.0.validate_migrated(kind, module, settings)
     }
     fn validate_current(
@@ -310,6 +315,9 @@ impl MigrateHost for ViewOnly<'_> {
         module: &str,
         settings: &serde_json::Value,
     ) -> Result<(), Unvalidated> {
+        if kind == busbar_contract::abi::mechanism::kind::AUTH {
+            return Ok(());
+        }
         self.0.validate_current(kind, module, settings)
     }
     fn migrating_from(&self) -> &str {
@@ -664,6 +672,11 @@ fn sites(
             let Some(module) = entry.get_key(field::MODULE).and_then(Value::as_str) else {
                 continue;
             };
+            // `token:` on an identity-provider definition is core's 1.5 operator field, not plugin
+            // settings: it passes through untouched, with no host check and no plugin migrate.
+            if kind == Kind::Auth && entry.contains_key(field::TOKEN) {
+                continue;
+            }
             let path = format!("{key}.{name}.settings");
             let Ok(settings) = migration_json(entry.get_key(field::SETTINGS), &path, ledger) else {
                 continue;
