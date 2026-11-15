@@ -192,6 +192,7 @@ all_zero!(row:
     crate::abi::mechanism::call::Field,
     crate::abi::host::service::HostSlots,
     crate::abi::auth::NamedValue,
+    crate::abi::export::CheckInstance,
     crate::abi::auth::StripName,
     crate::abi::auth::FieldSpan,
     crate::abi::hook::SignalEntry,
