@@ -180,7 +180,7 @@ pub fn encode_candidate(
     c: &PreparedCandidate,
     key: &CommitKey,
 ) -> Result<(), Full> {
-    let seal: &Seal = SEAL.get().ok_or(Full)?;
+    let seal: &Seal = &**SEAL.get().ok_or(Full)?;
     let candidate = c.candidate();
     let (slot, seq) = key.wire();
     let head = wire::CandHead {
