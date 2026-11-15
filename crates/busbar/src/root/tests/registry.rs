@@ -448,6 +448,7 @@ fn dropped_doors() -> &'static [DroppedDoor] {
         )
         .expect("the door serves");
         vec![DroppedDoor {
+            key,
             claims: vec![key],
             composes_over: Vec::new(),
             offered: facts.offered,
@@ -464,10 +465,11 @@ fn a_dropped_in_transports_offered_points_reach_the_guest_list_seal() {
     let fixture = &dropped_doors()[0];
     assert_eq!(
         crate::root::serve::transport_offers(&[], dropped_doors()),
-        [(fixture.claims[0], crate::root::doors::offers_unstated())],
+        [(fixture.key, crate::root::doors::offers_unstated())],
         "a dropped-in door stating no record offers what an unstated record does"
     );
     let peer_only = DroppedDoor {
+        key: fixture.key,
         claims: fixture.claims.clone(),
         composes_over: Vec::new(),
         offered: AuthPoints::PEER,
@@ -475,7 +477,7 @@ fn a_dropped_in_transports_offered_points_reach_the_guest_list_seal() {
         door: fixture.door.clone(),
     };
     let offers = crate::root::serve::transport_offers(&[], std::slice::from_ref(&peer_only));
-    assert_eq!(offers, [(fixture.claims[0], AuthPoints::PEER)]);
+    assert_eq!(offers, [(fixture.key, AuthPoints::PEER)]);
     let line = Line {
         route: Route {
             methods: busbar_contract::abi::transport::route::METHOD_POST,
@@ -627,7 +629,7 @@ fn a_dropped_in_wire_is_served_beside_the_linked_rows_and_answers_the_check() {
     let view = busbar_core_connector::registry::Transports::new(entries)
         .expect("one dropped-in door claims its schemes once");
     assert!(
-        view.serving(wire.claims[0]).is_some(),
+        view.serving(wire.key).is_some(),
         "the dropped-in key is served"
     );
 
@@ -649,7 +651,7 @@ fn a_second_door_on_a_served_key_is_refused_at_the_connector() {
         matches!(
             &refused,
             busbar_core_connector::registry::ViewRefusal::ClaimedTwice { scheme, .. }
-                if scheme == wire.claims[0]
+                if scheme == wire.key
         ),
         "{refused}"
     );
