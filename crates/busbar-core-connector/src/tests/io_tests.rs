@@ -232,7 +232,7 @@ fn large_response_read_counts() {
             .unwrap();
         let reg = register(a).unwrap();
         let writer = std::thread::spawn(move || {
-            b.write_all(&[5_u8; TOTAL]).unwrap();
+            b.write_all(&vec![5_u8; TOTAL]).unwrap();
             b
         });
         let b = writer.join().unwrap();
@@ -281,10 +281,12 @@ fn short_clears_matches_tokio_gate() {
             target_os = "freebsd"
         )
     ))]
-    assert!(
-        SHORT_CLEARS,
-        "epoll/kqueue: a short transfer clears readiness"
-    );
+    const {
+        assert!(
+            SHORT_CLEARS,
+            "epoll/kqueue: a short transfer clears readiness"
+        );
+    }
     #[cfg(any(
         mio_unsupported_force_poll_poll,
         target_os = "aix",
@@ -293,7 +295,9 @@ fn short_clears_matches_tokio_gate() {
         target_os = "hurd",
         target_os = "nto"
     ))]
-    assert!(!SHORT_CLEARS, "poll(2): only WouldBlock clears readiness");
+    const {
+        assert!(!SHORT_CLEARS, "poll(2): only WouldBlock clears readiness")
+    };
 }
 
 /// IOCP is level-triggered: the sized form is exactly `poll_io`, a short read proves nothing.

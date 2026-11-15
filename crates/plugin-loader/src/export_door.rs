@@ -125,13 +125,8 @@ pub fn check(
     if bytes.is_empty() {
         return Ok(Vec::new());
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: an export plugin's check findings did not read"
-    )]
-    let findings = serde_json::from_slice::<Vec<String>>(&bytes)
-        .map_err(|e| format!("export plugin check findings are not a JSON list of strings: {e}"));
-    findings
+    serde_json::from_slice::<Vec<String>>(&bytes)
+        .map_err(|e| crate::cold::export_door::check_findings_unread(&e))
 }
 
 fn check_bytes(
@@ -187,12 +182,9 @@ fn recorder_requirements(
         busbar_contract::abi::export::CHECK_PHASE_RECORDER,
         &[],
     )?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: an export recorder's declaration did not read"
-    )]
     let requirements: busbar_contract::export_calls::RecorderRequirements =
-        serde_json::from_slice(&bytes).map_err(|e| format!("invalid recorder declaration: {e}"))?;
+        serde_json::from_slice(&bytes)
+            .map_err(|e| crate::cold::export_door::recorder_declaration_unread(&e))?;
     requirements.validate()?;
     Ok(Some(requirements))
 }
@@ -274,7 +266,7 @@ impl Shared {
     fn fold_sheds(&self) {
         let shed = self.shed_pending.swap(0, Ordering::Relaxed);
         if shed > 0 {
-            fold_shed_lines(
+            crate::cold::export_door::fold_shed_lines(
                 self.dispatcher.observing(),
                 self.plugin.name(),
                 shed as usize,
@@ -291,7 +283,11 @@ impl Shared {
                 plugin = %self.plugin.name(),
                 "no ticket could be minted for an export batch; it is dropped"
             );
-            fold_shed_lines(self.dispatcher.observing(), self.plugin.name(), lines.len());
+            crate::cold::export_door::fold_shed_lines(
+                self.dispatcher.observing(),
+                self.plugin.name(),
+                lines.len(),
+            );
             return;
         };
         let mut batch = SecureVec::from(Vec::with_capacity(
@@ -332,7 +328,11 @@ impl Shared {
                         error = %why(o, done.error),
                         "an export batch was not delivered and is dropped"
                     );
-                    fold_shed_lines(self.dispatcher.observing(), self.plugin.name(), lines.len());
+                    crate::cold::export_door::fold_shed_lines(
+                        self.dispatcher.observing(),
+                        self.plugin.name(),
+                        lines.len(),
+                    );
                     break;
                 }
             }
@@ -358,7 +358,11 @@ impl Shared {
                         lines = shed.len(),
                         "queued export lines are shed while the instance stops"
                     );
-                    fold_shed_lines(self.dispatcher.observing(), self.plugin.name(), shed.len());
+                    crate::cold::export_door::fold_shed_lines(
+                        self.dispatcher.observing(),
+                        self.plugin.name(),
+                        shed.len(),
+                    );
                 }
                 drop(shed);
                 return if inflight.is_empty() || self.abandon.load(Ordering::Acquire) {
@@ -387,17 +391,6 @@ impl Shared {
             );
         }
     }
-}
-
-fn node_id() -> [u8; 8] {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: an export instance's node id is drawn once, when it opens"
-    )]
-    let t = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos() as u64);
-    (t ^ (u64::from(std::process::id()) << 40)).to_le_bytes()
 }
 
 pub struct ExportInstance {
@@ -472,7 +465,7 @@ impl ExportInstance {
             flusher: Mutex::new(None),
             stop: AtomicBool::new(false),
             abandon: AtomicBool::new(false),
-            node: node_id(),
+            node: crate::cold::export_door::node_id(),
             minted: AtomicU64::new(0),
         });
         let flusher = shared.clone();
@@ -486,12 +479,7 @@ impl ExportInstance {
             .map_err(|e| {
                 let mut f = Frame::new(in_head(), out_head());
                 let _ = shared.plugin.call(lc::CLOSE, &mut f);
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "boot: the export flusher thread did not start"
-                )]
-                let refused = format!("the export flusher did not start: {e}");
-                refused
+                crate::cold::export_door::flusher_unstarted(&e)
             })?;
         Ok(Self {
             shared,
@@ -623,24 +611,18 @@ impl ExportCalls for ExportInstance {
         settings: &busbar_contract::plugin_settings::ResolvedSettings,
         generation: u64,
     ) -> Result<(), String> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: an export refresh renders its new settings once"
-        )]
-        let encoded = settings.encode().map_err(|error| error.to_string())?;
+        let encoded = settings
+            .encode()
+            .map_err(|error| crate::cold::export_door::refresh_unrendered(&error))?;
         let seal = self
             .shared
             .dispatcher
             .seal()
             .ok_or("export refresh requires the host settings seal")?;
         let settings = Arc::new(SecureVec::from(encoded.expose(seal).as_slice()));
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: an export refresh found no free ticket"
-        )]
         let mut call = (0..self.shared.dispatcher.workers().max(1))
             .find_map(|worker| Ticketed::mint(&self.shared.dispatcher, worker))
-            .ok_or_else(|| "no ticket could be minted for an export refresh".to_string())?;
+            .ok_or("no ticket could be minted for an export refresh")?;
         let frame = Frame::new(
             busbar_contract::abi::mechanism::lifecycle::RefreshIn {
                 head: in_head(),
@@ -748,19 +730,20 @@ impl ExportCalls for ExportInstance {
 
     fn serve(&self, req: &ServeRequest<'_>) -> Result<Served, String> {
         let plugin = &self.shared.plugin;
-        let headers: Vec<AbiStr> = req
-            .headers
-            .iter()
-            .take(MAX_SERVE_HEADERS)
-            .flat_map(|(k, v)| [lend(k), lend(v)])
-            .collect();
+        let asked = req.headers.len().min(MAX_SERVE_HEADERS);
+        let mut lent = [AbiStr::ZERO; MAX_SERVE_HEADERS * 2];
+        for (pair, (k, v)) in lent.chunks_exact_mut(2).zip(&req.headers[..asked]) {
+            pair[0] = lend(k);
+            pair[1] = lend(v);
+        }
+        let headers = &lent[..asked * 2];
         let f = Frame::new(
             ServeIn {
                 head: in_head(),
                 method: lend(req.method),
                 path: lend(req.path),
                 query: lend_opt(req.query),
-                headers: lend_list(&headers),
+                headers: lend_list(headers),
                 headers_len: headers.len(),
                 body: blob(req.body, BLOB_OCTETS),
             },
@@ -824,27 +807,6 @@ impl ExportCalls for ExportInstance {
             self.shared.notify();
         }
     }
-}
-
-fn fold_shed_lines(observing: &crate::observe::Observing, name: &str, lines: usize) {
-    #[expect(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        clippy::disallowed_types,
-        reason = "error: an export that shed lines reports them on its shed series"
-    )]
-    let metrics = crate::observe::shed_series(name)
-        .into_iter()
-        .map(|n| serde_json::json!({"name": n, "type": "counter", "value": lines}))
-        .collect();
-    let report = busbar_contract::abi::mechanism::observe::Envelope {
-        result: (),
-        metrics,
-        diagnostics: Vec::new(),
-    };
-    // busbar:expect(bp::into_alloc, reason = "error: an export that shed lines reports them under its plugin name")
-    let name: Arc<str> = Arc::from(name);
-    observing.fold(&name, busbar_contract::abi::mechanism::kind::EXPORT, report);
 }
 
 #[cfg(test)]

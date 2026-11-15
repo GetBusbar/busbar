@@ -87,7 +87,7 @@ fn held_ephemeral_port() -> (socket2::Socket, u16) {
     (socket, port)
 }
 
-pub fn try_reserve(port: u16) -> Option<std::fs::File> {
+fn try_reserve(port: u16) -> Option<std::fs::File> {
     let dir = std::env::temp_dir().join("busbar-test-ports");
     std::fs::create_dir_all(&dir).expect("the port-claim directory");
     let file = std::fs::OpenOptions::new()

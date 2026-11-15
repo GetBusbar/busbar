@@ -71,14 +71,12 @@ pub fn build_with_group(
         ));
     }
 
-    // busbar:expect(bp::clone_alloc, reason = "config: a group change builds the next registry from the current one")
     let mut groups = current.groups_registry.clone();
     #[expect(
         clippy::disallowed_methods,
         reason = "config: the new group's name becomes its registry key"
     )]
     groups.insert(name.to_string(), cfg);
-    // busbar:expect(bp::fresh_buffer, reason = "config: validation messages are gathered once per group change")
     let mut errors = Vec::new();
     crate::config::groups::validate_groups(&groups, &|p| pool_known(current, p), &mut errors);
     if !errors.is_empty() {

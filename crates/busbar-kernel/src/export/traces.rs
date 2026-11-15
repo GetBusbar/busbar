@@ -34,7 +34,7 @@ static TRACES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 /// Called by OPEN once the sink set is fixed, before its interest rebuild, so
 /// that rebuild reads this layer's final hint.
-pub(super) fn sinks_fixed() {
+pub(crate) fn sinks_fixed() {
     let _ = TRACES.set(super::plugin::sinks().any(|s| s.projection.wants_stream(Traces)));
 }
 
