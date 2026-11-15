@@ -801,6 +801,8 @@ impl<T: VerifyPlugin, I: AbiIn, O: AbiOut> SafeSlot for NotServed<T, I, O> {
 
 /// The verify-only door. Its const declaration must state exactly `CAP_INBOUND`,
 /// no login kind and no outbound styles. Custom login implementations use `plugin_door!`.
+/// An optional trailing `former_names: &["old-name"]` declares the names an earlier release of
+/// this plugin answered to (a config naming one still resolves).
 ///
 /// A synchronous verifier uses the adapter and keeps the ordinary door shape:
 ///
@@ -836,7 +838,7 @@ impl<T: VerifyPlugin, I: AbiIn, O: AbiOut> SafeSlot for NotServed<T, I, O> {
 /// ```
 #[macro_export]
 macro_rules! auth_verify_door {
-    ($plugin:ty, $statement:expr $(,)?) => {
+    ($plugin:ty, $statement:expr $(, former_names: $former:expr)? $(,)?) => {
         $crate::plugin_door! {
             ops: $crate::abi::auth::Ops,
             statement: {
@@ -862,7 +864,8 @@ macro_rules! auth_verify_door {
                 // No `CAP_PROVISION`: the provisioning mount answers REFUSED.
                 serve: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_door::NotServed<
                     $plugin, $crate::abi::auth::ServeIn, $crate::abi::auth::ServeOut>>,
-            },
+            }
+            $(, former_names: $former)?,
         }
     };
 }
