@@ -638,6 +638,12 @@ async fn run(
     };
     let documents = Arc::new(root::startup_upgrade::documents::Documents::default());
     let bootstrap_rules = root::startup_upgrade::documents::BootstrapRules(documents.clone());
+    if let Some(refusal) = root::boot::start_refusal() {
+        die(boot_error(
+            "plugins directory refused at process start",
+            refusal,
+        ));
+    }
     let loaded = busbar_kernel::appbuild::load_config_from_disk_judged(
         &config_path,
         providers_override.as_deref(),
@@ -658,7 +664,7 @@ async fn run(
                 .as_ref(),
                 &config_path,
             ),
-            None => e,
+            None => root::boot::with_skip_lines(e),
         };
         die(boot_error(
             "principal transition configuration load refused",
