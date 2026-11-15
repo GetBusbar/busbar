@@ -48,6 +48,9 @@ struct Kept {
     /// The pointer field it backs; `None` for storage a string, a nested value or a list element
     /// owns (its pointer was written once, from this storage, and nothing can rewrite it).
     field: Option<&'static str>,
+    /// The host buffer field it was allocated for (a `buf` row), kept when a nested struct's or
+    /// list element's storage is adopted, so that buffer's [`Buf`] key still reads it.
+    buf: Option<&'static str>,
     ptr: *mut u8,
     /// Its length in elements.
     len: usize,
@@ -95,10 +98,16 @@ impl<T> Loans<T> {
         }
     }
 
-    /// The values a host buffer holds after a crossing: as many as it was allocated for.
+    /// The values a host buffer holds after a crossing: as many as it was allocated for. The key
+    /// reads its own allocation, lent at the top level or inside a nested struct (a framer's
+    /// `sink.wire`); a buffer since replaced by another reads empty.
     #[must_use]
     pub fn read<E: Scalar>(&self, key: &Buf<E>) -> &[E] {
-        let Some(k) = self.kept.iter().find(|k| k.field == Some(key.field)) else {
+        let Some(k) = self
+            .kept
+            .iter()
+            .find(|k| k.buf == Some(key.field) && k.ptr.addr() == key.at)
+        else {
             return &[];
         };
         assert!(align_of::<E>() <= align_of::<u64>() && size_of::<E>() > 0);
@@ -121,6 +130,7 @@ impl<T> Loans<T> {
         }
         self.kept.push(Kept {
             field,
+            buf: None,
             ptr,
             len,
             bytes,
@@ -164,6 +174,8 @@ impl<T> Loans<T> {
 #[derive(Debug, Clone, Copy)]
 pub struct Buf<E> {
     field: &'static str,
+    /// The allocation's address: which buffer of that field this key names.
+    at: usize,
     _e: PhantomData<fn() -> E>,
 }
 
@@ -243,11 +255,12 @@ macro_rules! loan_pairs {
         #[doc = concat!("Lends the host buffer `", stringify!($p), "`/`", stringify!($n), "` for `n` values.")]
         pub fn $p(&mut self, n: usize) -> Buf<$el> {
             let words = (n * size_of::<$el>()).div_ceil(size_of::<u64>());
-            self.keep(Some(stringify!($p)), vec![0u64; words]);
+            let at = self.keep(Some(stringify!($p)), vec![0u64; words]).addr();
             if let Some(k) = self.kept.last_mut() {
                 k.len = n;
+                k.buf = Some(stringify!($p));
             }
-            Buf { field: stringify!($p), _e: PhantomData }
+            Buf { field: stringify!($p), at, _e: PhantomData }
         }
     };
     (@set list($p:ident, $n:ident) -> $el:ty) => {
