@@ -6,3 +6,9 @@
 //! schema projections, its configuration refusals), never per request. It sits outside the
 //! request-path marker because it does not run per request; the request path only reads what it
 //! built. Each submodule is named for the request-path module it builds for.
+pub(crate) mod plane_dispatch;
+pub(crate) mod plane_door;
+pub(crate) mod plane_needs;
+pub(crate) mod plane_registry;
+pub(crate) mod plane_route_tables;
+pub(crate) mod plane_serve;

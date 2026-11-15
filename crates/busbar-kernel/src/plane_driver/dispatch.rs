@@ -79,7 +79,7 @@ pub fn fallback_key() -> &'static str {
 /// key comes out only through [`LaneQualifier::plane_key`]; the lane prefix through
 /// [`LaneQualifier::lane_prefix`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LaneQualifier(String);
+pub struct LaneQualifier(pub(crate) String);
 
 /// Text that cannot be a door's lane qualifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,16 +97,6 @@ impl std::fmt::Display for InvalidLaneQualifier {
 impl std::error::Error for InvalidLaneQualifier {}
 
 impl LaneQualifier {
-    /// The one way to make a qualifier: `""` (the models plane) or plain text with no control
-    /// character (the plane/lane separator `U+001F` is one, so a qualifier can never split a lane
-    /// name) and no surrounding whitespace.
-    pub fn parse(qualifier: &str) -> Result<Self, InvalidLaneQualifier> {
-        if qualifier.chars().any(char::is_control) || qualifier.trim() != qualifier {
-            return Err(InvalidLaneQualifier);
-        }
-        Ok(Self(qualifier.to_string()))
-    }
-
     /// The plane key this qualifier names: the models plane's `""` is the fallback plane.
     #[must_use]
     pub fn plane_key(&self) -> &str {
@@ -148,18 +138,7 @@ pub fn wire_format_names(key: &str) -> &'static [&'static str] {
     (decl.wire_format_names)(decl)
 }
 
-pub fn provider_dialects() -> Vec<&'static str> {
-    // busbar:expect(bp::fresh_buffer, reason = "config: the dialect list is read when a configuration is built or validated")
-    let mut out: Vec<&'static str> = Vec::new();
-    for d in registry::plane_decls() {
-        for name in (d.provider_dialects)(d) {
-            if !out.contains(name) {
-                out.push(name);
-            }
-        }
-    }
-    out
-}
+pub use crate::off_path::plane_dispatch::provider_dialects;
 
 pub fn sole_wire_format(key: &str) -> Option<&'static str> {
     sole_of(wire_format_names(key))
@@ -222,11 +201,15 @@ pub struct PlaneDispatch {
     /// The paths each plane answers on, keyed by plane key, canonical claim first. A key is present
     /// only once the plane has MOUNTED at least one path; an absent key is an unmounted plane, which
     /// [`Self::claims_of`] reads as the empty slice.
-    claims: std::collections::BTreeMap<&'static str, Vec<Claim>>,
+    pub(crate) claims: std::collections::BTreeMap<&'static str, Vec<Claim>>,
     /// The admission facts each mounted plane bound, keyed by plane key. Resolved THROUGH
     /// [`Self::claims`] by [`Self::admission_for`], so an admission without a matching claim is inert
     /// — it never lends its audience to a path the plane does not answer on.
     admissions: std::collections::BTreeMap<&'static str, PlaneAdmission>,
+    /// Every claim, indexed by its mount's first segment, each bucket in plane-key order and, within
+    /// a plane, in claim order: [`Self::mounted_plane_of`] and [`Self::wire_format_of`] read only the
+    /// bucket a path's first segment names, never the whole table.
+    pub(crate) mounts: std::collections::BTreeMap<String, Vec<Mount>>,
 }
 
 /// ONE PATH A PLANE ANSWERS ON, and the WIRE FORMAT it is spoken in there.
@@ -246,14 +229,23 @@ pub struct PlaneDispatch {
 /// answers exactly one dialect and nothing else, so its claim names that dialect and the boundary
 /// can label it before any handler runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Claim {
+pub(crate) struct Claim {
     /// The normalised mount path, matched at a segment boundary.
-    path: String,
+    pub(crate) path: String,
     /// The [`wire_format_names`] entry spoken here. Not a free string: a claim naming a
     /// format its plane does not list would put a label in the `ingress_protocol` series that no
     /// plane admits to speaking, which is exactly the kind of coincidence that vocabulary exists to
     /// prevent. `a_claim_only_names_a_wire_format_its_plane_speaks` holds it.
-    wire: &'static str,
+    pub(crate) wire: &'static str,
+}
+
+/// ONE CLAIM in the dispatch table's first-segment index: the plane that made it, its path and its
+/// wire format.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Mount {
+    pub(crate) key: &'static str,
+    pub(crate) path: String,
+    pub(crate) wire: &'static str,
 }
 
 impl PlaneDispatch {
@@ -277,52 +269,29 @@ impl PlaneDispatch {
         self.admissions.get(self.mounted_plane_of(path)?)
     }
 
-    pub fn mount(self, key: &'static str, path: &str, wire: &'static str) -> Self {
-        if is_fallback(key) {
-            return self;
-        }
-        self.mount_key(key, path, wire)
-    }
-
-    pub(crate) fn mount_key(mut self, key: &'static str, path: &str, wire: &'static str) -> Self {
-        let normalised = normalise_mount(path);
-        if normalised.is_empty() {
-            return self;
-        }
-        let claims = self.claims.entry(key).or_default();
-        if !claims.iter().any(|c| c.path == normalised) {
-            claims.push(Claim {
-                path: normalised,
-                wire,
-            });
-        }
-        self
-    }
-
     pub fn mount_of(&self, key: &str) -> Option<&str> {
         self.claims_of(key).first().map(|c| c.path.as_str())
     }
 
     pub fn wire_format_of(&self, path: &str) -> Option<&'static str> {
-        self.claims.keys().copied().find_map(|key| {
-            self.claims_of(key)
-                .iter()
-                .find(|c| path_is_under(path, &c.path))
-                .map(|c| c.wire)
-        })
+        self.mounted(path).map(|m| m.wire)
+    }
+
+    /// The first claim, in plane-key then claim order, that `path` is under: read off the one
+    /// index bucket the path's first segment names (every mount begins `/<segment>`).
+    fn mounted(&self, path: &str) -> Option<&Mount> {
+        let rest = path.strip_prefix('/')?;
+        let segment = rest.split('/').next().unwrap_or(rest);
+        for mount in self.mounts.get(segment)? {
+            if path_is_under(path, &mount.path) {
+                return Some(mount);
+            }
+        }
+        None
     }
 
     fn claims_of(&self, key: &str) -> &[Claim] {
         self.claims.get(key).map_or(&[], Vec::as_slice)
-    }
-
-    pub fn mounted_keys(&self) -> Vec<&'static str> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the mounts are listed for inspection; a request resolves through mounted_plane_of"
-        )]
-        let keys = self.claims.keys().copied().collect();
-        keys
     }
 
     pub fn ingress_of(&self, path: &str) -> Ingress {
@@ -334,11 +303,7 @@ impl PlaneDispatch {
     }
 
     pub fn mounted_plane_of(&self, path: &str) -> Option<&'static str> {
-        self.claims.keys().copied().find(|key| {
-            self.claims_of(key)
-                .iter()
-                .any(|claim| path_is_under(path, &claim.path))
-        })
+        self.mounted(path).map(|m| m.key)
     }
 
     pub(crate) fn has_mounts(&self) -> bool {
@@ -379,19 +344,6 @@ impl Ingress {
             Ingress::Fallback(dialect) => dialect,
         }
     }
-}
-
-fn normalise_mount(path: &str) -> String {
-    let trimmed = path.trim().trim_matches('/');
-    if trimmed.is_empty() {
-        return String::new();
-    }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a mount path is normalised once, when the dispatch table is built"
-    )]
-    let mount = format!("/{trimmed}");
-    mount
 }
 
 fn path_is_under(path: &str, mount: &str) -> bool {
