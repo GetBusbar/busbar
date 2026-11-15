@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-mod common;
+mod common {
+    pub mod principal;
+    pub mod test_door;
+}
 
 use busbar_contract::caps::{OriginKind, PostingFlags, ReasonCode, StepName};
 use busbar_kernel::canary::Canary;
@@ -11,7 +14,8 @@ use busbar_kernel::inflight::{
 use busbar_kernel::pump::NestedPool;
 use busbar_kernel::teller::{settle_written, Evidence, Kernel, Written};
 
-use common::{principal, TestDoor};
+use common::principal::principal;
+use common::test_door::TestDoor;
 
 fn enter(kernel: &Kernel, key: u64, origin: OriginKind) -> Enter {
     Enter {

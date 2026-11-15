@@ -83,7 +83,7 @@ mod imp {
 }
 
 /// The zero-overhead scope timer. With the `timing` feature OFF: `timeit!("name")` expands to `()`.
-/// With the feature ON: it expands to a [`Timer`] guard that records `Instant::now().elapsed()` into
+/// With the feature ON: it expands to a [`Timer`] guard that records the elapsed monotonic nanoseconds into
 /// the registry under `"name"` when it drops. Bind it to `let _t = ...;` so the whole scope is timed.
 #[cfg(not(feature = "timing"))]
 #[macro_export]
@@ -112,37 +112,12 @@ mod imp {
     use std::panic::catch_unwind;
     use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
     use std::sync::{Arc, Mutex, OnceLock, Weak};
-    use std::time::Instant;
 
-    /// The profiler's one clock seam: every sample is `now() - start`, both readings taken here.
+    /// The profiler's one clock seam: every sample is `now() - start`, both readings taken on the
+    /// node's monotonic clock (nanoseconds since its first reading in this process).
     #[inline(always)]
-    fn now() -> Instant {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the opt-in `timing` feature plus BUSBAR_TIMING profiler; the clock read is the measurement"
-        )]
-        let t = Instant::now();
-        t
-    }
-
-    const N_BUCKETS: usize = 65;
-
-    #[inline(always)]
-    fn bucket_of(ns: u64) -> usize {
-        if ns == 0 {
-            0
-        } else {
-            (64 - ns.leading_zeros()) as usize
-        }
-    }
-
-    #[inline]
-    fn bucket_floor(idx: usize) -> u64 {
-        if idx == 0 {
-            0
-        } else {
-            1u64 << (idx - 1)
-        }
+    fn now() -> u64 {
+        crate::store::vocab::monotonic_ns()
     }
 
     /// One method's accumulated stats. `count`/`total_ns`/`min_ns`/`max_ns` are exact; the histogram
@@ -158,11 +133,11 @@ mod imp {
     /// count, so p50 and p99 both collapse to `max_ns` with nothing saying they are wrong. `merge`
     /// folds the per-thread histograms with the same `+=` and had the same exposure.
     #[derive(Clone)]
-    struct MethodStat {
-        count: u64,
-        total_ns: u64,
-        min_ns: u64,
-        max_ns: u64,
+    pub(crate) struct MethodStat {
+        pub(crate) count: u64,
+        pub(crate) total_ns: u64,
+        pub(crate) min_ns: u64,
+        pub(crate) max_ns: u64,
         sketch: metrics_util::storage::Summary,
     }
 
@@ -207,14 +182,14 @@ mod imp {
         }
 
         /// A recorded quantile, held inside the exact extents; 0 when nothing was recorded.
-        fn percentile(&self, p: f64) -> u64 {
+        pub(crate) fn percentile(&self, p: f64) -> u64 {
             self.sketch
                 .quantile(p)
                 .map_or(0, |v| (v.max(0.0) as u64).clamp(self.min_ns, self.max_ns))
         }
     }
 
-    type ThreadRegistry = HashMap<&'static str, MethodStat>;
+    pub(crate) type ThreadRegistry = HashMap<&'static str, MethodStat>;
 
     /// Every live thread's accumulator, keyed by its allocation address. A thread removes its own
     /// entry as it ends (see [`LocalHandle`]), so the registry never needs a sweep.
@@ -282,11 +257,18 @@ mod imp {
 
     #[inline]
     pub fn enabled() -> bool {
+        enabled_from(|| std::env::var_os("BUSBAR_TIMING").is_some())
+    }
+
+    /// The gate, with the `BUSBAR_TIMING` environment probe as a seam: the probe runs only while
+    /// the gate is unresolved, and its answer is cached.
+    #[inline]
+    fn enabled_from(env_says_on: impl FnOnce() -> bool) -> bool {
         match ENABLED.load(Ordering::Relaxed) {
             2 => true,
             1 => false,
             _ => {
-                let on = std::env::var_os("BUSBAR_TIMING").is_some();
+                let on = env_says_on();
                 ENABLED.store(if on { 2 } else { 1 }, Ordering::Relaxed);
                 if on {
                     install_atexit();
@@ -310,10 +292,6 @@ mod imp {
         {
             // SAFETY: `atexit` stores a plain `extern "C"` fn pointer that takes no args and returns
             // nothing; `timing_atexit` matches that ABI and only reads process-global state.
-            #[expect(
-                unsafe_code,
-                reason = "config: BUSBAR_TIMING installs its exit-time report hook once"
-            )]
             unsafe {
                 libc::atexit(timing_atexit);
             }
@@ -348,14 +326,14 @@ mod imp {
 
     pub struct Timer {
         name: &'static str,
-        start: Option<Instant>,
+        start: Option<u64>,
     }
 
     impl Drop for Timer {
         #[inline]
         fn drop(&mut self) {
             if let Some(start) = self.start {
-                record(self.name, (now() - start).as_nanos() as u64);
+                record(self.name, now().saturating_sub(start));
             }
         }
     }
@@ -384,14 +362,14 @@ mod imp {
             return;
         }
         let snapshot = LOCAL.with(|h| h.0.lock().unwrap_or_else(|p| p.into_inner()).clone());
-        print_table("thread", &snapshot);
+        crate::off_path::timing::print_table("thread", &snapshot);
     }
 
     pub fn dump() {
         if !enabled() {
             return;
         }
-        print_table("process", &merged_snapshot());
+        crate::off_path::timing::print_table("process", &merged_snapshot());
     }
 
     fn merged_snapshot() -> ThreadRegistry {
@@ -401,93 +379,20 @@ mod imp {
         merged
     }
 
-    fn print_table(scope: &str, map: &ThreadRegistry) {
-        if map.is_empty() {
-            eprintln!("BUSBAR_TIMING scope={scope} (no samples)");
-            return;
-        }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the BUSBAR_TIMING report table, printed on demand or at exit"
-        )]
-        let mut rows: Vec<(&&'static str, &MethodStat)> = map.iter().collect();
-        rows.sort_by_key(|(_, s)| std::cmp::Reverse(s.total_ns));
-        eprintln!(
-            "BUSBAR_TIMING scope={scope}  {:<28} {:>10} {:>11} {:>10} {:>10} {:>10} {:>10} {:>10}",
-            "name", "count", "total", "mean", "p50", "p99", "min", "max"
-        );
-        for (name, s) in rows {
-            let mean = s.total_ns.checked_div(s.count).unwrap_or(0);
-            let min = if s.min_ns == u64::MAX { 0 } else { s.min_ns };
-            eprintln!(
-                "BUSBAR_TIMING scope={scope}  {:<28} {:>10} {:>11} {:>10} {:>10} {:>10} {:>10} {:>10}",
-                name,
-                s.count,
-                Ns(s.total_ns),
-                Ns(mean),
-                Ns(s.percentile(0.50)),
-                Ns(s.percentile(0.99)),
-                Ns(min),
-                Ns(s.max_ns),
-            );
-        }
-    }
-
-    /// A nanosecond count rendered as `Nns` / `N.NNus` / `N.NNms`, honouring the table's width and
-    /// alignment. It is written into a stack buffer, so a table row allocates no strings.
-    struct Ns(u64);
-
-    impl std::fmt::Display for Ns {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            use std::fmt::Write as _;
-            let mut buf = StackText::default();
-            let ns = self.0;
-            if ns < 1_000 {
-                write!(buf, "{ns}ns")?;
-            } else if ns < 1_000_000 {
-                write!(buf, "{:.2}us", ns as f64 / 1_000.0)?;
-            } else {
-                write!(buf, "{:.2}ms", ns as f64 / 1_000_000.0)?;
-            }
-            f.pad(buf.as_str())
-        }
-    }
-
-    /// A fixed stack buffer for one [`Ns`] cell; `u64::MAX` ns is 18 digits plus `.NNms`.
-    #[derive(Default)]
-    struct StackText {
-        bytes: [u8; 32],
-        len: usize,
-    }
-
-    impl StackText {
-        fn as_str(&self) -> &str {
-            std::str::from_utf8(&self.bytes[..self.len]).unwrap_or_default()
-        }
-    }
-
-    impl std::fmt::Write for StackText {
-        fn write_str(&mut self, s: &str) -> std::fmt::Result {
-            let end = self.len + s.len();
-            let dst = self.bytes.get_mut(self.len..end).ok_or(std::fmt::Error)?;
-            dst.copy_from_slice(s.as_bytes());
-            self.len = end;
-            Ok(())
-        }
-    }
-
     #[cfg(test)]
     #[path = "tests/imp_tests.rs"]
     mod tests;
 
     #[cfg(test)]
-    #[allow(unsafe_code)]
     #[path = "tests/mutation_hardening_tests.rs"]
     mod mutation_hardening_tests;
 }
 
 #[cfg(feature = "timing")]
 pub use imp::set_enabled;
+
+#[cfg(feature = "timing")]
+pub(crate) use imp::{MethodStat, ThreadRegistry};
 
 #[cfg(all(test, not(feature = "timing")))]
 #[path = "tests/zero_cost_when_off_tests.rs"]

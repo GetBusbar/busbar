@@ -165,9 +165,12 @@ fn work(inner: &Inner) {
     }
 }
 
+/// An item's pick order: its deadline (none sorts last), then its due instant.
+type PickKey = (Option<Instant>, Instant);
+
 /// The due, idle item with the earliest deadline (no deadline sorts last), then the earliest due.
 fn pick(book: &mut Book, now: Instant) -> Option<(usize, Arc<dyn Refreshable>)> {
-    let mut best: Option<(usize, Arc<dyn Refreshable>, (Option<Instant>, Instant))> = None;
+    let mut best: Option<(usize, Arc<dyn Refreshable>, PickKey)> = None;
     for (index, kept) in book.kept.iter().enumerate() {
         if kept.running || kept.due > now {
             continue;
@@ -184,7 +187,7 @@ fn pick(book: &mut Book, now: Instant) -> Option<(usize, Arc<dyn Refreshable>)> 
     best.map(|(index, item, _)| (index, item))
 }
 
-fn earlier(a: (Option<Instant>, Instant), b: (Option<Instant>, Instant)) -> bool {
+fn earlier(a: PickKey, b: PickKey) -> bool {
     match (a.0, b.0) {
         (Some(x), Some(y)) if x != y => x < y,
         (Some(_), None) => true,

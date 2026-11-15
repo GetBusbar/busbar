@@ -32,12 +32,7 @@ pub fn to_string<T: serde::Serialize>(value: &T) -> Result<String, sonic_rs::Err
 
 #[inline]
 pub fn parse_err_log(bytes_len: usize) -> String {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: an unparseable body renders its log line once"
-    )]
-    let line = format!("invalid JSON ({bytes_len} bytes)");
-    line
+    crate::cold::host::json_parse_err_log(bytes_len)
 }
 
 #[cfg(test)]

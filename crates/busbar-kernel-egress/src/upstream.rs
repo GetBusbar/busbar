@@ -61,11 +61,7 @@ pub const fn upstream_encoding() -> UpstreamEncoding {
 /// Write busbar's own `accept-encoding` choice ([`upstream_encoding`]) onto an upstream head that
 pub fn apply_upstream_encoding(fields: &mut Vec<(Vec<u8>, Vec<u8>)>) {
     if let Some(value) = upstream_encoding().accept_encoding() {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the upstream encoding is a build-time choice, and 1.6.0's adds no field"
-        )]
-        fields.push((b"accept-encoding".to_vec(), value.as_bytes().to_vec()));
+        crate::cold::push_field(fields, b"accept-encoding", value.as_bytes());
     }
 }
 

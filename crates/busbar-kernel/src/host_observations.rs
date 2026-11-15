@@ -75,7 +75,6 @@ struct ScopeAnswer {
 fn json_result<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, &'static str> {
     let key = wire::RESULT.as_bytes();
     let key_len = u16::try_from(key.len()).map_err(|_| REFUSED)?;
-    // busbar:expect(bp::fresh_buffer, reason = "config: the plane's Done callback owns its answer bytes (busbar-contract); this is the answer itself, written once")
     let mut out = Vec::with_capacity(2 + key.len() + 4 + 128);
     out.extend_from_slice(&key_len.to_le_bytes());
     out.extend_from_slice(key);

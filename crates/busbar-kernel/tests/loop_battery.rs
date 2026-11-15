@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-mod common;
+mod common {
+    pub mod group_probes;
+    pub mod hold_cell;
+    pub mod never;
+    pub mod principal;
+    pub mod refusals;
+    pub mod test_door;
+    pub mod units;
+}
 
 use std::future::Future;
 use std::ops::Not;
@@ -18,7 +26,22 @@ use busbar_kernel::teller::{
     exit, run_unit, run_unit_async, AccrualMeter, Ended, Evidence, Kernel, Run,
 };
 
-use common::{cell, ctx, principal, Door, NeverRoutes, TestDoor, TestUnits};
+use common::group_probes::CappedGroup;
+use common::hold_cell::cell;
+use common::never::NeverRoutes;
+use common::principal::principal;
+use common::test_door::TestDoor;
+use common::units::{ctx, TestUnits};
+
+impl TestUnits {
+    fn approved_lanes(&self) -> Vec<busbar_contract::caps::LaneId> {
+        self.approved_lanes.lock().unwrap().clone()
+    }
+
+    fn seated_principals(&self) -> Vec<PrincipalId> {
+        self.seated_principals.lock().unwrap().clone()
+    }
+}
 
 const ORDER: [StepName; 10] = [
     StepName::Arrival,
@@ -361,14 +384,14 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
     let canary = Canary::new();
 
     let parent = std::sync::Arc::new(cell(&kernel));
-    let admitted = busbar_contract::caps::Hold::open(&kernel.admit_token(), common::principal());
+    let admitted = busbar_contract::caps::Hold::open(&kernel.admit_token(), principal());
 
     let _arrival = parent
         .admit(admitted, &kernel.admit_token())
         .expect("the parent's cell was fresh");
 
     let child = TestUnits {
-        door: Door::Accrual(std::sync::Arc::clone(&parent)),
+        accrual: Some(std::sync::Arc::clone(&parent)),
         ..TestUnits::default()
     };
 
@@ -397,7 +420,7 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
         Ended::Settled { end, requests, fee } => {
             assert_eq!(end.outcome(), Outcome::Completed);
             let posted = end.posted().expect("the child posts like any other unit");
-            assert_eq!(posted.principal(), &common::principal());
+            assert_eq!(posted.principal(), &principal());
             assert!(!posted
                 .flags()
                 .contains(busbar_contract::caps::PostingFlags::LATE_ACCRUAL));
@@ -436,7 +459,7 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
 fn a_zero_priced_unit_holds_nothing_and_still_posts() {
     let kernel = Kernel::new();
     let units = TestUnits {
-        door: Door::Zero,
+        zero_hold: true,
         ..TestUnits::default()
     };
     let cell = cell(&kernel);
@@ -454,7 +477,6 @@ fn a_zero_priced_unit_holds_nothing_and_still_posts() {
 fn a_unit_that_ran_up_more_than_it_was_admitted_for_posts_it_rather_than_refusing() {
     let kernel = Kernel::new();
     let units = TestUnits {
-        door: Door::Own,
         spend: 400,
         evidence: Evidence {
             reported: Some(400),
@@ -478,7 +500,6 @@ fn a_unit_that_ran_up_more_than_it_was_admitted_for_posts_it_rather_than_refusin
 fn the_hold_is_posted_at_the_reported_figure_not_by_a_second_count() {
     let kernel = Kernel::new();
     let units = TestUnits {
-        door: Door::Own,
         spend: 150,
         evidence: Evidence {
             reported: Some(80),
@@ -550,6 +571,7 @@ fn a_caller_that_goes_away_drops_the_route_leg_and_frees_the_unit() {
     let route = NeverRoutes {
         units: &units,
         dropped: &dropped,
+        abandoned: Default::default(),
     };
 
     let table = InFlight::new(1);
@@ -667,6 +689,7 @@ fn the_door_draws_the_in_flight_lease_and_the_end_gives_it_back() {
     let route = NeverRoutes {
         units: &units,
         dropped: &dropped,
+        abandoned: Default::default(),
     };
     let table = InFlight::new(4);
     let slot = table
@@ -728,6 +751,7 @@ fn two_capped_groups_are_two_leases_while_the_unit_flies_and_none_after() {
     let route = NeverRoutes {
         units: &units,
         dropped: &dropped,
+        abandoned: Default::default(),
     };
     let table = InFlight::new(4);
     let slot = table
@@ -809,6 +833,7 @@ fn a_challenge_a_tick_and_a_kernel_verb_unit_draw_no_lease() {
         let route = NeverRoutes {
             units: &units,
             dropped: &dropped,
+            abandoned: Default::default(),
         };
         let leases = LeaseCell::new();
         let gauge = ConcurrencyGauge::new();
@@ -871,12 +896,13 @@ fn a_unit_the_door_refused_draws_no_lease() {
 #[test]
 fn a_group_capped_at_one_refuses_the_second_unit_until_the_first_has_ended() {
     let kernel = Kernel::new();
-    let group = common::CappedGroup::at(1);
+    let group = CappedGroup::at(1);
     let units = TestUnits::behind(&group);
     let dropped = AtomicBool::new(false);
     let route = NeverRoutes {
         units: &units,
         dropped: &dropped,
+        abandoned: Default::default(),
     };
     let table = InFlight::new(4);
     let first = table

@@ -10,12 +10,10 @@ use axum::{
     response::Response,
 };
 
-use crate::config::AuthCfg;
 use crate::diagnostics::{
     diag_debug, diag_error, diag_warn, ADMIN_AUTH_CHAIN_EMPTY, ADMIN_CHAIN_STALLED,
     ADMIN_FORBIDDEN_SUPPRESSED, ADMIN_MODULE_UNRESOLVED, ADMIN_OFFLOAD_SATURATED,
-    AUTH_CHAIN_OPEN_RELAY, AUTH_CHAIN_PANICKED, AUTH_OFFLOAD_SATURATED,
-    KEYS_IN_CHAIN_PASSTHROUGH_CONFLICT,
+    AUTH_CHAIN_PANICKED, AUTH_OFFLOAD_SATURATED, KEYS_IN_CHAIN_PASSTHROUGH_CONFLICT,
 };
 use crate::state::App;
 use busbar_contract::auth_calls::{
@@ -27,6 +25,11 @@ mod admin_sender_constraint;
 mod admitted;
 pub mod effect;
 pub mod relend;
+#[cfg(test)]
+use crate::off_path::auth::chain::admin_head;
+pub(crate) use crate::off_path::auth::chain::auth_refusal;
+pub use crate::off_path::auth::chain::open_operator;
+use crate::off_path::auth::chain::{admin_head_with, admin_verbs_named};
 pub use admitted::{admitted_context, AdmittedContext, AdmittedRefusal};
 
 const AUTH_SCHEME_BEARER: &str = "bearer";
@@ -77,38 +80,41 @@ pub enum ChainVerdict {
 pub struct AuthMiddleware {
     pub keys_in_chain: bool,
 
-    chain: Vec<ChainEntry>,
+    pub(crate) chain: Vec<ChainEntry>,
 
-    readers: Vec<CredentialReader>,
+    pub(crate) readers: Vec<CredentialReader>,
 
-    carriers: Vec<HeaderName>,
+    /// Each configured carrier header name to the first reader (index into `readers`) it
+    /// carries for, built with the readers: a request finds its reader by the lines it holds.
+    pub(crate) reader_by_carrier: foldhash::HashMap<HeaderName, usize>,
 
-    issued: Option<(String, busbar_contract::auth_calls::IssuedShape)>,
+    pub(crate) carriers: Vec<HeaderName>,
+
+    pub(crate) issued: Option<(String, busbar_contract::auth_calls::IssuedShape)>,
 }
 
-struct CredentialReader {
-    name: std::sync::Arc<str>,
-    calls: std::sync::Arc<dyn AuthCalls>,
-    kinds: std::sync::Arc<[String]>,
-    carriers: Vec<HeaderName>,
+pub(crate) struct CredentialReader {
+    pub(crate) name: std::sync::Arc<str>,
+    pub(crate) calls: std::sync::Arc<dyn AuthCalls>,
+    pub(crate) kinds: std::sync::Arc<[String]>,
 
-    issued: Option<busbar_contract::auth_calls::IssuedShape>,
+    pub(crate) issued: Option<busbar_contract::auth_calls::IssuedShape>,
 }
 
-impl CredentialReader {
-    fn carried(&self, headers: &HeaderMap) -> bool {
-        // busbar:expect(bp::state_scan, reason = "config: a reader's configured carrier names, fixed when the chain is built (a few header names)")
-        self.carriers.iter().any(|c| headers.contains_key(c))
-    }
+pub(crate) struct ChainEntry {
+    pub(crate) provider: String,
+
+    pub(crate) calls: std::sync::Arc<dyn AuthCalls>,
+
+    pub(crate) name: String,
 }
 
-struct ChainEntry {
-    provider: String,
-
-    calls: std::sync::Arc<dyn AuthCalls>,
-
-    name: String,
-}
+/// A credential reader the signed path hands on: its name, its calls and the kinds it verifies.
+pub(crate) type SignedReader = (
+    std::sync::Arc<str>,
+    std::sync::Arc<dyn AuthCalls>,
+    std::sync::Arc<[String]>,
+);
 
 fn chain_verdict_of(answer: VerifyAnswer) -> Judgement {
     Judgement::answered(answer)
@@ -648,199 +654,11 @@ pub use busbar_kernel_identity::{
     operator::{Operator, OperatorCredential},
 };
 
-pub fn open_operator(
-    registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
-    digest: Option<String>,
-    providers: &crate::config::IdentityProviders,
-) -> Result<Operator, String> {
-    let op = crate::config::operator_provider();
-    let axis = crate::preflight::auth_axis(registry.clone());
-    let answered = axis.as_ref().is_some_and(|axis| axis.answers(op));
-    let defs = providers.iter().map(|(n, d)| (n.as_str(), d.module.trim()));
-    let is_op = |m: &str| crate::config::names_operator(m);
-
-    let carriers = axis.as_ref().map(|a| a.carriers(op)).unwrap_or_default();
-    Operator::open(op, defs, &is_op, answered, digest, |d| {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the operator provider opens once, at boot; its refusal names the missing plugin"
-        )]
-        let axis = axis.ok_or_else(|| format!("no `kind: auth` plugin answers to '{op}'"))?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the operator provider opens once, at boot, on its configured digest"
-        )]
-        let opened = axis.open(
-            op,
-            op,
-            &busbar_contract::plugin_settings::ResolvedSettings::from(serde_json::Value::String(
-                d.to_string(),
-            )),
-        );
-        opened
-    })
-    .map(|operator| operator.with_carriers(carriers))
-}
-
-/// How an auth instance's settings are re-resolved for a re-lend: `None` when its plugin lends no
-/// secret reference (nothing it holds can rotate).
-pub(crate) fn relender(
-    settings: &busbar_contract::plugin_settings::Settings,
-    registry: &dyn busbar_contract::plugin_rows::PluginRows,
-    module: &str,
-    resolver: &crate::config::secret::SecretResolver,
-) -> Option<relend::Reresolve> {
-    let secrets = registry.secret_slots(module);
-    if secrets.is_empty() {
-        return None;
-    }
-    let references = registry.reference_slots(module);
-    let (settings, module, resolver) = (settings.clone(), module.to_string(), resolver.clone());
-    Some(Box::new(move || {
-        crate::config::secret::resolve_settings(
-            &settings,
-            &secrets,
-            &references,
-            &module,
-            &resolver,
-            &busbar_contract::config_time::ConfigScope::config_time(),
-        )
-    }))
-}
-
-pub(crate) fn auth_refusal(
-    registry: &dyn busbar_contract::plugin_rows::PluginRows,
-    module: &str,
-) -> String {
-    registry.kind_refusal(
-        busbar_contract::abi::mechanism::kind::AUTH,
-        "serve as an auth module",
-        module,
-    )
-}
-
 impl fmt::Debug for AdminAuthChain {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AdminAuthChain")
             .field("modules", &self.modules.keys())
             .finish()
-    }
-}
-
-impl AdminAuthChain {
-    pub fn build(
-        cfg: &AuthCfg,
-        registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
-        secret_resolver: &crate::config::secret::SecretResolver,
-    ) -> Result<Self, String> {
-        Self::build_on(
-            cfg,
-            registry.as_ref(),
-            secret_resolver,
-            &mut instances::AuthInstances::default(),
-            &|| crate::preflight::auth_axis(registry.clone()),
-        )
-    }
-
-    /// [`Self::build`] over the build's shared `instances`: a provider another role already
-    /// opened is handed over, not opened again (WASTE-AUTH-SECRETS W1).
-    pub(crate) fn build_on(
-        cfg: &AuthCfg,
-        registry: &dyn busbar_contract::plugin_rows::PluginRows,
-        secret_resolver: &crate::config::secret::SecretResolver,
-        instances: &mut instances::AuthInstances,
-        open_axis: &dyn Fn() -> Option<std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>>,
-    ) -> Result<Self, String> {
-        let mut modules: foldhash::HashMap<String, AdminModule> = foldhash::HashMap::default();
-        let op = crate::config::operator_provider();
-        let is_op = |m: &str| crate::config::names_operator(m);
-        let mut axis: Option<std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>> = None;
-        for entry in &cfg.admin_auth {
-            match entry.module.as_str() {
-                module if Operator::backed(op, &entry.name, Some(module), &is_op) => {}
-                other => {
-                    let name = entry.name.as_str();
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "config: a config-load refusal naming the admin_auth provider"
-                    )]
-                    let refused = |e: String| {
-                        format!(
-                            "auth.admin_auth provider '{name}' (module '{other}') could not be \
-                             loaded as a `kind: auth` plugin: {e}"
-                        )
-                    };
-                    let calls = instances.instance(
-                        name,
-                        other,
-                        registry,
-                        || {
-                            let mut resolved = instances::provider_settings(
-                                cfg,
-                                name,
-                                other,
-                                &entry.settings,
-                                registry,
-                                secret_resolver,
-                                |e| format!("identity-providers.{name} settings: {e}"),
-                            )?;
-
-                            let axis = match &axis {
-                                Some(axis) => axis.clone(),
-                                None => {
-                                    #[expect(
-                                        clippy::disallowed_methods,
-                                        reason = "config: a config-load refusal naming the auth module"
-                                    )]
-                                    let opened = open_axis().ok_or_else(|| {
-                                        refused(format!(
-                                            "no `kind: auth` plugin answers to '{other}'"
-                                        ))
-                                    })?;
-                                    axis.insert(opened).clone()
-                                }
-                            };
-
-                            if !axis.answers(other) {
-                                return Err(refused(auth_refusal(registry, other)));
-                            }
-                            instances::lend_login_secret(
-                                cfg,
-                                name,
-                                other,
-                                registry,
-                                secret_resolver,
-                                &mut resolved,
-                            )?;
-
-                            Ok(instances::Prepared {
-                                axis,
-                                resolved,
-                                reresolve: instances::reresolve(
-                                    cfg,
-                                    name,
-                                    other,
-                                    &entry.settings,
-                                    registry,
-                                    secret_resolver,
-                                ),
-                            })
-                        },
-                        refused,
-                    )?;
-
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "config: the admin_auth provider table is built once, at config load"
-                    )]
-                    modules.insert(name.to_string(), AdminModule { calls });
-                }
-            }
-        }
-        Ok(Self {
-            modules,
-            operator: Operator::new(op),
-        })
     }
 }
 
@@ -854,252 +672,11 @@ impl fmt::Debug for AuthMiddleware {
 }
 
 impl AuthMiddleware {
-    pub fn new(
-        cfg: &AuthCfg,
-        registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
-        secret_resolver: &crate::config::secret::SecretResolver,
-    ) -> Result<Self, String> {
-        Self::build_on(
-            cfg,
-            registry.as_ref(),
-            secret_resolver,
-            &mut instances::AuthInstances::default(),
-            &|| crate::preflight::auth_axis(registry.clone()),
-        )
-    }
-
-    /// [`Self::new`] over the build's shared `instances` (WASTE-AUTH-SECRETS W1).
-    pub(crate) fn build_on(
-        cfg: &AuthCfg,
-        registry: &dyn busbar_contract::plugin_rows::PluginRows,
-        secret_resolver: &crate::config::secret::SecretResolver,
-        instances: &mut instances::AuthInstances,
-        open_axis: &dyn Fn() -> Option<std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>>,
-    ) -> Result<Self, String> {
-        let mut keys_in_chain = false;
-        // busbar:expect(bp::fresh_buffer, reason = "config: the configured auth chain, built once at config load")
-        let mut chain: Vec<ChainEntry> = Vec::new();
-        let mut axis: Option<std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>> = None;
-        for entry in &cfg.chain {
-            match entry.module.as_str() {
-                crate::config::KEYS_MODULE => {
-                    keys_in_chain = true;
-                }
-                other => {
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "config: a config-load refusal naming the auth.chain module"
-                    )]
-                    let refused = |e: String| {
-                        format!(
-                            "auth.chain module '{other}' could not be loaded as a `kind: auth` \
-                             plugin: {e}"
-                        )
-                    };
-                    let name = entry.name.as_str();
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "config: auth.chain modules resolve once, at config load"
-                    )]
-                    let calls = instances.instance(
-                        name,
-                        other,
-                        registry,
-                        || {
-                            let mut resolved = instances::provider_settings(
-                                cfg,
-                                name,
-                                other,
-                                &entry.settings,
-                                registry,
-                                secret_resolver,
-                                |e| format!("auth.chain module '{other}' settings: {e}"),
-                            )?;
-                            let axis = match &axis {
-                                Some(axis) => axis.clone(),
-                                None => {
-                                    #[expect(
-                                        clippy::disallowed_methods,
-                                        reason = "config: a config-load refusal naming the auth.chain module"
-                                    )]
-                                    let opened = open_axis().ok_or_else(|| {
-                                        refused(format!(
-                                            "no `kind: auth` plugin answers to '{other}'"
-                                        ))
-                                    })?;
-                                    axis.insert(opened).clone()
-                                }
-                            };
-
-                            if !axis.answers(other) {
-                                return Err(refused(auth_refusal(registry, other)));
-                            }
-                            instances::lend_login_secret(
-                                cfg,
-                                name,
-                                other,
-                                registry,
-                                secret_resolver,
-                                &mut resolved,
-                            )?;
-                            Ok(instances::Prepared {
-                                axis,
-                                resolved,
-                                reresolve: instances::reresolve(
-                                    cfg,
-                                    name,
-                                    other,
-                                    &entry.settings,
-                                    registry,
-                                    secret_resolver,
-                                ),
-                            })
-                        },
-                        refused,
-                    )?;
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "config: the auth chain is built once, at config load"
-                    )]
-                    chain.push(ChainEntry {
-                        provider: entry.name.clone(),
-                        name: calls.name().to_string(),
-                        calls,
-                    });
-                }
-            }
-        }
-
-        if chain.is_empty() && !keys_in_chain {
-            diag_warn!(
-                AUTH_CHAIN_OPEN_RELAY,
-                "auth.chain is empty (open relay) - only acceptable for dev; reject in production"
-            );
-        }
-
-        // busbar:expect(bp::fresh_buffer, reason = "config: the credential readers, built once at config load")
-        let mut readers = Vec::new();
-        if keys_in_chain {
-            let axis = match &axis {
-                Some(axis) => Some(axis.clone()),
-                None => open_axis(),
-            };
-            for module in axis.iter().flat_map(|a| a.credential_readers()) {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "config: a config-load refusal naming the credential-reader plugin"
-                )]
-                let calls = axis
-                    .as_ref()
-                    .map(|a| {
-                        a.open(
-                            &module,
-                            &module,
-                            &busbar_contract::plugin_settings::ResolvedSettings::default(),
-                        )
-                    })
-                    .transpose()
-                    .map_err(|e| {
-                        format!(
-                            "auth.chain names `keys`, and the `kind: auth` plugin '{module}' that \
-                             verifies the credentials it holds could not be loaded: {e}"
-                        )
-                    })?;
-                if let Some(calls) = calls {
-                    // busbar:expect(bp::into_alloc, reason = "config: a credential reader is named once, at config load")
-                    let name = std::sync::Arc::<str>::from(module.as_str());
-                    // busbar:expect(bp::into_alloc, reason = "config: a credential reader's kinds are read once, at config load")
-                    let kinds = std::sync::Arc::<[String]>::from(calls.credential_kinds());
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "config: the credential readers are built once, at config load"
-                    )]
-                    readers.push(CredentialReader {
-                        name,
-                        kinds,
-                        issued: calls.issued_shape(),
-                        carriers: calls
-                            .carriers()
-                            .iter()
-                            .filter_map(|c| HeaderName::from_bytes(c.as_bytes()).ok())
-                            .collect(),
-                        calls,
-                    });
-                }
-            }
-        }
-
-        let carriers = match &axis {
-            Some(axis) => axis.default_inbound_style()?,
-            None => open_axis()
-                .map(|axis| axis.default_inbound_style())
-                .transpose()?
-                .unwrap_or_default(),
-        };
-
-        let issued = readers
-            .iter()
-            .find_map(|r| {
-                let kind = r.kinds.first()?.clone();
-                r.issued.clone().map(|shape| (kind, shape))
-            })
-            .or_else(|| match &axis {
-                Some(axis) => axis.issued_credential(),
-                None => open_axis().and_then(|axis| axis.issued_credential()),
-            });
-        Ok(Self {
-            keys_in_chain,
-            chain,
-            readers,
-            carriers: header_names(&carriers),
-            issued,
-        })
-    }
-
-    pub fn chain_names(&self) -> Vec<String> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the admin service's view of the configured chain"
-        )]
-        let names = self.chain.iter().map(|e| e.name.clone()).collect();
-        names
-    }
-
-    /// Effective authentication arms in execution order, including built-in keys.
-    pub fn effective_chain_names(&self) -> Vec<String> {
-        let mut names = self.chain_names();
-        if self.keys_in_chain {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: the admin service's view of the configured chain"
-            )]
-            names.push(crate::config::KEYS_MODULE.to_string());
-        }
-        names
-    }
-
-    #[must_use]
-    pub fn position_calls(&self, provider: &str) -> Option<std::sync::Arc<dyn AuthCalls>> {
-        // busbar:expect(bp::state_scan, reason = "config: plane routes resolve each configured chain position once, at config load")
-        self.chain
-            .iter()
-            .find(|e| e.provider == provider)
-            .map(|e| std::sync::Arc::clone(&e.calls))
-    }
-
-    pub(crate) fn signed_reader(
-        &self,
-        headers: &HeaderMap,
-    ) -> Option<(
-        std::sync::Arc<str>,
-        std::sync::Arc<dyn AuthCalls>,
-        std::sync::Arc<[String]>,
-    )> {
+    pub(crate) fn signed_reader(&self, headers: &HeaderMap) -> Option<SignedReader> {
         if !self.keys_in_chain {
             return None;
         }
-        // busbar:expect(bp::state_scan, reason = "config: the configured credential readers, fixed when the chain is built (one per reader plugin)")
-        self.readers.iter().find(|r| r.carried(headers)).map(|r| {
+        self.carrying_reader(headers).map(|r| {
             (
                 std::sync::Arc::clone(&r.name),
                 std::sync::Arc::clone(&r.calls),
@@ -1108,22 +685,14 @@ impl AuthMiddleware {
         })
     }
 
-    pub fn position_points(&self, provider: &str) -> busbar_contract::abi::auth::AuthPoints {
-        use busbar_contract::abi::auth::AuthPoints;
-        // busbar:expect(bp::state_scan, reason = "config: plane routes read each configured chain position's points once, at config load")
-        if let Some(entry) = self.chain.iter().find(|e| e.provider == provider) {
-            return entry.calls.inbound_points();
-        }
-        // busbar:expect(bp::state_scan, reason = "config: plane routes read the configured readers' points once, at config load")
-        let readers = self
-            .readers
-            .iter()
-            .fold(0, |set, r| set | r.calls.inbound_points().bits());
-        if readers == 0 {
-            AuthPoints::HEAD
-        } else {
-            AuthPoints(readers)
-        }
+    /// The first configured credential reader (in reader order) one of whose carrier lines
+    /// `headers` holds: looked up by each presented line name, never by sweeping the readers.
+    pub(crate) fn carrying_reader(&self, headers: &HeaderMap) -> Option<&CredentialReader> {
+        let first = headers
+            .keys()
+            .filter_map(|name| self.reader_by_carrier.get(name).copied())
+            .min()?;
+        self.readers.get(first)
     }
 
     pub fn is_open(&self) -> bool {
@@ -1202,19 +771,6 @@ impl AuthMiddleware {
             return Ok(keys_arm_verdict(gov, candidate, now, expected_aud));
         }
         Ok(complete_chain(None))
-    }
-
-    /// The instances the chain holds for `provider` (all, for `None`), in chain order: the admin
-    /// flush refreshes each distinct one once ([`instances::flush_distinct`]).
-    pub(crate) fn chain_instances<'a>(
-        &'a self,
-        provider: Option<&'a str>,
-    ) -> impl Iterator<Item = &'a std::sync::Arc<dyn AuthCalls>> + 'a {
-        // busbar:expect(bp::state_scan, reason = "config: an operator's admin flush walks the configured chain once")
-        self.chain
-            .iter()
-            .filter(move |e| provider.is_none_or(|m| m == e.provider))
-            .map(|e| &e.calls)
     }
 
     pub async fn run_chain_on_request_path(
@@ -1547,19 +1103,6 @@ fn carried_token(value: &HeaderValue, authorization: bool) -> Option<&str> {
     }
 }
 
-/// The configured carrier words as header names, parsed once when the chain is built.
-pub(crate) fn header_names(words: &[String]) -> Vec<HeaderName> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: carrier names are parsed once, when the auth chain is built"
-    )]
-    let names = words
-        .iter()
-        .filter_map(|w| HeaderName::from_bytes(w.as_bytes()).ok())
-        .collect();
-    names
-}
-
 pub use busbar_contract::auth::AuthPrincipal;
 
 type AdminChainAnswer = (ChainVerdict, Option<busbar_contract::authz::Scope>);
@@ -1625,15 +1168,7 @@ async fn run_admin_chain(
         let outcome = match name.as_str() {
             _ if operator => {
                 let operator = &app.admin_modules.operator;
-                let mut head = admin_head(method, target, headers, now);
-
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "config: the admin API is the node's configuration plane; its verify request owns a copy of the head"
-                )]
-                let credential = candidate
-                    .map(|c| busbar_contract::redacted::Secret::new(c.as_bytes().to_vec()));
-                head.credential = credential;
+                let head = admin_head_with(method, target, headers, now, candidate);
                 match probe {
                     true => operator.probe(&head),
                     false => operator.judge(head).await,
@@ -1641,14 +1176,7 @@ async fn run_admin_chain(
             }
 
             other => {
-                let mut request = admin_head(method, target, headers, now);
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "config: the admin API is the node's configuration plane; its verify request owns a copy of the head"
-                )]
-                let credential = candidate
-                    .map(|c| busbar_contract::redacted::Secret::new(c.as_bytes().to_vec()));
-                request.credential = credential;
+                let request = admin_head_with(method, target, headers, now, candidate);
                 external_admin_module(app, other, request, probe).await
             }
         }
@@ -1767,50 +1295,6 @@ pub enum AdminDoor {
     Unavailable(VerifierUnavailable),
     /// Refused: invalid credentials or the unchanged admin overload policy.
     Denied,
-}
-
-fn admin_head(
-    method: &str,
-    target: &str,
-    headers: &HeaderMap,
-    now: u64,
-) -> busbar_contract::auth_calls::VerifyRequest {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the admin API is the node's configuration plane; its verify request owns a copy of the head"
-    )]
-    let (path, query) = match target.split_once('?') {
-        Some((path, query)) => (path, Some(query.to_string())),
-        None => (target, None),
-    };
-    let authority = headers
-        .get(axum::http::header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the admin API is the node's configuration plane; its verify request owns a copy of the head"
-    )]
-    let request = busbar_contract::auth_calls::VerifyRequest {
-        point: busbar_contract::abi::auth::AuthPoint::Head,
-        lines: (headers.iter())
-            .map(|(n, v)| {
-                let value = busbar_contract::redacted::Secret::new(v.as_bytes().to_vec());
-                (n.as_str().to_string(), value)
-            })
-            .collect(),
-        method: method.to_string(),
-        authority: authority.to_string(),
-        path: path.to_string(),
-        query,
-        timestamp: now,
-        conn: 0,
-        unit: 0,
-        credential: None,
-        peer: None,
-        body: None,
-    };
-    request
 }
 
 fn admin_chain_outcome(
@@ -2129,34 +1613,6 @@ impl VerbAllowList {
     pub fn admits(&self, verb: Option<&str>, needed: busbar_contract::authz::Scope) -> bool {
         self.rungs.allows(needed) || verb.is_some_and(|v| self.named.contains(v))
     }
-}
-
-fn admin_verbs_named(
-    bindings: &crate::config::RoleBindings,
-    module: &str,
-    principal: &Principal,
-    cap: Option<busbar_contract::authz::Scope>,
-    rung_of: &impl Fn(&str) -> Option<busbar_contract::authz::Scope>,
-) -> std::collections::BTreeSet<String> {
-    let Some(table) = bindings.get(module) else {
-        return std::collections::BTreeSet::new();
-    };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the admin API is the node's configuration plane; a principal's named verbs are listed per admin request"
-    )]
-    let named = (principal.roles.iter())
-        .filter_map(|role| table.get(role))
-        .filter_map(|b| match b.verb_grant() {
-            Some(Ok(crate::config::VerbGrant::Named(names))) => Some(names),
-            _ => None,
-        })
-        .flatten()
-        .filter(|verb| {
-            rung_of(verb.as_str()).is_some_and(|rung| cap.is_none_or(|c| c.allows(rung)))
-        })
-        .collect();
-    named
 }
 
 /// An admin error body, `{"error":{"code":..,"message":..}}`, serialized from borrowed parts.
@@ -2533,21 +1989,14 @@ pub(crate) async fn auth_middleware(
             Ok(context) => context,
             Err(refused) => {
                 let path = req.uri().path();
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: the refused request's door target, kept for its refusal"
-                )]
-                let door = core_routes.door_refusal(path, req.method()).map(|refuse| {
-                    (
-                        refuse.clone(),
-                        busbar_contract::secure::SecureString::from(
-                            req.uri()
-                                .path_and_query()
-                                .map_or(path, |target| target.as_str())
-                                .to_owned(),
-                        ),
-                    )
-                });
+                let door = crate::cold::auth::chain::refusal_door(
+                    core_routes,
+                    path,
+                    req.method(),
+                    req.uri()
+                        .path_and_query()
+                        .map_or(path, |target| target.as_str()),
+                );
                 let admission = inbound.plane_admission();
                 let token = inbound.client_token();
                 return Err(match refused {
@@ -2606,18 +2055,13 @@ pub(crate) async fn auth_middleware(
     );
 
     // The refusal door and its target are read only when this request is refused.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a refused request's door target, kept for its refusal"
-    )]
     let door = || -> Option<RefusalDoor> {
-        core_routes.door_refusal(path, &method).map(|refuse| {
-            let target = uri.path_and_query().map_or(path, |t| t.as_str()).to_owned();
-            (
-                refuse.clone(),
-                busbar_contract::secure::SecureString::from(target),
-            )
-        })
+        crate::cold::auth::chain::refusal_door(
+            core_routes,
+            path,
+            &method,
+            uri.path_and_query().map_or(path, |t| t.as_str()),
+        )
     };
 
     let mut declared_admin = false;
@@ -2718,15 +2162,16 @@ pub(crate) async fn auth_middleware(
                 .map(|a| a.0.ip()),
             inbound_headers.unwrap_or_else(|| req.headers()),
         );
-        let presented = carried_credential(
-            &header_names(app.admin_modules.operator.carriers()),
+        let presented = carried_named(
+            app.admin_modules
+                .operator
+                .carriers()
+                .iter()
+                .map(String::as_str),
             inbound_headers.unwrap_or_else(|| req.headers()),
         )
         .is_some();
-        if let Some(retry_after) = app
-            .login_guard
-            .admin_throttled(admin_source, busbar_kernel::store::now())
-        {
+        if let Some(retry_after) = app.login_guard.admin_throttled(admin_source, now) {
             if let Some(admission) = &inbound {
                 admission.refuse(
                     busbar_contract::caps::StepName::Admit,
@@ -2785,8 +2230,7 @@ pub(crate) async fn auth_middleware(
         req.extensions_mut().insert(consumed);
 
         if presented && matches!(door, AdminDoor::Denied) {
-            app.login_guard
-                .admin_refused(admin_source, busbar_kernel::store::now());
+            app.login_guard.admin_refused(admin_source, now);
         }
         let principal = match admin_principal_or_response(door) {
             Ok(principal) => principal,
@@ -2850,16 +2294,7 @@ pub(crate) async fn auth_middleware(
                 app.mutation_limiter.check(actor, class, now)
             {
                 if first_in_window {
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "error: the first rate-limited refusal in a window names its class and path"
-                    )]
-                    crate::audit_ring::AUDIT.record_by(
-                        "admin.rate_limited",
-                        &format!("{}:{path}", class.label()),
-                        crate::audit_ring::OUTCOME_REJECTED,
-                        actor,
-                    );
+                    crate::cold::auth::chain::record_admin_rate_limited(class.label(), path, actor);
                 }
                 if let Some(admission) = &inbound {
                     admission.refuse(
@@ -2901,7 +2336,7 @@ pub(crate) async fn auth_middleware(
 
     let reader =
         (inbound.is_none() && admission.is_none() && app.auth.keys_in_chain && ingress_signed)
-            .then(|| app.auth.readers.iter().find(|r| r.carried(req.headers())))
+            .then(|| app.auth.carrying_reader(req.headers()))
             .flatten();
 
     let mut pending: Option<PendingClaim> = None;
@@ -3250,9 +2685,9 @@ impl AuthMiddleware {
                 name: "reader".into(),
                 calls,
                 kinds: std::sync::Arc::from([]),
-                carriers: vec![carrier.clone()],
                 issued: None,
             }],
+            reader_by_carrier: std::iter::once((carrier.clone(), 0)).collect(),
             carriers: vec![carrier],
             issued: None,
         }
