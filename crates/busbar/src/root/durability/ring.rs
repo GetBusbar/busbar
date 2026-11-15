@@ -43,9 +43,8 @@ impl AuditRing {
 
     pub(crate) fn push(&mut self, record: AuditRecord) {
         self.buf.push(record);
-        if self.buf.len() > AUDIT_RING {
-            let over = self.buf.len() - AUDIT_RING;
-            self.buf.drain(..over);
+        if self.buf.len() >= AUDIT_RING + AUDIT_SLACK {
+            self.buf.drain(..AUDIT_SLACK);
             #[cfg(test)]
             {
                 self.compactions += 1;
