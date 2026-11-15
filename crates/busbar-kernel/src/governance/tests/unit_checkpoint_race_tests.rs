@@ -7,7 +7,7 @@
 //! original-frame reads, parks a selection, or rewrites an original frame.
 
 use super::recovery::{RecoveryEvent, RecoveryKind, RecoveryState};
-use super::unit_checkpoint::{UnitCheckpoint, UnitCheckpointSink, UnitTarget};
+use super::unit_checkpoint::{UnitCheckpoint, UnitCheckpointSink, UnitRemoval, UnitTarget};
 use super::unit_checkpoint_store::{
     StoreUnitCheckpoints, UnitCheckpointAudit, UnitCheckpointEvidence,
 };
@@ -74,6 +74,11 @@ struct Mem {
     /// has not heard yet), so a pinned group is in flight with the head already moved.
     append_delay: Mutex<Option<Duration>>,
     appends_applied: AtomicUsize,
+    /// The next multi-row unit checkpoint candidate finds this checkpoint's head row already
+    /// taken by another candidate (written just before the candidate is applied).
+    compete: Mutex<Option<[u8; 16]>>,
+    /// Refuse, with no effect, every unit checkpoint candidate with more rows than this.
+    max_rows: Mutex<Option<usize>>,
 }
 
 fn control_address(key: Vec<u8>) -> Address {
@@ -175,6 +180,8 @@ impl Mem {
             appenders: Mutex::default(),
             append_delay: Mutex::new(None),
             appends_applied: AtomicUsize::new(0),
+            compete: Mutex::new(None),
+            max_rows: Mutex::new(None),
         }
     }
     fn set_mode(&self, mode: Mode) {
@@ -362,6 +369,31 @@ impl PersistenceBackend for Mem {
                 head,
             });
             self.unitcp_commits.fetch_add(1, Ordering::SeqCst);
+            let rows = prepared.candidate().mutations.len();
+            if self.max_rows.lock().unwrap().is_some_and(|max| rows > max) {
+                return Err(busbar_contract::persistence::Failure::Refused);
+            }
+            if rows > 1 {
+                let competing = self.compete.lock().unwrap().take();
+                if let Some(id) = competing {
+                    let address = prepared
+                        .candidate()
+                        .mutations
+                        .iter()
+                        .find_map(|mutation| match mutation {
+                            Mutation::Put { address, .. } if address.key.ends_with(&id) => {
+                                Some(address.clone())
+                            }
+                            _ => None,
+                        })
+                        .expect("the competing checkpoint is in the batch");
+                    self.state
+                        .lock()
+                        .unwrap()
+                        .rows
+                        .insert(address, Secret::new(b"another candidate's head".to_vec()));
+                }
+            }
             let mode = *self.mode.lock().unwrap();
             match mode {
                 Mode::Forward => {}
@@ -442,6 +474,10 @@ struct Fixture {
     sink: StoreUnitCheckpoints,
 }
 async fn fixture() -> Fixture {
+    fixture_with(64).await
+}
+/// A fixture whose store reads and stages up to `scan_items` items per call.
+async fn fixture_with(scan_items: usize) -> Fixture {
     let backend = Arc::new(Mem::new());
     let store = Arc::new(
         CoreStore::attach(
@@ -454,7 +490,7 @@ async fn fixture() -> Fixture {
             Limits {
                 pending_operations: 64,
                 conflict_retries: 1,
-                scan_items: 64,
+                scan_items,
                 scan_bytes: 1024 * 1024,
             },
         )
@@ -1044,6 +1080,156 @@ async fn an_unchanged_row_no_effect_names_the_changed_original() {
             staged,
             "the kept candidate is never staged twice"
         );
+    })
+    .await;
+}
+
+#[derive(Clone, Default)]
+struct Logs(Arc<Mutex<Vec<u8>>>);
+impl std::io::Write for Logs {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+impl Logs {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+/// Runs `test` on a current-thread runtime with every log line captured.
+fn logged(test: impl std::future::Future<Output = ()>) -> Logs {
+    let logs = Logs::default();
+    let writer = logs.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || writer.clone())
+        .with_target(false)
+        .with_ansi(false)
+        .with_max_level(tracing::Level::DEBUG)
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::callsite::rebuild_interest_cache();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(test)
+    });
+    logs
+}
+/// `snapshot` as checkpoint `n` of a batch: its own id and unit.
+fn numbered(mut snapshot: UnitCheckpoint, n: u8) -> UnitCheckpoint {
+    snapshot.id = [n; 16];
+    snapshot.unit = 1_000 + u64::from(n);
+    snapshot
+}
+/// Running-unit head rows in the store, whoever wrote them.
+fn heads(backend: &Mem) -> usize {
+    backend
+        .state
+        .lock()
+        .unwrap()
+        .rows
+        .keys()
+        .filter(|at| at.key.starts_with(UNITCP))
+        .count()
+}
+
+/// WHO: the settlement flusher's phase P over one batch of 128 checkpoints.
+/// DOES: (SHUTDOWN-HANG 8.9) the batch is one selection CAS. With one competing selector in it,
+/// the batch bisects: 127 commit and the bad one reports "another candidate won", in at most 14
+/// extra crossings. With a store refusing candidates over 32 rows, the batch size halves twice,
+/// `UNIT_FLUSH_BATCH_REDUCED` (BUSBAR-8031) is raised once, and every item commits.
+/// WHY: one crossing per item bounds a drain's settlement rate by store latency (§1.7), and one
+/// bad item must never fail its siblings.
+#[test]
+fn batch_bisects_and_reduces() {
+    let logs = logged(bounded(async {
+        let batch: Vec<UnitCheckpoint> = (1..=128u8).map(|n| numbered(unit(1), n)).collect();
+
+        let fixture = fixture_with(256).await;
+        *fixture.backend.compete.lock().unwrap() = Some(batch[37].id);
+        let results = fixture.sink.persist_batch(&batch).await;
+        let crossings = fixture.backend.unitcp_commits.load(Ordering::SeqCst);
+        assert!(
+            crossings <= 15,
+            "one CAS for the batch plus at most 14 for the bisect, not {crossings}"
+        );
+        for (at, result) in results.iter().enumerate() {
+            match result {
+                Err(refused) if at == 37 => {
+                    assert!(refused.0.contains("another candidate won"), "{}", refused.0)
+                }
+                Ok(()) if at != 37 => {}
+                other => panic!("item {at}: {:?}", other.as_ref().err().map(|e| &e.0)),
+            }
+        }
+        assert_eq!(
+            heads(&fixture.backend),
+            128,
+            "127 selected, plus the competitor's"
+        );
+
+        let fixture = fixture_with(256).await;
+        *fixture.backend.max_rows.lock().unwrap() = Some(32);
+        let results = fixture.sink.persist_batch(&batch).await;
+        for (at, result) in results.iter().enumerate() {
+            assert!(
+                result.is_ok(),
+                "item {at}: {:?}",
+                result.as_ref().err().map(|e| &e.0)
+            );
+        }
+        assert_eq!(heads(&fixture.backend), 128);
+        assert_eq!(
+            fixture.backend.unitcp_commits.load(Ordering::SeqCst),
+            6,
+            "128 and 64 refused, then four batches of 32"
+        );
+    }));
+    let text = logs.text();
+    assert_eq!(text.matches("BUSBAR-8031").count(), 1, "{text}");
+}
+
+/// WHO: the settlement flusher driving 50 terminal checkpoints through P and R as batches.
+/// DOES: (SHUTDOWN-HANG 8.3) P is one selection CAS and carries each original's sealed sequence
+/// and hash; R is one delete CAS, after which nothing is carried and no head row is left.
+/// WHY: own originals are evidence from their append, and nothing carried outlives custody.
+#[tokio::test]
+async fn a_batch_carries_its_originals_through_p_and_pops_them_in_r() {
+    bounded(async {
+        let fixture = fixture_with(256).await;
+        let batch: Vec<UnitCheckpoint> = (1..=50u8).map(|n| numbered(unit(2), n)).collect();
+        let first = fixture.journal.next_seq();
+        for result in fixture.sink.persist_batch(&batch).await {
+            assert!(result.is_ok(), "{:?}", result.err().map(|e| e.0));
+        }
+        assert_eq!(fixture.backend.unitcp_commits.load(Ordering::SeqCst), 1);
+        for (at, snapshot) in batch.iter().enumerate() {
+            let carried = fixture
+                .sink
+                .carried(&snapshot.id)
+                .expect("P carries its original");
+            assert_eq!(carried.seq, first + at as u64);
+        }
+        let removals: Vec<UnitRemoval<'_>> = batch
+            .iter()
+            .map(|snapshot| UnitRemoval {
+                snapshot,
+                audit: None,
+            })
+            .collect();
+        for result in fixture.sink.remove_batch(&removals).await {
+            assert!(result.is_ok(), "{:?}", result.err().map(|e| e.0));
+        }
+        assert_eq!(fixture.backend.unitcp_commits.load(Ordering::SeqCst), 2);
+        for snapshot in &batch {
+            assert_eq!(fixture.sink.carried(&snapshot.id), None);
+        }
+        assert_eq!(heads(&fixture.backend), 0);
     })
     .await;
 }
