@@ -851,3 +851,41 @@ fn an_imported_key_row_says_where_it_came_from() {
         Some("1.5.5")
     );
 }
+
+/// 1.5.5 rotated keys in place and kept the generation only in `generation_hash` (`...:g<N>`).
+/// ADM-04 serves `rotation.generation = rotation_count + 1`, so the importer must carry N-1 over.
+fn imported(generation_hash: &str) -> VirtualKey {
+    let mut source = key();
+    source.generation_hash = generation_hash.into();
+    let rows = migration_key(&source).unwrap();
+    key_decode(&rows.first().unwrap().1).unwrap()
+}
+
+#[test]
+fn an_imported_key_at_generation_three_keeps_its_rotation_history() {
+    let stored = imported("binding:vk_rotated:g3");
+    assert_eq!(stored.rotation_count, 2);
+    assert_eq!(
+        stored.rotation_count.saturating_add(1),
+        3,
+        "served generation"
+    );
+    assert_eq!(stored.rotated_at, None, "1.5.5 recorded no rotation time");
+    assert_eq!(stored.generation_hash, "binding:vk_rotated:g3");
+}
+
+#[test]
+fn an_imported_key_without_a_readable_generation_keeps_count_zero() {
+    for hash in [
+        "generation",
+        "binding:vk:g",
+        "binding:vk:gx",
+        "binding:vk:g0",
+        "binding:vk:g99999999999999999999999",
+        "binding:vk:0",
+        "",
+    ] {
+        assert_eq!(imported(hash).rotation_count, 0, "{hash:?}");
+    }
+    assert_eq!(imported("binding:vk:g1").rotation_count, 0);
+}
