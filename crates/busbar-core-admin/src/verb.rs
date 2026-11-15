@@ -163,6 +163,8 @@ pub enum KernelVerb {
     GetHooksNameSchema,
     PatchHooksNameSettings,
     GetHooksNameStatus,
+    PutHooksNameAttachmentsTarget,
+    DeleteHooksNameAttachmentsTarget,
 
     GetIdentityProviders,
     DeleteIdentityProvidersName,
@@ -315,6 +317,8 @@ pub const TABLE: &[VerbRow] = table! {
     New RecoveryResolve "POST" "/api/v1/admin/ledger/recovery/resolve" "recovery_resolve";
     New GetTelemetry "GET" "/api/v1/admin/telemetry" "get_telemetry";
     New GetOperationsKey "GET" "/api/v1/admin/operations/{key}" "get_operations_key";
+    New PutHooksNameAttachmentsTarget "PUT" "/api/v1/admin/hooks/{name}/attachments/{target}" "put_hooks_name_attachments_target";
+    New DeleteHooksNameAttachmentsTarget "DELETE" "/api/v1/admin/hooks/{name}/attachments/{target}" "delete_hooks_name_attachments_target";
     New GetTrust "GET" "/api/v1/admin/trust" "get_trust";
     New TrustApprove "POST" "/api/v1/admin/trust/approve" "trust_approve";
     New TrustRevoke "POST" "/api/v1/admin/trust/revoke" "trust_revoke";

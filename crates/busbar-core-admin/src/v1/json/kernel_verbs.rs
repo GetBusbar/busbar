@@ -1282,6 +1282,56 @@ fn doc_for(
                 unavailable_503("the Store could not read the operation"),
             ],
         },
+        KernelVerb::PutHooksNameAttachmentsTarget
+        | KernelVerb::DeleteHooksNameAttachmentsTarget => {
+            let attach = verb == KernelVerb::PutHooksNameAttachmentsTarget;
+            VerbDoc {
+                summary: if attach {
+                    "Attach a hook at one attach point"
+                } else {
+                    "Detach a hook from one attach point"
+                },
+                description: "`target` is `pools` (every pool), `pools.<pool>`, a plane section, or \
+                    `<section>.<instance>`, exactly as `HookView.attachments[].target` lists it. \
+                    Attaching places the hook at `position` (`last` or a zero-based place) in that \
+                    list; an attach that changes nothing, and a repeat, answer the same hook \
+                    without a new generation. A hook defined in the base config file is refused \
+                    (`base_defined`). Audited as `hook.attach` and `hook.detach`; config budget."
+                    .to_string(),
+                success: Success::Json(
+                    schema_of(gen.subschema_for::<crate::v1::contract::HookView>()),
+                    "The hook, with its attachments after the change",
+                ),
+                request: attach.then(|| {
+                    schema_of(req_gen.subschema_for::<crate::v1::contract::HookAttachRequest>())
+                }),
+                query: vec![
+                    json!({"name": "name", "in": "path", "required": true,
+                           "schema": {"type": "string"}}),
+                    json!({"name": "target", "in": "path", "required": true,
+                           "schema": {"type": "string"}}),
+                ],
+                errors: vec![
+                    (
+                        "400",
+                        format!("`invalid_request`: malformed body or target, a position past the end, or {BODY_UNREADABLE}"),
+                    ),
+                    gated_403(),
+                    (
+                        "404",
+                        "`not_found`: no such hook or pool, or (detach) the hook is not attached there"
+                            .to_string(),
+                    ),
+                    (
+                        "409",
+                        "`conflict`: `base_defined`, an attach point the configuration does not \
+                         have, or a higher-priority override of the list"
+                            .to_string(),
+                    ),
+                    unavailable_503("the Store could not commit the change"),
+                ],
+            }
+        }
         _ => return None,
     })
 }

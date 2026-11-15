@@ -1408,7 +1408,9 @@ impl AdminService {
     }
 
     fn hook_view(&self, name: &str, cfg: &HookCfg) -> HookView {
-        project_hook_view(name, cfg, &self.app.global_hooks)
+        let mut view = project_hook_view(name, cfg, &self.app.global_hooks);
+        view.attachments = crate::v1::json::attachments_of(&self.app, name);
+        view
     }
 }
 
