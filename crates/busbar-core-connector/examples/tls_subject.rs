@@ -20,7 +20,6 @@ use busbar_core_connector::{carrier, compose, framer, hostio};
 use busbar_kernel::config::secret::SecretResolver;
 use busbar_kernel::config::{SecretRef, TlsCfg};
 
-#[allow(unsafe_code)]
 #[path = "../src/tests/support.rs"]
 mod support;
 
