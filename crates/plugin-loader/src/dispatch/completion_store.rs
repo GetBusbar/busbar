@@ -88,7 +88,8 @@ impl ServiceStore {
         let ticket = capability.ticket;
         let mut removed = Retired::lend();
         removed.0.reserve(ack.handles.len());
-        let retired_conns = {
+        let mut retired_conns = super::super::conn_services::RetiredKept::lend();
+        {
             let mut map = self.lock(ticket);
             let held = map
                 .get_mut(&ticket)
@@ -122,27 +123,28 @@ impl ServiceStore {
                     _ => {}
                 }
             }
-            wake.conn_state.retire(ticket, &ack.handles, || {
-                self.held.retire(ticket, caller, &ack.handles, || {
-                    for handle in ack.handles.iter().filter(|h| h.domain == Domain::Host) {
-                        removed.0.push(
-                            held.entries
-                                .remove(&Issue {
-                                    caller,
-                                    seq: handle.seq,
-                                })
-                                .expect("validated service result"),
-                        );
-                    }
-                    let receipt = held
-                        .retirement
-                        .get_mut(&caller)
-                        .expect("validated owner nonce");
-                    receipt.1 = self.epochs.fetch_add(1, Ordering::Relaxed) + 1;
-                    receipt.2 = digest;
-                })
-            })?
-        };
+            wake.conn_state
+                .retire(ticket, &ack.handles, &mut retired_conns, || {
+                    self.held.retire(ticket, caller, &ack.handles, || {
+                        for handle in ack.handles.iter().filter(|h| h.domain == Domain::Host) {
+                            removed.0.push(
+                                held.entries
+                                    .remove(&Issue {
+                                        caller,
+                                        seq: handle.seq,
+                                    })
+                                    .expect("validated service result"),
+                            );
+                        }
+                        let receipt = held
+                            .retirement
+                            .get_mut(&caller)
+                            .expect("validated owner nonce");
+                        receipt.1 = self.epochs.fetch_add(1, Ordering::Relaxed) + 1;
+                        receipt.2 = digest;
+                    })
+                })?;
+        }
         drop((removed, retired_conns));
         Ok(())
     }
