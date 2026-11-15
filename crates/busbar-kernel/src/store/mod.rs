@@ -63,5 +63,5 @@ mod tests;
 #[path = "tests/breaker_race_tests.rs"]
 mod breaker_race_tests;
 
-mod vocab;
+pub(crate) mod vocab;
 pub use vocab::*;

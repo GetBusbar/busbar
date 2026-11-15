@@ -47,7 +47,7 @@ fn sealing_plane_where(trust_is: impl Fn(&str) -> bool) -> (ServedFacts, NeedId)
             let served = load_linked::<Plane>(
                 &row,
                 Bind {
-                    instance: Arc::from("registration-pin-probe"),
+                    instance: <Arc<str>>::from("registration-pin-probe"),
                     max_inflight_cap: 64,
                     sink: Arc::new(NoSink),
                     dispatcher: probe.adopter(),
@@ -205,10 +205,10 @@ async fn far_end(pki: &Pki, leaf: &Issued, mutual: bool) -> (u16, UnboundedRecei
                     .peer_certificates()
                     .is_some_and(|c| !c.is_empty());
                 let mut got = Vec::new();
-                let mut buf = [0_u8; 4096];
+                let mut buf = vec![0_u8; 4096];
                 let ended = |got: &[u8]| got.windows(4).any(|w| w == b"\r\n\r\n");
                 while !ended(&got) {
-                    match tls.read(&mut buf).await {
+                    match tls.read(&mut buf[..]).await {
                         Ok(0) | Err(_) => break,
                         Ok(n) => got.extend_from_slice(&buf[..n]),
                     }

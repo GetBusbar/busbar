@@ -357,7 +357,7 @@ impl ReplayIdentity {
         VerifyAnswer {
             strips: vec![Strip::field("authorization")],
             ..VerifyAnswer::from(Verified::Identity(VerifiedIdentity {
-                subject: "verified-reader".into(),
+                subject: "verified-reader".to_owned(),
                 groups: vec!["reader".into()],
                 replay: Some(Box::new(Replay {
                     key: format!("ingress-audit-replay-{replay}"),

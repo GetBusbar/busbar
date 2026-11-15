@@ -295,7 +295,7 @@ const CLAIM_VOIDED: &str = "claim.voided";
 /// name each, and the window. Plain fields: the record's bytes, as every build since the claim
 /// record was introduced has written them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClaimKey {
+pub(crate) struct ClaimKey {
     /// The bucket.
     pub bucket: String,
     /// The dimension's tag and its class name (empty but for a class dimension).
