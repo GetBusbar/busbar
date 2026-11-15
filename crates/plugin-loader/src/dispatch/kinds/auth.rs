@@ -556,12 +556,19 @@ impl Kind for Auth {
             slot::OUTBOUND_READY => "outbound_ready",
             slot::FIELDS => "fields",
             slot::TARGET => "target",
+            slot::SERVE => "serve",
             _ => lifecycle_name(s),
         }
     }
 
     fn optional_slot(s: u32) -> bool {
         s == slot::TARGET
+    }
+
+    /// `serve` may be NULL on a plugin that states no `CAP_PROVISION` (auth::Ops::serve): the
+    /// kernel never calls it there.
+    fn optional_by_statement(s: u32, st: &Statement) -> bool {
+        s == slot::SERVE && facts(st).is_ok_and(|f| f.caps & auth::CAP_PROVISION == 0)
     }
 
     fn check(a: &Answer) -> Result<(), Fault> {

@@ -867,6 +867,9 @@ macro_rules! auth_verify_door {
                     $plugin, $crate::abi::auth::OutboundReadyIn, $crate::abi::auth::OutboundReadyOut>>,
                 fields: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_door::NotServed<
                     $plugin, $crate::abi::auth::FieldsIn, $crate::abi::auth::FieldsOut>>,
+                // No `CAP_PROVISION`: the provisioning mount answers REFUSED.
+                serve: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_door::NotServed<
+                    $plugin, $crate::abi::auth::ServeIn, $crate::abi::auth::ServeOut>>,
             },
         }
     };

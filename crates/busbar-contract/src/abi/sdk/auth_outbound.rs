@@ -1006,6 +1006,10 @@ macro_rules! auth_outbound_door {
                     $crate::abi::sdk::auth_outbound::OutboundReadySlot<$plugin>>,
                 fields: $crate::abi::sdk::Safe<
                     $crate::abi::sdk::auth_outbound::FieldsSlot<$plugin>>,
+                // No `CAP_PROVISION`: the provisioning mount answers REFUSED.
+                serve: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_outbound::NotServed<
+                    $crate::abi::sdk::auth_outbound::Outbound<$plugin>,
+                    $crate::abi::auth::ServeIn, $crate::abi::auth::ServeOut>>,
             },
         }
     };
@@ -1069,6 +1073,10 @@ macro_rules! auth_door {
                 fields: $crate::abi::sdk::Safe<
                     $crate::abi::sdk::auth_outbound::FieldsSlot<
                         $plugin, $crate::abi::sdk::auth_outbound::Both<$plugin>>>,
+                // No `CAP_PROVISION`: the provisioning mount answers REFUSED.
+                serve: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_outbound::NotServed<
+                    $crate::abi::sdk::auth_outbound::Both<$plugin>,
+                    $crate::abi::auth::ServeIn, $crate::abi::auth::ServeOut>>,
             },
         }
     };
