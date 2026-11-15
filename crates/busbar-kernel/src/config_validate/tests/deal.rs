@@ -136,15 +136,10 @@ fn red_a_refusal_names_its_position() {
     assert_eq!(d.position(&verbs(&["tools", "t9"])), None);
     assert_eq!(d.refusal(&verbs(&["tools", "t9"]), "r"), "tools.t9: r");
 
-    #[derive(Debug, serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Entry {
-        url: String,
-    }
-    #[derive(Debug, serde::Deserialize)]
-    struct Root {
-        tools: std::collections::BTreeMap<String, Entry>,
-    }
+    type Root = std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    >;
     let text = "tools:\n  t1:\n    url: [1]\n";
     let library = busbar_contract::yaml::from_str::<Root>(text).expect_err("refused");
     let at = library.location().expect("the library places its refusal");

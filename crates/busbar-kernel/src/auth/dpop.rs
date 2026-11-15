@@ -190,20 +190,23 @@ fn bearer_constraint(headers: &HeaderMap, carriers: &[HeaderName]) -> SenderCons
 /// Whether any occurrence of any of `carriers` holds a DPoP-bound token (`Authorization` read
 /// as a bearer).
 pub(crate) fn carries_bound(headers: &HeaderMap, carriers: &[HeaderName]) -> bool {
-    carriers.iter().any(|name| {
-        // Inspect every occurrence: choosing only the first lets duplicate carriers hide a bound
-        // credential while another reader takes a different occurrence.
-        headers.get_all(name).iter().any(|value| {
-            let Ok(value) = value.to_str() else {
-                return false;
-            };
-            if *name == AUTHORIZATION {
-                super::AuthMiddleware::extract_bearer_token(value)
-                    .is_some_and(|token| is_dpop_bound(token))
-            } else {
-                is_dpop_bound(value)
-            }
-        })
+    carriers.iter().any(|name| carrier_bound(headers, name))
+}
+
+/// Whether any occurrence of the one carrier `name` holds a DPoP-bound token (`Authorization`
+/// read as a bearer).
+pub(crate) fn carrier_bound(headers: &HeaderMap, name: &HeaderName) -> bool {
+    // Inspect every occurrence: choosing only the first lets duplicate carriers hide a bound
+    // credential while another reader takes a different occurrence.
+    headers.get_all(name).iter().any(|value| {
+        let Ok(value) = value.to_str() else {
+            return false;
+        };
+        if *name == AUTHORIZATION {
+            super::AuthMiddleware::extract_bearer_token(value).is_some_and(is_dpop_bound)
+        } else {
+            is_dpop_bound(value)
+        }
     })
 }
 

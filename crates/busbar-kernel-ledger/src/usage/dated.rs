@@ -22,7 +22,7 @@ use crate::cost::{
 /// Beside the eras rides their request total, kept up to date as they are charged and refunded, so
 /// [`FeeEras::split`] never walks them.
 #[derive(Clone, Default, PartialEq, Eq)]
-pub struct FeeEras<E = u64>(Vec<(E, u64)>, u64);
+pub struct FeeEras<E = u64>(pub(crate) Vec<(E, u64)>, pub(crate) u64);
 
 /// Spelled as the dated eras alone: the total is derived from them.
 impl<E: std::fmt::Debug> std::fmt::Debug for FeeEras<E> {
@@ -55,17 +55,6 @@ impl<E: Copy + Eq + Into<RawRateEra> + From<u64>> FeeEras<E> {
     /// The dated eras and their request counts, as recorded.
     pub fn dated(&self) -> &[(E, u64)] {
         &self.0
-    }
-
-    /// A split read back from its dated eras and counts; era zero, the remainder, is dropped.
-    #[must_use]
-    pub fn of(dated: impl IntoIterator<Item = (E, u64)>) -> Self {
-        let eras: Vec<(E, u64)> = dated
-            .into_iter()
-            .filter(|(e, n)| (*e).into() != RawRateEra::legacy(0) && *n != 0)
-            .collect();
-        let total = eras.iter().fold(0u64, |acc, (_, n)| acc.saturating_add(*n));
-        Self(eras, total)
     }
 
     /// The fee base per era, given the bucket's billable total: every dated era, then the undated
@@ -179,22 +168,5 @@ fn price_dated_at<'r, C: Copy + Into<crate::cost::Count> + 'r>(
     Money::of_nanos(nanos_of_exact(exact)?)
 }
 
-/// A dated cell's segments folded back to ONE count map per lane, in first-seen order, with `add`
-pub fn by_lane<'r, V: Copy>(
-    segments: impl IntoIterator<Item = (&'r str, BTreeMap<String, V>), IntoIter: Clone>,
-    add: impl Fn(V, V) -> V,
-) -> Vec<(String, BTreeMap<String, V>)> {
-    let mut out: Vec<(String, BTreeMap<String, V>)> = Vec::new();
-    for (lane, counts) in segments {
-        match out.iter_mut().find(|(name, _)| name == lane) {
-            None => out.push((lane.to_string(), counts)),
-            Some((_, into)) => {
-                for (class, v) in counts {
-                    let merged = into.get(&class).map_or(v, |have| add(*have, v));
-                    into.insert(class, merged);
-                }
-            }
-        }
-    }
-    out
-}
+// Folded for an operator usage view or a scrape, never per request: off the request path.
+pub use crate::off_path::usage::by_lane;

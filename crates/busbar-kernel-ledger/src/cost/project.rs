@@ -114,11 +114,7 @@ impl<'r> MeteredRow<'r> {
     }
 
     /// [`MeteredRow::spend_micros_in_view`] with the final projection WITHHELD: the exact figure
-    pub fn exact_in_view(
-        &self,
-        arrived_ms: u64,
-        view: &HistoryView<'_>,
-    ) -> Result<i128, MoneyError> {
+    fn exact_in_view(&self, arrived_ms: u64, view: &HistoryView<'_>) -> Result<i128, MoneyError> {
         let mut t = Tally::in_view(*view);
         self.each_lane(&mut |lane, counts, fee| {
             t.row(
@@ -213,8 +209,12 @@ mod tests {
             ],
             0,
         );
-        let counts = BTreeMap::from([("input".into(), Count::parse("27.5").unwrap())]);
-        let classes = BTreeMap::from([("seconds".into(), Count::parse("0.25").unwrap())]);
+        let counts = [("input".into(), Count::parse("27.5").unwrap())]
+            .into_iter()
+            .collect::<BTreeMap<String, _>>();
+        let classes = [("seconds".into(), Count::parse("0.25").unwrap())]
+            .into_iter()
+            .collect::<BTreeMap<String, _>>();
         let row = MeteredRow::exact("lane", counts.clone(), 0, classes.clone());
         let mut tally = Tally::at_card(&card);
         tally
@@ -243,13 +243,24 @@ mod tests {
     fn whole_constructor_keeps_legacy_units_and_duplicate_classes_refuse_overflow() {
         let card = RateCard::from_micro_rates([(LaneClass::new("lane", "input"), 16.0)], 0);
         let empty = BTreeMap::new();
-        let legacy = MeteredRow::new("lane", BTreeMap::from([("input".into(), 27)]), 0, &empty);
+        let legacy = MeteredRow::new(
+            "lane",
+            [("input".into(), 27)]
+                .into_iter()
+                .collect::<BTreeMap<String, _>>(),
+            0,
+            &empty,
+        );
         assert_eq!(legacy.spend_micros_at_card(&card).unwrap(), 432);
         let overflow = MeteredRow::exact(
             "lane",
-            BTreeMap::from([("input".into(), Count::from_micros(i128::MAX))]),
+            [("input".into(), Count::from_micros(i128::MAX))]
+                .into_iter()
+                .collect::<BTreeMap<String, _>>(),
             0,
-            BTreeMap::from([("input".into(), Count::EPSILON)]),
+            [("input".into(), Count::EPSILON)]
+                .into_iter()
+                .collect::<BTreeMap<String, _>>(),
         );
         assert_eq!(
             overflow.spend_micros_at_card(&card),

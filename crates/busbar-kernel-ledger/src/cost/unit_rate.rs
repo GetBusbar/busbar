@@ -3,6 +3,8 @@
 
 //! AN OPEN METER CLASS'S CONFIGURED RATE, in the card's own representation (#83a O1: the rate-card
 
+use crate::cold::refusal;
+
 /// **ONE OPEN METER CLASS'S CONFIGURED RATE, held the way the rate card holds it: an integer number
 /// of NANO-units per unit**.
 ///
@@ -67,17 +69,6 @@ impl UnitRate {
                 ))
             })
     }
-}
-
-/// A configured rate's refusal, spelled once into the `String` the configuration check reports.
-#[cold]
-fn refusal(text: std::fmt::Arguments<'_>) -> String {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a configured rate's refusal is spelled once, when configuration is read"
-    )]
-    let spelled = std::fmt::format(text);
-    spelled
 }
 
 impl serde::Serialize for UnitRate {
