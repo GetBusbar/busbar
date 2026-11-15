@@ -67,12 +67,7 @@ impl AttemptTiming {
             if let Some(wait) = wait {
                 span.record("route_wait_us", micros(wait));
             }
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: an attempt is timed only when tracing enables its span"
-            )]
-            let start = Instant::now();
-            start
+            crate::cold::traced_start()
         });
         Self {
             span,
@@ -112,11 +107,8 @@ impl AttemptTiming {
 
     fn mark(&self, field: &'static str) {
         if let Some(start) = self.start {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: an attempt is timed only when tracing enables its span"
-            )]
-            self.span.record(field, micros(start.elapsed()));
+            self.span
+                .record(field, micros(crate::cold::traced_since(start)));
         }
     }
 
@@ -219,16 +211,8 @@ pub fn forward_instrumentation(
         None
     };
     for attempt in 1..=attempts {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the route wait is timed only when hot-path tracing is enabled"
-        )]
-        let route_started = hotpath_enabled().then(Instant::now);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the route wait is timed only when hot-path tracing is enabled"
-        )]
-        let route_wait = route_started.map(|started| started.elapsed());
+        let route_started = hotpath_enabled().then(crate::cold::traced_start);
+        let route_wait = route_started.map(crate::cold::traced_since);
         let span = if hotpath_enabled() {
             let w = live
                 .lock()
