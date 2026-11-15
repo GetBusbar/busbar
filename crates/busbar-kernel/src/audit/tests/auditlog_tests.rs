@@ -21,6 +21,7 @@ fn assert_roundtrip(seq: u64, prev_hash: &str, ts: u64, act: &str, res: &str, ou
         hash: String::new(),
         scheme: crate::audit_ring::AUDIT_SCHEME_PIPE,
         recorded_here: true,
+        ..Default::default()
     };
     let legacy = digest(&entry);
     assert_eq!(
@@ -217,6 +218,7 @@ async fn a_converted_sites_seam_record_matches_the_legacy_ring_hash() {
         hash: String::new(),
         scheme: crate::audit_ring::AUDIT_SCHEME_PIPE,
         recorded_here: true,
+        ..Default::default()
     };
     assert_eq!((seq1, prev1.as_str()), (1, ""), "genesis position");
     assert_eq!(hash1, digest(&mk(1, ts, act, String::new())));
@@ -276,6 +278,7 @@ async fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
         hash: String::new(),
         scheme: crate::audit_ring::AUDIT_SCHEME_PIPE,
         recorded_here: false,
+        ..Default::default()
     };
     let legacy_head = mk(1, ts, "hook.register", String::new());
     let legacy_tail = mk(2, ts + 60, "hook.delete", hash1.clone());
@@ -1577,6 +1580,7 @@ fn accepted_event_projection_preserves_pinned_identity_and_bounds_disclosure() {
         hash: "digest".into(),
         scheme: crate::audit_ring::AUDIT_SCHEME_PIPE,
         recorded_here: true,
+        ..Default::default()
     };
     let parsed = |rendered: crate::export::projection::Rendered| -> serde_json::Value {
         serde_json::from_slice(&rendered.line).unwrap()
@@ -1731,6 +1735,7 @@ fn live_audit_page_metadata_tracks_append_and_eviction_without_claiming_complete
                 hash: seq.to_string(),
                 scheme: crate::audit_ring::AUDIT_SCHEME_PIPE,
                 recorded_here: false,
+                ..Default::default()
             },
             "admin",
             Vec::new(),

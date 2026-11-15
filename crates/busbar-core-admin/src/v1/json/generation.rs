@@ -168,6 +168,20 @@ pub(crate) async fn preconditions(mut req: Request, next: Next) -> Response {
         }
     }
     if !is_read {
+        use busbar_kernel::audit::auditlog::{note_generation_source, note_idempotency_key};
+        if let Some(key) = req
+            .headers()
+            .get("idempotency-key")
+            .and_then(|v| v.to_str().ok())
+        {
+            note_idempotency_key(key);
+        }
+        if config {
+            let source = handle.clone();
+            note_generation_source(Arc::new(move || source.load().config_version));
+        }
+    }
+    if !is_read {
         let key = req
             .headers()
             .get("idempotency-key")
