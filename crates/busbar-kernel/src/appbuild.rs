@@ -1134,8 +1134,32 @@ async fn bootstrap_store_inputs(
     )?;
 
     let _signer = resolve_signing_key(cfg.auth.as_ref(), &resolver)?;
-    let _at_rest = resolve_at_rest_keys(&cfg.credentials, &resolver)?;
+    let at_rest = resolve_at_rest_keys(&cfg.credentials, &resolver);
+    publish_bootstrap_at_rest(at_rest.as_ref().map(Option::is_some).map_err(Clone::clone));
+    let _at_rest = at_rest?;
     Ok((registry, resolver))
+}
+
+/// What the latest store bootstrap resolved of `credentials.at_rest`, before the store opened:
+/// `Ok(true)` the key resolved, `Ok(false)` no `credentials.at_rest` block, `Err` the resolver's
+/// own text. The migration seam's recoverable gate reads it while the store's data step runs
+/// (MIGRATE-ON-BOOT §3 step 2 (a)); nothing else does.
+static BOOTSTRAP_AT_REST: std::sync::Mutex<Option<Result<bool, String>>> =
+    std::sync::Mutex::new(None);
+
+fn publish_bootstrap_at_rest(verdict: Result<bool, String>) {
+    *BOOTSTRAP_AT_REST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(verdict);
+}
+
+/// The latest store bootstrap's at-rest verdict (see `BOOTSTRAP_AT_REST`); `None` before any.
+#[must_use]
+pub fn bootstrap_at_rest() -> Option<Result<bool, String>> {
+    BOOTSTRAP_AT_REST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 /// The secret shorthand of the generation `cfg` was read under (SECRET-SHORTHAND-BOOT §3.4): what

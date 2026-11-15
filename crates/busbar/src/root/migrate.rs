@@ -21,14 +21,21 @@ use busbar_migrate::{Inputs, Plan, Refusal, Written};
 /// The plan step 1 made for an unstamped config, written by [`finish`].
 static PENDING: OnceLock<Plan> = OnceLock::new();
 
+/// The absolute directory of config.yaml, which TEXT_ADD_KEY names. Set by [`run`].
+static CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();
+
 /// Step 1. `Ok` when the boot may go on: stamped, absent (the config reader reports that in its own
-/// words), or planned and held for [`finish`].
+/// words), or planned and held for [`finish`]. On every boot it first installs the recoverable
+/// gate's answer for the loader ([`migrate_admit`]): a stamped config can still meet a 1.5.5
+/// store restored beside it.
 ///
 /// # Errors
 /// The migration's refusal text (NEWER, VERIFY, CONFIG, UNSUPPORTED), nothing written.
 #[cold]
 #[inline(never)]
 pub(crate) fn run(config: &Path, providers_flag: bool) -> Result<(), String> {
+    let _ = CONFIG_DIR.set(config_dir(config));
+    let _ = busbar_plugin_loader::dispatch::migrate::install_admit(migrate_admit);
     if !config.exists() {
         return Ok(());
     }
@@ -82,6 +89,68 @@ pub(crate) fn finish() -> Result<(), String> {
         ),
     }
     Err(reexec())
+}
+
+/// THE RECOVERABLE GATE (§3 step 2 (a); the loader's `migrate.admit` answer): whether this boot
+/// can seal the `n` recoverable 1.5.5 credentials a store's data step is about to hand core. Core
+/// answers from its own config alone, through the at-rest key the store bootstrap resolved before
+/// the store opened, with the resolver it built from the store's secret instances. The text is the
+/// process's for its life (the host-service rule): at most one per store per boot.
+#[cold]
+#[inline(never)]
+fn migrate_admit(n: u64) -> Result<(), &'static str> {
+    let dir = CONFIG_DIR
+        .get()
+        .cloned()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
+    admit_answer(n, busbar_kernel::appbuild::bootstrap_at_rest(), &dir)
+        .map_err(|text| -> &'static str { text.leak() })
+}
+
+/// The gate's verdict for `n` rows, from the bootstrap's at-rest verdict `keys` (`None` = no
+/// bootstrap resolved one) and the config directory `dir`.
+pub(crate) fn admit_answer(
+    n: u64,
+    keys: Option<Result<bool, String>>,
+    dir: &Path,
+) -> Result<(), String> {
+    if n == 0 {
+        return Ok(());
+    }
+    match keys {
+        Some(Ok(true)) => Ok(()),
+        Some(Ok(false)) => Err(text_add_key(n, dir)),
+        Some(Err(text)) => Err(format!("CONFIG: {text}")),
+        None => Err(format!(
+            "CONFIG: this 1.5.5 store holds `{n}` recoverable credentials stored in the clear, \
+             and this boot resolved no `credentials.at_rest` before the store opened, so it \
+             cannot seal them; nothing was written"
+        )),
+    }
+}
+
+/// TEXT_ADD_KEY (§3): core's text when a store holds `n` recoverable rows and no at-rest key is
+/// configured, naming the absolute config directory `dir`.
+pub(crate) fn text_add_key(n: u64, dir: &Path) -> String {
+    let key = dir.join("at-rest.key");
+    let key = key.display();
+    format!(
+        "CONFIG: this 1.5.5 store holds `{n}` recoverable credentials (SigV4 secret keys) stored \
+         in the clear, and 1.6.0 stores them only sealed. Nothing was written. Add an at-rest \
+         key, then boot 1.6.0 again:\n  (1) `openssl rand -hex 32 > {key} && chmod 600 {key}`. \
+         Use this same file on every node that shares this store.\n  (2) add to config.yaml: \
+         `credentials: {{at_rest: {{key: {{file: {key}}}}}}}`.\n1.5.5 does not accept this \
+         block, so add it only after every 1.5.5 instance has stopped. To roll back to 1.5.5 \
+         later, delete it from `config.yaml.1.5.5` first (docs/migration-1.6, \"At-rest key\")."
+    )
+}
+
+/// The absolute directory holding `config`.
+pub(crate) fn config_dir(config: &Path) -> PathBuf {
+    let absolute = std::path::absolute(config).unwrap_or_else(|_| config.to_path_buf());
+    absolute
+        .parent()
+        .map_or_else(|| PathBuf::from("/"), Path::to_path_buf)
 }
 
 /// The boot's own strict parse of a planned document, under the start grammar.
