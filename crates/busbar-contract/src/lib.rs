@@ -60,6 +60,7 @@ pub mod ids;
 pub mod io_host;
 #[allow(missing_docs, missing_debug_implementations)]
 pub mod ir;
+pub mod json;
 pub(crate) mod json_grammar;
 pub mod jsonrpc;
 pub mod kinds;
