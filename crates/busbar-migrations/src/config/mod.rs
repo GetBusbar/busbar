@@ -77,6 +77,23 @@ pub fn normalize_supported_source(
     normalize(raw, None, host, semantics == DocumentSemantics::Historical)
 }
 
+/// Pass 1 of a start that upgrades a pre-1.6 `plugins:` block: normalize `raw` as a
+/// source-specific historical document through [`migrate_plugins::ViewOnly`], which answers
+/// every `kind: auth` host check `Ok`, and return only the output's `plugins:` subtree (the
+/// upgraded view), or `None` when the output has no `plugins:` key. The `auth:` and
+/// `identity-providers:` output is discarded here, so nothing unchecked leaves this call. The
+/// `plugins:` conversion makes no auth host check and never reads the operator words, so the
+/// view equals the `plugins:` that full normalization of the same document produces.
+pub fn normalize_plugins_view(
+    raw: &str,
+    host: &dyn migrate_plugins::MigrateHost,
+) -> Result<Option<Value>, String> {
+    let out = normalize(raw, None, &migrate_plugins::ViewOnly(host), true)?;
+    let doc: Value = yaml::from_str(&out.yaml)
+        .map_err(|_| "normalization did not produce valid YAML".to_owned())?;
+    Ok(doc.get("plugins").cloned())
+}
+
 fn normalize(
     raw: &str,
     detection_yaml: Option<&str>,
@@ -376,3 +393,7 @@ mod normalize_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "tests/operator_view_tests.rs"]
+mod operator_view_tests;
