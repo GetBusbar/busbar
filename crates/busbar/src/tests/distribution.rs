@@ -179,6 +179,9 @@ mod config_transactions;
 #[path = "admin_application/apply_audit_tests.rs"]
 mod apply_audit_tests;
 
+#[path = "admin_application/grammar_admin_tests.rs"]
+mod grammar_admin_tests;
+
 #[path = "admin_application/custody_idempotency.rs"]
 mod custody_idempotency;
 

@@ -162,3 +162,67 @@ fn the_source_tree_holds_no_dead_or_generated_code_and_its_layering() {
         failures.join("\n")
     );
 }
+
+/// What reads the live secret axis as a grammar: the set the last admission published, whatever
+/// generation is serving or building (SECRET-SHORTHAND-BOOT §3.1, §3.4).
+const LIVE_AXIS_GRAMMAR: &[&str] = &[
+    "admitted_sugars(",
+    "grammar::admitted(",
+    "catalog_admitted",
+    "SecretAxis::sugars(crate::root::linked::secret_rows()",
+];
+
+/// The one production site that may: the connector's admission authority is issued once per
+/// process-lifetime table, and there is no per-generation secret axis (SECRET-SHORTHAND-BOOT OQ3).
+const LIVE_AXIS_ALLOWED: &[(&str, &str)] = &[(
+    "crates/busbar/src/root/connector.rs",
+    "SecretAxis::sugars(crate::root::linked::secret_rows()",
+)];
+
+/// SECRET-SHORTHAND-BOOT §3.4 (MR-B3): every reader takes the grammar of the read or generation it
+/// serves, passed explicitly: an admin request body its own phase 1, a generation's settings,
+/// fills, hooks, exports and plane sections that generation's grammar. None reads what the last
+/// admission left on the live secret axis, which during a build already holds the candidate's set.
+#[test]
+fn generation_sites_never_read_the_live_axis_as_their_grammar() {
+    let mut workspace = scan::load();
+    let root = workspace.root.clone();
+    let tree: SourceTree = parse(TREE, &read(&root, TREE));
+    let test_only: BTreeSet<String> = tree.test_only.iter().cloned().collect();
+    workspace.walk(&test_only);
+    let mut found = Vec::new();
+    for (path, reached) in &workspace.files {
+        if !reached.production {
+            continue;
+        }
+        let Ok(source) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let parsed = scan::Parsed::new(&source);
+        // Production lines only (test and doc ranges excluded), comments cut, whitespace removed:
+        // a call rustfmt splits over lines reads as one.
+        let code: String = source
+            .lines()
+            .enumerate()
+            .filter(|(index, _)| !parsed.excluded(index + 1))
+            .map(|(_, line)| line.split("//").next().unwrap_or_default())
+            .flat_map(str::chars)
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let relative = workspace.relative(path);
+        for needle in LIVE_AXIS_GRAMMAR {
+            let allowed = LIVE_AXIS_ALLOWED
+                .iter()
+                .any(|(file, what)| relative == *file && what == needle);
+            if !allowed && code.contains(needle) {
+                found.push(format!("{relative}: {needle}"));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "production code reads the live secret axis as a grammar; pass the read's or the \
+         generation's grammar instead:\n{}",
+        found.join("\n")
+    );
+}
