@@ -36,6 +36,8 @@ arc-swap = "1"
 backon = { version = "1.6", default-features = false }
 async-trait = "0.1"
 axum = "0.8"
+# `busbar_contract::json::Body` (feature `axum`): the responder trait alone, already linked through axum.
+axum-core = "0.5"
 base64 = "0.22"
 bytes = "1"
 core_affinity = "0.8"
@@ -115,7 +117,9 @@ ciborium = "0.2.2"
 serde_path_to_error = "0.1.20"
 smallvec = "1"
 socket2 = { version = "0.6", features = ["all"] }
-sonic-rs = "0.5"
+# THE JSON SEAM (DEP-3): sonic-rs behind `busbar_contract::json`. `arbitrary_precision` keeps every
+# number's lexeme (SERDE-NUMBERS r17), through the MattJackson fork in [patch.crates-io].
+sonic-rs = { version = "0.5", features = ["arbitrary_precision"] }
 # The event-stream line parser (`parser::parse_line`) under busbar-contract's SSE framer
 # (DEPENDENCY-LADDER C17); no default features, so no client, JSON or retry layer.
 sseer = { version = "0.3.1", default-features = false }
