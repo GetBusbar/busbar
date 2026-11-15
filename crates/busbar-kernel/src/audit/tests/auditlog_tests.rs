@@ -1380,7 +1380,8 @@ fn held(n: u64) -> HeldRefusal {
     HeldRefusal {
         origin: EventOrigin::Mutation,
         ts: n,
-        refusal: PluginRefusal::Need,
+        action: PluginRefusal::Need.action(),
+        outcome: PluginRefusal::Need.outcome(),
         resource: plugin_refusal_resource("export", "hook", &format!("need.{n}.refused")),
     }
 }

@@ -55,16 +55,16 @@ pub(crate) fn operator_claims<'a>(
 ) -> busbar_contract::auth_calls::OperatorClaims {
     let mut kept: Vec<(bool, busbar_contract::auth_calls::OperatorClaim)> = Vec::new();
     let mut unreadable = Vec::new();
-    for row in rows {
+    rows.for_each(|row| {
         let facts = match crate::auth_axis::stated_of(row) {
             Ok(facts) => facts,
             Err(e) => {
                 unreadable.push((row.manifest.alias.clone(), e));
-                continue;
+                return;
             }
         };
         let Some(principal) = facts.and_then(|f| f.operator_principal) else {
-            continue;
+            return;
         };
         let claim = busbar_contract::auth_calls::OperatorClaim {
             provider: row.manifest.alias.clone(),
@@ -85,7 +85,7 @@ pub(crate) fn operator_claims<'a>(
             Some(_) => {}
             None => kept.push((row.linked(), claim)),
         }
-    }
+    });
     busbar_contract::auth_calls::OperatorClaims {
         claims: kept.into_iter().map(|(_, claim)| claim).collect(),
         unreadable,
