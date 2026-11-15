@@ -38,8 +38,11 @@ pub(crate) fn run(config: &Path, providers_flag: bool) -> Result<(), String> {
     match admit(version, migrated, providers_flag).map_err(text_of)? {
         Stamp::Current => Ok(()),
         Stamp::Older(_) => {
+            busbar_contract::upgrade::mark_unstamped();
+            let facts = facts();
             let plan = busbar_migrate::plan(&Inputs {
                 path: config,
+                facts: &facts,
                 check: &strict_parse,
             })
             .map_err(text_of)?;
@@ -84,12 +87,46 @@ pub(crate) fn finish() -> Result<(), String> {
     Err(reexec())
 }
 
-/// The boot's own strict parse of a planned document, under the start grammar.
-fn strict_parse(text: &str) -> Result<(), String> {
+/// The boot's own strict parse of a planned document and of the planned providers catalog (both
+/// interpolated by the migration as the boot interpolates them), under the start grammar.
+fn strict_parse(text: &str, catalog: Option<&str>) -> Result<(), String> {
     let grammar = crate::root::boot::start_grammar()?;
     busbar_kernel::config::deploy_from_yaml_str(text, grammar)
         .map(drop)
-        .map_err(|error| format!("config.yaml: {error}"))
+        .map_err(|error| format!("config.yaml: {error}"))?;
+    match catalog {
+        Some(catalog) => busbar_kernel::config::providers::catalog_from_str(catalog, grammar)
+            .map(drop)
+            .map_err(|error| format!("{}: {error}", busbar_migrate::CATALOG_FILE)),
+        None => Ok(()),
+    }
+}
+
+/// What the migration needs from the gateway's installed state (§3 1, kind-level only; no plane
+/// or plugin is named): the fallback plane's billable classes it does not bill as fees, without the
+/// reserved units (the units a 1.5.5 `rate_card` lane priced at nothing), and every key the 1.6.0
+/// providers catalog reads (the catalog grammar's and the installed planes' declared keys).
+fn facts() -> busbar_migrate::Facts {
+    let planes = busbar_kernel::plane_driver::registry::plane_decls();
+    let mut open_units: Vec<String> = Vec::new();
+    for plane in planes.iter().filter(|plane| plane.fallback) {
+        for billable in plane.billable_classes.iter() {
+            let class = billable.class;
+            let open = !plane.fee_units.contains(&class)
+                && !busbar_contract::records::RESERVED_UNITS.contains(&class);
+            if open && !open_units.iter().any(|unit| unit == class) {
+                open_units.push(class.to_owned());
+            }
+        }
+    }
+    let mut catalog_keys: Vec<String> = busbar_kernel::config::providers::catalog_grammar_keys()
+        .iter()
+        .map(|key| (*key).to_owned())
+        .collect();
+    if let Some(declared) = busbar_kernel::plane_driver::door::provider_keys(planes) {
+        catalog_keys.extend(declared.catalog.keys.iter().map(|key| key.name.clone()));
+    }
+    busbar_migrate::Facts::of_process(open_units, catalog_keys)
 }
 
 /// Step 1's verdict on the stamp.

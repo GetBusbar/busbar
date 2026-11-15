@@ -874,6 +874,14 @@ pub struct PlaneFeesCfg {
     pub per_session: u32,
 }
 
+/// config.yaml's top-level keys in the order the schema declares them (`DeployCfg`'s fields, as the
+/// derived reader names them). The one-time upgrade places a top-level key it adds after the
+/// schema's preceding key (MIGRATE-ON-BOOT §A7 "Authored text").
+#[must_use]
+pub fn document_keys() -> &'static [&'static str] {
+    &[]
+}
+
 /// Deployment configuration - operator-owned config.yaml structure.
 ///
 /// The derived reader is the inherent `DeployCfg::deserialize` (the document body). A configuration

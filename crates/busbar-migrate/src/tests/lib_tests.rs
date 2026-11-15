@@ -7,9 +7,10 @@ use std::cell::Cell;
 use std::os::unix::fs::PermissionsExt;
 
 use super::*;
-use crate::scratch::Scratch;
+use crate::scratch::{accept, facts, Scratch};
 
-/// A 1.5.5 deployment whose core sections 1.6.0 reads unchanged.
+/// A 1.5.5 deployment whose core sections 1.6.0 reads unchanged (it names its store: AGREED QM2
+/// writes the block a store-less 1.5.5 config implied, which red (j) pins).
 const CONFIG_1_5_5: &str = "\
 # production gateway
 listen: 0.0.0.0:8080   # data plane
@@ -18,11 +19,9 @@ admin_listen: '127.0.0.1:8081'
 models:
   sonnet:
     provider: anthropic
+store:
+  module: sqlite
 ";
-
-fn accept(_: &str) -> Result<(), String> {
-    Ok(())
-}
 
 /// (c) a file stamped by a newer busbar is never planned.
 #[test]
@@ -31,6 +30,7 @@ fn a_newer_stamp_is_refused_newer() {
     let path = scratch.config("config_version: 2\nlisten: x\n");
     let refused = plan(&Inputs {
         path: &path,
+        facts: &facts(),
         check: &accept,
     })
     .unwrap_err();
@@ -55,15 +55,17 @@ fn the_one_field_is_config_version() {
 #[test]
 fn a_1_5_5_config_is_stamped_once_in_place_with_its_backup() {
     let scratch = Scratch::new();
-    let path = scratch.config(CONFIG_1_5_5);
+    let path = scratch.deployment(CONFIG_1_5_5);
     let seen = Cell::new(0);
-    let check = |text: &str| -> Result<(), String> {
+    let check = |text: &str, catalog: Option<&str>| -> Result<(), String> {
         seen.set(seen.get() + 1);
         assert_eq!(read_version(text), Ok(CONFIG_FORMAT));
+        assert_eq!(catalog, None, "the 1.5.5 catalog is kept as it is");
         Ok(())
     };
     let plan = plan(&Inputs {
         path: &path,
+        facts: &facts(),
         check: &check,
     })
     .expect("planned");
@@ -73,13 +75,14 @@ fn a_1_5_5_config_is_stamped_once_in_place_with_its_backup() {
         CONFIG_1_5_5,
         "plan writes nothing"
     );
-    assert_eq!(scratch.names(), ["config.yaml"]);
+    assert_eq!(scratch.names(), ["config.yaml", "providers.yaml"]);
     assert_eq!(write(&plan, &check), Ok(Written::Stamped));
     let written = std::fs::read_to_string(&path).unwrap();
     assert_eq!(
         written,
         "# production gateway\nconfig_version: 1\nlisten: 0.0.0.0:8080   # data plane\n\
-         admin_listen: '127.0.0.1:8081'\n\nmodels:\n  sonnet:\n    provider: anthropic\n"
+         admin_listen: '127.0.0.1:8081'\n\nmodels:\n  sonnet:\n    provider: anthropic\n\
+         store:\n  module: sqlite\n"
     );
     assert_eq!(
         std::fs::read_to_string(backup_path(&path)).unwrap(),
@@ -90,13 +93,15 @@ fn a_1_5_5_config_is_stamped_once_in_place_with_its_backup() {
         [
             "config.yaml",
             "config.yaml.1.5.5",
-            "config.yaml.busbar-lock"
+            "config.yaml.busbar-lock",
+            "providers.yaml"
         ],
         "no temporary is left"
     );
     // A stamped file is never planned again.
     let again = super::plan(&Inputs {
         path: &path,
+        facts: &facts(),
         check: &accept,
     })
     .unwrap_err();
@@ -107,9 +112,10 @@ fn a_1_5_5_config_is_stamped_once_in_place_with_its_backup() {
 #[test]
 fn a_config_stamped_by_a_peer_is_not_written_again() {
     let scratch = Scratch::new();
-    let path = scratch.config(CONFIG_1_5_5);
+    let path = scratch.deployment(CONFIG_1_5_5);
     let plan = plan(&Inputs {
         path: &path,
+        facts: &facts(),
         check: &accept,
     })
     .unwrap();
@@ -124,9 +130,10 @@ fn a_config_stamped_by_a_peer_is_not_written_again() {
 #[test]
 fn a_config_changed_after_the_plan_is_a_live_writer() {
     let scratch = Scratch::new();
-    let path = scratch.config(CONFIG_1_5_5);
+    let path = scratch.deployment(CONFIG_1_5_5);
     let plan = plan(&Inputs {
         path: &path,
+        facts: &facts(),
         check: &accept,
     })
     .unwrap();
@@ -139,35 +146,38 @@ fn a_config_changed_after_the_plan_is_a_live_writer() {
 }
 
 /// The strict parse refuses the planned document: its text, then the upgrade line; nothing written.
+/// (`budget_period` is a 1.4.x key that no 1.5.5 marker names: it reaches the parse unchanged.)
 #[test]
 fn a_planned_document_the_strict_parse_refuses_is_config_with_the_upgrade_line() {
     let scratch = Scratch::new();
-    let path = scratch.config("governance: {}\n");
-    let refuse = |_: &str| -> Result<(), String> {
-        Err("config.yaml: unknown field `governance`".to_owned())
+    let path = scratch.deployment("budget_period: month\nstore: {module: sqlite}\n");
+    let refuse = |_: &str, _: Option<&str>| -> Result<(), String> {
+        Err("config.yaml: unknown field `budget_period`".to_owned())
     };
     let refused = plan(&Inputs {
         path: &path,
+        facts: &facts(),
         check: &refuse,
     })
     .unwrap_err();
     let text = refused.to_string();
     assert!(
-        text.starts_with("CONFIG: config.yaml: unknown field `governance`\n"),
+        text.starts_with("CONFIG: config.yaml: unknown field `budget_period`\n"),
         "{text}"
     );
     assert!(text.ends_with(UPGRADE_FIRST), "{text}");
-    assert_eq!(scratch.names(), ["config.yaml"]);
+    assert_eq!(scratch.names(), ["config.yaml", "providers.yaml"]);
 }
 
 /// (r)(2): a backup present with other bytes is refused at 5R, nothing written.
 #[test]
 fn a_backup_with_other_bytes_refuses_the_write() {
     let scratch = Scratch::new();
-    let path = scratch.config(CONFIG_1_5_5);
+    let path = scratch.deployment(CONFIG_1_5_5);
     std::fs::write(backup_path(&path), "listen: elsewhere\n").unwrap();
     let plan = plan(&Inputs {
         path: &path,
+        facts: &facts(),
         check: &accept,
     })
     .unwrap();
@@ -185,7 +195,7 @@ fn a_backup_with_other_bytes_refuses_the_write() {
 #[test]
 fn a_crash_between_backup_and_rename_converges() {
     let scratch = Scratch::new();
-    let path = scratch.config(CONFIG_1_5_5);
+    let path = scratch.deployment(CONFIG_1_5_5);
     std::fs::hard_link(&path, backup_path(&path)).unwrap();
     std::fs::write(
         scratch.dir().join("config.yaml.busbar-new.4194304"),
@@ -194,6 +204,7 @@ fn a_crash_between_backup_and_rename_converges() {
     .unwrap();
     let plan = plan(&Inputs {
         path: &path,
+        facts: &facts(),
         check: &accept,
     })
     .unwrap();
@@ -208,7 +219,8 @@ fn a_crash_between_backup_and_rename_converges() {
         [
             "config.yaml",
             "config.yaml.1.5.5",
-            "config.yaml.busbar-lock"
+            "config.yaml.busbar-lock",
+            "providers.yaml"
         ],
         "the dead holder's temporary is swept under the lock"
     );
@@ -219,10 +231,13 @@ fn a_crash_between_backup_and_rename_converges() {
 fn the_rewritten_config_keeps_the_source_mode() {
     for mode in [0o600, 0o640, 0o644] {
         let scratch = Scratch::new();
-        let path = scratch.config("listen: 0.0.0.0:8080\nurl: postgres://u:pw@db/b\n");
+        let path = scratch.deployment(
+            "listen: 0.0.0.0:8080\nstore:\n  module: postgres\n  url: postgres://u:pw@db/b\n",
+        );
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
         let plan = plan(&Inputs {
             path: &path,
+            facts: &facts(),
             check: &accept,
         })
         .unwrap();

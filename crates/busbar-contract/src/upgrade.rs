@@ -25,6 +25,31 @@ pub const UPGRADE_FIRST: &str =
      1.5.5 first, and back up every store before you do: 1.5.5 deletes some pre-1.5.0 store data \
      when it opens it (docs/migration-1.6, Before you start)";
 
+/// Set once by the gateway's seam when this boot's config.yaml is unstamped: the one-time upgrade
+/// boot. Read by [`unknown_module`].
+static UNSTAMPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The seam marks this boot as the one-time upgrade of an unstamped config.yaml (§3 step 1).
+pub fn mark_unstamped() {
+    UNSTAMPED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// An unknown-module refusal as this boot reads it (§A2): on the upgrade boot of an unstamped
+/// config, `text` followed by [`UPGRADE_FIRST`], since a 1.5.5 `module:` value resolves only by the
+/// loader's generic name match and a name no installed plugin answers may predate 1.5.5; on every
+/// other boot, `text` as it is.
+#[must_use]
+pub fn unknown_module(text: String) -> String {
+    unknown_module_on(text, UNSTAMPED.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// [`unknown_module`] for a boot whose config is `unstamped` or not.
+#[must_use]
+pub fn unknown_module_on(text: String, unstamped: bool) -> String {
+    let _ = unstamped;
+    text
+}
+
 /// The one field: `config_version`, absent = 0. A document that is not a mapping is unstamped (the
 /// strict parse refuses it in its own words).
 ///
@@ -46,3 +71,7 @@ pub fn config_version(text: &str) -> Result<u64, String> {
         }),
     }
 }
+
+#[cfg(test)]
+#[path = "tests/upgrade_tests.rs"]
+mod tests;

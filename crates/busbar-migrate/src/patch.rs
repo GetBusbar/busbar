@@ -6,8 +6,25 @@
 //! quoting, anchors and blank lines survive and only the changed spans differ. Every edit is
 //! checked by its two proofs: re-parsing the written bytes gives the planned tree (one), and the
 //! written bytes minus the changed spans equal the source bytes minus the same spans (two).
+//!
+//! [`rewrite`] reads the source twice through the facade: as the chain's tree, and as a span index
+//! (a small [`Node`] read with serde-saphyr's `Spanned`, byte offsets from the string source; no
+//! parser of our own). `diff(source tree, planned tree)` by path yields the edits, applied by byte
+//! range:
+//! - a changed scalar: its span, replaced by the facade emitter's scalar (which quotes a string
+//!   that would re-read as another type);
+//! - a removed entry or sequence item: from its line's start to the end of its last content line
+//!   (comments after it stay);
+//! - an added entry: emitted in block style at the siblings' indentation, after the entry the
+//!   planned tree puts before it (so a top-level key a pass adds lands at the schema's position,
+//!   [`schema_insert`]);
+//! - an entry whose value changes kind: the entry re-emitted in place;
+//! - any edit inside a flow collection: that collection re-emitted in flow style, every unchanged
+//!   scalar and key copied from its source slice.
+//!
+//! Everything else is copied. An edit the writer cannot place refuses VERIFY naming the path.
 
-use busbar_contract::yaml::{self, ValueExt};
+use busbar_contract::yaml::{self, Pairs, Value, ValueExt};
 
 use crate::{Refusal, STAMP_KEY};
 
@@ -86,6 +103,26 @@ fn proof_two(source: &str, written: &str, at: usize, inserted: usize) -> bool {
     written.len() == source.len() + inserted
         && written[..at] == source[..at]
         && written[at + inserted..] == source[at..]
+}
+
+/// Insert `key: value` into a top-level mapping at the position the 1.6.0 schema declares. Red
+/// stub: appended.
+pub(crate) fn schema_insert(root: &mut Pairs, key: &str, value: Value) {
+    root.push((Value::from(key), value));
+}
+
+/// Rewrite `source` (whose tree is `before`) so that it reads as `after`. Red stub: the source.
+///
+/// # Errors
+/// None yet.
+pub fn rewrite(
+    source: &str,
+    before: &Value,
+    after: &Value,
+    shown: &str,
+) -> Result<String, Refusal> {
+    let _ = (before, after, shown);
+    Ok(source.to_owned())
 }
 
 #[cfg(test)]
