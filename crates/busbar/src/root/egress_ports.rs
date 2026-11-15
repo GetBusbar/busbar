@@ -119,10 +119,6 @@ impl Capacity for MemberPermits {
                 dyn Future<Output = Result<OwnedSemaphorePermit, tokio::sync::AcquireError>> + Send,
             >,
         >;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the waits are gathered only when every candidate member is at its concurrency limit"
-        )]
         let mut waits: Vec<(DestinationId, Wait)> = destinations
             .iter()
             .filter_map(|d| {

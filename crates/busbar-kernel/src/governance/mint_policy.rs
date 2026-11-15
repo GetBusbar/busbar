@@ -185,7 +185,6 @@ impl MintPolicy {
             .mint_ceilings
             .iter()
             .map(|(role, c)| {
-                // busbar:expect(bp::clone_alloc, reason = "boot: the mint policy is resolved once at boot from config")
                 (
                     role.clone(),
                     RoleCeiling {

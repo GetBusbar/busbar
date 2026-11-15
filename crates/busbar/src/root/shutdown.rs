@@ -15,12 +15,12 @@ use crate::root::serve::{drain_records, LateServices, RECORD_DRAIN};
 
 /// Obtained only by a successful semantic drain and consumed by retirement.
 /// Retaining the actual owners binds the final check to the drained generation.
-pub struct Drained {
+pub(crate) struct Drained {
     governance: Option<Arc<GovState>>,
     runtime: Option<Arc<RuntimeJournal>>,
 }
 
-pub async fn tail_after_flusher(
+pub(crate) async fn tail_after_flusher(
     governance: Option<Arc<GovState>>,
     late: &LateServices,
     journal: Option<&Arc<Mutex<Durability>>>,
@@ -45,7 +45,7 @@ pub async fn tail_after_flusher(
     }
 }
 
-pub async fn tail(
+pub(crate) async fn tail(
     governance: Option<Arc<GovState>>,
     late: &LateServices,
     journal: Option<&Arc<Mutex<Durability>>>,
@@ -174,7 +174,7 @@ async fn drain_audit_queue() -> Result<(), String> {
 /// Native retirement requires the successful drain result from this same book.
 /// The startup owner additionally refuses retirement while CoreStore retains any
 /// uncertain physical attempt, including attempts owned outside governance.
-pub async fn retire_storage(
+pub(crate) async fn retire_storage(
     startup: &mut busbar_kernel::persistence::startup::Startup,
     book: Option<&crate::root::durability::NodeBook>,
     drained: Drained,

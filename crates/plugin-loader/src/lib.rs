@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-#![deny(unsafe_code)]
-
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -20,7 +18,6 @@
     )
 )]
 pub mod auth_axis;
-#[expect(unsafe_code, reason = "crosses the plugin C ABI")]
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -41,7 +38,9 @@ pub mod auth_door;
 
 pub mod boot;
 
-#[expect(unsafe_code, reason = "crosses the plugin C ABI")]
+#[deny(unsafe_code)]
+mod cold;
+
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -93,8 +92,8 @@ pub mod durable;
         clippy::allow_attributes_without_reason
     )
 )]
+#[deny(unsafe_code)]
 pub mod export_axis;
-#[expect(unsafe_code, reason = "crosses the plugin C ABI")]
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -112,8 +111,8 @@ pub mod export_axis;
     )
 )]
 pub mod export_door;
+#[deny(unsafe_code)]
 pub mod fetch;
-#[expect(unsafe_code, reason = "crosses the plugin C ABI")]
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -147,8 +146,8 @@ mod ffi_thread;
         clippy::allow_attributes_without_reason
     )
 )]
+#[deny(unsafe_code)]
 pub mod highwater;
-#[expect(unsafe_code, reason = "crosses the plugin C ABI")]
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -182,8 +181,8 @@ pub mod hook_door;
         clippy::allow_attributes_without_reason
     )
 )]
+#[deny(unsafe_code)]
 mod host;
-#[allow(unsafe_code)]
 pub mod migration_secrets;
 // busbar:request-path
 #[cfg_attr(
@@ -201,9 +200,13 @@ pub mod migration_secrets;
         clippy::allow_attributes_without_reason
     )
 )]
+#[deny(unsafe_code)]
 pub mod observe;
+#[deny(unsafe_code)]
 pub mod open_once;
+#[deny(unsafe_code)]
 pub mod registry;
+#[deny(unsafe_code)]
 pub mod release_trust;
 
 // busbar:request-path
@@ -222,30 +225,28 @@ pub mod release_trust;
         clippy::allow_attributes_without_reason
     )
 )]
+#[deny(unsafe_code)]
 pub mod secret_calls;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/needs_restated.rs"]
 mod needs_restated;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/ordinary_load_negatives.rs"]
 mod ordinary_load_negatives;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/sdk_registration_tests.rs"]
 mod sdk_registration_tests;
 
 #[cfg(feature = "pack")]
+#[deny(unsafe_code)]
 pub mod integer_token;
+#[deny(unsafe_code)]
 pub mod settings_schema;
 pub mod sign;
-#[allow(unsafe_code)]
 mod stage;
-#[expect(unsafe_code, reason = "crosses the plugin C ABI")]
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -263,6 +264,7 @@ mod stage;
     )
 )]
 pub mod store_v4;
+#[deny(unsafe_code)]
 pub mod tarball;
 
 // busbar:request-path
@@ -281,6 +283,7 @@ pub mod tarball;
         clippy::allow_attributes_without_reason
     )
 )]
+#[deny(unsafe_code)]
 pub mod rows;
 
 pub use sign::EgressPolicy;
@@ -391,33 +394,32 @@ pub fn list_plugin_files(dir: &std::path::Path) -> Vec<String> {
 
 #[cfg(test)]
 #[path = "tests/lib_tests.rs"]
+#[deny(unsafe_code)]
 mod tests;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/export_conformance_tests.rs"]
 mod export_conformance_tests;
 
 #[cfg(test)]
 #[path = "tests/both_ways.rs"]
+#[deny(unsafe_code)]
 mod both_ways;
 
 #[cfg(test)]
 #[path = "tests/open_dropped_image_tests.rs"]
+#[deny(unsafe_code)]
 mod open_dropped_image_tests;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/auth_verify_conformance_tests.rs"]
 mod auth_verify_conformance_tests;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "../tests/fixtures/dispatch_test_plugin.rs"]
 mod dispatch_test_plugin;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/dispatch_tests.rs"]
 mod dispatch_tests;
 
@@ -425,52 +427,42 @@ mod dispatch_tests;
 use neutral_plane as plane_door_plugin;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/dispatch_kind_secret_export_tests.rs"]
 mod dispatch_kind_secret_export_tests;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/dispatch_kind_transport_tests.rs"]
 mod dispatch_kind_transport_tests;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/confined_kind_ops_tests.rs"]
 mod confined_kind_ops_tests;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/dispatch_kind_plane_tests.rs"]
 mod dispatch_kind_plane_tests;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/dispatch_kind_hook_tests.rs"]
 mod dispatch_kind_hook_tests;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/dispatch_kind_auth_tests.rs"]
 mod dispatch_kind_auth_tests;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/door_both_ways.rs"]
 mod door_both_ways;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/secret_door_conformance_tests.rs"]
 mod secret_door_conformance_tests;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/transport_door_conformance_tests.rs"]
 mod transport_door_conformance_tests;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/transport_door_tests.rs"]
 mod transport_door_tests;
 
@@ -479,126 +471,101 @@ mod transport_door_tests;
 mod hook_door_conformance_tests;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/conformance_auth_form_tests.rs"]
 mod conformance_auth_form_tests;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/conformance_auth_unjudged_tests.rs"]
 mod conformance_auth_unjudged_tests;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/conformance_export_unjudged_tests.rs"]
 mod conformance_export_unjudged_tests;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/conformance_ready_after_no_ticket_tests.rs"]
 mod conformance_ready_after_no_ticket_tests;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/conformance_ready_result_tests.rs"]
 mod conformance_ready_result_tests;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/neutral_plane.rs"]
 mod neutral_plane;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/neutral_plane_identity_tests.rs"]
 mod neutral_plane_identity_tests;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/ordinary_plane_registry.rs"]
 mod ordinary_plane_registry;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/ordinary_plane_lending.rs"]
 mod ordinary_plane_lending;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/ordinary_suite_dispatch_tests.rs"]
 mod ordinary_suite_dispatch_tests;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/ordinary_auth_short.rs"]
 mod ordinary_auth_short;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/ordinary_suite_hook_ticket_tests.rs"]
 mod ordinary_suite_hook_ticket_tests;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/neutral_store.rs"]
 mod neutral_store;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/neutral_secret.rs"]
 mod neutral_secret;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/neutral_rotating_secret.rs"]
 mod neutral_rotating_secret;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/neutral_export.rs"]
 mod neutral_export;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/ordinary_plane_ack_drive.rs"]
 mod ordinary_plane_ack_drive;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/ordinary_plane_lifecycle.rs"]
 mod ordinary_plane_lifecycle;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/ordinary_plane_sessions_actual.rs"]
 mod ordinary_plane_sessions_actual;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/ordinary_plane_deadline.rs"]
 mod ordinary_plane_deadline;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/ordinary_plane_fault_outputs.rs"]
 mod ordinary_plane_fault_outputs;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/ordinary_declared_metadata.rs"]
 mod ordinary_declared_metadata;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/retired_store_fixture.rs"]
 mod retired_store_fixture;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/neutral_transport.rs"]
 mod neutral_transport;
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/neutral_auth.rs"]
 mod neutral_auth;
