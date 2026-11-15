@@ -61,10 +61,12 @@ use busbar_contract::abi::host::service::{DEST_NO_ADDRESSES, DEST_UNRESOLVABLE};
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::transport::{ROLE_CARRIER, ROLE_FRAMER};
 use busbar_contract::conn::{
-    Bytes, ConnCause, ConnError, ConnId, ConnSlab, Conns, DeclaredConns, HeadDefaults, InstanceId,
+    Bytes, ConnCause, ConnId, ConnSlab, Conns, DeclaredConns, HeadDefaults, InstanceId,
     LocatedTarget, NeedId, NeedRefusal, OpenDesc, OwnedHead, Piece, PieceKind, PollConns, Ticket,
     NO_TICKET,
 };
+// Named by tests as `crate::ConnError`.
+pub(crate) use busbar_contract::conn::ConnError;
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::{WireFault, WireStatusClass};
 use busbar_contract::transport::ConnFacts;
