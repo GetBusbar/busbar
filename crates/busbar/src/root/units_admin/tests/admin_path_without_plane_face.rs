@@ -44,7 +44,7 @@ impl busbar_kernel_identity::RevocationView for ADirectoryThatMintedIt {
 fn a_door_that_identifies_the_operator() -> crate::root::units_admin::AdminDoorFn {
     crate::root::units_admin::door_identifying(
         THE_OPERATORS_CREDENTIAL,
-        crate::root::auth_bindings::ADMIN_PRINCIPAL_ID,
+        busbar_kernel::config::operator_principal_id(),
     )
 }
 
@@ -653,7 +653,7 @@ async fn the_operators_rows_for(router: &axum::Router, resource: &str) -> Vec<(S
         .as_array()
         .expect("the page carries items")
         .iter()
-        .filter(|row| row["principal"] == crate::root::auth_bindings::ADMIN_PRINCIPAL_ID)
+        .filter(|row| row["principal"] == busbar_kernel::config::operator_principal_id())
         .map(|row| {
             (
                 row["action"].as_str().unwrap_or_default().to_string(),

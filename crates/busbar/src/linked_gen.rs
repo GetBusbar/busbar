@@ -496,10 +496,6 @@ pub(crate) fn linked_source(
     }
     out.push_str("],\n");
 
-    let operator = metadata_value(manifest, "package.metadata.busbar.operator-auth", "row")
-        .and_then(|row| metadata_value(manifest, "package.metadata.busbar.linked-name", &row))
-        .unwrap_or_default();
-    out.push_str(&format!("    operator_auth: {operator:?},\n"));
     out.push_str("    export_doors: &LINKED_EXPORT_DOORS,\n");
     out.push_str("    former: &LINKED_FORMER,\n");
     out.push_str("    stores: &LINKED_STORES,\n");

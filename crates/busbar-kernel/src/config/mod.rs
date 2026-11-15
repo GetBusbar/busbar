@@ -540,8 +540,8 @@ pub use busbar_kernel::config::auth::{
 pub const CONFIG_TARGET_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn validate_token_placement(name: &str, module: &str, has_token: bool) -> Result<(), String> {
-    if has_token && !names_operator(module) {
-        let op = operator_provider();
+    let op = operator_provider();
+    if has_token && !op.is_empty() && !names_operator(module) {
         return Err(busbar_kernel_identity::operator::misplaced_definition_token(op, name, module));
     }
     Ok(())
@@ -579,6 +579,12 @@ pub fn resolve_auth(
                 }
             }
 
+            // The admin default with no operator row bound: config_validate refuses it with its own
+            // remedy (`no_default_admin_chain`), never as an undefined reference and never by
+            // dropping it into the empty (open) chain.
+            None if plane == "admin_auth" && name.trim().is_empty() => {
+                AuthChainEntry::bare(name.clone())
+            }
             None if builtin_identity_providers().contains(&name.as_str()) => {
                 AuthChainEntry::bare(name.clone())
             }

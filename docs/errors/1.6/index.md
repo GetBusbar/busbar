@@ -71,6 +71,7 @@ The thousands digit is the area.
 | [BUSBAR-3027](/docs/1.6/errors/BUSBAR-3027/) | A 1.5.5 file overlay holds settings this Store has not imported (boot refuses to start) | 1.6.0 |
 | [BUSBAR-3028](/docs/1.6/errors/BUSBAR-3028/) | A 1.5.5 overlay selector, variable or file is not read (nothing to import) | 1.6.0 |
 | [BUSBAR-3029](/docs/1.6/errors/BUSBAR-3029/) | A retired launch environment variable is set and IGNORED | 1.6.0 |
+| [BUSBAR-3030](/docs/1.6/errors/BUSBAR-3030/) | An auth plugin states the operator credential but is not first-party (ignored) | 1.6.0 |
 | [BUSBAR-3101](/docs/1.6/errors/BUSBAR-3101/) | A registration is named with a reserved word | 1.6.0 |
 | [BUSBAR-3102](/docs/1.6/errors/BUSBAR-3102/) | A model definition is invalid | 1.6.0 |
 | [BUSBAR-3103](/docs/1.6/errors/BUSBAR-3103/) | A model, pool or provider is named after a reserved route prefix | 1.6.0 |

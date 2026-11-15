@@ -35,8 +35,8 @@ impl busbar_contract::auth_calls::AuthAxis for RootAuthAxis {
         self.0.linked(module)
     }
 
-    fn operator(&self) -> Option<(String, String)> {
-        self.0.operator()
+    fn operator_claims(&self) -> busbar_contract::auth_calls::OperatorClaims {
+        self.0.operator_claims()
     }
 
     fn open(

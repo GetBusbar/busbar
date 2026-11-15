@@ -1,15 +1,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::auth::{open_operator, AuthMiddleware};
+use crate::auth::AuthMiddleware;
 use crate::diagnostics::{
     diag_error, diag_warn, DURABLE_KEYS_INERT, GOVERNANCE_STORE_EPHEMERAL, OPEN_RELAY_NO_AUTH,
     PLUGINS_FETCH_RELOAD_MISS, PROVIDER_API_KEY_UNRESOLVABLE, STATEFUL_PLANE_EPHEMERAL_STORE,
     STORE_SECRET_REF_UNRESOLVED,
 };
-use crate::preflight::{
-    build_secret_resolver, resolve_admin_token, resolve_at_rest_keys, resolve_signing_key,
-};
+use crate::preflight::{build_secret_resolver, resolve_at_rest_keys, resolve_signing_key};
 use crate::router::project_auth_scope_caps;
 use crate::state::App;
 use crate::store::{HealthState, LaneData};
@@ -869,7 +867,6 @@ async fn bootstrap_store_inputs(
         .collect();
     let resolver = build_secret_resolver(registry.clone(), &bootstrap_secrets)?;
 
-    let _admin = resolve_admin_token(cfg.auth.as_ref(), &resolver)?;
     let _signer = resolve_signing_key(cfg.auth.as_ref(), &resolver)?;
     let _at_rest = resolve_at_rest_keys(&cfg.credentials, &resolver)?;
     Ok((registry, resolver))
@@ -919,7 +916,7 @@ pub fn bootstrap_dependency_names_from_metadata(
         }
     }
     if let Some(auth) = &cfg.auth {
-        if let Some(reference) = auth.admin_token_ref() {
+        if let Some(reference) = auth.operator_token_ref() {
             if let Some(module) = reference.source_module() {
                 add(module);
             }
@@ -1533,7 +1530,7 @@ async fn build_app_native(
         .map_err(|e| format!("auth chain construction failed: {e}"))?,
     );
 
-    let mut admin_modules = crate::auth::AdminAuthChain::build_on(
+    let admin_modules = crate::auth::AdminAuthChain::build_on(
         &auth_cfg,
         plugin_registry.as_ref(),
         &secret_resolver,
@@ -1596,7 +1593,6 @@ async fn build_app_native(
 
     let mut rotate_gov_credentials: Option<GovCredentialRotation> = None;
 
-    let mut rotated_digest: Option<Option<String>> = None;
     let governance = if let Some(p) = prior {
         if let Some(gs) = p.governance.clone() {
             let transition_holds = governance::principal_transition::guard_native(
@@ -1614,26 +1610,6 @@ async fn build_app_native(
             // This is deny-only state from a completed receipt, never an authority grant.
             gs.install_transition_self_holds(transition_holds);
             let auth = cfg.auth.as_ref();
-            let declares_operator = auth.is_some_and(|a| {
-                a.admin_auth
-                    .iter()
-                    .chain(a.chain.iter())
-                    .any(|e| crate::config::names_operator(&e.module))
-            });
-
-            let admin_token: Option<Option<busbar_contract::redacted::Secret<String>>> =
-                if declares_operator {
-                    Some(
-                        resolve_admin_token(auth, &secret_resolver)
-                            .map_err(|e| format!("{e} (nothing was changed)"))?,
-                    )
-                } else {
-                    None
-                };
-            let hash = |t: &busbar_contract::redacted::Secret<String>| {
-                busbar_contract::redacted::sha256_hex(t.expose(&crate::seal::lend()).as_bytes())
-            };
-            rotated_digest = admin_token.as_ref().map(|t| t.as_ref().map(hash));
             let signer = match auth.and_then(|a| a.signing_key.as_ref()) {
                 Some(_) => Some(resolve_signing_key(auth, &secret_resolver)?),
                 None => None,
@@ -1643,15 +1619,8 @@ async fn build_app_native(
                 Some(_) => resolve_at_rest_keys(&cfg.credentials, &secret_resolver)?,
                 None => None,
             };
-            if admin_token.is_some() || signer.is_some() || at_rest.is_some() {
+            if signer.is_some() || at_rest.is_some() {
                 rotate_gov_credentials = Some(Box::pin(async move {
-                    if let Some(token) = admin_token {
-                        gs.set_admin_token(
-                            token
-                                .as_ref()
-                                .map(|r| r.expose(&crate::seal::lend()).as_str()),
-                        );
-                    }
                     if let Some(signer) = signer {
                         gs.set_signing_key(signer);
                     }
@@ -1699,21 +1668,12 @@ async fn build_app_native(
         )
         .await?;
 
-        let admin_token: Option<busbar_contract::redacted::Secret<String>> =
-            resolve_admin_token(cfg.auth.as_ref(), &secret_resolver)?;
-
         let signer = resolve_signing_key(cfg.auth.as_ref(), &secret_resolver)?;
 
         let at_rest = resolve_at_rest_keys(&cfg.credentials, &secret_resolver)?;
-        match governance::GovState::new_with_core(
-            core,
-            admin_token
-                .as_ref()
-                .map(|r| r.expose(&crate::seal::lend()).clone()),
-            signer,
-        )
-        .await
-        {
+        // The operator credential is the operator row's own instance (OPERATOR-FROM-ADMITTED-AUTH
+        // §3.8): core holds no operator token digest.
+        match governance::GovState::new_with_core(core, None, signer).await {
             Ok(gs) => {
                 gs.install_transition_self_holds(transition_holds);
                 let gs = Arc::new(gs);
@@ -1766,9 +1726,9 @@ async fn build_app_native(
         }
     };
 
-    let digest = rotated_digest.unwrap_or_else(|| governance.as_ref()?.admin_token_hash());
-    admin_modules.operator = open_operator(&plugin_registry, digest, &cfg.identity_providers)
-        .map_err(|e| format!("admin auth chain construction failed: {e}"))?;
+    if prior.is_none() {
+        accepted_operator(&auth_cfg, &admin_modules.operator);
+    }
     let admin_modules = Arc::new(admin_modules);
 
     let rewrite_hooks =
@@ -2242,3 +2202,26 @@ mod config_store_recovery_tests;
 #[cfg(test)]
 #[path = "tests/plugins_fetch_refusal_tests.rs"]
 mod plugins_fetch_refusal_tests;
+
+/// The boot's `auth.operator.accepted` rows (OPERATOR-FROM-ADMITTED-AUTH §3.10): one per
+/// operator-backed admin provider whose instance opened, naming the operator row that backs it.
+fn accepted_operator(auth: &config::AuthCfg, operator: &crate::auth::Operator) {
+    let Ok(Ok(Some(claim))) = busbar_kernel_identity::operator::judged().map(|j| j.words.as_ref())
+    else {
+        return;
+    };
+    for entry in auth
+        .admin_auth
+        .iter()
+        .filter(|e| operator.instance(&e.name).is_some())
+    {
+        crate::audit::auditlog::record_operator(
+            crate::audit::auditlog::OperatorAudit::Accepted,
+            &entry.name,
+            &format!(
+                "{} {} {} {}",
+                claim.canonical, claim.version, claim.signer, claim.principal
+            ),
+        );
+    }
+}
