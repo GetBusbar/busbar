@@ -295,10 +295,6 @@ criteria = "safe-to-deploy"
 version = "1.11.1"
 criteria = "safe-to-deploy"
 
-[[exemptions.hyper-rustls]]
-version = "0.27.9"
-criteria = "safe-to-run"
-
 [[exemptions.hyper-util]]
 version = "0.1.20"
 criteria = "safe-to-deploy"
@@ -358,10 +354,6 @@ criteria = "safe-to-deploy"
 [[exemptions.loom]]
 version = "0.7.2"
 criteria = "safe-to-deploy"
-
-[[exemptions.lru-slab]]
-version = "0.1.2"
-criteria = "safe-to-run"
 
 [[exemptions.matchit]]
 version = "0.8.4"
@@ -492,14 +484,6 @@ criteria = "safe-to-deploy"
 version = "0.12.6"
 criteria = "safe-to-deploy"
 
-[[exemptions.quinn]]
-version = "0.11.9"
-criteria = "safe-to-run"
-
-[[exemptions.quinn-proto]]
-version = "0.11.19"
-criteria = "safe-to-run"
-
 [[exemptions.r-efi]]
 version = "5.3.0"
 criteria = "safe-to-deploy"
@@ -515,10 +499,6 @@ criteria = "safe-to-deploy"
 [[exemptions.rand]]
 version = "0.9.5"
 criteria = "safe-to-deploy"
-
-[[exemptions.rand]]
-version = "0.10.2"
-criteria = "safe-to-run"
 
 [[exemptions.rand_xoshiro]]
 version = "0.7.0"
@@ -583,10 +563,6 @@ criteria = "safe-to-deploy"
 [[exemptions.rkyv_derive]]
 version = "0.8.18"
 criteria = "safe-to-deploy"
-
-[[exemptions.rustc-hash]]
-version = "2.1.2"
-criteria = "safe-to-run"
 
 [[exemptions.rustls]]
 version = "0.23.46"
