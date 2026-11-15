@@ -96,9 +96,8 @@ fn normalize_plugins_view_over_the_1_5_5_config_returns_the_golden_plugins() {
 
 #[test]
 fn full_normalization_of_the_1_5_5_config_keeps_the_token_definition() {
-    let out = normalize_supported_source(DocumentSemantics::Historical, V155, &ShaHost);
-    assert!(out.is_ok(), "normalization refused: {out:?}");
-    let out = out.expect("checked");
+    let out = normalize_supported_source(DocumentSemantics::Historical, V155, &ShaHost)
+        .unwrap_or_else(|e| panic!("normalization refused: {e}"));
     let after = body(&out.yaml);
     let definition = after.at("identity-providers").at("admin-tokens");
     assert_eq!(
