@@ -1423,6 +1423,15 @@ fn result_before_first_driver_tick_is_delivered_without_reviving_canceled_origin
     );
 }
 
+/// Spin until `done`, failing the test if it takes 10 s.
+fn within_10s(mut done: impl FnMut() -> bool) {
+    let start = std::time::Instant::now();
+    while !done() {
+        assert!(start.elapsed() < std::time::Duration::from_secs(10));
+        std::thread::yield_now();
+    }
+}
+
 #[test]
 fn actual_canceled_serve_settles_on_idle_driver_without_new_tick_or_resubmission() {
     use super::super::Frame;
@@ -1469,15 +1478,12 @@ fn actual_canceled_serve_settles_on_idle_driver_without_new_tick_or_resubmission
         correlation: candidate.correlation,
         decision: Ok(Decision::Applied),
     });
-    let start = std::time::Instant::now();
-    while unsafe { &*state }
-        .settlement_confirmed
-        .load(Ordering::SeqCst)
-        == 0
-    {
-        assert!(start.elapsed() < std::time::Duration::from_secs(10));
-        std::thread::yield_now();
-    }
+    within_10s(|| {
+        unsafe { &*state }
+            .settlement_confirmed
+            .load(Ordering::SeqCst)
+            != 0
+    });
     assert_eq!(unsafe { &*state }.settlement_seen.load(Ordering::SeqCst), 1);
     assert!(provider.accepted.lock().unwrap().is_empty());
     instance.recycle(driver);

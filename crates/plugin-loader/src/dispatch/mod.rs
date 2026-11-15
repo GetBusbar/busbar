@@ -415,22 +415,12 @@ pub(crate) fn cancel_frame(ticket: Ticket) -> Frame<CancelIn, CancelOut> {
 
 fn epoch() -> Instant {
     static EPOCH: OnceLock<Instant> = OnceLock::new();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: fixes the dispatch clock's epoch once, at its first use"
-    )]
-    let epoch = *EPOCH.get_or_init(Instant::now);
-    epoch
+    *EPOCH.get_or_init(crate::cold::dispatch::runtime::dispatch_epoch)
 }
 
 /// THE dispatch clock: the one monotonic read an op takes at its entry and passes down.
 pub fn now_ns() -> u64 {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the dispatch clock's single source; ops read it once at entry and pass the value down"
-    )]
-    let since = epoch().elapsed();
-    since.as_nanos() as u64
+    crate::cold::dispatch::runtime::dispatch_clock_since(epoch()).as_nanos() as u64
 }
 
 /// The [`Instant`] a [`now_ns`] reading names: compares a stored `Instant` against a reading

@@ -41,7 +41,7 @@ fn bind(table: Arc<dyn DeclaredConns>, timeout_ms: u64) -> Plugin<TestKind> {
         validated,
         None,
         Bind {
-            instance: Arc::from("immediate-framed-timeout"),
+            instance: "immediate-framed-timeout".into(),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
             dispatcher: Adopter::unwatched(),
