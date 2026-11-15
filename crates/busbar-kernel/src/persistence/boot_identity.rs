@@ -28,44 +28,81 @@ pub(crate) enum WriterRetirement {
     Retired(Vec<busbar_contract::persistence::Predicate>),
 }
 
+pub use super::undrained::{
+    undrained_records, ObservedBy, RecordLedger, UndrainedWriter, UNDRAINED_RECORDS,
+};
+
+type Target = super::undrained::Target;
+
+/// This instance's own attempts and its own observed closes of open writers.
+#[derive(Default)]
+struct RetireState {
+    /// `Some(seen)` iff the close was built from a control row that still admitted the epoch
+    /// (an open writer): its decision is the one moment its record is offered.
+    pending: std::collections::BTreeMap<
+        Target,
+        (
+            busbar_contract::persistence::PreparedCandidate,
+            Option<UndrainedWriter>,
+        ),
+    >,
+    closed_open: std::collections::BTreeSet<Target>,
+}
+
 /// Domain custody survives cancellation and Unknown. The CoreStore retains the
 /// native Attempt, while this owner retains its exact target and candidate.
 #[derive(Default)]
-pub(crate) struct WriterRetirements {
+pub struct WriterRetirements {
     gate: tokio::sync::Mutex<()>,
-    pending: Mutex<PendingRetirements>,
+    state: Mutex<RetireState>,
 }
-type PendingRetirements =
-    std::collections::BTreeMap<(u64, [u8; 16]), busbar_contract::persistence::PreparedCandidate>;
 impl WriterRetirements {
+    fn state(&self) -> std::sync::MutexGuard<'_, RetireState> {
+        self.state.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// `retire_after` with no margin and no record (the recovery tests' shape).
+    #[cfg(test)]
     pub(crate) async fn retire(
         &self,
         core: &CoreStore,
         epoch: u64,
         writer: [u8; 16],
     ) -> Result<WriterRetirement, String> {
+        self.retire_after(core, epoch, writer, 0, None).await
+    }
+
+    /// The one closer of a writer that is not this process's (SHUTDOWN-HANG F5 "The close").
+    /// `grace_ms` moves exactly two expressions: the liveness check and the store's own time
+    /// guard. With `seen`, an applied close of an open writer offers its
+    /// `shutdown.drain_incomplete` record the moment this instance observes the decision.
+    pub(crate) async fn retire_after(
+        &self,
+        core: &CoreStore,
+        epoch: u64,
+        writer: [u8; 16],
+        grace_ms: u64,
+        seen: Option<UndrainedWriter>,
+    ) -> Result<WriterRetirement, String> {
         use super::{commit::SubmitResult, facade::PendingId};
         use busbar_contract::persistence::{self as native, control};
         let _gate = self.gate.lock().await;
         let target = (epoch, writer);
         let retained = self
+            .state()
             .pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
             .get(&target)
-            .cloned();
+            .map(|(candidate, _)| candidate.clone());
         if let Some(candidate) = retained {
             let submission = core
                 .retry(PendingId(candidate.candidate().id.operation))
                 .await
                 .map_err(error)?;
             match submission.result {
-                SubmitResult::Decided(_) | SubmitResult::NoEffect(_) => {
-                    self.pending
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .remove(&target);
+                SubmitResult::Decided(decision) => {
+                    self.take_decided(target, matches!(*decision, native::Decision::Applied(_)));
                 }
+                SubmitResult::NoEffect(_) => self.take_decided(target, false),
                 SubmitResult::Uncertain | SubmitResult::Busy => {
                     return Ok(WriterRetirement::Pending);
                 }
@@ -159,9 +196,13 @@ impl WriterRetirements {
             .unix_seconds
             .checked_mul(1000)
             .ok_or("writer retirement clock overflow")?;
-        if now_ms < lease_row.expires_ms {
+        let closable_ms = lease_row
+            .expires_ms
+            .checked_add(grace_ms)
+            .ok_or("writer retirement grace overflow")?;
+        if now_ms < closable_ms {
             return Ok(WriterRetirement::Live {
-                retry_at_ms: lease_row.expires_ms,
+                retry_at_ms: closable_ms,
             });
         }
         let fence = super::fences::writer(
@@ -196,39 +237,129 @@ impl WriterRetirements {
                 ),
             }],
             time: Some(native::TimeGuard {
-                not_before: Some(lease_row.expires_ms.div_ceil(1000)),
+                not_before: Some(closable_ms.div_ceil(1000)),
                 before: None,
             }),
             result: Secret::default(),
         })
         .map_err(error)?;
-        self.pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(target, candidate.clone());
+        // A record is owed only for a writer that never retired: its row still admits it.
+        let seen = seen.filter(|_| old.admits(epoch));
+        {
+            let mut state = self.state();
+            if let Some(seen) = &seen {
+                undrained_records().retain(seen);
+            }
+            state.pending.insert(target, (candidate.clone(), seen));
+        }
         let submission = match core.submit(candidate).await {
             Ok(submission) => submission,
             Err(cause) => {
-                self.pending
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .remove(&target);
+                // Nothing crossed: drop the target with no record.
+                self.take_decided(target, false);
                 return Err(error(cause));
             }
         };
         match submission.result {
-            SubmitResult::Decided(_) | SubmitResult::NoEffect(_) => {
-                self.pending
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .remove(&target);
+            SubmitResult::Decided(decision) => {
+                self.take_decided(target, matches!(*decision, native::Decision::Applied(_)));
                 // Only a subsequent coherent permanent-fence read grants proof.
+                Ok(WriterRetirement::Pending)
+            }
+            SubmitResult::NoEffect(_) => {
+                self.take_decided(target, false);
                 Ok(WriterRetirement::Pending)
             }
             SubmitResult::Uncertain | SubmitResult::Busy => Ok(WriterRetirement::Pending),
             SubmitResult::Reconcile => {
                 Err("writer retirement retains unresolved original attempt".into())
             }
+        }
+    }
+
+    /// The only place a decided attempt leaves `pending`: one removal under `state`, so a
+    /// decision is offered to the record ledger at most once whoever reaches it.
+    fn take_decided(&self, target: Target, applied: bool) {
+        let refused = {
+            let mut state = self.state();
+            let Some((_, seen)) = state.pending.remove(&target) else {
+                return;
+            };
+            let Some(seen) = seen else {
+                return;
+            };
+            if applied {
+                state.closed_open.insert(target);
+            }
+            undrained_records()
+                .decided(&seen, applied)
+                .map(|error| (seen, error))
+        };
+        if let Some((seen, error)) = refused {
+            crate::diag_error!(crate::diagnostics::SHUTDOWN_DRAIN_INCOMPLETE_UNRECORDED,
+                epoch = seen.epoch, writer = %hex::encode(seen.writer),
+                node = ?seen.node, host = seen.host.as_deref().unwrap_or("none"),
+                observed_by = seen.observed_by.as_str(), %error,
+                "the close of a writer that never retired applied, but its shutdown.drain_incomplete record could not be queued; retried, and listed at exit");
+            undrained_records().ensure_retry_task();
+        }
+    }
+
+    /// Whether this instance's close of an open writer applied since the last call (the
+    /// caller's in-RAM follow-ups only; the record is already offered).
+    pub fn take_closed_open(&self, epoch: u64, writer: [u8; 16]) -> bool {
+        self.state().closed_open.remove(&(epoch, writer))
+    }
+
+    /// Targets this instance still retains.
+    #[must_use]
+    pub fn retained(&self) -> usize {
+        self.state().pending.len()
+    }
+
+    /// The shutdown seal phase's fence settle: re-drives retained attempts and submits nothing
+    /// new. It never awaits `gate`: a `Busy` retry (another drive in flight) waits 50 ms; an
+    /// `UnknownOperation` leaves the entry to the driver that holds the decision, unless no
+    /// driver is in flight (`gate` free), when the decision is lost to this process and the
+    /// target is listed at exit, unrecorded. Returns when nothing is retained.
+    pub async fn settle(&self, core: &CoreStore) {
+        use super::{commit::SubmitResult, facade::PendingId};
+        use busbar_contract::persistence as native;
+        loop {
+            let retained: Vec<(Target, busbar_contract::persistence::PreparedCandidate)> = self
+                .state()
+                .pending
+                .iter()
+                .map(|(t, (c, _))| (*t, c.clone()))
+                .collect();
+            if retained.is_empty() {
+                return;
+            }
+            for (target, candidate) in retained {
+                match core
+                    .retry(PendingId(candidate.candidate().id.operation))
+                    .await
+                {
+                    Ok(submission) => match submission.result {
+                        SubmitResult::Decided(decision) => self.take_decided(
+                            target,
+                            matches!(*decision, native::Decision::Applied(_)),
+                        ),
+                        SubmitResult::NoEffect(_) => self.take_decided(target, false),
+                        SubmitResult::Uncertain | SubmitResult::Busy | SubmitResult::Reconcile => {}
+                    },
+                    Err(_) => {
+                        // Decided by another driver. If none is in flight, nobody holds it.
+                        if let Ok(_free) = self.gate.try_lock() {
+                            let lost = self.state().pending.remove(&target);
+                            if let Some((_, Some(seen))) = lost {
+                                undrained_records().lost(&seen);
+                            }
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     }
 }
@@ -665,6 +796,322 @@ impl BootIdentity {
         self.stored_keyset_locked()
             .await?
             .ok_or_else(|| "deployment keyset was not kept".into())
+    }
+}
+
+/// A scanned writer lease: its target, key, exact bytes and expiry.
+type ScannedLease = (Target, Vec<u8>, Secret<Vec<u8>>, u64);
+
+/// One writer whose lease expired at least the grace ago (SHUTDOWN-HANG F5 "The scan").
+#[derive(Clone, Debug)]
+pub struct ExpiredWriter {
+    pub epoch: u64,
+    pub writer: [u8; 16],
+    /// `(host, node)` assignments under this writer, lowest node first.
+    pub nodes: Vec<(String, u64)>,
+    lease_key: Vec<u8>,
+    lease: Secret<Vec<u8>>,
+}
+
+/// One scan's inventory: up to `max` rows, the count left beyond it, and the rows that did not
+/// decode (never closed, reported once per start).
+#[derive(Debug, Default)]
+pub struct ExpiredWriters {
+    pub rows: Vec<ExpiredWriter>,
+    pub remaining: usize,
+    pub invalid: usize,
+}
+
+impl BootIdentity {
+    /// Every writer lease that expired at least `grace_ms` ago by the store's clock, oldest
+    /// epoch first, excluding this process's own writer. The gate is taken once per page, so
+    /// this process's own lease refresh waits at most one page. The scan is an inventory, not
+    /// a proof: every close is re-checked by the store.
+    pub async fn expired_writers(
+        &self,
+        grace_ms: u64,
+        max: usize,
+    ) -> Result<ExpiredWriters, String> {
+        let now_ms = self.now_ms().await?;
+        let own = self.core.authority().map_err(error)?;
+        let mut assignments: std::collections::BTreeMap<Target, Vec<(String, u64)>> =
+            std::collections::BTreeMap::new();
+        let mut leases: Vec<ScannedLease> = Vec::new();
+        let mut invalid = 0;
+        let mut cursor = None;
+        loop {
+            let page = {
+                let _gate = self.records.gate.lock().await;
+                self.records.resume().await?;
+                self.records
+                    .records
+                    .page(NODE_SCHEMA, b"", cursor.as_ref())
+                    .await
+                    .map_err(error)?
+            };
+            for (key, value) in page.rows {
+                let bytes = value.expose(&crate::seal::lend());
+                if let Some(rest) = key.strip_prefix(b"writer:") {
+                    let parsed = (rest.len() == 24)
+                        .then(|| {
+                            let epoch = u64::from_be_bytes(rest[..8].try_into().ok()?);
+                            let writer: [u8; 16] = rest[8..].try_into().ok()?;
+                            Some((epoch, writer))
+                        })
+                        .flatten();
+                    match (parsed, LeaseRow::parse(bytes)) {
+                        (Some(target), Ok(row)) => {
+                            leases.push((target, key.clone(), value.clone(), row.expires_ms));
+                        }
+                        _ => {
+                            invalid += 1;
+                            crate::diag_warn!(crate::diagnostics::EXPIRED_WRITER_ROW_INVALID,
+                                key_hex = %hex::encode(&key),
+                                "a writer lease row does not decode; it is never closed");
+                        }
+                    }
+                } else if let Some(rest) = key.strip_prefix(b"host:") {
+                    let host = rest.split(|b| *b == 0).next().unwrap_or_default();
+                    let host = String::from_utf8_lossy(host).into_owned();
+                    if bytes.len() == 8 {
+                        // A 1.5.5-shaped node id names no writer.
+                        continue;
+                    }
+                    match Assignment::parse(bytes) {
+                        Ok(assignment) => {
+                            let nodes = assignments
+                                .entry((assignment.epoch, assignment.writer))
+                                .or_default();
+                            if !nodes.iter().any(|(_, id)| *id == assignment.id) {
+                                nodes.push((host, assignment.id));
+                            }
+                        }
+                        Err(_) => {
+                            invalid += 1;
+                            crate::diag_warn!(crate::diagnostics::EXPIRED_WRITER_ROW_INVALID,
+                                key_hex = %hex::encode(&key),
+                                "a host assignment row does not decode; it is never closed");
+                        }
+                    }
+                }
+            }
+            match page.next {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        let mut out = ExpiredWriters {
+            invalid,
+            ..ExpiredWriters::default()
+        };
+        for (target, lease_key, lease, expires_ms) in leases {
+            if target == (own.writer_epoch, own.writer)
+                || now_ms < expires_ms.saturating_add(grace_ms)
+            {
+                continue;
+            }
+            if out.rows.len() >= max {
+                out.remaining += 1;
+                continue;
+            }
+            let mut nodes = assignments.remove(&target).unwrap_or_default();
+            nodes.sort_by_key(|(_, id)| *id);
+            out.rows.push(ExpiredWriter {
+                epoch: target.0,
+                writer: target.1,
+                nodes,
+                lease_key,
+                lease,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Deletes a closed writer's lease row, guarded by the exact bytes scanned. A row another
+    /// process deleted or changed first makes this a no-op.
+    pub async fn delete_writer_lease(&self, row: &ExpiredWriter) -> Result<bool, String> {
+        let _gate = self.records.gate.lock().await;
+        self.records.resume().await?;
+        self.records
+            .decide(
+                vec![predicate(
+                    NODE_SCHEMA,
+                    row.lease_key.clone(),
+                    Some(row.lease.clone()),
+                )],
+                vec![Mutation::Delete {
+                    schema: NODE_SCHEMA.into(),
+                    key: row.lease_key.clone(),
+                }],
+            )
+            .await
+    }
+}
+
+/// At most this many writers closed per start; the next start continues.
+pub const EXPIRED_PASS_MAX: usize = 256;
+
+/// The start-up predecessor task's owner (SEALING-FIX §3.6.2; this design ships its F5 step and
+/// its fence settle). Its own `WriterRetirements` records into the process-wide ledger.
+pub struct PredecessorFence {
+    core: Arc<CoreStore>,
+    identity: Arc<BootIdentity>,
+    host: String,
+    retirements: WriterRetirements,
+}
+
+/// What one F5 pass did, for its Info line.
+#[derive(Clone, Debug, Default)]
+pub struct ExpiredPass {
+    pub closed: usize,
+    pub skipped_live: usize,
+    pub invalid: usize,
+    pub remaining: usize,
+    pub records: super::undrained::PassCounts,
+}
+
+impl PredecessorFence {
+    pub fn new(core: Arc<CoreStore>, host: &str) -> Result<Arc<Self>, String> {
+        Ok(Arc::new(Self {
+            identity: Arc::new(BootIdentity::new(core.clone())?),
+            core,
+            host: host.into(),
+            retirements: WriterRetirements::default(),
+        }))
+    }
+
+    /// SHUTDOWN-HANG F5: close every writer whose lease expired at least one TTL ago, on any
+    /// host, through the one closer; delete each closed writer's lease row; then one bounded
+    /// "Records" pass on the ledger, the Info line, and no loop. `stop` (the first shutdown
+    /// broadcast) ends it at the next step boundary.
+    pub async fn run(&self, stop: tokio::sync::watch::Receiver<bool>) -> ExpiredPass {
+        let stopped = || *stop.borrow();
+        let mut pass = ExpiredPass::default();
+        let scan = match self
+            .identity
+            .expired_writers(LEASE_TTL_MS, EXPIRED_PASS_MAX)
+            .await
+        {
+            Ok(scan) => scan,
+            Err(error) => {
+                crate::diag_warn!(crate::diagnostics::EXPIRED_WRITER_CLOSE_FAILED,
+                    %error, "the expired-writer scan failed; the next start retries");
+                return pass;
+            }
+        };
+        pass.invalid = scan.invalid;
+        pass.remaining = scan.remaining;
+        'writers: for row in &scan.rows {
+            if stopped() {
+                break;
+            }
+            let (node, host) = row
+                .nodes
+                .first()
+                .map_or((None, None), |(host, id)| (Some(*id), Some(host.clone())));
+            let seen = UndrainedWriter {
+                node,
+                other_nodes: row.nodes.iter().skip(1).map(|(_, id)| *id).collect(),
+                epoch: row.epoch,
+                writer: row.writer,
+                observed_by: if host.as_deref() == Some(self.host.as_str()) {
+                    ObservedBy::Successor
+                } else {
+                    ObservedBy::ExpiredLeasePass
+                },
+                host,
+            };
+            loop {
+                match self
+                    .retirements
+                    .retire_after(
+                        &self.core,
+                        row.epoch,
+                        row.writer,
+                        LEASE_TTL_MS,
+                        Some(seen.clone()),
+                    )
+                    .await
+                {
+                    Ok(WriterRetirement::Live { .. }) => {
+                        pass.skipped_live += 1;
+                        continue 'writers;
+                    }
+                    Ok(WriterRetirement::Pending) => {
+                        if stopped() {
+                            break 'writers;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                    Ok(WriterRetirement::Retired(_)) => {
+                        if self.retirements.take_closed_open(row.epoch, row.writer) {
+                            tracing::info!(
+                                writer = %hex::encode(row.writer),
+                                epoch = row.epoch,
+                                "closed a writer that never retired; its shutdown.drain_incomplete record is offered"
+                            );
+                        }
+                        pass.closed += 1;
+                        if let Err(error) = self.identity.delete_writer_lease(row).await {
+                            crate::diag_warn!(crate::diagnostics::EXPIRED_WRITER_CLOSE_FAILED,
+                                epoch = row.epoch, writer = %hex::encode(row.writer), %error,
+                                "a closed writer's lease row was not deleted; the next start retries");
+                        }
+                        continue 'writers;
+                    }
+                    Err(error) => {
+                        crate::diag_warn!(crate::diagnostics::EXPIRED_WRITER_CLOSE_FAILED,
+                            epoch = row.epoch, writer = %hex::encode(row.writer), %error,
+                            "an expired writer was not closed; the next start retries");
+                        continue 'writers;
+                    }
+                }
+            }
+        }
+        if pass.remaining > 0 {
+            crate::diag_warn!(
+                crate::diagnostics::EXPIRED_WRITERS_REMAINING,
+                n = pass.remaining,
+                "more expired writers remain than one start closes; the next start continues"
+            );
+        }
+        if !stopped() {
+            pass.records = undrained_records()
+                .settle_pass(super::undrained::Retrier::Owner)
+                .await;
+            if !pass.records.clean() {
+                undrained_records().ensure_retry_task();
+            }
+        }
+        let refused: Vec<String> = pass
+            .records
+            .record_failed
+            .iter()
+            .map(UndrainedWriter::resource)
+            .collect();
+        tracing::info!(
+            closed = pass.closed,
+            recorded = pass.records.recorded,
+            record_failed = pass.records.record_failed.len(),
+            flush_failed = pass.records.flush_failed,
+            skipped_live = pass.skipped_live,
+            invalid = pass.invalid,
+            remaining = pass.remaining,
+            refused = %refused.join("; "),
+            "expired_writers"
+        );
+        pass
+    }
+
+    /// The seal phase's fence settle: re-drives what this task left retained, submits nothing.
+    pub async fn settle(&self) {
+        self.retirements.settle(&self.core).await;
+    }
+
+    /// Attempts this task still retains.
+    #[must_use]
+    pub fn retained(&self) -> usize {
+        self.retirements.retained()
     }
 }
 
