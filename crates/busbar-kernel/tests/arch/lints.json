@@ -3,7 +3,7 @@
   "a1_hot_path": "A1 (hot-path purity: no dyn, boxed futures, OnceLock/OnceCell reads, Mutex/RwLock, tokio::spawn, serde_json, sonic_rs::Value or String building) has no scope yet: edge, unit, gov::cells and audit_host::append arrive in W3.6 and W6. It turns on for edge in W3.6/W6.5, unit in W6.6, audit_host::append in W6.7 and gov::cells in W6.9, each MR adding its module here. A2 path rules arrive with each fold MR in layering.json.",
   "a3_one_impl": {
     "traits": {
-      "crates/busbar-contract/src/auth_calls.rs": ["AuthCalls", "LoginCall", "PerRequestHandle"],
+      "crates/busbar-contract/src/auth_calls.rs": ["PerRequestHandle"],
       "crates/busbar-contract/src/conn.rs": ["LendCredential"],
       "crates/busbar-contract/src/export_calls.rs": ["ExportAxis", "ExportCalls"],
       "crates/busbar-contract/src/framing_scope.rs": ["FramingScope"],
@@ -12,9 +12,7 @@
       "crates/busbar-contract/src/persistence/axis.rs": ["PersistenceAxis"],
       "crates/busbar-contract/src/persistence/lifecycle/axis.rs": ["MigrationTarget", "PreparedStore"],
       "crates/busbar-contract/src/plane_calls.rs": ["AuthenticatedRouteInFlight", "PieceInFlight", "PlaneCalls", "ServeInFlight"],
-      "crates/busbar-contract/src/plugin.rs": ["Plugin"],
       "crates/busbar-contract/src/plugin_rows.rs": ["PluginRows"],
-      "crates/busbar-contract/src/scratch.rs": ["Scratch"],
       "crates/busbar-contract/src/secret.rs": ["SecretAxis", "SecretCalls", "SecretResolve"],
       "crates/busbar-contract/src/services.rs": ["CredentialRead", "HookChildInvocation"],
       "crates/busbar-core-admin/src/admin_state.rs": ["AppAdmin"],
@@ -25,10 +23,8 @@
       "crates/busbar-core-oauth2/src/cimd.rs": ["CimdFetch"],
       "crates/busbar-kernel-audit/src/amend.rs": ["AmendSink"],
       "crates/busbar-kernel-audit/src/record.rs": ["Audit"],
-      "crates/busbar-kernel-egress/src/ports.rs": ["Capacity", "Journal", "PermitHandle"],
+      "crates/busbar-kernel-egress/src/ports.rs": ["Journal", "PermitHandle"],
       "crates/busbar-kernel-egress/src/walk.rs": ["Shape"],
-      "crates/busbar-kernel-identity/src/chain.rs": ["KeyVerifier", "RevocationView"],
-      "crates/busbar-kernel-wal/src/ship.rs": ["ShippedRecord", "Shipper"],
       "crates/busbar-kernel/src/admission.rs": ["PluginAdmission"],
       "crates/busbar-kernel/src/audit/mod.rs": ["ChainedRecord"],
       "crates/busbar-kernel/src/auth/self_keys.rs": ["SelfGroupProvisioner", "SelfServeKeys"],
@@ -36,7 +32,6 @@
       "crates/busbar-kernel/src/door.rs": ["PoolView"],
       "crates/busbar-kernel/src/durable.rs": ["DurableFs"],
       "crates/busbar-kernel/src/governance/mod.rs": ["IntoStoreResult"],
-      "crates/busbar-kernel/src/governance/persistence/recovery.rs": ["LegacyRecoveryHistory"],
       "crates/busbar-kernel/src/governance/recovery.rs": ["RecoverySink"],
       "crates/busbar-kernel/src/governance/unit_checkpoint_store.rs": ["UnitCheckpointAudit"],
       "crates/busbar-kernel/src/host_records.rs": ["RecordRows"],
@@ -44,7 +39,6 @@
       "crates/busbar-kernel/src/host_units.rs": ["UnitHookStage"],
       "crates/busbar-kernel/src/inflight.rs": ["ArrivalDoor"],
       "crates/busbar-kernel/src/observe.rs": ["Grants", "ObservationSink"],
-      "crates/busbar-kernel/src/persistence/import_target/journal.rs": ["RecoveryHistory"],
       "crates/busbar-kernel/src/persistence/recovery_api.rs": ["Store"],
       "crates/busbar-kernel/src/plane_driver/cancel.rs": ["MoneySeam"],
       "crates/busbar-kernel/src/plane_driver/far_end.rs": ["MemberSignals"],
@@ -59,12 +53,10 @@
       "crates/busbar-kernel/src/teller.rs": ["UnitEnds", "UnitTaps", "Units"],
       "crates/busbar-kernel/src/tick.rs": ["ClockWork"],
       "crates/busbar-migrations/src/coordinator.rs": ["Activation", "IntentStore", "SourceReader", "Transform", "Verifier"],
-      "crates/busbar-migrations/src/legacy/journal_binding.rs": ["JournalMigration"],
       "crates/busbar-migrations/src/legacy/projection.rs": ["ProjectionSource"],
       "crates/busbar-migrations/src/native_source.rs": ["ReadSeek", "SourceSpool", "SpoolFactory"],
       "crates/busbar-migrations/src/startup.rs": ["FrozenBindingResolver"],
       "crates/busbar-migrations/src/verification.rs": ["NativeReadback"],
-      "crates/busbar/src/root/auth_bindings.rs": ["VirtualKeyDirectory"],
       "crates/busbar/src/root/serve_neutral.rs": ["Output"],
       "crates/busbar/src/root/startup_upgrade/document_commit.rs": ["Checkpoints"],
       "crates/busbar/src/root/units_admin/mod.rs": ["AuditView"],
@@ -72,8 +64,7 @@
       "crates/plugin-loader/src/dispatch/measurement.rs": ["Authority"],
       "crates/plugin-loader/src/dispatch/ticket.rs": ["WakeRoute"],
       "crates/plugin-loader/src/dispatch/worker.rs": ["Job", "Settle"],
-      "crates/plugin-loader/src/observe.rs": ["PluginObserver"],
-      "crates/plugin-loader/src/release_crypto.rs": ["ReleaseCrypto"]
+      "crates/plugin-loader/src/observe.rs": ["PluginObserver"]
     },
     "macro_implemented": {
       "crates/busbar-contract/src/caps/capability.rs": ["Capability", "Sealed"],
@@ -84,8 +75,7 @@
       "crates/busbar-kernel-audit/src/record.rs": ["Sealed"],
       "crates/busbar-kernel-breaker/src/lib.rs": ["Sealed"],
       "crates/busbar-kernel/src/config/providers.rs": ["PlaneFields"],
-      "crates/busbar-kernel/src/mallctl.rs": ["Sealed", "Value"],
-      "crates/busbar-yaml/src/lib.rs": ["Sealed"]
+      "crates/busbar-kernel/src/mallctl.rs": ["Sealed", "Value"]
     }
   },
   "a4_late_binding": {
@@ -94,8 +84,6 @@
     "crates/busbar-kernel/src/governance/unit_checkpoint.rs": {"once_dyn": 1, "attach": 1, "by": "W3.11"},
     "crates/busbar-kernel/src/host_services.rs": {"once_dyn": 4, "attach": 8, "by": "W3.11"},
     "crates/busbar-kernel/src/plane_driver/money/observations.rs": {"attach": 1, "by": "W6.6 (judgement: a domain re-bind of a unit's observation scope, not a seam; the unit rewrite folds it)"},
-    "crates/busbar-kernel/src/plane_driver/registry.rs": {"atomic_ptr": 1, "by": "W3.11"},
-    "crates/busbar-kernel/src/preflight.rs": {"atomic_ptr": 1, "by": "W3.11"},
     "crates/busbar-kernel/src/state.rs": {"attach": 1, "by": "W3.11"},
     "crates/plugin-loader/src/dispatch/measurement.rs": {"once_dyn": 1, "by": "W4.3 (the plugin-loader crate is deleted)"},
     "crates/plugin-loader/src/dispatch/services.rs": {"once_dyn": 1, "by": "W4.3 (the plugin-loader crate is deleted)"},
