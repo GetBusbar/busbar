@@ -29,8 +29,8 @@ use crate::root::loader::dispatch::plane_calls::PlaneInstance;
 
 use crate::root::loader::dispatch::{in_head, out_head, Dispatcher, Frame};
 use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
-use busbar_contract::abi::plane::{CLAIM_EXACT, CLAIM_PATTERN, CLAIM_RAW_AFFIX};
-use busbar_contract::caps::{PrincipalId, Route};
+use busbar_contract::abi::plane::{CLAIM_EXACT, CLAIM_PATTERN};
+use busbar_contract::caps::PrincipalId;
 use busbar_kernel::observability::arrival::EntrySpans;
 use busbar_kernel::plane_driver::Arrival;
 use busbar_kernel::plane_routes::{

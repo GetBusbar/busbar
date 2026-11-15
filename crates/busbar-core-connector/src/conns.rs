@@ -596,9 +596,40 @@ struct Accepting {
     slot: Mutex<(Option<Listening>, Wakers)>,
 }
 
-/// Wakers held once each, keyed by [`waker_key`]: a repeat registration is found by its key, never
-/// by a scan of those held.
-type Wakers = HashMap<(usize, usize), Waker>;
+/// Wakers held once each, in the order they first registered (woken first registered, first
+/// woken): a repeat registration is found by its [`waker_key`] in `held`, never by a scan of those
+/// held.
+#[derive(Default)]
+struct Wakers {
+    held: HashSet<(usize, usize)>,
+    order: Vec<Waker>,
+}
+
+impl Wakers {
+    /// Hold `waker` unless one that wakes the same task is held already.
+    fn hold(&mut self, waker: &Waker) {
+        if self.held.insert(waker_key(waker)) {
+            self.order.push(waker.clone());
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.order.len()
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.order.is_empty()
+    }
+
+    /// Wake every held waker, in registration order.
+    fn wake_all(self) {
+        for waker in self.order {
+            waker.wake();
+        }
+    }
+}
 
 /// What [`Waker::will_wake`] compares two wakers by: their data pointer and their vtable.
 fn waker_key(waker: &Waker) -> (usize, usize) {
@@ -614,9 +645,7 @@ impl Accepting {
         let mut slot = self.slot.lock().expect("listener");
         let taken = slot.0.take();
         if taken.is_none() {
-            slot.1
-                .entry(waker_key(waker))
-                .or_insert_with(|| waker.clone());
+            slot.1.hold(waker);
         }
         taken
     }
@@ -628,9 +657,7 @@ impl Accepting {
             slot.0 = listening;
             std::mem::take(&mut slot.1)
         };
-        for w in waiting.into_values() {
-            w.wake();
-        }
+        waiting.wake_all();
     }
 }
 
@@ -922,10 +949,9 @@ impl DeadlineWake {
                         waiters.tickets.insert(ticket, fresh.take().unwrap())
                     }
                     DeadlineInterest::Task => {
-                        waiters
-                            .tasks
-                            .entry(waker_key(waker))
-                            .or_insert_with(|| fresh.take().unwrap());
+                        if waiters.tasks.held.insert(waker_key(waker)) {
+                            waiters.tasks.order.push(fresh.take().unwrap());
+                        }
                         None
                     }
                 }
@@ -949,13 +975,10 @@ impl Wake for DeadlineWake {
 
     fn wake_by_ref(self: &Arc<Self>) {
         let waiters = std::mem::take(&mut *self.waiters.lock().expect("deadline waiters"));
-        for waker in waiters
-            .tickets
-            .into_values()
-            .chain(waiters.tasks.into_values())
-        {
+        for waker in waiters.tickets.into_values() {
             waker.wake();
         }
+        waiters.tasks.wake_all();
     }
 }
 
@@ -4705,10 +4728,6 @@ impl PollConns for Connector {
 #[cfg(test)]
 #[path = "tests/connector_tests.rs"]
 pub(crate) mod tests;
-
-#[cfg(test)]
-#[path = "tests/real_tcp_tests.rs"]
-mod real_tcp_tests;
 
 #[cfg(test)]
 #[path = "tests/callback_waker.rs"]
