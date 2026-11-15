@@ -595,14 +595,8 @@ impl LegSink for UpstreamLeg {
     }
 
     fn channels(&self, batch: SessionBatch, _: Instant) -> Result<(), String> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a failed channel publication is answered with its sentence"
-        )]
-        let taken = self
-            .take_channels(batch)
-            .map_err(|error| format!("upstream channel publication failed: {error:?}"));
-        taken
+        self.take_channels(batch)
+            .map_err(crate::cold::lines::channel_publication_failed)
     }
 
     fn close(&self) {
@@ -738,7 +732,7 @@ impl Dialled {
     }
 
     pub(crate) fn begun(self, yielded: Yielded) -> Result<Self, ConnError> {
-        if let Err(error) = self.leg.take(&self.pairing, yielded, Instant::now()) {
+        if let Err(error) = self.leg.take(&self.pairing, yielded, crate::framer::now()) {
             return Err(self.fail(error));
         }
         if self.pairing.closed() {
@@ -816,7 +810,7 @@ impl Dialled {
 
     /// The far end's description settles the association; its lines must mirror the caller's.
     fn settle(&self, description: &[u8]) -> Result<(), ConnError> {
-        let now = Instant::now();
+        let now = crate::framer::now();
         let yielded = self.leg.turn(
             (),
             |()| Err(ConnError::Pending),
@@ -867,7 +861,7 @@ impl Dialled {
                     declared_len: None,
                 });
             }
-            let now = *read_at.get_or_insert_with(Instant::now);
+            let now = *read_at.get_or_insert_with(crate::framer::now);
             let keyed = self.leg.presented();
             if !keyed && self.due.is_some_and(|d| now >= d) {
                 return Err(ConnError::Timeout);
@@ -1035,7 +1029,7 @@ impl Dialled {
             return true;
         }
         // One clock reading: the keying bound and the drive both judge by it.
-        let now = Instant::now();
+        let now = crate::framer::now();
         if !self.leg.presented() && self.due.is_some_and(|d| now >= d) {
             return true;
         }

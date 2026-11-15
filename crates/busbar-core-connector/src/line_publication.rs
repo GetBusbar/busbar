@@ -378,7 +378,7 @@ impl Pairing {
         let job = Job {
             to: leg,
             across,
-            now: Instant::now(),
+            now: crate::framer::now(),
             text,
             original: true,
             unpaired: None,
@@ -755,7 +755,9 @@ impl Pairing {
                 (
                     leg,
                     sink,
-                    current.as_ref().map_or_else(Instant::now, |job| job.now),
+                    current
+                        .as_ref()
+                        .map_or_else(crate::framer::now, |job| job.now),
                 )
             };
             let Some(sink) = sink else {

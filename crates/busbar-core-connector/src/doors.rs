@@ -4,22 +4,21 @@
 //! Loaded transport doors presented to the connector's carrier and framer interfaces.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
+use crate::off_path::egress::doors::checked_row;
 use crate::{
     carrier::{Carry, Side},
     framer::{Call, Crossed, DoorFacts, FramerDoor},
     wire::unlayered,
 };
-use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON};
+use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::door::DoorFn;
-use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, RefreshIn};
-use busbar_contract::abi::sdk::door::{blank_in, blank_out};
+use busbar_contract::abi::mechanism::lifecycle::slot as life;
 use busbar_contract::abi::transport::slot;
 use busbar_plugin_loader::dispatch::{
-    kinds::transport::{Transport as TransportKind, TransportFacts},
-    Bind, ConnTable, DispatchConfig, Dispatcher, Frame, InFrame, NoSink, OutFrame, Plugin,
-    PluginLogConfig,
+    kinds::transport::Transport as TransportKind, Bind, DispatchConfig, Dispatcher, Frame, InFrame,
+    OutFrame, Plugin, PluginLogConfig,
 };
 
 /// The dispatcher every transport door is adopted by (its watchdog watches every crossing).
@@ -56,7 +55,7 @@ pub fn install_plugin_logs(logs: &'static PluginLogConfig) {
 }
 
 /// The `plugins.logs` a linked row's plugin log file is opened under.
-fn plugin_logs() -> &'static PluginLogConfig {
+pub(crate) fn plugin_logs() -> &'static PluginLogConfig {
     static DEFAULTS: OnceLock<PluginLogConfig> = OnceLock::new();
     match LOGS.get() {
         Some(logs) => logs,
@@ -74,116 +73,45 @@ pub fn bind() -> Bind {
 
 /// [`bind`], adopted by `on`: a composition of its own (a root cell's rig) binds its doors on its
 pub fn bind_on(on: &Dispatcher) -> Bind {
-    // busbar:expect(bp::into_alloc, reason = "config: a door's binding is made once, when it is bound")
-    let instance = Arc::from("transport");
-    Bind {
-        instance,
-        max_inflight_cap: 1024,
-        sink: Arc::new(NoSink),
-        dispatcher: on.adopter(),
-
-        conns: ConnTable::NoNeeds,
-    }
+    // A door's binding is made once, when it is bound: off the request path.
+    crate::off_path::egress::doors::bind_as(on, "transport")
 }
 
 /// What a LINKED row's door is bound to: [`bind`], labelled with the row's name (its registry
 pub fn row_bind(row: &str) -> Result<Bind, String> {
-    let bound = bind();
-    let sink = plugin_logs().sink(
-        row,
-        busbar_contract::abi::mechanism::KindCode::Transport,
-        bound.sink.clone(),
-    )?;
-    // busbar:expect(bp::into_alloc, reason = "config: a linked row's binding is made once, when it is bound")
-    let instance = Arc::from(row);
-    Ok(Bind {
-        instance,
-        sink: Arc::new(sink),
-        ..bound
-    })
+    crate::off_path::egress::doors::row_bind(row)
 }
 
 /// One transport door, opened, as the connector reaches it: on the dispatcher it was bound on,
 pub struct Dispatched {
-    listener_bindings: Vec<busbar_contract::abi::transport::listener_bindings::ListenerBinding>,
-    live: Arc<Live>,
-    facts: DoorFacts,
+    pub(crate) listener_bindings:
+        Vec<busbar_contract::abi::transport::listener_bindings::ListenerBinding>,
+    pub(crate) live: Arc<Live>,
+    pub(crate) facts: DoorFacts,
     /// Its tail states `FACT_ACCEPTS`.
-    accepts: bool,
-    detaches: bool,
-    adopts: bool,
+    pub(crate) accepts: bool,
+    pub(crate) detaches: bool,
+    pub(crate) adopts: bool,
     /// Its Statement states it renders sealed values (TSEAL, `abi::transport::EXT_SEALED_VALUES`).
-    seals: bool,
+    pub(crate) seals: bool,
     /// Its Adopt consumes the host's admitted-session extension.
-    adopts_session: bool,
-    on: Arc<Dispatcher>,
+    pub(crate) adopts_session: bool,
+    pub(crate) on: Arc<Dispatcher>,
 }
 
 /// ONE OPENED TRANSPORT INSTANCE, as a config apply refreshes it: the instance, the setting paths
-struct Live {
-    plugin: Plugin<TransportKind>,
-    settings_keys: Vec<&'static str>,
-    generation: AtomicU64,
+pub(crate) struct Live {
+    pub(crate) plugin: Plugin<TransportKind>,
+    pub(crate) settings_keys: Vec<&'static str>,
+    pub(crate) generation: AtomicU64,
     /// How many REFRESH crossings have returned, whatever their outcome: the door's settings
     /// epoch ([`FramerDoor::settings_epoch`]). `generation` is bumped before the crossing, so it
     /// cannot say the settings were applied.
-    applied: AtomicU64,
+    pub(crate) applied: AtomicU64,
 }
 
 /// EVERY TRANSPORT INSTANCE THIS PROCESS OPENED and still holds, linked and dropped in alike: what
-static LIVE: Mutex<Vec<Weak<Live>>> = Mutex::new(Vec::new());
-
-/// The settings blob a door that declares `blob` is handed (`None`: it declares none, and is handed
-fn settings_arg(blob: Option<&[u8]>) -> Blob {
-    match blob {
-        Some(b) => Blob {
-            ptr: b.as_ptr(),
-            len: b.len(),
-            fmt: BLOB_JSON,
-            flags: 0,
-        },
-        None => Blob {
-            ptr: std::ptr::null(),
-            len: 0,
-            fmt: BLOB_ABSENT,
-            flags: 0,
-        },
-    }
-}
-
-impl Live {
-    /// REFRESH this instance onto the next generation with the deployment's value of every
-    fn refresh(
-        &self,
-        settings: &busbar_contract::transport::TransportSettings,
-    ) -> Result<(), String> {
-        let blob =
-            (!self.settings_keys.is_empty()).then(|| settings_blob(&self.settings_keys, settings));
-        let mut i: RefreshIn = blank_in();
-        i.generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
-        i.settings = settings_arg(blob.as_deref());
-        let mut f = Frame::new(i, blank_out::<OutHead>());
-        let called = self.plugin.answer(life::REFRESH, &mut f);
-        // A failed refresh may have applied part of its settings: either way, what the instance
-        // located before this point is stale now.
-        self.applied.fetch_add(1, Ordering::Release);
-        if called.outcome == Outcome::Ready {
-            return Ok(());
-        }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a config apply's refusal text names the transport and its reason"
-        )]
-        let refused = format!(
-            "transport `{}` did not refresh ({:?}){}{}",
-            self.plugin.name(),
-            called.outcome,
-            if called.error.is_some() { ": " } else { "" },
-            String::from_utf8_lossy(called.error.as_deref().unwrap_or_default())
-        );
-        Err(refused)
-    }
-}
+pub(crate) static LIVE: Mutex<Vec<Weak<Live>>> = Mutex::new(Vec::new());
 
 /// A CONFIG APPLY, as every opened transport instance takes it (`BUSBAR-1.6.0.md` §11.4, "a plugin
 pub fn refresh_live(settings: &busbar_contract::transport::TransportSettings) -> Vec<String> {
@@ -195,53 +123,9 @@ pub fn refresh_named(
     settings: &busbar_contract::transport::TransportSettings,
     named: impl Fn(&str) -> bool,
 ) -> Vec<String> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a config apply sweeps the opened instances once, outside the lock after"
-    )]
-    let live: Vec<Arc<Live>> = {
-        let mut book = LIVE.lock().unwrap_or_else(PoisonError::into_inner);
-        book.retain(|w| w.strong_count() > 0);
-        // busbar:expect(bp::state_scan, reason = "config: a config apply visits every opened instance by design")
-        book.iter()
-            .filter_map(Weak::upgrade)
-            .filter(|l| named(l.plugin.name()))
-            .collect()
-    };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a config apply's refusals are handed back whole"
-    )]
-    let refused = live
-        .iter()
-        .filter_map(|l| l.refresh(settings).err())
-        .collect();
-    refused
+    // A config apply sweeps the opened instances once: off the request path.
+    crate::off_path::egress::doors::refresh_named(settings, named)
 }
-
-/// The deployment's value of the transport setting at config path `path`, as the door's settings
-fn dealt(
-    path: &str,
-    s: &busbar_contract::transport::TransportSettings,
-    into: &mut Vec<u8>,
-) -> std::io::Result<()> {
-    use std::io::Write as _;
-    match path {
-        "advanced.upstream_h2_prior_knowledge" => write!(into, "{}", s.upstream_h2_prior_knowledge),
-        "advanced.upstream_http1_only" => write!(into, "{}", s.upstream_http1_only),
-        "limits.upstream_request_timeout_secs" => write!(into, "{}", s.request_timeout_secs),
-        "limits.request_body_max_bytes" => write!(into, "{}", s.request_body_max_bytes),
-        _ => Ok(()),
-    }
-}
-
-/// Every path [`dealt`] deals, in the blob's key order (byte order, as a JSON object's sorted keys).
-const DEALT: [&str; 4] = [
-    "advanced.upstream_h2_prior_knowledge",
-    "advanced.upstream_http1_only",
-    "limits.request_body_max_bytes",
-    "limits.upstream_request_timeout_secs",
-];
 
 /// The settings blob a door that declares `declared` is opened with: each declared path the
 /// deployment deals, as one compact JSON object with its keys in byte order, written straight
@@ -251,20 +135,8 @@ pub fn settings_blob(
     declared: &[&str],
     s: &busbar_contract::transport::TransportSettings,
 ) -> Vec<u8> {
-    // busbar:expect(bp::fresh_buffer, reason = "config: a door is handed its settings blob owned, once per open or config apply")
-    let mut blob = Vec::with_capacity(160);
-    blob.push(b'{');
-    for path in DEALT.iter().filter(|p| declared.contains(p)) {
-        if blob.len() > 1 {
-            blob.push(b',');
-        }
-        blob.push(b'"');
-        blob.extend_from_slice(path.as_bytes());
-        blob.extend_from_slice(b"\":");
-        dealt(path, s, &mut blob).expect("writing into a Vec cannot fail");
-    }
-    blob.push(b'}');
-    blob
+    // A door is handed its settings blob owned, once per open or config apply: off the request path.
+    crate::off_path::egress::doors::settings_blob(declared, s)
 }
 
 impl Dispatched {
@@ -282,78 +154,8 @@ impl Dispatched {
         settings: &busbar_contract::transport::TransportSettings,
         on: Arc<Dispatcher>,
     ) -> Result<Self, String> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: an open's refusal text names the transport"
-        )]
-        let stated = plugin
-            .context::<TransportFacts>()
-            .cloned()
-            .ok_or_else(|| format!("`{}` states no transport tail", plugin.name()))?;
-        let blob = (!stated.settings_keys.is_empty())
-            .then(|| settings_blob(&stated.settings_keys, settings));
-        let mut i: OpenIn = blank_in();
-        i.settings = settings_arg(blob.as_deref());
-        let mut f = Frame::new(i, blank_out::<OpenOut>());
-        let opened = plugin.answer(life::OPEN, &mut f);
-        if opened.outcome != busbar_contract::abi::mechanism::call::Outcome::Ready {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: an open's refusal text names the transport"
-            )]
-            return Err(format!(
-                "transport `{}` would not open ({:?})",
-                plugin.name(),
-                opened.outcome
-            ));
-        }
-
-        plugin.ready(&on, busbar_plugin_loader::dispatch::ready::READY_DEADLINE)?;
-        let accepts = stated.accepts;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a door's facts are built once, when it is opened"
-        )]
-        let facts = DoorFacts {
-            name: plugin.name().to_owned(),
-            claims: stated.claims,
-            role: stated.role,
-            dials: stated.dials,
-            composes_over: stated.composes_over,
-            ported: stated.ported,
-            status_rows: stated.status_rows,
-            status_namespaces: stated.status_namespaces,
-            handoff_status: stated.handoff_status,
-            datagram: stated.datagram,
-            duplex: stated
-                .upgrades
-                .iter()
-                .chain(&stated.sessions)
-                .copied()
-                .collect(),
-        };
-
-        let _ = on.install_io(crate::hostio::process());
-        let live = Arc::new(Live {
-            plugin,
-            settings_keys: stated.settings_keys,
-            generation: AtomicU64::new(0),
-            applied: AtomicU64::new(0),
-        });
-        LIVE.lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(Arc::downgrade(&live));
-        Ok(Self {
-            listener_bindings: stated.listener_bindings,
-            live,
-            facts,
-            accepts,
-            detaches: stated.detaches,
-            adopts: stated.adopts,
-            seals: stated.seals,
-            adopts_session: stated.adopts_session,
-            on,
-        })
+        // A door is opened once, when it is bound: off the request path.
+        crate::off_path::egress::doors::open_on(plugin, settings, on)
     }
 
     /// REFRESH this instance with the deployment's applied `settings`: what [`refresh_live`] does
@@ -367,7 +169,12 @@ impl Dispatched {
 }
 
 /// One crossing through the dispatcher: the host's `in`/`out` copied in, the answer copied back.
-fn go<I: InFrame, O: OutFrame>(p: &Plugin<TransportKind>, s: u32, i: &mut I, o: &mut O) -> Crossed {
+pub(crate) fn go<I: InFrame, O: OutFrame>(
+    p: &Plugin<TransportKind>,
+    s: u32,
+    i: &mut I,
+    o: &mut O,
+) -> Crossed {
     let mut f = Frame::new(*i, *o);
     let c = p.answer(s, &mut f);
     *i = f.input;
@@ -545,14 +352,7 @@ impl FramerDoor for Dispatched {
             Call::Locate(i, o) => {
                 if i.head.deadline_ns != 0 {
                     let Some(provider) = self.on.host_services() else {
-                        #[expect(
-                            clippy::disallowed_methods,
-                            reason = "error: a crossing refused for want of the host clock carries its reason"
-                        )]
-                        return Crossed {
-                            outcome: Outcome::Failed,
-                            error: Some(b"request head deadline requires the host clock".to_vec()),
-                        };
+                        return crate::cold::egress::no_host_clock();
                     };
                     // Framer deadlines and CLOCK_NOW have distinct epochs. Cross the ABI using
                     // the same provider clock the plugin reads when preparing its signed head.
@@ -627,35 +427,6 @@ pub fn stated_row(door: DoorFn) -> Result<RowFacts, String> {
     checked_row(facts)
 }
 
-fn checked_row(facts: TransportFacts) -> Result<RowFacts, String> {
-    let Some(&key) = facts.claims.first() else {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a linked row's refusal text names its door"
-        )]
-        return Err(format!(
-            "the transport door `{}` claims no scheme: a linked row's key is its door's own claim",
-            facts.name
-        ));
-    };
-    if key != facts.name {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a linked row's refusal text names its door"
-        )]
-        return Err(format!(
-            "the transport door's Statement is named `{}` but its own claim (its first) is `{key}`: \
-             a linked row's key is its door's own claim, and the two must be one",
-            facts.name
-        ));
-    }
-    Ok(RowFacts {
-        key,
-        composes_over: facts.composes_over,
-        session: !facts.sessions.is_empty(),
-    })
-}
-
 /// [`RowFacts`] of a linked row's `door`, as the boot seal reads them.
 #[must_use]
 pub fn row_facts(door: DoorFn) -> RowFacts {
@@ -706,77 +477,23 @@ pub fn locate_bound(
     plugin: &Plugin<TransportKind>,
     target: &str,
 ) -> Result<crate::framer::Located, String> {
-    struct Locator<'a> {
-        plugin: &'a Plugin<TransportKind>,
-        facts: DoorFacts,
-    }
-    impl FramerDoor for Locator<'_> {
-        fn facts(&self) -> &DoorFacts {
-            &self.facts
-        }
-        fn cross(&self, call: Call<'_>) -> Crossed {
-            match call {
-                Call::Locate(i, o) => go(self.plugin, slot::LOCATE, i, o),
-                _ => Crossed {
-                    outcome: Outcome::Refused,
-                    error: None,
-                },
-            }
-        }
-    }
-    if plugin.is_open() {
-        return Err("configuration locate requires an unopened declaration".into());
-    }
-    let stated = plugin
-        .context::<TransportFacts>()
-        .ok_or("the admitted transport has no declaration")?;
-    // busbar:expect(bp::clone_alloc, reason = "config: a configuration locate stands its declaration's facts up once")
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a configuration locate stands its declaration's facts up once"
-    )]
-    let locator = Locator {
-        plugin,
-        facts: DoorFacts {
-            name: plugin.name().to_owned(),
-            claims: stated.claims.clone(),
-            role: stated.role,
-            dials: stated.dials,
-            composes_over: stated.composes_over.clone(),
-            ported: stated.ported,
-            status_rows: stated.status_rows.clone(),
-            status_namespaces: stated.status_namespaces.clone(),
-            handoff_status: stated.handoff_status.clone(),
-            duplex: stated
-                .upgrades
-                .iter()
-                .chain(&stated.sessions)
-                .copied()
-                .collect(),
-            datagram: stated.datagram,
-        },
-    };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a configuration locate's refusal text"
-    )]
-    let located = crate::framer::locate(&locator, target).map_err(|e| e.to_string())?;
-    Ok(located)
+    // A configuration locate stands its declaration's facts up once, at boot: off the request path.
+    crate::off_path::egress::doors::locate_bound(plugin, target)
 }
 
 #[cfg(test)]
 mod identity_tests {
     use super::*;
+    use busbar_plugin_loader::dispatch::kinds::transport::TransportFacts;
 
     #[test]
     fn actual_tcp_name_fault_is_refused() {
         use busbar_plugin_loader::dispatch::{load_dropped, rendering_of_library};
 
-        let path = std::path::PathBuf::from(
-            std::env::var_os("BUSBAR_TEST_TCP_CDYLIB")
-                .expect("BUSBAR_TEST_TCP_CDYLIB must name the actual built TCP product"),
-        );
-        let statement = rendering_of_library(&path)
+        let path = std::env::var_os("BUSBAR_TEST_TCP_CDYLIB")
+            .expect("BUSBAR_TEST_TCP_CDYLIB must name the actual built TCP product");
+        let path = std::path::Path::new(&path);
+        let statement = rendering_of_library(path)
             .expect("the actual TCP image renders")
             .expect("the actual TCP image exports a door");
         let dispatcher = Dispatcher::new(
@@ -784,14 +501,11 @@ mod identity_tests {
             busbar_kernel::host_services::caller_binding(),
         );
         let plugin = load_dropped::<TransportKind>(
-            &path,
+            path,
             &statement,
             Bind {
-                instance: Arc::from("actual-tcp-root-identity"),
                 max_inflight_cap: 64,
-                sink: Arc::new(NoSink),
-                dispatcher: dispatcher.adopter(),
-                conns: ConnTable::NoNeeds,
+                ..crate::off_path::egress::doors::bind_as(&dispatcher, "actual-tcp-root-identity")
             },
         )
         .expect("the actual TCP product loads through its ABI");
