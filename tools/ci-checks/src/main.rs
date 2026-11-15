@@ -520,3 +520,7 @@ fn seam_only_reached(tree: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "migrate_size_tests.rs"]
+mod migrate_size_tests;
