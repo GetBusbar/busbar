@@ -334,6 +334,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-ci-hop"
+version = "1.6.0"
+dependencies = [
+ "proc-macro2",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "busbar-contract"
 version = "1.6.0"
 dependencies = [
@@ -616,12 +624,22 @@ dependencies = [
 name = "busbar-plugin-abi"
 version = "1.6.0"
 dependencies = [
+ "aho-corasick",
+ "arc-swap",
+ "base64 0.22.1",
+ "busbar-crypto",
+ "hex",
+ "percent-encoding",
  "zerocopy",
+ "zeroize",
 ]
 
 [[package]]
 name = "busbar-plugin-bench"
 version = "1.6.0"
+dependencies = [
+ "busbar-plugin-abi",
+]
 
 [[package]]
 name = "busbar-plugin-loader"

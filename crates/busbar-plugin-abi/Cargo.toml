@@ -14,12 +14,23 @@ path = "src/lib.rs"
 [features]
 default = []
 # Core's side: answers, the buffer pool, the Need driver, the entry guard, the Host static and the scrubber (§10).
-host = []
+host = ["dep:busbar-crypto", "dep:aho-corasick", "dep:arc-swap", "dep:base64", "dep:percent-encoding", "dep:hex", "dep:zeroize"]
+# Dev-only (C-PANIC-HOST, like the kernel's): the injection point at the top of the host's `contain`.
+conformance = ["host"]
 # The in-memory hyper/tokio IO adapter transports use (§9).
 memio = []
 
 [dependencies]
 zerocopy = { version = "0.8", features = ["derive"] }
+# Feature `host` (IF §1): the crypto facade the Host marshals onto (never the backend), the scrubber's automaton,
+# lock-free snapshot swap and the encodings its needles are matched in, and the arena/needle wipes.
+busbar-crypto = { path = "../busbar-crypto", optional = true }
+aho-corasick = { workspace = true, optional = true }
+arc-swap = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+percent-encoding = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
 
 [lints]
 workspace = true
