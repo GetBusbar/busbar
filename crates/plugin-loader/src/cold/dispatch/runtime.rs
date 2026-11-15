@@ -69,13 +69,13 @@ pub(crate) fn worker_free_slots(counts: &[Option<u32>]) -> Vec<u32> {
     free
 }
 
+/// The workers a new dispatcher spawns once its pool is built, each with its receiver.
+type Started = Vec<(Arc<Worker>, Receiver<Msg>)>;
+
 /// A new dispatcher's `n` workers: their slots, and each worker with its receiver, to spawn once the
 /// pool is built.
 #[cold]
-pub(crate) fn start_workers(
-    n: u32,
-    key: TicketKey,
-) -> (Box<[WorkerSlot]>, Vec<(Arc<Worker>, Receiver<Msg>)>) {
+pub(crate) fn start_workers(n: u32, key: TicketKey) -> (Box<[WorkerSlot]>, Started) {
     let mut started = Vec::with_capacity(n as usize);
     let slots = (0..n)
         .map(|i| {
