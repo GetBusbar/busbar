@@ -21,6 +21,11 @@ The thousands digit is the area.
 | [BUSBAR-1007](/docs/1.6/errors/BUSBAR-1007/) | Admin store blocking task failed to join (cancelled or panicked) | 1.6.0 |
 | [BUSBAR-1008](/docs/1.6/errors/BUSBAR-1008/) | Group delete could not read keys to check bindings (admin 500) | 1.6.0 |
 | [BUSBAR-1009](/docs/1.6/errors/BUSBAR-1009/) | Admin /usage blocking task failed to join (cancelled or panicked) | 1.6.0 |
+| [BUSBAR-1010](/docs/1.6/errors/BUSBAR-1010/) | Store in-flight queue exhausted: new store writes are refused until slots free up | 1.6.0 |
+| [BUSBAR-1011](/docs/1.6/errors/BUSBAR-1011/) | A store commit whose earlier send may have applied was fenced on retry | 1.6.0 |
+| [BUSBAR-1012](/docs/1.6/errors/BUSBAR-1012/) | A live store commit was answered STALE: the slot queue invariant was broken | 1.6.0 |
+| [BUSBAR-1013](/docs/1.6/errors/BUSBAR-1013/) | A self-fenced store commit's readback could not decide whether it applied | 1.6.0 |
+| [BUSBAR-1014](/docs/1.6/errors/BUSBAR-1014/) | The store answered an inconsistent time-guard failure | 1.6.0 |
 
 ## 2xxx: Audit chain
 
@@ -63,6 +68,9 @@ The thousands digit is the area.
 | [BUSBAR-3024](/docs/1.6/errors/BUSBAR-3024/) | A metadata host-list entry names no host (it matches nothing and is dropped) — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-3025](/docs/1.6/errors/BUSBAR-3025/) | A provider URL names a private or loopback host the destination guard refuses | 1.6.0 |
 | [BUSBAR-3026](/docs/1.6/errors/BUSBAR-3026/) | Declared billable classes have no configured rate | 1.6.0 |
+| [BUSBAR-3027](/docs/1.6/errors/BUSBAR-3027/) | A 1.5.5 file overlay holds settings this Store has not imported (boot refuses to start) | 1.6.0 |
+| [BUSBAR-3028](/docs/1.6/errors/BUSBAR-3028/) | A 1.5.5 overlay selector, variable or file is not read (nothing to import) | 1.6.0 |
+| [BUSBAR-3029](/docs/1.6/errors/BUSBAR-3029/) | A retired launch environment variable is set and IGNORED | 1.6.0 |
 | [BUSBAR-3101](/docs/1.6/errors/BUSBAR-3101/) | A registration is named with a reserved word | 1.6.0 |
 | [BUSBAR-3102](/docs/1.6/errors/BUSBAR-3102/) | A model definition is invalid | 1.6.0 |
 | [BUSBAR-3103](/docs/1.6/errors/BUSBAR-3103/) | A model, pool or provider is named after a reserved route prefix | 1.6.0 |
@@ -95,6 +103,19 @@ The thousands digit is the area.
 | [BUSBAR-3130](/docs/1.6/errors/BUSBAR-3130/) | The admin listener is network-exposed without mTLS | 1.6.0 |
 | [BUSBAR-3131](/docs/1.6/errors/BUSBAR-3131/) | An export sink definition is invalid | 1.6.0 |
 | [BUSBAR-3132](/docs/1.6/errors/BUSBAR-3132/) | An outbound destination is refused by the egress policy | 1.6.0 |
+| [BUSBAR-3133](/docs/1.6/errors/BUSBAR-3133/) | A login attempt limit setting is invalid | 1.6.0 |
+| [BUSBAR-3134](/docs/1.6/errors/BUSBAR-3134/) | An allowlist entry names a cloud-metadata destination | 1.6.0 |
+| [BUSBAR-3135](/docs/1.6/errors/BUSBAR-3135/) | A registration still carries the retired per-registration private-address switch | 1.6.0 |
+| [BUSBAR-3136](/docs/1.6/errors/BUSBAR-3136/) | A retired cloud-metadata carve-out key is set | 1.6.0 |
+| [BUSBAR-3137](/docs/1.6/errors/BUSBAR-3137/) | An advanced.tls trust anchor is not a usable CA | 1.6.0 |
+| [BUSBAR-3138](/docs/1.6/errors/BUSBAR-3138/) | An advanced.tls trust anchor was accepted | 1.6.0 |
+| [BUSBAR-3139](/docs/1.6/errors/BUSBAR-3139/) | An advanced.tls trust anchor expires within 30 days | 1.6.0 |
+| [BUSBAR-3140](/docs/1.6/errors/BUSBAR-3140/) | No trust anchor applies to a TLS destination | 1.6.0 |
+| [BUSBAR-3144](/docs/1.6/errors/BUSBAR-3144/) | A plaintext destination entry is not an exact host or IP | 1.6.0 |
+| [BUSBAR-3145](/docs/1.6/errors/BUSBAR-3145/) | A destination wildcard is too wide | 1.6.0 |
+| [BUSBAR-3147](/docs/1.6/errors/BUSBAR-3147/) | System CA bundle entries were not used | 1.6.0 |
+| [BUSBAR-3148](/docs/1.6/errors/BUSBAR-3148/) | An advanced.tls destination entry is invalid | 1.6.0 |
+| [BUSBAR-3149](/docs/1.6/errors/BUSBAR-3149/) | Outbound connections go through a proxy | 1.6.0 |
 | [BUSBAR-3401](/docs/1.6/errors/BUSBAR-3401/) | --migrate-config was given no file to migrate | 1.6.0 |
 | [BUSBAR-3402](/docs/1.6/errors/BUSBAR-3402/) | --migrate-config could not read the file it was given | 1.6.0 |
 | [BUSBAR-3403](/docs/1.6/errors/BUSBAR-3403/) | --migrate-config could not resolve its working directory | 1.6.0 |
@@ -104,6 +125,8 @@ The thousands digit is the area.
 | [BUSBAR-3407](/docs/1.6/errors/BUSBAR-3407/) | An empty allowed_pools list now means no pools | 1.6.0 |
 | [BUSBAR-3408](/docs/1.6/errors/BUSBAR-3408/) | Migration added a binding that keeps 1.5.5's ungoverned access | 1.6.0 |
 | [BUSBAR-3409](/docs/1.6/errors/BUSBAR-3409/) | BUSBAR_WORKER_THREADS was not a positive integer and was not captured | 1.6.0 |
+| [BUSBAR-3410](/docs/1.6/errors/BUSBAR-3410/) | A registration's allow_private was replaced by exact advanced.allow_destinations entries | 1.6.0 |
+| [BUSBAR-3411](/docs/1.6/errors/BUSBAR-3411/) | A retired cloud-metadata carve-out key was removed | 1.6.0 |
 
 ## 4xxx: Auth & identity
 
@@ -138,6 +161,20 @@ The thousands digit is the area.
 | [BUSBAR-4027](/docs/1.6/errors/BUSBAR-4027/) | create_key request body failed to parse (client 400) | 1.6.0 |
 | [BUSBAR-4028](/docs/1.6/errors/BUSBAR-4028/) | create_key allowed_pools names an unconfigured pool (key still created) | 1.6.0 |
 | [BUSBAR-4029](/docs/1.6/errors/BUSBAR-4029/) | update_key request body failed to parse (client 400) | 1.6.0 |
+| [BUSBAR-4032](/docs/1.6/errors/BUSBAR-4032/) | Sender-constrained (DPoP) credential refused | 1.6.0 |
+| [BUSBAR-4033](/docs/1.6/errors/BUSBAR-4033/) | Credential sign-in throttled: the client's source spent its budget | 1.6.0 |
+| [BUSBAR-4034](/docs/1.6/errors/BUSBAR-4034/) | Credential sign-in failures passed the global alarm threshold | 1.6.0 |
+| [BUSBAR-4035](/docs/1.6/errors/BUSBAR-4035/) | Login attempt limiter cannot reach the core store (sign-ins refused) | 1.6.0 |
+| [BUSBAR-4036](/docs/1.6/errors/BUSBAR-4036/) | Client address unknown: per-source login limits skipped | 1.6.0 |
+| [BUSBAR-4037](/docs/1.6/errors/BUSBAR-4037/) | A login attempt limiter is disabled | 1.6.0 |
+| [BUSBAR-4038](/docs/1.6/errors/BUSBAR-4038/) | Admin door: a source's refused-credential budget is spent | 1.6.0 |
+| [BUSBAR-4039](/docs/1.6/errors/BUSBAR-4039/) | Credential sign-in refused: no signing key to key the login limiter | 1.6.0 |
+| [BUSBAR-4040](/docs/1.6/errors/BUSBAR-4040/) | Credential method held open after repeated provider outages | 1.6.0 |
+| [BUSBAR-4041](/docs/1.6/errors/BUSBAR-4041/) | An account has been throttled for more than four consecutive windows | 1.6.0 |
+| [BUSBAR-4042](/docs/1.6/errors/BUSBAR-4042/) | Operator token is shorter than 32 bytes | 1.6.0 |
+| [BUSBAR-4043](/docs/1.6/errors/BUSBAR-4043/) | Self-serve sign-in or refresh refused: the subject's key is on hold | 1.6.0 |
+| [BUSBAR-4044](/docs/1.6/errors/BUSBAR-4044/) | Admin request to re-enable a revoked key refused (revoked is terminal) | 1.6.0 |
+| [BUSBAR-4045](/docs/1.6/errors/BUSBAR-4045/) | Credential sign-in throttled: the account's failure ceiling is reached | 1.6.0 |
 
 ## 5xxx: Proxy & routing
 
@@ -169,7 +206,13 @@ The thousands digit is the area.
 | [BUSBAR-5042](/docs/1.6/errors/BUSBAR-5042/) | Unexpected breaker state on probe acquisition (fail-safe: refuse) — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-5043](/docs/1.6/errors/BUSBAR-5043/) | Unexpected breaker state on state read (reporting Closed) — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-5044](/docs/1.6/errors/BUSBAR-5044/) | Unexpected breaker state in record_failure (no-op) — RETIRED *(retired)* | 1.6.0 |
-| [BUSBAR-5045](/docs/1.6/errors/BUSBAR-5045/) | Cloud-metadata SSRF protection DISABLED (allow_all_metadata is set) | 1.6.0 |
+| [BUSBAR-5045](/docs/1.6/errors/BUSBAR-5045/) | Cloud-metadata SSRF protection DISABLED (allow_all_metadata is set) — RETIRED *(retired)* | 1.6.0 |
+| [BUSBAR-5046](/docs/1.6/errors/BUSBAR-5046/) | Provider usage not read (a unit settled without billing its final stated usage) | 1.6.0 |
+| [BUSBAR-5047](/docs/1.6/errors/BUSBAR-5047/) | An outbound TLS connection failed verification | 1.6.0 |
+| [BUSBAR-5048](/docs/1.6/errors/BUSBAR-5048/) | An expired trust anchor was withdrawn | 1.6.0 |
+| [BUSBAR-5049](/docs/1.6/errors/BUSBAR-5049/) | A trust anchor file changed; restart to apply | 1.6.0 |
+| [BUSBAR-5050](/docs/1.6/errors/BUSBAR-5050/) | Routing policy made no choice and no member has a known routing cost | 1.6.0 |
+| [BUSBAR-5051](/docs/1.6/errors/BUSBAR-5051/) | An outbound dial was refused | 1.6.0 |
 
 ## 6xxx: Plugins
 
@@ -187,6 +230,10 @@ The thousands digit is the area.
 | [BUSBAR-6010](/docs/1.6/errors/BUSBAR-6010/) | --list-plugins could not build a trust policy (plugins.trust is invalid) | 1.6.0 |
 | [BUSBAR-6011](/docs/1.6/errors/BUSBAR-6011/) | First-party anti-downgrade floor unreadable (booting with NO first-party floor) | 1.6.0 |
 | [BUSBAR-6012](/docs/1.6/errors/BUSBAR-6012/) | First-party anti-downgrade floor could not be persisted (it will not survive a restart) | 1.6.0 |
+| [BUSBAR-6013](/docs/1.6/errors/BUSBAR-6013/) | Plugin-supplied text exceeded its cap and was cut | 1.6.0 |
+| [BUSBAR-6014](/docs/1.6/errors/BUSBAR-6014/) | A plugin call was refused by an ABI rule | 1.6.0 |
+| [BUSBAR-6015](/docs/1.6/errors/BUSBAR-6015/) | A plugin used a deprecated ABI value (refused from 1.7.0) | 1.6.0 |
+| [BUSBAR-6017](/docs/1.6/errors/BUSBAR-6017/) | A plugin declares a retired ABI value | 1.6.0 |
 
 ## 7xxx: Plane protocols
 
@@ -223,7 +270,7 @@ The thousands digit is the area.
 | [BUSBAR-8009](/docs/1.6/errors/BUSBAR-8009/) | delete_key: tombstone committed and key evicted, but cache reconcile failed | 1.6.0 |
 | [BUSBAR-8010](/docs/1.6/errors/BUSBAR-8010/) | rotate_key: new generation committed, but cache reconcile failed (new secret not returned) | 1.6.0 |
 | [BUSBAR-8011](/docs/1.6/errors/BUSBAR-8011/) | Budget flush: some buckets failed to persist this tick (re-marked dirty for retry) | 1.6.0 |
-| [BUSBAR-8012](/docs/1.6/errors/BUSBAR-8012/) | SAFE MODE: config overlay not merged (running on base config.yaml alone) | 1.6.0 |
+| [BUSBAR-8012](/docs/1.6/errors/BUSBAR-8012/) | IGNORE OVERLAY: config overlay not merged (running on base config alone) | 1.6.0 |
 | [BUSBAR-8013](/docs/1.6/errors/BUSBAR-8013/) | Provider api_key did not resolve (degraded to an empty key) — RETIRED, see BUSBAR-8020 *(retired)* | 1.6.0 |
 | [BUSBAR-8014](/docs/1.6/errors/BUSBAR-8014/) | auth.chain is empty — OPEN RELAY (every request admitted unauthenticated) | 1.6.0 |
 | [BUSBAR-8015](/docs/1.6/errors/BUSBAR-8015/) | Store settings hold a secret reference that does not resolve here | 1.6.0 |
@@ -237,6 +284,10 @@ The thousands digit is the area.
 | [BUSBAR-8023](/docs/1.6/errors/BUSBAR-8023/) | A stored recoverable credential opens under neither at-rest key (it does not authenticate) | 1.6.0 |
 | [BUSBAR-8024](/docs/1.6/errors/BUSBAR-8024/) | Recoverable credentials are not yet re-sealed under the current at-rest key | 1.6.0 |
 | [BUSBAR-8025](/docs/1.6/errors/BUSBAR-8025/) | A recoverable credential written before 1.6.0 is stored in the clear | 1.6.0 |
+| [BUSBAR-8026](/docs/1.6/errors/BUSBAR-8026/) | A plane member's upstream credential could not be refreshed | 1.6.0 |
+| [BUSBAR-8027](/docs/1.6/errors/BUSBAR-8027/) | A plane member's upstream credential lapsed or was revoked at its source | 1.6.0 |
+| [BUSBAR-8028](/docs/1.6/errors/BUSBAR-8028/) | A plugin's rotated credential could not be applied | 1.6.0 |
+| [BUSBAR-8029](/docs/1.6/errors/BUSBAR-8029/) | A plugin instance's scheduled tick failed | 1.6.0 |
 | [BUSBAR-8101](/docs/1.6/errors/BUSBAR-8101/) | The admin resource named in the request does not exist | 1.6.0 |
 | [BUSBAR-8102](/docs/1.6/errors/BUSBAR-8102/) | The admin request carries no valid admin credential | 1.6.0 |
 | [BUSBAR-8103](/docs/1.6/errors/BUSBAR-8103/) | The admin path does not take this HTTP method | 1.6.0 |
@@ -264,6 +315,12 @@ The thousands digit is the area.
 | [BUSBAR-9010](/docs/1.6/errors/BUSBAR-9010/) | jemalloc idle-purge fallback unavailable (idle RSS may not return to the OS) | 1.6.0 |
 | [BUSBAR-9011](/docs/1.6/errors/BUSBAR-9011/) | --generate-signing-key could not mint a key (OS entropy source unavailable) | 1.6.0 |
 | [BUSBAR-9012](/docs/1.6/errors/BUSBAR-9012/) | Legacy audit table could not be migrated into the durable journal seam at boot | 1.6.0 |
+| [BUSBAR-9013](/docs/1.6/errors/BUSBAR-9013/) | Waiting on another writer's first start of this dataset (no listener bound yet) | 1.6.0 |
+| [BUSBAR-9014](/docs/1.6/errors/BUSBAR-9014/) | Took over a stalled first start (the previous owner is retired) | 1.6.0 |
+| [BUSBAR-9015](/docs/1.6/errors/BUSBAR-9015/) | First-start takeover not confirmed (outcome unknown or refused) | 1.6.0 |
+| [BUSBAR-9016](/docs/1.6/errors/BUSBAR-9016/) | First start step slower than its budget (waiters may take over) | 1.6.0 |
+| [BUSBAR-9017](/docs/1.6/errors/BUSBAR-9017/) | First start handed over on exit (writer retired) | 1.6.0 |
+| [BUSBAR-9018](/docs/1.6/errors/BUSBAR-9018/) | First start not handed over on exit (the next start waits) | 1.6.0 |
 | [BUSBAR-9101](/docs/1.6/errors/BUSBAR-9101/) | The command line names an argument busbar does not know | 1.6.0 |
 | [BUSBAR-9102](/docs/1.6/errors/BUSBAR-9102/) | A command's arguments do not fit together | 1.6.0 |
 | [BUSBAR-9103](/docs/1.6/errors/BUSBAR-9103/) | A command-line flag is missing its value | 1.6.0 |

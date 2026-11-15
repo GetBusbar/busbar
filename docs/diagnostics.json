@@ -564,6 +564,30 @@
     "retired": false
   },
   {
+    "code": "BUSBAR-3028",
+    "number": 3028,
+    "class": "config",
+    "slug": "config-legacy-overlay-not-read",
+    "title": "A 1.5.5 overlay selector, variable or file is not read (nothing to import)",
+    "severity": "actionable",
+    "summary": "The deployment still carries a 1.5.5 file-overlay input that 1.6 serving does not read: a config.overlay selector or BUSBAR_CONFIG_OVERLAY naming a file that does not exist, an overlay file that holds no settings, a file whose settings this Store has already imported, or a file beside a locked config (which 1.5.5 ignored too). Nothing is lost, so the boot continues; the message names the file and how it was selected.",
+    "action": "Remove the leftover input: delete the imported or empty overlay file, and remove BUSBAR_CONFIG_OVERLAY from the launcher. `busbar --migrate-config` removes config.overlay from config.yaml. See docs/migration-1.6.md.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
+    "code": "BUSBAR-3029",
+    "number": 3029,
+    "class": "config",
+    "slug": "retired-env-var-ignored",
+    "title": "A retired launch environment variable is set and IGNORED",
+    "severity": "actionable",
+    "summary": "busbar 1.6 no longer reads BUSBAR_PROVIDERS, BUSBAR_WORKER_THREADS, BUSBAR_UPSTREAM_HTTP1_ONLY or BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE. A set one has NO effect: the config key (or its default) is in force. Emitted pre-tracing, to stderr, at boot and by --validate.",
+    "action": "Run busbar --migrate-config in the old launch environment to write the value into config.yaml, validate, then remove the variable from the launcher.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
     "code": "BUSBAR-4001",
     "number": 4001,
     "class": "auth",
