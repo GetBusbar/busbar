@@ -14,6 +14,7 @@ use serde::de::value::MapAccessDeserializer;
 use serde::de::{DeserializeSeed, Deserializer, Error as _, IntoDeserializer, MapAccess, Visitor};
 use serde::Deserialize;
 
+use super::grammar::Grammar;
 use super::DeployCfg;
 
 use crate::config::plane_sections::{DeclaredSections, EndpointSection};
@@ -284,13 +285,14 @@ impl<'de> Deserialize<'de> for Body {
     }
 }
 
-/// A `DeployCfg` read through serde, by any caller, reads the source shorthand the admitted owners
-/// declare: no reader of the configuration skips the admitted grammar. A caller that names its own
-/// owners ([`deploy_with_sources`]) governs, since the context nearest the input governs.
+/// A `DeployCfg` decoded through serde with no grammar given: canonical references only, and its
+/// grammar stays [`GrammarField::Unbound`](super::grammar::GrammarField), which refuses wherever
+/// a grammar is needed. Every configuration reader reads through [`deploy_from_deserializer`] instead, under the
+/// grammar of its own read; nothing reads the live secret axis to parse a document.
 impl<'de> Deserialize<'de> for DeployCfg {
     fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
-        busbar_contract::secret_ref::context::deserialize::<Body, _>(de, &super::secret::sugars())
-            .map(|body| body.0)
+        let none = busbar_contract::secret_ref::Sugars::default();
+        busbar_contract::secret_ref::context::deserialize::<Body, _>(de, &none).map(|body| body.0)
     }
 }
 
@@ -342,30 +344,36 @@ fn read_document<'de, M: MapAccess<'de>, T: Deserialize<'de>>(
     Ok((deploy, lifted))
 }
 
-pub fn deploy_from_yaml_str(text: &str) -> Result<DeployCfg, busbar_contract::yaml::Error> {
+/// Read a deployment document under `grammar`: the grammar of this read (§3.4).
+pub fn deploy_from_yaml_str(
+    text: &str,
+    grammar: &Grammar,
+) -> Result<DeployCfg, busbar_contract::yaml::Error> {
     let mut deploy =
-        busbar_contract::yaml::with_deserializer(text, |d| deploy_from_deserializer(d))?;
+        busbar_contract::yaml::with_deserializer(text, |d| deploy_from_deserializer(d, grammar))?;
     deploy.authored_routing = super::authored_routing::capture(text, &deploy.pools);
     Ok(deploy)
 }
 
-pub fn deploy_from_deserializer<'de, D: Deserializer<'de>>(de: D) -> Result<DeployCfg, D::Error> {
-    deploy_with_sources(de, &super::secret::sugars())
-}
-
-/// Read native configuration with the source shorthand declared by admitted owners.
-/// An empty declaration set accepts canonical references only.
-pub fn deploy_with_sources<'de, D: Deserializer<'de>>(
+/// THE ONE DOCUMENT READER: the deployment document under `grammar`, which the result carries, so
+/// every later check of it reads the same shorthand. A shorthand no module of `grammar` declares
+/// is refused (an empty grammar accepts canonical references only).
+pub fn deploy_from_deserializer<'de, D: Deserializer<'de>>(
     de: D,
-    sources: &busbar_contract::secret_ref::Sugars,
+    grammar: &Grammar,
 ) -> Result<DeployCfg, D::Error> {
-    busbar_contract::secret_ref::context::deserialize::<SplitDocument, _>(de, sources).map(|d| d.0)
+    let mut deploy =
+        busbar_contract::secret_ref::context::deserialize::<SplitDocument, _>(de, &grammar.sugars)
+            .map(|d| d.0)?;
+    deploy.grammar = super::grammar::GrammarField::bound(grammar.clone());
+    Ok(deploy)
 }
 
 pub fn deploy_from_yaml_value(
     value: busbar_contract::yaml::Value,
+    grammar: &Grammar,
 ) -> Result<DeployCfg, busbar_contract::yaml::Error> {
-    deploy_from_deserializer(busbar_contract::yaml::deserializer(value))
+    deploy_from_deserializer(busbar_contract::yaml::deserializer(value), grammar)
 }
 
 #[cfg(test)]

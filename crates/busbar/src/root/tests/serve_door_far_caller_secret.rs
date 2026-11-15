@@ -32,10 +32,13 @@ async fn far_end_app() -> busbar_kernel::state::App {
         .find(|row| row.1)
         .expect("the assembled product links an ephemeral store")
         .0;
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
-        "store": {"module": module, "settings": {}}
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+            "store": {"module": module, "settings": {}}
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the actual deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual deployment resolves");

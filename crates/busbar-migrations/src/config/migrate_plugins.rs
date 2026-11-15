@@ -141,10 +141,17 @@ impl std::fmt::Display for Shown {
 }
 
 pub trait MigrateHost {
-    /// Source grammar declared by admitted owners; no source is inferred when absent.
+    /// The migration's grammar: the source shorthand the modules the migrated document's own
+    /// `plugins:` block admits declare ([`Self::bind_grammar`]), never the live secret axis. No
+    /// source is inferred when absent.
     fn source_declarations(&self) -> Result<busbar_contract::secret_ref::Sugars, String> {
         Ok(Default::default())
     }
+
+    /// The migrated document's `plugins:` block after the structural steps (SECRET-SHORTHAND-BOOT
+    /// §3.13): what [`Self::source_declarations`] is computed from for the rest of this migration.
+    /// A host with fixed declarations ignores it.
+    fn bind_grammar(&self, _plugins: Option<&busbar_contract::yaml::Value>) {}
 
     /// Accept opaque grammar/settings evidence for in-memory migration custody only.
     fn admit_config_profile(&self, _: &super::HistoricalConfigProof) -> Result<(), String> {

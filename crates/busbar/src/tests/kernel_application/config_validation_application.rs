@@ -35,6 +35,7 @@ pub(crate) fn make_root_cfg(
         plane_defs: Default::default(),
         plane_pools: Default::default(),
         plane_sections: Default::default(),
+        grammar: busbar_kernel::config::GrammarField::bound(busbar_kernel::config::Grammar::empty()),
         listen: busbar_kernel::config::DEFAULT_LISTEN_ADDR.into(),
         listen_explicit: false,
 
@@ -3003,10 +3004,13 @@ fn present_tools_section() -> Box<dyn busbar_kernel::config::plane_sections::Pla
     let written: busbar_contract::yaml::Value =
         busbar_contract::yaml::from_str("a-tool-server:\n  url: \"https://tools.example.com/rpc\"\n  pin: { mechanism: unpinned }\n")
             .expect("yaml");
-    let deploy = config::deploy_from_deserializer(serde_json::json!({
-        "providers": {}, "models": {}, "auth": { "chain": [], "admin_auth": [] },
-        (key): written,
-    }))
+    let deploy = config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {}, "models": {}, "auth": { "chain": [], "admin_auth": [] },
+            (key): written,
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("a one-registration tools section must parse through the product grammar");
     let mut cfg = config::resolve(&deploy, &HashMap::new()).expect("the tools deployment resolves");
     let section = cfg.plane_defs.remove(key).expect("the section is carried");
@@ -4440,6 +4444,7 @@ fn boot_admission_check(cfg: &RootCfg) -> Result<(), Refusal> {
             root: &no_root_rules,
             fetch: None,
             resolve_builtins: false,
+            secret_axis: busbar_kernel::config::secret::live_axis(),
         },
     )
     .map(|_| ())

@@ -312,8 +312,11 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": {"file": operator_token},
     });
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the product deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let mut plugin_config = plugins::trusted_config_with_key(&directory, &plugins::key(0x33));

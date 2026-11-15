@@ -192,7 +192,7 @@ async fn keys_chain_preserves_carriers_disable_revoke_and_metering_controls() {
         "per_request_fee": 1,
         "store": { "module": module, "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
+    }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
@@ -349,7 +349,7 @@ async fn open_chain_with_operator_is_anonymous_keyless_and_unmetered() {
         "per_request_fee": 1,
         "store": { "module": module, "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
+    }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
@@ -451,16 +451,19 @@ async fn open_chain_without_operator_still_inserts_default_context() {
     let signing = directory.join("signing-key");
     std::fs::write(&signing, hex::encode([7u8; 32])).expect("normal configured signing key");
 
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {},
-        "models": {},
-        "identity-providers": serde_json::json!({}),
-        "auth": { "chain": [], "admin_auth": [], "signing_key": {"file": signing},
-            "role_bindings": {} },
-        "per_request_fee": 1,
-        "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {},
+            "models": {},
+            "identity-providers": serde_json::json!({}),
+            "auth": { "chain": [], "admin_auth": [], "signing_key": {"file": signing},
+                "role_bindings": {} },
+            "per_request_fee": 1,
+            "store": { "module": module, "settings": settings },
+            "advanced": { "allow_destinations": ["127.0.0.1"] },
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
@@ -582,7 +585,7 @@ async fn ordinary_oidc_chain_keeps_grants_carriers_and_native_refusals() {
         "per_request_fee": 1,
         "store": { "module": module, "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
+    }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
@@ -712,7 +715,7 @@ async fn ordinary_oidc_chain_without_operator_ignores_persisted_keys() {
         "per_request_fee": 1,
         "store": { "module": module, "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
+    }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");

@@ -39,13 +39,16 @@ async fn actual_inbound_refusals_preserve_builder_bytes_unit_retirement_and_real
     let signing = directory.join("signing-key");
     std::fs::write(&signing, hex::encode([9u8; 32]))
         .expect("write the actual configured signing key");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {},
-        "models": {},
-        "auth": { "chain": ["keys"], "admin_auth": [], "signing_key": { "file": signing } },
-        "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {},
+            "models": {},
+            "auth": { "chain": ["keys"], "admin_auth": [], "signing_key": { "file": signing } },
+            "store": { "module": module, "settings": settings },
+            "advanced": { "allow_destinations": ["127.0.0.1"] },
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");

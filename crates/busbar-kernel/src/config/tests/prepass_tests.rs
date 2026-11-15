@@ -18,7 +18,12 @@ fn native_document_uses_admitted_source_declarations() {
             "credentials:\n  at_rest:\n    key: {{ {word}: descriptor }}\nidentity-providers:\n  external:\n    module: arbitrary-auth\n    token: {{ {word}: another }}\n"
         );
         let read = |sources: &Sugars| {
-            busbar_contract::yaml::with_deserializer(&raw, |d| deploy_with_sources(d, sources))
+            busbar_contract::yaml::with_deserializer(&raw, |d| {
+                deploy_from_deserializer(
+                    d,
+                    &crate::config::Grammar::new(sources.clone(), Default::default(), Vec::new()),
+                )
+            })
         };
         let parsed = read(&sources).unwrap();
         let key = parsed.credentials.at_rest.unwrap().key;

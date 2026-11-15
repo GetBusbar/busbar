@@ -157,9 +157,10 @@ async fn app_generation(
         let credential = directory.join("unused-provider-credential");
         std::fs::write(&credential, "inbound-context-provider-credential")
             .expect("the actual context provider's credential exists");
-        providers = busbar_kernel::config::providers::catalog_from_str(&format!(
-            "wire:\n  protocol: {dialect}\n  base_url: http://127.0.0.1:9\n"
-        ))
+        providers = busbar_kernel::config::providers::catalog_from_str(
+            &format!("wire:\n  protocol: {dialect}\n  base_url: http://127.0.0.1:9\n"),
+            &crate::root::boot::axis_test_grammar(),
+        )
         .expect("the actual context provider has its catalogue declaration");
         document["providers"] = serde_json::json!({"wire": {
             "protocol": dialect, "base_url": "http://127.0.0.1:9", "api_key": {"file": credential}
@@ -169,8 +170,11 @@ async fn app_generation(
         document["rate_card"] =
             serde_json::to_value(captured_rates()).expect("the actual complete card serializes");
     }
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the product deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &providers)
         .expect("the product deployment resolves");
     assert!(

@@ -217,11 +217,14 @@ async fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
                 attempt_timeout_ms: 10000\n  plain:\n    provider: far\npools:\n  fast:\n    \
                 members:\n      - model: patient\n        attempt_timeout_ms: 50\n      - model: \
                 plain\n  slow:\n    members:\n      - model: patient\n";
-    let deploy = busbar_kernel::config::deploy_from_yaml_str(yaml).expect("parses");
+    let deploy =
+        busbar_kernel::config::deploy_from_yaml_str(yaml, &crate::root::boot::axis_test_grammar())
+            .expect("parses");
     let cfg = busbar_kernel::config::resolve(&deploy, &defs).expect("resolves");
     crate::dist_root_install::install();
     let empty = busbar_kernel::config::deploy_from_yaml_str(
         "store: {module: memory}\nauth: {chain: [], admin_auth: []}\nproviders: {}\nmodels: {}\n",
+        &crate::root::boot::axis_test_grammar(),
     )
     .expect("the serving deployment parses");
     let empty = busbar_kernel::config::resolve(&empty, &Default::default())

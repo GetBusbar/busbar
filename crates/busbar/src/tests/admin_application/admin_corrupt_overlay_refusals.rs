@@ -47,8 +47,11 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
     let providers_path = dir.join("providers.json");
     std::fs::write(&config_path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
     std::fs::write(&providers_path, b"{}").unwrap();
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -201,8 +204,11 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
     let providers_path = dir.join("providers.json");
     std::fs::write(&config_path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
     std::fs::write(&providers_path, b"{}").unwrap();
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())

@@ -47,8 +47,11 @@ async fn test_admin_v1_config_settings_boot_scoped_limits_flagged_reload_to_appl
     .expect("write the actual immutable base configuration");
     let providers_path = directory.join("providers.json");
     std::fs::write(&providers_path, b"{}").expect("write the actual empty provider definitions");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -162,8 +165,11 @@ async fn test_admin_v1_config_settings_max_inbound_concurrent_flagged_reload_to_
     .expect("write the actual immutable base configuration");
     let providers_path = directory.join("providers.json");
     std::fs::write(&providers_path, b"{}").expect("write the actual empty provider definitions");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -275,8 +281,11 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
     .expect("write the actual immutable base configuration");
     let providers_path = directory.join("providers.json");
     std::fs::write(&providers_path, b"{}").expect("write the actual empty provider definitions");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -404,8 +413,11 @@ async fn test_admin_v1_config_settings_stale_if_match_conflicts() {
     .expect("write the actual immutable base configuration");
     let providers_path = directory.join("providers.json");
     std::fs::write(&providers_path, b"{}").expect("write the actual empty provider definitions");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -514,8 +526,11 @@ async fn test_admin_v1_config_settings_unknown_field_400() {
     .expect("write the actual immutable base configuration");
     let providers_path = directory.join("providers.json");
     std::fs::write(&providers_path, b"{}").expect("write the actual empty provider definitions");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())

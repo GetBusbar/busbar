@@ -48,15 +48,18 @@ parent:
         settings.is_object(),
         "the actual store settings are an object"
     );
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "listen": "127.0.0.1:0",
-        "providers": {"p": {"api_key": "none"}},
-        "models": {"m": {"provider": "p"}},
-        "pools": {"x@day": {"members": ["m"]}},
-        "auth": {"chain": [], "admin_auth": []},
-        "store": {"module": module, "settings": settings},
-        "advanced": {"allow_destinations": ["127.0.0.1"]},
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "listen": "127.0.0.1:0",
+            "providers": {"p": {"api_key": "none"}},
+            "models": {"m": {"provider": "p"}},
+            "pools": {"x@day": {"members": ["m"]}},
+            "auth": {"chain": [], "admin_auth": []},
+            "store": {"module": module, "settings": settings},
+            "advanced": {"allow_destinations": ["127.0.0.1"]},
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the group collision deployment parses");
     let definitions = std::collections::HashMap::from([(
         "p".to_string(),

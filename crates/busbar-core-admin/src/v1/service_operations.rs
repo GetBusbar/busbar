@@ -1831,6 +1831,7 @@ fn validate_config_blocking(
             root: &root_rules,
             fetch: None,
             resolve_builtins: false,
+            secret_axis: busbar_kernel::config::secret::live_axis(),
         },
     );
     let ok = checked.is_ok();

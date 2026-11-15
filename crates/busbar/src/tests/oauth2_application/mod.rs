@@ -234,8 +234,11 @@ async fn build_application(
 
     let mut fresh_store = None;
     let authorization_server = if resource_auth {
-        let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
-            .expect("the authorization-server bootstrap deployment parses");
+        let deploy = busbar_kernel::config::deploy_from_deserializer(
+            document.clone(),
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("the authorization-server bootstrap deployment parses");
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the authorization-server bootstrap deployment resolves");
         // Retain the exclusive creation provenance across construction stages. A prior
@@ -322,8 +325,11 @@ async fn build_application(
             "oauth-resource": { "read": {} },
         });
     }
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the product deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     // Only construction has occurred: no JWKS or application listener serves yet.

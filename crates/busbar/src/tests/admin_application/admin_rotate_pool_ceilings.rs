@@ -60,8 +60,11 @@ async fn proof_role_pool_ceiling_refuses_an_over_ceiling_rotate() {
     });
     document["auth"]["policy"] =
         serde_json::json!({"mint_ceilings":{"app-admin":{"allowed_pools":["pool-ok"]}}});
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -216,8 +219,11 @@ async fn proof_role_pool_ceiling_rotates_an_in_ceiling_key() {
     });
     document["auth"]["policy"] =
         serde_json::json!({"mint_ceilings":{"app-admin":{"allowed_pools":["pool-ok"]}}});
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -363,8 +369,11 @@ async fn a_past_ceiling_rotate_releases_its_idempotency_claim() {
     });
     document["auth"]["policy"] =
         serde_json::json!({"mint_ceilings":{"app-admin":{"allowed_pools":["pool-ok"]}}});
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())

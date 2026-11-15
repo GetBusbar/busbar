@@ -60,8 +60,11 @@ async fn test_admin_v1_topology_reads_pools_models_providers() {
     document["models"] =
         serde_json::json!({"model-a": {"provider": "prov-x"}, "model-b": {"provider": "prov-y"}});
     document["pools"] = serde_json::json!({"mypool": {"members": [{"model": "model-a", "weight": 3}, {"model": "model-b", "weight": 1}]}});
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &definitions)
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -193,8 +196,11 @@ async fn test_admin_v1_pool_detail_live_status() {
     document["providers"]["p"] = serde_json::json!({ "api_key": { "file": upstream_key } });
     document["models"] = serde_json::json!({"m1": {"provider": "p"}});
     document["pools"] = serde_json::json!({"mypool": {"members": [{"model": "m1", "weight": 5}]}});
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &definitions)
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -357,8 +363,11 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
     document["providers"]["p"] = serde_json::json!({ "api_key": { "file": upstream_key } });
     document["models"] = serde_json::json!({"m1": {"provider": "p"}});
     document["pools"] = serde_json::json!({"fast": {"members": [{"model": "m1", "weight": 1}]}, "cheap": {"members": [{"model": "m1", "weight": 1}]}});
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &definitions)
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())

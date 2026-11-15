@@ -75,8 +75,11 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
         &directory,
         &[(LANE, PROVIDER)],
     );
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
-        .expect("the product deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document.clone(),
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &provider_defs)
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
@@ -118,8 +121,11 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
         &directory,
         &[(LANE, PROVIDER)],
     );
-    let current = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the current deployment parses");
+    let current = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the current deployment parses");
     let current = busbar_kernel::config::resolve(&current, &provider_defs)
         .expect("the current deployment resolves");
     let (next, rotate, limits) = crate::root::real_store::build_app(

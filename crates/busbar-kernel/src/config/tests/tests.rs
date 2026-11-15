@@ -79,6 +79,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         listen_explicit: false,
         authored_routing: None,
         document_source_fingerprints: None,
+        grammar: crate::config::GrammarField::bound(crate::config::Grammar::empty()),
 
         endpoint: Default::default(),
         oauth_as: None,
@@ -1188,7 +1189,7 @@ fn an_inline_literal_refusal_names_its_config_position() {
         let yaml = format!(
             "store: {{module: memory}}\nmodels: {{}}\nproviders:\n  myprov:\n    api_key: {literal}\n"
         );
-        let err = deploy_from_yaml_str(&yaml)
+        let err = deploy_from_yaml_str(&yaml, &crate::config::Grammar::empty())
             .expect_err("an inline literal secret is refused")
             .to_string();
         let value = literal.trim_matches('"');
@@ -1521,8 +1522,8 @@ fn datagram_line_memory_limit_is_opt_in_and_resolves_to_root() {
         ("datagram_line_memory_bytes: 12345", Some(12345)),
     ] {
         let document = format!("providers: {{}}\nmodels: {{}}\nlimits:\n  {yaml}\n");
-        let deploy =
-            deploy_from_yaml_str(&document).expect("boot parser accepts the optional limit");
+        let deploy = deploy_from_yaml_str(&document, &crate::config::Grammar::empty())
+            .expect("boot parser accepts the optional limit");
         assert_eq!(deploy.limits.datagram_line_memory_bytes, expected);
         let cfg = resolve(&deploy, &HashMap::new()).expect("resolve the real config");
         assert_eq!(cfg.limits.datagram_line_memory_bytes, expected);
@@ -2653,7 +2654,7 @@ fn test_auth_policy_rejects_bad_input_at_parse() {
     };
 
     let bad_mode = doc("    binding_modes: [forever]\n");
-    let err = crate::config::deploy_from_yaml_str(&bad_mode)
+    let err = crate::config::deploy_from_yaml_str(&bad_mode, &crate::config::Grammar::empty())
         .expect_err("an unknown binding mode must be rejected at parse");
     assert!(
         err.to_string().contains("forever") || err.to_string().contains("unknown variant"),
@@ -2661,12 +2662,12 @@ fn test_auth_policy_rejects_bad_input_at_parse() {
     );
 
     let typo = doc("    slef_mint: true\n");
-    let err = crate::config::deploy_from_yaml_str(&typo)
+    let err = crate::config::deploy_from_yaml_str(&typo, &crate::config::Grammar::empty())
         .expect_err("a typo'd policy key must be rejected (deny_unknown_fields)");
     assert!(err.to_string().contains("unknown field"), "got: {err}");
 
     let ceiling_typo = doc("    mint_ceilings:\n      app-admin: { max_tll: \"7d\" }\n");
-    let err = crate::config::deploy_from_yaml_str(&ceiling_typo)
+    let err = crate::config::deploy_from_yaml_str(&ceiling_typo, &crate::config::Grammar::empty())
         .expect_err("a typo'd ceiling key must be rejected (deny_unknown_fields)");
     assert!(err.to_string().contains("unknown field"), "got: {err}");
 }
@@ -2674,8 +2675,11 @@ fn test_auth_policy_rejects_bad_input_at_parse() {
 #[test]
 fn auth_refusals_describe_the_current_schema_and_source_location() {
     let refusal = |auth: &str| {
-        crate::config::deploy_from_yaml_str(&format!("providers: {{}}\nmodels: {{}}\n{auth}"))
-            .expect_err("refused")
+        crate::config::deploy_from_yaml_str(
+            &format!("providers: {{}}\nmodels: {{}}\n{auth}"),
+            &crate::config::Grammar::empty(),
+        )
+        .expect_err("refused")
     };
     for (auth, line) in [
         ("auth:\n  bogus_key: 1\n", 4),
@@ -2706,15 +2710,21 @@ fn auth_refusals_describe_the_current_schema_and_source_location() {
     assert!(refusal("auth:\n  policy: {}\n  policy: {}\n")
         .to_string()
         .contains("duplicate field `policy`"));
-    let empty = crate::config::deploy_from_yaml_str("providers: {}\nmodels: {}\nauth:\n")
-        .expect("an empty auth block parses");
+    let empty = crate::config::deploy_from_yaml_str(
+        "providers: {}\nmodels: {}\nauth:\n",
+        &crate::config::Grammar::empty(),
+    )
+    .expect("an empty auth block parses");
     assert!(empty.auth.is_none());
 }
 
 #[test]
 fn core_sections_parse_directly_and_are_named_in_unknown_field_errors() {
     let parse = |tail: &str| {
-        crate::config::deploy_from_yaml_str(&format!("providers: {{}}\nmodels: {{}}\n{tail}"))
+        crate::config::deploy_from_yaml_str(
+            &format!("providers: {{}}\nmodels: {{}}\n{tail}"),
+            &crate::config::Grammar::empty(),
+        )
     };
     let error = parse("bogus_key: true\n").expect_err("unknown field");
     // `oauth_as` and `credentials` are named among the document's fields, in 1.5.5's spelling
@@ -2753,7 +2763,8 @@ fn a_flat_rate_card_resolves_to_itself() {
         "providers: {}\nmodels: {}\nrate_card: {}\n",
         "providers: {}\nmodels: {}\nrate_card:\n  m: { input_utok: 3, output_utok: 15 }\n",
     ] {
-        let deploy = crate::config::deploy_from_yaml_str(text).expect("parses");
+        let deploy = crate::config::deploy_from_yaml_str(text, &crate::config::Grammar::empty())
+            .expect("parses");
         assert!(deploy.plane_rate_cards.is_empty());
         let root = resolve(&deploy, &HashMap::new()).expect("resolves");
         assert_eq!(root.rate_card, deploy.rate_card, "{text}");
@@ -2864,6 +2875,7 @@ fn a_catalog_entrys_stray_key_is_refused_at_resolve() {
     let defs = crate::config::providers::catalog_from_str(
         "p:\n  protocol: openai\n  base_url: https://api.example.com\n  bogus_key: true\n\
          q:\n  protocol: openai\n  base_url: https://api.example.com\n  stray: 1\n",
+        &crate::config::Grammar::empty(),
     )
     .expect("the catalog reads; its options are judged at resolve");
     assert_eq!(defs["p"].options.keys().collect::<Vec<_>>(), ["bogus_key"]);
@@ -2884,9 +2896,12 @@ fn a_catalog_entrys_stray_key_is_refused_at_resolve() {
         errors.contains(&no_plane("q", "stray")),
         "an entry config.yaml does not reference is judged too: {errors:?}"
     );
-    let e = crate::config::providers::catalog_from_str("p:\n  protocol: [1]\n  base_url: x\n")
-        .expect_err("a typed key of the wrong type")
-        .to_string();
+    let e = crate::config::providers::catalog_from_str(
+        "p:\n  protocol: [1]\n  base_url: x\n",
+        &crate::config::Grammar::empty(),
+    )
+    .expect_err("a typed key of the wrong type")
+    .to_string();
     assert_eq!(e, "p.protocol: expected string scalar at line 2 column 13");
 }
 
@@ -2895,6 +2910,7 @@ fn an_unowned_catalog_is_deferred_only_while_no_provider_is_deployed() {
     let defs = crate::config::providers::catalog_from_str(
         "p:\n  protocol: catalog-deletion-qualification\n  base_url: https://p.example.invalid\n\
          q:\n  protocol: catalog-deletion-qualification\n  base_url: https://q.example.invalid\n  request_capability: {modes: [future]}\n",
+        &crate::config::Grammar::empty(),
     )
     .expect("core catalog fields are valid");
     let mut deploy = base_deploy();
@@ -2921,6 +2937,7 @@ fn an_unowned_catalog_is_deferred_only_while_no_provider_is_deployed() {
 fn an_unused_catalog_still_requires_valid_core_fields() {
     let error = crate::config::providers::catalog_from_str(
         "p:\n  protocol: catalog-deletion-qualification\n  base_url: [not, a, string]\n",
+        &crate::config::Grammar::empty(),
     )
     .expect_err("the core field is typed even for an unused catalog")
     .to_string();

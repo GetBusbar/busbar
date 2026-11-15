@@ -238,6 +238,10 @@ pub struct RootInstall {
     /// ([`crate::appbuild::ConfigProjection`]), taken by every build. `None` = a generation keeps
     /// no projection.
     pub config_projection: Option<crate::appbuild::ConfigProjection>,
+    /// The root's phase 1 ([`config::grammar::grammar_for`]): the grammar the modules one read's
+    /// `plugins:` block admits declare, judged by the registry build's own scan, pure. `None` = a
+    /// read that loads no plugin admits nothing and one that would scan `plugins.dir` is refused.
+    pub grammar: Option<config::grammar::GrammarFn>,
 }
 
 /// Puts the live dropped-in secret set back as it was when it was taken, if the live set differs

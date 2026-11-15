@@ -64,8 +64,11 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
     )
     .unwrap();
     std::fs::write(&config_path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &definitions)
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -250,8 +253,11 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
     disk["pools"] =
         serde_json::json!({"reload-pool":{"members":[{"model":"m0"},{"model":"m-new"}]}});
     std::fs::write(&config_path, serde_json::to_vec_pretty(&disk).unwrap()).unwrap();
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &definitions)
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())

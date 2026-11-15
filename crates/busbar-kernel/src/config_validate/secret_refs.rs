@@ -7,7 +7,7 @@ use busbar_contract::plugin_rows::PluginRows;
 /// Enumerate EVERY secret reference in the resolved config as `(what, &SecretRef)`, where `what` is
 /// the human-readable config path used in error messages. The SINGLE source of truth for which
 /// references are secrets: the structural check in `validate_cost_model` and the registry-backed
-/// module-existence check in `registry_refusal` (deferred until the plugin registry exists)
+/// module-existence check in `registry_refusal_with` (deferred until the plugin registry exists)
 /// both walk this list, so a new secret-bearing field is covered by both the moment it is added here.
 ///
 /// Every secret-bearing config field must be visited by credential validation. A missing reference must fail validation before runtime, including `identity-providers.<name>.browser_login.client_secret`, which the core presents during confidential-client code-to-token exchange. Exhaustive typed traversal prevents a field from being silently skipped by a hand-maintained path list.
@@ -101,10 +101,6 @@ fn reference_module_row(
     }
 }
 
-pub(crate) fn registry_refusal(registry: &dyn PluginRows, cfg: &RootCfg) -> Result<(), String> {
-    registry_refusal_with(registry, cfg, crate::config::secret::axis())
-}
-
 pub(crate) fn registry_refusal_with(
     registry: &dyn PluginRows,
     cfg: &RootCfg,
@@ -174,6 +170,7 @@ fn walk_secret_refs_with_boot_token<'a>(
 ) -> Vec<(String, &'a crate::config::SecretRef)> {
     let RootCfg {
         login_limits: _,
+        grammar: _,
         tls,
         admin_tls,
         auth,

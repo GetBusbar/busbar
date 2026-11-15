@@ -190,16 +190,22 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
         "spare:\n  protocol: openai\n  base_url: https://base.example.com\n"
     };
     std::fs::write(&providers_path, catalog_base).unwrap();
-    let mut deploy =
-        busbar_kernel::config::deploy_from_yaml_str(std::str::from_utf8(&base_bytes).unwrap())
-            .expect("the untouched operator file must independently pass the actual boot reader");
+    let mut deploy = busbar_kernel::config::deploy_from_yaml_str(
+        std::str::from_utf8(&base_bytes).unwrap(),
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the untouched operator file must independently pass the actual boot reader");
     deploy.document_source_fingerprints = Some(
         busbar_kernel::config::document_patch::SourceFingerprints::from_sources(
             std::str::from_utf8(&base_bytes).unwrap(),
             catalog_base,
         ),
     );
-    let defs = busbar_kernel::config::providers::catalog_from_str(catalog_base).unwrap();
+    let defs = busbar_kernel::config::providers::catalog_from_str(
+        catalog_base,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .unwrap();
     let config = busbar_kernel::config::resolve(&deploy, &defs).unwrap();
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
@@ -906,16 +912,22 @@ pub(super) async fn ephemeral_admin(
     std::fs::write(&config_path, &base_bytes).unwrap();
     let catalog_base = "spare:\n  protocol: openai\n  base_url: https://base.example.com\n";
     std::fs::write(&providers_path, catalog_base).unwrap();
-    let mut deploy =
-        busbar_kernel::config::deploy_from_yaml_str(std::str::from_utf8(&base_bytes).unwrap())
-            .expect("the operator file passes the actual boot reader");
+    let mut deploy = busbar_kernel::config::deploy_from_yaml_str(
+        std::str::from_utf8(&base_bytes).unwrap(),
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the operator file passes the actual boot reader");
     deploy.document_source_fingerprints = Some(
         busbar_kernel::config::document_patch::SourceFingerprints::from_sources(
             std::str::from_utf8(&base_bytes).unwrap(),
             catalog_base,
         ),
     );
-    let defs = busbar_kernel::config::providers::catalog_from_str(catalog_base).unwrap();
+    let defs = busbar_kernel::config::providers::catalog_from_str(
+        catalog_base,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .unwrap();
     let config = busbar_kernel::config::resolve(&deploy, &defs).unwrap();
     let boot_rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;

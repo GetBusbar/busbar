@@ -37,14 +37,17 @@ async fn the_actual_builder_wires_the_snapshot_ownership_fields() {
         settings.is_object(),
         "the actual store settings are an object"
     );
-    let deploy = kernel::config::deploy_from_deserializer(serde_json::json!({
-        "public_url": "https://assembly.example",
-        "providers": {},
-        "models": {},
-        "auth": { "chain": [], "admin_auth": [] },
-        "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
+    let deploy = kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "public_url": "https://assembly.example",
+            "providers": {},
+            "models": {},
+            "auth": { "chain": [], "admin_auth": [] },
+            "store": { "module": module, "settings": settings },
+            "advanced": { "allow_destinations": ["127.0.0.1"] },
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the product deployment parses");
     let config = kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");

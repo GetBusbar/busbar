@@ -63,6 +63,9 @@ pub struct App {
     pub configured_view: Option<Arc<crate::config::readback::ConfiguredView>>,
     /// Private exact consumed-source binding; contains no raw operator data.
     pub document_source_fingerprints: Option<crate::config::document_patch::SourceFingerprints>,
+    /// The grammar this generation's configuration was read under: what an admin edit of it reads
+    /// the running shorthand by. `Unbound` until a build binds it.
+    pub grammar: crate::config::GrammarField,
     /// Configured changes whose physical activation needs a restart. Cleared only at boot.
     pub config_pending_restart: Vec<String>,
     /// Generation-local observations of synchronous ordinary plane refresh callbacks.
@@ -717,6 +720,7 @@ impl App {
             config_projection,
             configured_view: None,
             document_source_fingerprints: None,
+            grammar: crate::config::GrammarField::default(),
             providers_override: providers_path.clone(),
             config_pending_restart: Vec::new(),
             plane_refresh: activation::PlaneRefreshReport::default(),

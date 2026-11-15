@@ -265,6 +265,7 @@ fn migrate_document(
 
     migrate_store_module(&mut root, &mut changes, &mut todos);
     super::former_names::migrate(&mut root, &mut changes, &mut todos);
+    host.bind_grammar(root.get_key("plugins"));
 
     if source_specific {
         super::migrate_plugins::migrate(

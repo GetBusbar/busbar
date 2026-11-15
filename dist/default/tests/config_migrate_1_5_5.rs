@@ -193,8 +193,8 @@ fn a_1_5_5_provider_with_no_bindings_keeps_its_users_after_migration() {
     )
     .expect("provider defs parse");
     let resolved = |text: &str| {
-        let deploy: DeployCfg =
-            deploy_from_yaml_str(text).unwrap_or_else(|e| panic!("the config parses: {e}\n{text}"));
+        let deploy: DeployCfg = deploy_from_yaml_str(text, &live_grammar())
+            .unwrap_or_else(|e| panic!("the config parses: {e}\n{text}"));
         let cfg = resolve(&deploy, &defs).unwrap_or_else(|e| panic!("resolves: {e:?}\n{text}"));
         busbar_kernel::config_validate::validate(&cfg)
             .unwrap_or_else(|e| panic!("validates: {e:?}\n{text}"));
@@ -510,4 +510,16 @@ fn migrated_ttl_write_units_price_at_the_write_rate() {
     );
     drop(gateway);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The grammar these fixtures read under: the words the installed secret axis declares (this
+/// distribution's linked secret modules), passed explicitly.
+fn live_grammar() -> busbar_kernel::config::Grammar {
+    busbar_kernel::config::Grammar::new(
+        busbar_kernel::config::secret::live_axis()
+            .map(busbar_contract::secret::SecretAxis::sugars)
+            .unwrap_or_default(),
+        Default::default(),
+        Vec::new(),
+    )
 }

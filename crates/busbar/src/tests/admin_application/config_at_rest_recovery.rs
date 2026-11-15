@@ -105,8 +105,11 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
             "store": { "module": module, "settings": settings },
             "advanced": { "allow_destinations": ["127.0.0.1"] },
         });
-        let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
-            .expect("the product deployment parses");
+        let deploy = busbar_kernel::config::deploy_from_deserializer(
+            document.clone(),
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("the product deployment parses");
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the product deployment resolves");
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);

@@ -27,8 +27,23 @@ pub(super) fn root_digest(cfg: &super::RootCfg, plugins: &super::PluginsCfg) -> 
             "allow_unsigned": plugins.trust.allow_unsigned,
             "allow_third_party": plugins.trust.allow_third_party,
             "publishers": plugins.publisher_keys(), "min_versions": plugins.min_versions,
-            "first_party_floors": plugins.first_party_floors},
+            "first_party_floors": plugins.first_party_floors,
+            "fetch": fetch_digest(&plugins.fetch)},
     }))
+}
+
+/// `plugins.fetch` as written: what a reload downloads into `plugins.dir` before it scans, so a
+/// change is security-relevant (SECRET-SHORTHAND-BOOT F10). An `{env: NAME}` entry contributes its
+/// variable's name, never its value.
+fn fetch_digest(fetch: &[super::PluginFetch]) -> Vec<serde_json::Value> {
+    fetch
+        .iter()
+        .map(|entry| match entry {
+            super::PluginFetch::Github(g) => json!({"github": g.github, "sha256": g.sha256}),
+            super::PluginFetch::Url(u) => json!({"url": u.url, "sha256": u.sha256}),
+            super::PluginFetch::Env(e) => json!({"env": e.env}),
+        })
+        .collect()
 }
 
 fn security_changed(current: &App, next: &App) -> bool {

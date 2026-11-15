@@ -230,7 +230,11 @@ fn fingerprint_is_stable_after_own_group_overlay_but_binds_other_settings() {
 
 #[test]
 fn runtime_groups_allow_only_the_plans_exact_personal_group_additions() {
-    let deploy = config::deploy_from_yaml_str("store: { module: memory }\n").unwrap();
+    let deploy = config::deploy_from_yaml_str(
+        "store: { module: memory }\n",
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .unwrap();
     let mut cfg = config::resolve(&deploy, &Default::default()).unwrap();
     let prefix = busbar_kernel::governance::SELF_KEY_GROUP_PREFIX;
     let old = format!("{prefix}old");
@@ -314,7 +318,11 @@ fn source_binding_rejects_changed_consumed_text_and_input_is_bounded() {
 
 #[test]
 fn cold_role_inventory_cannot_be_omitted_or_changed_and_own_overlay_remains_bound() {
-    let deploy = config::deploy_from_yaml_str("store: { module: memory }\n").unwrap();
+    let deploy = config::deploy_from_yaml_str(
+        "store: { module: memory }\n",
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .unwrap();
     let mut cfg = config::resolve(&deploy, &Default::default()).unwrap();
     let mut plan: transition::Plan = serde_json::from_value(serde_json::json!({
         "specification": {

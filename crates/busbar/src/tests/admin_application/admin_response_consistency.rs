@@ -53,8 +53,11 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
     });
     document["models"] = serde_json::json!({ "test-model": { "provider": "test-provider" } });
     document["pools"] = serde_json::json!({ "pa": { "members": [{ "model": "test-model" }] } });
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &definitions)
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -351,6 +354,7 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
         let pending = busbar_kernel::config::overlay::unparseable_named_map_entries_async(
             handle.load().overlay_path.as_deref(),
             section,
+            &busbar_kernel::config::grammar::admitted(),
         )
         .await
         .unwrap();
