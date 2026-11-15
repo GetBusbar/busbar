@@ -229,3 +229,40 @@ fn error_pages_a_list_message_links_its_head_line() {
     );
     assert_eq!(rest, format!("  - {item}"));
 }
+
+#[test]
+fn zz_temp_dump_pages() {
+    let pages = render_all(REGISTRY, &all_texts());
+    let dir = docs_errors().join(error_docs_version());
+    let mut out = String::new();
+    let mut fresh = BTreeSet::new();
+    for (name, body) in &pages {
+        fresh.insert(name.clone());
+        let on_disk = std::fs::read_to_string(dir.join(name)).ok();
+        if on_disk.as_deref() != Some(body.as_str()) {
+            out.push_str(&format!("@@PAGE\t{name}\t{}\n", body.ends_with('\n')));
+            for l in body.lines() {
+                out.push_str(&format!("@@L\t{name}\t{l}\n"));
+            }
+            out.push_str(&format!("@@END\t{name}\n"));
+        }
+    }
+    for e in std::fs::read_dir(&dir).unwrap() {
+        let n = e.unwrap().file_name().to_string_lossy().into_owned();
+        if !fresh.contains(&n) {
+            out.push_str(&format!("@@DEL\t{n}\n"));
+        }
+    }
+    let text = std::fs::read_to_string(docs_errors().join("LEDGER.tsv")).unwrap_or_default();
+    for d in REGISTRY {
+        if !text.contains(&format!("{}\t", d.banner())) {
+            out.push_str(&format!(
+                "@@LEDGER\t{}\t{}\t{}\n",
+                d.banner(),
+                d.slug,
+                d.since
+            ));
+        }
+    }
+    panic!("DUMPBEGIN\n{out}DUMPEND");
+}
