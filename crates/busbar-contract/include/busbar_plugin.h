@@ -174,7 +174,7 @@ extern "C" {
 #define BB_AUTH_IDENTITY_GROUPS_HARD_MAX UINT32_C(0x10000) /* The hard maximum of `needed_groups`: no identity asserts more groups than this. */
 #define BB_AUTH_FIELDS_HARD_MAX UINT32_C(64) /* The hard maximum of `needed_fields`: no style writes more auth fields than this. Also the */
 #define BB_AUTH_EXT_OUTBOUND_SETTINGS_CHECK "auth.outbound-settings-check" /* Pure outbound settings validation support: Statement value `b"\x01"`; on lifecycle */
-#define BB_AUTH_ABI_VERSION UINT32_C(4) /* The auth kind's ABI version: v1.5.5 shipped `2` (`AUTH_ABI_VERSION`); 1.6.0 ships `4`, which */
+#define BB_AUTH_ABI_VERSION UINT32_C(3) /* The auth kind's ABI version: v1.5.5 shipped `2` (`AUTH_ABI_VERSION`), so 1.6.0 ships `3`. */
 #define BB_AUTH_LAYOUT_FINGERPRINT UINT64_C(0x5b57a4ca0d0cd422) /* The auth kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_AUTH_SLOT_VERIFY UINT32_C(9) /* `verify`. */
 #define BB_AUTH_SLOT_BEGIN_LOGIN UINT32_C(10) /* `begin_login`. */

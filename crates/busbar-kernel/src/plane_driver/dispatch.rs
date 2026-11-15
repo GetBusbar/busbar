@@ -79,7 +79,7 @@ pub fn fallback_key() -> &'static str {
 /// key comes out only through [`LaneQualifier::plane_key`]; the lane prefix through
 /// [`LaneQualifier::lane_prefix`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LaneQualifier(pub(crate) String);
+pub struct LaneQualifier(String);
 
 /// Text that cannot be a door's lane qualifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +97,16 @@ impl std::fmt::Display for InvalidLaneQualifier {
 impl std::error::Error for InvalidLaneQualifier {}
 
 impl LaneQualifier {
+    /// The one way to make a qualifier: `""` (the models plane) or plain text with no control
+    /// character (the plane/lane separator `U+001F` is one, so a qualifier can never split a lane
+    /// name) and no surrounding whitespace.
+    pub fn parse(qualifier: &str) -> Result<Self, InvalidLaneQualifier> {
+        if qualifier.chars().any(char::is_control) || qualifier.trim() != qualifier {
+            return Err(InvalidLaneQualifier);
+        }
+        Ok(Self(qualifier.to_string()))
+    }
+
     /// The plane key this qualifier names: the models plane's `""` is the fallback plane.
     #[must_use]
     pub fn plane_key(&self) -> &str {

@@ -81,10 +81,7 @@ fn retire_on_exit(first_start: Arc<FirstStart>) -> Outcome {
     let helper = std::thread::Builder::new()
         .name("busbar-exit-retire".into())
         .spawn(move || {
-            let outcome = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
+            let outcome = match busbar_kernel::rt::current_thread().enable_all().build() {
                 Ok(runtime) => runtime.block_on(async {
                     match tokio::time::timeout(EXIT_RETIRE_BUDGET, first_start.abandon()).await {
                         Ok(Ok(abandoned)) => Outcome::Done(abandoned),

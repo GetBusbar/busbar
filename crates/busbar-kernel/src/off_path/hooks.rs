@@ -1332,15 +1332,3 @@ where
     }
     out
 }
-
-// --- hooks::text_cut ---
-
-/// A hook's `status` metrics, parsed as 1.5.5 does, with every cut reported against hook `name`.
-pub fn parse_hook_status_metrics(
-    name: &str,
-    raw: &[serde_json::Value],
-) -> Vec<busbar_contract::hook_wire::reply::HookMetric> {
-    let (metrics, cuts) = busbar_contract::hook_wire::reply::parse_status_metrics_counted(raw);
-    crate::hooks::text_cut::report_cuts(name, &cuts, crate::hooks::text_cut::cap_of);
-    metrics
-}

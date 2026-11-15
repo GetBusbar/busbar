@@ -89,7 +89,7 @@ Adding a kind's workload means a `specs()` module that builds that kind's frames
 From a core checkout, against any cdylib:
 
 ```sh
-cargo run --release --manifest-path tools/plugin-bench/Cargo.toml -- \
+cargo run --release --manifest-path tools/plugin-bench/Cargo.toml --example busbar-plugin-bench -- \
   --plugin /path/to/target/release/libbusbar_store_memory_plugin.so --kind store
 ```
 
