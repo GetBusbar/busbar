@@ -15,7 +15,13 @@ use std::path::{Path, PathBuf};
 
 /// The features that are test-only everywhere. A `[features]` entry whose key is one of these only
 /// composes test-only features, so defining or forwarding it is not an enabling edge.
-const GUARDED: [&str; 4] = ["test-seal", "test-support", "abi-scan", "kernel-parity"];
+const GUARDED: [&str; 5] = [
+    "test-seal",
+    "test-support",
+    "abi-scan",
+    "kernel-parity",
+    "stage-probe",
+];
 
 /// The facade's manifest, relative to the workspace root.
 const FACADE: &str = "crates/busbar-plugin-test/Cargo.toml";
@@ -175,7 +181,9 @@ fn scanned() -> (PathBuf, Vec<PathBuf>) {
         root.display()
     );
     assert!(
-        !found.iter().any(|m| label_of(m, &root).starts_with("tools/plugin-bench/")),
+        !found
+            .iter()
+            .any(|m| label_of(m, &root).starts_with("tools/plugin-bench/")),
         "the walk entered tools/plugin-bench, a separate workspace: it would false-red on its \
          deliberate `test-support`"
     );
@@ -321,9 +329,13 @@ fn the_dev_edge_scan_refuses_every_non_dev_edge() {
 /// A manifest that declares its own `[workspace]` is a separate build, so the walk leaves it out.
 #[test]
 fn a_separate_workspace_is_not_walked() {
-    assert!(declares_workspace("[package]\nname = \"x\"\n\n[workspace]\n"));
+    assert!(declares_workspace(
+        "[package]\nname = \"x\"\n\n[workspace]\n"
+    ));
     assert!(declares_workspace("[workspace.dependencies]\n"));
-    assert!(!declares_workspace("[package]\nname = \"x\"\n[dependencies]\n"));
+    assert!(!declares_workspace(
+        "[package]\nname = \"x\"\n[dependencies]\n"
+    ));
 }
 
 /// THE `stage-probe` COUNTERS MAY NEVER REACH A RELEASE BUILD EITHER (SINGLE-PATH §8): the same
