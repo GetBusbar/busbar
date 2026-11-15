@@ -54,7 +54,9 @@ fn every_pinned_plugin_carries_the_former_names_plugins_yaml_declares() {
     let mut wrong = Vec::new();
     for (repo, got) in &pinned {
         match registered.get(repo) {
-            None => wrong.push(format!("{repo}: pinned, but plugins.yaml has no entry for it")),
+            None => wrong.push(format!(
+                "{repo}: pinned, but plugins.yaml has no entry for it"
+            )),
             Some(want) if want != got => wrong.push(format!(
                 "{repo}: pinned with former_names {got:?}, but plugins.yaml declares {want:?}; the \
                  dropped-in tarball would not answer to its 1.5.5 manifest name"
