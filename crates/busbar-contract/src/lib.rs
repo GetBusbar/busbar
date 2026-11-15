@@ -14,6 +14,9 @@ pub mod authz;
 #[allow(unsafe_code, missing_docs, missing_debug_implementations)]
 pub mod abi;
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod abi_scan;
+
 #[cfg(test)]
 #[path = "tests/allocation_observer.rs"]
 mod alloc_counter;

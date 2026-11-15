@@ -12,8 +12,11 @@ mod sealed {
 
 #[cfg(any(test, feature = "test-seal"))]
 pub mod chip;
+pub mod loans;
 pub mod metrics;
+pub mod mutant;
 pub mod sink;
+pub mod watch;
 
 mod restated_transport;
 pub use restated_transport::RestatedTransport;
