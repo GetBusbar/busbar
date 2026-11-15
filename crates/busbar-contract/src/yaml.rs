@@ -215,6 +215,8 @@ pub fn options() -> serde_saphyr::Options {
         unit_structs_refuse_mappings: true,
         // serde_yaml's rule: `!!null` with non-null text (`!!null str`) is refused.
         null_tag_requires_null_text: true,
+        // serde_yaml's placement: a missing field is reported at its mapping's start.
+        missing_field_at_mapping_start: true,
         lowercase_radix_prefixes_only: true,
         bom_inside_document_as_content: true,
         // libyaml's rule: an auto-detected block scalar is indented at least one column.
@@ -414,9 +416,11 @@ impl From<serde_saphyr::Error> for Error {
             let suffix = format!(" at line {}, column {}", at.line(), at.column());
             if let Some(bare) = message.strip_suffix(&suffix) {
                 message = bare.to_owned();
-                // serde_yaml printed no position on a struct's missing field (the error is raised
-                // after the mapping ends); every other placed error kept its position.
-                placed_suffix = !message.starts_with("missing field ");
+                // serde_yaml placed a struct's missing field at its mapping's start and printed no
+                // position when that start was the document's first character (line 1, column 1);
+                // every other placed error kept its position.
+                placed_suffix =
+                    !(message.starts_with("missing field ") && at.line() == 1 && at.column() == 1);
             }
         }
         // serde-saphyr's own duplicate refusal names its options; `options()` passes duplicates
