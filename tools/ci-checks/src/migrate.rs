@@ -82,9 +82,15 @@ pub(crate) fn flag_text(root: &Path) -> Result<Vec<String>, String> {
 /// The lines of production string literals and doc comments that name the flag. A file syn cannot
 /// parse is read line by line, so it is never skipped.
 pub(crate) fn flag_sites(text: &str) -> Vec<usize> {
+    sites(text, &[FLAG])
+}
+
+/// The lines of production string literals, doc comments and identifiers that name any needle.
+pub(crate) fn sites(text: &str, needles: &'static [&'static str]) -> Vec<usize> {
     match syn::parse_file(text) {
         Ok(ast) => {
             let mut scan = FlagScan {
+                needles,
                 test_depth: usize::from(is_test(&ast.attrs)),
                 hits: Vec::new(),
             };
@@ -96,13 +102,14 @@ pub(crate) fn flag_sites(text: &str) -> Vec<usize> {
         Err(_) => text
             .lines()
             .enumerate()
-            .filter(|(_, line)| line.contains(FLAG))
+            .filter(|(_, line)| needles.iter().any(|needle| line.contains(needle)))
             .map(|(index, _)| index + 1)
             .collect(),
     }
 }
 
 struct FlagScan {
+    needles: &'static [&'static str],
     test_depth: usize,
     hits: Vec<usize>,
 }
@@ -116,7 +123,7 @@ impl FlagScan {
     }
 
     fn hit(&mut self, value: &str, line: usize) {
-        if self.test_depth == 0 && value.contains(FLAG) {
+        if self.test_depth == 0 && self.needles.iter().any(|needle| value.contains(needle)) {
             self.hits.push(line);
         }
     }
@@ -129,6 +136,10 @@ impl FlagScan {
                 TokenTree::Literal(literal) => {
                     let line = literal.span().start().line;
                     self.hit(&literal.to_string(), line);
+                }
+                TokenTree::Ident(ident) => {
+                    let line = ident.span().start().line;
+                    self.hit(&ident.to_string(), line);
                 }
                 _ => {}
             }
@@ -158,6 +169,10 @@ impl<'ast> Visit<'ast> for FlagScan {
             self.hit(&text.value(), text.span().start().line);
         }
         visit::visit_lit(self, lit);
+    }
+
+    fn visit_ident(&mut self, ident: &'ast proc_macro2::Ident) {
+        self.hit(&ident.to_string(), ident.span().start().line);
     }
 
     fn visit_macro(&mut self, mac: &'ast syn::Macro) {

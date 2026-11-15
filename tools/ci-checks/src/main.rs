@@ -13,7 +13,7 @@
 //!   the root workspace's feature-resolved graph (`cargo tree`: every feature, target and edge
 //!   kind), `ring`, `sha2` and `ed25519-dalek` are built only beneath `busbar-crypto*`. Dev edges
 //!   count: tests use the facade too.
-//! - `migrate-flag-text`, `migrate-anchors`: the migrate-on-boot checks (`migrate.rs`).
+//! - `migrate-flag-text`, `migrate-anchors`, `migrate-size`: the migrate-on-boot checks (`migrate.rs`, `migrate_size.rs`).
 //!
 //! Usage: `busbar-ci-checks [check...]`; with no argument every check runs. Each finding prints as
 //! one line; any finding or error fails the run.
@@ -31,12 +31,14 @@ use syn::{
 };
 
 mod migrate;
+mod migrate_size;
 
-const CHECKS: [&str; 4] = [
+const CHECKS: [&str; 5] = [
     "no-getrandom",
     "crypto-graph",
     "migrate-flag-text",
     "migrate-anchors",
+    "migrate-size",
 ];
 /// The crypto seam: `busbar-crypto` and `busbar-crypto-backend` (crate directories and packages).
 const SEAM: &str = "busbar-crypto";
@@ -58,6 +60,7 @@ fn main() -> ExitCode {
             "crypto-graph" => crypto_graph(&root),
             "migrate-flag-text" => migrate::flag_text(&root),
             "migrate-anchors" => migrate::anchors(&root),
+            "migrate-size" => migrate_size::run(&root),
             other => Err(format!(
                 "unknown check `{other}` (checks: {})",
                 CHECKS.join(", ")

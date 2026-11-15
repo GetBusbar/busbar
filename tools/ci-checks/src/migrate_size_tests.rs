@@ -105,7 +105,9 @@ fn a_missing_anchor_symbol_is_named_and_a_present_one_is_not() {
     ]);
     let missing = anchors_missing(&renamed);
     assert_eq!(missing.len(), 2, "{missing:?}");
-    assert!(missing.iter().any(|m| m.contains("busbar::root::migrate::run")));
+    assert!(missing
+        .iter()
+        .any(|m| m.contains("busbar::root::migrate::run")));
     assert!(missing.iter().all(|m| m.contains("anchor not found")));
     assert_eq!(anchors_missing(&[]).len(), 5);
 }
@@ -125,7 +127,10 @@ fn linked_plugin_migrate_code_is_counted_from_the_manifest() {
         ("fixture_plugin::other::big", 310 * KB),
     ]);
     assert_eq!(gateway_bytes(&fns, &with_row), 310 * KB);
-    let without_row = gateway_prefixes(&DIST.replace("fixture = \"fixture-plugin\"\n", ""), DIST_LOCK);
+    let without_row = gateway_prefixes(
+        &DIST.replace("fixture = \"fixture-plugin\"\n", ""),
+        DIST_LOCK,
+    );
     assert_eq!(gateway_bytes(&fns, &without_row), 0);
     // A linked crate with no migrate module adds 0.
     let none = bloat(&[("busbar_plane_llm::lib::f", 50)]);
@@ -188,7 +193,8 @@ fn a_forbidden_dependency_beneath_the_migrator_fails_separation() {
 fn the_real_migrator_has_no_forbidden_dependency() {
     let root = repo_root();
     let lock = std::fs::read_to_string(root.join("Cargo.lock")).expect("root lock");
-    let dist = std::fs::read_to_string(root.join("dist/default/Cargo.toml")).expect("dist manifest");
+    let dist =
+        std::fs::read_to_string(root.join("dist/default/Cargo.toml")).expect("dist manifest");
     let findings = separation_deps(&lock, &forbidden_deps(&linked_crates(&dist)));
     assert!(findings.is_empty(), "{}", findings.join("\n"));
 }
@@ -197,7 +203,8 @@ fn the_real_migrator_has_no_forbidden_dependency() {
 /// Dockerfile binary fails.
 #[test]
 fn a_migrate_binary_fails_separation() {
-    let bin = "[package]\nname = \"x\"\n\n[[bin]]\nname = \"busbar-migrate\"\npath = \"src/main.rs\"\n";
+    let bin =
+        "[package]\nname = \"x\"\n\n[[bin]]\nname = \"busbar-migrate\"\npath = \"src/main.rs\"\n";
     assert_eq!(bin_findings("crates/x/Cargo.toml", bin).len(), 1);
     let other = "[[bin]]\nname = \"busbar\"\npath = \"src/main.rs\"\n";
     assert!(bin_findings("crates/x/Cargo.toml", other).is_empty());
