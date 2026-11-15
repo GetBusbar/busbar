@@ -67,7 +67,7 @@ impl AttemptTiming {
             if let Some(wait) = wait {
                 span.record("route_wait_us", micros(wait));
             }
-            crate::cold::traced_start()
+            traced_start()
         });
         Self {
             span,
@@ -107,8 +107,7 @@ impl AttemptTiming {
 
     fn mark(&self, field: &'static str) {
         if let Some(start) = self.start {
-            self.span
-                .record(field, micros(crate::cold::traced_since(start)));
+            self.span.record(field, micros(traced_since(start)));
         }
     }
 
@@ -211,8 +210,8 @@ pub fn forward_instrumentation(
         None
     };
     for attempt in 1..=attempts {
-        let route_started = hotpath_enabled().then(crate::cold::traced_start);
-        let route_wait = route_started.map(crate::cold::traced_since);
+        let route_started = hotpath_enabled().then(traced_start);
+        let route_wait = route_started.map(traced_since);
         let span = if hotpath_enabled() {
             let w = live
                 .lock()
@@ -273,3 +272,14 @@ pub fn forward_instrumentation(
 #[cfg(test)]
 #[path = "tests/timing_tests.rs"]
 mod tests;
+
+/// An attempt's start, read only when tracing enables its span, from the host monotonic clock (the
+/// node's one clock service), as the `Instant` the span's intervals are measured from.
+fn traced_start() -> std::time::Instant {
+    busbar_contract::mono_instant::instant_at(crate::store::monotonic_ns())
+}
+
+/// The interval since a traced attempt's `start`, on the host monotonic clock.
+fn traced_since(start: std::time::Instant) -> std::time::Duration {
+    traced_start().saturating_duration_since(start)
+}
