@@ -42,6 +42,8 @@ enum Mode {
     Park,
     /// Replace the selection's pinned original frame with `R(1)` first.
     Tamper,
+    /// The same, for the next usage recovery selection.
+    TamperRecovery,
 }
 
 #[derive(Default)]
@@ -125,6 +127,17 @@ fn is_unitcp(prepared: &PreparedCandidate) -> bool {
             Mutation::DeleteRange { .. } => false,
         })
 }
+/// A usage recovery selection.
+fn is_recovery(prepared: &PreparedCandidate) -> bool {
+    prepared
+        .candidate()
+        .mutations
+        .iter()
+        .any(|mutation| match mutation {
+            Mutation::Put { address, .. } => address.key.starts_with(b"busbar.recover1\0"),
+            _ => false,
+        })
+}
 /// A node journal append: it moves the journal head `H`.
 fn is_append(prepared: &PreparedCandidate) -> bool {
     prepared
@@ -166,6 +179,26 @@ impl Mem {
     }
     fn set_mode(&self, mode: Mode) {
         *self.mode.lock().unwrap() = mode;
+    }
+    /// Overwrite the original frame `prepared` pins with `R(1)`'s bytes, before it is applied.
+    fn replace_pinned_original(&self, prepared: &PreparedCandidate) {
+        let pinned = prepared
+            .candidate()
+            .predicates
+            .iter()
+            .find(|predicate| journal_tag(&predicate.address.key) == Some(b'R'))
+            .expect("a selection pins its original frame")
+            .address
+            .clone();
+        let mut state = self.state.lock().unwrap();
+        let first = state
+            .rows
+            .iter()
+            .find(|(at, _)| at.key == journal_key(b'R', 1))
+            .map(|(_, value)| value.clone())
+            .expect("the first original frame");
+        assert_ne!(pinned.key, journal_key(b'R', 1));
+        state.rows.insert(pinned, first);
     }
     fn apply(&self, prepared: &PreparedCandidate) -> Decision {
         let mut state = self.state.lock().unwrap();
@@ -299,6 +332,10 @@ impl PersistenceBackend for Mem {
         _key: busbar_contract::persistence::CommitKey,
     ) -> Call<'_, Decision> {
         Box::pin(async move {
+            if is_recovery(&prepared) && *self.mode.lock().unwrap() == Mode::TamperRecovery {
+                self.set_mode(Mode::Forward);
+                self.replace_pinned_original(&prepared);
+            }
             if !is_unitcp(&prepared) {
                 let decision = self.apply(&prepared);
                 if is_append(&prepared) && matches!(decision, Decision::Applied(_)) {
@@ -968,6 +1005,45 @@ async fn a_rewritten_checkpoint_original_is_refused_against_carried_evidence() {
         let refused = fixture.sink.persist(&unit(2)).await.unwrap_err().0;
         assert!(refused.contains("carried"), "{refused}");
         assert_eq!(selected_revision(&fixture.backend), Some(1));
+    })
+    .await;
+}
+
+/// WHO: usage recovery selecting an operation's Intent while one of its own originals no longer
+/// holds the bytes it sealed, with the selection row unchanged.
+/// DOES: (SHUTDOWN-HANG F2.1, 8.4) the no-effect is classified from one read of the selection
+/// row: unchanged and custody ours, so it names the changed original; the staged original is kept
+/// and never re-staged.
+/// WHY: an unchanged row was reported as a missing selection or as another candidate's win.
+#[tokio::test]
+async fn an_unchanged_row_no_effect_names_the_changed_original() {
+    bounded(async {
+        let fixture = fixture().await;
+        append_one(&fixture.journal).await;
+        let recovery = crate::governance::persistence::recovery::StoreRecovery::new(
+            fixture.journal.clone(),
+            crate::teller::Kernel::new().durability_token(),
+        )
+        .unwrap();
+        fixture.backend.set_mode(Mode::TamperRecovery);
+        let refused =
+            crate::governance::recovery::RecoverySink::persist(&recovery, &terminal_event())
+                .await
+                .unwrap_err()
+                .to_string();
+        assert!(
+            !refused.contains("another recovery candidate won"),
+            "{refused}"
+        );
+        assert!(refused.contains("differs"), "{refused}");
+        let staged = fixture.journal.next_seq();
+        let _ =
+            crate::governance::recovery::RecoverySink::persist(&recovery, &terminal_event()).await;
+        assert_eq!(
+            fixture.journal.next_seq(),
+            staged,
+            "the kept candidate is never staged twice"
+        );
     })
     .await;
 }
