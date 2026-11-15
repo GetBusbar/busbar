@@ -23,6 +23,16 @@ crate-type = ["cdylib"]
 name = "carrier_target"
 path = "tests/fixtures/carrier_target.rs"
 
+# The stream target's own line framer (its cdylib), and a stream target over it run as a process.
+[[example]]
+name = "framer_fixture"
+path = "tests/fixtures/framer_fixture.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "framer_target"
+path = "tests/fixtures/framer_target.rs"
+
 [features]
 # Host targets (SDK-SAFE-TEST-HOST §10.2), off by default and never in a release build: a plugin
 # repository enables one in its [dev-dependencies]. `target` is the shared code (std::net only, so
