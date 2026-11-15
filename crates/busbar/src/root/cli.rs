@@ -604,19 +604,15 @@ pub(crate) fn validate_config_command() -> i32 {
 
 const LIST_PLUGINS_HEADER: &str = "FILE                               NAME                     ALIAS        KIND   VERSION   SIGNATURE                STATUS";
 
-fn list_plugins_command() -> i32 {
-    let argv = argv();
-    let config_path = std::path::PathBuf::from(resolve_config_path(argv.config.as_deref()));
-
-    let (plugins_cfg, store_ref) = match load_config_from_disk(
-        &config_path,
-        argv.providers.as_deref().map(std::path::Path::new),
-        false,
-        config::EnvSubst::Lenient,
-    ) {
+/// The plugins block and store reference `--list-plugins` inventories against.
+fn list_plugins_config(
+    config_path: &std::path::Path,
+    providers: Option<&std::path::Path>,
+) -> Result<(config::PluginsCfg, Option<String>), String> {
+    match load_config_from_disk(config_path, providers, false, config::EnvSubst::Lenient) {
         Ok(l) => {
             let store = l.deploy.store.as_ref().map(|g| g.module.clone());
-            (l.deploy.plugins, store)
+            Ok((l.deploy.plugins, store))
         }
         Err(e) => {
             eprintln!(
@@ -625,7 +621,23 @@ fn list_plugins_command() -> i32 {
                     "config not readable ({e}); using the default plugins block"
                 ))
             );
-            (config::PluginsCfg::default(), None)
+            Ok((config::PluginsCfg::default(), None))
+        }
+    }
+}
+
+fn list_plugins_command() -> i32 {
+    let argv = argv();
+    let config_path = std::path::PathBuf::from(resolve_config_path(argv.config.as_deref()));
+
+    let (plugins_cfg, store_ref) = match list_plugins_config(
+        &config_path,
+        argv.providers.as_deref().map(std::path::Path::new),
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[error] {e}");
+            return EXIT_FAILURE;
         }
     };
     plugins_cfg.warn_invalid_floors();
