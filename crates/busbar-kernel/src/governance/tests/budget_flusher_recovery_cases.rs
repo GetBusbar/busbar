@@ -8,6 +8,18 @@ use crate::governance::recovery::{
 
 #[tokio::test]
 async fn live_flusher_resumes_not_landed_with_current_cost_without_blocking_reactor() {
+    flusher_resumes_not_landed_with_current_cost(false).await;
+}
+
+/// SHUTDOWN-HANG 8.10: a correction whose verdict is durable but unsettled at SIGTERM is settled
+/// by the drain-mode money driver [M], with the current cost, before `money_stop`: the drain
+/// pass resumes correction verdicts as the periodic tick does.
+#[tokio::test]
+async fn the_drain_money_driver_settles_a_durable_correction_verdict_before_money_stop() {
+    flusher_resumes_not_landed_with_current_cost(true).await;
+}
+
+async fn flusher_resumes_not_landed_with_current_cost(drain: bool) {
     crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(ChunkStore::new().await);
     let journal = Arc::new(Journal::default());
@@ -237,13 +249,35 @@ async fn live_flusher_resumes_not_landed_with_current_cost_without_blocking_reac
         })
     }));
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
-    let flusher =
-        crate::governance::spawn_budget_flusher(gov.clone(), shutdown_rx, Some(handle.clone()));
+    let mut shutdown_rx = Some(shutdown_rx);
+    let clock = drain
+        .then(|| crate::governance::drain::DrainClock::new(std::time::Duration::from_secs(20)));
+    let periodic = (!drain).then(|| {
+        crate::governance::spawn_budget_flusher(
+            gov.clone(),
+            shutdown_rx.take().expect("one receiver"),
+            Some(handle.clone()),
+        )
+    });
 
     let mut next = (*app).clone();
     next.cost = Arc::new(current_cost);
     next.config_version += 1;
     handle.swap(Arc::new(next)).await;
+    // In drain mode SIGTERM has landed before the driver's first select: it starts in drain
+    // mode at once, so the drain pass (not a periodic tick) is what resumes the verdict.
+    let flusher = match periodic {
+        Some(flusher) => flusher,
+        None => {
+            shutdown_tx.send(()).unwrap();
+            tokio::spawn(crate::governance::run_budget_flusher(
+                gov.clone(),
+                shutdown_rx.take().expect("one receiver"),
+                Some(handle.clone()),
+                clock.clone(),
+            ))
+        }
+    };
 
     tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx)
         .await
@@ -262,7 +296,16 @@ async fn live_flusher_resumes_not_landed_with_current_cost_without_blocking_reac
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }).await.expect("the actual periodic flusher resumes the durable verdict without another resolve or restart");
-    shutdown_tx.send(()).unwrap();
+    match &clock {
+        Some(clock) => {
+            assert!(
+                !clock.money_stopped(),
+                "settled by the money driver's drain passes, before money_stop"
+            );
+            clock.stop_money();
+        }
+        None => shutdown_tx.send(()).unwrap(),
+    }
     tokio::time::timeout(std::time::Duration::from_secs(5), flusher)
         .await
         .unwrap()
