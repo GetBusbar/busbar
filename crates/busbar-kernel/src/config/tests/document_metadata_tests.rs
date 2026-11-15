@@ -320,7 +320,7 @@ fn a_section_no_registered_plane_requires_may_be_omitted_and_reads_empty() {
     let err = read("listen: \"x\"\nno_such_key: 1\n").expect_err("unknown key");
     assert!(
         err.to_string()
-            .starts_with("unknown field `no_such_key`, expected one of"),
+            .starts_with("no_such_key: unknown field `no_such_key`, expected one of"),
         "{err}"
     );
 }

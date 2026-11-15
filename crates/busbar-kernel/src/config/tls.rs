@@ -127,6 +127,19 @@ impl<'de> Deserialize<'de> for TlsSource {
         match value {
             Value::Text(pem) => Ok(Self::Inline(pem)),
             Value::Map(map) => {
+                // A key other than `file` or `env` (a secret-store reference's `module`,
+                // `settings`) is named, however many entries the map holds.
+                if let Some(key) = map
+                    .iter()
+                    .filter_map(|(k, _)| k.as_str())
+                    .find(|k| !matches!(*k, "file" | "env"))
+                {
+                    return Err(D::Error::custom(format!(
+                        "a TLS source is `{{ file: <path> }}`, `{{ env: <NAME> }}` or inline PEM \
+                         text; `{key}` is not accepted (a secret-store reference cannot feed the \
+                         trust store: it is built before any secret plugin is reachable)"
+                    )));
+                }
                 let mut entries = map.into_iter();
                 let (Some((k, v)), None) = (entries.next(), entries.next()) else {
                     return Err(D::Error::custom(

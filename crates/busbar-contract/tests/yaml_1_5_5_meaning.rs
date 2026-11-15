@@ -35,8 +35,7 @@
 //! (1.5.5 wrote an enum variant with content as `!Variant`). Not ported: other emitter
 //! output, error wording and positions, `Value`/`Number`/`Mapping` API internals, `Debug`
 //! output, seeds, `apply_merge`, the multi-document iterator and bytes (APIs this module does not
-//! offer), and the typed `0644` case, which is the owner-accepted difference pinned by
-//! `leading_zero_into_an_integer_field_reads_as_decimal_until_upstream_274` (ACCEPT 282).
+//! offer). The typed `0644` case is pinned by `leading_zero_into_an_integer_field_is_refused`.
 //!
 //! PROPOSED ACCEPTS, awaiting the owner. Each is still asserted as 1.5.5 read it, so each is red
 //! until the owner approves it (then the assertion flips to the new reading) or it is fixed.
@@ -436,17 +435,17 @@ fn from_value_reads_like_the_text() {
     );
 }
 
-/// Row 5, typed: 1.5.5 refused `0644` for an integer field. serde-saphyr has no option to refuse
-/// it yet (upstream request: https://github.com/bourumir-wyngs/serde-saphyr/issues/274), so it
-/// reads as decimal 644 meanwhile (owner ACCEPT 282). When the option lands, pin it in
-/// `yaml::options()` and flip this test to `is_err()`.
+/// Row 5, typed: 1.5.5 refused `0644` for an integer field, and so does serde-saphyr 2.1.1: it
+/// reads a zero-prefixed integer spelling only under `legacy_octal_numbers`, which
+/// `yaml::options()` leaves off. (The owner-accepted interim reading as decimal 644, ACCEPT 282,
+/// pending upstream issue 274, is no longer needed.)
 #[test]
-fn leading_zero_into_an_integer_field_reads_as_decimal_until_upstream_274() {
+fn leading_zero_into_an_integer_field_is_refused() {
     #[derive(Debug, Deserialize)]
     struct Mode {
         mode: u32,
     }
-    assert_eq!(yaml::from_str::<Mode>("mode: 0644\n").unwrap().mode, 644);
+    assert!(yaml::from_str::<Mode>("mode: 0644\n").is_err());
 }
 
 /// Tags are found anywhere in a document, keys included, for readers that must refuse or carry

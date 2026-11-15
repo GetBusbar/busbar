@@ -13,6 +13,8 @@
 //! `tests/yaml_1_5_5_meaning.rs`:
 //! - `yes`, `no`, `on`, `off`, `y`, `n` (any case) are strings, never booleans.
 //! - Integers with redundant leading zeros (`0644`, `-007`, `+00`) are strings when read untyped.
+//! - A quoted scalar (`'1024'`, `"true"`) is a string: an integer, float or boolean field
+//!   refuses it.
 //! - Numbers with underscores (`1_000`) are strings when read untyped.
 //! - `1:30` (sexagesimal) is a string.
 //! - `<<` is a literal key; merge keys are not expanded.
@@ -207,6 +209,8 @@ pub fn options() -> serde_saphyr::Options {
     use serde_saphyr::{DuplicateKeyPolicy, MergeKeyPolicy, NonFiniteFloatPolicy};
     serde_saphyr::options! {
         null_scalars_as_text: true,
+        // serde_yaml's rule: a quoted scalar is a string, never a number or a boolean.
+        quoted_scalars_are_strings: true,
         lowercase_radix_prefixes_only: true,
         bom_inside_document_as_content: true,
         // serde_yaml's rule: each repeated entry reaches the reader, which decides (a struct
@@ -428,23 +432,64 @@ impl From<serde_saphyr::Error> for Error {
 }
 
 impl Error {
-    fn at_path(mut self, path: serde_path_to_error::Path) -> Self {
+    /// Name the failing node's path, from serde_path_to_error's tracked `path` and the hops an
+    /// untyped read mirrored below it (`hops`, see [`Hop`]): those hops replace the tail of the
+    /// tracked path they match, so the tag read of every untyped node (serde-saphyr's `Tagged`
+    /// protocol, a virtual sequence that the tracker counts as an index `[0]`) is left out, and a
+    /// mapping key is named by its text.
+    fn at_path(mut self, path: serde_path_to_error::Path, hops: Option<Vec<Hop>>) -> Self {
         use serde_path_to_error::Segment;
-        let mut segments: Vec<&Segment> = path.iter().collect();
+        let tracked: Vec<&Segment> = path.iter().collect();
+        // (the segment's text, whether it is an index, whether it is a key being read)
+        let mut segments: Vec<(String, bool, bool)> = tracked
+            .iter()
+            .map(|segment| {
+                (
+                    segment.to_string(),
+                    matches!(segment, Segment::Seq { .. }),
+                    matches!(segment, Segment::Unknown),
+                )
+            })
+            .collect();
+        // A failure before a hop's node was reached (the parser failing between items) is
+        // tracked at the parent, so the last hop may be one the tracker never took.
+        let matched = hops.as_deref().and_then(|hops| {
+            [hops.len(), hops.len().saturating_sub(1)]
+                .into_iter()
+                .find_map(|taken| {
+                    let start = tracked.len().checked_sub(taken)?;
+                    hops_match(&hops[..taken], &tracked[start..]).then(|| (&hops[..taken], start))
+                })
+        });
+        if let Some((hops, start)) = matched {
+            segments.truncate(start);
+            for (hop, segment) in hops.iter().zip(&tracked[start..]) {
+                match hop {
+                    Hop::Tag => {}
+                    Hop::Key(Some(name)) => segments.push((name.clone(), false, false)),
+                    Hop::KeyRead => segments.push((segment.to_string(), false, true)),
+                    Hop::Seq(_) | Hop::Key(None) | Hop::Variant => segments.push((
+                        segment.to_string(),
+                        matches!(segment, Segment::Seq { .. }),
+                        false,
+                    )),
+                }
+            }
+        }
         // A repeated key is refused while its key is read, so the tracked path ends in that
         // unnamed key; serde_yaml named the mapping holding it.
         if self.message.starts_with(DUPLICATE_ENTRY)
-            && matches!(segments.last(), Some(Segment::Unknown))
+            && segments.last().is_some_and(|(_, _, key_read)| *key_read)
         {
             segments.pop();
         }
         if !segments.is_empty() {
             let mut text = String::new();
-            for (at, segment) in segments.iter().enumerate() {
-                if at > 0 && !matches!(segment, Segment::Seq { .. }) {
+            for (at, (segment, index, _)) in segments.iter().enumerate() {
+                if at > 0 && !index {
                     text.push('.');
                 }
-                text.push_str(&segment.to_string());
+                text.push_str(segment);
             }
             self.path = Some(text);
         }
@@ -493,7 +538,7 @@ pub fn from_str<T: DeserializeOwned>(text: &str) -> Result<T, Error> {
         if let Some(stand_in) = stand_in {
             restore_byte_order_marks(&mut tree, stand_in);
         }
-        return T::deserialize(deserializer(tree));
+        return from_value(tree);
     }
     with_deserializer(text, |d| T::deserialize(d))
 }
@@ -590,7 +635,11 @@ pub fn tag_of(value: &Value) -> Option<String> {
 }
 
 /// Builds one untyped node, asking serde-saphyr for the node's tag first (its `Tagged` protocol:
-/// the node as the sequence `[value, tag?]`). Other deserializers answer with the node itself.
+/// the node as the sequence `[value, tag?]`). Other deserializers answer with the node itself:
+/// through `visit_newtype_struct`, or, for one that reads every request as `deserialize_any`
+/// (serde's `MapAccessDeserializer`, `EnumAccessDeserializer`), as that node; a sequence such a
+/// deserializer hands over cannot be told from the tag protocol, so read one with
+/// [`untyped_seq`].
 struct Node;
 
 impl<'de> DeserializeSeed<'de> for Node {
@@ -598,6 +647,18 @@ impl<'de> DeserializeSeed<'de> for Node {
     fn deserialize<D: serde::Deserializer<'de>>(self, de: D) -> Result<Value, D::Error> {
         de.deserialize_newtype_struct(TAGGED, Node)
     }
+}
+
+/// [`Node`]'s answers for a deserializer that hands over the node itself rather than the tag
+/// protocol: each is [`Untyped`]'s.
+macro_rules! node_as_untyped {
+    ($($visit:ident($ty:ty)),+ $(,)?) => {
+        $(
+            fn $visit<E: serde::de::Error>(self, v: $ty) -> Result<Value, E> {
+                serde::de::Visitor::$visit(Untyped, v)
+            }
+        )+
+    };
 }
 
 impl<'de> serde::de::Visitor<'de> for Node {
@@ -609,14 +670,60 @@ impl<'de> serde::de::Visitor<'de> for Node {
         de.deserialize_any(Untyped)
     }
     fn visit_seq<S: serde::de::SeqAccess<'de>>(self, mut seq: S) -> Result<Value, S::Error> {
-        let value = seq
-            .next_element_seed(UntypedSeed)?
+        let value = hop(Hop::Tag, || seq.next_element_seed(UntypedSeed))?
             .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
-        Ok(match seq.next_element::<String>()? {
+        Ok(match hop(Hop::Tag, || seq.next_element::<String>())? {
             Some(tag) if !tag.starts_with("tag:yaml.org,2002:") => tagged(&tag, value),
             _ => value,
         })
     }
+    node_as_untyped! {
+        visit_bool(bool),
+        visit_f32(f32),
+        visit_f64(f64),
+        visit_i8(i8),
+        visit_i16(i16),
+        visit_i32(i32),
+        visit_i64(i64),
+        visit_i128(i128),
+        visit_u8(u8),
+        visit_u16(u16),
+        visit_u32(u32),
+        visit_u64(u64),
+        visit_u128(u128),
+        visit_char(char),
+        visit_str(&str),
+        visit_string(String),
+        visit_bytes(&[u8]),
+        visit_byte_buf(Vec<u8>),
+    }
+    fn visit_unit<E: serde::de::Error>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+    fn visit_none<E: serde::de::Error>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+    fn visit_some<D: serde::Deserializer<'de>>(self, de: D) -> Result<Value, D::Error> {
+        Node.deserialize(de)
+    }
+    fn visit_map<M: serde::de::MapAccess<'de>>(self, map: M) -> Result<Value, M::Error> {
+        serde::de::Visitor::visit_map(Untyped, map)
+    }
+    fn visit_enum<A: serde::de::EnumAccess<'de>>(self, data: A) -> Result<Value, A::Error> {
+        serde::de::Visitor::visit_enum(Untyped, data)
+    }
+}
+
+/// Read the rest of a sequence as an untyped [`Value::Array`], each item as [`untyped`] reads a
+/// node: for a visitor that was handed a sequence and wants it as the tree.
+pub fn untyped_seq<'de, S: serde::de::SeqAccess<'de>>(seq: S) -> Result<Value, S::Error> {
+    serde::de::Visitor::visit_seq(Untyped, seq)
+}
+
+/// Read the rest of a mapping as an untyped [`Value::Map`], as [`untyped`] reads one (a repeated
+/// key refused): for a visitor that was handed a mapping and wants it as the tree.
+pub fn untyped_map<'de, M: serde::de::MapAccess<'de>>(map: M) -> Result<Value, M::Error> {
+    serde::de::Visitor::visit_map(Untyped, map)
 }
 
 struct UntypedSeed;
@@ -696,15 +803,18 @@ impl<'de> serde::de::Visitor<'de> for Untyped {
     }
     fn visit_seq<S: serde::de::SeqAccess<'de>>(self, mut seq: S) -> Result<Value, S::Error> {
         let mut items = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(4096));
-        while let Some(item) = seq.next_element_seed(Node)? {
+        while let Some(item) = hop(Hop::Seq(items.len()), || seq.next_element_seed(Node))? {
             items.push(item);
         }
         Ok(Value::Array(items))
     }
     fn visit_map<M: serde::de::MapAccess<'de>>(self, mut map: M) -> Result<Value, M::Error> {
         let mut pairs = Pairs::with_capacity(map.size_hint().unwrap_or(0).min(4096));
-        while let Some(key) = map.next_key_seed(Key(&pairs))? {
-            let value = map.next_value_seed(Node)?;
+        while let Some(key) = hop(Hop::KeyRead, || {
+            unmirrored(|| map.next_key_seed(Key(&pairs)))
+        })? {
+            let name = key.as_text().map(str::to_owned);
+            let value = hop(Hop::Key(name), || map.next_value_seed(Node))?;
             pairs.push((key, value));
         }
         Ok(Value::Map(pairs))
@@ -717,7 +827,7 @@ impl<'de> serde::de::Visitor<'de> for Untyped {
         if variant == CBOR_TAGGED {
             content.tuple_variant(2, CborTagContent)
         } else {
-            let value = content.newtype_variant_seed(Node)?;
+            let value = hop(Hop::Variant, || content.newtype_variant_seed(Node))?;
             Ok(tagged(&format!("!{variant}"), value))
         }
     }
@@ -779,10 +889,100 @@ where
 {
     refuse_control_characters(text)?;
     let mut track = serde_path_to_error::Track::new();
+    let outer = HOPS.replace(Some(Hops::default()));
     let read = serde_saphyr::with_deserializer_from_str_with_options(text, options(), |de| {
         read(serde_path_to_error::Deserializer::new(de, &mut track))
     });
-    read.map_err(|e| Error::from(e).at_path(track.path()))
+    let hops = HOPS.replace(outer).and_then(|hops| hops.failed);
+    read.map_err(|e| Error::from(e).at_path(track.path(), hops))
+}
+
+// ---- The path below an untyped node ----
+
+/// One step of the tracked path that an untyped read ([`Node`], [`Untyped`]) takes below the
+/// node it starts at, mirrored so [`Error::at_path`] can tell them apart: serde_path_to_error
+/// counts the tag read of each node (serde-saphyr's `Tagged` protocol, the virtual sequence
+/// `[value, tag?]`) as an index, which serde_yaml's path never held.
+#[derive(Clone, Debug)]
+enum Hop {
+    /// The tag read of one node: tracked as `[0]` (its value) or `[1]` (its tag).
+    Tag,
+    /// An item of a sequence.
+    Seq(usize),
+    /// The value of a mapping entry, named by its key's text when the key is a string.
+    Key(Option<String>),
+    /// A mapping key being read (the tracker names none).
+    KeyRead,
+    /// The content of a variant read as a tag (`!Variant content`).
+    Variant,
+}
+
+/// Whether `hops` are the tracked `tail`, step for step.
+fn hops_match(hops: &[Hop], tail: &[&serde_path_to_error::Segment]) -> bool {
+    use serde_path_to_error::Segment;
+    hops.iter()
+        .zip(tail)
+        .all(|(hop, segment)| match (hop, segment) {
+            (Hop::Tag, Segment::Seq { index }) => *index <= 1,
+            (Hop::Seq(at), Segment::Seq { index }) => at == index,
+            (Hop::Key(_) | Hop::KeyRead, Segment::Map { .. } | Segment::Unknown) => true,
+            (Hop::Variant, Segment::Enum { .. }) => true,
+            _ => false,
+        })
+}
+
+/// The hops of the untyped read in progress on this thread, inside one [`with_deserializer`].
+#[derive(Default)]
+struct Hops {
+    stack: Vec<Hop>,
+    /// While non-zero, nothing is mirrored: a mapping key is being read (the tracker follows no
+    /// path inside a key), or an in-memory read ([`from_value`]) runs inside a tracked one.
+    paused: usize,
+    /// The hops to the first failure, kept as the tracker keeps its first path.
+    failed: Option<Vec<Hop>>,
+}
+
+thread_local! {
+    static HOPS: std::cell::RefCell<Option<Hops>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `read` one hop below the current node: `hop` is mirrored while it runs and, if it fails,
+/// the hops to it are kept for the error's path.
+fn hop<T, E>(hop: Hop, read: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
+    let mirrored = HOPS.with_borrow_mut(|hops| match hops {
+        Some(hops) if hops.paused == 0 => {
+            hops.stack.push(hop);
+            true
+        }
+        _ => false,
+    });
+    let result = read();
+    if mirrored {
+        HOPS.with_borrow_mut(|hops| {
+            if let Some(hops) = hops {
+                if result.is_err() && hops.failed.is_none() {
+                    hops.failed = Some(hops.stack.clone());
+                }
+                hops.stack.pop();
+            }
+        });
+    }
+    result
+}
+
+/// Run `read` with nothing mirrored (see [`Hops::paused`]).
+fn unmirrored<T>(read: impl FnOnce() -> T) -> T {
+    let pause = |by: isize| {
+        HOPS.with_borrow_mut(|hops| {
+            if let Some(hops) = hops {
+                hops.paused = hops.paused.saturating_add_signed(by);
+            }
+        });
+    };
+    pause(1);
+    let result = read();
+    pause(-1);
+    result
 }
 
 /// The first application tag (`!Name`, or a non-core tag URI) anywhere in the document, keys
@@ -1917,7 +2117,7 @@ impl<E: serde::ser::Error> serde::Serializer for Capture<E> {
 /// Read a [`Value`] tree into `T`, in memory, as serde_yaml's `from_value` did: through
 /// [`ValueDeserializer`], with its semantics and its error texts (which carry no position).
 pub fn from_value<T: DeserializeOwned>(value: Value) -> Result<T, Error> {
-    T::deserialize(deserializer(value))
+    unmirrored(|| T::deserialize(deserializer(value)))
 }
 
 /// A [`Value`] tree as serde input, read in memory: what serde_yaml offered by making its `Value`
