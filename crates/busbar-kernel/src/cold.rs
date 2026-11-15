@@ -9,3 +9,6 @@
 
 /// `governance`: refusal text and rare first-sight paths of the governance request-path module.
 pub(crate) mod governance;
+// Sections as submodules (cold/<section>.rs), so the slices that fill them do not collide.
+pub(crate) mod auth;
+pub(crate) mod host;
