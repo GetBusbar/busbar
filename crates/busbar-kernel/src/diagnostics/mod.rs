@@ -1433,8 +1433,8 @@ diagnostics! {
 
     CONFIG_STORE_INVALID = 3120, Config, Fatal, "config-store-invalid", "1.6.0", false,
         "The store block is missing or names no module",
-        "Busbar keeps keys, budgets, audit and configuration overlays in the store named by top-level `store:`. The block is missing or its `module:` is empty.",
-        "Add `store: { module: <store plugin> }` (for example `sqlite` with a `db_path` setting)."
+        "Busbar keeps keys, budgets, audit and configuration overlays in the store named by top-level `store:`. The block is missing or its `module:` is empty. 1.6.0 has no default store: a 1.5.5 config.yaml with no `store:` block ran on the store built into 1.5.5, and the one-time upgrade writes that block into it, so a config.yaml stamped `config_version: 1` must name its store itself.",
+        "Add `store: { module: <store plugin> }` (for example `sqlite` with a `db_path` setting). For what 1.5.5 did with no block (state kept in RAM, lost on restart), name the in-memory store."
         => config_store_invalid(detail) "{detail}",
         example "store:\n  module: \"\"",
         detail "store.module must be non-empty; name the configured Store plugin";

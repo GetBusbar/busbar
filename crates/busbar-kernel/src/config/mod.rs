@@ -879,7 +879,7 @@ pub struct PlaneFeesCfg {
 /// schema's preceding key (MIGRATE-ON-BOOT §A7 "Authored text").
 #[must_use]
 pub fn document_keys() -> &'static [&'static str] {
-    &[]
+    grammar_fields::struct_keys(DeployCfg::deserialize)
 }
 
 /// Deployment configuration - operator-owned config.yaml structure.

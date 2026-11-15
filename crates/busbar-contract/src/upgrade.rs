@@ -46,8 +46,11 @@ pub fn unknown_module(text: String) -> String {
 /// [`unknown_module`] for a boot whose config is `unstamped` or not.
 #[must_use]
 pub fn unknown_module_on(text: String, unstamped: bool) -> String {
-    let _ = unstamped;
-    text
+    if unstamped {
+        format!("{text}\n{UPGRADE_FIRST}")
+    } else {
+        text
+    }
 }
 
 /// The one field: `config_version`, absent = 0. A document that is not a mapping is unstamped (the

@@ -92,8 +92,17 @@ impl Template {
         env: Env,
         shown: &str,
     ) -> Result<(), Refusal> {
-        let _ = (patched, after, env, shown);
-        Ok(())
+        let resolved = Resolved::of(patched, env, shown)?;
+        let mut now = parse(resolved.text(), shown)?;
+        let mut path = Vec::new();
+        let kept = same_reading(&self.tree, after, &self.resolved, &now, &mut path);
+        wipe(&mut now);
+        kept.map_err(|at| {
+            Refusal::Authored(format!(
+                "the upgrade could not keep {shown}'s authored text at `{at}` (it would read \
+                 differently once interpolated); nothing was written"
+            ))
+        })
     }
 }
 
