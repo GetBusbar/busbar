@@ -958,7 +958,14 @@ dependencies = [
 name = "busbar-plugin-abi"
 version = "1.6.0"
 dependencies = [
+ "aho-corasick",
+ "arc-swap",
+ "base64 0.22.1",
+ "busbar-crypto",
+ "hex",
+ "percent-encoding",
  "zerocopy",
+ "zeroize",
 ]
 
 [[package]]

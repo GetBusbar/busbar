@@ -24,6 +24,8 @@ members = [
     "crates/busbar-plugin-test",
     # Core's repository checks (no-getrandom, crypto-graph), one CI job line each.
     "tools/ci-checks",
+    # ci/hop: no thread hop around a plugin entry (IF §15 rule 10), one CI job line.
+    "ci/hop",
 ]
 
 # Each version is written once here; members inherit with `workspace = true` and may add features.
@@ -32,6 +34,8 @@ members = [
 busbar-contract = { path = "crates/busbar-contract" }
 # The one crypto backend: busbar-crypto names it by this URL; a private build patches its own in.
 busbar-crypto-backend = { path = "crates/busbar-crypto-backend" }
+# The plugin host's scrubber automaton (busbar-plugin-abi[host], IF §12.16); already in the lock.
+aho-corasick = "1"
 arc-swap = "1"
 # The accept-error backoff (core-connector listen.rs, shared by the root listener). No default
 # features: no sleeper, no std rng; only the ExponentialBuilder iterator, as a const.
