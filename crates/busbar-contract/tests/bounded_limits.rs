@@ -200,12 +200,12 @@ fn a_plane_that_declares_more_pointers_than_the_ceiling_is_capped_at_it() {
 /// The cursor stops at the ceiling its own documentation claims.
 #[test]
 fn the_frame_cursor_stops_at_the_per_connection_ceiling() {
-    use busbar_contract::wire::{Frame, FrameCursor, FrameMeta};
+    use busbar_contract::wire::{Frame as WireFrame, FrameCursor, FrameMeta};
     use busbar_contract::{Direction, StreamId};
 
     let chunk: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![0u8; 8 * 1024].into_boxed_slice());
-    let frames: Vec<Frame> = (0..16)
-        .map(|i| Frame {
+    let frames: Vec<WireFrame> = (0..16)
+        .map(|i| WireFrame {
             direction: Direction::Inbound,
             stream: StreamId(i),
             bytes: SlabBytes::new(chunk.clone()),

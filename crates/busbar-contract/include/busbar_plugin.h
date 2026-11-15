@@ -883,6 +883,7 @@ typedef uint8_t bb_export_ExportStream;
 #define BB_EXPORT_ExportStream_Identity ((bb_export_ExportStream)6)
 #define BB_EXPORT_ExportStream_Prompts ((bb_export_ExportStream)7)
 #define BB_EXPORT_ExportStream_Completions ((bb_export_ExportStream)8)
+#define BB_EXPORT_ExportStream_Content ((bb_export_ExportStream)9)
 /* THE WIRE REFUSAL CODES: a refusal reason as it crosses the plane ABI ([`RefusalStatus::reason`], */
 typedef uint32_t bb_plane_RefusalCode;
 #define BB_PLANE_RefusalCode_InFlightCap ((bb_plane_RefusalCode)0)

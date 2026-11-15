@@ -326,11 +326,15 @@ pub(crate) fn linked_source(
     };
 
     let former_names_of = |feature: &str| -> String {
-        metadata_value(manifest, "package.metadata.busbar.linked-former-names", feature)
-            .map_or_else(
-                || String::from("&[]"),
-                |door| format!("{door}.former_names()"),
-            )
+        metadata_value(
+            manifest,
+            "package.metadata.busbar.linked-former-names",
+            feature,
+        )
+        .map_or_else(
+            || String::from("&[]"),
+            |door| format!("{door}.former_names()"),
+        )
     };
     out.push_str(
         "/// The store axis: each linked store's `(key, ephemeral, door, canonical)`.\n\
@@ -386,8 +390,12 @@ pub(crate) fn linked_source(
                 &format!("{store}.former_names()"),
             ));
         }
-        let declared = metadata_value(manifest, "package.metadata.busbar.linked-former-names", feature)
-            .is_some();
+        let declared = metadata_value(
+            manifest,
+            "package.metadata.busbar.linked-former-names",
+            feature,
+        )
+        .is_some();
         if !declared {
             continue;
         }

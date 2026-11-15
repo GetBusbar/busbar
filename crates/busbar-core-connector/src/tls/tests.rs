@@ -7,6 +7,7 @@ use super::*;
 use busbar_contract::crypto::testing::rcgen;
 use busbar_kernel::config::secret::SecretResolver;
 use busbar_kernel::config::SecretRef;
+use rustls::pki_types::pem::PemObject;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Generate a self-signed server cert for `localhost`. Returns (cert_pem, key_pem).

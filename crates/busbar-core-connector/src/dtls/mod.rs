@@ -102,11 +102,7 @@ impl SessionCert {
     }
 
     fn dimpl(&self) -> dimpl::DtlsCertificate {
-        let certificate = self.cert.der().to_vec();
-        dimpl::DtlsCertificate {
-            certificate,
-            private_key: self.cert.handle().to_vec(),
-        }
+        crate::off_path::dtls::certificate(&self.cert)
     }
 }
 
@@ -600,7 +596,9 @@ impl Association {
         if crypto::fill(&mut txid).is_err() {
             return;
         }
-        let Some(probe) = stun::probe(&self.keys, txid, self.tie_breaker, self.controlling) else {
+        let Some(probe) =
+            crate::off_path::dtls::probe(&self.keys, txid, self.tie_breaker, self.controlling)
+        else {
             return;
         };
         if let Some((to, sent)) = self.probes.insert(txid, (path, now)) {
