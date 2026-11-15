@@ -687,3 +687,20 @@ fn a_refused_opens_text_is_one_bounded_line() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_refused_open_is_more_than_the_bare_label() {
+    let root = private_root("dlerror-label");
+    let bad = root.join("plain.so");
+    not_a_shared_object(&bad);
+    let error = dlopen_on_worker(bad.as_os_str())
+        .err()
+        .expect("text is not a library");
+    assert_ne!(error, "dlopen failed", "the loader's text was dropped");
+    assert!(
+        error.starts_with("dlopen failed: ") && error.len() > "dlopen failed: ".len() + 8,
+        "libloading's Display is only the label; the dlerror text is its source: {error}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
