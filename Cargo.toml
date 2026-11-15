@@ -20,6 +20,8 @@ members = [
     "crates/busbar-kernel-audit",
     "crates/plugin-loader",
     "crates/busbar-plugin-test",
+    # Core's repository checks (no-getrandom, crypto-graph), one CI job line each.
+    "tools/ci-checks",
 ]
 
 # Each version is written once here; members inherit with `workspace = true` and may add features.
@@ -91,8 +93,10 @@ percent-encoding = "2.3.2"
 form_urlencoded = "1.2.2"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"
-# Defaults off: rustls only, so no second crypto backend enters.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+# Test clients only (dev-dependencies of kernel, admin and oauth2; nothing ships it): they speak plain
+# HTTP to loopback servers, so no TLS feature. Its `rustls-tls` turns on rustls's ring provider, a second
+# crypto backend beside AWS-LC (229; tools/ci-checks crypto-graph).
+reqwest = { version = "0.12", default-features = false, features = ["stream"] }
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
 webpki-roots = "1"
 # Reading a CA certificate's basicConstraints, keyUsage and validity (core-connector trust store,

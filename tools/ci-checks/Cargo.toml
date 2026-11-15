@@ -1,0 +1,20 @@
+[package]
+name = "busbar-ci-checks"
+version = "1.6.0"
+publish = false            # internal workspace tool; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "Core's repository checks, one CI job line each in busbar-release ci/core.yml: no-getrandom (randomness only through the crypto facade) and crypto-graph (ring, sha2 and ed25519-dalek reachable in the root lock only through busbar-crypto)."
+license = "Apache-2.0"
+
+[[bin]]
+name = "busbar-ci-checks"
+path = "src/main.rs"
+bench = false
+
+[dependencies]
+proc-macro2 = { workspace = true }
+syn = { workspace = true }
+
+[lints]
+workspace = true
