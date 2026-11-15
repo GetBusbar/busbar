@@ -76,15 +76,46 @@ impl ConnScript {
     /// several writes and one write may meet several `expect`s; a write past the expected bytes, or bytes that
     /// differ, is `Invalid`; a write after a `reset` is `Closed`.
     fn wrote(&mut self, bytes: &[u8]) -> Result<(), NeedErr> {
-        let _ = bytes;
-        todo!("W1-T1 red: the script engine")
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            match self.steps.front_mut() {
+                Some(Step::Expect(want)) => {
+                    let n = want.len().min(rest.len());
+                    if want[..n] != rest[..n] {
+                        return Err(NeedErr::Invalid);
+                    }
+                    want.drain(..n);
+                    rest = &rest[n..];
+                    if want.is_empty() {
+                        self.steps.pop_front();
+                    }
+                }
+                Some(Step::Reset) => return Err(NeedErr::Closed),
+                _ => return Err(NeedErr::Invalid),
+            }
+        }
+        Ok(())
     }
 
     /// The plugin reads at most `max` bytes. A READ while the script still expects bytes from the plugin would
     /// wait forever on a real conn: it answers `Timeout`. A spent script reads as EOF.
     fn read(&mut self, max: usize) -> Result<Read, NeedErr> {
-        let _ = max;
-        todo!("W1-T1 red: the script engine")
+        if max == 0 {
+            return Err(NeedErr::Invalid);
+        }
+        match self.steps.front_mut() {
+            Some(Step::Reply(have)) => {
+                let n = have.len().min(max);
+                let out: Vec<u8> = have.drain(..n).collect();
+                if have.is_empty() {
+                    self.steps.pop_front();
+                }
+                Ok(Read::Bytes(out))
+            }
+            Some(Step::Eof) | None => Ok(Read::Eof),
+            Some(Step::Reset) => Err(NeedErr::Closed),
+            Some(Step::Expect(_)) => Err(NeedErr::Timeout),
+        }
     }
 }
 
