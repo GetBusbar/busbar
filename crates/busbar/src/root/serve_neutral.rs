@@ -44,6 +44,16 @@ impl From<Rendered> for Whole {
     }
 }
 
+/// The request a selected line serves: its admitted context and body, its transport scheme, and
+/// the slot and caller it answers through.
+struct AdmittedRequest<C> {
+    context: AdmittedContext,
+    body: Bytes,
+    scheme: u8,
+    slot: FramedSession,
+    caller: Arc<C>,
+}
+
 impl DataRoutes {
     pub(super) fn inbound_audit_kind(&self, line: u32) -> OpClassId {
         self.guests
@@ -130,7 +140,7 @@ impl DataRoutes {
     }
 
     /// Render a pre-admission refusal through the exact sealed claimant, without a path rematch.
-    pub fn refuse_line(
+    pub(crate) fn refuse_line(
         &self,
         app: &Arc<busbar_kernel::state::App>,
         refusal: &busbar_kernel::plane_routes::KernelRefusal<'_>,
@@ -189,11 +199,11 @@ impl DataRoutes {
             target,
             fields: std::mem::take(&mut head.fields)
                 .into_iter()
-                .filter_map(|(name, mut value)| {
+                .filter_map(|(name, value)| {
                     if keep_arrival_field(name.as_bytes()) {
                         Some((name.into_bytes(), value))
                     } else {
-                        zeroize::Zeroize::zeroize(&mut value);
+                        drop(busbar_contract::secure::SecureVec::from(value));
                         None
                     }
                 })
@@ -293,11 +303,13 @@ impl DataRoutes {
         self.serve_admitted_inner(
             admission,
             (plane, claim),
-            context,
-            body,
-            scheme,
-            slot,
-            caller,
+            AdmittedRequest {
+                context,
+                body,
+                scheme,
+                slot,
+                caller,
+            },
         )
         .instrument(span)
         .await
@@ -310,12 +322,15 @@ impl DataRoutes {
         admission: &RequestAdmission,
         // `serve_admitted`'s claim of the selected line, looked up once (SINGLE-PATH SP-A1).
         (plane, claim): DoorClaim,
-        context: AdmittedContext,
-        body: Bytes,
-        scheme: u8,
-        slot: FramedSession,
-        caller: Arc<C>,
+        request: AdmittedRequest<C>,
     ) -> Option<SessionPipe> {
+        let AdmittedRequest {
+            context,
+            body,
+            scheme,
+            slot,
+            caller,
+        } = request;
         if let Some(document) = resource_documents(&self.served).get(&(plane, claim)) {
             let rendered = busbar_kernel::ingress::protocol::metadata_rendered(
                 &busbar_kernel::ingress::protocol::Metadata {

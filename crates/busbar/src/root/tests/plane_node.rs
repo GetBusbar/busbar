@@ -2666,10 +2666,9 @@ fn rerank_history_on(
 fn rerank_report(units: u64) -> Report {
     Report {
         usage: busbar_contract::billing::ExactUsage {
-            usage_units: std::collections::BTreeMap::from([(
-                SEARCH_UNITS.to_string(),
-                units.into(),
-            )]),
+            usage_units: [(SEARCH_UNITS.to_string(), units.into())]
+                .into_iter()
+                .collect::<std::collections::BTreeMap<_, _>>(),
         },
         fee_count: 1,
         lane: "lane".to_string(),

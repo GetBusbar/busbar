@@ -360,7 +360,7 @@ fn observe_deallocation(address: usize, layout: Layout, reallocated: bool) {
 
 #[cfg(target_os = "linux")]
 fn read_payload(memory: &File, payload: &mut ObservedPayload) {
-    let mut chunk = [0u8; 4096];
+    let mut chunk = [0u8; 512];
     let mut all_zero = true;
     while payload.bytes_read < payload.len {
         let count = chunk.len().min(payload.len - payload.bytes_read);

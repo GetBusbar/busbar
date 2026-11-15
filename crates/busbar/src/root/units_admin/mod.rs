@@ -21,7 +21,7 @@ use busbar_kernel_ledger::cost::{Money, MoneyError};
 /// NO derived `Debug` — see the hand-written impl below. This value holds the operator's LIVE
 /// credential, twice.
 #[derive(Clone, PartialEq, Eq)]
-pub struct AdminRequest {
+pub(crate) struct AdminRequest {
     /// The request method.
     pub method: String,
     /// The request path, query string and all.
@@ -89,7 +89,7 @@ impl std::fmt::Debug for AdminRequest {
 /// from the others. An answer that carried only a body would force a status to be re-derived here,
 /// and a re-derived status is a status that can differ.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AdminAnswer {
+pub(crate) struct AdminAnswer {
     /// The status code.
     pub status: u16,
     /// The response headers, in emission order.
@@ -99,7 +99,7 @@ pub struct AdminAnswer {
 }
 
 #[async_trait::async_trait]
-pub trait AdminDispatch: Send + Sync {
+pub(crate) trait AdminDispatch: Send + Sync {
     async fn execute(&self, verb: KernelVerb, request: &AdminRequest) -> AdminAnswer;
 
     async fn execute_admitted(
@@ -135,7 +135,7 @@ impl AdminDispatch for AdmittedDispatch {
 /// request, and answering `503` says exactly that. Building the units against this is what lets the
 /// composition be tested without a listener.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct RefusingDispatch;
+pub(crate) struct RefusingDispatch;
 
 #[cfg(test)]
 #[async_trait::async_trait]
@@ -153,7 +153,7 @@ impl AdminDispatch for RefusingDispatch {
 /// One row of the one ledger, priced: a bucket's current window, its counts priced at the card each
 /// was earned under (MONEY-DESIGN §3: money is counts x the card, computed in core).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LedgerRow {
+pub(crate) struct LedgerRow {
     /// The bucket: a key's id.
     pub bucket: String,
     /// The window the counts are in, as the unix second it opens at (`0` = the all-time window).
@@ -167,7 +167,7 @@ pub struct LedgerRow {
 /// A row the card refused to price (#42): it is withheld from the figures and named, never served
 /// as the priced remainder.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RefusedRow {
+pub(crate) struct RefusedRow {
     /// The bucket.
     pub bucket: String,
     /// The window, as the unix second it opens at.
@@ -178,7 +178,7 @@ pub struct RefusedRow {
 
 /// The one ledger as the views read it, as of one read: every priced row, and every refused one.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PricedLedger {
+pub(crate) struct PricedLedger {
     /// The priced rows, in bucket order. A row nothing was counted in is not a row.
     pub rows: Vec<LedgerRow>,
     /// The rows the card refused to price.
@@ -186,14 +186,14 @@ pub struct PricedLedger {
 }
 
 #[async_trait::async_trait]
-pub trait LedgerView: Send + Sync {
+pub(crate) trait LedgerView: Send + Sync {
     async fn priced(&self) -> Result<PricedLedger, String>;
 }
 
 /// The view a node has before a ledger is bound behind it: no rows, which is the truth about a node
 /// composed with no governance store.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct UnopenedLedger;
+pub(crate) struct UnopenedLedger;
 
 #[async_trait::async_trait]
 impl LedgerView for UnopenedLedger {
@@ -202,7 +202,7 @@ impl LedgerView for UnopenedLedger {
     }
 }
 
-pub struct CountsLedger {
+pub(crate) struct CountsLedger {
     app: Arc<busbar_kernel::state::AppHandle>,
 }
 
@@ -214,7 +214,7 @@ impl std::fmt::Debug for CountsLedger {
 
 impl CountsLedger {
     #[must_use]
-    pub fn new(app: Arc<busbar_kernel::state::AppHandle>) -> Self {
+    pub(crate) fn new(app: Arc<busbar_kernel::state::AppHandle>) -> Self {
         CountsLedger { app }
     }
 }
@@ -269,7 +269,7 @@ pub(crate) async fn priced_keys(
 }
 
 #[async_trait::async_trait]
-pub trait AuditView: Send + Sync {
+pub(crate) trait AuditView: Send + Sync {
     fn read(&self, take: &mut dyn FnMut(&AuditChain, Option<&[AuditRecord]>));
 
     async fn read_window(
@@ -316,7 +316,7 @@ pub trait AuditView: Send + Sync {
     }
 }
 
-pub struct NodeAudit {
+pub(crate) struct NodeAudit {
     durability: Arc<Mutex<crate::root::durability::Durability>>,
 }
 
@@ -328,7 +328,7 @@ impl std::fmt::Debug for NodeAudit {
 
 impl NodeAudit {
     #[must_use]
-    pub fn new(durability: Arc<Mutex<crate::root::durability::Durability>>) -> Self {
+    pub(crate) fn new(durability: Arc<Mutex<crate::root::durability::Durability>>) -> Self {
         NodeAudit { durability }
     }
 
@@ -459,13 +459,13 @@ async fn render_audit_view(
     }
 }
 
-pub type PoolKnown = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+pub(crate) type PoolKnown = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 fn no_pools() -> PoolKnown {
     Arc::new(|_| false)
 }
 
-pub struct CoreGovernance {
+pub(crate) struct CoreGovernance {
     dispatch: Arc<dyn AdminDispatch>,
 
     ledger: Arc<dyn LedgerView>,
@@ -501,7 +501,7 @@ pub struct CoreGovernance {
 
 impl CoreGovernance {
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         dispatch: Arc<dyn AdminDispatch>,
         ledger: Arc<dyn LedgerView>,
         audit: Option<Arc<dyn AuditView>>,
@@ -532,13 +532,13 @@ impl CoreGovernance {
     }
 
     #[must_use]
-    pub fn trusting(mut self, trust: TrustDesk) -> Self {
+    pub(crate) fn trusting(mut self, trust: TrustDesk) -> Self {
         self.trust = trust;
         self
     }
 
     #[must_use]
-    pub fn replaying(
+    pub(crate) fn replaying(
         mut self,
         replays: Arc<bound::ReplayCache>,
         store: Option<bound::ReplayStore>,
@@ -565,7 +565,7 @@ impl CoreGovernance {
     }
 
     #[must_use]
-    pub fn pooled(mut self, pools: PoolKnown) -> Self {
+    pub(crate) fn pooled(mut self, pools: PoolKnown) -> Self {
         self.pools = pools;
         self
     }
@@ -577,13 +577,13 @@ impl CoreGovernance {
     }
 
     #[must_use]
-    pub fn granted(mut self, granted: VerbScope) -> Self {
+    pub(crate) fn granted(mut self, granted: VerbScope) -> Self {
         self.granted = granted;
         self
     }
 
     #[must_use]
-    pub fn amending(
+    pub(crate) fn amending(
         mut self,
         amendments: Option<Arc<AmendmentJournal>>,
         attribution: AmendAttribution,
@@ -1037,7 +1037,7 @@ async fn amend_rate_history_effect(
 /// Who asked for a correction — the fact the verbs unit resolved at Route and the durable amendment
 /// record states.
 #[derive(Debug, Clone)]
-pub struct AmendAttribution {
+pub(crate) struct AmendAttribution {
     /// The authenticated principal that submitted the correction.
     pub principal: String,
 }
@@ -1054,7 +1054,7 @@ const AMENDMENT_RECORD_TAG_V1: &str = "busbar/rate-amendment/v1";
 
 /// The original durable encoding retained when an old record is read back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AmendmentVersion {
+pub(crate) enum AmendmentVersion {
     /// Unbased records with implicitly priced cells.
     V1,
     /// Unbased records with explicit cell pricing markers.
@@ -1075,7 +1075,7 @@ pub enum AmendmentVersion {
 /// this node writes them as the empty
 /// fingerprint, `single` and the empty signature.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AmendmentRecord {
+pub(crate) struct AmendmentRecord {
     /// The durable format to preserve when this record is encoded again.
     pub version: AmendmentVersion,
     /// Start of the corrected window, milliseconds.
@@ -1121,7 +1121,7 @@ pub struct AmendmentRecord {
     pub signature: String,
 }
 
-pub fn amendment_body(
+pub(crate) fn amendment_body(
     record: &AmendmentRecord,
 ) -> Result<Vec<u8>, busbar_core_admin::GovernanceError> {
     use crate::root::kernel::CorrectionBase;
@@ -1177,7 +1177,7 @@ pub fn amendment_body(
 
 #[cfg(test)]
 #[must_use]
-pub fn amendment_from_body(body: &[u8]) -> Option<AmendmentRecord> {
+pub(crate) fn amendment_from_body(body: &[u8]) -> Option<AmendmentRecord> {
     struct Reader<'a>(&'a [u8]);
     impl<'a> Reader<'a> {
         #[cfg(test)]
@@ -1269,7 +1269,7 @@ pub fn amendment_from_body(body: &[u8]) -> Option<AmendmentRecord> {
     r.0.is_empty().then_some(record)
 }
 
-pub struct AmendmentJournal {
+pub(crate) struct AmendmentJournal {
     book: Arc<Mutex<crate::root::durability::Durability>>,
     token: Grant<busbar_contract::caps::DurableWrite>,
 }
@@ -1282,7 +1282,7 @@ impl std::fmt::Debug for AmendmentJournal {
 
 impl AmendmentJournal {
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         book: Arc<Mutex<crate::root::durability::Durability>>,
         token: Grant<busbar_contract::caps::DurableWrite>,
     ) -> Self {
@@ -1290,7 +1290,7 @@ impl AmendmentJournal {
     }
 
     #[cfg(test)]
-    pub async fn record(
+    pub(crate) async fn record(
         &self,
         record: &AmendmentRecord,
         wall_secs: u64,
@@ -1301,12 +1301,12 @@ impl AmendmentJournal {
             .map_err(|_| busbar_core_admin::GovernanceError::Store)
     }
 
-    pub async fn admit(&self) -> Result<(), String> {
+    pub(crate) async fn admit(&self) -> Result<(), String> {
         let journal = Arc::clone(&self.book.lock().unwrap_or_else(|p| p.into_inner()).journal);
         journal.flush().await.map_err(|error| format!("{error:?}"))
     }
 
-    pub async fn acked(&self, node_seq: u64) -> Result<(), String> {
+    pub(crate) async fn acked(&self, node_seq: u64) -> Result<(), String> {
         let journal = Arc::clone(&self.book.lock().unwrap_or_else(|p| p.into_inner()).journal);
         if node_seq >= journal.next_seq() {
             return Err("the requested journal record has not been staged".into());
@@ -1314,7 +1314,7 @@ impl AmendmentJournal {
         journal.flush().await.map_err(|error| format!("{error:?}"))
     }
 
-    pub fn seal_policy(
+    pub(crate) fn seal_policy(
         &self,
         body: Vec<u8>,
         wall_secs: u64,
@@ -1338,7 +1338,7 @@ impl AmendmentJournal {
 
     #[cfg(test)]
     #[must_use]
-    pub fn sealed_through(&self) -> u64 {
+    pub(crate) fn sealed_through(&self) -> u64 {
         self.book
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -1567,7 +1567,7 @@ impl AdminWalk {
     }
 }
 
-pub type AdminDoorFn =
+pub(crate) type AdminDoorFn =
     Arc<dyn Fn(&AdminRequest) -> busbar_kernel::auth::AdminVerdict + Send + Sync>;
 
 #[cfg(test)]
@@ -1609,7 +1609,7 @@ pub(crate) fn door_identifying(token: &'static str, id: &'static str) -> AdminDo
     })
 }
 
-pub type EffectAdmission = Arc<
+pub(crate) type EffectAdmission = Arc<
     dyn for<'a> Fn(
             &'a busbar_kernel::auth::effect::Context,
         ) -> std::pin::Pin<
@@ -1626,7 +1626,7 @@ pub type EffectAdmission = Arc<
         + Sync,
 >;
 
-pub struct AdminBinding {
+pub(crate) struct AdminBinding {
     pub effect_admission: Option<EffectAdmission>,
     pub dispatch: Arc<dyn AdminDispatch>,
 
@@ -1665,7 +1665,7 @@ impl std::fmt::Debug for AdminBinding {
 
 impl AdminBinding {
     #[must_use]
-    pub fn new(dispatch: Arc<dyn AdminDispatch>, door: AdminDoorFn) -> Self {
+    pub(crate) fn new(dispatch: Arc<dyn AdminDispatch>, door: AdminDoorFn) -> Self {
         AdminBinding {
             effect_admission: None,
             dispatch,
@@ -1687,28 +1687,28 @@ impl AdminBinding {
 
     #[cfg(test)]
     #[must_use]
-    pub fn with_pools(mut self, pools: PoolKnown) -> Self {
+    pub(crate) fn with_pools(mut self, pools: PoolKnown) -> Self {
         self.pools = pools;
         self
     }
 
     #[cfg(test)]
     #[must_use]
-    pub fn with_ledger_view(mut self, ledger: Arc<dyn LedgerView>) -> Self {
+    pub(crate) fn with_ledger_view(mut self, ledger: Arc<dyn LedgerView>) -> Self {
         self.ledger = ledger;
         self
     }
 
     #[cfg(test)]
     #[must_use]
-    pub fn with_audit_view(mut self, audit: Arc<dyn AuditView>) -> Self {
+    pub(crate) fn with_audit_view(mut self, audit: Arc<dyn AuditView>) -> Self {
         self.audit = Some(audit);
         self
     }
 }
 
 #[must_use]
-pub fn kernel_verb(resolved: &ResolvedVerb) -> Option<KernelVerb> {
+pub(crate) fn kernel_verb(resolved: &ResolvedVerb) -> Option<KernelVerb> {
     busbar_core_admin::verb::verb_for(resolved.method, resolved.template)
 }
 
@@ -2150,9 +2150,9 @@ mod admin_mount;
 pub(crate) use admin_mount::*;
 
 mod adjust;
-pub use adjust::live_adjuster;
+pub(crate) use adjust::live_adjuster;
 pub(crate) mod bound;
-pub use bound::{
+pub(crate) use bound::{
     live_admin_door, live_planes, live_records, live_replay_store, no_planes, no_trust,
     PlaneLookup, PlaneRecordSink, TrustDesk,
 };

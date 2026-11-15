@@ -3,10 +3,10 @@
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use busbar_contract::abi::host::conn::connector::{
     DIRECTION_OUTBOUND, EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPERATOR_INFRASTRUCTURE,
@@ -56,13 +56,14 @@ fn dispatcher() -> &'static Arc<Dispatcher> {
 
 fn actual_transport(variable: &str) -> Entry {
     static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
-    let path = PathBuf::from(std::env::var_os(variable).expect(variable));
-    let statement = rendering_of_library(&path)
+    let path = std::env::var_os(variable).expect(variable);
+    let path = Path::new(&path);
+    let statement = rendering_of_library(path)
         .expect("the actual transport image renders")
         .expect("the actual image exports a door");
     let dispatcher = dispatcher();
     let plugin = load_dropped::<Transport>(
-        &path,
+        path,
         &statement,
         Bind {
             instance: Arc::from(format!(
@@ -132,17 +133,23 @@ fn need(transport: &str, class: u32) -> ReadNeed {
     }
 }
 
+/// About 10 s of 2 ms polls: the waits below are bounded by a count, never by clock reads.
+const POLLS: u32 = 5000;
+
 fn settle<T>(call: impl FnMut() -> Result<T, ConnError>) -> Result<T, ConnError> {
-    settle_until(Instant::now() + Duration::from_secs(10), call)
+    let mut polls = POLLS;
+    settle_until(&mut polls, call)
 }
 
+/// `call` until it answers other than `Pending`, spending `polls` (shared by the caller's waits).
 fn settle_until<T>(
-    deadline: Instant,
+    polls: &mut u32,
     mut call: impl FnMut() -> Result<T, ConnError>,
 ) -> Result<T, ConnError> {
     loop {
         match call() {
-            Err(ConnError::Pending) if Instant::now() < deadline => {
+            Err(ConnError::Pending) if *polls > 0 => {
+                *polls -= 1;
                 std::thread::sleep(Duration::from_millis(2));
             }
             answer => return answer,
@@ -151,7 +158,7 @@ fn settle_until<T>(
 }
 
 fn accept(listener: &TcpListener) -> std::io::Result<TcpStream> {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut polls = POLLS;
     loop {
         match listener.accept() {
             Ok((socket, _)) => {
@@ -161,9 +168,10 @@ fn accept(listener: &TcpListener) -> std::io::Result<TcpStream> {
                 return Ok(socket);
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                if Instant::now() >= deadline {
+                if polls == 0 {
                     return Err(std::io::ErrorKind::TimedOut.into());
                 }
+                polls -= 1;
                 std::thread::sleep(Duration::from_millis(2));
             }
             Err(error) => return Err(error),
@@ -242,11 +250,11 @@ fn upgraded_echo(connector: &Connector, target: &str) -> Result<Vec<u8>, ConnErr
     })?;
     let answer = (|| {
         settle(|| connector.upgrade_secure(OWNER, id, Some("localhost"), None, false, NO_TICKET))?;
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut polls = POLLS;
         let mut at = 0;
         while at < 5 {
-            assert!(Instant::now() < deadline, "the complete TLS write finishes");
-            let written = settle_until(deadline, || {
+            assert!(polls > 0, "the complete TLS write finishes");
+            let written = settle_until(&mut polls, || {
                 connector.write(OWNER, id, &b"hello"[at..], false, false)
             })?;
             assert_ne!(written, 0, "a TLS write makes progress");
@@ -260,8 +268,8 @@ fn upgraded_echo(connector: &Connector, target: &str) -> Result<Vec<u8>, ConnErr
         let mut heads = 0;
         let mut buffer = [0_u8; 256];
         while body.len() < 5 {
-            assert!(Instant::now() < deadline, "the complete TLS body arrives");
-            let piece = settle_until(deadline, || {
+            assert!(polls > 0, "the complete TLS body arrives");
+            let piece = settle_until(&mut polls, || {
                 connector.read(OWNER, id, NO_TICKET, &mut buffer)
             })?;
             match piece.kind {
@@ -373,22 +381,20 @@ fn the_real_http_framer_delivers_one_head_and_the_exact_body() {
     let address = listener.local_addr().unwrap();
     let far = std::thread::spawn(move || {
         let mut socket = accept(&listener).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
+        // Each read waits at most 10 s, on the socket's own timeout.
+        socket
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
         let mut seen = [0_u8; 512];
         let mut used = 0;
         while !seen[..used].windows(4).any(|w| w == b"\r\n\r\n") {
             assert!(
-                Instant::now() < deadline,
-                "the complete request head arrives"
-            );
-            assert!(
                 used < seen.len(),
                 "the short fixture GET fits its head buffer"
             );
-            socket
-                .set_read_timeout(Some(deadline.saturating_duration_since(Instant::now())))
-                .unwrap();
-            let read = socket.read(&mut seen[used..]).unwrap();
+            let read = socket
+                .read(&mut seen[used..])
+                .expect("the complete request head arrives");
             assert_ne!(read, 0, "the request must have its complete head");
             used += read;
         }
@@ -432,11 +438,11 @@ fn the_real_http_framer_delivers_one_head_and_the_exact_body() {
     .unwrap();
     let mut heads = 0;
     let mut body = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut polls = POLLS;
     let mut buffer = [0_u8; 512];
     while body.len() < 5 {
-        assert!(Instant::now() < deadline, "the complete HTTP reply arrives");
-        let piece = settle_until(deadline, || {
+        assert!(polls > 0, "the complete HTTP reply arrives");
+        let piece = settle_until(&mut polls, || {
             connector.read(OWNER, id, NO_TICKET, &mut buffer)
         })
         .unwrap();

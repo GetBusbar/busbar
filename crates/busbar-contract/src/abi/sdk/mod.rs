@@ -639,6 +639,10 @@ pub mod migrate;
 )]
 pub mod plane_life;
 
+/// THE SANCTIONED COLD MODULE of the request-path SDK modules above: refusal text and other code
+/// the request path reaches only off its hot path, every fn `#[cold]` or `#[inline(never)]`.
+mod cold;
+
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 

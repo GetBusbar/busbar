@@ -9,8 +9,17 @@ use crate::secure::{SecureArray, SecureVec};
 
 use crate::crypto;
 
-fn joined(parts: &[&[u8]]) -> SecureVec {
-    SecureVec::from(parts.concat())
+/// The concatenation of `parts` in one exact-size custody block: it never grows, so no copy of
+/// the message is left behind unwiped.
+pub(crate) fn joined(parts: &[&[u8]]) -> SecureVec {
+    let total = parts
+        .iter()
+        .fold(0_usize, |n, part| n.saturating_add(part.len()));
+    let mut out = SecureVec::with_capacity(total).unwrap_or_default();
+    for part in parts {
+        out.extend_from_slice(part);
+    }
+    out
 }
 
 #[cold]

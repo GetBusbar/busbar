@@ -10,7 +10,12 @@ fn fold<R>(plugin: &str, kind: &'static str, envelope: &Envelope<R>) {
         metrics: envelope.metrics.clone(),
         diagnostics: envelope.diagnostics.clone(),
     };
-    testing::observing().fold(&std::sync::Arc::from(plugin), kind, owned);
+    testing::observing().fold(&crate::cold::observe::shared_name(plugin), kind, owned);
+}
+
+/// The time since `start`: a measurement's closing clock read, apart from its opening one.
+fn since(start: std::time::Instant) -> std::time::Duration {
+    start.elapsed()
 }
 
 fn fold_entries(
@@ -20,7 +25,7 @@ fn fold_entries(
     diagnostics: &[serde_json::Value],
 ) {
     testing::observing().fold_entries(
-        &std::sync::Arc::from(plugin),
+        &crate::cold::observe::shared_name(plugin),
         kind,
         metrics.to_vec(),
         diagnostics.to_vec(),
@@ -260,7 +265,7 @@ fn observed_through_its_bind<K: crate::dispatch::Kind>(
     let plugin = crate::dispatch::load_linked::<K>(
         &row,
         crate::dispatch::Bind {
-            instance: std::sync::Arc::from("envelope-all"),
+            instance: crate::cold::hook_door::instance_label("envelope-all"),
             max_inflight_cap: 64,
             sink: binder.clone(),
             dispatcher: d.adopter(),
@@ -425,7 +430,7 @@ fn a_full_intake_drops_and_counts_and_never_stalls_the_caller() {
             &[],
         );
     }
-    let took = started.elapsed();
+    let took = since(started);
     testing::HOLD.store(false, Ordering::SeqCst);
     let kept = testing::folds()
         .iter()
@@ -482,10 +487,11 @@ fn a_drop_after_the_last_handled_observation_is_still_reported() {
     let observing = testing::observing();
     let intake = observing.intake().expect("the intake runs");
     intake.counts.dropped.fetch_add(7, Ordering::AcqRel);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while testing::DROPPED.load(Ordering::SeqCst) - before < 7
-        && std::time::Instant::now() < deadline
-    {
+    // At least 10 s, as 10 ms polls counted rather than clocked.
+    for _ in 0..1_000 {
+        if testing::DROPPED.load(Ordering::SeqCst) - before >= 7 {
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     let reported = testing::DROPPED.load(Ordering::SeqCst) - before;

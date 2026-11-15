@@ -23,13 +23,16 @@ fn signing_key(der: &[u8]) -> Result<crypto::rsa::SigningKey, ()> {
 impl Cred {
     /// Whether the credential is a supported PKCS #8 RSA private key.
     pub fn rsa_pkcs8_check(&self) -> Result<(), String> {
-        let checked = signing_key(self.wire()).map(drop);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a configured key that is not one, refused once as its settings are checked"
-        )]
-        let checked = checked.map_err(|_| "the key is not a supported PKCS #8 RSA key".to_owned());
-        checked
+        signing_key(self.wire())
+            .map(drop)
+            .map_err(|()| crate::abi::sdk::cold::cred::not_a_pkcs8_rsa_key())
+    }
+
+    /// The length of [`Cred::jws_rs256`]'s answer under this key, found without signing: the
+    /// modulus length in base64url without padding. `None` when the key is not one.
+    pub(crate) fn jws_rs256_len(&self) -> Option<usize> {
+        let key = signing_key(self.wire()).ok()?;
+        base64::encoded_len(key.modulus_len(), false)
     }
 
     /// The RS256 signature of `signing_input`, base64url without padding.

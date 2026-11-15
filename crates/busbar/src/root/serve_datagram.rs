@@ -30,11 +30,11 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// THE CLAIM DOORS, by the claim their datagram framer answers: each one bound port.
 #[derive(Debug, Default, Clone)]
-pub struct ClaimDoors(pub(in crate::root) HashMap<String, Arc<ClaimDoor>>);
+pub(crate) struct ClaimDoors(pub(in crate::root) HashMap<String, Arc<ClaimDoor>>);
 
 impl ClaimDoors {
     #[must_use]
-    pub fn get(&self, claim: &str) -> Option<Arc<ClaimDoor>> {
+    pub(crate) fn get(&self, claim: &str) -> Option<Arc<ClaimDoor>> {
         self.0.get(claim).cloned()
     }
 }
@@ -47,7 +47,7 @@ enum Woke {
     Joined,
 }
 
-pub struct ClaimDoor {
+pub(crate) struct ClaimDoor {
     port: ReadyPort,
     runtime: tokio::runtime::Handle,
     detached: Option<Arc<DetachedTasks>>,
@@ -77,7 +77,7 @@ impl std::fmt::Debug for ClaimDoor {
 
 impl ClaimDoor {
     #[must_use]
-    pub fn serve(port: ReadyPort) -> Arc<Self> {
+    pub(crate) fn serve(port: ReadyPort) -> Arc<Self> {
         let door = Arc::new(ClaimDoor {
             port,
             runtime: tokio::runtime::Handle::current(),
@@ -122,7 +122,7 @@ impl ClaimDoor {
     }
 
     #[must_use]
-    pub fn local(&self) -> SocketAddr {
+    pub(crate) fn local(&self) -> SocketAddr {
         self.port.local_addr()
     }
 
@@ -286,7 +286,7 @@ impl ClaimDoor {
     }
 }
 
-pub struct CallerLeg {
+pub(crate) struct CallerLeg {
     me: Weak<CallerLeg>,
     door: Weak<ClaimDoor>,
     id: Mutex<Option<u64>>,
@@ -442,13 +442,25 @@ impl CallerLeg {
         }
     }
 
-    fn take_batch(&self, session: SessionBatch, _now: Instant) -> Result<(), String> {
+    fn take_batch(&self, session: SessionBatch, now: Instant) -> Result<(), String> {
+        self.take_batch_keeping(session, now, None).map(drop)
+    }
+
+    /// Take a published batch, passing over the piece at `keep` (whose bytes the caller took) and
+    /// handing back the custody it pairs with.
+    fn take_batch_keeping(
+        &self,
+        session: SessionBatch,
+        _now: Instant,
+        keep: Option<usize>,
+    ) -> Result<Option<Custody>, String> {
         let SessionBatch {
             pieces,
             custody,
             owners,
             producer,
         } = session;
+        let mut kept = None;
         let activity = custody.publishing();
         let _publication = CallerPublication {
             leg: self,
@@ -462,8 +474,12 @@ impl CallerLeg {
             .expect("publication owns its container")
             .clone();
         let mut owners = owners.into_iter();
-        for g in pieces {
+        for (at, g) in pieces.into_iter().enumerate() {
             let owner = owners.next().unwrap_or_else(|| fallback.clone());
+            if keep == Some(at) {
+                kept = Some(owner);
+                continue;
+            }
             if g.fields {
                 let release = {
                     let mut out = lock(&self.outbound);
@@ -519,7 +535,7 @@ impl CallerLeg {
                 return Err("the caller's channel reader did not accept its output".into());
             }
         }
-        Ok(())
+        Ok(kept)
     }
 
     fn release(self: Arc<Self>) -> impl std::future::Future<Output = ()> + Send + 'static {
@@ -646,7 +662,7 @@ impl CallerLeg {
                                 return false;
                             }
                             out.held.push_back((
-                                bytes.to_vec(),
+                                crate::root::cold::early_input(bytes),
                                 text,
                                 credit.take().expect("reserved input"),
                             ));
@@ -856,7 +872,7 @@ pub(super) struct Opened {
 }
 
 pub(super) struct Description {
-    bytes: Vec<u8>,
+    bytes: busbar_contract::secure::SecureVec,
     _custody: Custody,
 }
 
@@ -876,17 +892,10 @@ impl Description {
         let custody = self._custody.reader();
         let transfer = custody.copying();
         bytes::Bytes::from_owner(Delivered {
-            bytes: busbar_contract::secure::SecureVec::from(std::mem::take(&mut self.bytes)),
+            bytes: std::mem::take(&mut self.bytes),
             _custody: custody,
             _transfer: transfer,
         })
-    }
-}
-
-impl Drop for Description {
-    fn drop(&mut self) {
-        use zeroize::Zeroize as _;
-        self.bytes.zeroize();
     }
 }
 
@@ -939,18 +948,16 @@ impl Opened {
             .iter()
             .position(|piece| piece.stream == 0 && !piece.fields)
             .ok_or("the framer answered no description of its own")?;
-        let answer = session.pieces.remove(index).bytes;
-        let custody = if index < session.owners.len() {
-            session.owners.remove(index)
-        } else {
-            session.custody.clone()
-        };
-
+        let answer = busbar_contract::secure::SecureVec::from(std::mem::take(
+            &mut session.pieces[index].bytes,
+        ));
+        let custody = leg
+            .take_batch_keeping(session, now, Some(index))?
+            .ok_or("the framer answered no description of its own")?;
         let answer = Description {
             bytes: answer,
             _custody: custody,
         };
-        leg.take_batch(session, now)?;
         let (head_tx, head) = oneshot::channel();
         Ok(Opened {
             description: answer,

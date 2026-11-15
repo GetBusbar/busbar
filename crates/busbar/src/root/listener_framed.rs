@@ -36,7 +36,7 @@ const BODY_LIMIT_REFUSAL: u32 =
     busbar_kernel::plane_driver::class_status(busbar_contract::abi::plane::RefusalClass::TooLarge);
 
 pub(crate) type FramerFor = Arc<dyn Fn(&str) -> Option<Arc<dyn FramerDoor>> + Send + Sync>;
-pub type DispatchFor = Arc<
+pub(crate) type DispatchFor = Arc<
     dyn Fn(&busbar_kernel::inbound::RequestAdmission) -> Option<Arc<crate::root::serve::DataRoutes>>
         + Send
         + Sync,
