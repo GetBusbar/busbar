@@ -1667,3 +1667,11 @@ impl super::CombinedPlugin for Transactional {
         Ok(0)
     }
 }
+
+/// The outbound and verify-and-outbound macros fill `serve` (auth v4) too: a door either builds
+/// for a plugin without `CAP_PROVISION` answers `serve` REFUSED rather than leaving it NULL.
+#[test]
+fn the_outbound_and_combined_macros_fill_the_serve_slot() {
+    assert!(ops_of(plugin::door).serve.is_some(), "auth_outbound_door!");
+    assert!(ops_of(gated::door).serve.is_some(), "auth_door!");
+}
