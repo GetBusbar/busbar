@@ -211,6 +211,8 @@ pub fn options() -> serde_saphyr::Options {
         null_scalars_as_text: true,
         // serde_yaml's rule: a quoted scalar is a string, never a number or a boolean.
         quoted_scalars_are_strings: true,
+        // serde_yaml's rule: a unit struct reads only from null, never from `{}`.
+        unit_structs_refuse_mappings: true,
         lowercase_radix_prefixes_only: true,
         bom_inside_document_as_content: true,
         // serde_yaml's rule: each repeated entry reaches the reader, which decides (a struct

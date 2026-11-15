@@ -61,6 +61,12 @@ delta = "2.1.1@git:8ec56f9acc93e8f2f2c30f4e52497acc76cce86a -> 2.1.1@git:9e1666f
 importable = false
 notes = "busbar's own patch: one commit, src/de/message_formatters.rs only. Unknown field and unknown variant refusals render their expected names as serde's default de::Error does (`a`, `a` or `b`, one of `a`, `b`, `c`; there are no fields/variants when empty) via a pure string helper. Display text only: no parsing, unsafe, I/O or dependency change. Covers only this exact revision."
 
+[[audits.serde-saphyr]]
+criteria = "safe-to-deploy"
+delta = "2.1.1@git:9e1666f3199cf41ab83394936a5093f72c7e22c1 -> 2.1.1@git:49b330217b7d8a2e7873336ce7411a0079776af8"
+importable = false
+notes = "busbar's own patch: one commit adding opt-in Options::unit_structs_refuse_mappings (default false): deserialize_unit_struct refuses a mapping start with the existing UnexpectedValueForUnit error when set. options.rs, cfg.rs, deserializer.rs (one match arm), tests.rs. No unsafe, I/O or dependency change; default behaviour unchanged. Covers only this exact revision."
+
 [[audits.h2]]
 criteria = "safe-to-deploy"
 delta = "0.4.18 -> 0.4.18@git:d6146a5c425e55653cdfebc5660e52d87430c588"
