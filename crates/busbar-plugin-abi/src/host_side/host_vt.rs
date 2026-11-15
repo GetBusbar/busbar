@@ -64,6 +64,8 @@ fn contain<R>(fallback: R, body: impl FnOnce() -> R) -> R {
 /// caller (the HOST entries, UNSAFE-MIN).
 #[cfg(test)]
 mod injection {
+    use crate::host_side::entry;
+    use busbar_ffi::{Bytes, CryptoRet, Host, HostFns};
     use core::cell::Cell;
 
     std::thread_local! {
@@ -588,10 +590,31 @@ mod tests {
         }
     }
 
-    /// The bytes of an answer, read back from this thread's arena.
+    /// The bytes of an answer.
     fn bytes(out: CryptoOut) -> Vec<u8> {
         assert_eq!(out.status, status::OK, "{out:?}");
-        ARENA.with(|cell| cell.borrow().buf[out.at..out.at + out.len].to_vec())
+        out.bytes.clone()
+    }
+
+    /// A host with no entries: the tests need only its `Ctx` brand.
+    const NO_HOST: Host = Host::new(
+        0,
+        HostFns {
+            now: None,
+            mono: None,
+            random: None,
+            crypto: None,
+            log: None,
+            log_level: None,
+            grow: None,
+            deployment: None,
+            migrate_admit: None,
+        },
+    );
+
+    /// Status and a copy of the lent bytes of one answer.
+    fn seen(ret: CryptoRet<'_>) -> (u32, Vec<u8>) {
+        (ret.status, ret.out.get().to_vec())
     }
 
     fn unhex(text: &str) -> Vec<u8> {
@@ -642,48 +665,66 @@ mod tests {
     #[test]
     fn c_header_arena_outputs_are_append_only_and_intact() {
         fresh(|| {
-            let kat = unhex("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
-            let first = crypto_body(&req(
-                alg::HMAC_SHA256,
-                key_form::RAW,
-                b"Jefe",
-                b"what do ya want for nothing?",
-                b"",
-            ));
-            let second = crypto_body(&req(
-                alg::HMAC_SHA256,
-                key_form::RAW,
-                b"Jefe",
-                b"provided",
-                b"",
-            ));
-            assert!(first.at + first.len <= second.at, "{first:?} {second:?}");
-            assert_eq!(bytes(first), kat);
-            assert_ne!(bytes(second), kat);
-            let random = random_body(64);
-            assert!(second.at + second.len <= random.at);
-            assert_eq!(
-                bytes(first),
-                kat,
-                "the first output is intact after two more"
-            );
+            entry::within(7, || {
+                NO_HOST.scoped(|ctx| {
+                    let kat =
+                        unhex("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
+                    let hmac = |data: &[u8]| {
+                        vt::crypto(
+                            ctx,
+                            &CryptoReq {
+                                alg: alg::HMAC_SHA256,
+                                key_form: key_form::RAW,
+                                param: 0,
+                                key: Bytes::new(b"Jefe"),
+                                data: Bytes::new(data),
+                                aux: Bytes::EMPTY,
+                                aad: Bytes::EMPTY,
+                            },
+                        )
+                    };
+                    let first = hmac(b"what do ya want for nothing?");
+                    let second = hmac(b"provided");
+                    assert_eq!((first.status, second.status), (status::OK, status::OK));
+                    let (f, s) = (first.out.get(), second.out.get());
+                    assert!(f.as_ptr().addr() + f.len() <= s.as_ptr().addr());
+                    assert_eq!(f, kat);
+                    assert_ne!(s, kat);
+                    let random = vt::random(ctx, 64);
+                    assert_eq!(random.status, status::OK);
+                    let r = random.out.get();
+                    assert!(s.as_ptr().addr() + s.len() <= r.as_ptr().addr());
+                    assert_eq!(
+                        first.out.get(),
+                        kat,
+                        "the first output is intact after two more"
+                    );
 
-            // Filling to the cap: the output that does not fit is LIMIT, written nowhere; earlier outputs stay.
-            let mut last = random;
-            while let Some(next) = Some(random_body(RANDOM_MAX)).filter(|o| o.status == status::OK)
-            {
-                last = next;
-            }
-            assert_eq!(random_body(RANDOM_MAX), CryptoOut::status(status::LIMIT));
-            let room = ARENA_CAP - (last.at + last.len);
-            assert_eq!(random_body(room + 1), CryptoOut::status(status::LIMIT));
-            if room > 0 {
-                assert_eq!(random_body(room).status, status::OK);
-            }
-            assert_eq!(random_body(1), CryptoOut::status(status::LIMIT));
-            assert_eq!(bytes(first), kat);
-            let limit = vt::random(1);
-            assert_eq!((limit.crypto_status(), limit.len()), (status::LIMIT, 0));
+                    // Filling to the cap: the output that does not fit is LIMIT, written nowhere, and the
+                    // earlier outputs stay.
+                    let mut used = 32 + 32 + 64;
+                    while used + RANDOM_MAX <= ARENA_CAP {
+                        assert_eq!(vt::random(ctx, RANDOM_MAX).status, status::OK);
+                        used += RANDOM_MAX;
+                    }
+                    let room = ARENA_CAP - used;
+                    assert_eq!(seen(vt::random(ctx, RANDOM_MAX)), (status::LIMIT, vec![]));
+                    assert_eq!(seen(vt::random(ctx, room + 1)), (status::LIMIT, vec![]));
+                    if room > 0 {
+                        assert_eq!(vt::random(ctx, room).status, status::OK);
+                    }
+                    assert_eq!(seen(vt::random(ctx, 1)), (status::LIMIT, vec![]));
+                    assert_eq!(first.out.get(), kat);
+
+                    // The outermost exit zeroes what was lent (I11) and the arena starts over.
+                    reset_arena();
+                    assert!(first.out.get().iter().all(|&b| b == 0));
+                    assert!(r.iter().all(|&b| b == 0));
+                    let again = vt::random(ctx, 64);
+                    assert_eq!(again.status, status::OK);
+                    assert_eq!(again.out.get().as_ptr(), f.as_ptr());
+                });
+            });
         });
     }
 
@@ -696,16 +737,83 @@ mod tests {
                 CryptoOut::status(status::INVALID)
             );
             let (a, b) = (random_body(32), random_body(32));
-            assert_ne!(bytes(a), bytes(b));
+            assert_ne!(bytes(a.clone()), bytes(b));
             assert_ne!(bytes(a), [0; 32]);
-            let raw = vt::random(16);
-            assert_eq!((raw.crypto_status(), raw.len()), (status::OK, 16));
-            assert_eq!(raw.read(<[u8]>::len), 16);
-            let refused = vt::random(0);
-            assert_eq!(
-                (refused.crypto_status(), refused.len()),
-                (status::INVALID, 0)
+            entry::within(1, || {
+                NO_HOST.scoped(|ctx| {
+                    let raw = seen(vt::random(ctx, 16));
+                    assert_eq!((raw.0, raw.1.len()), (status::OK, 16));
+                    assert_eq!(seen(vt::random(ctx, 0)), (status::INVALID, vec![]));
+                });
+            });
+        });
+    }
+
+    #[test]
+    fn random_and_crypto_outside_an_entry_answer_empty_with_a_failure_status() {
+        fresh(|| {
+            NO_HOST.scoped(|ctx| {
+                let (status, bytes) = seen(vt::random(ctx, 16));
+                assert_ne!(status, status::OK);
+                assert!(bytes.is_empty());
+                let req = CryptoReq {
+                    alg: alg::SHA256,
+                    key_form: key_form::RAW,
+                    param: 0,
+                    key: Bytes::EMPTY,
+                    data: Bytes::new(b"abc"),
+                    aux: Bytes::EMPTY,
+                    aad: Bytes::EMPTY,
+                };
+                let (status, bytes) = seen(vt::crypto(ctx, &req));
+                assert_ne!(status, status::OK);
+                assert!(bytes.is_empty());
+            });
+            // Nothing was lent, so the arena is untouched and the next entry starts at its beginning.
+            entry::within(1, || {
+                NO_HOST.scoped(|ctx| assert_eq!(vt::random(ctx, 8).status, status::OK));
+            });
+        });
+    }
+
+    #[test]
+    fn the_host_static_carries_the_safe_trampolines() {
+        fresh(|| {
+            let fns = HOST.fns();
+            assert!(fns.now.is_some() && fns.mono.is_some() && fns.log.is_some());
+            assert!(fns.log_level.is_some() && fns.grow.is_some() && fns.deployment.is_some());
+            assert!(
+                fns.migrate_admit.is_none(),
+                "K9's seam waits for the entry guard"
             );
+            let random = fns.random.expect("random");
+            let crypto = fns.crypto.expect("crypto");
+            let now = fns.now.expect("now");
+            HOST.scoped(|ctx| {
+                assert!(now(ctx) > 1_600_000_000_000_000_000);
+                let outside = random(ctx, 16);
+                assert_ne!(outside.status, status::OK);
+                assert!(outside.out.is_empty());
+                entry::within(3, || {
+                    let ok = random(ctx, 16);
+                    assert_eq!((ok.status, ok.out.get().len()), (status::OK, 16));
+                    let req = CryptoReq {
+                        alg: alg::SHA256,
+                        key_form: key_form::RAW,
+                        param: 0,
+                        key: Bytes::EMPTY,
+                        data: Bytes::new(b"abc"),
+                        aux: Bytes::EMPTY,
+                        aad: Bytes::EMPTY,
+                    };
+                    let sha = crypto(ctx, &req);
+                    assert_eq!(
+                        sha.out.get(),
+                        unhex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+                    );
+                });
+                reset_arena();
+            });
         });
     }
 
@@ -905,17 +1013,31 @@ mod tests {
             injection::arm_panic();
             assert_eq!(vt::mono(), 0);
             injection::arm_panic();
-            let random = vt::random(16);
-            assert_eq!((random.crypto_status(), random.len()), (status::RNG, 0));
+            NO_HOST.scoped(|ctx| {
+                entry::within(2, || {
+                    assert_eq!(seen(vt::random(ctx, 16)), (status::RNG, vec![]));
+                    injection::arm_panic();
+                    let req = CryptoReq {
+                        alg: alg::SHA256,
+                        key_form: key_form::RAW,
+                        param: 0,
+                        key: Bytes::EMPTY,
+                        data: Bytes::new(b"abc"),
+                        aux: Bytes::EMPTY,
+                        aad: Bytes::EMPTY,
+                    };
+                    assert_eq!(seen(vt::crypto(ctx, &req)), (status::RNG, vec![]));
+                });
+            });
             injection::arm_panic();
             assert_eq!(vt::deployment(), DeploymentId([0; 16]));
             injection::arm_panic();
             vt::log(3, 0, "dropped");
-            assert_eq!(faults(HOST_PANIC), before + 5);
+            assert_eq!(faults(HOST_PANIC), before + 6);
             assert!(vt::now() > 1_600_000_000_000_000_000);
             assert_eq!(
                 faults(HOST_PANIC),
-                before + 5,
+                before + 6,
                 "an armed injection fires once"
             );
 
@@ -923,7 +1045,7 @@ mod tests {
             set_log_sink(test_sink);
             SINK_PANICS.with(|p| p.set(true));
             contain((), || log_body(1, 0, "line"));
-            assert_eq!(faults(HOST_PANIC), before + 6);
+            assert_eq!(faults(HOST_PANIC), before + 7);
             SINK_PANICS.with(|p| p.set(false));
         });
     }

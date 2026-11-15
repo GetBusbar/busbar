@@ -27,3 +27,12 @@ pub(crate) fn owner() -> Option<u32> {
         slot => Some(slot),
     }
 }
+
+/// Runs `f` as if an entry of `slot` were running on this thread (the guard itself is W1-H1's); restores on exit.
+#[cfg(test)]
+pub(crate) fn within<R>(slot: u32, f: impl FnOnce() -> R) -> R {
+    let saved = OWNER.with(|owner| owner.replace(slot));
+    let answer = f();
+    OWNER.with(|owner| owner.set(saved));
+    answer
+}
