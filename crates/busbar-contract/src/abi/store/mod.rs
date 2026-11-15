@@ -20,7 +20,3 @@ abi_struct! {
 pub const CANCEL_UNKNOWN: u32 = 0;
 /// Diagnostic for reuse of a logical operation identity with a different body.
 pub const DIAG_OPID_CONFLICT: &str = "STORE_OPID_CONFLICT";
-/// Caller-side retry give-up horizon still read by five kernel retry owners
-/// (host records, governance recovery, ledger correction, exact debt, metering flush).
-/// Store COMMIT dedupe no longer depends on it: slot rows never expire.
-pub const OP_ID_RETENTION_SECS: u64 = 24 * 60 * 60;

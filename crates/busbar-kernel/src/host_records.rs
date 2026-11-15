@@ -267,7 +267,6 @@ pub(crate) struct ConditionalWrite {
     pub owed: ConditionalOwed,
     _unit: Option<Arc<crate::host_units::UnitRecord>>,
     pub(crate) prepared: bool,
-    submitted: Option<std::time::Instant>,
     uncertain: bool,
     pub(crate) positions: Vec<crate::host_chains::ConditionalPosition>,
     pub(crate) native_pending: Option<crate::persistence::facade::PendingId>,
@@ -288,7 +287,6 @@ impl ConditionalWrite {
             owed,
             _unit: unit,
             prepared: false,
-            submitted: None,
             uncertain: false,
             positions: Vec::new(),
             native_pending: None,
@@ -299,7 +297,6 @@ impl ConditionalWrite {
         mut self,
         rows: &dyn RecordRows,
         book: &crate::host_chains::ChainBook,
-        now: std::time::Instant,
     ) -> Option<Self> {
         if !self.prepared {
             for chain in self.chains.iter() {
@@ -319,18 +316,8 @@ impl ConditionalWrite {
             }
             self.prepared = true;
         }
-        let first = *self.submitted.get_or_insert(now);
-        if now.saturating_duration_since(first).as_secs()
-            >= busbar_contract::abi::store::OP_ID_RETENTION_SECS
-        {
-            if let Some(acked) = self.owed.acked.take() {
-                acked(ConditionalResult {
-                    correlation: self.owed.correlation,
-                    decision: Err(ConditionalFailure::Indeterminate),
-                });
-            }
-            return Some(self);
-        }
+        // An ambiguous write is resent with its exact operation, however old: its slot is held
+        // until it settles, so the store replays the recorded verdict (STORE-TRANSACTIONS N8).
         match rows.record_transaction(&self.request) {
             Ok(decision) => {
                 for position in &self.positions {

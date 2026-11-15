@@ -76,11 +76,36 @@ pub enum AdminError {
     /// of the card, not the request, is what a retry cannot fix. `class` is `None` when the card
     /// names no entry for the lane at all (then no class of it is priced).
     UnpricedClass { lane: String, class: Option<String> },
+    /// A plugin refused in its own words: a settings push the hook refused or did not acknowledge
+    /// (`hook_no_ack`), or an op or instance open the plugin refused (`plugin_rejected`). `code =
+    /// invalid_request`. The message is core's; the plugin's scrubbed text and code ride in
+    /// `details` (`PluginTextDetails`, ADMIN-API-1.6 section 1.3), never in the message.
+    PluginText {
+        cond: taxonomy::Cond,
+        text: Option<String>,
+        plugin_diag: Option<String>,
+        condition: Option<String>,
+    },
 }
 
 use busbar_kernel::admin::gate::ApiError;
 
 impl AdminError {
+    /// A plugin's refusal in its own words (see [`AdminError::PluginText`]).
+    pub fn plugin_text(
+        cond: taxonomy::Cond,
+        text: Option<String>,
+        plugin_diag: Option<String>,
+        condition: Option<String>,
+    ) -> Self {
+        AdminError::PluginText {
+            cond,
+            text,
+            plugin_diag,
+            condition,
+        }
+    }
+
     pub fn not_found(what: impl Into<String>) -> Self {
         AdminError::NotFound {
             what: what.into(),
@@ -108,6 +133,7 @@ impl AdminError {
             AdminError::Internal => ApiError::Internal.code(),
             AdminError::Unavailable(_) => ApiError::Unavailable(String::new()).code(),
             AdminError::UnpricedClass { .. } => "unpriced_class",
+            AdminError::PluginText { .. } => "invalid_request",
         }
     }
 
@@ -124,6 +150,7 @@ impl AdminError {
             AdminError::Internal => ApiError::Internal.http_status(),
             AdminError::Unavailable(_) => ApiError::Unavailable(String::new()).http_status(),
             AdminError::UnpricedClass { .. } => 409,
+            AdminError::PluginText { .. } => 400,
         }
     }
 
@@ -148,6 +175,12 @@ impl AdminError {
             AdminError::RateLimited => ApiError::RateLimited.message(),
             AdminError::Internal => ApiError::Internal.message(),
             AdminError::Unavailable(msg) => msg.clone(),
+            AdminError::PluginText { cond, .. } => match cond {
+                taxonomy::Cond::HookNoAck => {
+                    "the hook did not acknowledge the settings push".into()
+                }
+                _ => "the plugin refused the request".into(),
+            },
             AdminError::UnpricedClass { lane, class } => match class {
                 Some(class) => format!(
                     "usage cannot be priced: the rate card in force names no price for class \

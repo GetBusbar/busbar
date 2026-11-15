@@ -76,6 +76,7 @@ pub trait UnitCheckpointSink: Send + Sync {
 mod book;
 
 pub use book::UnitAuditMiss;
+pub(crate) use book::UnitCustody;
 use book::{Pending, PendingBook};
 
 #[derive(Default)]
@@ -83,6 +84,13 @@ pub(super) struct UnitCheckpointBook {
     sink: OnceLock<Arc<dyn UnitCheckpointSink>>,
     pending: PendingBook,
     flushing: tokio::sync::Mutex<()>,
+}
+
+impl UnitCheckpointBook {
+    /// The terminal-backlog mirror the admission gate reads (SHUTDOWN-HANG F4a).
+    pub(super) fn terminal_counter(&self) -> Arc<std::sync::atomic::AtomicU64> {
+        self.pending.terminal_counter()
+    }
 }
 
 /// A checkpoint refusal, rendered once on the error path.
@@ -155,6 +163,16 @@ impl GovState {
     pub(super) fn has_unsettled_unit_checkpoints(&self) -> bool {
         !self.unit_checkpoints.pending.lock().is_empty()
             || self.unit_checkpoints.flushing.try_lock().is_err()
+    }
+
+    /// Every unit entry's custody facts, for a non-retired exit's classification.
+    pub(crate) fn unit_checkpoint_states(&self) -> Vec<UnitCustody> {
+        self.unit_checkpoints.pending.lock().custody_states()
+    }
+
+    /// Whether a unit flush pass holds the book's flush lock right now.
+    pub(crate) fn unit_checkpoints_flushing(&self) -> bool {
+        self.unit_checkpoints.flushing.try_lock().is_err()
     }
 
     pub(crate) fn unit_checkpoint_pending(&self, id: &[u8; 16]) -> bool {
@@ -242,20 +260,35 @@ impl GovState {
         true
     }
 
-    /// Called by the existing usage flusher, including its final shutdown pass.
+    /// Called by the flusher's tick, boot restore and the upgrade candidate: never halted.
     pub async fn flush_unit_checkpoints(&self) -> RecordStoreResult<()> {
+        self.flush_unit_checkpoints_until(&|| false).await
+    }
+
+    /// One pass that reads `halt` before each item and returns at the first boundary where it
+    /// is true (SHUTDOWN-HANG F3.3/F4 [M]). An item already started runs to its end, so no write
+    /// is dropped; the items not reached stay in custody. Terminal entries go first, then running
+    /// entries whose revision moved; the pass yields to the runtime after every item.
+    pub async fn flush_unit_checkpoints_until(
+        &self,
+        halt: &(impl Fn() -> bool + Sync),
+    ) -> RecordStoreResult<()> {
         let Some(sink) = self.unit_checkpoints.sink.get() else {
             return Ok(());
         };
         let _flush = self.unit_checkpoints.flushing.lock().await;
-        let ids = self.unit_checkpoints.pending.lock().ids();
+        let ids = self.unit_checkpoints.pending.lock().flush_order();
         let mut first_error = None;
         for id in ids {
+            if halt() {
+                break;
+            }
             if let Err(failed) = self.flush_unit_checkpoint(sink.as_ref(), id).await {
                 tracing::warn!(checkpoint = %hex::encode(id), error = %failed,
                     "running money checkpoint remains unresolved and will retry");
                 first_error.get_or_insert(failed);
             }
+            tokio::task::yield_now().await;
         }
         first_error.map_or(Ok(()), Err)
     }

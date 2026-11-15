@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use busbar_contract::abi::sdk::expiry::Counted;
 
@@ -26,6 +26,9 @@ pub(super) struct PendingBook {
     blocked: RecoveredTargets,
     /// `note_unit_audit` calls that matched no single live entry.
     audit_misses: AtomicU64,
+    /// The number of `ended` entries: the admission gate's terminal backlog (SHUTDOWN-HANG
+    /// F4a). Changed only under `inner`, by the methods that change an entry's `ended`.
+    terminal: Arc<AtomicU64>,
 }
 
 #[derive(Default)]
@@ -48,6 +51,17 @@ pub(super) struct Pending {
     persisted: Option<u64>,
     recovered: bool,
     audit_seq: Option<u64>,
+}
+
+/// One entry's custody facts at a non-retired exit (SHUTDOWN-HANG §5).
+#[derive(Clone, Debug)]
+pub(crate) struct UnitCustody {
+    pub(crate) id: Id,
+    pub(crate) ended: bool,
+    pub(crate) persisted: Option<u64>,
+    pub(crate) revision: u64,
+    pub(crate) principal: String,
+    pub(crate) group: String,
 }
 
 /// `note_unit_audit` matched zero or several live entries for the unit; the caller falls back to
@@ -160,7 +174,13 @@ impl PendingBook {
             inner: self.inner.lock().unwrap_or_else(|p| p.into_inner()),
             blocked: &self.blocked,
             audit_misses: &self.audit_misses,
+            terminal: &self.terminal,
         }
+    }
+
+    /// The terminal-backlog counter the admission gate reads without the lock.
+    pub(super) fn terminal_counter(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.terminal)
     }
 
     /// Whether a recovered unit still blocks admission to `(bucket, window)`. It never takes the
@@ -235,6 +255,12 @@ impl PendingBook {
         assert_eq!(kept, index, "recovered index");
         let kept: BTreeSet<_> = inner.by_unit.iter().copied().collect();
         assert_eq!(kept, by_unit, "unit index");
+        let ended = inner.entries.values().filter(|e| e.snapshot.ended).count();
+        assert_eq!(
+            self.terminal.load(Ordering::Relaxed),
+            u64::try_from(ended).unwrap_or(u64::MAX),
+            "terminal mirror"
+        );
     }
 }
 
@@ -242,6 +268,7 @@ pub(super) struct PendingGuard<'a> {
     inner: MutexGuard<'a, Inner>,
     blocked: &'a RecoveredTargets,
     audit_misses: &'a AtomicU64,
+    terminal: &'a AtomicU64,
 }
 
 impl PendingGuard<'_> {
@@ -260,8 +287,14 @@ impl PendingGuard<'_> {
             self.blocked.add(&entry.snapshot.targets);
         }
         let unit = entry.snapshot.unit;
+        if entry.snapshot.ended {
+            self.terminal.fetch_add(1, Ordering::Relaxed);
+        }
         let old = self.inner.entries.insert(id, entry);
         if let Some(old) = &old {
+            if old.snapshot.ended {
+                self.terminal.fetch_sub(1, Ordering::Relaxed);
+            }
             self.inner.by_unit.remove(&(old.snapshot.unit, id));
             if old.recovered {
                 self.blocked.drop_targets(&old.snapshot.targets);
@@ -273,6 +306,9 @@ impl PendingGuard<'_> {
 
     pub(super) fn remove(&mut self, id: &Id) -> Option<Pending> {
         let old = self.inner.entries.remove(id)?;
+        if old.snapshot.ended {
+            self.terminal.fetch_sub(1, Ordering::Relaxed);
+        }
         self.inner.by_unit.remove(&(old.snapshot.unit, *id));
         if old.recovered {
             self.blocked.drop_targets(&old.snapshot.targets);
@@ -288,6 +324,7 @@ impl PendingGuard<'_> {
             entry,
             by_unit: &mut inner.by_unit,
             blocked: self.blocked,
+            terminal: self.terminal,
         })
     }
 
@@ -325,9 +362,31 @@ impl PendingGuard<'_> {
         }
     }
 
-    /// Every id. A cold walk: the flusher's pass and shutdown only.
-    pub(super) fn ids(&self) -> Vec<Id> {
-        crate::off_path::governance::runtime::unit_checkpoint_book_ids(self.inner.entries.keys())
+    /// The flush pass's snapshot (SHUTDOWN-HANG F3.3): every `ended` entry first, then the
+    /// running entries whose revision moved since their last persist, each group in id order.
+    /// A running entry whose revision is persisted needs no store call and is skipped.
+    pub(super) fn flush_order(&self) -> Vec<Id> {
+        crate::off_path::governance::runtime::unit_checkpoint_book_flush_order(
+            self.inner.entries.iter(),
+            |e: &Pending| e.snapshot.ended,
+            |e: &Pending| !e.snapshot.ended && e.persisted != Some(e.snapshot.revision),
+        )
+    }
+
+    /// Every entry's custody facts at exit: id, ended, persisted revision, staged revision,
+    /// principal and group. A cold walk: a non-retired exit only.
+    pub(super) fn custody_states(&self) -> Vec<UnitCustody> {
+        crate::off_path::governance::runtime::unit_checkpoint_book_map(
+            self.inner.entries.iter(),
+            |(id, e): (&Id, &Pending)| UnitCustody {
+                id: *id,
+                ended: e.snapshot.ended,
+                persisted: e.persisted,
+                revision: e.snapshot.revision,
+                principal: e.snapshot.principal.clone(),
+                group: e.snapshot.group.clone(),
+            },
+        )
     }
 
     /// Whether every entry satisfies `f`. A cold walk: boot only.
@@ -344,6 +403,7 @@ pub(super) struct PendingEdit<'a> {
     entry: &'a mut Pending,
     by_unit: &'a mut Counted<BTreeSet<(u64, Id)>>,
     blocked: &'a RecoveredTargets,
+    terminal: &'a AtomicU64,
 }
 
 impl PendingEdit<'_> {
@@ -368,6 +428,15 @@ impl PendingEdit<'_> {
         if snapshot.unit != self.entry.snapshot.unit {
             self.by_unit.remove(&(self.entry.snapshot.unit, self.id));
             self.by_unit.insert((snapshot.unit, self.id));
+        }
+        match (self.entry.snapshot.ended, snapshot.ended) {
+            (false, true) => {
+                self.terminal.fetch_add(1, Ordering::Relaxed);
+            }
+            (true, false) => {
+                self.terminal.fetch_sub(1, Ordering::Relaxed);
+            }
+            _ => {}
         }
         self.entry.snapshot = snapshot;
     }

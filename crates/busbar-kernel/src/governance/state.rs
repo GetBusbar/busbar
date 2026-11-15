@@ -213,6 +213,10 @@ impl GovState {
         let mut boot_caller_ref = busbar_contract::secure::SecureArray::<32>::zeroed();
         busbar_contract::crypto::fill(&mut boot_caller_ref[..])
             .expect("OS randomness for the per-boot caller-reference key");
+        let unit_checkpoints = unit_checkpoint::UnitCheckpointBook::default();
+        let admissions = Arc::new(super::drain::AdmissionGate::over(
+            unit_checkpoints.terminal_counter(),
+        ));
         Ok(Self {
             observation_view: RwLock::default(),
             core,
@@ -231,7 +235,8 @@ impl GovState {
             budget_flush_runner: BudgetFlushRunner::default(),
             deleting_budget_buckets: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             pending_metering: PendingMetering::new(),
-            unit_checkpoints: unit_checkpoint::UnitCheckpointBook::default(),
+            unit_checkpoints,
+            admissions,
             money_view: money_view::MoneyView::default(),
             caller_refs: Arc::new(RwLock::new(Some(Arc::new(match signer.as_ref() {
                 Some(s) => crate::auth::CallerRefKey::derive(&s.secret_bytes()),
@@ -1533,6 +1538,9 @@ impl GovState {
         }
 
         let mut grant = AdmitGrant::default();
+        // SHUTDOWN-HANG F4a: closed, then the terminal-backlog cap, then the live count. Every
+        // later refusal drops the grant and with it this count, so a refusal never leaks one.
+        grant.hold = Some(self.admissions.enter()?);
         for &gi in chain.group_indices() {
             let Some(cap) = groups[gi].concurrent_cap else {
                 continue;

@@ -345,7 +345,6 @@ impl BreakerUnit {
         if pool.is_empty() {
             dest.default = Some(Arc::clone(&cell));
         } else {
-            // busbar:expect(bp::into_alloc, reason = "config: a cell is created once per configured (pool, destination); its pool name is spelled into the map key once, never per request")
             let key = Box::from(pool);
             dest.pools.insert(key, Arc::clone(&cell));
         }

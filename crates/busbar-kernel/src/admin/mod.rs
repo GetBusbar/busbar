@@ -2,5 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 pub mod gate;
+pub mod reasons;
 pub mod scope;
 pub mod seam;
