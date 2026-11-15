@@ -14,7 +14,8 @@
 //! `Default` for them, and no `transmute`, `zeroed`, `MaybeUninit` or pointer cast names them.
 //! A1 (hot-path purity) has no scope until W3.6/W6 create its modules; see `a1_hot_path`.
 //!
-//! Every list only shrinks: against the merge base no entry may be added or raised, and an
+//! Every list only shrinks: against the merge base no entry may be added or raised (an `admitted`
+//! owner ruling covers a one-impl entry for the one merge that carries it), and an
 //! entry the code no longer needs fails until it is lowered or removed. Production code only:
 //! test targets and test-only regions (`cfg(test)` or the `test-support` feature) are skipped. The check parses sources; it never builds.
 
@@ -46,6 +47,10 @@ struct Lints {
     /// File → its late-binding counts and the MR that removes them.
     a4_late_binding: BTreeMap<String, Late>,
     a9_capability: Minting,
+    /// "<file> <trait>" → the owner ruling that admits a one-impl entry for one merge. Valid only
+    /// while the merge base lacks the entry; once the entry is in the base the admission must go.
+    #[serde(default)]
+    admitted: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -907,10 +912,19 @@ fn minting(
     mints
 }
 
-fn added(now: &ByFile, before: &ByFile, list: &str, failures: &mut Vec<String>) {
+fn added(
+    now: &ByFile,
+    before: &ByFile,
+    admitted: &BTreeMap<String, String>,
+    list: &str,
+    failures: &mut Vec<String>,
+) {
     for (file, names) in now {
         for name in names {
-            if !before.get(file).is_some_and(|old| old.contains(name)) {
+            let ruled = admitted
+                .get(&format!("{file} {name}"))
+                .is_some_and(|ruling| !ruling.trim().is_empty());
+            if !ruled && !before.get(file).is_some_and(|old| old.contains(name)) {
                 failures.push(format!(
                     "one impl: {file} {name} was added to {list}; entries can only be removed"
                 ));
@@ -920,15 +934,39 @@ fn added(now: &ByFile, before: &ByFile, list: &str, failures: &mut Vec<String>) 
 }
 
 fn shrink_only(now: &Lints, before: &Lints, failures: &mut Vec<String>) {
+    for key in now.admitted.keys() {
+        let still_new = key.split_once(' ').is_some_and(|(file, name)| {
+            [
+                (&now.a3_one_impl.traits, &before.a3_one_impl.traits),
+                (
+                    &now.a3_one_impl.macro_implemented,
+                    &before.a3_one_impl.macro_implemented,
+                ),
+            ]
+            .iter()
+            .any(|(now, before)| {
+                now.get(file).is_some_and(|names| names.contains(name))
+                    && !before.get(file).is_some_and(|names| names.contains(name))
+            })
+        });
+        if !still_new {
+            failures.push(format!(
+                "admitted: {key} is not a one-impl entry new against the merge base; remove its \
+                 admission"
+            ));
+        }
+    }
     added(
         &now.a3_one_impl.traits,
         &before.a3_one_impl.traits,
+        &now.admitted,
         "a3_one_impl.traits",
         failures,
     );
     added(
         &now.a3_one_impl.macro_implemented,
         &before.a3_one_impl.macro_implemented,
+        &now.admitted,
         "a3_one_impl.macro_implemented",
         failures,
     );

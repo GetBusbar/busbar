@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "test_only": [
+    "busbar-plugin-test"
+  ],
+  "generated": [
+    "crates/busbar/src/main.rs:300",
+    "crates/busbar/src/main.rs:302",
+    "crates/busbar/src/root/migration_table.rs:4"
+  ]
+}

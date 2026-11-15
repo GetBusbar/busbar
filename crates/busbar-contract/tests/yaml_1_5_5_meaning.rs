@@ -60,7 +60,8 @@
 //! 5. `0XFF`, `0O17`, `0B1` (upper-case radix prefixes): 1.5.5 read strings untyped and refused
 //!    them for integer fields (its prefixes were lower-case only); now the integers 255, 15, 1.
 //!    Lower-case `0x`/`0o`/`0b`, signed or not (`+0xF0`, `-0o70`, `-0b10`), read alike.
-//! 6. The alias bomb in fields a struct ignores (`ignored_alias_bomb_reads`): 1.5.5 read it (it
+//! 6. The alias bomb in fields a struct ignores (`an_alias_bomb_is_refused_even_in_ignored_fields`,
+//!    owner ACCEPT 2026-11-15: "accept sounds correct, 1.5.5 was broken"): 1.5.5 read it (it
 //!    skipped ignored events without following aliases); now refused by serde-saphyr's alias
 //!    replay budget, as serde-saphyr walks an ignored value with `deserialize_any`. serde has no
 //!    skip, so no forwarding layer could fix it either.
@@ -475,7 +476,30 @@ fn application_tags_are_found_wherever_they_are() {
 
 /// Recorded cases the owner accepts reading differently from 1.5.5: (record name, why). Each is
 /// skipped by name. Empty: every recorded case is held to its 1.5.5 meaning.
-const ACCEPTED_DIFFERENCES: &[(&str, &str)] = &[];
+/// Owner ACCEPT 2026-11-15 ("accept sounds correct, 1.5.5 was broken"): U+0085 (NEL) is content in YAML
+/// 1.2; libyaml read it as a line break.
+const ACCEPTED_DIFFERENCES: &[(&str, &str)] = &[
+    (
+        "mutated-oracle-config#0",
+        "U+0085 (NEL) is YAML 1.2 content, a libyaml line break",
+    ),
+    (
+        "mutated-oracle-config#112",
+        "U+0085 (NEL) is YAML 1.2 content, a libyaml line break",
+    ),
+    (
+        "mutated-oracle-config#149",
+        "U+0085 (NEL) is YAML 1.2 content, a libyaml line break",
+    ),
+    (
+        "mutated-oracle-config#323",
+        "U+0085 (NEL) is YAML 1.2 content, a libyaml line break",
+    ),
+    (
+        "mutated-oracle-config#372",
+        "U+0085 (NEL) is YAML 1.2 content, a libyaml line break",
+    ),
+];
 
 /// Recorded cases proposed to the owner as accepted differences (item 7 in the module docs), not
 /// yet approved: still checked and still failing when they differ. This list only labels their
@@ -1131,13 +1155,12 @@ fn untagged_enums_see_resolved_scalars() {
     );
 }
 
-/// test_de `test_bomb`: unused aliases in fields a typed read ignores are not expanded, so the
-/// document reads.
-// PROPOSED ACCEPT (item 6): 1.5.5 read `Data { expected: "string" }`; serde-saphyr walks the
-// ignored fields with `deserialize_any`, following the aliases, and refuses the document on its
-// alias replay budget (its own port of this test asserts the refusal). Red until approved.
+/// test_de `test_bomb`, as an owner-accepted difference (2026-11-15, "accept sounds correct, 1.5.5
+/// was broken"): 1.5.5 read `Data { expected: "string" }` because it skipped aliases in fields a
+/// typed read ignores. 1.6.0 refuses an alias bomb on its replay budget wherever it sits, so a
+/// hostile document cannot reach the expansion at all.
 #[test]
-fn ignored_alias_bomb_reads() {
+fn an_alias_bomb_is_refused_even_in_ignored_fields() {
     #[derive(Debug, Deserialize, PartialEq)]
     struct Data {
         expected: String,
@@ -1148,12 +1171,8 @@ fn ignored_alias_bomb_reads() {
         doc.push_str(&format!("{name}: &{name} [{row}]\n"));
     }
     doc.push_str("expected: string\n");
-    assert_eq!(
-        yaml::from_str::<Data>(&doc).unwrap(),
-        Data {
-            expected: "string".into()
-        }
-    );
+    let refused = yaml::from_str::<Data>(&doc).expect_err("an alias bomb is refused");
+    assert!(refused.to_string().contains("budget"), "{refused}");
 }
 
 /// test_error: inputs 1.5.5 refused, by kind: syntax, wrong type, missing, unknown anchor, more

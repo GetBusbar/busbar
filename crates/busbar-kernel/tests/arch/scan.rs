@@ -23,7 +23,7 @@ use syn::spanned::Spanned;
 use syn::visit::Visit;
 use syn::{Attribute, Expr, Item, Meta, Token};
 
-/// The counting method this walker implements. `ci/loc-bar.json` must name it.
+/// The counting method this walker implements.
 pub const METHOD: &str = "diet-metrics-v2";
 
 #[derive(Deserialize)]

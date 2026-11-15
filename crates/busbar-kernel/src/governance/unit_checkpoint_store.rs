@@ -170,6 +170,8 @@ struct PersistPending {
     expected: Arc<ExpectedValue>,
     appended: bool,
     selection_proof: Option<Arc<VerifiedHead>>,
+    /// A re-driven uncertain attempt met a definite no-effect; never resubmitted.
+    reconciling: bool,
     operation: [u8; 16],
 }
 #[derive(Clone)]
@@ -180,6 +182,8 @@ struct RemovePending {
     // The proof the retained delete attempt CASes against; `None` until the
     // first attempt (live head) and after a definite no-effect re-arm.
     proof: Option<Arc<VerifiedHead>>,
+    /// A re-driven uncertain attempt met a definite no-effect; never resubmitted.
+    reconciling: bool,
     ordinal: Option<u64>,
     operation: [u8; 16],
 }
@@ -369,6 +373,16 @@ impl StoreUnitCheckpoints {
                 self.save(Pending::Persist(p.clone()));
             }
         }
+        // A retained proof means an earlier crossing of this exact attempt has an
+        // unknown outcome (cancelled or reply lost); once a re-drive met a definite
+        // no-effect, only reconciliation resolves it.
+        let (redrive, reconciling) = match &pending {
+            Pending::Persist(p) => (p.selection_proof.is_some(), p.reconciling),
+            Pending::Remove(p) => (p.proof.is_some(), p.reconciling),
+        };
+        if reconciling {
+            return Err(refusal("running money native custody remains unresolved"));
+        }
         // The selection is built and submitted under the journal's publication
         // driver against its live head (or the exact retained proof), so no
         // append can move the head between the proof and the CAS.
@@ -423,6 +437,16 @@ impl StoreUnitCheckpoints {
             Ok(()) => {
                 self.clear();
                 Ok(Some(pending))
+            }
+            Err((true, _)) if redrive => {
+                // The re-drive's no-effect does not resolve the earlier crossing,
+                // which may still land: keep the exact attempt, never resubmit it.
+                match &mut pending {
+                    Pending::Persist(p) => p.reconciling = true,
+                    Pending::Remove(p) => p.reconciling = true,
+                }
+                self.save(pending);
+                Err(refusal("running money native custody remains unresolved"))
             }
             Err((definite, why)) => {
                 if definite {
@@ -601,6 +625,7 @@ impl UnitCheckpointSink for StoreUnitCheckpoints {
             expected: Arc::new(previous.map_or(ExpectedValue::Absent, ExpectedValue::Exact)),
             appended: false,
             selection_proof: None,
+            reconciling: false,
             operation: crate::door::op_id().0,
         }));
         self.complete().await.map(|_| ())
@@ -645,6 +670,7 @@ impl UnitCheckpointSink for StoreUnitCheckpoints {
             record,
             expected: Arc::new(ExpectedValue::Exact(raw)),
             proof: None,
+            reconciling: false,
             ordinal,
             operation: crate::door::op_id().0,
         }));

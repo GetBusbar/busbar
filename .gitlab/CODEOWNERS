@@ -1,4 +1,4 @@
 # Owner approval is required to change the architecture bars (decision 288).
 # No other path has a code owner.
-/crates/busbar-kernel/tests/arch/loc-bar.json @Matthew-Jackson
+/crates/busbar-kernel/tests/arch/source-tree.json @Matthew-Jackson
 /crates/busbar-kernel/tests/arch/layering.json @Matthew-Jackson

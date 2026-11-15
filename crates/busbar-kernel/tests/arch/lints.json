@@ -15,6 +15,7 @@
       "crates/busbar-contract/src/plugin_rows.rs": ["PluginRows"],
       "crates/busbar-contract/src/secret.rs": ["SecretAxis", "SecretCalls", "SecretResolve"],
       "crates/busbar-contract/src/services.rs": ["CredentialRead", "HookChildInvocation"],
+      "crates/busbar-contract/src/yaml.rs": ["MappingExt", "ValueExt"],
       "crates/busbar-core-admin/src/admin_state.rs": ["AppAdmin"],
       "crates/busbar-core-admin/src/governance.rs": ["Governance"],
       "crates/busbar-core-admin/src/transport.rs": ["AdminTransport"],
@@ -25,8 +26,10 @@
       "crates/busbar-kernel-audit/src/record.rs": ["Audit"],
       "crates/busbar-kernel-egress/src/ports.rs": ["Journal", "PermitHandle"],
       "crates/busbar-kernel-egress/src/walk.rs": ["Shape"],
+      "crates/busbar-kernel-identity/src/lib.rs": ["RevocationView"],
       "crates/busbar-kernel/src/admission.rs": ["PluginAdmission"],
       "crates/busbar-kernel/src/audit/mod.rs": ["ChainedRecord"],
+      "crates/busbar-kernel/src/auth/login_limits/mod.rs": ["CredentialDoor"],
       "crates/busbar-kernel/src/auth/self_keys.rs": ["SelfGroupProvisioner", "SelfServeKeys"],
       "crates/busbar-kernel/src/config/settings_public.rs": ["PublicSettings"],
       "crates/busbar-kernel/src/door.rs": ["PoolView"],
@@ -47,35 +50,43 @@
       "crates/busbar-kernel/src/plane_driver/mod.rs": ["AuditSink", "DriverSteps"],
       "crates/busbar-kernel/src/plane_driver/money.rs": ["EndPost"],
       "crates/busbar-kernel/src/plane_driver/registry.rs": ["PlaneBootCtx"],
+      "crates/busbar-kernel/src/plane_driver/route_tables.rs": ["EngineTablesView"],
       "crates/busbar-kernel/src/plane_driver/slots.rs": ["ContainerGateSink"],
       "crates/busbar-kernel/src/plugin_routes.rs": ["StatusResponseExt"],
       "crates/busbar-kernel/src/probe.rs": ["ProbeTarget"],
+      "crates/busbar-kernel/src/refresh.rs": ["Report"],
+      "crates/busbar-kernel/src/store/vocab.rs": ["LaneRuntime"],
       "crates/busbar-kernel/src/teller.rs": ["UnitEnds", "UnitTaps", "Units"],
       "crates/busbar-kernel/src/tick.rs": ["ClockWork"],
       "crates/busbar-migrations/src/coordinator.rs": ["Activation", "IntentStore", "SourceReader", "Transform", "Verifier"],
       "crates/busbar-migrations/src/legacy/projection.rs": ["ProjectionSource"],
+      "crates/busbar-migrations/src/legacy/transform.rs": ["NativeProofs"],
       "crates/busbar-migrations/src/native_source.rs": ["ReadSeek", "SourceSpool", "SpoolFactory"],
       "crates/busbar-migrations/src/startup.rs": ["FrozenBindingResolver"],
-      "crates/busbar-migrations/src/verification.rs": ["NativeReadback"],
+      "crates/busbar-migrations/src/verification.rs": ["NativeReadback", "TargetRecoveryProbe"],
       "crates/busbar/src/root/serve_neutral.rs": ["Output"],
       "crates/busbar/src/root/startup_upgrade/document_commit.rs": ["Checkpoints"],
       "crates/busbar/src/root/units_admin/mod.rs": ["AuditView"],
+      "crates/plugin-loader/src/cold/dispatch/services.rs": ["Sweep"],
       "crates/plugin-loader/src/dispatch/auth_handle.rs": ["AuthHandleHost"],
       "crates/plugin-loader/src/dispatch/measurement.rs": ["Authority"],
       "crates/plugin-loader/src/dispatch/ticket.rs": ["WakeRoute"],
       "crates/plugin-loader/src/dispatch/worker.rs": ["Job", "Settle"],
       "crates/plugin-loader/src/observe.rs": ["PluginObserver"]
+
     },
     "macro_implemented": {
       "crates/busbar-contract/src/caps/capability.rs": ["Capability", "Sealed"],
       "crates/busbar-contract/src/caps/step.rs": ["Sealed", "Step"],
       "crates/busbar-contract/src/ir/handle.rs": ["Sealed"],
+      "crates/busbar-contract/src/json_grammar.rs": ["Scalar"],
       "crates/busbar-contract/src/plugin.rs": ["KindMarker", "KindSeal"],
       "crates/busbar-contract/src/redacted.rs": ["Minted", "OwnerSeal"],
       "crates/busbar-kernel-audit/src/record.rs": ["Sealed"],
       "crates/busbar-kernel-breaker/src/lib.rs": ["Sealed"],
       "crates/busbar-kernel/src/config/providers.rs": ["PlaneFields"],
       "crates/busbar-kernel/src/mallctl.rs": ["Sealed", "Value"]
+
     }
   },
   "a4_late_binding": {
@@ -98,5 +109,18 @@
       "crates/busbar-kernel/src/hook_child.rs": "hook_child::Grant is the hook-child operation binding read from config (serde), not the capability token",
       "crates/busbar-kernel/src/trust/validate.rs": "trust::validate::Grant is one scope or egress grant a visibility check needs (Copy by design), not the capability token"
     }
+  },
+  "admitted": {
+    "crates/busbar-contract/src/json_grammar.rs Scalar": "owner R-CHECKS 2026-11-15: keep the one-implementation-trait check, freeze today's traits, new ones fail",
+    "crates/busbar-contract/src/yaml.rs MappingExt": "owner R-CHECKS 2026-11-15: keep the one-implementation-trait check, freeze today's traits, new ones fail",
+    "crates/busbar-contract/src/yaml.rs ValueExt": "owner R-CHECKS 2026-11-15: keep the one-implementation-trait check, freeze today's traits, new ones fail",
+    "crates/busbar-kernel-identity/src/lib.rs RevocationView": "owner R-CHECKS 2026-11-15: keep the one-implementation-trait check, freeze today's traits, new ones fail",
+    "crates/busbar-kernel/src/auth/login_limits/mod.rs CredentialDoor": "owner R-CHECKS 2026-11-15: keep the one-implementation-trait check, freeze today's traits, new ones fail",
+    "crates/busbar-kernel/src/plane_driver/route_tables.rs EngineTablesView": "owner R-CHECKS 2026-11-15: keep the one-implementation-trait check, freeze today's traits, new ones fail",
+    "crates/busbar-kernel/src/refresh.rs Report": "owner R-CHECKS 2026-11-15: keep the one-implementation-trait check, freeze today's traits, new ones fail",
+    "crates/busbar-kernel/src/store/vocab.rs LaneRuntime": "owner R-CHECKS 2026-11-15: keep the one-implementation-trait check, freeze today's traits, new ones fail",
+    "crates/busbar-migrations/src/legacy/transform.rs NativeProofs": "owner R-CHECKS 2026-11-15: keep the one-implementation-trait check, freeze today's traits, new ones fail",
+    "crates/busbar-migrations/src/verification.rs TargetRecoveryProbe": "owner R-CHECKS 2026-11-15: keep the one-implementation-trait check, freeze today's traits, new ones fail",
+    "crates/plugin-loader/src/cold/dispatch/services.rs Sweep": "owner R-CHECKS 2026-11-15: keep the one-implementation-trait check, freeze today's traits, new ones fail"
   }
 }

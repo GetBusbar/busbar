@@ -8,7 +8,8 @@
 //! other crate root carries `deny` or `forbid(unsafe_code)`, and every module that carries
 //! `#![forbid(unsafe_code)]` today keeps it. A7 (with core-diet): an `allow`/`expect` of
 //! `dead_code` or an `unused*` lint in production code never grows past today's per-file count.
-//! The lists only shrink: against the merge base no entry may be added or raised.
+//! The lists only shrink: against the merge base no entry may be added or raised, except under an
+//! `admitted` owner ruling, which is valid for the one merge that carries the change.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -24,6 +25,11 @@ struct Escapes {
     unsafe_code: UnsafeCode,
     /// File → `allow`/`expect` attributes naming `dead_code` or `unused*`.
     dead_code: BTreeMap<String, usize>,
+    /// File → the owner ruling that admits its site or forbid-list removal for one merge. An
+    /// admission is valid only while the merge base lacks the change; once the change is in the
+    /// base the entry must go, so an admission never outlives the merge that carries it.
+    #[serde(default)]
+    admitted: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -181,6 +187,7 @@ fn unsafe_and_dead_code_escapes_stay_at_their_frozen_sites() {
             if let Some(text) = super::file_at(&root, &base, ESCAPES) {
                 let before: Escapes = sonic_rs::from_str(&text).expect("base escapes");
                 shrink_only(&escapes, &before, &measured, &mut failures);
+                admissions_expire(&escapes, &before, &mut failures);
             }
         }
     }
@@ -219,6 +226,9 @@ fn shrink_only(
             .sites
             .get(file)
             .is_none_or(|old| site.keywords > old.keywords || site.allows > old.allows);
+        if raised && admitted(now, file, failures) {
+            continue;
+        }
         if raised {
             failures.push(format!(
                 "unsafe: the site {file} was added or raised; entries can only be removed"
@@ -226,7 +236,10 @@ fn shrink_only(
         }
     }
     for file in &before.unsafe_code.forbid {
-        if !now.unsafe_code.forbid.contains(file) && measured.contains_key(file) {
+        if !now.unsafe_code.forbid.contains(file)
+            && measured.contains_key(file)
+            && !admitted(now, file, failures)
+        {
             failures.push(format!(
                 "forbid: {file} left the forbid list; a forbid is never lifted"
             ));
@@ -236,6 +249,38 @@ fn shrink_only(
         if *count > before.dead_code.get(file).copied().unwrap_or(0) {
             failures.push(format!(
                 "dead code: the frozen count for {file} rose; it can only fall"
+            ));
+        }
+    }
+}
+
+/// Whether `file` carries an owner admission; an empty ruling is itself a failure.
+fn admitted(now: &Escapes, file: &str, failures: &mut Vec<String>) -> bool {
+    match now.admitted.get(file) {
+        None => false,
+        Some(ruling) if ruling.trim().is_empty() => {
+            failures.push(format!("admitted: {file} names no owner ruling"));
+            false
+        }
+        Some(_) => true,
+    }
+}
+
+/// Every admission must still be needed: the base lacks the site, a raise, or the forbid entry.
+fn admissions_expire(now: &Escapes, before: &Escapes, failures: &mut Vec<String>) {
+    for file in now.admitted.keys() {
+        let site_added = now.unsafe_code.sites.get(file).is_some_and(|site| {
+            before
+                .unsafe_code
+                .sites
+                .get(file)
+                .is_none_or(|old| site.keywords > old.keywords || site.allows > old.allows)
+        });
+        let forbid_lifted =
+            before.unsafe_code.forbid.contains(file) && !now.unsafe_code.forbid.contains(file);
+        if !site_added && !forbid_lifted {
+            failures.push(format!(
+                "admitted: {file} is already in the merge base; remove its admission"
             ));
         }
     }

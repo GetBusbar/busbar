@@ -40,3 +40,11 @@ AWS_LC_SYS_USE_SYSTEM_aarch64_apple_darwin = { value = "0", force = true }
 AWS_LC_SYS_STATIC_aarch64_apple_darwin = { value = "1", force = true }
 AWS_LC_SYS_USE_SYSTEM_x86_64_pc_windows_msvc = { value = "0", force = true }
 AWS_LC_SYS_STATIC_x86_64_pc_windows_msvc = { value = "1", force = true }
+
+# Test threads get the main thread's 8 MiB stack. The YAML depth limit (busbar_contract::yaml
+# MAX_DEPTH = 128, serde_yaml's) is reached through serde recursion whose debug-build frames are
+# several times larger than release frames; libtest's 2 MiB default thread stack overflows at that
+# limit in a debug test build (yaml_1_5_5_meaning nesting_is_allowed_128_deep,
+# unbounded_recursion_is_refused, kernel test_structural_check_does_not_overflow_on_deeply_nested_config).
+# Not forced: an explicit RUST_MIN_STACK in the environment wins.
+RUST_MIN_STACK = "8388608"
