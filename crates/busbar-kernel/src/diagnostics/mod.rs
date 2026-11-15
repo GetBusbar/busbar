@@ -1068,11 +1068,11 @@ diagnostics! {
         "`busbar --validate` ran the exact load → resolve → semantic-validate → strict-secret pipeline boot runs and the config did NOT pass at one of those phases, so it exits non-zero. Because `--validate` mirrors boot, this same config would fail to boot the gateway. The specific phase and offending entries are printed alongside this code.",
         "Fix the reported errors in config.yaml / providers.yaml (a parse/structure error, a cross-reference the resolver rejected, a semantic-validation failure, or an unset required secret) and re-run `--validate` until it reports `ok`.";
 
-    /// `--list-plugins` could not read config, so it inventoried using the default plugins block.
+    /// `--list-plugins` refused: the config file exists but could not be read, parsed or env-substituted (no inventory against the default plugins block).
     CLI_LIST_PLUGINS_CONFIG_UNREADABLE = 3016, Config, Actionable, "cli-list-plugins-config-unreadable", "1.6.0", false,
-        "--list-plugins fell back to the default plugins block (config unreadable)",
-        "`busbar --list-plugins` could not read/parse config.yaml, so it inventoried the plugins directory using the DEFAULT `plugins:` block (default dir and trust policy) rather than the deployment's configured one. The inventory shown may not reflect the directory, trust policy, or store selection the running gateway would actually use.",
-        "This is informational and best-effort pre-deployment. To inventory against the real config, fix config.yaml so it parses (run `busbar --validate` to see the error) and re-run `--list-plugins`.";
+        "--list-plugins refused a config that exists but is not readable",
+        "`busbar --list-plugins` found a config file at the resolved path that could not be read, parsed or env-substituted, so it refuses (exit 1) rather than inventory the DEFAULT `plugins:` block (default dir and trust policy), which would describe a directory other than the one the deployment configures. The default block is used only when no config file exists at that path (a bare inventory).",
+        "Fix config.yaml so it parses (run `busbar --validate` to see the error) and re-run `--list-plugins`, or point `--config` at the right file.";
 
     /// GET /config/settings read the overlay while unreadable/corrupt and reported NO root overrides.
     CONFIG_SETTINGS_OVERLAY_UNREADABLE = 3017, Config, Actionable, "config-settings-overlay-unreadable", "1.6.0", false,

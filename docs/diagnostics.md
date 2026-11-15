@@ -407,15 +407,15 @@ A provider is configured with a NON-EMPTY api_key while `upstream_credentials` i
 **What to do:** Fix the reported errors in config.yaml / providers.yaml (a parse/structure error, a cross-reference the resolver rejected, a semantic-validation failure, or an unset required secret) and re-run `--validate` until it reports `ok`.
 
 <a id="cli-list-plugins-config-unreadable"></a>
-### BUSBAR-3016 — --list-plugins fell back to the default plugins block (config unreadable)
+### BUSBAR-3016 — --list-plugins refused a config that exists but is not readable
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `cli-list-plugins-config-unreadable`
 
-`busbar --list-plugins` could not read/parse config.yaml, so it inventoried the plugins directory using the DEFAULT `plugins:` block (default dir and trust policy) rather than the deployment's configured one. The inventory shown may not reflect the directory, trust policy, or store selection the running gateway would actually use.
+`busbar --list-plugins` found a config file at the resolved path that could not be read, parsed or env-substituted, so it refuses (exit 1) rather than inventory the DEFAULT `plugins:` block (default dir and trust policy), which would describe a directory other than the one the deployment configures. The default block is used only when no config file exists at that path (a bare inventory).
 
-**What to do:** This is informational and best-effort pre-deployment. To inventory against the real config, fix config.yaml so it parses (run `busbar --validate` to see the error) and re-run `--list-plugins`.
+**What to do:** Fix config.yaml so it parses (run `busbar --validate` to see the error) and re-run `--list-plugins`, or point `--config` at the right file.
 
 <a id="config-settings-overlay-unreadable"></a>
 ### BUSBAR-3017 — Config-settings read found the overlay unreadable/corrupt (reported no root overrides)

@@ -58,7 +58,7 @@ The thousands digit is the area.
 | [BUSBAR-3013](/docs/1.6/errors/BUSBAR-3013/) | passthrough provider has a non-empty api_key that is never forwarded (inert config) | 1.6.0 |
 | [BUSBAR-3014](/docs/1.6/errors/BUSBAR-3014/) | --print-metadata-blocklist printed the built-in denylist only (config unreadable) | 1.6.0 |
 | [BUSBAR-3015](/docs/1.6/errors/BUSBAR-3015/) | --validate rejected the config (load, resolve, semantic, or secret-resolution failure) | 1.6.0 |
-| [BUSBAR-3016](/docs/1.6/errors/BUSBAR-3016/) | --list-plugins fell back to the default plugins block (config unreadable) | 1.6.0 |
+| [BUSBAR-3016](/docs/1.6/errors/BUSBAR-3016/) | --list-plugins refused a config that exists but is not readable | 1.6.0 |
 | [BUSBAR-3017](/docs/1.6/errors/BUSBAR-3017/) | Config-settings read found the overlay unreadable/corrupt (reported no root overrides) | 1.6.0 |
 | [BUSBAR-3018](/docs/1.6/errors/BUSBAR-3018/) | Config-settings read found a newer-busbar overlay (reported no root overrides) | 1.6.0 |
 | [BUSBAR-3019](/docs/1.6/errors/BUSBAR-3019/) | Config-settings overlay read task failed to join (500 rather than a fabricated 200) | 1.6.0 |
