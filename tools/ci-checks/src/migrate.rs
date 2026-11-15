@@ -167,10 +167,6 @@ impl WordScan<'_> {
                     let line = literal.span().start().line;
                     self.hit(&literal.to_string(), line);
                 }
-                TokenTree::Ident(ident) => {
-                    let line = ident.span().start().line;
-                    self.hit(&ident.to_string(), line);
-                }
                 _ => {}
             }
         }
@@ -205,10 +201,6 @@ impl<'ast> Visit<'ast> for WordScan<'_> {
             self.hit(&text.value(), text.span().start().line);
         }
         visit::visit_lit(self, lit);
-    }
-
-    fn visit_ident(&mut self, ident: &'ast proc_macro2::Ident) {
-        self.hit(&ident.to_string(), ident.span().start().line);
     }
 
     fn visit_macro(&mut self, mac: &'ast syn::Macro) {

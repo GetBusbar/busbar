@@ -190,13 +190,13 @@ fn retire_metadata_carve_outs(root: &mut Pairs, resolved: &Value, report: &mut V
     }
 }
 
+/// A write tier's rate key and, when exact, the rate value and its rendering.
+type WriteRate = (&'static str, Option<(Value, String)>);
+
 /// The entry's cache-write rate as an exact `UnitRate` value and its rendering: `cache_write_utok`
 /// when present (never falling back), else `input_utok`. `Ok(None)`: not an exact rate (the units
 /// stay unpriced). A template slot refuses by 1t: the rate would be computed from it.
-fn write_unit_rate(
-    lane: &str,
-    entry: &Pairs,
-) -> Result<(&'static str, Option<(Value, String)>), Refusal> {
+fn write_unit_rate(lane: &str, entry: &Pairs) -> Result<WriteRate, Refusal> {
     let key = if entry.contains_key("cache_write_utok") {
         "cache_write_utok"
     } else {
@@ -257,7 +257,7 @@ fn price_open_units(
             .open_units
             .iter()
             .map(String::as_str)
-            .filter(|unit| missing(entry.get_key("units"), *unit))
+            .filter(|unit| missing(entry.get_key("units"), unit))
             .partition(|unit| WRITE_TIER_UNITS.contains(unit));
         if written.is_empty() && added.is_empty() {
             continue;

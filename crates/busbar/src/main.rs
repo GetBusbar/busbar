@@ -1377,7 +1377,8 @@ async fn run(
             upgrade,
             publication,
             completion,
-            prepared,
+            // The prepared Store's own holders (its target identity moved into the continuation).
+            (prepared.backend, prepared.recovery),
             _boot_store_binding,
         );
         die(root::migrate::restart(

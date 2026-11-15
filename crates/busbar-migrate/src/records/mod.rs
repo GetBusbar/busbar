@@ -354,9 +354,9 @@ impl Summary {
             Some(_) => Err(bad()),
         };
         let mut tags = [[0u64; 4]; 8];
-        for tag in 1..=last {
+        for (tag, slot) in tags.iter_mut().enumerate().take(last + 1).skip(1) {
             let at = 2 + 3 * (tag - 1);
-            tags[tag] = [
+            *slot = [
                 count(at)?,
                 count(at + 1)?,
                 count(at + 2)?,

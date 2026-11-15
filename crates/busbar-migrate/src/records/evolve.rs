@@ -30,8 +30,11 @@ pub struct RecordStep {
     /// The namespaces whose rows it rewrites, in order.
     pub namespaces: &'static [NamespaceId],
     /// One row at format `from` in, the same row at `from + 1` out.
-    pub convert: fn(NamespaceId, &[u8], &[u8]) -> Result<SecureVec, Refusal>,
+    pub convert: Convert,
 }
+
+/// One record conversion: a row at format `from` (its namespace, key and value) to `from + 1`.
+pub type Convert = fn(NamespaceId, &[u8], &[u8]) -> Result<SecureVec, Refusal>;
 
 /// The production steps: none in 1.6.0.
 pub const RECORD_STEPS: &[RecordStep] = &[];

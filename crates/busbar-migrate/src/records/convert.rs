@@ -324,7 +324,7 @@ fn usage(cols: &Cols<'_>) -> Result<Row, Refusal> {
         ..Units::default()
     };
     let rest = cols.cells.len().saturating_sub(5);
-    if rest % 7 != 0 {
+    if !rest.is_multiple_of(7) {
         return Err(cols.unknown("a model entry is not 7 cells"));
     }
     let mut models = Vec::with_capacity(rest / 7);

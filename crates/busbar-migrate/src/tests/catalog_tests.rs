@@ -35,12 +35,8 @@ fn upgrade(scratch: &Scratch, config: &str, facts: &Facts) -> (Vec<String>, Opti
         *handed.borrow_mut() = catalog.map(str::to_owned);
         Ok(())
     };
-    let planned = plan(&Inputs {
-        path: &path,
-        facts,
-        check: &check,
-    })
-    .unwrap_or_else(|refusal| panic!("planned: {refusal}"));
+    let planned = plan(&Inputs::new(&path, facts, &check))
+        .unwrap_or_else(|refusal| panic!("planned: {refusal}"));
     let report = planned.report().to_vec();
     assert_eq!(write(&planned, &check), Ok(Written::Stamped));
     (report, handed.into_inner())
