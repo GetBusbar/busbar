@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use crate::v1::contract::taxonomy::Cond;
 use crate::v1::contract::AdminError;
 
 pub use busbar_kernel::admin_verbs::{registered, PlaneTrust, PlaneVerbError};
@@ -27,9 +28,16 @@ pub fn to_admin_error(plane: &'static str, name: &str, err: PlaneVerbError) -> A
             "{} `{name}`",
             busbar_kernel::plane_driver::dispatch::plane_decl(plane).subject_noun
         )),
-        PlaneVerbError::Validation(msg) | PlaneVerbError::ValidationOf(msg, _) => {
-            AdminError::Validation(msg)
+        // The text is the plugin's: it rides in `details`, never in the message (section 1.3).
+        PlaneVerbError::Validation(text) => {
+            AdminError::plugin_text(Cond::PluginRejected, Some(text), None, None)
         }
+        PlaneVerbError::ValidationOf(text, cond) => AdminError::plugin_text(
+            Cond::PluginRejected,
+            Some(text),
+            None,
+            Some(cond_of(cond).reason().to_string()),
+        ),
         PlaneVerbError::Internal(_) => AdminError::Internal,
         PlaneVerbError::Unavailable => {
             AdminError::Unavailable("plane dependency is temporarily unavailable".into())
@@ -42,21 +50,12 @@ pub fn refusal_response(
     name: &str,
     err: PlaneVerbError,
 ) -> axum::response::Response {
-    let cond = match &err {
-        PlaneVerbError::ValidationOf(_, cond) => Some(*cond),
-        _ => None,
-    };
-    let e = to_admin_error(plane, name, err);
-    match cond {
-        Some(cond) => crate::v1::json::err_json_cond(&e, cond_of(cond)),
-        None => crate::v1::json::err_json(&e),
-    }
+    crate::v1::json::err_json(&to_admin_error(plane, name, err))
 }
 
 fn cond_of(
     cond: busbar_kernel::admin_verbs::PlaneAdminCond,
 ) -> crate::v1::contract::taxonomy::Cond {
-    use crate::v1::contract::taxonomy::Cond;
     use busbar_kernel::admin_verbs::PlaneAdminCond;
     match cond {
         PlaneAdminCond::MalformedBody => Cond::MalformedBody,

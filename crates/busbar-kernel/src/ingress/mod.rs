@@ -124,6 +124,14 @@ impl std::fmt::Display for RefusalText<'_> {
                 "Your quota configuration is incomplete (group '{group}' is not \
                      configured). Please contact your administrator."
             ),
+            LimitBlocked::Draining => {
+                f.write_str("gateway is shutting down; retry on another instance")
+            }
+            LimitBlocked::CustodyFull { backlog, cap } => write!(
+                f,
+                "usage custody is at capacity ({backlog} of {cap} finished requests await \
+                     settlement in the store); retry shortly"
+            ),
         }
     }
 }
@@ -171,6 +179,16 @@ pub fn limit_refusal(
             quota_status(),
             busbar_contract::protocol::KIND_INSUFFICIENT_QUOTA,
             None,
+        ),
+        LimitBlocked::Draining => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            busbar_contract::protocol::KIND_OVERLOADED,
+            None,
+        ),
+        LimitBlocked::CustodyFull { .. } => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            busbar_contract::protocol::KIND_OVERLOADED,
+            Some(1),
         ),
     };
     let message = crate::cold::host::ingress_refusal_text(&RefusalText(blocked));

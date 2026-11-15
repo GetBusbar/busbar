@@ -33,7 +33,7 @@ fn native_document_uses_admitted_source_declarations() {
             Some(owner)
         );
         let error = read(&Sugars::default()).unwrap_err().to_string();
-        assert!(error.contains("not declared"), "{error}");
+        assert!(error.contains("is a secret shorthand"), "{error}");
         assert!(!error.contains("descriptor"), "{error}");
     }
 }

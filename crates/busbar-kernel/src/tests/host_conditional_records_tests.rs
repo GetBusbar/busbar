@@ -525,11 +525,7 @@ fn changed_body_operation_identity_is_distinct_from_condition_conflict() {
     let mut write = queued(changed, Arc::clone(&answers));
     write.prepared = true;
     assert!(write
-        .attempt(
-            &rows,
-            &crate::host_chains::ChainBook::default(),
-            clock_read()
-        )
+        .attempt(&rows, &crate::host_chains::ChainBook::default())
         .is_none());
     assert_eq!(
         answers.lock().unwrap()[0].decision,
@@ -537,42 +533,32 @@ fn changed_body_operation_identity_is_distinct_from_condition_conflict() {
     );
 }
 
+/// STORE-TRANSACTIONS §8 item 19: an ambiguous write is resent with its exact operation however
+/// long ago it was first sent (no 24 h horizon remains to compare), and the store replays
+/// Applied. No Indeterminate give-up.
 #[test]
-fn replay_horizon_reports_indeterminate_without_new_dispatch_or_loss_of_custody() {
+fn a_day_old_ambiguous_write_resends_its_operation_and_settles_applied() {
     let rows = AtomicRows::default();
+    rows.0.lock().unwrap().lose_reply = true;
     let answers = Arc::new(Mutex::new(Vec::new()));
     let mut write = queued(request(Expected::Absent, b"state"), Arc::clone(&answers));
     write.prepared = true;
-    write.submitted = Some(
-        clock_read()
-            - std::time::Duration::from_secs(busbar_contract::abi::store::OP_ID_RETENTION_SECS),
-    );
     let identity = write.request.clone();
+    let book = crate::host_chains::ChainBook::default();
     let retained = write
-        .attempt(
-            &rows,
-            &crate::host_chains::ChainBook::default(),
-            clock_read(),
-        )
-        .expect("expired ambiguous operation remains owned");
-    assert_eq!(retained.request, identity);
+        .attempt(&rows, &book)
+        .expect("a lost answer keeps custody");
+    assert!(answers.lock().unwrap().is_empty());
+    assert!(retained.attempt(&rows, &book).is_none());
+    let calls = rows.0.lock().unwrap().calls.clone();
     assert_eq!(
-        answers.lock().unwrap()[0].decision,
-        Err(ConditionalFailure::Indeterminate)
+        calls,
+        vec![identity.clone(), identity],
+        "one resend, same operation"
     );
-    assert!(rows.0.lock().unwrap().calls.is_empty());
-    assert!(retained
-        .attempt(
-            &rows,
-            &crate::host_chains::ChainBook::default(),
-            clock_read()
-        )
-        .is_some());
-    assert_eq!(answers.lock().unwrap().len(), 1);
-}
-
-fn clock_read() -> std::time::Instant {
-    std::time::Instant::now()
+    let answers = answers.lock().unwrap();
+    assert_eq!(answers.len(), 1);
+    assert_eq!(answers[0].decision, Ok(Decision::Applied));
 }
 
 struct Inline;
@@ -738,28 +724,16 @@ fn later_refusal_does_not_discard_an_earlier_unknown_commit() {
     let answers = Arc::new(Mutex::new(Vec::new()));
     let write = queued(request(Expected::Absent, b"state"), Arc::clone(&answers));
     let unknown = write
-        .attempt(
-            &rows,
-            &crate::host_chains::ChainBook::default(),
-            clock_read(),
-        )
+        .attempt(&rows, &crate::host_chains::ChainBook::default())
         .unwrap();
     rows.0.lock().unwrap().refuse = true;
     let still_unknown = unknown
-        .attempt(
-            &rows,
-            &crate::host_chains::ChainBook::default(),
-            clock_read(),
-        )
+        .attempt(&rows, &crate::host_chains::ChainBook::default())
         .expect("refused retry does not settle earlier commit");
     assert!(answers.lock().unwrap().is_empty());
     rows.0.lock().unwrap().refuse = false;
     assert!(still_unknown
-        .attempt(
-            &rows,
-            &crate::host_chains::ChainBook::default(),
-            clock_read()
-        )
+        .attempt(&rows, &crate::host_chains::ChainBook::default())
         .is_none());
     assert_eq!(answers.lock().unwrap()[0].decision, Ok(Decision::Applied));
     let state = rows.0.lock().unwrap();

@@ -1615,59 +1615,17 @@ impl VerbAllowList {
     }
 }
 
-/// An admin error body, `{"error":{"code":..,"message":..}}`, serialized from borrowed parts.
-#[derive(serde::Serialize)]
-struct AdminError<M> {
-    error: AdminErrorBody<M>,
-}
-
-#[derive(serde::Serialize)]
-struct AdminErrorBody<M> {
-    code: &'static str,
-    message: M,
-}
-
-/// The fixed body of a fixed admin refusal, rendered once and shared by every response.
-fn admin_error_body(e: &crate::admin::gate::ApiError) -> axum::body::Bytes {
-    let body = crate::json::to_vec(&AdminError {
-        error: AdminErrorBody {
-            code: e.code(),
-            message: e.message(),
-        },
-    });
-    axum::body::Bytes::from(body.unwrap_or_default())
-}
-
-static ADMIN_UNAUTHORIZED_BODY: std::sync::LazyLock<axum::body::Bytes> =
-    std::sync::LazyLock::new(|| admin_error_body(&crate::admin::gate::ApiError::Unauthorized));
-
-static ADMIN_RATE_LIMITED_BODY: std::sync::LazyLock<axum::body::Bytes> =
-    std::sync::LazyLock::new(|| admin_error_body(&crate::admin::gate::ApiError::RateLimited));
-
 fn admin_unauthorized_response() -> Response {
-    Response::builder()
-        .status(StatusCode::UNAUTHORIZED)
-        .header(axum::http::header::CONTENT_TYPE, "application/json")
-        .header(axum::http::header::WWW_AUTHENTICATE, "Bearer")
-        .body(Body::from(ADMIN_UNAUTHORIZED_BODY.clone()))
-        .expect("static unauthorized response")
+    let mut response = crate::admin::gate::err_json(&crate::admin::gate::ApiError::Unauthorized);
+    response.headers_mut().insert(
+        axum::http::header::WWW_AUTHENTICATE,
+        HeaderValue::from_static("Bearer"),
+    );
+    response
 }
 
 fn forbidden_response(needed: busbar_contract::authz::Scope) -> Response {
-    let body = crate::json::to_vec(&AdminError {
-        error: AdminErrorBody {
-            code: "forbidden",
-            message: format_args!(
-                "this endpoint requires the `{}` admin scope",
-                needed.as_str()
-            ),
-        },
-    });
-    Response::builder()
-        .status(StatusCode::FORBIDDEN)
-        .header(axum::http::header::CONTENT_TYPE, "application/json")
-        .body(Body::from(body.unwrap_or_default()))
-        .expect("static forbidden response")
+    crate::admin::gate::scope_insufficient(needed.as_str())
 }
 
 /// The admin door's 429: `rate_limited` (BUSBAR-8108) with the REAL time until the source's oldest
@@ -1682,15 +1640,12 @@ fn rate_limited_after(retry_after_secs: u64) -> Response {
 }
 
 fn rate_limited_response() -> Response {
-    Response::builder()
-        .header(
-            axum::http::header::RETRY_AFTER,
-            HeaderValue::from(crate::ratelimit::MUTATION_RATE_WINDOW_SECS),
-        )
-        .status(StatusCode::TOO_MANY_REQUESTS)
-        .header(axum::http::header::CONTENT_TYPE, "application/json")
-        .body(Body::from(ADMIN_RATE_LIMITED_BODY.clone()))
-        .expect("static rate-limited response")
+    let mut response = crate::admin::gate::err_json(&crate::admin::gate::ApiError::RateLimited);
+    response.headers_mut().insert(
+        axum::http::header::RETRY_AFTER,
+        HeaderValue::from(crate::ratelimit::MUTATION_RATE_WINDOW_SECS),
+    );
+    response
 }
 
 pub(crate) fn unauthorized_with_completion_taps(
@@ -1810,7 +1765,7 @@ fn admin_principal_or_response(door: AdminDoor) -> Result<Option<Principal>, Box
 
 fn admin_unavailable_response() -> Response {
     let unavailable = crate::admin::gate::ApiError::Unavailable(String::new());
-    let mut resp = crate::admin::gate::error_envelope(
+    let mut resp = crate::admin::gate::admin_error_envelope(
         unavailable.http_status(),
         unavailable.code(),
         ADMIN_AUTH_UNAVAILABLE_MESSAGE,

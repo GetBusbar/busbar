@@ -1641,7 +1641,7 @@ fn a_prepared_head_frames_what_request_sealed_frames() {
         .expect("a valid head");
         let sent = Exchange::prepared(
             &prepared,
-            vec![key().field(), key().field()],
+            &[key().field(), key().field()],
             post().body.clone(),
         )
         .expect("a valid send");
@@ -1669,8 +1669,8 @@ fn a_prepared_head_refuses_at_preparation() {
         PreparedRequest::new(post(), vec![(0, b"x-api-key".to_vec())]).expect("a valid head");
     let bad = Cred::captured(crate::secure::SecureVec::from(b"tok\r\nx".to_vec()));
     assert!(matches!(
-        Exchange::prepared(&prepared, vec![bad.field()], Vec::new()),
+        Exchange::prepared(&prepared, &[bad.field()], Vec::new()),
         Err(ConnFailure::Refused(t)) if t.contains("x-api-key") && !t.contains("tok")
     ));
-    assert!(Exchange::prepared(&prepared, Vec::new(), Vec::new()).is_err());
+    assert!(Exchange::prepared(&prepared, &[], Vec::new()).is_err());
 }

@@ -154,6 +154,7 @@ tokio::task_local! {
 /// every handler/replay path. Axum extractor refusals are plain text and may quote request values;
 /// replace those framework errors without inspecting or retaining their body.
 async fn admin_response_boundary(
+    axum::extract::State(handle): axum::extract::State<std::sync::Arc<state::AppHandle>>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
@@ -166,10 +167,11 @@ async fn admin_response_boundary(
                 .path()
                 .strip_prefix(prefix)
                 .is_some_and(|tail| tail.starts_with('/')));
-    let mut response = next.run(req).await;
     if !admin {
-        return response;
+        return next.run(req).await;
     }
+    let request_id = crate::admin::gate::request_id_of(handle.load().next_request_id());
+    let mut response = crate::admin::gate::with_request_id(request_id.clone(), next.run(req)).await;
     let plain_text = response
         .headers()
         .get(CONTENT_TYPE)
@@ -179,18 +181,32 @@ async fn admin_response_boundary(
         response = match response.status() {
             StatusCode::BAD_REQUEST
             | StatusCode::UNSUPPORTED_MEDIA_TYPE
-            | StatusCode::UNPROCESSABLE_ENTITY => crate::admin::gate::admin_error_envelope(
-                400,
-                "invalid_request",
-                "malformed admin request",
-            ),
-            StatusCode::PAYLOAD_TOO_LARGE => crate::admin::gate::admin_error_envelope(
-                413,
-                busbar_contract::protocol::ERR_TYPE_REQUEST_TOO_LARGE,
-                "admin request body exceeds the configured limit",
-            ),
+            | StatusCode::UNPROCESSABLE_ENTITY => {
+                crate::admin::gate::in_request_scope(&request_id, || {
+                    crate::admin::gate::admin_error_envelope(
+                        400,
+                        "invalid_request",
+                        "malformed admin request",
+                    )
+                })
+            }
+            StatusCode::PAYLOAD_TOO_LARGE => {
+                crate::admin::gate::in_request_scope(&request_id, || {
+                    crate::admin::gate::admin_error_envelope(
+                        413,
+                        busbar_contract::protocol::ERR_TYPE_REQUEST_TOO_LARGE,
+                        "admin request body exceeds the configured limit",
+                    )
+                })
+            }
             _ => response,
         };
+    }
+    if let Ok(value) = axum::http::HeaderValue::from_str(&request_id) {
+        response
+            .headers_mut()
+            .entry(crate::admin::gate::HEADER_REQUEST_ID)
+            .or_insert(value);
     }
     response.headers_mut().insert(
         axum::http::header::CACHE_CONTROL,
@@ -229,7 +245,7 @@ pub fn fallback_error_response(
         use crate::admin::gate::ApiError;
         if under_api_root(path) {
             if status == axum::http::StatusCode::PAYLOAD_TOO_LARGE {
-                return crate::admin::gate::error_envelope(status.as_u16(), kind, message);
+                return crate::admin::gate::admin_error_envelope(status.as_u16(), kind, message);
             }
             let e = if status == axum::http::StatusCode::METHOD_NOT_ALLOWED {
                 ApiError::MethodNotAllowed
@@ -703,7 +719,10 @@ fn apply_common_layers_for_mounts(
 
     let router = router.layer(CatchPanicLayer::new(handle.clone()));
     router
-        .layer(axum::middleware::from_fn(admin_response_boundary))
+        .layer(axum::middleware::from_fn_with_state(
+            handle.clone(),
+            admin_response_boundary,
+        ))
         .with_state(handle.clone())
 }
 

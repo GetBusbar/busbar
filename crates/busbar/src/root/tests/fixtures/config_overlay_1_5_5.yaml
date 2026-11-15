@@ -1,0 +1,15 @@
+# A 1.5.5 deployment that names its file overlay, in 1.5.5's own grammar: `config.overlay: { file:
+# <path> }` (v1.5.5:crates/busbar/src/config/mod.rs:3220 `ConfigMgmtCfg`, :3241 `OverlayCfg::Backend`,
+# :3254 `OverlayBackend.file`). 1.5.5 booted it and persisted admin-API changes to that file. 1.6.0
+# persists them in the configured Store, so the selector is retired. The kernel and root tests hold the 1.6.0
+# current reader's refusal and the migration's removal of the selector to this document.
+store:
+  module: valkey
+  settings: { url: "kv://127.0.0.1:6379/0" }
+config:
+  locked: false
+  overlay:
+    file: busbar-overlay.json
+providers: {}
+models: {}
+pools: {}

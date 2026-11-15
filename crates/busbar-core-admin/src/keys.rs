@@ -476,7 +476,7 @@ fn applied_mutation(operation: &str, resource: &str) -> Response {
     json_response(
         StatusCode::CONFLICT,
         json!({
-            "error": { "code": "mutation_applied", "message": "The mutation committed; cache reconciliation is incomplete" },
+            "error": busbar_kernel::admin::gate::error_object("mutation_applied", None, "The mutation committed; cache reconciliation is incomplete", &json!({}), &busbar_kernel::admin::gate::current_request_id()),
             "effect": "applied", "operation": operation, "resource": resource,
             "recovery": if operation == "key.rotate" { "rotate_with_new_action" } else { "reread_resource" },
             "credential_recoverable": false
@@ -489,7 +489,7 @@ fn idempotency_mismatch(who: KeyAudit<'_>) -> Response {
     json_response(
         StatusCode::CONFLICT,
         json!({
-            "error": { "code": "idempotency_mismatch", "message": "Idempotency-Key is bound to different exact request bytes" },
+            "error": busbar_kernel::admin::gate::error_object("idempotency_mismatch", None, "Idempotency-Key is bound to different exact request bytes", &json!({}), &busbar_kernel::admin::gate::current_request_id()),
             "effect": "not_applied"
         }),
     )
@@ -521,7 +521,7 @@ fn claim_refused(who: KeyAudit<'_>, refused: Refused) -> Response {
             return json_response(
                 StatusCode::CONFLICT,
                 json!({
-                    "error": { "code": "mutation_applied", "message": "The earlier mutation committed; its once-shown secret cannot be replayed here" },
+                    "error": busbar_kernel::admin::gate::error_object("mutation_applied", None, "The earlier mutation committed; its once-shown secret cannot be replayed here", &json!({}), &busbar_kernel::admin::gate::current_request_id()),
                     "effect": "applied", "operation": operation, "resource": what,
                     "recovery": if operation == "key.rotate" { "rotate_with_new_action" } else { "reread_resource" },
                     "credential_recoverable": false

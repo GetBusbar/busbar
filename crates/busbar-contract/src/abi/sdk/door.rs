@@ -1096,6 +1096,17 @@ pub type RawDoorFn = extern "C" fn() -> *const Door;
 #[derive(Debug, Clone, Copy)]
 pub struct MacroDoor {
     door: DoorFn,
+    former_names: &'static [&'static str],
+}
+
+/// What a door declares about itself beside its Statement. [`plugin_door!`](crate::plugin_door)
+/// implements it for every door it lays out; a crate that names nothing keeps the defaults, so
+/// its source compiles unchanged.
+pub trait DoorDecl {
+    /// The names an earlier release of this plugin answered to. A config naming one still
+    /// resolves to this plugin (`plugin-loader` registry words). Empty by default; set with
+    /// `former_names: &["old-name"]` in the door macro.
+    const FORMER_NAMES: &'static [&'static str] = &[];
 }
 
 impl MacroDoor {
@@ -1111,13 +1122,33 @@ impl MacroDoor {
     #[doc(hidden)]
     #[must_use]
     pub const unsafe fn __from_door_macro(door: DoorFn) -> Self {
-        Self { door }
+        Self {
+            door,
+            former_names: &[],
+        }
+    }
+
+    /// The door macro's plumbing: the door's [`DoorDecl::FORMER_NAMES`].
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn __with_former_names(self, former_names: &'static [&'static str]) -> Self {
+        Self {
+            door: self.door,
+            former_names,
+        }
     }
 
     /// The door function.
     #[must_use]
     pub const fn door_fn(self) -> DoorFn {
         self.door
+    }
+
+    /// The names an earlier release answered to (the door's [`DoorDecl::FORMER_NAMES`]); empty
+    /// when it declares none.
+    #[must_use]
+    pub const fn former_names(self) -> &'static [&'static str] {
+        self.former_names
     }
 }
 
@@ -1176,6 +1207,11 @@ impl MacroDoor {
 ///   [`Migrate`](crate::abi::sdk::migrate::Migrate). It runs with no instance, so it cannot be a
 ///   [`Safe`](crate::abi::sdk::safe::Safe) slot. Without it the door states none, and
 ///   `busbar --migrate-config` passes the plugin's settings section through unchanged.
+/// * `former_names: &["old"]` (optional, last) — the names an earlier release of this plugin
+///   answered to (`DoorDecl::FORMER_NAMES`, default empty). A door that omits it compiles
+///   unchanged. A compiled-in row's table reads it off `MACRO_DOOR.former_names()` and registers
+///   it with the door's `REWRITE_ALIAS` words as one list, so a config naming the old module
+///   still resolves.
 #[macro_export]
 macro_rules! plugin_door {
     // The door's `ready` entry: none, or the trampoline over the named slot (kind-neutral: the
@@ -1207,6 +1243,7 @@ macro_rules! plugin_door {
         lifecycle: life($life:ty, ready)
         $(, migrate: $migrate:ty)?
         $(, kind_ops: { $($field:ident : $slot:ty),* $(,)? })?
+        $(, former_names: $former:expr)?
         $(,)?
     ) => {
         $crate::plugin_door! {
@@ -1216,6 +1253,7 @@ macro_rules! plugin_door {
             ready: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Ready<$life>>
             $(, migrate: $migrate)?
             $(, kind_ops: { $($field : $slot),* })?
+            $(, former_names: $former)?
         }
     };
     (
@@ -1225,6 +1263,7 @@ macro_rules! plugin_door {
         $(, ready: $ready:ty)?
         $(, migrate: $migrate:ty)?
         $(, kind_ops: { $($field:ident : $slot:ty),* $(,)? })?
+        $(, former_names: $former:expr)?
         $(,)?
     ) => {
         $crate::plugin_door! {
@@ -1244,6 +1283,7 @@ macro_rules! plugin_door {
             $(, ready: $ready)?
             $(, migrate: $migrate)?
             $(, kind_ops: { $($field : $slot),* })?
+            $(, former_names: $former)?
         }
     };
     (
@@ -1263,6 +1303,7 @@ macro_rules! plugin_door {
         $(, ready: $ready:ty)?
         $(, migrate: $migrate:ty)?
         $(, kind_ops: { $($field:ident : $slot:ty),* $(,)? })?
+        $(, former_names: $former:expr)?
         $(,)?
     ) => {
         const _: () = ::core::assert!(
@@ -1361,6 +1402,13 @@ macro_rules! plugin_door {
             __DOOR
         }
 
+        /// This plugin's door declarations: the SDK's `DoorDecl`
+        /// defaults, with the `former_names` this invocation names.
+        struct __DoorDecls;
+        impl $crate::abi::sdk::door::DoorDecl for __DoorDecls {
+            $(const FORMER_NAMES: &'static [&'static str] = $former;)?
+        }
+
         /// This plugin's door as the door macro built it.
         pub const MACRO_DOOR: $crate::abi::sdk::door::MacroDoor =
             // SAFETY: `door` is the function this macro expanded just above: it answers the
@@ -1368,7 +1416,10 @@ macro_rules! plugin_door {
             // content (its lists, strings, blobs and kind tail) is the caller's own `const` data;
             // The caller must ensure each
             // count matches its backing storage.
-            unsafe { $crate::abi::sdk::door::MacroDoor::__from_door_macro(door) };
+            unsafe { $crate::abi::sdk::door::MacroDoor::__from_door_macro(door) }
+                .__with_former_names(
+                    <__DoorDecls as $crate::abi::sdk::door::DoorDecl>::FORMER_NAMES,
+                );
 
     };
     // `lifecycle: plane_life(P)`: the plane's nine lifecycle slots over its `PlaneLife` `P`
@@ -1380,6 +1431,7 @@ macro_rules! plugin_door {
         $(, ready: $ready:ty)?
         $(, migrate: $migrate:ty)?
         $(, kind_ops: { $($field:ident : $slot:ty),* $(,)? })?
+        $(, former_names: $former:expr)?
         $(,)?
     ) => {
         $crate::plugin_door! {
@@ -1399,6 +1451,7 @@ macro_rules! plugin_door {
             $(, ready: $ready)?
             $(, migrate: $migrate)?
             $(, kind_ops: { $($field : $slot),* })?
+            $(, former_names: $former)?
         }
     };
 }
@@ -1450,7 +1503,7 @@ macro_rules! export_plugin {
             $(, catalog: $catalog:ty)?
             $(, authenticated_route: $authenticated_route:ty)?
             $(,)?
-        } $(,)?
+        } $(, former_names: $former:expr)? $(,)?
     ) => {
         $crate::plugin_door! {
             ops: $crate::abi::plane::Ops,
@@ -1467,10 +1520,11 @@ macro_rules! export_plugin {
                 project: $project,
                 $(catalog: $catalog,)?
                 $(authenticated_route: $authenticated_route,)?
-            },
+            }
+            $(, former_names: $former)?,
         }
     };
-    (hook: $open:ty, statement: $statement:expr $(, serve: $serve:ty)? $(,)?) => {
+    (hook: $open:ty, statement: $statement:expr $(, serve: $serve:ty)? $(, former_names: $former:expr)? $(,)?) => {
         $crate::plugin_door! {
             ops: $crate::abi::hook::Ops,
             statement: $statement,
@@ -1483,7 +1537,8 @@ macro_rules! export_plugin {
                 status: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Status<$open>>,
                 describe: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Describe<$open>>,
                 $(serve: $serve,)?
-            },
+            }
+            $(, former_names: $former)?,
         }
     };
     ($($door:tt)*) => { $crate::plugin_door! { $($door)* } };

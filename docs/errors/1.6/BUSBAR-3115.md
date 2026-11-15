@@ -30,7 +30,7 @@ auth:
 Busbar reports:
 
 ```text
-BUSBAR-3115: auth.signing_key is required for signed-token auth (auth.chain names the built-in `keys` verifier), but none is set - and busbar no longer auto-generates one. Generate a key with `busbar --generate-signing-key`, then set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR} - a SHARED secret across nodes for a fleet). See https://getbusbar.com/docs/1.6/errors/BUSBAR-3115
+BUSBAR-3115: auth.signing_key is required for signed-token auth (auth.chain names the built-in `keys` verifier), but none is set - and busbar no longer auto-generates one. Generate a key with `busbar --generate-signing-key`, then set auth.signing_key to a secret reference for it (a shorthand an admitted secret module declares, or `{ module: …, settings: … }`; a SHARED secret across nodes for a fleet). See https://getbusbar.com/docs/1.6/errors/BUSBAR-3115
 ```
 
 ---

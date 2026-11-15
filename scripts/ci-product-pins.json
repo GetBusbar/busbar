@@ -62,7 +62,7 @@
       "commit": "8553ddc893a6ab5efb4415e7c89b6e98ce7fc917",
       "package": "busbar-export-file-plugin",
       "kind": "export",
-      "alias": "file",
+      "alias": "request-log-file",
       "image": "libbusbar_export_file_plugin.so",
       "declares": "export-file/declares.json",
       "lock_sha256": "9d061b396a254c474c20e13b5f96c06599350297697cd62f9115078677a42dcb"
@@ -260,7 +260,7 @@
       "commit": "06a8ade187e1cd961b348d45face2f2b2a1add27",
       "package": "busbar-export-webhook-plugin",
       "kind": "export",
-      "alias": "webhook",
+      "alias": "request-log-webhook",
       "image": "libbusbar_export_webhook_plugin.so",
       "declares": "export-webhook/declares.json",
       "lock_sha256": "316ba0137b4bef8d56c47f54aa98482e4bd8f14bd311e6a5ac9b52f71c651358"

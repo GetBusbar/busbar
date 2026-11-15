@@ -20,7 +20,7 @@ pub type LinkedStore = (
     &'static str,
 );
 
-pub type LinkedStoreDoor = (
+type LinkedStoreDoor = (
     &'static str,
     bool,
     busbar_contract::abi::sdk::door::MacroDoor,
@@ -28,7 +28,7 @@ pub type LinkedStoreDoor = (
 );
 
 /// ONE STORE-AXIS ROW as the store crate states it: its `linked::STORE`
-/// in either shape, a [`LinkedStore`] or a [`LinkedStoreDoor`], read as the [`LinkedStore`] the
+/// in either shape, a [`LinkedStore`] or the door-carrying tuple, read as the [`LinkedStore`] the
 /// root's install carries. The composition root's generated table wraps every `STORE` in it.
 #[derive(Debug, Clone, Copy)]
 pub struct StoreRow<T>(pub T);
@@ -38,6 +38,13 @@ impl StoreRow<LinkedStore> {
     pub const fn linked(self) -> LinkedStore {
         self.0
     }
+
+    /// The names an earlier release answered to: none on this shape, which carries no door
+    /// declarations.
+    #[must_use]
+    pub const fn former_names(self) -> &'static [&'static str] {
+        &[]
+    }
 }
 
 impl StoreRow<LinkedStoreDoor> {
@@ -45,6 +52,13 @@ impl StoreRow<LinkedStoreDoor> {
     pub const fn linked(self) -> LinkedStore {
         let (key, ephemeral, door, canonical) = self.0;
         (key, ephemeral, door.door_fn(), canonical)
+    }
+
+    /// The names an earlier release answered to: the door's `FORMER_NAMES`.
+    #[must_use]
+    pub const fn former_names(self) -> &'static [&'static str] {
+        let (_, _, door, _) = self.0;
+        door.former_names()
     }
 }
 
@@ -176,6 +190,10 @@ pub struct RootInstall {
     /// The root's secret admission ([`SecretAdmit`]): what puts a build's dropped-in secret
     /// plugins on [`Self::secret_axis`]. `None` = no dropped-in secret plugin joins the axis.
     pub secret_admit: Option<SecretAdmit>,
+    /// The root's snapshot of the dropped-in secret set [`Self::secret_admit`] replaces: taken
+    /// before a config transaction, restored when the transaction ends without publishing, so an
+    /// unpublished generation's set never stays on the live axis. `None` = nothing to restore.
+    pub secret_snapshot: Option<SecretSnapshotTake>,
     /// The root's rate holder ([`crate::rate_apply::RateApply`]): what every rate resolution, at
     /// boot and on each apply/reload, is staged with and raised to. `None` = no holder hears an
     /// apply (a build with no root ledger).
@@ -221,6 +239,13 @@ pub struct RootInstall {
     /// no projection.
     pub config_projection: Option<crate::appbuild::ConfigProjection>,
 }
+
+/// Puts the live dropped-in secret set back as it was when it was taken, if the live set differs
+/// from it (by name, version and image). An unchanged set is left alone, with its cached checkers.
+pub type SecretRestoreFn = Box<dyn FnOnce() + Send>;
+
+/// Takes the live dropped-in secret set and returns what puts it back ([`SecretRestoreFn`]).
+pub type SecretSnapshotTake = fn() -> SecretRestoreFn;
 
 pub type PluginLogsCheck = fn(&config::PluginsCfg) -> Result<(), String>;
 
@@ -449,6 +474,19 @@ pub(crate) fn builtin_ranking(
     ranking_on_axis(axis.as_ref(), name).ok()
 }
 
+/// Operator remedy shared by the store refusals.
+const STORE_REMEDY: &str =
+    "install a signed plugin of kind store and select it with store.module set to its name";
+
+fn store_needs_plugins_error(store_ref: &str, dir: &str) -> String {
+    format!(
+        "store.module: '{store_ref}' requires the plugin subsystem, but plugins.enabled is \
+         false (the default). Set plugins.enabled: true and place the signed \
+         '{store_ref}' store plugin tarball in the plugins directory ('{dir}'). The published \
+         binary links no store of its own: store.module selects a plugin of kind store by name."
+    )
+}
+
 struct PluginRef<'a> {
     kind: &'a str,
     names: String,
@@ -595,13 +633,7 @@ pub fn plugins_preflight(
     let has_hook_plugin = !hook_plugin_refs.is_empty();
 
     if store_is_plugin && !plugins_cfg.enabled {
-        return Err(format!(
-            "store.module: '{store_ref}' requires the plugin subsystem, but plugins.enabled is \
-             false (the default). Set plugins.enabled: true and place the signed \
-             '{store_ref}' store plugin tarball in the plugins directory ('{}'), or set \
-             store.module: memory.",
-            plugins_cfg.dir
-        ));
+        return Err(store_needs_plugins_error(&store_ref, &plugins_cfg.dir));
     }
 
     if !auth_plugin_refs.is_empty() && !plugins_cfg.enabled {
@@ -666,7 +698,7 @@ pub fn plugins_preflight(
                 missing: format!("no plugin matching store.module: '{store_ref}'"),
                 must_be: "a store plugin",
                 label: "",
-                remedy: "set store.module: memory",
+                remedy: STORE_REMEDY,
             },
         )?;
     }

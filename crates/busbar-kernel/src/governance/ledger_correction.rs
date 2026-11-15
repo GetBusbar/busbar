@@ -47,7 +47,6 @@ pub(in crate::governance) struct PendingCorrection {
     intent: Intent,
     targets: Vec<(String, u64)>,
     sent_at: u64,
-    started: std::time::Instant,
     running: Arc<std::sync::atomic::AtomicBool>,
     receipt: Arc<std::sync::Mutex<Option<Decision>>>,
     settled: Arc<std::sync::Mutex<Option<Decision>>>,
@@ -83,10 +82,6 @@ impl PendingCorrection {
             .unwrap_or_else(|p| p.into_inner())
             .as_ref()
             .is_some_and(|event| event.state != RecoveryState::Settled)
-    }
-
-    fn receipt_retention_expired(&self) -> bool {
-        ledger_off_path::ledger_correction_retention_expired(self.started)
     }
 
     pub(super) fn unresolved_day(&self) -> Option<u64> {
@@ -291,9 +286,7 @@ impl GovState {
                         RecoveryState::LandedUnknown
                         | RecoveryState::VerdictLanded
                         | RecoveryState::VerdictNotLanded => true,
-                        RecoveryState::Intent => self
-                            .recovery_retention_expired(event.operation_id)
-                            .is_none(),
+                        RecoveryState::Intent => !self.recovery_sent_here(event.operation_id),
                         _ => false,
                     }
             })
@@ -446,9 +439,7 @@ impl GovState {
                     | RecoveryState::VerdictNotLanded
                     | RecoveryState::LandedUnknown
             ) || (event.state == RecoveryState::Intent
-                && self
-                    .recovery_retention_expired(event.operation_id)
-                    .is_none())
+                && !self.recovery_sent_here(event.operation_id))
             {
                 if let Err(error) = self
                     .resume_adopted_correction(cost, event.operation_id)
@@ -484,7 +475,7 @@ impl GovState {
         custody.validate_event(&event).map_err(unavailable)?;
         match event.state {
             RecoveryState::Intent => {
-                if self.recovery_retention_expired(operation_id).is_none() {
+                if !self.recovery_sent_here(operation_id) {
                     custody.mark_age_unknown();
                     let next = self.new_recovery_event(
                         operation_id,
@@ -1139,19 +1130,14 @@ impl GovState {
         }
         self.keep_correction_recovery(pending, RecoveryState::Intent)
             .await?;
-        let age = if self.recovery_enabled() {
-            self.recovery_retention_expired(pending.request.op_id.0)
-        } else {
-            Some(pending.receipt_retention_expired())
-        };
-        if age != Some(false) || pending.receipt_retention_expired() {
+        // A send from this process is resent with its exact operation, however old: its slot is
+        // held until it settles, so the store replays the recorded verdict (STORE-TRANSACTIONS N8).
+        if self.recovery_enabled() && !self.recovery_sent_here(pending.request.op_id.0) {
             self.keep_correction_recovery(pending, RecoveryState::LandedUnknown)
                 .await?;
-            return Err(unresolved(if age.is_none() {
-                "receipt age is unknown after restart; landed-unknown operation requires an audited verdict"
-            } else {
-                "receipt retention expired; landed-unknown operation requires an audited verdict"
-            }));
+            return Err(unresolved(
+                "receipt age is unknown after restart; landed-unknown operation requires an audited verdict",
+            ));
         }
 
         let decision = match self
@@ -1792,13 +1778,12 @@ impl GovState {
                     }));
                     guards[index].1.insert(bucket, before);
                 }
-                let (sent_at, started) = ledger_off_path::ledger_correction_sent_clock();
+                let sent_at = ledger_off_path::ledger_correction_sent_clock();
                 let pending = PendingCorrection {
                     request,
                     intent: Intent::of(adj, action_id),
                     targets,
                     sent_at,
-                    started,
                     running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     receipt: Arc::new(std::sync::Mutex::new(None)),
                     settled: Arc::new(std::sync::Mutex::new(None)),

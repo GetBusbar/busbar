@@ -182,6 +182,53 @@ fn the_observability_lift_out_meets_its_1_5_5_bytes() {
     }
 }
 
+#[test]
+fn a_1_5_5_config_overlay_selector_is_refused_with_its_migration_path() {
+    install();
+    let raw = include_str!("fixtures/config_overlay_1_5_5.yaml");
+    let doc: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str(raw).expect("the 1.5.5 document parses");
+
+    // The current reader (`--validate`, a reload, any document that skipped startup
+    // normalization) refuses the selector by name, says it is retired, and names the way out.
+    let markers = busbar_kernel::config::current_format::detect_legacy_markers(&doc);
+    let refused = busbar_kernel::config::current_format::legacy_config_error(&markers);
+    for want in [
+        "`config.overlay`",
+        "retired in 1.6.0",
+        "Store",
+        "busbar --migrate-config",
+        "--migrate-overlay",
+    ] {
+        assert!(
+            refused.contains(want),
+            "the current reader's refusal does not say `{want}`:\n{refused}"
+        );
+    }
+
+    // That way out works: the migration drops the selector and keeps `config.locked`.
+    let out = busbar_migrations::config::migrate::migrate_config(raw).expect("migrates");
+    let migrated: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str(&out.yaml).expect("the output parses");
+    assert!(
+        migrated.at("config").get("overlay").is_none(),
+        "the migration keeps the retired selector:\n{}",
+        out.yaml
+    );
+    assert!(
+        out.changes
+            .iter()
+            .any(|line| line.starts_with("config.overlay removed")),
+        "the migration does not report the removal:\n{:#?}",
+        out.changes
+    );
+    assert!(
+        busbar_kernel::config::current_format::detect_legacy_markers(&migrated).is_empty(),
+        "the migrated document still meets the current reader's refusal:\n{}",
+        out.yaml
+    );
+}
+
 const MANIFEST: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
 const REGISTRY: &str = include_str!("../../../../../plugins.yaml");
 const HEADER: &str = "[package.metadata.busbar.migration]";

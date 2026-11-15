@@ -23,10 +23,12 @@ use crate::state::App;
 
 mod derived;
 mod handin;
+mod tables;
 #[cfg(test)]
 use crate::off_path::inbound::checked_line_ids;
 pub(crate) use derived::Derived;
 use handin::handin_state_matches;
+use tables::{Adoptions, ByFraming, Units};
 
 pub const NO_LIST: &str = "the kernel holds no guest list for this listener at this generation";
 
@@ -1161,11 +1163,24 @@ fn peer_capacity(existing: bool, held: usize) -> Result<(), &'static str> {
     }
 }
 
+/// What a framing's end takes from the peer table, driven through the production type.
+#[cfg(test)]
 fn take_framing_peers<T>(peers: &mut HashMap<(u64, u64, u64), T>, framing: u64) -> Vec<T> {
-    peers
-        .extract_if(|(_, _, f), _| *f == framing)
+    let mut table = ByFraming::default();
+    for ((owner, generation, f), peer) in std::mem::take(peers) {
+        table.insert((owner, generation), f, peer);
+    }
+    let taken = table
+        .take(framing)
+        .into_iter()
         .map(|(_, peer)| peer)
-        .collect()
+        .collect();
+    peers.extend(
+        table
+            .into_flat()
+            .map(|((owner, generation), f, peer)| ((owner, generation, f), peer)),
+    );
+    taken
 }
 
 fn peer_payload_empty(unit: UnitRef, head: &Head, body: Option<&[u8]>) -> bool {
@@ -1289,6 +1304,8 @@ struct FramingListener {
     generation: u64,
     opening: Option<Arc<Table>>,
     ended_streams: HashSet<u64>,
+    /// The generation and table each live stream was granted; they retire with the listener.
+    grants: HashMap<u64, (u64, Arc<Table>)>,
     status: FramingStatus,
 }
 
@@ -1305,34 +1322,23 @@ struct PendingAdoption {
     unit: UnitState,
 }
 
-/// The pending session adoptions, by destination framing, and the source leg of each (one
-/// pending adoption per leg), so the duplicate check reads the leg by key.
-#[derive(Default)]
-struct Adoptions {
-    by_destination: HashMap<(u64, u64), PendingAdoption>,
-    legs: HashSet<u64>,
-}
-
 impl Table {
     fn line_of(&self, id: u64) -> Option<u32> {
         self.lines_by_id.get(&id).copied()
     }
 }
 
-type StreamGrants = HashMap<(u64, u64, u64), (u64, Arc<Table>)>;
-
 pub struct Inbound {
     pub(crate) tables: RwLock<HashMap<(u64, u64, u64), Arc<Table>>>,
 
-    framing_listeners: Mutex<HashMap<(u64, u64), FramingListener>>,
+    framing_listeners: Mutex<ByFraming<u64, FramingListener>>,
 
-    stream_grants: Mutex<StreamGrants>,
-    units: Mutex<HashMap<u64, UnitState>>,
+    units: Mutex<Units>,
     adoptions: Mutex<Adoptions>,
 
-    framing_conns: Mutex<HashMap<(u64, u64), u64>>,
+    framing_conns: Mutex<ByFraming<u64, u64>>,
 
-    peers: Mutex<HashMap<(u64, u64, u64), UnitState>>,
+    peers: Mutex<ByFraming<(u64, u64), UnitState>>,
     seals: Seals,
     spawn: Spawn,
     refused: RefusedSink,
@@ -1613,7 +1619,6 @@ impl Inbound {
         Arc::new(Self {
             tables: RwLock::default(),
             framing_listeners: Mutex::default(),
-            stream_grants: Mutex::default(),
             units: Mutex::default(),
             adoptions: Mutex::default(),
             peers: Mutex::default(),
@@ -1671,25 +1676,30 @@ impl Inbound {
             .framing_listeners
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        match held.entry((owner, framing)) {
-            std::collections::hash_map::Entry::Vacant(at) => {
-                at.insert(FramingListener {
-                    listener,
-                    generation,
-                    opening: Some(Arc::clone(&table)),
-                    ended_streams: HashSet::default(),
-                    status: FramingStatus::Active,
-                });
+        match held.get(owner, framing) {
+            None => {
+                held.insert(
+                    owner,
+                    framing,
+                    FramingListener {
+                        listener,
+                        generation,
+                        opening: Some(Arc::clone(&table)),
+                        ended_streams: HashSet::default(),
+                        grants: HashMap::default(),
+                        status: FramingStatus::Active,
+                    },
+                );
                 Ok(())
             }
-            std::collections::hash_map::Entry::Occupied(at)
-                if at.get().listener == listener
-                    && at.get().generation == generation
-                    && at.get().status == FramingStatus::Active =>
+            Some(at)
+                if at.listener == listener
+                    && at.generation == generation
+                    && at.status == FramingStatus::Active =>
             {
                 Ok(())
             }
-            _ => Err(UNIT_FOREIGN),
+            Some(_) => Err(UNIT_FOREIGN),
         }
     }
 
@@ -1698,7 +1708,7 @@ impl Inbound {
             .framing_listeners
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .get_mut(&(owner, framing))
+            .get_mut(owner, framing)
             .and_then(|binding| binding.opening.take());
         drop(opening);
     }
@@ -1708,7 +1718,7 @@ impl Inbound {
             .framing_listeners
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let source = held.get_mut(&(owner, framing)).ok_or(UNIT_FOREIGN)?;
+        let source = held.get_mut(owner, framing).ok_or(UNIT_FOREIGN)?;
         if source.status != FramingStatus::Active {
             return Err(UNIT_FOREIGN);
         }
@@ -1717,16 +1727,16 @@ impl Inbound {
     }
 
     fn claimed_session(
-        units: &HashMap<u64, UnitState>,
+        units: &Units,
         source: busbar_contract::framing_scope::AdoptionSource,
     ) -> Result<(u64, u64, u32, [u64; 2]), &'static str> {
-        let mut matching = units.iter().filter(|(_, unit)| {
+        let mut matching = units.in_framing(source.leg).filter(|(_, unit)| {
             unit.owner == source.owner
                 && unit.binding.framing == Some(source.leg)
                 && unit.claimed
                 && unit.handed_head.is_some()
         });
-        let (&id, unit) = matching.next().ok_or(UNIT_FOREIGN)?;
+        let (id, unit) = matching.next().ok_or(UNIT_FOREIGN)?;
         if matching.next().is_some()
             || unit.binding.conn != source.conn
             || !unit.alive.load(std::sync::atomic::Ordering::Acquire)
@@ -1754,7 +1764,7 @@ impl Inbound {
                 .framing_listeners
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            let binding = held.get(&(source.owner, source.leg)).ok_or(UNIT_FOREIGN)?;
+            let binding = held.get(source.owner, source.leg).ok_or(UNIT_FOREIGN)?;
             if binding.listener != source.listener || binding.status != FramingStatus::Detached {
                 return Err(UNIT_FOREIGN);
             }
@@ -1774,10 +1784,10 @@ impl Inbound {
             .framing_listeners
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let binding = held.get(&(source.owner, source.leg)).ok_or(UNIT_FOREIGN)?;
+        let binding = held.get(source.owner, source.leg).ok_or(UNIT_FOREIGN)?;
         if binding.listener != source.listener
             || binding.status != FramingStatus::Detached
-            || held.contains_key(&(owner, framing))
+            || held.contains_key(owner, framing)
         {
             return Err(UNIT_FOREIGN);
         }
@@ -1785,9 +1795,7 @@ impl Inbound {
             .adoptions
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if pending.by_destination.contains_key(&(owner, framing))
-            || pending.legs.contains(&source.leg)
-        {
+        if pending.contains_key(owner, framing) || pending.has_leg(source.leg) {
             return Err(UNIT_FOREIGN);
         }
         let mut units = self.units();
@@ -1801,17 +1809,16 @@ impl Inbound {
         let mut unit = units.remove(&id).ok_or(UNIT_FOREIGN)?;
         unit.owner = owner;
         unit.secret = secret;
-        pending.legs.insert(source.leg);
-        pending
-            .by_destination
-            .insert((owner, framing), PendingAdoption { source, id, unit });
+        pending.insert(owner, framing, PendingAdoption { source, id, unit });
         held.insert(
-            (owner, framing),
+            owner,
+            framing,
             FramingListener {
                 listener: source.listener,
                 generation,
                 opening: None,
                 ended_streams: HashSet::default(),
+                grants: HashMap::default(),
                 status: FramingStatus::Adopting,
             },
         );
@@ -1832,7 +1839,7 @@ impl Inbound {
             .framing_listeners
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let destination = held.get(&(owner, framing)).ok_or(UNIT_FOREIGN)?;
+        let destination = held.get(owner, framing).ok_or(UNIT_FOREIGN)?;
         if destination.status != FramingStatus::Adopting {
             return Err(UNIT_FOREIGN);
         }
@@ -1840,12 +1847,9 @@ impl Inbound {
             .adoptions
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let stage = pending
-            .by_destination
-            .get(&(owner, framing))
-            .ok_or(UNIT_FOREIGN)?;
+        let stage = pending.get(owner, framing).ok_or(UNIT_FOREIGN)?;
         if !held
-            .get(&(stage.source.owner, stage.source.leg))
+            .get(stage.source.owner, stage.source.leg)
             .is_some_and(|source| source.status == FramingStatus::Detached)
             || destination
                 .ended_streams
@@ -1857,23 +1861,19 @@ impl Inbound {
             .framing_conns
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if conns.contains_key(&(owner, framing)) {
+        if conns.contains_key(owner, framing) {
             return Err(CONN_MISMATCH);
         }
         let mut units = self.units();
         if units.contains_key(&stage.id) {
             return Err(UNIT_FOREIGN);
         }
-        let mut stage = pending
-            .by_destination
-            .remove(&(owner, framing))
-            .ok_or(UNIT_FOREIGN)?;
-        pending.legs.remove(&stage.source.leg);
+        let mut stage = pending.remove(owner, framing).ok_or(UNIT_FOREIGN)?;
         stage.unit.binding.conn = conn;
         stage.unit.binding.framing = Some(framing);
         units.insert(stage.id, stage.unit);
-        conns.insert((owner, framing), conn);
-        held.get_mut(&(owner, framing)).ok_or(UNIT_FOREIGN)?.status = FramingStatus::Active;
+        conns.insert(owner, framing, conn);
+        held.get_mut(owner, framing).ok_or(UNIT_FOREIGN)?.status = FramingStatus::Active;
         Ok(())
     }
 
@@ -1884,21 +1884,16 @@ impl Inbound {
         stream: u64,
         generation: u64,
     ) -> Result<(), &'static str> {
-        let key = (owner, framing, stream);
         let (listener, opening_generation) = {
             let held = self
                 .framing_listeners
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            let binding = held.get(&(owner, framing)).ok_or(NO_LIST)?;
+            let binding = held.get(owner, framing).ok_or(NO_LIST)?;
             if binding.status != FramingStatus::Active || binding.ended_streams.contains(&stream) {
                 return Err(UNIT_FOREIGN);
             }
-            let grants = self
-                .stream_grants
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            if let Some((granted, _)) = grants.get(&key) {
+            if let Some((granted, _)) = binding.grants.get(&stream) {
                 return if *granted == generation {
                     Ok(())
                 } else {
@@ -1908,11 +1903,11 @@ impl Inbound {
             (binding.listener, binding.generation)
         };
         let table = self.table_at(owner, listener, generation).ok_or(NO_LIST)?;
-        let held = self
+        let mut held = self
             .framing_listeners
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let binding = held.get(&(owner, framing)).ok_or(NO_LIST)?;
+        let binding = held.get_mut(owner, framing).ok_or(NO_LIST)?;
         if binding.listener != listener
             || binding.generation != opening_generation
             || binding.status != FramingStatus::Active
@@ -1922,11 +1917,7 @@ impl Inbound {
         if binding.ended_streams.contains(&stream) {
             return Err(UNIT_FOREIGN);
         }
-        let mut grants = self
-            .stream_grants
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        match grants.entry(key) {
+        match binding.grants.entry(stream) {
             std::collections::hash_map::Entry::Vacant(at) => {
                 at.insert((generation, Arc::clone(&table)));
                 Ok(())
@@ -1950,7 +1941,7 @@ impl Inbound {
                     .framing_listeners
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner);
-                if let Some(listener) = held.get(&(owner, framing)) {
+                if let Some(listener) = held.get(owner, framing) {
                     if listener.status != FramingStatus::Active {
                         return Err(UNIT_FOREIGN);
                     }
@@ -1959,11 +1950,9 @@ impl Inbound {
                             return Ok(Arc::clone(table));
                         }
                     }
-                    return self
-                        .stream_grants
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .get(&(owner, framing, binding.stream))
+                    return listener
+                        .grants
+                        .get(&binding.stream)
                         .filter(|(granted, _)| *granted == generation)
                         .map(|(_, table)| Arc::clone(table))
                         .ok_or(NO_LIST);
@@ -1976,12 +1965,12 @@ impl Inbound {
             .ok_or(UNIT_FOREIGN)
     }
 
-    fn units(&self) -> std::sync::MutexGuard<'_, HashMap<u64, UnitState>> {
+    fn units(&self) -> std::sync::MutexGuard<'_, Units> {
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::UnitsLock);
         self.units.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn peers(&self) -> std::sync::MutexGuard<'_, HashMap<(u64, u64, u64), UnitState>> {
+    fn peers(&self) -> std::sync::MutexGuard<'_, ByFraming<(u64, u64), UnitState>> {
         self.peers.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -2011,22 +2000,21 @@ impl Inbound {
             .framing_listeners
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let binding = held.get(&(owner, framing)).ok_or(NO_LIST)?;
+        let binding = held.get(owner, framing).ok_or(NO_LIST)?;
         if binding.status != FramingStatus::Active || binding.ended_streams.contains(&stream) {
             return Err(UNIT_FOREIGN);
         }
         let mut units = self.units();
-        let mut matching = units.iter().filter(|(_, unit)| {
-            unit.owner == owner
-                && unit.binding.framing == Some(framing)
-                && unit.binding.stream == stream
-                && !unit.claimed
-                && unit.handed_head.is_some()
-        });
-        let id = *matching.next().ok_or(UNIT_FOREIGN)?.0;
-        if matching.next().is_some() {
-            return Err(UNIT_FOREIGN);
-        }
+        let id = {
+            let mut matching = units
+                .in_stream(owner, framing, stream)
+                .filter(|(_, unit)| !unit.claimed && unit.handed_head.is_some());
+            let id = matching.next().ok_or(UNIT_FOREIGN)?.0;
+            if matching.next().is_some() {
+                return Err(UNIT_FOREIGN);
+            }
+            id
+        };
         let unit = units.get_mut(&id).ok_or(UNIT_FOREIGN)?;
         let handed = unit.handed_head.as_ref().ok_or(UNIT_FOREIGN)?;
         if !same_request(handed, head) {
@@ -2095,49 +2083,27 @@ impl Inbound {
             .framing_listeners
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let retired_bindings: Vec<_> = held
-            .extract_if(|(_, f), _| *f == framing)
-            .map(|(_, binding)| binding)
-            .collect();
-        let retired_adoptions: Vec<_> = {
-            let mut adoptions = self
-                .adoptions
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            let retired: Vec<_> = adoptions
-                .by_destination
-                .extract_if(|(_, leg), stage| *leg == framing || stage.source.leg == framing)
-                .map(|(_, stage)| stage)
-                .collect();
-            for stage in &retired {
-                adoptions.legs.remove(&stage.source.leg);
-            }
-            retired
-        };
-        let retired_grants: Vec<_> = self
-            .stream_grants
+        // Each table gives up exactly this framing's rows; a listener takes its grants with it.
+        let retired_bindings = held.take(framing);
+        let retired_adoptions = self
+            .adoptions
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .extract_if(|(_, f, _), _| *f == framing)
-            .map(|(_, grant)| grant)
-            .collect();
-        let retired_units: Vec<_> = self
-            .units()
-            .extract_if(|_, u| u.binding.framing == Some(framing))
-            .map(|(_, u)| u)
-            .collect();
-        let retired_peers = take_framing_peers(&mut self.peers(), framing);
-        self.framing_conns
+            .take_framing(framing);
+        let retired_units = self.units().take_framing(framing);
+        let retired_peers = self.peers().take(framing);
+        let retired_conns = self
+            .framing_conns
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .retain(|(_, f), _| *f != framing);
+            .take(framing);
         drop(held);
         drop((
             retired_bindings,
             retired_adoptions,
-            retired_grants,
             retired_units,
             retired_peers,
+            retired_conns,
         ));
     }
 
@@ -2146,23 +2112,11 @@ impl Inbound {
             .framing_listeners
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if let Some(binding) = held.get_mut(&(owner, framing)) {
+        let retired_grant = held.get_mut(owner, framing).and_then(|binding| {
             binding.ended_streams.insert(stream);
-        }
-        let retired_grant = self
-            .stream_grants
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&(owner, framing, stream));
-        let retired_units: Vec<_> = self
-            .units()
-            .extract_if(|_, unit| {
-                unit.owner == owner
-                    && unit.binding.framing == Some(framing)
-                    && unit.binding.stream == stream
-            })
-            .map(|(_, unit)| unit)
-            .collect();
+            binding.grants.remove(&stream)
+        });
+        let retired_units = self.units().take_stream(owner, framing, stream);
         drop(held);
         drop((retired_grant, retired_units));
     }
@@ -2179,20 +2133,17 @@ impl Inbound {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let registered =
-            held.contains_key(&(owner, framing)) || self.table(owner, generation).is_some();
+            held.contains_key(owner, framing) || self.table(owner, generation).is_some();
         let mut conns = self
             .framing_conns
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        match conns.entry((owner, framing)) {
-            std::collections::hash_map::Entry::Occupied(e) if *e.get() != conn => {
-                Err(CONN_MISMATCH)
-            }
-            std::collections::hash_map::Entry::Occupied(_) => Ok(()),
-
-            std::collections::hash_map::Entry::Vacant(_) if !registered => Err(NO_LIST),
-            std::collections::hash_map::Entry::Vacant(v) => {
-                v.insert(conn);
+        match conns.get(owner, framing) {
+            Some(held_conn) if *held_conn != conn => Err(CONN_MISMATCH),
+            Some(_) => Ok(()),
+            None if !registered => Err(NO_LIST),
+            None => {
+                conns.insert(owner, framing, conn);
                 Ok(())
             }
         }
@@ -2229,7 +2180,7 @@ impl Inbound {
         if let Some(framing) = binding.framing {
             let peers = self.peers();
             if let Some(peer) = peers
-                .get(&(owner, generation, framing))
+                .get((owner, generation), framing)
                 .filter(|p| p.providers == *providers)
             {
                 for inherited in inherited_peer_answers(
@@ -2252,15 +2203,13 @@ impl Inbound {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         if let Some(framing) = binding.framing {
-            match held.get(&(owner, framing)) {
+            match held.get(owner, framing) {
                 Some(listener) => {
                     if listener.status != FramingStatus::Active
                         || listener.ended_streams.contains(&binding.stream)
-                        || !self
-                            .stream_grants
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .get(&(owner, framing, binding.stream))
+                        || !listener
+                            .grants
+                            .get(&binding.stream)
                             .is_some_and(|(g, policy)| {
                                 *g == generation && Arc::ptr_eq(policy, &state.table)
                             })
@@ -2321,7 +2270,7 @@ impl Inbound {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         if let Some(framing) = binding.framing {
-            if held.get(&(owner, framing)).is_some_and(|listener| {
+            if held.get(owner, framing).is_some_and(|listener| {
                 listener.status != FramingStatus::Active
                     || listener.ended_streams.contains(&binding.stream)
             }) {
@@ -2373,7 +2322,7 @@ impl Inbound {
     fn with_state<R>(&self, target: Target, f: impl FnOnce(&mut UnitState) -> R) -> Option<R> {
         match target {
             Target::Unit(unit) => self.units().get_mut(&unit).map(f),
-            Target::Peer(key) => self.peers().get_mut(&key).map(f),
+            Target::Peer(key) => self.peers().get_mut((key.0, key.1), key.2).map(f),
         }
     }
 
@@ -2431,14 +2380,14 @@ impl Inbound {
                 .framing_listeners
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            if !held.contains_key(&(call.owner, call.framing))
+            if !held.contains_key(call.owner, call.framing)
                 && self.table(call.owner, call.generation).is_none()
             {
                 return Err(NO_LIST);
             }
             let key = (call.owner, call.generation, call.framing);
             let mut peers = self.peers();
-            if peer_capacity(peers.contains_key(&key), peers.len()).is_err() {
+            if peer_capacity(peers.contains_key((key.0, key.1), key.2), peers.len()).is_err() {
                 tracing::error!(
                     owner = call.owner,
                     conn = call.conn,
@@ -2447,7 +2396,7 @@ impl Inbound {
                 );
                 return Err(PEER_TABLE_FULL);
             }
-            peers.entry(key).or_insert_with(|| {
+            peers.or_insert_with((key.0, key.1), key.2, || {
                 UnitState::open(
                     call.owner,
                     call.generation,
