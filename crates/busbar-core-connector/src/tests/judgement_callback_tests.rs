@@ -455,6 +455,9 @@ fn a_refusal_names_the_hop_that_failed() {
         Default::default(),
         proxy(),
     );
+    // `far.test` resolves only at the proxy: `proxy_resolution: proxy` (the default, `local`,
+    // refuses a target that does not resolve here before the proxy hop is reached).
+    a.set_proxy_by_address(false);
     let id = open(&a).expect("the proxy's judgement pends");
     read_until_failed(&a, id);
     let why = a.conn_refusal(OWNER, id).expect("the reason is held");
@@ -477,6 +480,7 @@ fn a_refusal_names_the_hop_that_failed() {
         Default::default(),
         proxy(),
     );
+    b.set_proxy_by_address(false);
     assert!(open(&b).is_err());
     assert_eq!(
         b.refusal(OWNER, NeedId(0)).as_ref().map(shown).as_deref(),
@@ -602,10 +606,9 @@ fn an_asynchronous_proxy_hop_failure_names_the_proxy() {
 
         let proxy = answering_proxy(b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n");
         let (c, id) = opened(proxy, Default::default(), "far.test:80");
-        // Under `proxy_resolution: local` the CONNECT, and so its refusal, names the judged address.
         assert_eq!(
             reason_of(&c, id).await,
-            "could not connect to the egress proxy: proxy refused CONNECT 127.0.0.1:80: HTTP/1.1 \
+            "could not connect to the egress proxy: proxy refused CONNECT far.test:80: HTTP/1.1 \
              407 Proxy Authentication Required"
         );
 
