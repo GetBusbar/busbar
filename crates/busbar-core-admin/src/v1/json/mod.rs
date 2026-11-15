@@ -647,3 +647,7 @@ mod operator_file_policy_tests;
 
 #[cfg(feature = "test-support")]
 pub use handlers::credential_flush_response_for_test;
+
+#[cfg(test)]
+#[path = "tests/audit_feed_tests.rs"]
+mod audit_feed_tests;

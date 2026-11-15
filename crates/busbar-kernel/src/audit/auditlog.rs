@@ -1694,3 +1694,7 @@ pub fn held_operator_rows() -> Vec<String> {
 #[cfg(test)]
 #[path = "tests/audit_keyset_tests.rs"]
 mod keyset_tests;
+
+#[cfg(test)]
+#[path = "tests/audit_row_tests.rs"]
+mod row_tests;
