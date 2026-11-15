@@ -190,11 +190,22 @@ pub async fn healthz(crate::state::CurrentApp(app): crate::state::CurrentApp) ->
     }
     let t = now();
 
-    let lanes = app.engine_tables_view().lane_count();
-    let ready = if lanes == 0 {
+    let view = app.engine_tables_view();
+    let lanes = view.lane_count();
+    let ready = if lanes > 0 {
+        (0..lanes).any(|i| app.store.is_ready_any_cell(i, t))
+    } else if view.llm_configured() {
         a_plane_opened(&app)
     } else {
-        (0..lanes).any(|i| app.store.is_ready_any_cell(i, t))
+        // No LLM plane: lanes do not count against health. Every other configured plane must be up.
+        if let Some(key) = first_unopened_plane(&app) {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("plane '{key}' configured but not open"),
+            )
+                .into_response();
+        }
+        true
     };
     if ready {
         (StatusCode::OK, "ok").into_response()
@@ -211,6 +222,17 @@ fn plugin_dispatch_halted(latched: bool) -> Option<Response> {
         )
             .into_response()
     })
+}
+
+fn first_unopened_plane(app: &crate::state::App) -> Option<String> {
+    crate::plane_driver::registry::plane_decls()
+        .iter()
+        .filter(|d| !d.fallback && app.plane_configured(d))
+        .find(|d| {
+            app.plane_slot(d.key)
+                .is_some_and(|slot| !crate::plane_driver::door::opened(slot.as_ref()))
+        })
+        .map(|d| d.key.to_string())
 }
 
 fn a_plane_opened(app: &crate::state::App) -> bool {
