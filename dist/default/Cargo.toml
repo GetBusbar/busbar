@@ -35,6 +35,8 @@ async-trait = { workspace = true }
 # `main.rs` have to know this plane exists.
 busbar-core-oauth2 = { path = "../../crates/busbar-core-oauth2" }
 busbar-migrations = { path = "../../crates/busbar-migrations" }
+# The boot's one-time config upgrade (MIGRATE-ON-BOOT), cold library code.
+busbar-migrate = { path = "../../crates/busbar-migrate" }
 # The admin API service (`/api/v1/admin/*`), a MANDATORY sibling crate (not a plugin). Always linked;
 # `main` registers its mount seam unconditionally. Feature-neutral defaults off — the binary's own
 # feature forwards below turn on `busbar-admin`'s features in lock-step with busbar-core's.

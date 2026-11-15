@@ -38,6 +38,7 @@ busbar-core-connector = { path = "../busbar-core-connector" }
 busbar-plugin-loader = { path = "../plugin-loader" }
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
 busbar-migrations = { path = "../busbar-migrations" }
+busbar-migrate = { path = "../busbar-migrate" }
 busbar-contract = { path = "../busbar-contract" }
 busbar-kernel-identity = { path = "../busbar-kernel-identity" }
 busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }

@@ -184,6 +184,9 @@ impl Manifest {
         bytes
     }
 
+    /// Once per open; pinned so the migrate-size job finds it (MIGRATE-ON-BOOT §7 †).
+    #[cold]
+    #[inline(never)]
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, Error> {
         if bytes.len() != 80 || &bytes[..8] != b"BSCFMT1\0" {
             return Err(Error::UnsupportedFormat);

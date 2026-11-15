@@ -437,6 +437,10 @@
           "optional": true,
           "type": "ConfigMgmtCfg"
         },
+        "config_version": {
+          "optional": true,
+          "type": "u64"
+        },
         "decisions": {
           "optional": true,
           "type": "DeclaredSections"

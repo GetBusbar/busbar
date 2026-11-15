@@ -10,7 +10,7 @@ slug: docs/1.6/errors/BUSBAR-3021
 
 ## What it means
 
-RETIRED. Serving no longer applies deprecated operational environment overrides. Use --migrate-config with the old deployment environment and working directory to capture provider, worker and upstream HTTP settings; old file-overlay selection is migration input only.
+RETIRED. Serving no longer applies deprecated operational environment overrides. Move the provider, worker and upstream HTTP settings they set into config.yaml; old file-overlay selection is read only by the one-time upgrade boot.
 
 ## How to fix it
 

@@ -421,6 +421,14 @@ fn main() {
     for w in root::config_migrate::ignored_launch_env(|n| std::env::var_os(n)) {
         eprintln!("{w}");
     }
+    // Migrate-on-boot step 1 (MIGRATE-ON-BOOT r42 §3): config.yaml's one field, before anything else
+    // reads it. An unstamped config is planned in memory here and written at step 5.
+    {
+        let argv = root::cli::argv();
+        let config =
+            std::path::PathBuf::from(root::cli::resolve_config_path(argv.config.as_deref()));
+        root::migrate::run(&config, argv.providers.is_some()).unwrap_or_else(|error| die(error));
+    }
     #[cfg(not(unix))]
     let worker_threads = WORKERS.0;
 
@@ -1617,6 +1625,9 @@ async fn run(
         )));
     }
 
+    // Migrate-on-boot step 5: every instance has opened; an upgraded config.yaml is written in
+    // place now, before any listener serves, and the process re-executes onto it.
+    root::migrate::finish().unwrap_or_else(|error| die(error));
     let _ = root::inbound::install(root::doors::dispatcher());
     if listener_plan.has_root_listener() {
         let app = app_handle.load();

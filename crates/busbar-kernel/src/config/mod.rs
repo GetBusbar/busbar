@@ -899,6 +899,12 @@ pub struct DeployCfg {
     /// some other way, which refuses wherever the grammar is needed. Never on the wire.
     #[serde(skip)]
     pub grammar: grammar::GrammarField,
+    /// The config stamp, config.yaml's first key (`config_version: 1`, MIGRATE-ON-BOOT r42 §3):
+    /// the format this file is in, written once by the boot's upgrade of a 1.5.x file. The gateway
+    /// reads it before this parse (`root/migrate.rs`) and refuses any value other than the current
+    /// one there; here it is admitted and carried, never interpreted.
+    #[serde(default)]
+    pub config_version: Option<u64>,
     #[serde(default = "default_listen")]
     pub listen: String,
     /// busbar's PUBLIC base URL (top-level `public_url:`) — see [`RootCfg::public_url`]. Absent by
@@ -1047,7 +1053,7 @@ pub struct DeployCfg {
     ///
     /// 1.5.3 also DELETED the `observability:` block outright: its last remaining field
     /// (`otlp_url`) is now an `export:` instance with `module: otlp`. A config still carrying
-    /// `observability:` LOUD-FAILS with the `--migrate-config` breadcrumb.
+    /// `observability:` LOUD-FAILS by name.
     #[serde(default)]
     pub export: ExportDefs,
     /// THE DECLARED SECTIONS (1.6.0): every top-level section a registered plane declares AND owns
@@ -2227,6 +2233,7 @@ impl std::fmt::Debug for RootCfg {
 impl std::fmt::Debug for DeployCfg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DeployCfg")
+            .field("config_version", &self.config_version)
             .field("listen_explicit", &self.listen_explicit)
             .field("authored_routing", &self.authored_routing)
             .field(

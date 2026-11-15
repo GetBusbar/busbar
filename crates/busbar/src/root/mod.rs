@@ -191,6 +191,8 @@ pub mod linked;
 pub mod listener;
 pub(crate) mod loader;
 pub(crate) mod measurements;
+/// The migrate-on-boot seam: step 1 (the stamp) and step 5 (the write and re-exec).
+pub(crate) mod migrate;
 pub mod migration_secrets;
 pub mod migration_table;
 // busbar:request-path

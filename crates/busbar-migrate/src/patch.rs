@@ -17,8 +17,22 @@ use crate::{Refusal, STAMP_KEY};
 /// # Errors
 /// CONFIG when the document's root is not a block mapping the line can open (proof one fails).
 pub fn stamp(text: &str, format: u64) -> Result<String, Refusal> {
-    let _ = (first_key_offset, proof_one, format);
-    Ok(text.to_owned())
+    let at = first_key_offset(text);
+    let mut line = String::new();
+    if at == text.len() && !text.is_empty() && !text.ends_with('\n') {
+        line.push('\n');
+    }
+    line.push_str(STAMP_KEY);
+    line.push_str(": ");
+    line.push_str(&format.to_string());
+    line.push('\n');
+    let mut out = String::with_capacity(text.len() + line.len());
+    out.push_str(&text[..at]);
+    out.push_str(&line);
+    out.push_str(&text[at..]);
+    proof_one((at < text.len()).then_some(text), &out, format)?;
+    debug_assert!(proof_two(text, &out, at, line.len()));
+    Ok(out)
 }
 
 /// The byte offset of the first line that is not blank, a comment, a `%` directive or `---`.

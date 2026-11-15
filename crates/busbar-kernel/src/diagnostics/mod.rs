@@ -168,7 +168,7 @@ diagnostics! {
     /// RETIRED in 1.6.0: operational environment overrides are migration input only.
     DEPRECATED_ENV_VAR_HONORED = 3021, Config, Actionable, "deprecated-env-var-honored", "1.5.0", true,
         "A deprecated environment variable is set and still honored — RETIRED",
-        "RETIRED. Serving no longer applies deprecated operational environment overrides. Use --migrate-config with the old deployment environment and working directory to capture provider, worker and upstream HTTP settings; old file-overlay selection is migration input only.",
+        "RETIRED. Serving no longer applies deprecated operational environment overrides. Move the provider, worker and upstream HTTP settings they set into config.yaml; old file-overlay selection is read only by the one-time upgrade boot.",
         "Run the 1.6 migration before serving, review and validate its output, then remove the retired variables from launchers. See docs/migration-1.6.md. See BUSBAR-3029.";
 
     /// RETIRED before 1.6.0 shipped: nothing emits it. The number is kept so a log line from a pre-release build still resolves to an entry that says what happened.
@@ -283,7 +283,7 @@ diagnostics! {
     CONFIG_METADATA_CARVE_OUT_RETIRED = 3136, Config, Fatal, "config-metadata-carve-out-retired", "1.6.0", false,
         "A retired cloud-metadata carve-out key is set",
         "The configuration sets `security.allow_metadata_hosts`, `security.allow_all_metadata: true` or a provider's `allow_metadata_hosts`. In 1.6.0 cloud metadata is refused for every outbound connection, in every egress class, and no configuration admits it, so these 1.5.5 carve-outs are retired. The configuration is refused rather than read with the carve-out ignored. `security.blocked_metadata_hosts` still extends the denylist.",
-        "Run `busbar --migrate-config`: it removes the keys and reports each removed entry (BUSBAR-3411). A workload that needs cloud credentials uses workload-identity federation (IRSA, AKS workload identity, GKE workload identity federation) through a projected token file, never the instance metadata endpoint.";
+        "Remove the keys. A workload that needs cloud credentials uses workload-identity federation (IRSA, AKS workload identity, GKE workload identity federation) through a projected token file, never the instance metadata endpoint.";
 
     /// The migration retired a registration's `allow_private` and listed exactly its hosts in `advanced.allow_destinations`.
     MIGRATE_PRIVATE_REACH_TO_ALLOWLIST = 3410, Config, Actionable, "migrate-private-reach-to-allowlist", "1.6.0", false,
@@ -319,13 +319,13 @@ diagnostics! {
     CONFIG_PRIVATE_REACH_RETIRED = 3135, Config, Fatal, "config-private-reach-retired", "1.6.0", false,
         "A registration still carries the retired per-registration private-address switch",
         "A plane registration (an MCP server under `tools:`, an A2A agent under `agents:`) sets `allow_private`. 1.6.0 has one private-address policy for every outbound connection, `advanced.block_private_addresses` with `advanced.allow_destinations`; a per-registration switch that lifted it for one plugin is retired. The configuration is refused, naming the registration, rather than read with the switch ignored or applied.",
-        "Run `busbar --migrate-config`: it removes the key and lists exactly that registration's host in `advanced.allow_destinations`. Or do the same by hand: delete `allow_private` and add the host (or its address) to `advanced.allow_destinations`. A cloud-metadata address stays refused whatever is listed.";
+        "Delete `allow_private` and add the host (or its address) to `advanced.allow_destinations`. A cloud-metadata address stays refused whatever is listed.";
 
     /// A provider URL names a private or loopback host the destination guard refuses (1.5.5 upgrade).
     CONFIG_PROVIDER_DESTINATION_REFUSED = 3025, Config, Actionable, "config-provider-destination-refused", "1.6.0", false,
         "A provider URL names a private or loopback host the destination guard refuses",
         "A provider's `base_url` or `token_url` names a private or loopback address (an RFC 1918, loopback, link-local, CGNAT or unique-local literal, or the `localhost` name), and `advanced.block_private_addresses` is on (the default) and `advanced.allow_destinations` does not name it. The destination guard refuses every request to it, so the provider would fail on its first request rather than at startup. 1.5.5 had no such guard. Emitted once per URL at config load, naming the provider, the key and the host.",
-        "Add exactly that host to `advanced.allow_destinations` (`busbar --migrate-config` adds the hosts a provider's plane reports), or point the provider at a public address. Turning `block_private_addresses` off also admits it, and every other private address with it.";
+        "Add exactly that host to `advanced.allow_destinations`, or point the provider at a public address. Turning `block_private_addresses` off also admits it, and every other private address with it.";
 
     /// RETIRED: a metadata host-list entry that names no host is refused at startup, not warned about.
     CONFIG_METADATA_ENTRY_NAMES_NO_HOST = 3024, Config, Actionable, "config-metadata-entry-names-no-host", "1.6.0", true,
@@ -1744,7 +1744,7 @@ diagnostics! {
     CONFIG_LEGACY_OVERLAY_NOT_READ = 3028, Config, Actionable, "config-legacy-overlay-not-read", "1.6.0", false,
         "A 1.5.5 overlay selector, variable or file is not read (nothing to import)",
         "The deployment still carries a 1.5.5 file-overlay input that 1.6 serving does not read: a config.overlay selector or BUSBAR_CONFIG_OVERLAY naming a file that does not exist, an overlay file that holds no settings, a file whose settings this Store has already imported, or a file beside a locked config (which 1.5.5 ignored too). Nothing is lost, so the boot continues; the message names the file and how it was selected.",
-        "Remove the leftover input: delete the imported or empty overlay file, and remove BUSBAR_CONFIG_OVERLAY from the launcher. `busbar --migrate-config` removes config.overlay from config.yaml. See docs/migration-1.6.md.";
+        "Remove the leftover input: delete the imported or empty overlay file, and remove BUSBAR_CONFIG_OVERLAY from the launcher. Remove `config.overlay` from config.yaml. See docs/migration-1.6.md.";
 
     /// A `plaintext: true` destination entry names a wildcard or a CIDR.
     CONFIG_PLAINTEXT_ENTRY_NOT_EXACT = 3144, Config, Fatal, "config-plaintext-entry-not-exact", "1.6.0", false,
@@ -1895,7 +1895,7 @@ diagnostics! {
     RETIRED_ENV_VAR_IGNORED = 3029, Config, Actionable, "retired-env-var-ignored", "1.6.0", false,
         "A retired launch environment variable is set and IGNORED",
         "busbar 1.6 no longer reads BUSBAR_PROVIDERS, BUSBAR_WORKER_THREADS, BUSBAR_UPSTREAM_HTTP1_ONLY or BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE. A set one has NO effect: the config key (or its default) is in force. Emitted pre-tracing, to stderr, at boot and by --validate.",
-        "Run busbar --migrate-config in the old launch environment to write the value into config.yaml, validate, then remove the variable from the launcher.";
+        "Write the value into config.yaml, validate, then remove the variable from the launcher.";
 }
 
 /// The page text (template + example) of every templated code the host knows: the catalog's own

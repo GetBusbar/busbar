@@ -27,6 +27,9 @@ pub fn migrate_references_door(
     settings_migration(door, settings, from, true)
 }
 
+/// Cold, and pinned so the migrate-size job finds it (MIGRATE-ON-BOOT §7 †).
+#[cold]
+#[inline(never)]
 fn settings_migration(
     door: RawDoorFn,
     settings: &(impl serde::Serialize + ?Sized),

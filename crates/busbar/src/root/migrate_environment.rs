@@ -55,8 +55,7 @@ pub(crate) fn ignored_launch_env(env: impl Fn(&str) -> Option<OsString>) -> Vec<
         .map(|r| {
             format!(
                 "[warn] {code}: {name} is set but ignored (busbar 1.6 no longer reads it); use {use_instead}. \
-                 `busbar --migrate-config <config.yaml>`, run in the old launch environment, writes it into config.yaml; \
-                 then remove {name} from the launcher.",
+                 Write its value into config.yaml, then remove {name} from the launcher.",
                 code = busbar_kernel::diagnostics::RETIRED_ENV_VAR_IGNORED.banner(),
                 name = r.name,
                 use_instead = r.use_instead

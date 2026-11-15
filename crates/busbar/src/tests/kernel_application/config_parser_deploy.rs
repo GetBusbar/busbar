@@ -8,6 +8,7 @@ use std::collections::HashMap;
 pub(crate) fn base_deploy() -> DeployCfg {
     DeployCfg {
         declared: Default::default(),
+        config_version: None,
         listen: DEFAULT_LISTEN_ADDR.into(),
         listen_explicit: false,
         authored_routing: None,

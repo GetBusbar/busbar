@@ -155,7 +155,7 @@ impl Plan {
 
     /// The format config.yaml was planned from.
     #[must_use]
-    pub fn from(&self) -> u64 {
+    pub fn source_format(&self) -> u64 {
         self.from
     }
 }
@@ -171,8 +171,28 @@ impl Plan {
 #[cold]
 #[inline(never)]
 pub fn plan(inputs: &Inputs<'_>) -> Result<Plan, Refusal> {
-    let _ = (inputs, steps::STEPS.len(), files::read_bounded, chain);
-    Err(Refusal::Config("not built".to_owned()))
+    let source = files::read_bounded(inputs.path)?;
+    let from = read_version(&source)?;
+    if from > CONFIG_FORMAT {
+        return Err(Refusal::Newer { found: from });
+    }
+    if from == CONFIG_FORMAT {
+        return Err(Refusal::Config(format!(
+            "{} already carries `{STAMP_KEY}: {CONFIG_FORMAT}`; there is nothing to upgrade",
+            inputs.path.display()
+        )));
+    }
+    files::probe_in_place(inputs.path)?;
+    let mut report = Vec::new();
+    let planned = chain(&source, from, &mut report)?;
+    (inputs.check)(&planned).map_err(|text| Refusal::Config(format!("{text}\n{UPGRADE_FIRST}")))?;
+    Ok(Plan {
+        path: inputs.path.to_path_buf(),
+        from,
+        planned,
+        digest: busbar_contract::crypto::sha256(source.as_bytes()),
+        report,
+    })
 }
 
 /// How [`write`] ended.
@@ -198,8 +218,33 @@ pub enum Written {
 #[cold]
 #[inline(never)]
 pub fn write(plan: &Plan, check: Check<'_>) -> Result<Written, Refusal> {
-    let _ = (plan, check, lock::Held::take, files::create_like);
-    Err(Refusal::Config("not built".to_owned()))
+    let _held = lock::Held::take(&plan.path)?;
+    let now = files::read_bounded(&plan.path)?;
+    if read_version(&now)? >= CONFIG_FORMAT {
+        return Ok(Written::StampedByPeer);
+    }
+    if busbar_contract::crypto::sha256(now.as_bytes()) != plan.digest {
+        return Err(Refusal::LiveWriter(format!(
+            "{} changed between the plan and the write: stop every 1.5.5 instance and every \
+             other writer of this file, then boot again; nothing was written",
+            plan.path.display()
+        )));
+    }
+    let again = chain(&now, plan.from, &mut Vec::new())?;
+    if again != plan.planned {
+        return Err(Refusal::Config(format!(
+            "the upgrade of {} did not plan the same document twice from the same bytes; nothing \
+             was written",
+            plan.path.display()
+        )));
+    }
+    check(&again).map_err(|text| Refusal::Config(format!("{text}\n{UPGRADE_FIRST}")))?;
+    let backup = backup_path(&plan.path);
+    files::backup_absent_or_equal(&backup, now.as_bytes())?;
+    let fresh = files::create_like(&plan.path, again.as_bytes())?;
+    files::keep_backup(&plan.path, &backup)?;
+    files::replace(&fresh, &plan.path)?;
+    Ok(Written::Stamped)
 }
 
 /// `STEPS[from..CONFIG_FORMAT]` over the source text, then the stamp.

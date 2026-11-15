@@ -12,7 +12,7 @@ The configuration sets `security.allow_metadata_hosts`, `security.allow_all_meta
 
 ## How to fix it
 
-Run `busbar --migrate-config`: it removes the keys and reports each removed entry (BUSBAR-3411). A workload that needs cloud credentials uses workload-identity federation (IRSA, AKS workload identity, GKE workload identity federation) through a projected token file, never the instance metadata endpoint.
+Remove the keys. A workload that needs cloud credentials uses workload-identity federation (IRSA, AKS workload identity, GKE workload identity federation) through a projected token file, never the instance metadata endpoint.
 
 ---
 

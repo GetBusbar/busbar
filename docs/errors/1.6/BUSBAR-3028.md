@@ -12,7 +12,7 @@ The deployment still carries a 1.5.5 file-overlay input that 1.6 serving does no
 
 ## How to fix it
 
-Remove the leftover input: delete the imported or empty overlay file, and remove BUSBAR_CONFIG_OVERLAY from the launcher. `busbar --migrate-config` removes config.overlay from config.yaml. See docs/migration-1.6.md.
+Remove the leftover input: delete the imported or empty overlay file, and remove BUSBAR_CONFIG_OVERLAY from the launcher. Remove `config.overlay` from config.yaml. See docs/migration-1.6.md.
 
 ---
 

@@ -287,8 +287,8 @@ pub fn default_usage_flush_interval_ms() -> u64 {
 pub struct ResponseHeadersCfg {
     /// Emit the `Server-Timing: busbar;dur=<ms>` response header (default `false`). MIGRATED from
     /// the 1.5.x `observability.emit_server_timing`; the old key is now
-    /// an `unknown field` boot error (`deny_unknown_fields` on `ObservabilityCfg`) — run
-    /// `busbar --migrate-config` to move it. The header is a useful latency probe, but it is also an
+    /// an `unknown field` boot error (`deny_unknown_fields` on `ObservabilityCfg`); the boot's one-time
+    /// upgrade of a 1.5.x config.yaml moves it. The header is a useful latency probe, but it is also an
     /// in-band busbar fingerprint on an otherwise anti-fingerprinting gateway — and the one
     /// fingerprint observable by an UNAUTHENTICATED client on every response — so it defaults OFF to
     /// preserve backend-facing indistinguishability. Operators who want the latency probe (and accept

@@ -4,7 +4,7 @@ description: "Every Busbar 1.6 error and warning code: what it means and how to 
 slug: docs/1.6/errors
 ---
 
-Every operator-facing error and warning Busbar prints carries a permanent `BUSBAR-NNNN` code: config refusals at `--validate` and startup, `--migrate-config` messages, CLI errors, admin API error responses (the `code` field) and warn/error log lines (the `diag` field). A message reads `BUSBAR-NNNN: <what is wrong>. See <link>`; the link is the code's page below. Codes are never reused: a retired code keeps its page.
+Every operator-facing error and warning Busbar prints carries a permanent `BUSBAR-NNNN` code: config refusals at `--validate` and startup (the one-time upgrade included), CLI errors, admin API error responses (the `code` field) and warn/error log lines (the `diag` field). A message reads `BUSBAR-NNNN: <what is wrong>. See <link>`; the link is the code's page below. Codes are never reused: a retired code keeps its page.
 
 The thousands digit is the area.
 
