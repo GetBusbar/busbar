@@ -735,6 +735,10 @@ mod tests {
         let raw = r#"{"credential":{"cabinet":"item"},"bag":{"nested":{"drawer":"x"},"kept":{"literal":{"shelf":"y"}},"canon":{"module":"m","settings":{"box":"z"}}},"ordinary":{"crate":"w"}}"#;
         let mut decoder = serde_json::Deserializer::from_str(raw);
         let read: Doc = deserialize_recording(&mut decoder, &sugars, &used).unwrap();
+        assert_eq!(
+            read.credential,
+            sugars.get("cabinet").unwrap().reference("item")
+        );
         assert_eq!(read.ordinary["crate"], "w");
         let mut keys = read.bag.key_names();
         keys.sort();
