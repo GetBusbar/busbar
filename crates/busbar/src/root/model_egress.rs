@@ -129,7 +129,7 @@ pub struct ModelPools {
 }
 
 /// The member facts by model, in the map type the kernel's far end takes them as.
-pub type MemberFactsByModel =
+pub(crate) type MemberFactsByModel =
     std::collections::HashMap<String, busbar_kernel::plane_driver::MemberFacts>;
 
 pub struct ModelServing {

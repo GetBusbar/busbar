@@ -62,7 +62,7 @@ pub(crate) struct Index {
 
 /// One plugin in the [`Index`].
 #[derive(Debug, Clone)]
-pub struct IndexPlugin {
+pub(crate) struct IndexPlugin {
     /// `org/repo`, as a `plugins.fetch` GitHub pin names it.
     pub repo: String,
     /// The repositories its earlier releases were published from.
