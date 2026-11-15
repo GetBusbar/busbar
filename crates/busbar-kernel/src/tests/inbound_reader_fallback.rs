@@ -558,7 +558,8 @@ async fn a_pending_fallback_head_obeys_the_original_operation_deadline_and_canno
     );
     assert!(
         immediate.is_none(),
-        "the real host retains the pending verifier"
+        "the real host retains the pending verifier: answered {immediate:?}, saw {:?}",
+        seen.lock().unwrap()
     );
     let answer = tokio::time::timeout(std::time::Duration::from_secs(1), received)
         .await
