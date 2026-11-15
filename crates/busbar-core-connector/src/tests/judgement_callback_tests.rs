@@ -197,7 +197,9 @@ fn completing_a_later_replay_drops_the_earlier_public_waker_outside_guards() {
                 request.push(byte[0]);
                 assert!(request.len() <= 8192, "CONNECT request stayed bounded");
             }
-            assert!(request.starts_with(b"CONNECT far.test:80 HTTP/1.1\r\n"));
+            // `advanced.proxy_resolution: local` (the default): the CONNECT names the address the
+            // judgement answered for `far.test:80`.
+            assert!(request.starts_with(b"CONNECT 127.0.0.1:80 HTTP/1.1\r\n"));
             socket
                 .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 .await
@@ -377,9 +379,11 @@ fn refusal_connector(
         )
         .proxying(proxy),
     );
+    // The default class: a framed operator-infrastructure need declared without `target_from` is
+    // the retired shape BUSBAR-6017 refuses at declaration, and these needs name no config target.
     let spec = ReadNeed {
         direction: DIRECTION_OUTBOUND,
-        egress_class: EGRESS_OPERATOR_INFRASTRUCTURE,
+        egress_class: busbar_contract::abi::host::conn::connector::EGRESS_DEFAULT,
         transport: "frames".to_owned(),
         auth: String::new(),
         target_from: String::new(),
@@ -598,9 +602,10 @@ fn an_asynchronous_proxy_hop_failure_names_the_proxy() {
 
         let proxy = answering_proxy(b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n");
         let (c, id) = opened(proxy, Default::default(), "far.test:80");
+        // Under `proxy_resolution: local` the CONNECT, and so its refusal, names the judged address.
         assert_eq!(
             reason_of(&c, id).await,
-            "could not connect to the egress proxy: proxy refused CONNECT far.test:80: HTTP/1.1 \
+            "could not connect to the egress proxy: proxy refused CONNECT 127.0.0.1:80: HTTP/1.1 \
              407 Proxy Authentication Required"
         );
 
