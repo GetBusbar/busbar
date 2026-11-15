@@ -304,6 +304,7 @@ where
                 .map_err(|msg| E::from(TxnError::Validation(msg)))?;
         }
     }
+    let mut secrets = SecretRestore::take();
     let outcome =
         super::security_policy::scoped(guard.authority, || body(&Txn { app: &snapshot }))?;
     let handle = Arc::clone(handle);
@@ -312,7 +313,16 @@ where
     tokio::spawn(crate::audit::auditlog::scope_request(
         audit_request,
         crate::auth::effect::scope(context.clone(), async move {
-            let result = apply(&handle, outcome, mode, context.as_ref(), guard.authority).await;
+            let result = apply(
+                &handle,
+                outcome,
+                mode,
+                context.as_ref(),
+                guard.authority,
+                &mut secrets,
+            )
+            .await;
+            drop(secrets);
             drop(guard);
             crate::export::plugin::refresh_pending();
             result
@@ -328,6 +338,7 @@ async fn apply<T, E>(
     mode: TransactionMode,
     context: Option<&crate::auth::effect::Context>,
     mut authority: Option<crate::auth::effect::Authority>,
+    secrets: &mut SecretRestore,
 ) -> Result<T, E>
 where
     T: Send + 'static,
@@ -416,6 +427,7 @@ where
                         .map_err(|message| E::from(TxnError::Validation(message)))?,
                 }
                 committed = true;
+                secrets.disarm();
                 match then {
                     Then::Value(value) => return Ok(value),
 
@@ -466,6 +478,7 @@ where
                         .map_err(|message| E::from(TxnError::Validation(message)))?,
                 }
                 committed = true;
+                secrets.disarm();
                 outcome = Outcome::Async(then);
             }
             Outcome::Blocking(f) => {
@@ -495,6 +508,34 @@ where
             Outcome::Async(future) => {
                 outcome = super::security_policy::scoped_async(authority, future).await?
             }
+        }
+    }
+}
+
+/// The dropped-in secret set as the transaction found it. A build's admission replaces the live set
+/// before the generation is published; if the transaction ends without publishing (a refused build,
+/// a refused commit, a failed persist), dropping this puts the found set back, and only if it
+/// changed. Publication disarms it.
+struct SecretRestore(Option<crate::preflight::SecretRestoreFn>);
+
+impl SecretRestore {
+    fn take() -> Self {
+        Self(
+            crate::preflight::root_rows()
+                .secret_snapshot
+                .map(|take| take()),
+        )
+    }
+
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for SecretRestore {
+    fn drop(&mut self) {
+        if let Some(restore) = self.0.take() {
+            restore();
         }
     }
 }

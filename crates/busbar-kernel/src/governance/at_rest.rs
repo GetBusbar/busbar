@@ -16,9 +16,9 @@ pub(crate) const KID_LABEL: &[u8] = b"busbar credential-at-rest kid v1";
 
 pub const NO_KEY_REFUSAL: &str = "a recoverable credential cannot be minted: no at-rest key is \
      configured, so it could not be stored sealed. Set credentials.at_rest.key to a secret \
-     reference that resolves to 32 random bytes (for example `openssl rand -hex 32` written to a \
-     file, then `credentials: { at_rest: { key: { file: /run/secrets/busbar-at-rest.key } } }`), \
-     give every node that shares this store the same key, and reload";
+     reference that resolves to 32 random bytes (a file read by a secret module, for example, \
+     holding the output of `openssl rand -hex 32`), give every node that shares this store the \
+     same key, and reload";
 
 const PLAIN: &str = "v1:plain:";
 const AEAD: &str = "v1:aead:";

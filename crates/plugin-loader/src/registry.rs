@@ -493,6 +493,41 @@ pub struct SkippedPlugin {
     pub trusted_keys: Vec<String>,
 }
 
+/// The longest file name a skip line echoes, in characters, after escaping.
+const SKIP_LINE_FILE_CHARS: usize = 96;
+
+impl SkippedPlugin {
+    /// The operator's line for a skipped file whose kind can declare config grammar (`kind:
+    /// secret | plane | auth`): which file, and why it was not admitted. `None` for other kinds.
+    ///
+    /// The reason is a fixed class keyed by [`Self::kind`], never the plugin-controlled reason
+    /// text or the manifest's name; the file name is escaped and capped.
+    #[must_use]
+    pub fn skip_line(&self) -> Option<String> {
+        use crate::sign::RejectKind;
+        let kind = [kind::SECRET, kind::PLANE, kind::AUTH]
+            .into_iter()
+            .find(|k| *k == self.manifest.kind)?;
+        let why = match self.kind {
+            RejectKind::Unsigned => "unsigned",
+            RejectKind::Tampered => "tampered",
+            RejectKind::UnknownPublisher => "unknown publisher",
+            RejectKind::RetiredKey => "retired key",
+            RejectKind::Revoked => "revoked",
+            RejectKind::Superseded => "superseded",
+            RejectKind::AntiDowngrade => "below its version floor (anti-downgrade)",
+            RejectKind::UntrustedFloored => "untrusted below floor",
+            RejectKind::EgressGrant => "provider egress refused: not first-party",
+        };
+        let escaped = self.file.escape_debug().to_string();
+        let mut file: String = escaped.chars().take(SKIP_LINE_FILE_CHARS).collect();
+        if file.len() < escaped.len() {
+            file.push('\u{2026}');
+        }
+        Some(format!("\"{file}\" (kind {kind}) was not admitted: {why}"))
+    }
+}
+
 /// The registry of validated, loadable plugins, addressable by canonical name OR alias. Built only
 /// after all three phases pass; this is the ONLY resolution surface (`governance.store:` etc.), so
 /// nothing outside the validated set can ever be selected.

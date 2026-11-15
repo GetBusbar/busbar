@@ -200,6 +200,32 @@ fn replacing_or_removing_a_dropped_set_retires_its_cached_checker() {
     }
 }
 
+/// GA1 (SECRET-SHORTHAND-BOOT audit H): a config transaction that ends without publishing puts
+/// the dropped-in set it found back only if the set changed. A failure that never replaced the set
+/// keeps the cached checkers, so a client looping invalid bodies never clears them.
+#[test]
+fn failed_reload_with_unchanged_set_keeps_checker_cache() {
+    let cached = |rows: &SecretRows| rows.checkers.lock().unwrap().plugins.len();
+    let rows = SecretRows::new(dispatcher, || None);
+    rows.set_dropped([dropped_secret_candidate()]);
+    assert_eq!(rows.check(NAME, &reference_settings()), Ok(()));
+    assert_eq!(cached(&rows), 1, "the check cached its checker");
+
+    let found = rows.dropped();
+    assert!(
+        !rows.restore_if_changed(found),
+        "an unchanged set is not replaced"
+    );
+    assert_eq!(cached(&rows), 1, "the cached checker survives");
+
+    let found = rows.dropped();
+    rows.set_dropped([unloadable_replacement(dropped_secret_candidate())]);
+    assert!(rows.restore_if_changed(found), "a changed set is put back");
+    assert_eq!(rows.check(NAME, &reference_settings()), Ok(()));
+    rows.set_dropped(std::iter::empty());
+    assert!(!rows.answers(NAME));
+}
+
 /// The thread that asks a dropped-in checker to `check` retires AFTER the checker's image is
 /// unloaded: every libtest test thread does, and so does any host thread that validates
 /// configuration and exits. If `check` entered the plugin on that thread, the image's own `std`

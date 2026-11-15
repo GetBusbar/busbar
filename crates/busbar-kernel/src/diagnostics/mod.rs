@@ -1382,7 +1382,7 @@ diagnostics! {
         "Follow the message: generate a signing key with `busbar --generate-signing-key` and reference it from `auth.signing_key`, name `keys` or an IdP plugin in `auth.chain`, and keep the operator token on the operator provider."
         => config_auth_chain_invalid(detail) "{detail}",
         example "auth:\n  chain: [keys]          # no signing_key",
-        detail "auth.signing_key is required for signed-token auth (auth.chain names the built-in `keys` verifier), but none is set - and busbar no longer auto-generates one. Generate a key with `busbar --generate-signing-key`, then set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR} - a SHARED secret across nodes for a fleet)";
+        detail "auth.signing_key is required for signed-token auth (auth.chain names the built-in `keys` verifier), but none is set - and busbar no longer auto-generates one. Generate a key with `busbar --generate-signing-key`, then set auth.signing_key to a secret reference for it (a shorthand an admitted secret module declares, or `{ module: …, settings: … }`; a SHARED secret across nodes for a fleet)";
 
     CONFIG_PLANE_OPEN_TO_ANONYMOUS = 3116, Config, Fatal, "config-plane-open-to-anonymous", "1.6.0", false,
         "A plane is configured while the data-plane auth chain is empty",
@@ -1426,11 +1426,11 @@ diagnostics! {
 
     CONFIG_SECRET_REFERENCE_INVALID = 3121, Config, Fatal, "config-secret-reference-invalid", "1.6.0", false,
         "A secret reference or secret module setting is invalid",
-        "A secret is referenced in a way busbar cannot resolve safely: `none` where a credential is required, a reference form the setting does not accept, or module-level settings on a built-in secret module that takes none.",
-        "Reference the secret as `{ env: VAR }`, `{ file: /path }` or `{ module: <secret-module>, settings: {...} }`, as the message shows for the setting it names."
+        "A secret is referenced in a way busbar cannot resolve safely: `none` where a credential is required, a reference form the setting does not accept, a shorthand no admitted secret module declares, or module-level settings on a secret module linked into this build that takes none.",
+        "Write the canonical `{ module: <secret module>, settings: {...} }` reference, or a shorthand an admitted secret module declares (`busbar --list-plugins` shows them)."
         => config_secret_reference_invalid(detail) "{detail}",
-        example "secrets:\n  env: { prefix: BUSBAR_ }",
-        detail "secrets.env: the built-in 'env' secret module takes no module-level settings";
+        example "auth:\n  signing_key: { vault-path: signing }   # no admitted secret module declares `vault-path`",
+        detail "auth.signing_key: `{vault-path: …}` is a secret shorthand, and no admitted secret module declares `vault-path`. Install a signed `kind: secret` module that declares `vault-path` into plugins.dir and admit it (plugins.enabled, plugins.trust), or write the canonical `{ module: <secret module>, settings: { … } }` reference. `busbar --list-plugins` shows what was admitted";
 
     CONFIG_METADATA_HOST_ENTRY_INVALID = 3122, Config, Fatal, "config-metadata-host-entry-invalid", "1.6.0", false,
         "A metadata host list entry can never match",
@@ -1459,10 +1459,10 @@ diagnostics! {
     CONFIG_PROVIDER_CREDENTIAL_INVALID = 3125, Config, Fatal, "config-provider-credential-invalid", "1.6.0", false,
         "A provider's credential cannot be used as configured",
         "A provider's outbound credential is invalid for its auth style: the referenced secret does not parse (a service-account key, a signing key), required auth settings are missing, or the settings contradict the style. The message names the provider, the style and the secret's source, never its value.",
-        "Fix the secret the message points at (its `env:`, `file:` or module source) or the provider's auth settings, then run `busbar --validate`."
+        "Fix the secret the message points at (its secret module source) or the provider's auth settings, then run `busbar --validate`."
         => config_provider_credential_invalid(detail) "{detail}",
-        example "providers:\n  vertex:\n    auth: jwt-bearer\n    api_key: { env: VERTEX_SA }   # not a service-account JSON",
-        detail "provider 'vertex' jwt-bearer credential (from env:VERTEX_SA) is invalid: service-account key is not JSON";
+        example "providers:\n  vertex:\n    auth: jwt-bearer\n    api_key: { module: <secret module>, settings: { … } }   # not a service-account JSON",
+        detail "provider 'vertex' jwt-bearer credential (from secret module '<secret module>') is invalid: service-account key is not JSON";
 
     CONFIG_PROVIDER_PROTOCOL_UNKNOWN = 3126, Config, Fatal, "config-provider-protocol-unknown", "1.6.0", false,
         "A provider names a protocol this build does not speak",

@@ -337,6 +337,7 @@ pub fn register_stores(linked: &Linked) {
             store_axis: Some(store_axis),
             secret_axis: Some(secrets),
             secret_admit: Some(crate::root::boot::admit_secrets),
+            secret_snapshot: Some(secret_snapshot),
 
             rate_apply: Some(&crate::root::kernel::CardRepricer),
             rate_epoch: Some(&crate::root::kernel::CardRepricer),
@@ -434,6 +435,15 @@ fn conns() -> Option<busbar_contract::conn::admissions::AdmissionAuthority> {
         crate::root::connector::admit(
             std::sync::Arc::clone(one) as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>
         )
+    })
+}
+
+/// Takes the dropped-in secret set a config transaction found; the returned restore puts it back if
+/// the transaction publishes nothing ([`busbar_kernel::preflight::RootInstall::secret_snapshot`]).
+fn secret_snapshot() -> busbar_kernel::preflight::SecretRestoreFn {
+    let found = secret_rows().dropped();
+    Box::new(move || {
+        secret_rows().restore_if_changed(found);
     })
 }
 

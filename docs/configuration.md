@@ -297,7 +297,8 @@ tls:
 | `key` | secret reference | (required when `tls` is set) |
 | `client_ca` | secret reference | unset (no client-cert requirement) |
 
-Each value is a secret REFERENCE (`{ file: ... }` / `{ env: VAR }` / `{ module: <secret-plugin> }`)
+Each value is a secret REFERENCE (the canonical `{ module: <secret-plugin>, settings: {...} }`, or a
+shorthand such as `{ file: ... }` that an admitted secret module declares)
 resolving to PEM bytes. The same shape configures the admin listener under `admin_tls:` (with
 `client_ca` gating admin mTLS; a network-exposed `admin_listen` without `admin_tls.client_ca`
 refuses to boot unless `admin_require_mtls: false` is set deliberately).
@@ -355,7 +356,7 @@ auth:
 
 | Field | Type | Required | Default | Notes |
 |---|---|---|---|---|
-| `signing_key` | secret reference | **when `keys` is in the chain** | none | The ed25519 key Busbar signs + verifies virtual-key tokens with, as a secret reference (`{ file: … }` / `{ env: … }` / a secret plugin, never an inline literal). Fleet-shared (every node verifying the same tokens resolves the same key). **Required whenever the data-plane chain names the built-in `keys` verifier**; its absence there fails `--validate`/boot. Busbar does **not** auto-generate one (1.5.1: the earlier generate-and-persist-beside-config behavior boot-looped read-only config mounts). Generate a key with `busbar --generate-signing-key`. Rotating it revokes every outstanding key. |
+| `signing_key` | secret reference | **when `keys` is in the chain** | none | The ed25519 key Busbar signs + verifies virtual-key tokens with, as a secret reference (the canonical `{ module: <secret-plugin>, settings: {…} }` form, or a shorthand an admitted secret module declares; never an inline literal). Fleet-shared (every node verifying the same tokens resolves the same key). **Required whenever the data-plane chain names the built-in `keys` verifier**; its absence there fails `--validate`/boot. Busbar does **not** auto-generate one (1.5.1: the earlier generate-and-persist-beside-config behavior boot-looped read-only config mounts). Generate a key with `busbar --generate-signing-key`. Rotating it revokes every outstanding key. |
 | `chain` | list of provider NAMES | no | `[]` | The ordered DATA-PLANE authentication chain: the **sole** authority over whether a data-plane request needs a credential (the admin token never gates the data plane; see the axis note below). Each entry is a bare NAME: either a built-in (`keys`) or a key of the top-level `identity-providers:` map. A name that is neither is a **hard startup error** (fail-closed: never a silently-skipped identity provider). `[]` (default) is the open front door: development only, loud startup warning (the admin API stays gated by `admin_auth`). When the chain names `keys`, a **usable admin mint path** must exist (an `admin-tokens` provider with a `token:`, an admin provider granting `full`, or an explicit open `admin_auth: []`). Otherwise no virtual key could ever be minted and the data plane would reject every request, so it is a **hard startup error**. A configured auth plugin that cannot be loaded (missing/untrusted tarball, wrong kind, `plugins.enabled: false`, or an ABI failure) is likewise a **hard startup error**. |
 | `admin_auth` | list of provider NAMES | no | `[admin-tokens]` | The chain gating `/api/v1/admin/*`, same bare-name references as `chain`. The built-in `admin-tokens` provider carries the operator credential as a secret reference (`token:`) on its definition. `[]` = OPEN admin (dev only; loud warning). |
 | `role_bindings` | map | no | `{}` | Role policy, NESTED BY PROVIDER NAME: `role_bindings.<provider>.<role> -> { allowed_pools?, group?, admin_scope?, verbs? }`. Keying by NAME (not by the backing plugin's own name) is what lets two named providers share one module and still hold independent grants. See below. |
@@ -1576,7 +1577,7 @@ plugins:
 
 ### `secrets`
 
-Module-level `open()` configuration for `kind: secret` plugins, keyed by module name or alias: `secrets.<module>.settings` is delivered to the plugin's `open()` (any secret-reference value in it, such as `token: { env: VAULT_TOKEN }`, is resolved by the built-in `env` / `file` modules before it crosses the ABI). Absent, every secret plugin opens with `{}`. The built-in `env` and `file` modules take no config and must not appear here. The entry rejects unknown keys. See [plugins.md](plugins.md) for the Vault example.
+Module-level `open()` configuration for `kind: secret` plugins, keyed by module name or alias: `secrets.<module>.settings` is delivered to the plugin's `open()` (any secret-reference value in it, such as `token: { env: VAULT_TOKEN }` where an admitted secret module declares the `env` shorthand, is resolved through that module before it crosses the ABI). Absent, every secret plugin opens with `{}`. A secret module linked into the build takes no module-level config and must not appear here. The entry rejects unknown keys. See [plugins.md](plugins.md) for the Vault example.
 
 ### `security`
 
@@ -2116,7 +2117,8 @@ advanced:
   match only IP-literal dials. A dial matching several entries trusts the union of their anchors.
   A matching entry that lists anchors **replaces** `roots` and `trust_anchors` for that dial unless
   `include_roots: true`. An entry that lists only a pin or a client identity keeps the base set.
-* **Sources** are `{ file: <path> }`, `{ env: <NAME> }` or inline PEM. A secret-store reference is
+* **Sources** are `{ file: <path> }`, `{ env: <NAME> }` or inline PEM. This is core's own TLS
+  source grammar, not secret shorthand: it needs no secret module. A secret-store reference is
   refused: the store is built before any secret plugin is reachable, and a CA is public. Client
   identity keys are read by core and never handed to a plugin.
 * **Validation at boot** (every operator anchor): the PEM parses and holds only certificates; each
