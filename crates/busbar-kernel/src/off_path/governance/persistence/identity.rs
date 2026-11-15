@@ -1356,6 +1356,16 @@ impl Tx<'_> {
 #[path = "identity_tests.rs"]
 mod tests;
 
+/// Rotations a 1.5.5 key had undergone: N-1 from a trailing `:g<N>` generation (N >= 1). A hash
+/// with no readable generation reads as never rotated (0), the same as an absent field.
+fn legacy_rotation_count(generation_hash: &str) -> u64 {
+    generation_hash
+        .rsplit_once(":g")
+        .filter(|(_, n)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|(_, n)| n.parse::<u64>().ok())
+        .map_or(0, |n| n.saturating_sub(1))
+}
+
 /// Encode imported identity evidence without dispatching a business mutation.
 /// The importer owns global revision high-water and duplicate/index validation.
 pub(crate) fn migration_key(
@@ -1363,6 +1373,10 @@ pub(crate) fn migration_key(
 ) -> RecordStoreResult<Vec<(Address, Secret<Vec<u8>>)>> {
     let mut stamped = key.clone();
     stamped.migrated_from.get_or_insert_with(|| "1.5.5".into());
+    // 1.5.5 rotated in place and kept only the generation (`...:g<N>`), never a count or a time.
+    if stamped.rotation_count == 0 {
+        stamped.rotation_count = legacy_rotation_count(&stamped.generation_hash);
+    }
     let mut rows = vec![(row(b'K', &key.id)?, Secret::new(encode(&stamped)?))];
     if key.revision != 0 {
         rows.push((
