@@ -50,6 +50,8 @@ pub fn backend_const() {
     for name in alg::ALL {
         let _ = supports(name);
     }
+    // One answer for the external-plugin gate: the backend's required const (IF §5.2 round 13).
+    assert_eq!(supports("EXTERNAL_PLUGINS"), EXTERNAL_PLUGINS);
 }
 
 /// SHA-2, the audit link, constant-time comparison.
@@ -180,6 +182,11 @@ pub fn rng() {
     assert_ne!(x, y);
     assert_ne!(u64().unwrap(), u64().unwrap());
     assert_ne!(random::<16>().unwrap(), [0; 16]);
+    // `fill_checked` draws from the same generator, with the backend's error kept (round 21).
+    let mut z = [0_u8; 32];
+    fill_checked(&mut z).unwrap();
+    assert_ne!(z, [0; 32]);
+    assert_ne!(z, x);
 }
 
 /// AES-GCM (NIST test cases 2 and 14) and the AES block (FIPS 197 appendix B).

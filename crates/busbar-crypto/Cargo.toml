@@ -1,6 +1,7 @@
 [package]
 # The crypto facade (CRYPTO-SEAM §2.1-2.3). Crypto-free: every primitive is the backend's. Reached by
-# every other crate as `busbar_contract::crypto`; no crate but busbar-contract names it.
+# every other crate as `busbar_contract::crypto`; no crate but busbar-contract and
+# busbar-plugin-abi[host] names it (abi sits below busbar-contract, IF §16.23).
 name = "busbar-crypto"
 version = "1.6.0"
 publish = false

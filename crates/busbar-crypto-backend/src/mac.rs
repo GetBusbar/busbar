@@ -83,9 +83,5 @@ pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 /// HMAC-SHA384 of `msg` under `key`.
 #[inline]
 pub fn hmac_sha384(key: &[u8], msg: &[u8]) -> Result<[u8; 48], Error> {
-    let _ = (key, msg);
-    Err(Error::Refused {
-        alg: "HMAC-SHA384",
-        reason: "not provided yet",
-    })
+    Ok(mac(hmac::HMAC_SHA384, key, msg))
 }

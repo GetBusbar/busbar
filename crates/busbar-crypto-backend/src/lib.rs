@@ -43,7 +43,14 @@ pub use tls::{
 };
 
 /// The backend contract version `busbar-crypto` asserts. Raised on any breaking change to this API.
-pub const API: u32 = 1;
+/// 2 (MIN-3 H0b): `EXTERNAL_PLUGINS`, `hmac_sha384`, `aes_ctr::apply`, `ecdsa_p384`, the SPKI
+/// verification forms and `ed25519::SigningKey::from_pkcs8`.
+pub const API: u32 = 2;
+
+/// Whether a plugin that brings its own crypto (stamp `crypto = "external"`) may load under this
+/// backend. Required, with no default (IF §5.2 round 13): a backend that never states it fails the
+/// facade's contract, so none admits by omission. The software backend admits them.
+pub const EXTERNAL_PLUGINS: bool = true;
 
 /// This backend's name: `[a-z0-9-]`, 1..=8 bytes. Shown in `--version`, `/healthz` and the audit stamp.
 pub const NAME: &str = "software";
