@@ -77,7 +77,7 @@ pub fn operator_file_difference<'a>(
                 .filter(|(_, def)| operator_backed(def))
                 .map(|(name, _)| name.as_str()),
         )
-        .find(|name| backed(*name) != reference.get(*name))
+        .find(|name| backed(name) != reference.get(name))
 }
 
 /// THE PROVENANCE RULE (§3.5 "File policy"): the first operator-backed definition `cfg` holds from
