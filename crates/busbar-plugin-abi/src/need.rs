@@ -9,6 +9,7 @@ use core::marker::PhantomData;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 // ---- §6.1 Wire (inside `mechanism!`) ----
+mechanism! {
 
 /// One step request. Body = NeedRec, then arg0..arg3 bytes back to back (lengths in `lens`).
 /// `secret` = a SecretHandle (SECRET; the client cert for OPEN/STARTTLS/FETCH with TLS_MUTUAL), 0 = none.
@@ -180,6 +181,7 @@ pub mod open_flag {
     /// variables), so a plugin keys its own bounded per-connection state on it (§6.1 rules). Any other data1
     /// length on an OK OPEN is a host bug the shim answers with a BadRecords FAULT.
     pub const POOLED_ID_LEN: u32 = 8;
+}
 }
 
 // W0-ABI: `PoolKey` (§6.1) is C1's (busbar-core-connector, §13), not an abi item; it is not written here.

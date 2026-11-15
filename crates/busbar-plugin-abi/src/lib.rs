@@ -5,11 +5,32 @@
 //! the plugin header, `Open`/`Describe`, the stamp, the fingerprint and the seven kind traits; feature `host`
 //! adds core's side (§10), feature `memio` the in-memory IO adapter (§9).
 //!
-//! Wave 0 (W0-ABI) lands every frozen signature as a compiling stub with `todo!()` bodies; each wave-1 task
-//! replaces the stubs in the files it owns. The stubs carry no `unsafe`: the raw entry tables and the other
-//! `unsafe` items arrive with their owners (W1-A1, W1-A2, W1-A4, W1-H0) under an escapes admission.
+//! Wave 0 (W0-ABI) landed every frozen signature as a compiling stub; each wave-1 task replaces the stubs in
+//! the files it owns. W1-A1 owns this file, `types.rs`, `records.rs`, `fail.rs`, `fp.rs`, `versions.rs` and the
+//! `mechanism!` block. The crate has no `unsafe` (owner ruling); every IF item that needs it (the Host and
+//! header fn pointers, the `Vt` tables, `unsafe impl`s, the non-empty view read, `Out`'s in-place writes) is
+//! held as a stub or a signature comment until the UNSAFE-MIN design decides the boundary.
 
 #![deny(unsafe_code)]
+
+/// The `mechanism!` block (IF §7.5). It emits its items unchanged and records their tokens, doc comments
+/// included, as `stringify!` spells them; `fp::CORE_FP` folds the five blocks (types.rs, records.rs, host.rs,
+/// need.rs, plugin.rs, in that order) with `fp`'s whitespace-blind FNV-1a, so a token or doc change in any
+/// block moves CORE_FP and the pin in `ci/abi.pin` fails until it is moved with it. The rustc pin there covers
+/// token-spelling drift (r4 §3.2). Each block holds only the `#[repr(C)]`/Pod type definitions and `pub const`
+/// items §7.5 lists; impl blocks, the safe API, slots and the bridge stay outside, so refactoring them never
+/// moves CORE_FP.
+///
+/// W1-A1: the IF writes the matcher as `$(#[doc = $d:literal])* $item:item` with the doc values hashed through
+/// `concat!`. In `macro_rules` that matcher is a local ambiguity (a `#` can open either the doc repetition or
+/// the `item` fragment), so the block is taken as token trees and its docs are hashed where they stand.
+macro_rules! mechanism {
+    ($($item:tt)*) => {
+        $($item)*
+        /// This block's tokens, doc comments included (IF §7.5); `fp::CORE_FP` folds it.
+        pub(crate) const MECHANISM_BLOCK: &str = stringify!($($item)*);
+    };
+}
 
 pub mod bridge;
 pub mod fail;

@@ -6,6 +6,7 @@
 use crate::fail::Fail;
 use crate::types::Bytes;
 
+mechanism! {
 /// The host vtable. One process-wide static; plugins get `&'static Host`. The raw fields are private to abi.
 /// Round 20: every fn field is panic-contained host-side (I10, §10.7 `contain`): a host bug answers crypto
 /// and random RNG (out EMPTY; round 24: FAILED, never REFUSED), grow false, now/mono/log_level 0, deployment all
@@ -182,6 +183,7 @@ pub mod level {
     pub const INFO: u32 = 3;
     pub const DEBUG: u32 = 4;
     pub const TRACE: u32 = 5;
+}
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

@@ -13,6 +13,7 @@ use crate::records::{Full, Nested, Out};
 use crate::stamp::Stamp;
 use crate::types::Str;
 
+mechanism! {
 /// The only thing `busbar_plugin` returns. Identical for every kind. All pointers point into the image's .rodata.
 #[repr(C)]
 pub struct Plugin {
@@ -62,6 +63,7 @@ pub struct Plugin {
 pub const OPEN_DRY_RUN: u32 = 1;
 /// The one exported symbol, emitted by `export!` only.
 pub const SYMBOL: &[u8] = b"busbar_plugin\0";
+}
 // W0-ABI: `pub type EntryFn = unsafe extern "C" fn() -> *const Plugin;` lands with W1-A4 (an unsafe fn pointer
 // type).
 
