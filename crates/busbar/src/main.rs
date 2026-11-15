@@ -311,7 +311,8 @@ fn register_planes() {
     root::linked::register_stores(&LINKED);
     busbar_kernel::preflight::install_linked_auth(LINKED.auths);
 
-    let dropped = root::boot::dropped_from_config(&LINKED);
+    let scan = root::boot::start_scan();
+    let dropped = root::boot::install_start(scan, &LINKED);
     busbar_kernel::preflight::install_operator(root::auth_bindings::operator_binding(dropped));
 
     busbar_kernel::preflight::install_declared_styles(root::door_steps::declared_styles());
@@ -320,6 +321,7 @@ fn register_planes() {
     root::linked::register_exports(dropped);
 
     root::settings_public::install(&LINKED, dropped);
+    root::boot::bind_start_grammar();
 
     busbar_core_oauth2::install::<root::connector::AuthServerConns>();
 
@@ -662,7 +664,8 @@ async fn run(
                 .as_ref(),
                 &config_path,
             ),
-            None => root::boot::with_skip_lines(e),
+            // The read's own grammar already appended its report (one line per file not admitted).
+            None => e,
         };
         die(boot_error(
             "principal transition configuration load refused",

@@ -134,12 +134,18 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
     let provider_defs = complete_usage_fixture(&mut document, &directory, &[(LANE, PROVIDER)]);
     let mut current_document = document.clone();
     current_document["rate_card"][LANE]["input_utok"] = serde_json::json!(1.0);
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &provider_defs)
         .expect("the actual admin deployment resolves");
-    let current_deploy = busbar_kernel::config::deploy_from_deserializer(current_document)
-        .expect("the current lower-rate deployment parses");
+    let current_deploy = busbar_kernel::config::deploy_from_deserializer(
+        current_document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the current lower-rate deployment parses");
     let current_config = busbar_kernel::config::resolve(&current_deploy, &provider_defs)
         .expect("the current lower-rate deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())

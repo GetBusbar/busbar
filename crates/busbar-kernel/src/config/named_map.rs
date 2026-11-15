@@ -110,35 +110,42 @@ impl NamedMapSection {
         name: &str,
         def: &serde_json::Value,
     ) -> Result<(), String> {
-        self.parse_def(name, def)?.install(deploy, name)
+        let grammar = deploy.grammar.get()?.clone();
+        self.parse_def(name, def, &grammar)?.install(deploy, name)
     }
 
-    pub fn parse_def(self, name: &str, def: &serde_json::Value) -> Result<NamedDef, String> {
+    /// One definition, read under `grammar`: the grammar of the read it belongs to.
+    pub fn parse_def(
+        self,
+        name: &str,
+        def: &serde_json::Value,
+        grammar: &super::Grammar,
+    ) -> Result<NamedDef, String> {
         match self {
             NamedMapSection::IdentityProviders => {
-                busbar_contract::secret_ref::context::deserialize(
-                    def.clone(),
-                    &super::secret::sugars(),
-                )
-                .map_err(|e| format!("invalid `identity-providers.{name}` definition: {e}"))
-                .and_then(|cfg: IdentityProviderCfg| {
-                    if let Some(token) = cfg.max_admin_scope.as_deref() {
-                        crate::config::parse::parse_ceiling(
-                            &format!("`identity-providers.{name}`"),
-                            token,
-                        )?;
-                    }
+                busbar_contract::secret_ref::context::deserialize(def.clone(), &grammar.sugars)
+                    .map_err(|e| format!("invalid `identity-providers.{name}` definition: {e}"))
+                    .and_then(|cfg: IdentityProviderCfg| {
+                        if let Some(token) = cfg.max_admin_scope.as_deref() {
+                            crate::config::parse::parse_ceiling(
+                                &format!("`identity-providers.{name}`"),
+                                token,
+                            )?;
+                        }
 
-                    super::validate_token_placement(name, cfg.module.trim(), cfg.token.is_some())?;
-                    Ok(NamedDef::IdentityProvider(cfg))
-                })
+                        super::validate_token_placement(
+                            name,
+                            cfg.module.trim(),
+                            cfg.token.is_some(),
+                        )?;
+                        Ok(NamedDef::IdentityProvider(cfg))
+                    })
             }
-            NamedMapSection::Export => busbar_contract::secret_ref::context::deserialize(
-                def.clone(),
-                &super::secret::sugars(),
-            )
-            .map(NamedDef::Export)
-            .map_err(|e| format!("invalid `export.{name}` definition: {e}")),
+            NamedMapSection::Export => {
+                busbar_contract::secret_ref::context::deserialize(def.clone(), &grammar.sugars)
+                    .map(NamedDef::Export)
+                    .map_err(|e| format!("invalid `export.{name}` definition: {e}"))
+            }
 
             NamedMapSection::Plane(_) => {
                 if crate::plane_driver::registry::plane_decl_for_config_section(self.key())
@@ -155,8 +162,13 @@ impl NamedMapSection {
         }
     }
 
-    pub fn validate_def(self, name: &str, def: &serde_json::Value) -> Result<(), String> {
-        self.parse_def(name, def).map(|_| ())
+    pub fn validate_def(
+        self,
+        name: &str,
+        def: &serde_json::Value,
+        grammar: &super::Grammar,
+    ) -> Result<(), String> {
+        self.parse_def(name, def, grammar).map(|_| ())
     }
 
     pub fn referents(self, deploy: &DeployCfg, name: &str) -> Vec<String> {
@@ -238,7 +250,7 @@ impl PlaneDefinition<'_> {
     ) -> Result<(), String> {
         let section = self.section;
         let entry =
-            busbar_contract::yaml::to_value(def).map_err(|e| format!("`{section}.{name}`: {e}"))?;
+            busbar_contract::json::to_yaml(def).map_err(|e| format!("`{section}.{name}`: {e}"))?;
         crate::config::plane_sections::validate_plane_entry(
             section,
             name,

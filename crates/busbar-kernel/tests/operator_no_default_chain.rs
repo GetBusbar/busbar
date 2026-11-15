@@ -9,7 +9,9 @@
 const NO_DEFAULT: &str = "no admitted first-party auth plugin states the operator credential";
 
 fn resolved(yaml: &str) -> busbar_kernel::config::RootCfg {
-    let deploy = busbar_kernel::config::deploy_from_yaml_str(yaml).expect("the config parses");
+    let deploy =
+        busbar_kernel::config::deploy_from_yaml_str(yaml, &busbar_kernel::config::Grammar::empty())
+            .expect("the config parses");
     busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
         .expect("the config resolves")
 }

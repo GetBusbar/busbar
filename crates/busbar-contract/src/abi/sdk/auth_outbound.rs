@@ -949,12 +949,15 @@ impl<L: Life<Kind = crate::plugin::markers::AuthKind>, I: AbiIn, O: AbiOut> Safe
 /// but for `tick`, `drive` and `cancel`, which are the plugin's ([`OutboundTick`],
 /// [`OutboundDrive`], [`OutboundCancel`]). `verify` and the login pair answer REFUSED.
 ///
+/// Options, in order: `migrate: Migrator`, then `former_names: &["old-name"]` (the names an
+/// earlier release answered to; a config naming one still resolves).
+///
 /// ```ignore
 /// busbar_contract::auth_outbound_door!(MyPlugin, STATEMENT);
 /// ```
 #[macro_export]
 macro_rules! auth_outbound_door {
-    ($plugin:ty, $statement:expr $(, migrate: $migrator:ty)? $(,)?) => {
+    ($plugin:ty, $statement:expr $(, migrate: $migrator:ty)? $(, former_names: $former:expr)? $(,)?) => {
         $crate::plugin_door! {
             ops: $crate::abi::auth::Ops,
             statement: {
@@ -1005,7 +1008,8 @@ macro_rules! auth_outbound_door {
                 serve: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_outbound::NotServed<
                     $crate::abi::sdk::auth_outbound::Outbound<$plugin>,
                     $crate::abi::auth::ServeIn, $crate::abi::auth::ServeOut>>,
-            },
+            }
+            $(, former_names: $former)?,
         }
     };
 }
@@ -1015,12 +1019,15 @@ macro_rules! auth_outbound_door {
 /// ([`Both`]); the login pair answers REFUSED. Its tail is [`outbound_tail`] through
 /// [`with_inbound`].
 ///
+/// An optional trailing `former_names: &["old-name"]` declares the names an earlier release
+/// answered to.
+///
 /// ```ignore
 /// busbar_contract::auth_door!(verify_and_outbound: MyPlugin, STATEMENT);
 /// ```
 #[macro_export]
 macro_rules! auth_door {
-    (verify_and_outbound: $plugin:ty, $statement:expr $(,)?) => {
+    (verify_and_outbound: $plugin:ty, $statement:expr $(, former_names: $former:expr)? $(,)?) => {
         $crate::plugin_door! {
             ops: $crate::abi::auth::Ops,
             statement: {
@@ -1072,7 +1079,8 @@ macro_rules! auth_door {
                 serve: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_outbound::NotServed<
                     $crate::abi::sdk::auth_outbound::Both<$plugin>,
                     $crate::abi::auth::ServeIn, $crate::abi::auth::ServeOut>>,
-            },
+            }
+            $(, former_names: $former)?,
         }
     };
 }

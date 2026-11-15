@@ -603,3 +603,23 @@ fn retention_codes_round_trip_and_age_is_the_default() {
     assert_eq!(Retention::TerminalOnly.code(), 1);
     assert_eq!(Retention::from_code(2), None);
 }
+
+/// A key that was never rotated and never migrated serializes byte-for-byte as it did before the
+/// 1.6 key metadata (ADMIN-API-1.6 4.2): the new stored fields are omitted while default.
+#[test]
+fn key_row_new_metadata_is_omitted_while_default_and_round_trips() {
+    let plain = sample_key();
+    let wire = serde_json::to_value(&plain).unwrap();
+    for field in ["rotated_at", "rotation_count", "migrated_from"] {
+        assert!(
+            wire.get(field).is_none(),
+            "{field} must be omitted while default"
+        );
+    }
+    let mut rotated = sample_key();
+    rotated.rotated_at = Some(1_700_000_000);
+    rotated.rotation_count = 3;
+    rotated.migrated_from = Some("1.5.5".into());
+    let back: VirtualKey = serde_json::from_value(serde_json::to_value(&rotated).unwrap()).unwrap();
+    assert_eq!(back, rotated);
+}

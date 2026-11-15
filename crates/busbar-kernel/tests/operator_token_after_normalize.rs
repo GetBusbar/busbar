@@ -7,15 +7,17 @@
 //! remedy (no operator row is admitted in this binary), and never with the generic no-mint-path
 //! refusal. No words are installed: this test owns its binary.
 
+use busbar_kernel::plane_driver::registry::{publish_planes, PlaneDecl, PlaneDeclaration};
+
 const FIXTURE: &str = include_str!("fixtures/operator_token_after_normalize.yaml");
 
-/// The 1.5.5 configuration spells its secrets `{ env: … }` and `{ file: … }`. Core declares no
-/// source shorthand itself: an admitted secret module does. Read the fixture as a deployment whose
-/// admitted secret module declares both words.
-fn fixture_sources() -> busbar_contract::secret_ref::Sugars {
+/// The read's grammar. The 1.5.5 configuration spells its secrets `{ env: … }` and `{ file: … }`.
+/// Core declares no source shorthand itself: an admitted secret module does. This read admits one
+/// that declares both words.
+fn fixture_grammar() -> busbar_kernel::config::Grammar {
     use busbar_contract::abi::mechanism::door::REWRITE_SUGAR;
-    let mut sources = busbar_contract::secret_ref::Sugars::default();
-    sources
+    let mut sugars = busbar_contract::secret_ref::Sugars::default();
+    sugars
         .declare(
             "fixture-source",
             &[
@@ -24,8 +26,60 @@ fn fixture_sources() -> busbar_contract::secret_ref::Sugars {
             ],
         )
         .expect("the fixture source declares its shorthand");
-    sources
+    busbar_kernel::config::Grammar::new(sugars, std::collections::BTreeMap::new(), Vec::new())
 }
+
+/// A test-only fallback plane declaration (no plane plugin, no hooks): the 1.5.5 `pools:` and
+/// `models:` sections are owned by the fallback plane, and this kernel-only binary links none.
+static FALLBACK_PLANE: PlaneDecl = PlaneDecl {
+    declaration: PlaneDeclaration {
+        key: "r21-fallback",
+        fallback: true,
+        config_section: "models",
+        scope_kinds: &[],
+        subject_noun: "model",
+        admin_noun: "model",
+        audit_kind: "model",
+        card_signing_domain: None,
+        card_kid_prefix: None,
+        owned_config_sections: &[],
+        billable_classes: &[],
+        class_parents: &[],
+        fee_units: &[],
+        metric_families: &[],
+        record_kinds: &[],
+        required_config_sections: &[],
+        trust_keys: &[],
+        served_op_classes: &[],
+        caller_credential_refusal: None,
+    },
+    wire_format_names: |_| &[],
+    provider_dialects: |_| &[],
+    claims: |_| Vec::new(),
+    admission: |_| None,
+    build: |_, _| None,
+    routes: None,
+    admin_routes: None,
+    openapi: None,
+    hydrate: None,
+    start: None,
+    config_validate: None,
+    named_def_list: None,
+    named_def_get: None,
+    registry_contains: None,
+    reresolve_gates: None,
+    openapi_schemas: None,
+    on_swap: None,
+    parse_section: None,
+    parse_endpoint: None,
+    lower_endpoint: None,
+    build_runtime: None,
+    viewer: None,
+    retain_verify_gates: None,
+    default_section: None,
+    resolve_provider: None,
+    door: None,
+};
 
 /// One provider definition per configured provider, as a providers.yaml would give.
 fn defs_for(
@@ -46,11 +100,9 @@ fn defs_for(
 
 #[test]
 fn a_normalized_1_5_5_token_config_is_refused_with_its_named_remedy() {
-    let sources = fixture_sources();
-    let deploy = busbar_contract::yaml::with_deserializer(FIXTURE, |d| {
-        busbar_kernel::config::deploy_with_sources(d, &sources)
-    })
-    .expect("the fixture parses");
+    publish_planes(&[&FALLBACK_PLANE]);
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(FIXTURE, &fixture_grammar())
+        .expect("the fixture parses");
     let errors = match busbar_kernel::config::resolve(&deploy, &defs_for(&deploy)) {
         Err(errors) => errors,
         Ok(cfg) => busbar_kernel::config_validate::validate(&cfg)

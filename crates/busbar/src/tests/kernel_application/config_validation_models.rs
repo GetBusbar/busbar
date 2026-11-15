@@ -17,6 +17,7 @@ fn make_root_cfg(
         plane_defs: Default::default(),
         plane_pools: Default::default(),
         plane_sections: Default::default(),
+        grammar: busbar_kernel::config::GrammarField::bound(busbar_kernel::config::Grammar::empty()),
         listen: busbar_kernel::config::DEFAULT_LISTEN_ADDR.into(),
         listen_explicit: false,
 

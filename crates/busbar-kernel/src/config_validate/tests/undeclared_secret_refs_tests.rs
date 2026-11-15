@@ -32,6 +32,7 @@ fn store_with(settings: serde_json::Value) -> crate::config::RootCfg {
         module: "fixture-owner".into(),
         settings: serde_json::from_value(settings).expect("object settings"),
     });
+    cfg.grammar = crate::config::GrammarField::bound(crate::config::Grammar::empty());
     cfg
 }
 

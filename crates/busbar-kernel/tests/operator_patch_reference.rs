@@ -85,9 +85,12 @@ fn the_patch_loader_returns_the_unpatched_operator_reference() {
     let _ = std::fs::remove_dir_all(&dir);
 
     let file_reference = OperatorFileDefs::of(
-        &busbar_kernel::config::deploy_from_yaml_str(&file())
-            .expect("config.yaml parses")
-            .identity_providers,
+        &busbar_kernel::config::deploy_from_yaml_str(
+            &file(),
+            &busbar_kernel::config::Grammar::empty(),
+        )
+        .expect("config.yaml parses")
+        .identity_providers,
     );
     assert!(
         file_reference.get(OP).is_some(),
@@ -142,9 +145,12 @@ fn a_stored_patch_that_moves_the_operator_credential_refuses_boot_by_path() {
 
 fn reference_of(yaml: &str) -> OperatorFileDefs {
     OperatorFileDefs::of(
-        &busbar_kernel::config::deploy_from_yaml_str(yaml)
-            .expect("config.yaml parses")
-            .identity_providers,
+        &busbar_kernel::config::deploy_from_yaml_str(
+            yaml,
+            &busbar_kernel::config::Grammar::empty(),
+        )
+        .expect("config.yaml parses")
+        .identity_providers,
     )
 }
 

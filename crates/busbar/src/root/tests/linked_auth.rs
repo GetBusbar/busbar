@@ -232,10 +232,13 @@ fn synthetic_auth(alias: &str, mode: &str) -> busbar_kernel::auth::AuthMiddlewar
 }
 
 fn shape_config() -> config::RootCfg {
-    let deploy = config::deploy_from_deserializer(serde_json::json!({
-        "providers":{},"models":{},"auth":{"chain":[],"admin_auth":[]},
-        "store":{"module":"fixture-shape-store"},
-    }))
+    let deploy = config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers":{},"models":{},"auth":{"chain":[],"admin_auth":[]},
+            "store":{"module":"fixture-shape-store"},
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("structural validation deployment");
     config::resolve(&deploy, &Default::default()).expect("structural validation configuration")
 }
@@ -485,7 +488,9 @@ fn cfg_with_credentials(
     document["identity-providers"][operator] = serde_json::json!({
         "module":operator,"token":{"file":token_path},
     });
-    let deploy = config::deploy_from_deserializer(document).expect("credential deployment parses");
+    let deploy =
+        config::deploy_from_deserializer(document, &crate::root::boot::axis_test_grammar())
+            .expect("credential deployment parses");
     config::resolve(&deploy, &Default::default()).expect("credential deployment resolves")
 }
 

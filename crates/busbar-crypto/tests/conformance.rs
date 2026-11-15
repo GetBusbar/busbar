@@ -65,6 +65,6 @@ fn software_backend_provides_everything() {
     }
     assert_eq!(
         busbar_contract::crypto::link::RECIPE,
-        "busbar.audit.digest.v7"
+        "busbar.audit.link.v1"
     );
 }

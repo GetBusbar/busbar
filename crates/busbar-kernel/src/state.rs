@@ -67,6 +67,9 @@ pub struct App {
     /// (OPERATOR-FROM-ADMITTED-AUTH §3.6.1): set by boot and `POST /config/reload`, carried
     /// unchanged by every other build. An apply or validate body is held to it.
     pub operator_file_defs: Arc<crate::config::OperatorFileDefs>,
+    /// The grammar this generation's configuration was read under: what an admin edit of it reads
+    /// the running shorthand by. `Unbound` until a build binds it.
+    pub grammar: crate::config::GrammarField,
     /// Configured changes whose physical activation needs a restart. Cleared only at boot.
     pub config_pending_restart: Vec<String>,
     /// Generation-local observations of synchronous ordinary plane refresh callbacks.
@@ -722,6 +725,7 @@ impl App {
             configured_view: None,
             document_source_fingerprints: None,
             operator_file_defs: Arc::default(),
+            grammar: crate::config::GrammarField::default(),
             providers_override: providers_path.clone(),
             config_pending_restart: Vec::new(),
             plane_refresh: activation::PlaneRefreshReport::default(),
