@@ -6593,3 +6593,70 @@ async fn exhausted_terminal_checkpoint_records_custody() {
             .any(|held| held.id == snapshot.id && held.ended));
     }
 }
+
+/// Counts persists; every write succeeds.
+#[derive(Default)]
+struct CountingUnitSink(std::sync::atomic::AtomicUsize);
+
+#[async_trait::async_trait]
+impl super::unit_checkpoint::UnitCheckpointSink for CountingUnitSink {
+    async fn persist(
+        &self,
+        _snapshot: &super::unit_checkpoint::UnitCheckpoint,
+    ) -> RecordStoreResult<()> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+    async fn remove(
+        &self,
+        _snapshot: &super::unit_checkpoint::UnitCheckpoint,
+    ) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    async fn replay(&self) -> RecordStoreResult<Vec<super::unit_checkpoint::UnitCheckpoint>> {
+        Ok(Vec::new())
+    }
+}
+
+/// WHO: the money driver in drain mode, told to stop while a unit pass is running.
+/// DOES: (SHUTDOWN-HANG 8.7) the halt is read before each batch of 128: the batch in flight runs
+/// to its end (no dropped write), no new batch starts, and the units not reached stay in custody.
+/// WHY: the final budget and metering flushes must not starve behind a unit backlog, and a write
+/// already started must never be cut.
+#[tokio::test]
+async fn flusher_observes_halt_between_batches() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.clone().core(), None, None)
+        .await
+        .unwrap();
+    gov.attach_recovery_sink(Arc::new(super::recovery::tests::Journal::default()))
+        .await
+        .unwrap();
+    let sink = Arc::new(CountingUnitSink::default());
+    gov.attach_unit_checkpoint_sink(sink.clone()).await.unwrap();
+    let key = sample_key("vk_sh_batches", "sh-batches");
+    for id in 1..=200u8 {
+        gov.stage_unit_checkpoint(exhausted_unit(
+            &key,
+            RawRateEra::legacy(0),
+            1_700_000_000,
+            id,
+        ));
+    }
+    let persisted = || sink.0.load(std::sync::atomic::Ordering::SeqCst);
+    gov.flush_unit_checkpoints_until(&|| persisted() > 0)
+        .await
+        .unwrap();
+    assert_eq!(
+        persisted(),
+        128,
+        "exactly the batch in flight completes, and no batch starts after the halt"
+    );
+    assert!((1..=200u8).all(|id| gov.unit_checkpoint_pending(&[id; 16])));
+    gov.flush_unit_checkpoints().await.unwrap();
+    assert_eq!(
+        persisted(),
+        200,
+        "the units not reached are persisted next pass"
+    );
+}
