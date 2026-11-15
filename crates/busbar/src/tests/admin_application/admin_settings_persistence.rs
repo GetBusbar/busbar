@@ -911,14 +911,19 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
         store["module"], module,
         "the non-secret shape still introspects: {json}"
     );
+    // ACCEPTED DIFFERENCE (coordinator ruling ADM-14 Q2, AGREED.md coordinator entry, the owner's
+    // standing guidance that 1.6 security improvements are taken): /config/settings serves every
+    // secret position as {set, secret_ref} (v1/secret_rule.rs). The 1.5.5 assertion was
+    // `settings_keys == ["url"]` with no `settings` member; it moved to the position shape, which
+    // still shows what is configured and, being stricter, never a value or a hash.
     assert_eq!(
-        store["settings_keys"],
-        serde_json::json!(["url"]),
-        "the bag is projected as KEY NAMES, so `what is configured` survives: {json}"
+        store["settings"],
+        serde_json::json!({ "url": { "set": true, "secret_ref": null } }),
+        "the bag is projected as {{set, secret_ref}} positions, so `what is configured` survives: {json}"
     );
     assert!(
-        store.get("settings").is_none(),
-        "no raw settings bag anywhere on this wire: {json}"
+        store.get("settings_keys").is_none(),
+        "the 1.5.5 key-name projection is replaced by the position shape: {json}"
     );
 
     handle.abort();
