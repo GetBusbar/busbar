@@ -279,12 +279,11 @@ impl GovState {
         durable: bool,
         before_commit: impl FnOnce() -> Result<(), CountError>,
     ) -> Result<(), CountError> {
-        // A count-free unit (e.g. a pool 503 before any member bound its lane) changes no cell.
-        // This matches `record_counts_served_in_era`, so the served and checkpoint bills agree
-        // (UPG-H2).
-        if units.values().all(|n| n.is_zero()) {
-            return before_commit();
-        }
+        // A count-free unit (e.g. a pool 503 before any member bound its lane) adds no row and no
+        // count, matching `record_counts_served_in_era`, so the served and checkpoint bills agree
+        // (UPG-H2). It still touches a cell it already charged in this window: its terminal
+        // checkpoint is custody of that cell (UPG-A04c).
+        let count_free = units.values().all(|n| n.is_zero());
         // A request charges a handful of buckets: the shard list, its guards and the staged cells
         // stay inline on the stack.
         // Kept ascending and distinct as it is built, so the guards are taken in shard order.
@@ -308,6 +307,17 @@ impl GovState {
             let index = shards
                 .binary_search(&self.budget.shard_index(bucket))
                 .expect("target shard held");
+            if count_free {
+                let Some(mut cell) = guards[index].get(bucket).cloned() else {
+                    continue;
+                };
+                if cell.window_start != window {
+                    continue;
+                }
+                cell.mutate(|cell| cell.last_touch = now);
+                changes.push((index, bucket, cell));
+                continue;
+            }
             let mut cell = guards[index]
                 .get(bucket)
                 .cloned()
