@@ -19,10 +19,24 @@ pub(crate) fn dlopen_on_worker(path: &std::ffi::OsStr) -> Result<Library, String
         crate::ffi_thread::debug_assert_permanent("dlopen");
         unsafe { Library::new(path) }
     }) {
-        Ok(r) => r.map_err(|e| loader_reason(&e.to_string())),
+        Ok(r) => r.map_err(|e| loader_error(&e)),
 
         Err(_) => Err("the library's initializer panicked while loading".to_string()),
     }
+}
+
+/// A libloading error as the loader reported it. libloading's `Display` for `DlOpen`/`DlSym` is
+/// only the label ("dlopen failed"); the `dlerror` text (e.g. "version `GLIBC_2.38' not found") is
+/// the error's `source`, so the whole chain is joined, then made safe by [`loader_reason`].
+pub(crate) fn loader_error(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut text = e.to_string();
+    let mut next = e.source();
+    while let Some(cause) = next {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        next = cause.source();
+    }
+    loader_reason(&text)
 }
 
 /// The most characters of a dynamic loader's reason a refusal carries.
