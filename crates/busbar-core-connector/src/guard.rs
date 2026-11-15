@@ -381,18 +381,12 @@ pub struct SystemResolver;
 
 impl Resolve for SystemResolver {
     fn resolve(&self, host: &str, done: Resolved) {
-        use std::net::ToSocketAddrs;
         resolve_capped(
             host,
             done,
             crate::compose::MAX_PENDING_LOOKUPS,
             &RESOLVING,
-            |host: &str| {
-                let found = (host, 0)
-                    .to_socket_addrs()
-                    .map_err(|e| crate::cold::egress::lookup_failed(&e));
-                found.map(|a| a.map(|s| s.ip()).collect())
-            },
+            crate::off_path::guard::system_lookup,
         );
     }
 }
@@ -400,40 +394,7 @@ impl Resolve for SystemResolver {
 /// The resolutions [`SystemResolver`] has in flight.
 static RESOLVING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// Resolve `host` by `lookup` on a thread of its own, answering through `done`, with at most `cap`
-pub(crate) fn resolve_capped<F>(
-    host: &str,
-    done: Resolved,
-    cap: usize,
-    in_flight: &'static std::sync::atomic::AtomicUsize,
-    lookup: F,
-) where
-    F: FnOnce(&str) -> Result<Vec<IpAddr>, String> + Send + 'static,
-{
-    use std::sync::Mutex;
-    let Some(place) = crate::hostio::LookupPlace::take(cap, in_flight) else {
-        done(Err(crate::cold::egress::lookups_in_flight(cap)));
-        return;
-    };
-    let cell = Arc::new(Mutex::new(Some(done)));
-    let mine = Arc::clone(&cell);
-    let take = |c: &Mutex<Option<Resolved>>| c.lock().unwrap_or_else(|e| e.into_inner()).take();
-    let host = host.to_owned();
-    let spawned = std::thread::Builder::new()
-        .name("busbar-resolve".into())
-        .spawn(move || {
-            let _place = place;
-            let answer = lookup(host.as_str());
-            if let Some(done) = take(&mine) {
-                done(answer);
-            }
-        });
-    if spawned.is_err() {
-        if let Some(done) = take(&cell) {
-            done(Err("no resolver thread".into()));
-        }
-    }
-}
+pub(crate) use crate::off_path::guard::resolve_capped;
 
 #[cfg(test)]
 #[path = "tests/guard_tests.rs"]

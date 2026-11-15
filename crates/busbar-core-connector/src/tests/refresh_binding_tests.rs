@@ -166,10 +166,11 @@ fn refused_refresh_preserves_the_committed_connector_binding() {
         None,
         dispatcher.conn_waker(),
     ));
+    let instance = "refresh-witness".into();
     let plugin = load_linked::<Secret>(
         &LinkedRow::of(door).unwrap(),
         Bind {
-            instance: Arc::from("refresh-witness"),
+            instance,
             max_inflight_cap: 1,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),

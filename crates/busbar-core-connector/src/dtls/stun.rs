@@ -7,31 +7,31 @@ use busbar_contract::crypto;
 use busbar_contract::secure::SecureVec;
 
 /// STUN's magic cookie (RFC 8489 §5).
-const MAGIC_COOKIE: [u8; 4] = [0x21, 0x12, 0xa4, 0x42];
+pub(crate) const MAGIC_COOKIE: [u8; 4] = [0x21, 0x12, 0xa4, 0x42];
 /// A Binding request (method 0x001, class request).
-const BINDING_REQUEST: [u8; 2] = [0x00, 0x01];
+pub(crate) const BINDING_REQUEST: [u8; 2] = [0x00, 0x01];
 /// A Binding success response.
 const BINDING_SUCCESS: [u8; 2] = [0x01, 0x01];
 /// The USERNAME attribute.
-const USERNAME: u16 = 0x0006;
+pub(crate) const USERNAME: u16 = 0x0006;
 /// The MESSAGE-INTEGRITY attribute (HMAC-SHA1, 20 bytes).
-const MESSAGE_INTEGRITY: u16 = 0x0008;
+pub(crate) const MESSAGE_INTEGRITY: u16 = 0x0008;
 /// PRIORITY.
-const PRIORITY: u16 = 0x0024;
+pub(crate) const PRIORITY: u16 = 0x0024;
 /// ICE-CONTROLLED.
-const ICE_CONTROLLED: u16 = 0x8029;
+pub(crate) const ICE_CONTROLLED: u16 = 0x8029;
 /// ICE-CONTROLLING.
-const ICE_CONTROLLING: u16 = 0x802a;
+pub(crate) const ICE_CONTROLLING: u16 = 0x802a;
 /// FINGERPRINT.
-const FINGERPRINT: u16 = 0x8028;
+pub(crate) const FINGERPRINT: u16 = 0x8028;
 /// FINGERPRINT's XOR constant (RFC 8489 §14.7).
-const FINGERPRINT_XOR: u32 = 0x5354_554e;
+pub(crate) const FINGERPRINT_XOR: u32 = 0x5354_554e;
 /// The header length.
-const HEADER: usize = 20;
+pub(crate) const HEADER: usize = 20;
 /// MESSAGE-INTEGRITY's value length.
-const MI_LEN: usize = 20;
+pub(crate) const MI_LEN: usize = 20;
 /// A probe states peer-reflexive priority (RFC 8445 §7.1.1), using the same UDP type preference
-const PROBE_PRIORITY: u32 = 0x6eff_ffff;
+pub(crate) const PROBE_PRIORITY: u32 = 0x6eff_ffff;
 
 /// One side's ICE credentials.
 #[derive(Clone)]
@@ -56,16 +56,14 @@ pub(crate) struct Keys {
     /// The local ICE password: the MESSAGE-INTEGRITY (HMAC-SHA1) key of checks to us.
     local: SecureVec,
     /// The remote ICE password: the key of our probes and of their answers.
-    remote: SecureVec,
-    probe_username: Vec<u8>,
+    pub(crate) remote: SecureVec,
+    pub(crate) probe_username: Vec<u8>,
 }
 
 impl Keys {
     pub(crate) fn new(local: &IceCredentials, remote: &IceCredentials) -> Self {
-        let (local_ufrag_prefix, probe_username) = (
-            format!("{}:", local.ufrag).into_bytes(),
-            format!("{}:{}", remote.ufrag, local.ufrag).into_bytes(),
-        );
+        let (local_ufrag_prefix, probe_username) =
+            crate::off_path::dtls::credential_names(local, remote);
         Keys {
             local_ufrag_prefix,
             local: SecureVec::from(local.pwd.as_bytes()),
@@ -168,45 +166,13 @@ pub(crate) fn is_binding_success(d: &[u8]) -> bool {
     d.len() >= HEADER && d[0..2] == BINDING_SUCCESS && d[4..8] == MAGIC_COOKIE
 }
 
-fn attr(m: &mut Vec<u8>, kind: u16, value: &[u8]) {
+pub(crate) fn attr(m: &mut Vec<u8>, kind: u16, value: &[u8]) {
     m.extend_from_slice(&kind.to_be_bytes());
     m.extend_from_slice(&u16::try_from(value.len()).unwrap_or(0).to_be_bytes());
     m.extend_from_slice(value);
     m.resize(m.len().div_ceil(4) * 4, 0);
 }
 
-fn set_len(m: &mut [u8], body: usize) {
+pub(crate) fn set_len(m: &mut [u8], body: usize) {
     m[2..4].copy_from_slice(&u16::try_from(body).unwrap_or(0).to_be_bytes());
-}
-
-/// A consent probe: a Binding request to the peer under the REMOTE credentials (USERNAME
-/// …). `None` when the crypto backend does not provide HMAC-SHA1.
-pub(crate) fn probe(
-    keys: &Keys,
-    txid: [u8; 12],
-    tie_breaker: [u8; 8],
-    controlling: bool,
-) -> Option<Vec<u8>> {
-    let mut m = Vec::with_capacity(128);
-    m.extend_from_slice(&BINDING_REQUEST);
-    m.extend_from_slice(&[0, 0]);
-    m.extend_from_slice(&MAGIC_COOKIE);
-    m.extend_from_slice(&txid);
-    attr(&mut m, USERNAME, &keys.probe_username);
-    attr(&mut m, PRIORITY, &PROBE_PRIORITY.to_be_bytes());
-    let role = if controlling {
-        ICE_CONTROLLING
-    } else {
-        ICE_CONTROLLED
-    };
-    attr(&mut m, role, &tie_breaker);
-    let body = m.len() - HEADER + 4 + MI_LEN;
-    set_len(&mut m, body);
-    let mac = crypto::legacy::hmac_sha1(&keys.remote, &m).ok()?;
-    attr(&mut m, MESSAGE_INTEGRITY, &mac);
-    let body = m.len() - HEADER + 8;
-    set_len(&mut m, body);
-    let crc = crc32fast::hash(&m) ^ FINGERPRINT_XOR;
-    attr(&mut m, FINGERPRINT, &crc.to_be_bytes());
-    Some(m)
 }

@@ -522,7 +522,7 @@ fn a_definitive_answer_drops_after_one_confirming_reread_and_an_outage_keeps() {
     for kind in [ERROR_KIND_NOT_FOUND, ERROR_KIND_DENIED] {
         let b = bound("b1-def", &[Ok("v1"), Err(kind), Err(kind)]);
         let first = b.per.handle_at(b.minted).expect("bound");
-        let now = Instant::now();
+        let now = b.minted;
         let (attempt, due) = b.per.refresh_with(&scope(), now, 0.5);
         assert_eq!(attempt, Attempt::Confirming { error_kind: kind });
         assert_eq!(
@@ -530,14 +530,10 @@ fn a_definitive_answer_drops_after_one_confirming_reread_and_an_outage_keeps() {
             now + Duration::from_secs(1),
             "re-read after one second"
         );
-        assert_eq!(
-            b.per.handle_at(Instant::now()),
-            Some(first),
-            "kept meanwhile"
-        );
+        assert_eq!(b.per.handle_at(now), Some(first), "kept meanwhile");
         let (attempt, _) = b.per.refresh_with(&scope(), due, 0.5);
         assert_eq!(attempt, Attempt::Dropped { error_kind: kind });
-        assert_eq!(b.per.handle_at(Instant::now()), None, "dropped at once");
+        assert_eq!(b.per.handle_at(due), None, "dropped at once");
         assert_eq!(
             b.report.coded(8027)[0].field("cause"),
             Some("revoked-at-source")

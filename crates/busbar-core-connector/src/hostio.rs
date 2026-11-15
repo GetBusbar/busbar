@@ -586,7 +586,7 @@ impl IoHost for HostIo {
                         Err(r) => return Poll::Ready(Err(r)),
                     };
                     self.record(ticket, Some(id), None);
-                    return Poll::Ready(Ok((id, peer.to_string())));
+                    return Poll::Ready(Ok((id, crate::off_path::hostio::peer_text(&peer))));
                 }
 
                 Poll::Ready(Err(e))
@@ -811,7 +811,9 @@ impl IoHost for HostIo {
             Kind::Stream { sock, .. } => match sock.get_ref() {
                 Sock::Tcp(s) => Ok(Ends {
                     port: s.local_addr().map_err(|err| failed(&err))?.port(),
-                    peer: s.peer_addr().map_err(|err| failed(&err))?.to_string(),
+                    peer: crate::off_path::hostio::peer_text(
+                        &s.peer_addr().map_err(|err| failed(&err))?,
+                    ),
                     exit: None,
                 }),
                 #[cfg(unix)]
