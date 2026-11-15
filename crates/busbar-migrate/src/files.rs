@@ -189,7 +189,7 @@ pub(crate) fn create_like_at(
 
 /// 5b: keep the source as `config.yaml.1.5.5` by hard link (the same inode, byte-identical), then
 /// fsync the directory. A backup already present was checked equal by 5R.
-pub(crate) fn keep_backup(config: &Path, backup: &Path) -> Result<(), Refusal> {
+pub(crate) fn keep_backup(config: &Path, backup: &Path, _bytes: &[u8]) -> Result<(), Refusal> {
     match fs::hard_link(config, backup) {
         Ok(()) => {}
         Err(error) if error.kind() == ErrorKind::AlreadyExists => {}

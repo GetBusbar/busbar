@@ -448,7 +448,7 @@ pub enum Written {
 /// Step 5 (§3, §A3 5L-5d): under the directory lock, re-run the plan from disk (same digest, same
 /// result, the strict parse again), check the read-only preconditions, then write the planned
 /// providers catalog (5a2) and the stamped document beside config.yaml with their sources' mode
-/// and owner, keep the original as `config.yaml.1.5.5` (a hard link: the same bytes), and rename
+/// and owner, keep the original as `config.yaml.1.5.5` (a byte copy with its own inode), and rename
 /// the new file over config.yaml. Every step is fsynced. A crash at any point leaves either the
 /// original config.yaml (the next boot plans again and converges) or the stamped one.
 ///
@@ -507,7 +507,7 @@ pub fn write(plan: &Plan, check: Check<'_>) -> Result<Written, Refusal> {
         catalog::write(planned)?;
     }
     let fresh = files::create_like(&plan.path, again.text.as_bytes())?;
-    files::keep_backup(&plan.path, &backup)?;
+    files::keep_backup(&plan.path, &backup, now.as_bytes())?;
     if let Some(read) = &read {
         // 5c: before the stamp, so a 1.5.5 still writing the overlay is caught, never lost.
         if let Err(refusal) = overlay::guard(read) {
