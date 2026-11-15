@@ -1107,6 +1107,9 @@ impl PlaneMoney {
         }
         if let Some(mut snapshot) = self.checkpoint_snapshot(key, open, counts, metered) {
             snapshot.unread = unread.map(|reason| reason.as_str().to_string());
+            busbar_contract::stage_probe::tick(
+                busbar_contract::stage_probe::Derive::CheckpointStage,
+            );
             self.gov.finish_unit_checkpoint(snapshot);
         } else {
             tracing::error!(unit = key.get(), checkpoint = %hex::encode(open.checkpoint_id),
