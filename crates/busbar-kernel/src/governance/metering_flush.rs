@@ -20,12 +20,15 @@ struct MeteringAttempt {
 }
 
 impl MeteringWrite {
+    /// Move the first send `by` into the past.
     #[cfg(test)]
-    pub(super) fn expire_attempt(&mut self) {
-        self.op
-            .as_mut()
-            .expect("the operation was attempted")
-            .replay_before = std::time::Instant::now();
+    pub(super) fn backdate_first_send(&mut self, by: std::time::Duration) {
+        let op = self.op.as_mut().expect("the operation was attempted");
+        op.replay_before = op
+            .replay_before
+            .checked_sub(by)
+            .expect("a representable instant");
+        op.first_sent_at_ms -= u64::try_from(by.as_millis()).expect("a short interval");
     }
 
     fn new((key, counts): (MeterKey, MeterCounts)) -> Option<Self> {

@@ -353,6 +353,43 @@ async fn unknown_correction_retains_exact_identity_through_another_error_and_bac
     );
 }
 
+/// STORE-TRANSACTIONS §8 item 19: a correction sent from this process a day and a second ago is
+/// resent with its exact operation while its slot is held; the store replays Applied. No
+/// "receipt retention expired" give-up, no LandedUnknown.
+#[tokio::test]
+async fn a_day_old_correction_sent_here_resends_its_operation_and_applies_once() {
+    let store = Arc::new(FlakyStore::new().await);
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
+    gov.attach_recovery_sink(Arc::new(Journal::default()))
+        .await
+        .unwrap();
+    let key = key("vk_correction_day_old", None);
+    store.identity().put_key(&key).await.unwrap();
+    let cm = model(&[]);
+    let now = crate::store::now();
+    gov.record_usage(&cm, &key, "", MODEL, &toks(INITIAL_INPUT, 0), now);
+    metered(&gov, &key.id, MODEL, INITIAL_INPUT, now).await;
+    store
+        .lose_correction_reply
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let delta = delta();
+    let adj = correction(&key, &delta, now);
+    assert!(gov.adjust_usage_async(&cm, &adj).await.is_err());
+    let operation = store.correction_calls.lock().unwrap()[0].op_id.0;
+    gov.backdate_recovery_send(operation, std::time::Duration::from_secs(24 * 60 * 60 + 1));
+    gov.adjust_usage_async(&cm, &adj).await.unwrap().unwrap();
+    assert_eq!(
+        input(&store.ledger().get_usage(&key.id, 0).await.unwrap()),
+        CORRECTED_INPUT,
+        "the resend replays the applied correction"
+    );
+    let calls = store.correction_calls.lock().unwrap();
+    assert_eq!(calls.len(), 2, "exactly one resend");
+    assert_eq!(calls[0], calls[1], "the resend keeps the exact id and body");
+}
+
 #[tokio::test]
 async fn accrual_refund_and_roll_update_both_reserved_raw_branches() {
     let store = Arc::new(FlakyStore::new().await);

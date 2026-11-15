@@ -65,6 +65,85 @@ async fn ordinary_small_usage_unwind_does_not_duplicate_committed_effect() {
     ordinary_unknown_result_retries_once(true).await;
 }
 
+/// STORE-TRANSACTIONS §8 item 19: a first send a day and a second in the past.
+const DAY_AND_A_SECOND: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60 + 1);
+
+/// Exact debt (item 19): a chunk whose reply was lost a day and a second ago is resent with its
+/// operation while its slot is held, and the store replays Applied: no retention give-up.
+#[tokio::test]
+async fn a_day_old_exact_debt_chunk_resends_its_operation_and_settles_once() {
+    let store = Arc::new(FlakyStore::new().await);
+    store.lose_usage_reply.store(true, Ordering::SeqCst);
+    let key = sample_key("vk_day_old_chunk", "day-old-chunk-generation");
+    store.identity().put_key(&key).await.unwrap();
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
+    accrue_plain(&gov, &key.id, FIRST_INPUT);
+    assert_eq!(
+        gov.flush_budgets().await,
+        0,
+        "the lost reply keeps the chunk"
+    );
+    gov.age_exact_debt_chunks(DAY_AND_A_SECOND);
+    assert_eq!(gov.flush_budgets().await, 1, "the resend settles the chunk");
+    assert_eq!(
+        store
+            .ledger()
+            .get_usage(&key.id, 0)
+            .await
+            .unwrap()
+            .tokens_for_whole_test(MODEL),
+        Some(FIRST_INPUT),
+        "the resend replays; the chunk applies once"
+    );
+}
+
+/// Recovery (item 19): a raw intent sent from this process a day and a second ago is resent, not
+/// turned LandedUnknown; only an unknown sent clock (after a restart) is.
+#[tokio::test]
+async fn a_day_old_raw_intent_sent_here_resends_instead_of_landing_unknown() {
+    use super::super::recovery::RecoveryState;
+    let store = Arc::new(FlakyStore::new().await);
+    store.lose_usage_reply.store(true, Ordering::SeqCst);
+    let key = sample_key("vk_day_old_raw_intent", "day-old-raw-intent-generation");
+    store.identity().put_key(&key).await.unwrap();
+    let journal = Arc::new(RecoveryJournal::default());
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
+    gov.attach_recovery_sink(journal.clone()).await.unwrap();
+    accrue_plain(&gov, &key.id, FIRST_INPUT);
+    gov.flush_budgets().await;
+    let intent = gov.recovery().list(None, 10).await.unwrap().pop().unwrap();
+    assert_eq!(intent.state, RecoveryState::Intent);
+    gov.backdate_recovery_send(intent.operation_id, DAY_AND_A_SECOND);
+    gov.flush_budgets().await;
+    let states: Vec<RecoveryState> = journal
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|event| event.operation_id == intent.operation_id)
+        .map(|event| event.state)
+        .collect();
+    assert!(
+        !states.contains(&RecoveryState::LandedUnknown),
+        "{states:?}"
+    );
+    assert!(states.contains(&RecoveryState::Settled), "{states:?}");
+    assert_eq!(
+        store
+            .ledger()
+            .get_usage(&key.id, 0)
+            .await
+            .unwrap()
+            .tokens_for_whole_test(MODEL),
+        Some(FIRST_INPUT),
+        "the resend replays; the intent applies once"
+    );
+}
+
 #[derive(Default)]
 struct RecoveryJournal(std::sync::Mutex<Vec<super::super::recovery::RecoveryEvent>>);
 #[async_trait::async_trait]
