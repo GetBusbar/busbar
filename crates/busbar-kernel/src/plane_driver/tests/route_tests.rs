@@ -26,12 +26,20 @@ fn piece(from: u32, attempt_no: u32, head: bool) -> Piece {
     }
 }
 
-fn text(s: AbiStr) -> Vec<u8> {
-    if s.ptr.is_null() {
-        return Vec::new();
+/// The bytes `len` at `ptr` name, read without `unsafe`: `owner` is the buffer the frame lends them
+/// from, found by address; a string lying outside it fails the test.
+fn lent(ptr: *const u8, len: usize, owner: &[u8]) -> &[u8] {
+    if ptr.is_null() || len == 0 {
+        return &[];
     }
-    // SAFETY: the frame's strings point into `bufs`, alive for the test.
-    unsafe { std::slice::from_raw_parts(s.ptr, s.len).to_vec() }
+    let start = ptr.addr().wrapping_sub(owner.as_ptr().addr());
+    owner
+        .get(start..start.wrapping_add(len))
+        .expect("a lent string lies inside the buffer it is lent from")
+}
+
+fn text(s: AbiStr, owner: &[u8]) -> Vec<u8> {
+    lent(s.ptr, s.len, owner).to_vec()
 }
 
 #[test]
@@ -45,7 +53,7 @@ fn every_piece_lends_the_units_claim_dialect_and_caller_reference() {
     ] {
         let (i, _) = frame(&mut b, &p, 9);
         assert_eq!((i.claim, i.dialect), (2, 3));
-        assert_eq!(text(i.caller_ref), b"c0ffee");
+        assert_eq!(text(i.caller_ref, &b.caller_ref), b"c0ffee");
     }
 
     let mut other = bufs(5);
@@ -62,10 +70,12 @@ fn every_piece_preserves_host_recovery_capability_bytes() {
     )]);
     for from in [FROM_CALLER, FROM_FAR_END, FROM_KERNEL] {
         let (input, _) = frame(&mut b, &piece(from, 0, false), 1);
-        // SAFETY: frame borrows the extension allocation retained in `b`.
-        let ext = unsafe {
-            std::slice::from_raw_parts(input.head.extensions.ptr, input.head.extensions.len)
-        };
+        // The frame lends the extension allocation retained in `b`.
+        let ext = lent(
+            input.head.extensions.ptr,
+            input.head.extensions.len,
+            &b.extensions,
+        );
         assert!(busbar_contract::abi::sdk::recovery::supported(ext));
     }
 }
@@ -75,11 +85,11 @@ fn only_an_attempt_names_its_member_and_pool() {
     let mut b = bufs(0);
     let (i, _) = frame(&mut b, &piece(FROM_KERNEL, 1, false), 9);
     assert_eq!(
-        (text(i.member), text(i.pool)),
+        (text(i.member, &b.member), text(i.pool, &b.pool)),
         (b"m1".to_vec(), b"p1".to_vec())
     );
     let (i, _) = frame(&mut b, &piece(FROM_CALLER, 0, false), 9);
-    assert!(text(i.member).is_empty() && text(i.pool).is_empty());
+    assert!(text(i.member, &b.member).is_empty() && text(i.pool, &b.pool).is_empty());
 }
 
 #[test]
@@ -87,12 +97,8 @@ fn only_the_answers_first_piece_lends_the_kept_head() {
     let mut b = bufs(0);
     let (i, _) = frame(&mut b, &piece(FROM_FAR_END, 0, true), 9);
     assert_eq!(i.head_fields_len, 1);
-    // SAFETY: one field in `b.head`.
-    let f = unsafe { *i.head_fields };
-    assert_eq!(
-        (text(f.name), text(f.value)),
-        (b"retry-after".to_vec(), b"7".to_vec())
-    );
+    // The one field `bufs` keeps (`retry-after: 7`): the kept head itself is lent, by address.
+    assert_eq!(i.head_fields, b.head.as_ptr());
     let (i, _) = frame(&mut b, &piece(FROM_FAR_END, 0, false), 9);
     assert!(i.head_fields.is_null() && i.head_fields_len == 0);
 }
