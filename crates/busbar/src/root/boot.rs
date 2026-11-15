@@ -1532,7 +1532,7 @@ pub(crate) fn classify_against(
     for row in registry.loadable().iter().filter(|row| {
         !row.linked()
             && (row.manifest.kind == "plane" || row.manifest.kind == "auth")
-            && !known.contains(&row.manifest.name)
+            && !known.iter().any(|name| row.is_module(name))
     }) {
         let image = row.archive_sha256.clone().unwrap_or_default();
         if row.manifest.kind == "auth" {
