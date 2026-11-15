@@ -1242,6 +1242,46 @@ fn doc_for(
             schema_of(gen.subschema_for::<AuditChainKeysView>()),
             "The published verifying keys (empty when the node signs nothing)",
         ),
+        KernelVerb::GetOperationsKey => VerbDoc {
+            summary: "One idempotent operation, by its Idempotency-Key",
+            description: "The caller's own operation under `Idempotency-Key`: `state` is one of \
+                `applied`, `rejected` or `in_flight`, with the status, the request digest, the \
+                times, the config generation it ran under, and the stored response. A 404 means \
+                the key is unknown or past retention. `?principal=` reads another principal's \
+                operation and needs the `full` scope."
+                .to_string(),
+            success: Success::Json(
+                json!({"type": "object", "required": ["idempotency_key", "principal",
+                    "operation_id", "state", "request_sha256", "received_at"],
+                    "properties": {
+                        "idempotency_key": {"type": "string"},
+                        "principal": {"type": "string"},
+                        "operation_id": {"type": "string"},
+                        "state": {"enum": ["applied", "rejected", "in_flight"]},
+                        "status": {"type": ["integer", "null"]},
+                        "request_sha256": {"type": "string"},
+                        "received_at": {"type": "integer"},
+                        "completed_at": {"type": ["integer", "null"]},
+                        "config_generation": {"type": ["integer", "null"]},
+                        "audit_seq": {"type": ["integer", "null"]},
+                        "response": {}}}),
+                "The operation record",
+            ),
+            request: None,
+            query: vec![
+                json!({"name": "key", "in": "path", "required": true,
+                       "schema": {"type": "string", "minLength": 1, "maxLength": 128}}),
+                json!({"name": "principal", "in": "query", "required": false,
+                       "schema": {"type": "string"}}),
+            ],
+            errors: vec![
+                (
+                    "404",
+                    "`not_found`: the key is unknown or past retention".to_string(),
+                ),
+                unavailable_503("the Store could not read the operation"),
+            ],
+        },
         _ => return None,
     })
 }

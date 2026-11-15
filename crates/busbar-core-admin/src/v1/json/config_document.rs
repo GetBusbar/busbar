@@ -78,7 +78,7 @@ pub(super) fn configuration_and_restart(app: &App) -> (serde_json::Value, Vec<St
     restart.dedup();
     let Some(view) = app.configured_view.as_ref() else {
         return (
-            json!({"config_version": app.config_version, "state": "unavailable",
+            json!({"config_version": app.config_version, "config_generation": app.config_generation.load(std::sync::atomic::Ordering::Acquire), "state": "unavailable",
             "plane_refresh": observation, "reload_to_apply": restart}),
             restart,
         );
@@ -88,6 +88,7 @@ pub(super) fn configuration_and_restart(app: &App) -> (serde_json::Value, Vec<St
     (
         json!({
             "config_version": app.config_version,
+            "config_generation": app.config_generation.load(std::sync::atomic::Ordering::Acquire),
             "state": if restart.is_empty() { "configured" } else { "restart_pending" },
             "source": "installed_generation",
             "config_locked": app.overlay_path.is_none(),
