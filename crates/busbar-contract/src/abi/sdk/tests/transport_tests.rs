@@ -121,7 +121,7 @@ fn out() -> OutHead {
 #[test]
 fn a_role_stub_and_a_carrier_op_without_io_answer_in_words() {
     // SAFETY: this is the complete transport table exported by the actual SDK-generated door.
-    let table = unsafe { &*plugin::door().ops().cast::<Ops>() };
+    let table = unsafe { &*(plugin::MACRO_DOOR.door_fn())().ops().cast::<Ops>() };
     let mut input: OpenIn = zeroed();
     input.head.size = std::mem::size_of::<OpenIn>() as u32;
     input.head.op = life::OPEN;
@@ -208,7 +208,7 @@ fn a_role_stub_and_a_carrier_op_without_io_answer_in_words() {
 #[test]
 fn a_carrier_op_on_no_instance_answers_in_words() {
     // SAFETY: the actual macro door exports this complete transport Ops table.
-    let table = unsafe { &*plugin::door().ops().cast::<Ops>() };
+    let table = unsafe { &*(plugin::MACRO_DOOR.door_fn())().ops().cast::<Ops>() };
     let flush = table.flush.expect("flush");
     let mut input: ConnIn = zeroed();
     input.head.size = std::mem::size_of::<ConnIn>() as u32;

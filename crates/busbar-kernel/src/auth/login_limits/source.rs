@@ -32,10 +32,13 @@ impl ForwardedHeader {
     /// The configured spelling, or `None` for an unknown one.
     #[must_use]
     pub fn parse(name: &str) -> Option<Self> {
-        match name.trim().to_ascii_lowercase().as_str() {
-            "x-forwarded-for" => Some(Self::XForwardedFor),
-            "forwarded" => Some(Self::Forwarded),
-            _ => None,
+        let name = name.trim();
+        if name.eq_ignore_ascii_case("x-forwarded-for") {
+            Some(Self::XForwardedFor)
+        } else if name.eq_ignore_ascii_case("forwarded") {
+            Some(Self::Forwarded)
+        } else {
+            None
         }
     }
 
@@ -57,35 +60,7 @@ pub struct TrustedProxies {
 }
 
 impl TrustedProxies {
-    /// Read the configured entries; the error names the first bad one.
-    pub fn read(entries: &[String], header: Option<&str>) -> Result<Self, String> {
-        let mut nets = Vec::with_capacity(entries.len());
-        for (i, entry) in entries.iter().enumerate() {
-            match IpNet::parse(entry) {
-                Ok(net) => nets.push(net),
-                Err(busbar_contract::net::IpNetError::HostBitsSet) => {
-                    return Err(format!(
-                    "advanced.trusted_proxies[{i}]: `{entry}` sets address bits past its prefix \
-                         length; write the network address"
-                ))
-                }
-                Err(busbar_contract::net::IpNetError::NotNetwork) => {
-                    return Err(format!(
-                        "advanced.trusted_proxies[{i}]: `{entry}` is not an IP address or a CIDR"
-                    ))
-                }
-            }
-        }
-        let header = match header {
-            None => ForwardedHeader::default(),
-            Some(name) => ForwardedHeader::parse(name).ok_or_else(|| {
-                format!(
-                    "advanced.forwarded_header: `{name}` is not `x-forwarded-for` or `forwarded`"
-                )
-            })?,
-        };
-        Ok(Self { nets, header })
-    }
+    // `read` (configuration time) is in `crate::off_path::auth::login`.
 
     fn trusts(&self, ip: IpAddr) -> bool {
         self.nets.iter().any(|n| n.covers(ip))
@@ -135,9 +110,8 @@ pub fn client_source(
         }
         return ClientSource::Known(peer);
     }
-    let hops = forwarded_hops(headers, trusted.header);
     let mut nearest = peer;
-    for hop in hops.iter().rev() {
+    for hop in forwarded_hops_nearest_first(headers, trusted.header) {
         let Some(ip) = hop.map(canonical) else {
             return ClientSource::Unknown(UnknownSource::Unparseable);
         };
@@ -149,38 +123,49 @@ pub fn client_source(
     ClientSource::Known(nearest)
 }
 
-/// Every hop the header states, left to right, across all its lines in order; `None` for a hop
-/// that is not an address.
-fn forwarded_hops(headers: &HeaderMap, header: ForwardedHeader) -> Vec<Option<IpAddr>> {
-    let mut hops = Vec::new();
-    for line in headers.get_all(header.name()) {
-        let Ok(line) = line.to_str() else {
-            hops.push(None);
-            continue;
-        };
-        match header {
-            ForwardedHeader::XForwardedFor => {
-                hops.extend(
+/// Every hop the header states, NEAREST FIRST: right to left across all its lines, the last line
+/// first (the reverse of the order the header states them); `None` for a hop that is not an
+/// address, and one `None` for a line that is not text.
+fn forwarded_hops_nearest_first(
+    headers: &HeaderMap,
+    header: ForwardedHeader,
+) -> impl Iterator<Item = Option<IpAddr>> + '_ {
+    headers
+        .get_all(header.name())
+        .into_iter()
+        .rev()
+        .flat_map(move |line| {
+            let text = line.to_str().ok();
+            let unreadable = text.is_none().then_some(None);
+            let xff = text
+                .filter(|_| header == ForwardedHeader::XForwardedFor)
+                .into_iter()
+                .flat_map(|line| {
                     line.split(',')
+                        .rev()
                         .map(str::trim)
                         .filter(|h| !h.is_empty())
-                        .map(node_address),
-                );
-            }
-            ForwardedHeader::Forwarded => {
-                for element in line.split(',') {
-                    let for_param = element.split(';').find_map(|pair| {
-                        let (k, v) = pair.split_once('=')?;
-                        k.trim().eq_ignore_ascii_case("for").then_some(v.trim())
-                    });
-                    if let Some(v) = for_param {
-                        hops.push(node_address(v.trim_matches('"')));
-                    }
-                }
-            }
-        }
-    }
-    hops
+                        .map(node_address)
+                });
+            let forwarded = text
+                .filter(|_| header == ForwardedHeader::Forwarded)
+                .into_iter()
+                .flat_map(|line| {
+                    line.split(',')
+                        .rev()
+                        .filter_map(forwarded_for)
+                        .map(|v| node_address(v.trim_matches('"')))
+                });
+            unreadable.into_iter().chain(xff).chain(forwarded)
+        })
+}
+
+/// The `for=` parameter of one RFC 7239 `Forwarded` element.
+fn forwarded_for(element: &str) -> Option<&str> {
+    element.split(';').find_map(|pair| {
+        let (k, v) = pair.split_once('=')?;
+        k.trim().eq_ignore_ascii_case("for").then_some(v.trim())
+    })
 }
 
 /// One hop: an IP, `v4:port`, `[v6]` or `[v6]:port`.
@@ -236,10 +221,7 @@ impl SourceBucket {
     /// How this bucket is named in logs and audit (an address or `net/len`).
     #[must_use]
     pub fn label(&self) -> String {
-        match self {
-            Self::V4(v4) => v4.to_string(),
-            Self::V6(len, net) => format!("{net}/{len}"),
-        }
+        crate::cold::auth::login::source_label(self)
     }
 }
 

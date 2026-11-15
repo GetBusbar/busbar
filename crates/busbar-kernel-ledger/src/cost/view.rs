@@ -479,14 +479,7 @@ impl<'a> Tally<'a> {
         let card = pricing.card;
 
         if !pricing.lane_named() {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a refusal owns the lane it names; the priced path never reaches it"
-            )]
-            return Err(MoneyError::LaneUnpriced {
-                card_seq,
-                lane: lane.to_string(),
-            });
+            return Err(crate::cold::tally_lane_unpriced(card_seq, lane));
         }
         let mut amount: i128 = 0;
         for (class, count) in counts {
@@ -495,15 +488,7 @@ impl<'a> Tally<'a> {
                 ClassPrice::Nanos(nanos) => i128::from(nanos),
 
                 ClassPrice::Unpriced => {
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "error: a refusal owns the lane and class it names; the priced path never reaches it"
-                    )]
-                    return Err(MoneyError::ClassUnpriced {
-                        card_seq,
-                        lane: lane.to_string(),
-                        class: class.to_string(),
-                    });
+                    return Err(crate::cold::tally_class_unpriced(card_seq, lane, class));
                 }
             };
             let line = count

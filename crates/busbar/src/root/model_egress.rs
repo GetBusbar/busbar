@@ -68,7 +68,7 @@ impl LiveApp {
     }
 
     #[must_use]
-    pub fn try_load(&self) -> Option<Arc<busbar_kernel::state::App>> {
+    pub(crate) fn try_load(&self) -> Option<Arc<busbar_kernel::state::App>> {
         match self.handle.get() {
             Some(handle) => handle.upgrade().map(|handle| handle.load()),
             None => self.fallback.load(),
@@ -129,7 +129,7 @@ pub struct ModelPools {
 }
 
 /// The member facts by model, in the map type the kernel's far end takes them as.
-pub type MemberFactsByModel =
+pub(crate) type MemberFactsByModel =
     std::collections::HashMap<String, busbar_kernel::plane_driver::MemberFacts>;
 
 pub struct ModelServing {
@@ -190,7 +190,7 @@ impl LatencyReservoir {
     }
 
     #[must_use]
-    pub fn p95_ms(&self) -> Option<u64> {
+    pub(crate) fn p95_ms(&self) -> Option<u64> {
         use std::sync::atomic::Ordering;
         let generation = self.written.load(Ordering::Acquire);
         let cached = self.p95.load(Ordering::Relaxed);
@@ -263,7 +263,7 @@ impl busbar_kernel::plane_driver::MemberSignals for ModelSignals {
     }
 }
 
-pub struct ModelShown {
+pub(crate) struct ModelShown {
     pub described: Arc<BTreeMap<String, Arc<MemberFactsByModel>>>,
 
     pub signals: Arc<dyn busbar_kernel::plane_driver::MemberSignals>,

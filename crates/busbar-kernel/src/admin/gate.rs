@@ -98,7 +98,7 @@ pub fn err_json(e: &ApiError) -> Response {
 /// top-level `code` field beside `error` (the envelope's own rule: additive changes go outside
 /// `error`, which stays exactly `code` + `message`). Error paths only.
 #[must_use]
-pub fn admin_diag(code: &str) -> &'static busbar_contract::diagnostic::Diagnostic {
+fn admin_diag(code: &str) -> &'static busbar_contract::diagnostic::Diagnostic {
     use crate::diagnostics as d;
     match code {
         "not_found" => &d::ADMIN_NOT_FOUND,

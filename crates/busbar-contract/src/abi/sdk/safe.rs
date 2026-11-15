@@ -233,14 +233,15 @@ impl Head {
                 }
             }
         }
-        let mut segment = &self.parked;
+        // Every slot held: claim from the segments past the last, each grown when it is reached.
+        let mut segment = self.parked.grow();
         loop {
-            segment = segment.grow();
             for slot in &segment.slots {
                 if let Some(held) = Self::claim_free::<S>(slot, key, true) {
                     return held;
                 }
             }
+            segment = segment.grow();
         }
     }
 

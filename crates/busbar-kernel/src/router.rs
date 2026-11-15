@@ -1,6 +1,8 @@
 use axum::Router;
 
-use crate::{auth, config, endpoints, ingress, limits, state};
+use crate::off_path::router::base_data_router_scoped;
+pub(crate) use crate::off_path::router::project_auth_scope_caps;
+use crate::{auth, endpoints, limits, state};
 
 pub(crate) const HEADER_SERVER_TIMING: &str = "server-timing";
 
@@ -49,7 +51,8 @@ pub fn configure_server_timing(enabled: bool) {
 /// reports its full processing time. W3C `dur` is milliseconds, written at µs precision.
 #[derive(Debug, Clone)]
 pub struct ServerTiming {
-    start: std::time::Instant,
+    /// The request's one start reading of the node's monotonic clock, in nanoseconds.
+    start_ns: u64,
     upstream_us: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
@@ -69,13 +72,8 @@ impl ServerTiming {
     }
 
     fn now() -> Self {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the opt-in server-timing header takes its request's one start reading"
-        )]
-        let start = std::time::Instant::now();
         Self {
-            start,
+            start_ns: crate::store::vocab::monotonic_ns(),
             upstream_us: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(NO_UPSTREAM_RTT)),
         }
     }
@@ -89,26 +87,61 @@ impl ServerTiming {
     /// for a response head written from inside it; `None` when the header is off.
     #[must_use]
     pub fn current_value() -> Option<String> {
-        MEASURING.try_with(Self::value).ok()
+        MEASURING
+            .try_with(|timing| String::from(timing.value().as_str()))
+            .ok()
     }
 
-    /// The header's value as of now: `busbar;dur=<ms>`.
+    /// The header's value as of now: `busbar;dur=<ms>`, written on the stack.
     #[must_use]
-    pub fn value(&self) -> String {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the opt-in server-timing header reads its elapsed time once, as the head is written"
-        )]
-        let total_us = u64::try_from(self.start.elapsed().as_micros()).unwrap_or(u64::MAX);
+    pub(crate) fn value(&self) -> ServerTimingValue {
+        let total_us = crate::store::vocab::monotonic_ns().saturating_sub(self.start_ns) / 1000;
         let upstream_us = self.upstream_us.load(std::sync::atomic::Ordering::Relaxed);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the opt-in server-timing header's value; http header values are owned"
-        )]
-        return format!(
-            "busbar;dur={:.3}",
-            server_timing_dur_ms(total_us, upstream_us)
+        let mut value = ServerTimingValue::default();
+        // `busbar;dur=` plus at most 20 integer digits and `.NNN` fits the buffer.
+        let _ = std::fmt::Write::write_fmt(
+            &mut value,
+            format_args!(
+                "busbar;dur={:.3}",
+                server_timing_dur_ms(total_us, upstream_us)
+            ),
         );
+        value
+    }
+}
+
+/// A `Server-Timing` header value, written into a fixed stack buffer so a measured response
+/// allocates no string for it.
+#[derive(Clone, Copy)]
+pub(crate) struct ServerTimingValue {
+    bytes: [u8; 64],
+    len: usize,
+}
+
+impl Default for ServerTimingValue {
+    fn default() -> Self {
+        Self {
+            bytes: [0; 64],
+            len: 0,
+        }
+    }
+}
+
+impl ServerTimingValue {
+    /// The value's text.
+    #[must_use]
+    pub(crate) fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.bytes[..self.len]).unwrap_or_default()
+    }
+}
+
+impl std::fmt::Write for ServerTimingValue {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        let end = self.len + s.len();
+        let dst = self.bytes.get_mut(self.len..end).ok_or(std::fmt::Error)?;
+        dst.copy_from_slice(s.as_bytes());
+        self.len = end;
+        Ok(())
     }
 }
 
@@ -274,7 +307,7 @@ pub(crate) async fn method_not_allowed_handler(
     )
 }
 
-async fn private_not_found(
+pub(crate) async fn private_not_found(
     axum::extract::State(handle): axum::extract::State<std::sync::Arc<state::AppHandle>>,
     state::CurrentApp(app): state::CurrentApp,
     uri: axum::http::Uri,
@@ -355,7 +388,7 @@ pub(crate) async fn server_timing(
 ) -> axum::response::Response {
     let timing = ServerTiming::now();
     let mut resp = timing.measure(next.run(req)).await;
-    if let Ok(v) = axum::http::HeaderValue::from_str(&timing.value()) {
+    if let Ok(v) = axum::http::HeaderValue::from_str(timing.value().as_str()) {
         resp.headers_mut()
             .insert(axum::http::HeaderName::from_static(HEADER_SERVER_TIMING), v);
     }
@@ -431,18 +464,15 @@ pub fn build_router_with_limits(
 ) -> (Router, std::sync::Arc<state::AppHandle>) {
     let plugin_routes = app.plugin_routes.clone();
 
-    // busbar:expect(bp::clone_alloc, reason = "boot: the router is built once per App snapshot")
-    let plane_slots = app.plane_slots.clone();
-    let oauth_as = app.oauth_as.clone();
-    let handle = std::sync::Arc::new(state::AppHandle::new(app));
-
+    // The data router borrows the snapshot's plane slots before the handle takes the snapshot.
     let (router, core_routes) = base_data_router(
         &plugin_routes,
-        &plane_slots,
-        oauth_as.as_ref(),
+        &app.plane_slots,
+        app.oauth_as.as_ref(),
         Vec::new(),
         Vec::new(),
     );
+    let handle = std::sync::Arc::new(state::AppHandle::new(app));
     let router = crate::admin::seam::mount_admin(router);
     let router = crate::plugin_routes::mount_plugin_routes(router, &plugin_routes, true);
     let router = apply_common_layers(
@@ -474,148 +504,7 @@ pub(crate) fn base_data_router(
     base_data_router_scoped(plugin_routes, plane_slots, oauth_as, doors, sessions, true)
 }
 
-fn base_data_router_scoped(
-    plugin_routes: &crate::plugin_routes::PluginRouteTable,
-    plane_slots: &std::collections::BTreeMap<
-        &'static str,
-        std::sync::Arc<dyn std::any::Any + Send + Sync>,
-    >,
-    oauth_as: Option<&std::sync::Arc<dyn std::any::Any + Send + Sync>>,
-    doors: Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
-    sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
-    root_surface: bool,
-) -> (
-    Router<std::sync::Arc<state::AppHandle>>,
-    crate::core_routes::CoreRouteTable,
-) {
-    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
-
-    let router = if root_surface {
-        let router = crate::core_routes::CoreRouter::new()
-            .route("/stats", RouteMethod::Get, RouteAuth::Key, endpoints::stats)
-            .route(
-                crate::auth::HEALTHZ_PATH,
-                RouteMethod::Get,
-                RouteAuth::None,
-                endpoints::healthz,
-            );
-
-        router
-            .route(
-                crate::auth::exchange::AUTH_TOKEN_PATH,
-                RouteMethod::Get,
-                RouteAuth::None,
-                crate::auth::login::seam::browser,
-            )
-            .route(
-                crate::auth::exchange::AUTH_TOKEN_PATH,
-                RouteMethod::Post,
-                RouteAuth::None,
-                crate::auth::exchange::exchange,
-            )
-    } else {
-        crate::core_routes::CoreRouter::new()
-    };
-
-    let mut router = router;
-    for decl in crate::plane_driver::registry::plane_decls() {
-        let Some(slot) = plane_slots.get(decl.key) else {
-            continue;
-        };
-
-        if let Some(routes) = decl.routes {
-            for spec in routes(slot.as_ref()) {
-                router = mount_plane_route(router, slot.clone(), spec);
-            }
-        }
-    }
-
-    let unslotted: std::sync::Arc<dyn std::any::Any + Send + Sync> = std::sync::Arc::new(());
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the router is built once per App snapshot"
-    )]
-    let door_paths: std::collections::BTreeSet<String> =
-        doors.iter().map(|spec| spec.path.clone()).collect();
-    for spec in doors {
-        router = mount_plane_route(router, std::sync::Arc::clone(&unslotted), spec);
-    }
-
-    for spec in sessions {
-        router = mount_plane_session(router, std::sync::Arc::clone(&unslotted), spec);
-    }
-
-    for path in door_paths {
-        let claimed = router
-            .methods_at(&path)
-            .into_iter()
-            .map(crate::plugin_routes::method_filter_of)
-            .reduce(axum::routing::MethodFilter::or);
-        if let Some(rest) = claimed.and_then(unclaimed_verbs) {
-            router = router.map_router(|r| {
-                r.route(&path, axum::routing::on(rest, method_not_allowed_handler))
-            });
-        }
-    }
-
-    let router = match crate::oauth_as::seam::seam() {
-        Some(seam) if root_surface => (seam.mount)(router, oauth_as),
-        _ => router,
-    };
-
-    let router =
-        router.map_router(|r| crate::plugin_routes::mount_plugin_routes(r, plugin_routes, false));
-    router
-        .map_router(|r| {
-            let r = if root_surface {
-                r.fallback(ingress::protocol_dispatch)
-            } else {
-                r.fallback(private_not_found)
-            };
-            r.method_not_allowed_fallback(method_not_allowed_handler)
-        })
-        .into_parts()
-}
-
-fn unclaimed_verbs(claimed: axum::routing::MethodFilter) -> Option<axum::routing::MethodFilter> {
-    use axum::routing::MethodFilter;
-    let all = [
-        (MethodFilter::GET, axum::http::Method::GET),
-        (MethodFilter::POST, axum::http::Method::POST),
-        (MethodFilter::PUT, axum::http::Method::PUT),
-        (MethodFilter::PATCH, axum::http::Method::PATCH),
-        (MethodFilter::DELETE, axum::http::Method::DELETE),
-        (MethodFilter::OPTIONS, axum::http::Method::OPTIONS),
-        (MethodFilter::TRACE, axum::http::Method::TRACE),
-        (MethodFilter::CONNECT, axum::http::Method::CONNECT),
-        (MethodFilter::HEAD, axum::http::Method::HEAD),
-    ];
-    let get_claimed = claimed_has(claimed, &axum::http::Method::GET);
-    all.into_iter()
-        .filter(|(_, m)| !claimed_has(claimed, m))
-        .filter(|(_, m)| !(get_claimed && *m == axum::http::Method::HEAD))
-        .map(|(f, _)| f)
-        .reduce(MethodFilter::or)
-}
-
-fn claimed_has(filter: axum::routing::MethodFilter, method: &axum::http::Method) -> bool {
-    use axum::routing::MethodFilter;
-    let one = match *method {
-        axum::http::Method::GET => MethodFilter::GET,
-        axum::http::Method::POST => MethodFilter::POST,
-        axum::http::Method::PUT => MethodFilter::PUT,
-        axum::http::Method::PATCH => MethodFilter::PATCH,
-        axum::http::Method::DELETE => MethodFilter::DELETE,
-        axum::http::Method::OPTIONS => MethodFilter::OPTIONS,
-        axum::http::Method::TRACE => MethodFilter::TRACE,
-        axum::http::Method::CONNECT => MethodFilter::CONNECT,
-        axum::http::Method::HEAD => MethodFilter::HEAD,
-        _ => return false,
-    };
-    filter.or(one) == filter
-}
-
-fn mount_plane_route(
+pub(crate) fn mount_plane_route(
     router: crate::core_routes::CoreRouter,
     slot: std::sync::Arc<dyn std::any::Any + Send + Sync>,
     spec: busbar_kernel::plane_routes::PlaneRouteSpec,
@@ -682,7 +571,7 @@ fn mount_plane_route(
     )
 }
 
-fn mount_plane_session(
+pub(crate) fn mount_plane_session(
     router: crate::core_routes::CoreRouter,
     slot: std::sync::Arc<dyn std::any::Any + Send + Sync>,
     spec: busbar_kernel::plane_routes::PlaneSessionSpec,
@@ -961,19 +850,10 @@ fn request_panicked(
     payload: &(dyn std::any::Any + Send),
 ) -> axum::response::Response {
     let message = panic_payload_message(payload);
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a request panicked; its 500 names where, when the hook did not"
-    )]
-    let (location, backtrace) = take_panic_seen().map_or_else(
-        || {
-            (
-                "<unknown: another panic hook replaced the kernel's>".to_string(),
-                String::new(),
-            )
-        },
-        |s| (s.location, s.backtrace),
-    );
+    let (location, backtrace) = take_panic_seen()
+        .map_or_else(crate::cold::host::router_panic_unseen, |s| {
+            (s.location, s.backtrace)
+        });
     tracing::error!(
         method = %method,
         path = %uri.path(),
@@ -1055,24 +935,9 @@ pub(crate) fn install_request_panic_hook() {
                 previous(info);
                 return;
             }
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a request panicked; the hook records where"
-            )]
-            let location = info.location().map_or_else(
-                || "<no location>".to_string(),
-                |l| format!("{}:{}:{}", l.file(), l.line(), l.column()),
-            );
+            let location = crate::cold::host::router_panic_location(info.location());
             let captured = std::backtrace::Backtrace::capture();
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a request panicked; the hook records its backtrace"
-            )]
-            let backtrace = if captured.status() == std::backtrace::BacktraceStatus::Captured {
-                captured.to_string()
-            } else {
-                String::new()
-            };
+            let backtrace = crate::cold::host::router_panic_backtrace(&captured);
             REQUEST_PANIC_SEEN.with(|s| {
                 if let Ok(mut slot) = s.try_borrow_mut() {
                     *slot = Some(PanicSeen {
@@ -1172,18 +1037,15 @@ pub fn build_split_routers_serving_listener(
     max_inbound_concurrent: usize,
     server_timing_enabled: bool,
 ) -> (Router, Router, std::sync::Arc<state::AppHandle>) {
-    // busbar:expect(bp::clone_alloc, reason = "boot: the router is built once per App snapshot")
-    let plane_slots = app.plane_slots.clone();
-    let oauth_as = app.oauth_as.clone();
-    let handle = std::sync::Arc::new(state::AppHandle::new(app));
-
+    // The data router borrows the snapshot's plane slots before the handle takes the snapshot.
     let (data, data_core_routes) = base_data_router(
         data_plugins,
-        &plane_slots,
-        oauth_as.as_ref(),
+        &app.plane_slots,
+        app.oauth_as.as_ref(),
         doors,
         sessions,
     );
+    let handle = std::sync::Arc::new(state::AppHandle::new(app));
     let data = apply_common_layers(
         data,
         data_core_routes.with_door_refusals(refusals),
@@ -1213,7 +1075,7 @@ pub fn build_admin_router_on(
 pub type DispatchLayer =
     fn(Router<std::sync::Arc<state::AppHandle>>) -> Router<std::sync::Arc<state::AppHandle>>;
 
-fn unchanged_dispatch_layer(
+pub(crate) fn unchanged_dispatch_layer(
     router: Router<std::sync::Arc<state::AppHandle>>,
 ) -> Router<std::sync::Arc<state::AppHandle>> {
     router
@@ -1289,14 +1151,14 @@ pub fn build_data_router_on(
 }
 
 pub struct PreparedListener {
-    data: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
-    router: Router<std::sync::Arc<state::AppHandle>>,
-    core_routes: crate::core_routes::CoreRouteTable,
+    pub(crate) data: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+    pub(crate) router: Router<std::sync::Arc<state::AppHandle>>,
+    pub(crate) core_routes: crate::core_routes::CoreRouteTable,
 
     pub refusals: Vec<crate::plane_routes::PlaneRefusalSpec>,
-    refuse_by_path: Option<crate::plane_routes::PlaneRefuseByPathFn>,
-    root_surface: bool,
-    dispatch_layer: DispatchLayer,
+    pub(crate) refuse_by_path: Option<crate::plane_routes::PlaneRefuseByPathFn>,
+    pub(crate) root_surface: bool,
+    pub(crate) dispatch_layer: DispatchLayer,
 }
 
 impl std::fmt::Debug for PreparedListener {
@@ -1308,56 +1170,6 @@ impl std::fmt::Debug for PreparedListener {
 }
 
 impl PreparedListener {
-    pub fn new(
-        app: &state::App,
-        plugins: &crate::plugin_routes::PluginRouteTable,
-        doors: Vec<crate::plane_routes::PlaneRouteSpec>,
-        sessions: Vec<crate::plane_routes::PlaneSessionSpec>,
-        refusals: Vec<crate::plane_routes::PlaneRefusalSpec>,
-        refuse_by_path: Option<crate::plane_routes::PlaneRefuseByPathFn>,
-        root_surface: bool,
-    ) -> Result<Self, String> {
-        crate::plane_routes::pair_door_refusals(&doors, &sessions, &refusals)?;
-        let (router, core_routes) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let empty_slots = std::collections::BTreeMap::new();
-            base_data_router_scoped(
-                plugins,
-                if root_surface {
-                    &app.plane_slots
-                } else {
-                    &empty_slots
-                },
-                if root_surface {
-                    app.oauth_as.as_ref()
-                } else {
-                    None
-                },
-                doors,
-                sessions,
-                root_surface,
-            )
-        }))
-        .map_err(|_| {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: the candidate listener is refused"
-            )]
-            let why = "candidate physical routes cannot be mounted together".to_string();
-            why
-        })?;
-        // busbar:expect(bp::clone_alloc, reason = "boot: a prepared listener keeps its refusals once, beside its core routes")
-        let core_routes = core_routes.with_door_refusals(refusals.clone());
-        Ok(Self {
-            data: None,
-            router,
-            core_routes,
-            refusals,
-            refuse_by_path,
-            root_surface,
-            dispatch_layer: unchanged_dispatch_layer,
-        })
-    }
-
     /// The refusal producer captured with this prepared listener's route snapshot.
     pub fn refusal_renderer(&self) -> Option<crate::plane_routes::PlaneRefuseByPathFn> {
         self.refuse_by_path.clone()
@@ -1479,23 +1291,6 @@ pub fn serve_listener_generations(
         .with_state(handle);
 
     apply_inbound_concurrency_limit(router, max_inbound_concurrent)
-}
-
-pub(crate) fn project_auth_scope_caps<M: FromIterator<(String, String)>>(a: &config::AuthCfg) -> M {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the auth scope ceilings are projected once per App snapshot"
-    )]
-    return a
-        .chain
-        .iter()
-        .chain(a.admin_auth.iter())
-        .filter_map(|e| {
-            e.max_admin_scope
-                .as_ref()
-                .map(|sc| (e.name.clone(), sc.clone()))
-        })
-        .collect();
 }
 
 pub(crate) fn apply_inbound_concurrency_limit(

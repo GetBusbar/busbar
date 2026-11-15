@@ -13,7 +13,7 @@ pub(crate) mod hooks;
 pub mod host;
 mod money;
 pub(crate) use money::observation_budget_id;
-mod needs;
+pub(crate) mod needs;
 mod probe;
 pub mod registry;
 mod route;

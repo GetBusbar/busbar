@@ -28,15 +28,13 @@ pub mod stat {
 
     pub const ON_PIECES: usize = 0;
 
-    pub const HOST_CALLS: usize = 1;
+    pub(crate) const HOST_CALLS: usize = 1;
 
     pub const CANCELS: usize = 2;
 
-    pub const CANCELS_ON_WORKER: usize = 3;
+    pub(crate) const CANCELS_ON_WORKER: usize = 3;
 
-    pub const LAST_DISPOSITION: usize = 4;
-
-    pub const DRIVES: usize = 5;
+    pub(crate) const LAST_DISPOSITION: usize = 4;
 
     pub const UNIT: usize = 6;
 

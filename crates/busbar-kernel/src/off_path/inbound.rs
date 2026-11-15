@@ -1,0 +1,153 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! Off-path code for the request-path `inbound` tree: a listener generation's install (its line
+//! index, its ordered auth chains, its door refusals, its request-point auths), the retirement of
+//! the generations it replaces, a listener's removal, and the line specs a published listener
+//! lends its transport. Each runs once per listener generation or lifecycle event, never per
+//! request; the request path only reads the installed [`Table`].
+
+use std::sync::{Arc, PoisonError};
+
+use busbar_contract::abi::auth::{AuthPoint, POINT_HEAD_BODY};
+use foldhash::HashMap;
+
+use crate::guest::LineAuth;
+use crate::inbound::{is_line_id, Inbound, LineSpec, Listener, Table, IDS_REFUSED};
+
+impl Listener {
+    /// The lines as the transport is lent them, listed when the listener is published.
+    #[must_use]
+    pub fn specs(&self) -> Vec<LineSpec> {
+        (0u32..)
+            .zip(self.guests.lines().iter().zip(&self.ids))
+            .map(|(i, (l, id))| {
+                let points = l.auth.points().bits();
+                LineSpec {
+                    line: i,
+                    auth: *id,
+                    points,
+                    body_limit: if points & POINT_HEAD_BODY != 0 {
+                        self.body_limit
+                    } else {
+                        0
+                    },
+                }
+            })
+            .collect()
+    }
+}
+
+impl Inbound {
+    /// Install a listener generation: its tables are built once here, and the generations it
+    /// replaces are retired.
+    pub fn install_at(
+        &self,
+        owner: u64,
+        listener_id: u64,
+        generation: u64,
+        listener: Listener,
+    ) -> Result<(), &'static str> {
+        let lines_by_id = checked_line_ids(&listener.ids, listener.guests.lines().len())?;
+        let providers: Vec<Arc<[String]>> = listener
+            .guests
+            .lines()
+            .iter()
+            .map(|line| match &line.auth {
+                LineAuth::Chain(names, _) => ordered(names),
+                LineAuth::None => Arc::default(),
+            })
+            .collect();
+        let doors = crate::core_routes::CoreRouteTable::default()
+            .with_door_refusals(listener.door_refusals.clone());
+        let request_auths = listener
+            .auths
+            .iter()
+            .filter(|(_, auth)| {
+                let points = auth.inbound_points();
+                points.has(AuthPoint::Head) || points.has(AuthPoint::HeadBody)
+            })
+            .map(|(name, _)| name.clone())
+            .chain(std::iter::once(crate::config::KEYS_MODULE.to_owned()))
+            .collect();
+        let mut tables = self.tables.write().unwrap_or_else(PoisonError::into_inner);
+        let mut retired = Vec::new();
+        let replaced = tables.insert(
+            (owner, listener_id, generation),
+            Arc::new(Table {
+                listener,
+                doors,
+                providers,
+                lines_by_id,
+                request_auths,
+            }),
+        );
+        retired.extend(replaced);
+        tables.retain(|(o, listener, g), table| {
+            let keep = *o != owner || *listener != listener_id || g.saturating_add(1) >= generation;
+            if !keep {
+                retired.push(Arc::clone(table));
+            }
+            keep
+        });
+        drop(tables);
+        drop(retired);
+        Ok(())
+    }
+
+    /// Retire every listener generation older than the one before `generation` (a config
+    /// publish).
+    pub fn retire_before(&self, generation: u64) {
+        let mut tables = self.tables.write().unwrap_or_else(PoisonError::into_inner);
+        let mut retired = Vec::new();
+        tables.retain(|(_, _, old), table| {
+            if old.saturating_add(1) < generation {
+                retired.push(Arc::clone(table));
+                false
+            } else {
+                true
+            }
+        });
+        drop(tables);
+        drop(retired);
+    }
+
+    /// Forget every generation of a listener, once, as it is removed.
+    pub fn forget_listener(&self, owner: u64, listener: u64) {
+        let mut tables = self.tables.write().unwrap_or_else(PoisonError::into_inner);
+        let mut retired = Vec::new();
+        tables.retain(|(o, l, _), table| {
+            if *o == owner && *l == listener {
+                retired.push(Arc::clone(table));
+                false
+            } else {
+                true
+            }
+        });
+        drop(tables);
+        drop(retired);
+    }
+}
+
+/// A listener's line ids, indexed once when it is installed.
+pub(crate) fn checked_line_ids(
+    ids: &[u64],
+    lines: usize,
+) -> Result<HashMap<u64, u32>, &'static str> {
+    let lines_by_id: HashMap<u64, u32> = ids.iter().copied().zip(0u32..).collect();
+    if ids.len() != lines || lines_by_id.len() != lines || !ids.iter().all(|id| is_line_id(*id)) {
+        return Err(IDS_REFUSED);
+    }
+    Ok(lines_by_id)
+}
+
+/// A line's auth chain in walk order (the keys module last), ordered once at install.
+fn ordered(names: &[String]) -> Arc<[String]> {
+    let keys = crate::config::KEYS_MODULE;
+    names
+        .iter()
+        .filter(|n| *n != keys)
+        .chain(names.iter().filter(|n| *n == keys).take(1))
+        .cloned()
+        .collect()
+}

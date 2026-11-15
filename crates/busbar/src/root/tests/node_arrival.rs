@@ -74,7 +74,7 @@ async fn a_unit_arriving_at_a_window_boundary_bills_in_the_window_it_arrived_in(
         "and one second later is a different bucket, which is what makes this a straddle"
     );
 
-    let card = std::collections::BTreeMap::from([(
+    let card = [(
         LANE.to_string(),
         busbar_kernel::config::RateEntryCfg {
             input_utok: 1.0,
@@ -83,7 +83,9 @@ async fn a_unit_arriving_at_a_window_boundary_bills_in_the_window_it_arrived_in(
             cache_write_utok: 0.0,
             ..Default::default()
         },
-    )]);
+    )]
+    .into_iter()
+    .collect::<std::collections::BTreeMap<_, _>>();
     let rig = node_rig(
         "arrival-window-bills",
         far_end(answer()).await,

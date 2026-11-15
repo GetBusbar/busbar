@@ -83,7 +83,7 @@ pub mod node {
     pub type Build = Box<dyn FnOnce(Lent) -> Built + Send>;
 
     #[cfg(test)]
-    pub type Handed = (PrincipalId, OpClassId, &'static str, Build);
+    pub(crate) type Handed = (PrincipalId, OpClassId, &'static str, Build);
 }
 
 /// One linked wire, as its door's Statement states it: the layers it declares, its claims (its
@@ -185,7 +185,7 @@ fn export_abi() -> u32 {
     crate::root::loader::supported_abi("export").unwrap_or_default()
 }
 
-pub fn linked_exports(
+pub(crate) fn linked_exports(
     doors: &[LinkedDoorExport],
 ) -> Result<Vec<crate::root::loader::LinkedPlugin>, String> {
     let manifest = |name: &str, alias: &str, declares: &str| {
@@ -338,7 +338,7 @@ pub(crate) fn link_secrets(
 static DISK: std::sync::OnceLock<std::sync::Arc<busbar_kernel::host_disk::DiskLane>> =
     std::sync::OnceLock::new();
 
-pub fn disk_lane() -> std::sync::Arc<busbar_kernel::host_disk::DiskLane> {
+pub(crate) fn disk_lane() -> std::sync::Arc<busbar_kernel::host_disk::DiskLane> {
     DISK.get_or_init(std::sync::Arc::default).clone()
 }
 
@@ -382,7 +382,7 @@ fn plane_rows() -> Result<Vec<&'static PlaneDecl>, String> {
     Ok(rows)
 }
 
-pub fn refuse_a_key_two_doors_register(named: &[(String, &str)]) -> Result<(), String> {
+pub(crate) fn refuse_a_key_two_doors_register(named: &[(String, &str)]) -> Result<(), String> {
     for (i, (name, key)) in named.iter().enumerate() {
         if let Some((first, _)) = named[..i].iter().find(|(_, k)| k == key) {
             return Err(format!(
@@ -478,7 +478,7 @@ pub(crate) const PLANE_CARRIED_SERIES: &[(&str, &[&str])] = &[
     ),
 ];
 
-pub fn register_exports(dropped: Option<&'static crate::root::loader::PluginRegistry>) {
+pub(crate) fn register_exports(dropped: Option<&'static crate::root::loader::PluginRegistry>) {
     let _ = crate::root::dispatch::dispatcher()
         .observing()
         .install_host_series(host_series);
@@ -501,7 +501,7 @@ pub fn plane_door_declares(
     linked.plane_door_declares.to_vec()
 }
 
-pub fn door_breaker(
+pub(crate) fn door_breaker(
     linked: &Linked,
     dropped: Option<&crate::root::loader::PluginRegistry>,
     plane: &str,
@@ -589,7 +589,7 @@ pub(crate) const HOST_SERIES: &[&str] = &[
     "busbar_tap_notifications_dropped_total",
 ];
 
-pub fn host_series(name: &str) -> bool {
+pub(crate) fn host_series(name: &str) -> bool {
     let base = ["_sum", "_count", "_bucket"]
         .iter()
         .find_map(|suffix| name.strip_suffix(suffix));
@@ -602,7 +602,7 @@ static DROPPED: std::sync::OnceLock<&'static crate::root::loader::PluginRegistry
 static CATALOGUE: std::sync::OnceLock<busbar_kernel::diagnostics::Catalogue> =
     std::sync::OnceLock::new();
 
-pub fn catalogue() -> busbar_kernel::diagnostics::Catalogue {
+pub(crate) fn catalogue() -> busbar_kernel::diagnostics::Catalogue {
     CATALOGUE
         .get()
         .copied()
@@ -636,7 +636,7 @@ pub fn register_diagnostics(linked: &Linked) -> busbar_kernel::diagnostics::Cata
     catalogue
 }
 
-pub fn declared_diagnostics(
+pub(crate) fn declared_diagnostics(
     registry: &crate::root::loader::PluginRegistry,
     taken: &[&'static busbar_contract::diagnostic::Diagnostic],
 ) -> Result<Vec<&'static busbar_contract::diagnostic::Diagnostic>, String> {
@@ -660,7 +660,7 @@ pub fn declared_diagnostics(
 }
 
 #[cfg(test)]
-pub fn linked_declared_diagnostics(
+pub(crate) fn linked_declared_diagnostics(
     linked: &Linked,
     taken: &[&'static busbar_contract::diagnostic::Diagnostic],
 ) -> Result<Vec<&'static busbar_contract::diagnostic::Diagnostic>, String> {

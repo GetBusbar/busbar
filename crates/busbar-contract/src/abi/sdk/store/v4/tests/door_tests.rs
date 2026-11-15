@@ -204,11 +204,11 @@ fn call<I, O>(
 }
 fn table() -> &'static wire::Ops {
     // SAFETY: generated door's table is the declared v4 table.
-    unsafe { &*door().ops().cast::<wire::Ops>() }
+    unsafe { &*(MACRO_DOOR.door_fn())().ops().cast::<wire::Ops>() }
 }
 #[test]
 fn v4_native_pending_short_retry_metadata_and_cancel() {
-    let door = door();
+    let door = (MACRO_DOOR.door_fn())();
     assert_eq!(door.kind_abi(), 3);
     assert_eq!(door.layout(), wire::LAYOUT_FINGERPRINT);
     assert_eq!(table().head.slots, wire::TABLE_SLOTS);

@@ -174,13 +174,19 @@ fn bc2_trailing_cr_blank_line_completes_frame() {
     assert_eq!(sse_lines("data: x\r"), vec!["data: x"]);
 }
 
+/// One split-offset case: the stream, the frames it gives, and the bytes it holds.
+type SplitCase<'a> = (&'a [u8], &'a [&'a [u8]], usize);
+
+/// One terminator case: the bytes and the terminator's offset and length, if any.
+type TerminatorCase<'a> = (&'a [u8], Option<(usize, usize)>);
+
 /// DEPENDENCY-LADDER C17 (sseer) pins the framer before its terminator search moves onto
 /// `sseer::parser::parse_line`: every stream below, split at every byte offset into two pushes,
 /// gives the same frames and the same held tail, with a BOM, comment lines and every line
 /// terminator mixed in.
 #[test]
 fn frames_hold_at_every_split_offset_before_the_crate_swap() {
-    let streams: &[(&[u8], &[&[u8]], usize)] = &[
+    let streams: &[SplitCase<'_>] = &[
         (
             b"\xEF\xBB\xBFdata: a\n\n: keep-alive\r\n\r\nevent: x\rdata: b\r\r\ndata: c\n\r\ntail",
             &[
@@ -212,7 +218,7 @@ fn frames_hold_at_every_split_offset_before_the_crate_swap() {
 /// offset of the first terminator of the blank line and the length of the pair.
 #[test]
 fn the_frame_terminator_answer_is_pinned_before_the_crate_swap() {
-    let cases: &[(&[u8], Option<(usize, usize)>)] = &[
+    let cases: &[TerminatorCase<'_>] = &[
         (b"data: a\n\nrest", Some((7, 2))),
         (b"data: a\r\n\r\n", Some((7, 4))),
         (b"data: a\r\r\n", Some((7, 3))),

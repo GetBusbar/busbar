@@ -103,9 +103,8 @@ fn text(s: &str) -> Value {
     Value::Text(s.to_owned())
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq)]
 struct Flag {
-    #[allow(dead_code)]
     flag: bool,
 }
 
@@ -1162,39 +1161,38 @@ fn ignored_alias_bomb_reads() {
 /// than one document, a core tag on a value it cannot mean, wrong length. Refusal only, not
 /// wording.
 #[test]
-#[allow(dead_code)]
 fn inputs_1_5_5_refused_are_refused() {
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, PartialEq)]
     struct A {
         b: Vec<B>,
     }
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, PartialEq)]
     enum B {
         C(C),
     }
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, PartialEq)]
     struct C {
         d: bool,
     }
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, PartialEq)]
     struct Basic {
         v: bool,
         w: bool,
     }
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, PartialEq)]
     struct Wrapper {
         c: (),
     }
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, PartialEq)]
     enum E {
         V(usize),
     }
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, PartialEq)]
     struct Struct {
         x: usize,
         y: usize,
     }
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, PartialEq)]
     struct Array {
         x: [i32; 1],
     }
@@ -1281,15 +1279,14 @@ fn inputs_1_5_5_refused_are_refused() {
 /// test_error `test_infinite_recursion_*`, `test_finite_recursion_*`: a self-referencing alias,
 /// and nesting 1,000 deep, are refused rather than followed.
 #[test]
-#[allow(dead_code)]
 fn unbounded_recursion_is_refused() {
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, PartialEq)]
     struct Objects {
         x: Option<Box<Objects>>,
     }
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, PartialEq)]
     struct Arrays(usize, Option<Box<Arrays>>);
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, PartialEq)]
     struct Newtype(Option<Box<Newtype>>);
 
     assert!(yaml::from_str::<Objects>("&a {'x': *a}").is_err());
@@ -1364,13 +1361,13 @@ fn duplicate_keys_of_every_kind_are_refused() {
 /// `!Inner !Variant []` (two tags on one node).
 #[test]
 fn nested_enums_1_5_5_refused_are_refused() {
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, PartialEq)]
     enum Outer {
-        Inner(#[allow(dead_code)] Inner),
+        Inner(Inner),
     }
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, PartialEq)]
     enum Inner {
-        Variant(#[allow(dead_code)] Vec<usize>),
+        Variant(Vec<usize>),
     }
     for doc in [
         "---\n!Inner []\n",
