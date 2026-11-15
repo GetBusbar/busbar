@@ -19,6 +19,7 @@ members = [
     "crates/busbar-kernel-wal",
     "crates/busbar-kernel-audit",
     "crates/plugin-loader",
+    "crates/busbar-plugin-test",
 ]
 
 # Each version is written once here; members inherit with `workspace = true` and may add features.

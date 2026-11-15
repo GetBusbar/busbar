@@ -5,7 +5,7 @@
   "locked": false,
   "slack_pct": 3,
   "slack_min": 150,
-  "test_only": [],
+  "test_only": ["busbar-plugin-test"],
   "decisions": [],
   "bridges": []
 }
