@@ -632,7 +632,8 @@ pub struct PluginView {
     /// Plugin kind: `auth`, `hooks`/`hook`, `store`, `secret`, `export`, `plane`, or `transport`.
     pub r#type: &'static str,
     /// `"compiled-in"` or `"plugin"` (a dlopen'd dynamic-library plugin: auth, hook, and store
-    /// kinds alike as of 1.5.0's signed plugin ABI).
+    /// kinds alike as of 1.5.0's signed plugin ABI). The operator credential's auth row reads
+    /// `"installed"`: it is an admitted plugin row, linked or dropped, never a built-in.
     pub loader: &'static str,
     /// Whether the plugin is currently active, where tracked; `None` when activation is not summarized
     /// at this level.
@@ -1055,8 +1056,8 @@ pub struct KeyUsageView {
 pub struct AdminAuthView {
     /// Whether an admin credential chain is configured. `false` = the empty chain = open dev posture.
     pub configured: bool,
-    /// The active admin-plane guard module names, the `admin_auth` chain verbatim (by default the
-    /// operator credential's provider alone), reported in order. Empty when the admin plane is open.
+    /// The active admin-plane guard module names, the `admin_auth` chain verbatim, reported in order.
+    /// Empty when the admin plane is open.
     #[cfg_attr(feature = "openapi-schema", schemars(description = modules_description()))]
     pub modules: Vec<String>,
 }
@@ -1069,11 +1070,13 @@ fn hook_plugins_description() -> String {
     )
 }
 
+/// Word-free (OPERATOR-FROM-ADMITTED-AUTH §3.9): the OpenAPI document is generated in a build with no
+/// operator row, so it names no operator word.
 #[cfg(feature = "openapi-schema")]
 fn modules_description() -> String {
-    format!(
-        "The active admin-plane guard module names, the `admin_auth` chain verbatim (e.g.\n`[\"{}\"]`), reported in order. Empty when the admin plane is open.",
-        busbar_kernel::config::operator_module()
+    String::from(
+        "The active admin-plane guard module names, the `admin_auth` chain verbatim, reported in \
+         order. Empty when the admin plane is open.",
     )
 }
 
