@@ -409,13 +409,7 @@ impl StartupUpgrade {
         let digest: Digest32 = hash.finish();
         let mut upgrade_id = [0; 16];
         upgrade_id.copy_from_slice(&digest[..16]);
-        let target = Identity {
-            dataset: backend.info().dataset.0,
-            format: CORE_FORMAT,
-            artifact_digest: artifact,
-            schema_digest: schema,
-            product_release: [1, 6, 0],
-        };
+        let target = current_target(backend.info(), artifact, schema);
         self.opened = Some(backend.clone());
         self.binding = Some((upgrade_id, target.clone()));
         Ok(Preparation::Recovery(Box::new(RecoveryPending {
@@ -1064,7 +1058,24 @@ async fn checked_native_fence(
     })
 }
 
-fn target_identity(info: busbar_contract::persistence::BackendInfo) -> Result<Identity, Error> {
+/// The target an empty or current Store binds at startup: core's format on the opened dataset.
+pub(crate) fn current_target(
+    info: busbar_contract::persistence::BackendInfo,
+    artifact: Digest32,
+    schema: Digest32,
+) -> Identity {
+    Identity {
+        dataset: info.dataset.0,
+        format: CORE_FORMAT,
+        artifact_digest: artifact,
+        schema_digest: schema,
+        product_release: [1, 6, 0],
+    }
+}
+
+pub(crate) fn target_identity(
+    info: busbar_contract::persistence::BackendInfo,
+) -> Result<Identity, Error> {
     if info.dataset.0 == [0; 16] || info.physical_version != 1 {
         return Err(Error::IdentityMismatch);
     }
@@ -1107,3 +1118,7 @@ pub(crate) fn native_error(error: native::Error) -> Error {
         native::Error::Unavailable | native::Error::MissingCapability => Error::MissingCapability,
     }
 }
+
+#[cfg(test)]
+#[path = "startup_tests.rs"]
+mod tests;

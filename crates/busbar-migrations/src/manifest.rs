@@ -42,6 +42,17 @@ pub struct Identity {
     pub product_release: [u32; 3],
 }
 
+impl Identity {
+    /// Whether the opened Store described by `info` realizes this core target identity.
+    pub fn realized_by(&self, info: &busbar_contract::persistence::BackendInfo) -> bool {
+        self.dataset == info.dataset.0
+            && self.format.physical == info.physical_version
+            && self.format.owner == CORE_FORMAT_OWNER
+            && self.format.logical == CORE_FORMAT.logical
+            && self.format.codec == CORE_FORMAT.codec
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Bounds {

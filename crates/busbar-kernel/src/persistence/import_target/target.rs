@@ -444,3 +444,7 @@ async fn read(
         _ => Err(Error::Corrupt),
     }
 }
+
+#[cfg(test)]
+#[path = "target_tests.rs"]
+mod tests;
