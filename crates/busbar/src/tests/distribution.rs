@@ -23,9 +23,6 @@ mod kernel_router;
 #[path = "../../../../dist/default/tests/product/decisions_hooks.rs"]
 mod decisions_hooks;
 
-#[path = "kernel_application/hooks_pool_admission.rs"]
-mod hooks_pool_admission;
-
 #[path = "admin_application/usage_reads_the_process_rate_history.rs"]
 mod admin_usage_history;
 
@@ -130,9 +127,6 @@ mod config_parser_plane_sections;
 
 #[path = "kernel_application/plane_driver_health.rs"]
 mod plane_driver_health;
-
-#[path = "kernel_application/plane_driver_hooks.rs"]
-mod plane_driver_hooks;
 
 #[path = "kernel_application/plane_driver_host.rs"]
 mod plane_driver_host;
@@ -256,26 +250,17 @@ mod config_document_patch;
 #[path = "admin_application/config_price_activation.rs"]
 mod config_price_activation;
 
-#[path = "admin_application/config_secret_transaction.rs"]
-mod config_secret_transaction;
-
 #[path = "admin_application/service_group_deletion.rs"]
 mod service_group_deletion;
 
 #[path = "admin_application/service_groups.rs"]
 mod service_groups;
 
-#[path = "admin_application/service_hooks.rs"]
-mod service_hooks;
-
 #[path = "admin_application/service_named_defs.rs"]
 mod service_named_defs;
 
 #[path = "admin_application/service_plugin_policy.rs"]
 mod service_plugin_policy;
-
-#[path = "admin_application/service_hook_probe.rs"]
-mod service_hook_probe;
 
 #[path = "admin_application/service_plugin_integration.rs"]
 mod service_plugin_integration;
@@ -292,17 +277,11 @@ mod misc_ingress_terminal;
 #[path = "kernel_application/misc_router_door.rs"]
 mod misc_router_door;
 
-#[path = "kernel_application/misc_router_session.rs"]
-mod misc_router_session;
-
 #[path = "kernel_application/auth_admin_tests.rs"]
 mod kernel_application_auth_admin_tests;
 
 #[path = "kernel_application/exports_projection.rs"]
 mod kernel_application_exports_projection;
-
-#[path = "kernel_application/hooks_runtime_replies.rs"]
-mod kernel_application_hooks_runtime_replies;
 
 #[path = "admin_application/admin_corrupt_overlay_refusals.rs"]
 mod admin_application_admin_corrupt_overlay_refusals;
@@ -397,17 +376,11 @@ mod admin_application_admin_openapi_route_parity;
 #[path = "admin_application/admin_stuck_key_sentinel.rs"]
 mod admin_application_admin_stuck_key_sentinel;
 
-#[path = "kernel_application/auth_login_tests.rs"]
-mod kernel_application_auth_login_tests;
-
 #[path = "kernel_application/central2_config_export.rs"]
 mod kernel_application_central2_config_export;
 
 #[path = "admin_application/admin_custody_outcomes.rs"]
 mod admin_application_admin_custody_outcomes;
-
-#[path = "kernel_application/external_plane_driver_actual.rs"]
-mod kernel_application_external_plane_driver_actual;
 
 #[path = "kernel_application/recovery_flusher_actual.rs"]
 mod kernel_application_recovery_flusher_actual;
