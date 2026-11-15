@@ -58,6 +58,8 @@ fn tls_handshake_through_the_facade() {
 #[test]
 fn software_backend_provides_everything() {
     assert_eq!(busbar_contract::crypto::BACKEND, "software");
+    // The software backend admits external-crypto plugins (`supports` answers from the const).
+    assert!(busbar_contract::crypto::supports("EXTERNAL_PLUGINS"));
     for name in busbar_contract::crypto::alg::ALL {
         assert!(busbar_contract::crypto::supports(name), "{name}");
     }

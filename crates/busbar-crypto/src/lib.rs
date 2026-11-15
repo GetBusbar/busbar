@@ -36,6 +36,11 @@ pub use signer::{
 /// The crypto backend this binary was built with (`"software"` in core).
 pub const BACKEND: &str = b::NAME;
 
+/// Whether a plugin that brings its own crypto (stamp `crypto = "external"`) may load: the linked
+/// backend's required answer (IF §5.2 round 13; `false` in a FIPS build). Admission reads this and
+/// nothing else; [`supports`] answers `"EXTERNAL_PLUGINS"` from it, so there is no second answer.
+pub const EXTERNAL_PLUGINS: bool = b::EXTERNAL_PLUGINS;
+
 /// An algorithm or parameter the linked backend refuses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Unsupported {
@@ -156,6 +161,9 @@ pub mod alg {
     const TLS_X25519: &str = "TLS_X25519";
     /// TLS 1.2 without the extended master secret.
     const TLS12_NO_EMS: &str = "TLS12_NO_EMS";
+    /// Not an algorithm: `supports` answers it from the `EXTERNAL_PLUGINS` const, never
+    /// from the backend's `supports`. Not a gate (admission reads the const).
+    pub(crate) const EXTERNAL_PLUGINS: &str = "EXTERNAL_PLUGINS";
     /// Every name, for `--validate` and tests.
     pub const ALL: &[&str] = &[
         MD5,
@@ -171,10 +179,15 @@ pub mod alg {
     ];
 }
 
-/// Whether the linked backend provides `alg` (one of [`alg`]'s names).
+/// Whether the linked backend provides `alg` (one of [`alg`]'s names). `"EXTERNAL_PLUGINS"` is
+/// answered from [`EXTERNAL_PLUGINS`].
 #[must_use]
 pub fn supports(alg: &str) -> bool {
-    b::supports(alg)
+    if alg == alg::EXTERNAL_PLUGINS {
+        EXTERNAL_PLUGINS
+    } else {
+        b::supports(alg)
+    }
 }
 
 /// The start-up self-test: the backend's own checks, then four known answers through this API
@@ -347,10 +360,17 @@ pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     b::ct_eq(a, b)
 }
 
+/// Fill `buf` with random bytes; the backend's error through `map` (Rng, SelfTest, ...), so a
+/// failed DRBG self-test is told apart from a plain generator failure (IF §5.2 round 21, host_vt).
+#[inline]
+pub fn fill_checked(buf: &mut [u8]) -> Result<(), Error> {
+    b::fill(buf).map_err(map)
+}
+
 /// Fill `buf` with random bytes.
 #[inline]
 pub fn fill(buf: &mut [u8]) -> Result<(), RngError> {
-    b::fill(buf).map_err(|_| RngError)
+    fill_checked(buf).map_err(|_| RngError)
 }
 
 /// A random `u64`.
