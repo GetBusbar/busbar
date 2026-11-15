@@ -331,5 +331,6 @@ The thousands digit is the area.
 | [BUSBAR-9101](/docs/1.6/errors/BUSBAR-9101/) | The command line names an argument busbar does not know | 1.6.0 |
 | [BUSBAR-9102](/docs/1.6/errors/BUSBAR-9102/) | A command's arguments do not fit together | 1.6.0 |
 | [BUSBAR-9103](/docs/1.6/errors/BUSBAR-9103/) | A command-line flag is missing its value | 1.6.0 |
+| [BUSBAR-9201](/docs/1.6/errors/BUSBAR-9201/) | A plane needs a transport protocol that no installed transport provides | 1.6.0 |
 
 This page is generated from the Busbar source; do not edit it by hand.

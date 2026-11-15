@@ -406,6 +406,32 @@ fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
     ));
 }
 
+/// Core carries no transport of its own: a plane claiming a protocol no installed transport provides
+/// is a deployment's plugin set, not a build fault. The refusal is coded, names the plane, the kind
+/// and the protocol generically, and says what to install; it names no crate and no plugin.
+#[test]
+fn an_unprovided_transport_protocol_is_refused_as_a_missing_transport_plugin() {
+    let refusal = BootRefusal::UnregisteredClaimTransport {
+        plane: "admin",
+        transport: "http",
+    };
+    let text = refusal.to_string();
+    assert!(text.starts_with("BUSBAR-9201: "), "coded: {text}");
+    assert!(
+        text.contains(
+            "plane `admin` needs a transport of kind `transport` that provides the protocol \
+             `http`, and none is installed or admitted; install a transport plugin that provides \
+             `http`"
+        ),
+        "says what is missing and what to install: {text}"
+    );
+    assert!(
+        text.ends_with("See https://getbusbar.com/docs/1.6/errors/BUSBAR-9201"),
+        "links its page: {text}"
+    );
+    assert!(!text.contains("crate"), "names no crate: {text}");
+}
+
 #[cfg(linked_every_plane_door)]
 #[test]
 fn the_check_answers_now_that_every_claim_names_a_served_transport() {
