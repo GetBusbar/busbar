@@ -13,7 +13,7 @@ const UNVERIFIED: &str = "unverified";
 
 fn caller() -> Caller {
     Caller::for_test(
-        "inst".into(),
+        Arc::from("inst"),
         busbar_contract::abi::mechanism::KindCode::Plane,
     )
 }

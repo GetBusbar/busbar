@@ -1050,17 +1050,12 @@ async fn an_open_class_priced_in_config_is_charged_and_capped_end_to_end() {
             vec![limit(LimitMetric::Budget, 100, Some(LimitWindow::Day))],
         ),
     )]
-    .into_iter()
-    .collect();
+    .into();
     let cm = CostModel::resolve_parts(Some(&card), 0, &groups);
     let g = gov().await;
     let k = key("vk_rerank", Some("g"));
     let now = 1_700_000_000;
-    let search = |n: u64| {
-        [("search_units".to_string(), n)]
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>()
-    };
+    let search = |n: u64| BTreeMap::from([("search_units".to_string(), n)]);
 
     g.try_admit(&cm, &k, "", now).expect("nothing spent");
     g.record_usage(&cm, &k, "", "rerank", &search(499), now);
@@ -1104,11 +1099,8 @@ async fn an_open_class_the_present_card_does_not_price_refuses_and_absent_reads_
             vec![limit(LimitMetric::Budget, 100, Some(LimitWindow::Day))],
         ),
     )]
-    .into_iter()
-    .collect();
-    let units = [("search_units".to_string(), 1u64)]
-        .into_iter()
-        .collect::<std::collections::BTreeMap<_, _>>();
+    .into();
+    let units = BTreeMap::from([("search_units".to_string(), 1u64)]);
     let now = 1_700_000_000;
     let k = key("vk_rerank", Some("g"));
 
@@ -1360,9 +1352,7 @@ async fn an_adjust_moves_the_key_group_and_metrics_reads_of_the_budget_book() {
         (250, 1_000_000, 250, 1_000_000),
         "as recorded"
     );
-    let delta = [(UNIT_INPUT.to_string(), -200_000i64)]
-        .into_iter()
-        .collect::<std::collections::BTreeMap<_, _>>();
+    let delta = BTreeMap::from([(UNIT_INPUT.to_string(), -200_000i64)]);
     let adjustment = super::Adjustment {
         key_id: &k.id,
         pool: "",
@@ -1409,9 +1399,7 @@ async fn an_adjust_larger_than_its_segment_is_refused_and_moves_nothing() {
         (key.tokens.whole_for_test(), group.tokens.whole_for_test())
     };
     assert_eq!(read(&g).await, (1_000, 1_000));
-    let delta = [(UNIT_INPUT.to_string(), -1_001i64)]
-        .into_iter()
-        .collect::<std::collections::BTreeMap<_, _>>();
+    let delta = BTreeMap::from([(UNIT_INPUT.to_string(), -1_001i64)]);
     let adjustment = super::Adjustment {
         key_id: &k.id,
         pool: "",
@@ -1446,9 +1434,7 @@ async fn an_adjust_larger_than_its_segment_is_refused_and_moves_nothing() {
 
     let other_lane = super::Adjustment {
         model: "never-served",
-        delta: &[(UNIT_INPUT.to_string(), -1i64)]
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>(),
+        delta: &BTreeMap::from([(UNIT_INPUT.to_string(), -1i64)]),
         ..adjustment
     };
     assert!(matches!(
@@ -1468,9 +1454,7 @@ async fn an_adjust_larger_than_its_segment_is_refused_and_moves_nothing() {
             .expect("the store reads"),
         Err(super::AdjustRefused::UnknownKey)
     );
-    let empty = [(UNIT_INPUT.to_string(), 0i64)]
-        .into_iter()
-        .collect::<std::collections::BTreeMap<_, _>>();
+    let empty = BTreeMap::from([(UNIT_INPUT.to_string(), 0i64)]);
     let nothing = super::Adjustment {
         delta: &empty,
         ..adjustment
@@ -1504,9 +1488,7 @@ async fn admit_after_adjust(id: &'static str, recorded: u64, corrected: u64) -> 
     g.record_usage(&cm, &k, "", "m", &toks(recorded, 0), now);
     metered(&g, &k.id, "m", recorded, now).await;
     let signed = |n: u64| i64::try_from(n).expect("the fixture's counts fit i64");
-    let delta = [(UNIT_INPUT.to_string(), signed(corrected) - signed(recorded))]
-        .into_iter()
-        .collect::<std::collections::BTreeMap<_, _>>();
+    let delta = BTreeMap::from([(UNIT_INPUT.to_string(), signed(corrected) - signed(recorded))]);
     let adjustment = super::Adjustment {
         key_id: &k.id,
         pool: "",
@@ -1579,9 +1561,7 @@ async fn q64_two_pools(
 
 async fn q64_adjust(g: &GovState, cm: &CostModel, id: &str, now: u64, pool: Option<&str>) {
     use busbar_contract::records::UNIT_INPUT;
-    let delta = [(UNIT_INPUT.to_string(), -200_000i64)]
-        .into_iter()
-        .collect::<std::collections::BTreeMap<_, _>>();
+    let delta = BTreeMap::from([(UNIT_INPUT.to_string(), -200_000i64)]);
     let adjustment = super::Adjustment {
         key_id: id,
         pool: pool.unwrap_or(""),
@@ -1681,9 +1661,7 @@ fn estimate_card(limits: Vec<LimitCfg>) -> CostModel {
 }
 
 fn expected_input(n: u64) -> BTreeMap<String, u64> {
-    [(busbar_contract::records::UNIT_INPUT.to_string(), n)]
-        .into_iter()
-        .collect::<std::collections::BTreeMap<_, _>>()
+    BTreeMap::from([(busbar_contract::records::UNIT_INPUT.to_string(), n)])
 }
 
 #[tokio::test]
@@ -2222,9 +2200,7 @@ async fn fractional_token_cap_uses_real_quantity_and_checked_accumulation() {
         "",
         "m",
         None,
-        &[("input".into(), Count::parse("0.999999").unwrap())]
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>(),
+        &BTreeMap::from([("input".into(), Count::parse("0.999999").unwrap())]),
         now,
         era,
     )
@@ -2236,9 +2212,7 @@ async fn fractional_token_cap_uses_real_quantity_and_checked_accumulation() {
         "",
         "m",
         None,
-        &[("input".into(), Count::EPSILON)]
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>(),
+        &BTreeMap::from([("input".into(), Count::EPSILON)]),
         now,
         era,
     )
@@ -2265,9 +2239,7 @@ async fn exact_accrual_overflow_leaves_every_chain_bucket_and_meter_unchanged() 
     full.accrue_raw(
         "m",
         era,
-        &[("input".into(), busbar_contract::count::MAX)]
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>(),
+        &BTreeMap::from([("input".into(), busbar_contract::count::MAX)]),
     )
     .unwrap();
     g.budget.write(bucket).insert(bucket.into(), full);
@@ -2277,12 +2249,10 @@ async fn exact_accrual_overflow_leaves_every_chain_bucket_and_meter_unchanged() 
         "",
         "m",
         Some("p"),
-        &[
+        &BTreeMap::from([
             ("input".into(), Count::EPSILON),
             ("search_units".into(), Count::ONE),
-        ]
-        .into_iter()
-        .collect::<std::collections::BTreeMap<_, _>>(),
+        ]),
         now,
         era,
     );
@@ -2399,11 +2369,10 @@ fn class_parent_totals_keep_raw_ledger_and_pricing_disjoint() {
         return;
     }
     crate::plane_driver::registry::publish_planes(&[&CLASS_PARENT_PLANE]);
-    let counts = whole_counts(
-        &[("part_a".into(), 3), ("part_b".into(), 4)]
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>(),
-    );
+    let counts = whole_counts(&BTreeMap::from([
+        ("part_a".into(), 3),
+        ("part_b".into(), 4),
+    ]));
     let mut cell = BudgetCell::default();
     cell.accrue_raw("subject", RawRateEra::legacy(100), &counts)
         .unwrap();
@@ -2425,22 +2394,16 @@ fn class_parent_totals_keep_raw_ledger_and_pricing_disjoint() {
     cell.accrue_raw(
         "subject",
         RawRateEra::legacy(200),
-        &whole_counts(
-            &[("input".into(), 2)]
-                .into_iter()
-                .collect::<std::collections::BTreeMap<_, _>>(),
-        ),
+        &whole_counts(&BTreeMap::from([("input".into(), 2)])),
     )
     .unwrap();
     assert_eq!(cell.total_tier("input"), whole_count(9));
     assert_eq!(cell.total_tokens(), whole_count(9));
     assert_eq!(cell.models.len(), 2);
-    let overflow = [
+    let overflow = BTreeMap::from([
         ("part_a".into(), Count::from_micros(i128::MAX)),
         ("part_b".into(), Count::ONE),
-    ]
-    .into_iter()
-    .collect::<std::collections::BTreeMap<_, _>>();
+    ]);
     assert!(class_total("subject", &overflow, "input").is_err());
 }
 
@@ -2487,9 +2450,7 @@ async fn class_parent_cap_refuses_disjoint_children_at_the_host_gate() {
         &key,
         "",
         "subject",
-        &[("part_a".into(), 3)]
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>(),
+        &BTreeMap::from([("part_a".into(), 3)]),
         now,
     );
     g.try_admit(&cm, &key, "", now)
@@ -2499,9 +2460,7 @@ async fn class_parent_cap_refuses_disjoint_children_at_the_host_gate() {
         &key,
         "",
         "subject",
-        &[("part_b".into(), 4)]
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>(),
+        &BTreeMap::from([("part_b".into(), 4)]),
         now,
     );
     assert_blocked(
