@@ -2664,3 +2664,7 @@ impl AuthMiddleware {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/admin_grant_tests.rs"]
+mod admin_grant_tests;

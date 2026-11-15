@@ -678,3 +678,7 @@ mod operator_file_policy_tests;
 
 #[cfg(feature = "test-support")]
 pub use handlers::credential_flush_response_for_test;
+
+#[cfg(test)]
+#[path = "tests/admin_grant_tests.rs"]
+mod admin_grant_tests;
