@@ -12,7 +12,8 @@
 //! image ([`PluginThread`]), the callers whose tokens flow in and never out ([`Caller`]), and the
 //! run report with its fail-closed judgement ([`Report`], [`Unserved`]). What a target serves on
 //! its listeners is its [`Subject`]: the carrier's routes (feature `target-http`,
-//! [`carrier::Routes`]), and the stream, datagram and plane targets as they join it.
+//! [`carrier::Routes`]), a stream framer on loopback TCP ([`stream::Framer`]), and the datagram
+//! and plane targets as they join it.
 //!
 //! **Fail closed.** Anything the target was asked and does not serve is recorded; the run then
 //! fails with no allow-list: [`Served::finish`] answers [`Unserved`], `main` exits non-zero, and a
@@ -20,6 +21,7 @@
 
 #[cfg(feature = "target-http")]
 pub mod carrier;
+pub mod stream;
 
 use std::cell::Cell;
 use std::fmt;
@@ -306,14 +308,16 @@ impl fmt::Display for Unserved {
 }
 
 /// What a target serves on its listeners, one image at a time: the facade's own targets, a closed
-/// set. The carrier's route table is the one today ([`carrier::Routes`], feature `target-http`);
-/// the stream, datagram and plane targets join as variants. A concrete enum, not a trait: every
-/// subject is the facade's, so there is no boundary for a trait to stand on (§3.1).
+/// set: the carrier's route table ([`carrier::Routes`], feature `target-http`) and a stream framer
+/// ([`stream::Framer`]); the datagram and plane targets join as variants. A concrete enum, not a
+/// trait: every subject is the facade's, so there is no boundary for a trait to stand on (§3.1).
 #[non_exhaustive]
 pub enum Subject {
     /// The carrier's route table, served over hyper on every image's listener.
     #[cfg(feature = "target-http")]
     Routes(carrier::Routes),
+    /// A stream framer, each image on its own loopback TCP listener.
+    Stream(stream::Framer),
 }
 
 impl Subject {
@@ -323,6 +327,7 @@ impl Subject {
         match *self {
             #[cfg(feature = "target-http")]
             Self::Routes(ref routes) => routes.bind(image, at),
+            Self::Stream(ref framer) => framer.bind(image, at),
         }
     }
 
@@ -331,6 +336,17 @@ impl Subject {
         match *self {
             #[cfg(feature = "target-http")]
             Self::Routes(ref mut routes) => routes.flag(flag, value),
+            Self::Stream(ref mut framer) => framer.flag(flag, value),
+        }
+    }
+
+    /// A command-line flag `main` does not know that takes no value: whether it is the
+    /// subject's (and taken).
+    fn switch(&mut self, flag: &str) -> bool {
+        match *self {
+            #[cfg(feature = "target-http")]
+            Self::Routes(_) => false,
+            Self::Stream(ref mut framer) => framer.switch(flag),
         }
     }
 
@@ -339,6 +355,7 @@ impl Subject {
         match *self {
             #[cfg(feature = "target-http")]
             Self::Routes(_) => Vec::new(),
+            Self::Stream(_) => Vec::new(),
         }
     }
 }
@@ -516,10 +533,11 @@ impl Target {
 
     /// The target as its own process (§10.3). Reads `--listen ADDR`, `--images
     /// both|cdylib|linked`, `--ready-file PATH`, `--seed N`, `--callers PATH` and `--upstream
-    /// ENTRY=ADDR` (any other flag is the subject's); binds every listener; atomically writes the
-    /// ready file and prints one `BUSBAR_TARGET {json}` line, both naming addresses, the seed and
-    /// the images only; serves until stdin closes; then judges the run. Exit 0: served; 1:
-    /// something was not served; 2: refused at start (the ready file holds `{"error": ..}`).
+    /// ENTRY=ADDR` (any other flag is the subject's, with a value or, like `--mutant`, without);
+    /// binds every listener; atomically writes the ready file and prints one `BUSBAR_TARGET
+    /// {json}` line, both naming addresses, the seed and the images only; serves until stdin
+    /// closes; then judges the run. Exit 0: served; 1: something was not served; 2: refused
+    /// at start (the ready file holds `{"error": ..}`).
     #[must_use]
     pub fn main(mut self) -> ExitCode {
         let started = self.args(std::env::args().skip(1));
@@ -562,6 +580,9 @@ impl Target {
 
     fn args(&mut self, mut args: impl Iterator<Item = String>) -> Result<(), Refused> {
         while let Some(flag) = args.next() {
+            if self.subject.switch(&flag) {
+                continue;
+            }
             let value = args
                 .next()
                 .ok_or_else(|| Refused::Args(format!("{flag} needs a value")))?;
