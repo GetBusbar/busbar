@@ -238,6 +238,23 @@ pub(crate) struct PostServe<'a> {
     pub(crate) book: Option<NodeBook>,
     pub(crate) startup: busbar_kernel::persistence::startup::Startup,
     pub(crate) shutdown_tx: tokio::sync::broadcast::Sender<()>,
+    /// The start-up predecessor task (F5) and its fence owner, joined and settled in [4].
+    pub(crate) predecessor: Option<(JoinHandle<()>, Arc<PredecessorFence>)>,
+}
+
+use busbar_kernel::persistence::boot_identity::{undrained_records, PredecessorFence};
+
+/// One synchronous read of the process-wide record ledger, printed on every exit path: the
+/// records this process offered that no flush confirmed, closes that may still apply, and
+/// records the queue refused.
+fn print_exit_snapshot() {
+    let report = undrained_records().exit_report();
+    for seen in &report.unconfirmed {
+        eprintln!("busbar: drain_incomplete_unconfirmed {}", seen.resource());
+    }
+    for seen in &report.unrecorded {
+        eprintln!("busbar: drain_incomplete_unrecorded {}", seen.resource());
+    }
 }
 
 /// The idle wait of the settle loop.
@@ -258,6 +275,7 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         book,
         startup,
         shutdown_tx,
+        predecessor,
     } = post;
     let mut failures: Vec<String> = Vec::new();
 
@@ -440,9 +458,33 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         }
     }
 
-    // [4] The seal phase, until C3. SEALING-FIX adds the predecessor sealer's join, the fence
-    // settle and the notary's final page here, each bounded by Cut::Seal.
+    // [4] The seal phase, until C3: the predecessor task's join (it was told to stop at the
+    // first broadcast and stops at its next step boundary), then the fence settle, which
+    // re-drives what it left retained and submits nothing new. Both detach on overrun.
+    // SEALING-FIX adds the notary's final page here, bounded by Cut::Seal.
     drain.progress(Phase::Seal, gov);
+    if let Some((task, fence)) = predecessor {
+        if let Joined::Detached(_) = drain
+            .bounded(Phase::Seal, DrainHandle::adopt(task), Cut::Seal)
+            .await
+        {
+            failures.push("the start-up predecessor task did not stop by the seal cut".into());
+        }
+        let settling = Arc::clone(&fence);
+        if let Joined::Detached(_) = drain
+            .bounded(
+                Phase::Seal,
+                DrainHandle::spawn(async move { settling.settle().await }),
+                Cut::Seal,
+            )
+            .await
+        {
+            eprintln!(
+                "busbar: shutdown predecessor_fence=retained:{}",
+                fence.retained()
+            );
+        }
+    }
 
     // [5] Close staging, flush the journal, drain the admin audit queue, then the checks.
     drain.progress(Phase::Journal, gov);
@@ -474,8 +516,15 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
             failures.push("native journal still owns unpublished originals".into());
         }
     }
-    // A late audit producer must leave a visible failure after journal closure.
-    if let Some(error) = audit_failure(
+    // A late audit producer must leave a visible failure after journal closure. The record
+    // ledger's retry task closes first, so only this sequence retries; a record is confirmed
+    // only by a drain that began after it (its mark). A record refused while the queue was
+    // full gets a second round once the first drain has emptied it.
+    let ledger = undrained_records();
+    ledger.close_retry_task();
+    ledger.retry_unrecorded();
+    let mark = ledger.mark();
+    let audit = audit_failure(
         drain
             .bounded(
                 Phase::Audit,
@@ -483,8 +532,31 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
                 Cut::Deadline,
             )
             .await,
-    ) {
-        failures.push(format!("final audit drain: {error}"));
+    );
+    match audit {
+        Some(error) => failures.push(format!("final audit drain: {error}")),
+        None => {
+            if !busbar_kernel::audit::auditlog::has_unsettled_audit() {
+                ledger.confirm_before(mark);
+            }
+            if ledger.has_unrecorded() {
+                ledger.retry_unrecorded();
+                let second = ledger.mark();
+                let again = audit_failure(
+                    drain
+                        .bounded(
+                            Phase::Audit,
+                            DrainHandle::spawn(drain_audit_queue()),
+                            Cut::Deadline,
+                        )
+                        .await,
+                );
+                match again {
+                    Some(error) => failures.push(format!("final audit drain: {error}")),
+                    None => ledger.confirm_before(second),
+                }
+            }
+        }
     }
     if busbar_kernel::audit::auditlog::has_unsettled_audit() {
         failures.push("administrative audit still owns queued or active originals".into());
@@ -544,6 +616,7 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
             Joined::Detached(_) => {}
         }
     }
+    print_exit_snapshot();
     line_code
 }
 
@@ -592,6 +665,7 @@ fn incomplete(
             "completed spend is not in durable custody; listed on stderr as evidence"
         );
     }
+    print_exit_snapshot();
     code
 }
 

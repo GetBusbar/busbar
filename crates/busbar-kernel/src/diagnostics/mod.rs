@@ -1845,6 +1845,30 @@ diagnostics! {
         "New governed requests are refused with a 503: either the gateway is shutting down (cause=drain, reason drain, retry on another instance) or the number of finished governed requests whose spend still awaits settlement in the store reached its cap (cause=custody_full, reason durability_unavailable, Retry-After 1). Running requests and streams are never refused, and every refusal is audited on its unit. Logged once per episode; an Info line follows when the backlog falls below 90% of the cap.",
         "For custody_full, check the store's latency and throughput: settlement is slower than governed arrival. For drain, route traffic to another instance until this one restarts.";
 
+    /// A writer that never retired was closed, but its shutdown.drain_incomplete record could not be queued.
+    SHUTDOWN_DRAIN_INCOMPLETE_UNRECORDED = 9021, Boot, Actionable, "shutdown-drain-incomplete-unrecorded", "1.6.0", false,
+        "A closed writer's shutdown.drain_incomplete record could not be queued (retried)",
+        "This process closed the store writer of a previous process that never retired (a successor on the same host, a recovery adopter, or the start-up expired-lease pass), but the admin audit queue refused its shutdown.drain_incomplete record: the queue was full or no entropy was available. The record is kept, named here with the writer's epoch, id, node and host, retried every second until it is queued and confirmed, and printed at exit if it is still refused. No later process records this writer.",
+        "Check the admin audit store's health: the queue is full because its appends do not complete. The record is retried on its own; if this process exits first, its stderr carries the writer's identity as the only evidence.";
+
+    /// A writer lease or host assignment row did not decode; the expired-writer pass never closes it.
+    EXPIRED_WRITER_ROW_INVALID = 9022, Boot, Actionable, "expired-writer-row-invalid", "1.6.0", false,
+        "A writer lease or host assignment row does not decode (never closed)",
+        "The start-up pass that closes writers whose lease expired at least one lease TTL ago found a writer lease or host assignment row it cannot decode. It never closes or deletes such a row; it reports it once per start with the row's key.",
+        "Inspect the named key in the store's node schema. A row written by another tool or a damaged store needs operator repair; busbar leaves it in place.";
+
+    /// The expired-writer pass could not close a writer, or delete a closed writer's lease row.
+    EXPIRED_WRITER_CLOSE_FAILED = 9023, Boot, Actionable, "expired-writer-close-failed", "1.6.0", false,
+        "An expired writer was not closed (the next start retries)",
+        "The start-up pass that closes writers whose lease expired at least one lease TTL ago could not close the named writer, could not delete a closed writer's lease row, or could not scan the node schema, usually because the store did not answer. The writer stays open and the next start of any gateway on this store retries.",
+        "Check the store's health. Nothing is lost: the writer is closed, and its shutdown.drain_incomplete record written, by a later start.";
+
+    /// More expired writers remain than one start closes.
+    EXPIRED_WRITERS_REMAINING = 9024, Boot, Actionable, "expired-writers-remaining", "1.6.0", false,
+        "More expired writers remain than one start closes (the next start continues)",
+        "The start-up pass closes at most 256 expired writers per start, so its cost stays bounded. More remained; the next start of any gateway on this store continues with them.",
+        "None if starts continue. Many expired writers point at many processes that did not retire: check why shutdowns are not completing.";
+
     /// A retired 1.5.x launch environment variable is set; 1.6 ignores it.
     RETIRED_ENV_VAR_IGNORED = 3029, Config, Actionable, "retired-env-var-ignored", "1.6.0", false,
         "A retired launch environment variable is set and IGNORED",

@@ -1782,6 +1782,7 @@ async fn run(
     drop(recovery_served);
 
     busbar_kernel::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
+    let predecessor = spawn_predecessor_task(governance.as_ref(), control_work.shutdown_rx.clone());
 
     let mut threads: Vec<std::thread::JoinHandle<()>> = Vec::new();
     let mut admin: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + '_>>> = None;
@@ -1946,9 +1947,38 @@ async fn run(
         book,
         startup: store_admission,
         shutdown_tx: shutdown_tx.clone(),
+        predecessor,
     };
     let code = root::shutdown::finish(post, &drain).await;
     root::exit::exit(code);
+}
+
+/// The start-up predecessor task (SHUTDOWN-HANG F5), after `Ready`, in the background and never
+/// on the request path: it closes writers whose lease expired at least one TTL ago, on any host,
+/// and records those that never retired. `stop` (the first shutdown broadcast) ends it at a step
+/// boundary; the drain joins it and settles its fence in the seal phase.
+fn spawn_predecessor_task(
+    gov: Option<&Arc<busbar_kernel::governance::GovState>>,
+    stop: tokio::sync::watch::Receiver<bool>,
+) -> Option<(
+    tokio::task::JoinHandle<()>,
+    Arc<busbar_kernel::persistence::boot_identity::PredecessorFence>,
+)> {
+    let core = gov?.core_store_handle().ok()?;
+    let host = root::durability::host_identity();
+    let fence = match busbar_kernel::persistence::boot_identity::PredecessorFence::new(core, &host)
+    {
+        Ok(fence) => fence,
+        Err(error) => {
+            tracing::info!(%error, "the start-up predecessor task did not start; the next start retries");
+            return None;
+        }
+    };
+    let task = Arc::clone(&fence);
+    let handle = tokio::spawn(root::measurements::maintenance(async move {
+        task.run(stop).await;
+    }));
+    Some((handle, fence))
 }
 
 /// A door egress's model serving over `app`'s lanes; boot and every apply build it here.
