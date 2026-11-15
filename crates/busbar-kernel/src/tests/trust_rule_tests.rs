@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use std::sync::Arc;
+
 use busbar_contract::abi::host::service as svc;
 use busbar_contract::services::{Caller, HostServices, Later, Ran, Stored, TrustKeyRef};
 

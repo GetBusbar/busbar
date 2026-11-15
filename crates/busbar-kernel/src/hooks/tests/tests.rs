@@ -1600,7 +1600,7 @@ fn assert_runtime_still_polls(
         if canary.is_finished() {
             return;
         }
-        std::thread::sleep(tick);
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
     panic!("{msg}");
 }
