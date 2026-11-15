@@ -1865,9 +1865,9 @@ async fn ticket_verdict(
             signed,
             keys_in_chain,
             prefix,
-            token,
             carried: None,
         },
+        token,
         gov,
         now,
         &crate::appbuild::AcceptAll,
@@ -1882,20 +1882,21 @@ type ClaimedTicketVerdict = (
     Option<crate::host_services::HostTicketAdmission>,
 );
 
-/// What one request presents for door-ticket redemption: whether it arrived signed, whether keys
-/// are in the chain, the door's ticket prefix, the presented token, and the ticket its auth point
-/// already verified (SINGLE-PATH SP-AU3).
+/// What one request presents for door-ticket redemption, besides its token: whether it arrived
+/// signed, whether keys are in the chain, the door's ticket prefix, and the ticket its auth point
+/// already verified (SINGLE-PATH SP-AU3). The presented token is lent to the redemption as its own
+/// argument: this value is copied and holds no credential.
 #[derive(Clone, Copy)]
 struct PresentedTicket<'a> {
     signed: bool,
     keys_in_chain: bool,
     prefix: Option<&'a str>,
-    token: Option<&'a str>,
     carried: Option<&'a crate::governance::VerifiedTicket>,
 }
 
 async fn claimed_ticket_verdict(
     presented: PresentedTicket<'_>,
+    token: Option<&str>,
     gov: Option<&std::sync::Arc<crate::governance::GovState>>,
     now: u64,
     rules: &dyn crate::appbuild::RootRules,
@@ -1905,7 +1906,6 @@ async fn claimed_ticket_verdict(
         signed,
         keys_in_chain,
         prefix,
-        token,
         carried,
     } = presented;
     match (!signed, prefix, token) {
@@ -2406,11 +2406,11 @@ pub(crate) async fn auth_middleware(
             signed: signed.is_some(),
             keys_in_chain: app.auth.keys_in_chain,
             prefix: core_routes.door_ticket(path, req.method()),
-            token: client_token.as_deref(),
             carried: inbound
                 .as_ref()
                 .and_then(crate::inbound::RequestAdmission::carried_ticket),
         },
+        client_token.as_deref(),
         app.governance.as_ref(),
         now,
         app.root_rules.as_ref(),

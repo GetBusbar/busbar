@@ -1,25 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `plane_driver::dispatch`'s off-path code: a door's lane qualifier, made once per configuration;
-//! the provider dialect list, read when a configuration is built or validated; and the plane
-//! dispatch table's mounts, built once per generation. A request resolves through the built table.
+//! `plane_driver::dispatch`'s off-path code: the provider dialect list, read when a configuration
+//! is built or validated; and the plane dispatch table's mounts, built once per generation. A
+//! request resolves through the built table.
 
-use crate::plane_driver::dispatch::{is_fallback, InvalidLaneQualifier};
-use crate::plane_driver::dispatch::{Claim, LaneQualifier, Mount, PlaneDispatch};
+use crate::plane_driver::dispatch::is_fallback;
+use crate::plane_driver::dispatch::{Claim, Mount, PlaneDispatch};
 use crate::plane_driver::registry;
-
-impl LaneQualifier {
-    /// The one way to make a qualifier: `""` (the models plane) or plain text with no control
-    /// character (the plane/lane separator `U+001F` is one, so a qualifier can never split a lane
-    /// name) and no surrounding whitespace.
-    pub fn parse(qualifier: &str) -> Result<Self, InvalidLaneQualifier> {
-        if qualifier.chars().any(char::is_control) || qualifier.trim() != qualifier {
-            return Err(InvalidLaneQualifier);
-        }
-        Ok(Self(qualifier.to_string()))
-    }
-}
 
 pub fn provider_dialects() -> Vec<&'static str> {
     let mut out: Vec<&'static str> = Vec::new();
