@@ -2457,10 +2457,10 @@ dependencies = [
 [[package]]
 name = "serde-saphyr"
 version = "2.1.1"
-source = "git+https://github.com/MattJackson/serde-saphyr?rev=98c72ddb98b8c71303db9c56db24a8e3a4b11624#98c72ddb98b8c71303db9c56db24a8e3a4b11624"
+source = "git+https://github.com/MattJackson/serde-saphyr?rev=d919ed3dbe56b017e207208516a03e00f089a769#d919ed3dbe56b017e207208516a03e00f089a769"
 dependencies = [
  "annotate-snippets",
- "base64 0.22.1",
+ "base64 0.23.1",
  "encoding_rs_io",
  "granit-parser",
  "nohash-hasher",
