@@ -307,6 +307,10 @@ mod oracle_source_pins;
 mod product_pin_aliases;
 
 #[cfg(test)]
+#[path = "tests/product_pin_former_names.rs"]
+mod product_pin_former_names;
+
+#[cfg(test)]
 pub(crate) static PUBLISHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[cfg(test)]
