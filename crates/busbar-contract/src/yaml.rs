@@ -213,8 +213,12 @@ pub fn options() -> serde_saphyr::Options {
         quoted_scalars_are_strings: true,
         // serde_yaml's rule: a unit struct reads only from null, never from `{}`.
         unit_structs_refuse_mappings: true,
+        // serde_yaml's rule: `!!null` with non-null text (`!!null str`) is refused.
+        null_tag_requires_null_text: true,
         lowercase_radix_prefixes_only: true,
         bom_inside_document_as_content: true,
+        // libyaml's rule: an auto-detected block scalar is indented at least one column.
+        block_scalar_indent_at_least_one: true,
         // serde_yaml's rule: each repeated entry reaches the reader, which decides (a struct
         // refuses it, a map keeps the last value, an untyped read refuses it; see `untyped`).
         duplicate_keys: DuplicateKeyPolicy::PassThrough,

@@ -135,3 +135,15 @@ notes = "Full registry snapshot source review, not human approval or executed Ru
 criteria = "safe-to-deploy"
 version = "0.1.5"
 notes = "Actual source review, not human approval or executed Rust tests. Archive SHA256 993ad287eb20e8ba755312801cfe1413e0f25d604075863acaddca10b04c1833 matches the target lock and all archive files match reviewed cached source. Read all handwritten runtime code, manifests and tests; independently parsed all generated range data. Runtime is safe Rust over immutable range tables with no dependencies, build script, procedural macros, FFI, allocation, mutable globals or ambient filesystem/network/process/environment capabilities. Verified sorted/nonoverlapping scalar endpoints, all 3466 general-category ranges against official Unicode18.0.0 data over 1114112 codepoints, and all633 emoji ranges over1112064 Rust scalars. Emoji lookup's sole unwrap is total over Rust scalars; successful binary-search indices stay within the array. Both shipped/default features reviewed. Generator at declared VCS b5594806088d6492327228a74d05c881b9b3c042 read but not executed; generated package table matches its commit-addressed source. This is a source safety audit, not full Unicode conformance certification or an audit of stringprep/dependencies."
+
+[[audits.granit-parser]]
+criteria = "safe-to-deploy"
+delta = "2.1.0@git:e62d0c9a92189d705642ebebe48545e2a556fa62 -> 2.1.0@git:d31e9292a0be49de7d3a85ee07555bb9d0afce20"
+importable = false
+notes = "busbar's own patch: one commit adding opt-in Options::block_scalar_indent_at_least_one (default false). When set, the auto-detected block-scalar indent is floored at 1 (libyaml's rule) in skip_block_scalar_first_line_indent; options.rs, scanner.rs (three lines), tests. No unsafe, I/O or dependency change; default behaviour unchanged. Covers only this exact revision."
+
+[[audits.serde-saphyr]]
+criteria = "safe-to-deploy"
+delta = "2.1.1@git:49b330217b7d8a2e7873336ce7411a0079776af8 -> 2.1.1@git:98c72ddb98b8c71303db9c56db24a8e3a4b11624"
+importable = false
+notes = "busbar's own patch: two commits. Opt-in Options::null_tag_requires_null_text (default false): deserialize_unit refuses a !!null scalar whose text is not a null spelling, with the existing UnexpectedValueForUnit error. Opt-in Options::block_scalar_indent_at_least_one (default false), forwarded unchanged to granit-parser's option. options.rs, cfg.rs, deserializer.rs, tests.rs. No unsafe, I/O or dependency change; default behaviour unchanged. Covers only this exact revision."
