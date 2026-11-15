@@ -708,7 +708,8 @@ extern "C" {
 #define BB_HSVC_OP_DIRECTORY_CREATE UINT32_C(41) /* `directory.create`. */
 #define BB_HSVC_OP_DIRECTORY_APPLY UINT32_C(42) /* `directory.apply`. */
 #define BB_HSVC_OP_DIRECTORY_DELETE UINT32_C(43) /* `directory.delete`. */
-#define BB_HSVC_SERVICES UINT32_C(44) /* How many services [`HostSlots`] holds. */
+#define BB_HSVC_OP_MIGRATE_ADMIT UINT32_C(44) /* `migrate.admit`: whether the boot can seal a store's recoverable 1.5.5 credentials. */
+#define BB_HSVC_SERVICES UINT32_C(45) /* How many services [`HostSlots`] holds. */
 #define BB_HSVC_SECRET_NOT_LIVE UINT64_C(0) /* `value` of [`op::RECORDS_SECRET`]: not live, or no such credential. */
 #define BB_HSVC_SECRET_LIVE UINT64_C(1) /* `value` of [`op::RECORDS_SECRET`]: the credential is live. */
 #define BB_HSVC_ABSENT UINT64_C(0) /* `value` of [`op::RECORDS_GET`]: no such record. */
@@ -1203,6 +1204,7 @@ typedef struct bb_hsvc_ContentScanIn bb_hsvc_ContentScanIn;
 typedef struct bb_hsvc_HookCallIn bb_hsvc_HookCallIn;
 typedef struct bb_hsvc_SnapshotReadIn bb_hsvc_SnapshotReadIn;
 typedef struct bb_hsvc_NeedAdmitIn bb_hsvc_NeedAdmitIn;
+typedef struct bb_hsvc_MigrateAdmitIn bb_hsvc_MigrateAdmitIn;
 typedef struct bb_hsvc_DiskAppendIn bb_hsvc_DiskAppendIn;
 typedef struct bb_hsvc_DiskWritten bb_hsvc_DiskWritten;
 typedef struct bb_hsvc_SessionEmitIn bb_hsvc_SessionEmitIn;
@@ -3895,6 +3897,12 @@ struct bb_hsvc_NeedAdmitIn {
     uint32_t _reserved;
 };
 
+/* [`op::MIGRATE_ADMIT`]'s `in`: THE RECOVERABLE GATE (MIGRATE-ON-BOOT §3 step 2, §4). A store */
+struct bb_hsvc_MigrateAdmitIn {
+    bb_hsvc_ServiceHead head;
+    uint64_t recoverable;
+};
+
 /* [`op::DISK_APPEND`]'s `in`: append `bytes` to the local file the host maps the calling */
 struct bb_hsvc_DiskAppendIn {
     bb_hsvc_ServiceHead head;
@@ -4066,6 +4074,7 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn directory_create;
     bb_hsvc_ServiceFn directory_apply;
     bb_hsvc_ServiceFn directory_delete;
+    bb_hsvc_ServiceFn migrate_admit;
 };
 
 /* THE HOST'S I/O TABLE: one [`ServiceFn`] per [`op`], in index order. A NULL slot is one this host */
@@ -6275,6 +6284,10 @@ BB_ASSERT(BB_ALIGNOF(bb_hsvc_NeedAdmitIn) == 4, "bb_hsvc_NeedAdmitIn: alignment"
 BB_ASSERT(offsetof(bb_hsvc_NeedAdmitIn, head) == 0, "bb_hsvc_NeedAdmitIn.head: offset");
 BB_ASSERT(offsetof(bb_hsvc_NeedAdmitIn, need) == 24, "bb_hsvc_NeedAdmitIn.need: offset");
 BB_ASSERT(offsetof(bb_hsvc_NeedAdmitIn, _reserved) == 28, "bb_hsvc_NeedAdmitIn._reserved: offset");
+BB_ASSERT(sizeof(bb_hsvc_MigrateAdmitIn) == 32, "bb_hsvc_MigrateAdmitIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_hsvc_MigrateAdmitIn) == 8, "bb_hsvc_MigrateAdmitIn: alignment");
+BB_ASSERT(offsetof(bb_hsvc_MigrateAdmitIn, head) == 0, "bb_hsvc_MigrateAdmitIn.head: offset");
+BB_ASSERT(offsetof(bb_hsvc_MigrateAdmitIn, recoverable) == 24, "bb_hsvc_MigrateAdmitIn.recoverable: offset");
 BB_ASSERT(sizeof(bb_hsvc_DiskAppendIn) == 72, "bb_hsvc_DiskAppendIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_DiskAppendIn) == 8, "bb_hsvc_DiskAppendIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_DiskAppendIn, head) == 0, "bb_hsvc_DiskAppendIn.head: offset");
@@ -6382,7 +6395,7 @@ BB_ASSERT(offsetof(bb_hsvc_OutboundAuthorizeIn, expected_revision) == 80, "bb_hs
 BB_ASSERT(offsetof(bb_hsvc_OutboundAuthorizeIn, expires_at_unix) == 88, "bb_hsvc_OutboundAuthorizeIn.expires_at_unix: offset");
 BB_ASSERT(offsetof(bb_hsvc_OutboundAuthorizeIn, field_name) == 96, "bb_hsvc_OutboundAuthorizeIn.field_name: offset");
 BB_ASSERT(offsetof(bb_hsvc_OutboundAuthorizeIn, credential) == 112, "bb_hsvc_OutboundAuthorizeIn.credential: offset");
-BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 360, "bb_hsvc_HostSlots: size");
+BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 368, "bb_hsvc_HostSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_HostSlots) == 8, "bb_hsvc_HostSlots: alignment");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, size) == 0, "bb_hsvc_HostSlots.size: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, slots) == 4, "bb_hsvc_HostSlots.slots: offset");
@@ -6430,6 +6443,7 @@ BB_ASSERT(offsetof(bb_hsvc_HostSlots, directory_count) == 328, "bb_hsvc_HostSlot
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, directory_create) == 336, "bb_hsvc_HostSlots.directory_create: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, directory_apply) == 344, "bb_hsvc_HostSlots.directory_apply: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, directory_delete) == 352, "bb_hsvc_HostSlots.directory_delete: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, migrate_admit) == 360, "bb_hsvc_HostSlots.migrate_admit: offset");
 BB_ASSERT(sizeof(bb_hio_IoSlots) == 88, "bb_hio_IoSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hio_IoSlots) == 8, "bb_hio_IoSlots: alignment");
 BB_ASSERT(offsetof(bb_hio_IoSlots, size) == 0, "bb_hio_IoSlots.size: offset");
