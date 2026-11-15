@@ -427,7 +427,7 @@ fn the_extra_metadata_refusals_hold_in_every_class() {
 fn a_commit_republishes_the_metadata_lists() {
     let blocking = Destinations {
         block_private_addresses: true,
-        blocked: vec!["203.0.113.9".into()],
+        blocked: vec!["93.184.216.34".into()],
         ..Destinations::default()
     };
     let g = Guard::from_config(&Destinations {
@@ -436,7 +436,9 @@ fn a_commit_republishes_the_metadata_lists() {
     })
     .unwrap();
     let held = g.clone();
-    let listed = [ip("203.0.113.9")];
+    // A public address: 203.0.113.0/24 is documentation space, which the guard already refuses as
+    // internal, so it could not show a lifted refusal.
+    let listed = [ip("93.184.216.34")];
     assert_eq!(
         held.judge_answer("x.test", &listed, EGRESS_PROVIDER),
         Ok(())
