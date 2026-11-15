@@ -237,9 +237,9 @@ fn the_thread_cpu_clock_moves_with_work() {
 }
 
 #[test]
-fn a_begin_carries_its_scheme_and_a_lane_lends_its_paths() {
+fn a_lane_lends_its_paths_and_keying() {
     let mut b = Loans::<BeginIn>::new();
-    b.scheme(2).lane(|l| {
+    b.lane(|l| {
         l.push(|lane| {
             lane.size(1)
                 .keying(|k| {
@@ -255,6 +255,5 @@ fn a_begin_carries_its_scheme_and_a_lane_lends_its_paths() {
         });
     });
     let sealed = b.seal();
-    assert_eq!(sealed.scheme, 2);
     assert!(!sealed.lane.is_null());
 }
