@@ -6,17 +6,21 @@
 
 mod common;
 
-use busbar_kernel_identity::operator::{install_linked, OperatorWords};
+use busbar_kernel_identity::operator::{install_operator, Judged, OperatorBinding};
 
 #[test]
 fn plugins_view_matches_golden_with_operator_words() {
-    install_linked(
-        &[],
-        OperatorWords {
-            provider: "admin-tokens",
-            principal_id: "admin",
-        },
-    );
+    install_operator(OperatorBinding::Bound(Judged {
+        words: Ok(Some(busbar_contract::auth_calls::OperatorClaim {
+            provider: "admin-tokens".into(),
+            canonical: "busbar-auth-admin-tokens".into(),
+            principal: "admin".into(),
+            first_party: true,
+            version: "1.6.0".into(),
+            signer: "busbar".into(),
+        })),
+        inert: Vec::new(),
+    }));
     assert_eq!(busbar_kernel_identity::operator::provider(), "admin-tokens");
     common::check_view_properties(common::FIXTURE);
 }

@@ -95,6 +95,39 @@ pub(crate) fn judged_operator(
     busbar_kernel::preflight::choose_operator(&claims)
 }
 
+/// THE STARTUP UPGRADE'S PASS 1 (OPERATOR-FROM-ADMITTED-AUTH §3.4.1): on a start whose `plugins:`
+/// block is in a pre-1.6 shape, the operator credential is judged from the upgrade's own converted
+/// `plugins:` view (`original` normalized through `host` with no auth host check), scanned exactly
+/// as the start scan scans config.yaml, and bound before pass 2 and before the build. The build
+/// then scans the same view, so its restart check compares equal on this start and every later
+/// one. Any other start returns at once.
+pub(crate) fn bind_from_upgraded_view(
+    original: &str,
+    host: &dyn busbar_migrations::config::migrate_plugins::MigrateHost,
+) -> Result<(), String> {
+    if !crate::root::boot::plugins_block_is_historical()
+        || busbar_kernel_identity::operator::judged().is_ok()
+    {
+        return Ok(());
+    }
+    let view = busbar_migrations::config::normalize_plugins_view(original, host)?;
+    let plugins = view
+        .map(busbar_contract::yaml::from_value::<busbar_kernel::config::PluginsCfg>)
+        .transpose()
+        .map_err(|e| format!("the upgraded `plugins:` block does not read: {e}"))?;
+    let data_dir = busbar_kernel::preflight::fleet_data_dir();
+    let registry = match &plugins {
+        Some(p) if p.enabled => Some(crate::root::boot::registry(
+            Vec::new(),
+            Some(p),
+            data_dir.as_deref(),
+            &mut |_| {},
+        )?),
+        _ => None,
+    };
+    busbar_kernel::preflight::bind_deferred(judged_operator(registry.as_ref()))
+}
+
 #[cfg(test)]
 #[path = "tests/auth_bindings.rs"]
 mod tests;
