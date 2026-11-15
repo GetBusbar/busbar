@@ -273,7 +273,7 @@ pub(crate) mod peer {
                 Self {
                     socket,
                     framing,
-                    pending: VecDeque::from([yielded]),
+                    pending: [yielded].into_iter().collect::<VecDeque<_>>(),
                 },
                 offer,
             )

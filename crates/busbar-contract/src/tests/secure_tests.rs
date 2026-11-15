@@ -109,12 +109,12 @@ fn secure_vec_compacts_only_when_half_consumed() {
 
 #[test]
 fn secure_vec_growth_wipes_old_block() {
+    static GROWTH: [u8; 64 * 1024] = [9; 64 * 1024];
     let mut s = SecureVec::new();
     s.extend(SENTINEL).unwrap();
     let old = s.allocation().as_ptr();
     let old_len = s.capacity();
-    let (grown, old_wiped, _) =
-        crate::support::observe_wipe(old, old_len, || s.extend(&[9_u8; 64 * 1024]));
+    let (grown, old_wiped, _) = crate::support::observe_wipe(old, old_len, || s.extend(&GROWTH));
     grown.unwrap();
     assert_ne!(
         s.allocation().as_ptr(),
@@ -131,8 +131,9 @@ fn secure_vec_growth_wipes_old_block() {
 
 #[test]
 fn secure_vec_shrink_only_when_empty() {
+    static LARGE: [u8; 128 * 1024] = [1; 128 * 1024];
     let mut s = SecureVec::new();
-    s.extend(&[1_u8; 128 * 1024]).unwrap();
+    s.extend(&LARGE).unwrap();
     let grown = s.capacity();
     assert!(grown >= 128 * 1024);
     s.consume(100);

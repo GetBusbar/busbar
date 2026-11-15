@@ -71,7 +71,7 @@ fn spawn(io: &HostIo, program: Program, grant: Ticket) -> u64 {
 async fn read_all(io: &HostIo, handle: u64) -> Vec<u8> {
     let mut output = Vec::new();
     loop {
-        let mut buffer = [0_u8; 16_384];
+        let mut buffer = vec![0_u8; 16_384];
         let n = poll_fn(|cx| io.read(OWNER, handle, &mut buffer, cx.waker()))
             .await
             .unwrap();
@@ -138,7 +138,7 @@ fn native_windows_child_uses_admitted_environment_and_working_directory() {
         io.shut(OWNER, handle, DIR_WRITE).unwrap();
         let output = String::from_utf8(read_all(&io, handle).await).unwrap();
         let mut fields = output.split('|');
-        let observed = std::path::PathBuf::from(fields.next().unwrap());
+        let observed = std::path::Path::new(fields.next().unwrap());
         assert_eq!(observed.canonicalize().unwrap(), directory.canonicalize().unwrap());
         assert_eq!(fields.next(), Some("admitted"));
         assert_eq!(fields.next(), Some(""), "PATH must not leak from the host");

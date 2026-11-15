@@ -11,7 +11,7 @@ use busbar_kernel::governance::AdjustRefused;
 
 /// One correction, as the verb's body states it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Correction {
+pub(crate) struct Correction {
     /// The key whose counts are corrected.
     pub key: String,
     /// The lane (model) the counts were earned on.
@@ -31,25 +31,26 @@ pub struct Correction {
 
 /// Why the ledger would not take a correction.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Refused {
+pub(crate) enum Refused {
     /// The history holds no entry with that key.
     UnknownEntry,
     /// The ledger refused it; nothing was applied.
     Ledger(AdjustRefused),
 }
 
-pub type AdjustmentFuture<'a> =
+pub(crate) type AdjustmentFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Result<(), Refused>, String>> + Send + 'a>>;
 
-pub type UsageAdjuster = Arc<dyn for<'a> Fn(&'a Correction) -> AdjustmentFuture<'a> + Send + Sync>;
+pub(crate) type UsageAdjuster =
+    Arc<dyn for<'a> Fn(&'a Correction) -> AdjustmentFuture<'a> + Send + Sync>;
 
 #[must_use]
-pub fn no_ledger() -> UsageAdjuster {
+pub(crate) fn no_ledger() -> UsageAdjuster {
     Arc::new(|_| Box::pin(async { Err("no ledger is bound on this node".to_string()) }))
 }
 
 #[must_use]
-pub fn live_adjuster(app: Arc<busbar_kernel::state::AppHandle>) -> UsageAdjuster {
+pub(crate) fn live_adjuster(app: Arc<busbar_kernel::state::AppHandle>) -> UsageAdjuster {
     Arc::new(move |c: &Correction| {
         let app = app.clone();
         Box::pin(async move {

@@ -166,7 +166,7 @@ impl std::fmt::Display for CardBootError {
 /// WHY A CONFIG CARD APPLY WAS REFUSED: the card was not made durable, so the card in force is the
 /// one that was (MONEY-AUDIT D-6).
 #[derive(Debug)]
-pub enum CardRefused {
+pub(crate) enum CardRefused {
     /// The boot's book has rebuilt the history but its handle is not bound yet: there is no journal
     /// the card could go on.
     Unbound,
@@ -929,7 +929,7 @@ pub(crate) fn cells_onto(
 #[cfg(test)]
 /// **ONE CONFIG APPLY, JOURNALLED**: the card and the instant it took effect from.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CardApplied {
+pub(crate) struct CardApplied {
     /// The first instant the entry prices, in wall-clock milliseconds: zero for the opening entry,
     /// the apply's own instant for every later one.
     pub effective_from: u64,

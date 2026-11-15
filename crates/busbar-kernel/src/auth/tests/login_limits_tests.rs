@@ -171,7 +171,7 @@ impl CredentialDoor for Fake {
     fn complete<'a>(
         &'a self,
         _: &'a str,
-        _: &'a str,
+        _: String,
         submitted: Vec<(String, String)>,
     ) -> DoorFuture<'a, (LoginJudged, Option<RejectHint>)> {
         Box::pin(async move {

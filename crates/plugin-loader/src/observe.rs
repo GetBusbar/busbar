@@ -256,12 +256,13 @@ pub(crate) fn settle() {
         .iter()
         .filter_map(std::sync::Weak::upgrade)
         .collect();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    // At least 10 s across every intake, as 1 ms polls counted rather than clocked.
+    let mut polls = 10_000_u32;
     for counts in live {
-        while counts.done.load(Ordering::Acquire) < counts.sent.load(Ordering::Acquire)
-            && std::time::Instant::now() < deadline
+        while counts.done.load(Ordering::Acquire) < counts.sent.load(Ordering::Acquire) && polls > 0
         {
             std::thread::sleep(std::time::Duration::from_millis(1));
+            polls -= 1;
         }
     }
 }
@@ -305,10 +306,9 @@ impl EnvelopeObserver {
         kind: &'static str,
         families: Vec<busbar_contract::abi::mechanism::rendering::ReadFamily>,
     ) -> Self {
-        // busbar:expect(bp::into_alloc, reason = "boot: an instance's envelope observer keeps its plugin name, shared by every observation")
         Self {
             observing,
-            plugin: std::sync::Arc::from(plugin),
+            plugin: crate::cold::observe::shared_name(plugin),
             kind,
             families,
             then: None,
@@ -453,42 +453,25 @@ pub fn grant_series(
     let grants = guard.get_or_insert_with(Default::default);
     for d in declared {
         if observing.is_host_series(&d.name) {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "boot: a plugin declares a series the host itself emits"
-            )]
-            let refused = format!(
-                "plugin '{plugin}' declares the series '{}', which the host itself emits",
-                d.name
-            );
-            return Err(refused);
+            return Err(crate::cold::observe::host_series_refused(plugin, &d.name));
         }
         let owner = grants
             .iter()
             .find(|(p, g)| *p != plugin && g.series.iter().any(|held| held.name == d.name));
         if let Some((owner, _)) = owner {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "boot: a plugin declares a series already granted to another"
-            )]
-            let refused = format!(
-                "plugin '{plugin}' declares the series '{}', already granted to plugin '{owner}'",
-                d.name
-            );
-            return Err(refused);
+            return Err(crate::cold::observe::series_taken_refused(
+                plugin, &d.name, owner,
+            ));
         }
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a first-party instance takes its grant once, when it loads"
-    )]
-    let held = {
-        let granted = grants.entry(plugin.to_string()).or_default();
-        granted.holders += 1;
-        granted.series = declared.to_vec();
-        plugin.to_string()
-    };
-    Ok(SeriesGrant { plugin: Some(held) })
+    let granted = grants
+        .entry(crate::cold::observe::granted_name(plugin))
+        .or_default();
+    granted.holders += 1;
+    granted.series = crate::cold::observe::granted_series(declared);
+    Ok(SeriesGrant {
+        plugin: Some(crate::cold::observe::granted_name(plugin)),
+    })
 }
 
 pub fn first_party(plugin: &str) -> bool {
@@ -503,19 +486,18 @@ pub fn first_party_series(plugin: &str, name: &str, kind: &str) -> bool {
 }
 
 pub fn shed_series(plugin: &str) -> Vec<String> {
+    crate::cold::observe::shed_series(plugin)
+}
+
+/// `read` over the series `plugin` was granted (none when it holds no grant), under the grants'
+/// read lock.
+pub(crate) fn with_granted_series<T>(
+    plugin: &str,
+    read: impl FnOnce(&[busbar_contract::abi::mechanism::observe::SeriesDecl]) -> T,
+) -> T {
     let guard = GRANTS.read().unwrap_or_else(|e| e.into_inner());
-    let granted = guard
-        .as_ref()
-        .and_then(|g| g.get(plugin))
-        .into_iter()
-        .flat_map(|g| g.series.iter());
-    let shed = granted.filter(|d| d.shed && d.kind == "counter");
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: an export that shed lines names the series it reports them under"
-    )]
-    let names = shed.map(|d| d.name.clone()).collect();
-    names
+    let granted = guard.as_ref().and_then(|g| g.get(plugin));
+    read(granted.map_or(&[][..], |g| g.series.as_slice()))
 }
 
 #[cfg(test)]

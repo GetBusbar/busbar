@@ -152,7 +152,7 @@ impl Durability {
     }
 }
 
-pub enum AuditWindowAt {
+pub(crate) enum AuditWindowAt {
     Cached(Vec<AuditRecord>),
 
     OnChain { chain: ChainAt, sealed_before: u64 },

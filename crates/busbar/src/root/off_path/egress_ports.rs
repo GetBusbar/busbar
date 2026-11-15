@@ -15,7 +15,7 @@ use crate::root::egress_ports::{LabelBound, MemberPermits, WalkTelemetry};
 impl MemberPermits {
     /// The members' permits, built once per configured walk.
     #[must_use]
-    pub fn new(limits: impl IntoIterator<Item = (DestinationId, usize)>) -> Self {
+    pub(crate) fn new(limits: impl IntoIterator<Item = (DestinationId, usize)>) -> Self {
         let limits = limits
             .into_iter()
             .map(|(d, n)| (d, Arc::new(Semaphore::new(n))))
@@ -27,7 +27,7 @@ impl MemberPermits {
 impl LabelBound {
     /// A plane's lane vocabulary, gathered once per generation.
     #[must_use]
-    pub fn new(vocabulary: impl IntoIterator<Item = String>) -> Self {
+    pub(crate) fn new(vocabulary: impl IntoIterator<Item = String>) -> Self {
         let vocabulary = vocabulary.into_iter().collect();
         LabelBound {
             reach: HashMap::default(),
@@ -37,7 +37,7 @@ impl LabelBound {
 
     /// A walk's reachable words, gathered and keyed once per generation.
     #[must_use]
-    pub fn reaching(
+    pub(crate) fn reaching(
         mut self,
         walked: &str,
         pool_words: impl IntoIterator<Item = String>,
@@ -56,7 +56,7 @@ impl LabelBound {
 impl WalkTelemetry {
     /// The members' lane names, gathered once per configured walk.
     #[must_use]
-    pub fn new(names: impl IntoIterator<Item = (DestinationId, String)>) -> Self {
+    pub(crate) fn new(names: impl IntoIterator<Item = (DestinationId, String)>) -> Self {
         let names = names.into_iter().collect();
         WalkTelemetry {
             names,

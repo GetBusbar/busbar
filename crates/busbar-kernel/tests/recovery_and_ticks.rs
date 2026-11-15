@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-mod common;
+mod common {
+    pub mod group_probes;
+    pub mod never;
+    pub mod principal;
+    pub mod test_door;
+    pub mod units;
+}
 
 use busbar_contract::caps::{
     HoldCellState, OriginKind, PostingFlags, ReasonCode, StepName, UnitKey,
@@ -12,7 +18,11 @@ use busbar_kernel::slice::{bucket_all, ConcurrencyGauge};
 use busbar_kernel::teller::{Evidence, Kernel};
 use busbar_kernel::tick::{sweep, sweep_settle, Sweep};
 
-use common::{principal, TestDoor};
+use common::group_probes::CappedGroup;
+use common::never::NeverRoutes;
+use common::principal::principal;
+use common::test_door::TestDoor;
+use common::units::{ctx, TestUnits};
 
 #[test]
 fn a_lost_task_is_settled_within_one_tick() {
@@ -174,11 +184,12 @@ fn the_sweep_gives_back_the_lease_the_door_drew_on_a_lost_task() {
     let kernel = Kernel::new();
     let table = InFlight::new(4);
     let canary = Canary::new();
-    let units = common::TestUnits::passing();
+    let units = TestUnits::passing();
     let dropped = std::sync::atomic::AtomicBool::new(false);
-    let route = common::NeverRoutes {
+    let route = NeverRoutes {
         units: &units,
         dropped: &dropped,
+        abandoned: Default::default(),
     };
     let gauge = ConcurrencyGauge::new();
     let meter = busbar_kernel::teller::AccrualMeter::new();
@@ -195,7 +206,7 @@ fn the_sweep_gives_back_the_lease_the_door_drew_on_a_lost_task() {
         .map_err(|_| ())
         .expect("under the cap");
 
-    let unit = common::ctx(9);
+    let unit = ctx(9);
     let mut running = Box::pin(busbar_kernel::teller::run_unit_async(
         &kernel,
         &units,
@@ -251,11 +262,12 @@ fn the_sweep_gives_back_the_group_leases_of_a_lost_task_too() {
     let kernel = Kernel::new();
     let table = InFlight::new(4);
     let canary = Canary::new();
-    let units = common::TestUnits::in_groups(&["tenant", "team"]);
+    let units = TestUnits::in_groups(&["tenant", "team"]);
     let dropped = std::sync::atomic::AtomicBool::new(false);
-    let route = common::NeverRoutes {
+    let route = NeverRoutes {
         units: &units,
         dropped: &dropped,
+        abandoned: Default::default(),
     };
     let gauge = ConcurrencyGauge::new();
     let meter = busbar_kernel::teller::AccrualMeter::new();
@@ -274,7 +286,7 @@ fn the_sweep_gives_back_the_group_leases_of_a_lost_task_too() {
         .map_err(|_| ())
         .expect("under the cap");
 
-    let unit = common::ctx(11);
+    let unit = ctx(11);
     let mut running = Box::pin(busbar_kernel::teller::run_unit_async(
         &kernel,
         &units,
@@ -319,12 +331,13 @@ fn the_sweep_gives_back_the_door_count_a_lost_task_was_holding() {
     let kernel = Kernel::new();
     let table = InFlight::new(4);
     let canary = Canary::new();
-    let group = common::CappedGroup::at(1);
-    let units = common::TestUnits::behind(&group);
+    let group = CappedGroup::at(1);
+    let units = TestUnits::behind(&group);
     let dropped = std::sync::atomic::AtomicBool::new(false);
-    let route = common::NeverRoutes {
+    let route = NeverRoutes {
         units: &units,
         dropped: &dropped,
+        abandoned: Default::default(),
     };
     let gauge = ConcurrencyGauge::new();
     let meter = busbar_kernel::teller::AccrualMeter::new();
@@ -341,7 +354,7 @@ fn the_sweep_gives_back_the_door_count_a_lost_task_was_holding() {
         .map_err(|_| ())
         .expect("under the cap");
 
-    let unit = common::ctx(12);
+    let unit = ctx(12);
     let mut running = Box::pin(busbar_kernel::teller::run_unit_async(
         &kernel,
         &units,
@@ -379,7 +392,7 @@ fn the_sweep_gives_back_the_door_count_a_lost_task_was_holding() {
     assert_eq!(group.live(), 0, "the lost unit's count is back");
     assert!(!slot.leases().holds_grant());
 
-    let next_units = common::TestUnits::behind(&group);
+    let next_units = TestUnits::behind(&group);
     let cell = busbar_contract::caps::HoldCell::new(busbar_kernel::inflight::arrival_hold(
         &kernel,
         &TestDoor,
@@ -390,7 +403,7 @@ fn the_sweep_gives_back_the_door_count_a_lost_task_was_holding() {
     let ended = busbar_kernel::teller::run_unit(
         &kernel,
         &next_units,
-        &common::ctx(13),
+        &ctx(13),
         busbar_kernel::teller::Run {
             cell: &cell,
             parent: None,

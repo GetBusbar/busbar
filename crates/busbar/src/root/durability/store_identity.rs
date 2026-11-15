@@ -48,7 +48,7 @@ pub(crate) fn host_identity() -> String {
 
 /// What a walk of every chain the store keeps found.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct StoredWalk {
+pub(crate) struct StoredWalk {
     /// The node ids whose chains were walked.
     pub chains: Vec<u64>,
     /// What did not hold: a chain that does not verify, an audit record that does not decode, whose

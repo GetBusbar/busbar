@@ -10,9 +10,8 @@ fn a_cached_disabled_gate_does_not_resample_the_environment() {
 
     ENABLED.store(1, Ordering::Relaxed);
 
-    unsafe { std::env::set_var("BUSBAR_TIMING", "1") };
-    let result = std::panic::catch_unwind(enabled);
-    unsafe { std::env::remove_var("BUSBAR_TIMING") };
+    // An environment that would say ON: the cached answer must win without consulting it.
+    let result = std::panic::catch_unwind(|| enabled_from(|| true));
 
     ENABLED.store(0, Ordering::Relaxed);
     assert!(

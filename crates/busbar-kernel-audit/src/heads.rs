@@ -30,14 +30,15 @@ impl SignedHead {
     /// The head as it stood after one record was sealed.
     #[must_use]
     pub fn of(record: &AuditRecord) -> Self {
-        // busbar:expect(bp::clone_alloc, reason = "boot: a chain's first head; every later head is rewritten in place")
-        SignedHead {
-            seq: record.seq,
-            hash: record.hash.clone(),
-            signature: record.signature.clone(),
-            key_id: record.key_id.clone(),
-            wall: record.wall,
-        }
+        let mut head = SignedHead {
+            seq: 0,
+            hash: String::new(),
+            signature: None,
+            key_id: None,
+            wall: 0,
+        };
+        head.overwrite_from(record);
+        head
     }
 
     /// Become the head `record` leaves, reusing this head's storage.
@@ -111,18 +112,6 @@ impl HeadHistory {
     #[must_use]
     pub fn tip(&self) -> Option<&SignedHead> {
         self.tip.as_ref()
-    }
-
-    /// Every anchor this node can offer, in position order: the series, then the tip if the tip is
-    #[must_use]
-    pub fn anchors(&self) -> Vec<SignedHead> {
-        let mut out = self.series.clone();
-        if let Some(tip) = &self.tip {
-            if out.last().map(|h| h.seq) != Some(tip.seq) {
-                out.push(tip.clone());
-            }
-        }
-        out
     }
 
     /// THE ANCHOR FOR A WINDOW: the newest anchor at or before a position.

@@ -5,6 +5,8 @@
 
 pub use busbar_contract::net::*;
 
+use crate::cold::scheme_of;
+
 /// WHY A GUARDED FETCH WAS REFUSED — the FACT, not the sentence.
 ///
 /// Every arm names the URL, host or address that caused it, because a refusal an operator cannot
@@ -67,32 +69,8 @@ pub fn split_url(url: &str) -> Result<(bool, String, u16, String), AddressRefusa
     Ok((https, parts.host, port, parts.path))
 }
 
-/// The URL as a refusal may repeat it: everything an authority put before its last `@` replaced by a
-pub fn redact_userinfo(url: &str) -> String {
-    let (prefix, rest) = match url.split_once("://") {
-        Some((scheme, rest)) => (&url[..scheme.len() + 3], rest),
-        None => ("", url),
-    };
-    let authority_end = rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len());
-    match rest[..authority_end].rfind('@') {
-        Some(at) => {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a refusal repeats the URL with its credential redacted"
-            )]
-            let redacted = format!("{prefix}<redacted>@{}", &rest[at + 1..]);
-            redacted
-        }
-        None => {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a refusal repeats the URL it refused"
-            )]
-            let repeated = url.to_string();
-            repeated
-        }
-    }
-}
+// A refusal's repeat of the URL is spelled out of line, in the cold module.
+pub use crate::cold::redact_userinfo;
 
 /// A provider BASE URL with its authority's userinfo removed: `scheme://user:pass@host:port/path`
 pub fn strip_userinfo(url: &str) -> std::borrow::Cow<'_, str> {
@@ -101,23 +79,8 @@ pub fn strip_userinfo(url: &str) -> std::borrow::Cow<'_, str> {
     };
     let authority_end = rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len());
     match rest[..authority_end].rfind('@') {
-        Some(at) => std::borrow::Cow::Owned(format!("{scheme}://{}", &rest[at + 1..])),
+        Some(at) => std::borrow::Cow::Owned(crate::cold::without_userinfo(scheme, &rest[at + 1..])),
         None => std::borrow::Cow::Borrowed(url),
-    }
-}
-
-/// The scheme a string CLAIMS, for a refusal message. Nothing is decided from it — the decision is
-fn scheme_of(url: &str) -> String {
-    match url.split_once(':') {
-        Some((s, _)) if !s.is_empty() && !s.contains('/') => {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: the refusal names the scheme a URL claimed"
-            )]
-            let scheme = s.to_ascii_lowercase();
-            scheme
-        }
-        _ => String::new(),
     }
 }
 
@@ -207,7 +170,6 @@ impl<'a> HostSet<'a> {
             return false;
         }
 
-        // busbar:expect(bp::state_scan, reason = "config: the operator's own allow or block list, a handful of hosts")
         if self.names.iter().any(|n| n.eq_ignore_ascii_case(host)) {
             return true;
         }
@@ -217,18 +179,15 @@ impl<'a> HostSet<'a> {
         }
 
         if let Some(expanded) = expand_alternate_ipv4(host) {
-            // busbar:expect(bp::state_scan, reason = "config: the operator's own allow or block list, a handful of hosts")
             if self.v4.contains(&expanded) {
                 return true;
             }
         }
 
-        // busbar:expect(bp::state_scan, reason = "config: the operator's own allow or block list, a handful of hosts")
         match host.parse::<IpAddr>() {
             Ok(IpAddr::V4(v4)) => self.v4.contains(&v4),
             Ok(IpAddr::V6(v6)) => {
                 let embedded = embedded_ipv4(&v6);
-                // busbar:expect(bp::state_scan, reason = "config: the operator's own allow or block list, a handful of hosts")
                 self.v6.contains(&v6) || embedded.is_some_and(|m| self.v4.contains(&m))
             }
             Err(_) => false,

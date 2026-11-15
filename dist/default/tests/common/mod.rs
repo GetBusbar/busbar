@@ -12,7 +12,7 @@ pub mod pinned_planes;
 pub mod plugins;
 pub mod upstream;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// One classified source line.
 #[derive(Debug, Clone)]
@@ -200,38 +200,12 @@ pub fn production_lines(path: &Path) -> Vec<Line> {
         .collect()
 }
 
-pub fn production_text(path: &Path) -> String {
-    production_lines(path)
-        .iter()
-        .map(|l| format!("{}\n", l.code))
-        .collect()
-}
-
-pub fn is_test_path(path: &Path) -> bool {
+fn is_test_path(path: &Path) -> bool {
     let p = path.to_string_lossy().replace('\\', "/");
     p.ends_with("_tests.rs")
         || p.ends_with("/tests.rs")
         || p.contains("/test_support")
         || p.contains("/tests/")
-}
-
-pub fn production_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
-    paths.sort();
-    for path in paths {
-        if path.is_dir() {
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name == "target" || name == "tests" {
-                continue;
-            }
-            production_rs_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") && !is_test_path(&path) {
-            out.push(path);
-        }
-    }
 }
 
 pub fn item_body<'a>(lines: &'a [Line], signature: &str) -> Option<Vec<&'a Line>> {
@@ -252,157 +226,6 @@ pub fn item_body<'a>(lines: &'a [Line], signature: &str) -> Option<Vec<&'a Line>
     }
 
     Some(body)
-}
-
-pub const ASSERTION_TOKENS: &[&str] = &[
-    "assert!",
-    "assert_eq!",
-    "assert_ne!",
-    "assert_matches!",
-    "debug_assert!",
-    "debug_assert_eq!",
-    "debug_assert_ne!",
-    "expect_err(",
-    "unwrap_err(",
-];
-
-pub fn is_test_attribute(code: &str) -> bool {
-    let t = code.trim();
-    t.starts_with("#[") && (t.contains("test]") || t.contains("test("))
-}
-
-pub fn asserts_directly(body: &[&Line]) -> bool {
-    body.iter()
-        .any(|l| ASSERTION_TOKENS.iter().any(|tok| l.code.contains(tok)))
-}
-
-pub fn called_idents(body: &[&Line]) -> std::collections::BTreeSet<String> {
-    let mut out = std::collections::BTreeSet::new();
-    for line in body {
-        let chars: Vec<char> = line.code.chars().collect();
-        let mut i = 0usize;
-        while i < chars.len() {
-            if chars[i] == '(' {
-                let mut j = i;
-                while j > 0 && (chars[j - 1].is_ascii_alphanumeric() || chars[j - 1] == '_') {
-                    j -= 1;
-                }
-                if j < i && !chars[j].is_ascii_digit() {
-                    out.insert(chars[j..i].iter().collect::<String>());
-                }
-            }
-            i += 1;
-        }
-    }
-    out
-}
-
-pub fn has_test_attribute(lines: &[Line], at: usize) -> bool {
-    let mut i = at;
-    while i > 0 {
-        i -= 1;
-        let code = lines[i].code.trim();
-        if code.is_empty() {
-            continue;
-        }
-        if code.starts_with("#[") || code.starts_with("#!") {
-            if is_test_attribute(code) {
-                return true;
-            }
-            continue;
-        }
-
-        return false;
-    }
-    false
-}
-
-/// Why a named function is not evidence, in the order the three checks run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NotEvidence {
-    /// No `fn NAME(` in the code (comments stripped) of any file searched.
-    Absent,
-    /// Only in production code: outside every `#[cfg(test)]` module and not in a test file.
-    Production,
-    /// Test code, but no test attribute: a helper the harness never runs.
-    NotATest,
-    /// A test whose body asserts nothing, directly or one hop down.
-    AssertsNothing,
-}
-
-pub fn test_fn_is_evidence(files: &[Vec<Line>], func: &str) -> Result<(), NotEvidence> {
-    let sig = format!("fn {func}(");
-    let mut best = NotEvidence::Absent;
-    let rank = |n: NotEvidence| match n {
-        NotEvidence::Absent => 0,
-        NotEvidence::Production => 1,
-        NotEvidence::NotATest => 2,
-        NotEvidence::AssertsNothing => 3,
-    };
-    for lines in files {
-        for (at, line) in lines.iter().enumerate() {
-            let Some(col) = line.code.find(&sig) else {
-                continue;
-            };
-            if line.code[..col]
-                .chars()
-                .next_back()
-                .is_some_and(|c| c.is_alphanumeric() || c == '_')
-            {
-                continue;
-            }
-            let verdict = if !line.intest {
-                NotEvidence::Production
-            } else if !has_test_attribute(lines, at) {
-                NotEvidence::NotATest
-            } else if !body_asserts_at(lines, at, &sig) {
-                NotEvidence::AssertsNothing
-            } else {
-                return Ok(());
-            };
-            if rank(verdict) > rank(best) {
-                best = verdict;
-            }
-        }
-    }
-    Err(best)
-}
-
-pub fn body_asserts_at(lines: &[Line], at: usize, signature: &str) -> bool {
-    let Some(body) = item_body(&lines[at..], signature) else {
-        return false;
-    };
-    let mut seen = std::collections::BTreeSet::new();
-    let mut queue = vec![body];
-    while let Some(body) = queue.pop() {
-        if asserts_directly(&body) {
-            return true;
-        }
-        for callee in called_idents(&body) {
-            if seen.insert(callee.clone()) {
-                if let Some(helper) = item_body(lines, &format!("fn {callee}(")) {
-                    queue.push(helper);
-                }
-            }
-        }
-    }
-    false
-}
-
-pub fn fixture_lines(name: &str) -> Vec<String> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join(name);
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()));
-    let lines: Vec<String> = text
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .collect();
-    assert!(!lines.is_empty(), "fixture {} is empty", path.display());
-    lines
 }
 
 pub fn operator_module() -> String {
@@ -445,27 +268,4 @@ pub fn manifest_table(table: &str) -> Vec<(String, String)> {
         "Cargo.toml: `{header}` is missing or empty"
     );
     rows
-}
-
-pub fn linked_plane_crates() -> Vec<(String, String)> {
-    let axes = manifest_table("package.metadata.busbar.linked-axes");
-    manifest_table("package.metadata.busbar.linked")
-        .into_iter()
-        .filter(|(feature, _)| {
-            axes.iter()
-                .any(|(f, a)| f == feature && a.split_whitespace().any(|x| x == "plane"))
-        })
-        .collect()
-}
-
-pub fn enabled_features() -> std::collections::BTreeSet<&'static str> {
-    env!("BUSBAR_ENABLED_FEATURES").split_whitespace().collect()
-}
-
-pub fn linked_plane_crates_own_entry() -> Vec<(String, String)> {
-    let entries = manifest_table("package.metadata.busbar.linked-entry");
-    linked_plane_crates()
-        .into_iter()
-        .filter(|(_, krate)| !entries.iter().any(|(k, _)| k == krate))
-        .collect()
 }

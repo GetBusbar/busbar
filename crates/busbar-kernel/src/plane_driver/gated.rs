@@ -138,7 +138,7 @@ fn unparseable_stage(hooks: Option<&GatedHooks>, marked: bool) -> Result<(), Sto
 
 impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
     pub(crate) async fn gated_stage(&self, binder: &dyn HookBinder) -> Result<(), Stopped> {
-        let mut ran = Vec::new();
+        let mut ran = super::ran_buffer();
         let stage = self.run_gated_stage(binder, &mut ran).await;
         self.report_hooks(ran);
         stage
@@ -175,10 +175,8 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 } else {
                     recorded.as_deref()
                 };
-                let entry = std::str::from_utf8(named.unwrap_or_default())
-                    .unwrap_or_default()
-                    .to_string();
-                let hooks = binder.bind_gated(&entry, principal.as_deref());
+                let entry = std::str::from_utf8(named.unwrap_or_default()).unwrap_or_default();
+                let hooks = binder.bind_gated(entry, principal.as_deref());
 
                 return unparseable_stage(hooks.as_ref(), marked);
             }
@@ -410,7 +408,7 @@ pub(super) fn refused_rewrite(
     }
     (
         busbar_contract::abi::plane::PROJECT_FAULT_STATUS,
-        busbar_contract::abi::plane::PROJECT_FAULT_MESSAGE.to_string(),
+        crate::cold::hooks_project_fault_words(),
     )
 }
 
@@ -431,7 +429,7 @@ fn mark_unapplied(hook: &str, ran: &mut [HookApplied]) {
 pub(super) fn rewrite_refusal(status: u16, message: &str) -> (u16, String) {
     use crate::hooks::{REQUIRED_HOOK_UNAVAILABLE_MESSAGE, REQUIRED_HOOK_UNAVAILABLE_STATUS};
     if status == REQUIRED_HOOK_UNAVAILABLE_STATUS && message == REQUIRED_HOOK_UNAVAILABLE_MESSAGE {
-        return (status, message.to_string());
+        return (status, crate::cold::hooks_owned_words(message));
     }
     (
         clamp_reject_status(status),

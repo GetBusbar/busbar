@@ -5,7 +5,7 @@ use super::*;
 use busbar_contract::abi::mechanism::KindCode;
 
 fn caller() -> Caller {
-    Caller::issue(&crate::seal::acquire(), Arc::from("plane"), KindCode::Plane)
+    Caller::issue(&crate::seal::acquire(), "plane".into(), KindCode::Plane)
 }
 
 pub(super) fn publication<'a>(

@@ -55,12 +55,7 @@ pub fn declare_recorder<L: Life<Kind = crate::plugin::markers::ExportKind>>(
     if let Err(error) = requirements.validate() {
         return out.fail(Refusal::refused(error));
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the recorder declaration, encoded once per check"
-    )]
-    let encoded = serde_json::to_vec(&requirements);
-    match encoded {
+    match serde_json::to_vec(&requirements) {
         Ok(bytes) => {
             out.lease(
                 |o| &o.findings,
@@ -70,14 +65,7 @@ pub fn declare_recorder<L: Life<Kind = crate::plugin::markers::ExportKind>>(
             );
             Outcome::Ready
         }
-        Err(error) => {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a declaration that would not encode, said once"
-            )]
-            let why = error.to_string();
-            out.fail(Refusal::failed(why))
-        }
+        Err(error) => out.fail(Refusal::failed(super::cold::wire::display_text(&error))),
     }
 }
 
@@ -130,28 +118,18 @@ impl<L: Life<Kind = crate::plugin::markers::ExportKind>> SafeSlot for Quiet<L> {
 /// The instance names `check` is handed, in configuration order (an absent name reads empty).
 #[must_use]
 pub fn instance_names(input: Lent<'_, CheckIn>) -> Vec<String> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the configured instance names, read once per check"
-    )]
-    let names = input
+    input
         .instances()
         .iter()
         .map(|c| String::from_utf8_lossy(c.field(|c| &c.name).bytes()).into_owned())
-        .collect();
-    names
+        .collect()
 }
 
 /// THE `one_instance` LIMITS CHECK: with more than one instance of the sink configured (`names`,
 #[must_use]
 pub fn one_instance_reason(names: &[String], why: &str) -> Vec<String> {
     if names.len() > 1 {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a second configured instance's refusal, said once per check"
-        )]
-        let why = why.to_string();
-        vec![why]
+        super::cold::wire::one_reason(why)
     } else {
         Vec::new()
     }
@@ -163,20 +141,14 @@ pub fn second_instances(names: &[String], alias: &str, why: &str) -> Vec<String>
     let Some((first, rest)) = names.split_first() else {
         return Vec::new();
     };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: each second configured instance's refusal, said once per check"
-    )]
-    let refusals = rest
-        .iter()
+    rest.iter()
         .map(|name| {
             format!(
                 "export.{name}: a second `module: {alias}` instance (already defined as \
                  '{first}'). {why}"
             )
         })
-        .collect();
-    refusals
+        .collect()
 }
 
 #[cfg(test)]

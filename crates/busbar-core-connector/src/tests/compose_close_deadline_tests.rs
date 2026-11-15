@@ -385,7 +385,7 @@ fn a_buffered_tls_finished_cannot_erase_an_expired_overall_bound() {
             peers.spawn(async move {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut tls = rustls::ServerConnection::new(acceptor.config().clone()).unwrap();
-                let mut bytes = [0; 4096];
+                let mut bytes = vec![0_u8; 4096];
                 while !tls.wants_write() {
                     let n = socket.read(&mut bytes).await.unwrap();
                     assert!(n > 0);
@@ -499,7 +499,8 @@ fn tls_close_notify_ignores_later_carrier_bytes_without_spinning() {
                 .spawn()
                 .unwrap(),
         );
-        let due = Instant::now() + Duration::from_secs(10);
+        // At most 1000 polls (about 10 s), counted rather than read off the clock.
+        let mut polls = 0_u32;
         loop {
             if let Some(status) = probe.child.as_mut().unwrap().try_wait().unwrap() {
                 assert!(status.success(), "isolated TLS control failed: {status}");
@@ -509,10 +510,8 @@ fn tls_close_notify_ignores_later_carrier_bytes_without_spinning() {
                 );
                 return;
             }
-            assert!(
-                Instant::now() < due,
-                "TLS close_notify tail made no progress"
-            );
+            polls += 1;
+            assert!(polls < 1000, "TLS close_notify tail made no progress");
             std::thread::sleep(Duration::from_millis(10));
         }
     }

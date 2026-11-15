@@ -10,7 +10,7 @@
 //! (its warm tokens and caches kept); a plugin with no `refresh` gets a new instance opened over
 //! the new settings and swapped in whole. A refusal keeps the running instance (BUSBAR-8028).
 
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use busbar_contract::auth::BeginLogin;
@@ -27,67 +27,20 @@ use crate::preflight::{RelendStreak, RELEND_EVERY};
 /// How an instance's settings are re-resolved from what it was opened over.
 pub type Reresolve = Box<dyn Fn() -> Result<ResolvedSettings, String> + Send + Sync>;
 
-/// An auth instance the host re-lends: every call goes to the instance it holds now.
+/// An auth instance the host re-lends: every call goes to the instance it holds now. Opened and
+/// built once per config build, off the request path (`crate::off_path::auth::keys::relend`).
 pub struct RelendingAuth {
-    name: String,
-    module: String,
-    label: String,
-    axis: Arc<dyn AuthAxis>,
-    reresolve: Reresolve,
-    current: arc_swap::ArcSwap<Arc<dyn AuthCalls>>,
-    streak: Mutex<RelendStreak>,
-    report: &'static dyn crate::refresh::Report,
-}
-
-/// OPEN `module` as `label` over `resolved` through `axis`; when `reresolve` is given (the plugin
-/// lends secret references), the instance is kept by the host refresher and re-lent on rotation.
-pub fn open(
-    axis: &Arc<dyn AuthAxis>,
-    module: &str,
-    label: &str,
-    resolved: &ResolvedSettings,
-    reresolve: Option<Reresolve>,
-) -> Result<Arc<dyn AuthCalls>, String> {
-    let calls = axis.open(module, label, resolved)?;
-    let Some(reresolve) = reresolve else {
-        return Ok(calls);
-    };
-    let relending = Arc::new(RelendingAuth::new(
-        Arc::clone(axis),
-        module,
-        label,
-        reresolve,
-        calls,
-        &crate::refresh::HOST_REPORT,
-    ));
-    crate::refresh::keep(
-        Arc::downgrade(&relending) as Weak<dyn crate::refresh::Refreshable>,
-        Instant::now() + crate::retry::spread(RELEND_EVERY, 0.1, crate::retry::unit()),
-    );
-    Ok(relending)
+    pub(crate) name: String,
+    pub(crate) module: String,
+    pub(crate) label: String,
+    pub(crate) axis: Arc<dyn AuthAxis>,
+    pub(crate) reresolve: Reresolve,
+    pub(crate) current: arc_swap::ArcSwap<Arc<dyn AuthCalls>>,
+    pub(crate) streak: Mutex<RelendStreak>,
+    pub(crate) report: &'static dyn crate::refresh::Report,
 }
 
 impl RelendingAuth {
-    pub fn new(
-        axis: Arc<dyn AuthAxis>,
-        module: &str,
-        label: &str,
-        reresolve: Reresolve,
-        calls: Arc<dyn AuthCalls>,
-        report: &'static dyn crate::refresh::Report,
-    ) -> Self {
-        Self {
-            name: calls.name().to_string(),
-            module: module.to_string(),
-            label: label.to_string(),
-            axis,
-            reresolve,
-            current: arc_swap::ArcSwap::from_pointee(calls),
-            streak: Mutex::new(RelendStreak::default()),
-            report,
-        }
-    }
-
     fn now(&self) -> Arc<dyn AuthCalls> {
         Arc::clone(&self.current.load())
     }

@@ -12,53 +12,13 @@ use busbar_contract::caps::{
 };
 use busbar_kernel::plane_driver::DriverSteps;
 use busbar_kernel::registry::Generation;
-use busbar_kernel::teller::{AccrualMeter, Evidence, Kernel, UnitCtx};
+use busbar_kernel::teller::{AccrualMeter, Evidence, UnitCtx};
 
-pub struct CappedGroup {
-    live: Arc<std::sync::atomic::AtomicUsize>,
-    cap: usize,
-}
+use super::principal::principal;
 
-impl CappedGroup {
-    pub fn at(cap: usize) -> Arc<Self> {
-        Arc::new(CappedGroup {
-            live: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            cap,
-        })
-    }
-
-    pub fn live(&self) -> usize {
-        self.live.load(Ordering::Acquire)
-    }
-
-    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
-    // MSRV floor is below 1.95, so keep the older name.
-    #[allow(deprecated)]
-    fn count_one(&self) -> Option<GroupCount> {
-        self.live
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < self.cap).then_some(n + 1)
-            })
-            .ok()
-            .map(|_| GroupCount(Arc::clone(&self.live)))
-    }
-}
-
-struct GroupCount(Arc<std::sync::atomic::AtomicUsize>);
-
-impl Drop for GroupCount {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::AcqRel);
-    }
-}
-
-pub enum Door {
-    Own,
-
-    Accrual(Arc<HoldCell>),
-
-    Zero,
-}
+/// A door-side lease: takes a count into the slip and answers whether the door held one.
+pub(crate) type AdmitLease =
+    Arc<dyn Fn(&busbar_kernel::slice::GroupLeaseSlip) -> bool + Send + Sync>;
 
 pub struct TestUnits {
     pub calls: Mutex<Vec<StepName>>,
@@ -67,7 +27,9 @@ pub struct TestUnits {
 
     pub refuse_wait: Option<u32>,
 
-    pub door: Door,
+    pub accrual: Option<Arc<HoldCell>>,
+
+    pub zero_hold: bool,
 
     pub evidence: Evidence,
 
@@ -87,9 +49,7 @@ pub struct TestUnits {
 
     pub groups: Vec<&'static str>,
 
-    pub capped: Option<Arc<CappedGroup>>,
-
-    pub abandoned: Mutex<Vec<busbar_kernel::teller::Ended>>,
+    pub capped: Option<AdmitLease>,
 
     pub resolved: Option<Vec<u8>>,
 
@@ -102,7 +62,8 @@ impl Default for TestUnits {
             calls: Mutex::new(Vec::new()),
             refuse_at: None,
             refuse_wait: None,
-            door: Door::Own,
+            accrual: None,
+            zero_hold: false,
             evidence: Evidence::default(),
             spend: 0,
             meter: Arc::new(AccrualMeter::new()),
@@ -113,7 +74,6 @@ impl Default for TestUnits {
             seated_principals: Mutex::new(Vec::new()),
             groups: Vec::new(),
             capped: None,
-            abandoned: Mutex::new(Vec::new()),
             resolved: None,
             tap_faults: Mutex::new(Vec::new()),
         }
@@ -125,47 +85,7 @@ impl TestUnits {
         TestUnits::default()
     }
 
-    pub fn in_groups(groups: &[&'static str]) -> Self {
-        TestUnits {
-            groups: groups.to_vec(),
-            ..TestUnits::default()
-        }
-    }
-
-    pub fn behind(group: &Arc<CappedGroup>) -> Self {
-        TestUnits {
-            capped: Some(Arc::clone(group)),
-            ..TestUnits::default()
-        }
-    }
-
-    pub fn refusing(step: StepName, reason: ReasonCode) -> Self {
-        TestUnits {
-            refuse_at: Some((step, reason)),
-            ..TestUnits::default()
-        }
-    }
-
-    pub fn called(&self) -> Vec<StepName> {
-        self.calls.lock().unwrap().clone()
-    }
-
-    pub fn doors(&self) -> (bool, bool) {
-        (
-            self.refused_door.load(Ordering::Acquire),
-            self.admitted_door.load(Ordering::Acquire),
-        )
-    }
-
-    pub fn approved_lanes(&self) -> Vec<busbar_contract::caps::LaneId> {
-        self.approved_lanes.lock().unwrap().clone()
-    }
-
-    pub fn seated_principals(&self) -> Vec<PrincipalId> {
-        self.seated_principals.lock().unwrap().clone()
-    }
-
-    fn note(&self, step: StepName) {
+    pub fn note(&self, step: StepName) {
         self.calls.lock().unwrap().push(step);
     }
 
@@ -177,51 +97,6 @@ impl TestUnits {
             }),
             _ => None,
         }
-    }
-}
-
-pub struct NeverRoutes<'u> {
-    pub units: &'u TestUnits,
-
-    pub dropped: &'u AtomicBool,
-}
-
-pub struct Never<'u> {
-    dropped: &'u AtomicBool,
-}
-
-impl std::future::Future for Never<'_> {
-    type Output = SeatVerdict<Route>;
-
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        std::task::Poll::Pending
-    }
-}
-
-impl Drop for Never<'_> {
-    fn drop(&mut self) {
-        self.dropped.store(true, Ordering::Release);
-    }
-}
-
-impl busbar_kernel::teller::RouteAwait for NeverRoutes<'_> {
-    fn route_leg<'a>(
-        &'a self,
-        _token: &'a Pass<Route>,
-        _ctx: &'a UnitCtx,
-        _destinations: &'a [busbar_contract::caps::VerifiedDestination],
-    ) -> busbar_kernel::teller::RouteLeg<'a> {
-        self.units.note(StepName::Route);
-        Box::pin(Never {
-            dropped: self.dropped,
-        })
-    }
-
-    fn abandoned(&self, _ctx: &UnitCtx, ended: busbar_kernel::teller::Ended) {
-        self.units.abandoned.lock().unwrap().push(ended);
     }
 }
 
@@ -252,22 +127,6 @@ pub fn encoded_frame() -> busbar_contract::caps::Frame {
     }
 }
 
-pub struct TestDoor;
-
-impl busbar_kernel::inflight::ArrivalDoor for TestDoor {
-    fn arrival_hold(
-        &self,
-        principal: PrincipalId,
-        token: &busbar_contract::caps::Grant<busbar_contract::caps::Admittance>,
-    ) -> Hold {
-        Hold::open(token, principal)
-    }
-}
-
-pub fn principal() -> PrincipalId {
-    PrincipalId::new("acct:battery")
-}
-
 pub fn ctx(key: u64) -> UnitCtx {
     UnitCtx {
         call: busbar_contract::caps::CallId::UNBOUND,
@@ -278,10 +137,6 @@ pub fn ctx(key: u64) -> UnitCtx {
         admin_listener: false,
         kernel_verb_only: false,
     }
-}
-
-pub fn cell(kernel: &Kernel) -> HoldCell {
-    HoldCell::new(Hold::open(&kernel.admit_token(), principal()))
 }
 
 pub fn usage(token: &Grant<Consumption>, quantity: u64) -> Usage {
@@ -390,25 +245,26 @@ impl busbar_kernel::plane_driver::DriverSteps for TestUnits {
             return Err(refusal);
         }
 
-        if let Some(group) = &self.capped {
-            let Some(counted) = group.count_one() else {
+        if let Some(lease) = &self.capped {
+            if !lease(leases) {
                 return Err(Refusal::new(ReasonCode::RateLimited));
-            };
-
-            leases.holding(busbar_kernel::slice::DoorGrant::new(counted));
+            }
         }
 
         for group in &self.groups {
             leases.counted(group);
         }
-        Ok(match &self.door {
-            Door::Own => Admission::Own(Hold::open(admit, principal.clone())),
-            Door::Zero => Admission::ZeroHold,
-            Door::Accrual(parent) => match parent.accrue_child(principal, admit) {
-                Ok(accrual) => Admission::Accrual(accrual),
+        Ok(if self.zero_hold {
+            Admission::ZeroHold
+        } else {
+            match &self.accrual {
+                None => Admission::Own(Hold::open(admit, principal.clone())),
+                Some(parent) => match parent.accrue_child(principal, admit) {
+                    Ok(accrual) => Admission::Accrual(accrual),
 
-                Err(_) => Admission::Own(Hold::open(admit, principal.clone())),
-            },
+                    Err(_) => Admission::Own(Hold::open(admit, principal.clone())),
+                },
+            }
         })
     }
 

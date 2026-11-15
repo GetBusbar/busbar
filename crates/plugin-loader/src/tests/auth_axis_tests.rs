@@ -136,7 +136,6 @@ mod aliased_inbound {
     );
 }
 
-#[allow(unsafe_code)] // This fixture deliberately restates a raw ABI declaration.
 mod outbound_only {
     use busbar_contract::abi::auth::{AuthTail, StyleDecl, CAP_OUTBOUND, POINT_HEAD};
     const STYLES: &[StyleDecl] = &[StyleDecl {
@@ -365,10 +364,10 @@ fn dropping(alias: &str, door: busbar_contract::abi::mechanism::door::DoorFn) ->
         &key,
         Manifest {
             name: format!("busbar-auth-{alias}"),
-            alias: alias.into(),
-            kind: "auth".into(),
-            version: "1.0.0".into(),
-            publisher: FIRST_PARTY_PUBLISHER.into(),
+            alias: alias.to_owned(),
+            kind: "auth".to_owned(),
+            version: "1.0.0".to_owned(),
+            publisher: FIRST_PARTY_PUBLISHER.to_owned(),
             abi_version: crate::registry::supported_abi("auth").unwrap(),
             statement: Some(hex::encode(stated)),
             ..Default::default()
@@ -443,7 +442,7 @@ fn red_a_stated_rendering_whose_tail_is_not_the_doors_is_refused_at_admit() {
     use crate::dispatch::kinds::auth::Auth;
     use crate::dispatch::{load_linked, Bind, ConnTable, LinkedRow, LoadError, NoSink};
     let bind = || Bind {
-        instance: Arc::from("tail-admit"),
+        instance: crate::cold::auth_axis::instance("tail-admit"),
         max_inflight_cap: 4,
         sink: Arc::new(NoSink),
         dispatcher: crate::dispatch::Adopter::unwatched(),
