@@ -412,12 +412,7 @@ impl OpenRefusal {
                 return line;
             }
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a refused open_outbound's answer text, joined once per refusal"
-        )]
-        let text = self.lines.join("\n");
-        Cow::Owned(text)
+        Cow::Owned(super::cold::wire::joined_lines(&self.lines))
     }
 }
 

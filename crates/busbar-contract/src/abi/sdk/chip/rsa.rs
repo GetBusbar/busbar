@@ -45,12 +45,17 @@ fn framed(der: &[u8]) -> bool {
 
 fn pem_body(pem: &[u8]) -> Option<Vec<u8>> {
     let text = std::str::from_utf8(pem).ok()?;
-    let b64: String = text
-        .lines()
-        .filter(|l| !l.starts_with("-----"))
-        .flat_map(|l| l.trim().chars())
-        .collect();
-    base64::engine::general_purpose::STANDARD.decode(b64).ok()
+    // The trimmed body lines, joined in place in one block sized to the PEM (never grown).
+    let mut b64 = vec![0_u8; text.len()];
+    let mut n = 0;
+    for line in text.lines().filter(|l| !l.starts_with("-----")) {
+        let line = line.trim().as_bytes();
+        b64[n..n + line.len()].copy_from_slice(line);
+        n += line.len();
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(&b64[..n])
+        .ok()
 }
 
 fn der(pem: &[u8]) -> Result<Vec<u8>, Refused> {

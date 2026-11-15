@@ -486,7 +486,7 @@ pub fn encode_source_chunk_owned<O: OwnerSeal>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    crate::own_seal!(Own);
+    use crate::support::Own;
     fn reader() -> SourceReader {
         SourceReader::new(
             SourceCodec::HistoricalV1,

@@ -26,9 +26,9 @@ impl SecretBytes {
             .checked_add(bytes.len())
             .expect("wiping buffer length");
         if len > self.0.capacity() {
-            let mut next = Vec::with_capacity(len.max(self.0.capacity().saturating_mul(2)));
-            next.extend_from_slice(&self.0);
+            let next = Vec::with_capacity(len.max(self.0.capacity().saturating_mul(2)));
             let mut old = std::mem::replace(&mut self.0, next);
+            self.0.extend_from_slice(&old);
             wipe_bytes(&mut old);
         }
         self.0.extend_from_slice(bytes);

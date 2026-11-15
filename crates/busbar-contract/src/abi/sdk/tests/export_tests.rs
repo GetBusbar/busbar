@@ -122,7 +122,7 @@ mod plugin {
 
 fn ops() -> &'static Ops {
     // SAFETY: the actual SDK-generated export door declares this complete static table.
-    unsafe { &*plugin::door().ops().cast::<Ops>() }
+    unsafe { &*(plugin::MACRO_DOOR.door_fn())().ops().cast::<Ops>() }
 }
 
 fn opened(table: &Ops) -> *mut core::ffi::c_void {
@@ -379,7 +379,7 @@ fn the_tail_and_the_alias_state_what_they_are_given() {
     assert_eq!(a.from.len, "probe-sink".len());
     assert!(a.to.ptr.is_null() && a.to.len == 0);
     // SAFETY: the actual exported static Statement and its static name bytes stay live.
-    let descriptor = unsafe { &*plugin::door().statement() };
+    let descriptor = unsafe { &*(plugin::MACRO_DOOR.door_fn())().statement() };
     let name = unsafe { std::slice::from_raw_parts(descriptor.name.ptr, descriptor.name.len) };
     assert_eq!(std::str::from_utf8(name).unwrap(), "probe-sink");
 }

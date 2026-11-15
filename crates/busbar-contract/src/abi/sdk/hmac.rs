@@ -91,7 +91,7 @@ pub fn hmac_sha1(key: &Cred, parts: &[&[u8]]) -> SecureArray<20> {
 }
 
 fn hmac_sha1_raw(key: &[u8], parts: &[&[u8]]) -> SecureArray<20> {
-    let message = SecureVec::from(parts.concat());
+    let message = super::chip::digests::joined(parts);
     SecureArray::from(crypto::legacy::hmac_sha1(key, &message).unwrap_or_else(|e| refused(e)))
 }
 

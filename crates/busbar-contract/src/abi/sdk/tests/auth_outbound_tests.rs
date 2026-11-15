@@ -191,7 +191,7 @@ mod plugin {
 }
 
 fn ops() -> &'static Ops {
-    ops_of(plugin::door)
+    ops_of(plugin::MACRO_DOOR.door_fn())
 }
 
 fn ops_of(door: DoorFn) -> &'static Ops {
@@ -753,7 +753,7 @@ fn verify_on_an_outbound_only_door_is_refused() {
     }
 
     // SAFETY: the door's `'static` Statement and tail.
-    let st = unsafe { &*plugin::door().statement };
+    let st = unsafe { &*(plugin::MACRO_DOOR.door_fn())().statement };
     // SAFETY: as above.
     let tail = unsafe { &*st.kind_tail.cast::<AuthTail>() };
     assert_eq!((tail.caps, tail.inbound_points), (CAP_OUTBOUND, 0));
@@ -863,7 +863,7 @@ mod stray {
 /// A flag outside `FIELD_SENSITIVE | FIELD_QUERY` is the plugin's bug: the call is FAULT, and
 #[test]
 fn a_stray_field_flag_is_fault() {
-    let t = ops_of(stray::door);
+    let t = ops_of(stray::MACRO_DOOR.door_fn());
     let inst = opened(t);
     let mut host = Host::new(64, 16);
     let (o, _, _) = fields(t, inst, 1, &mut host);
@@ -950,7 +950,7 @@ mod both {
 #[test]
 fn combined_door_leases_instance_carriers_on_open_and_refresh() {
     use crate::abi::mechanism::extensions;
-    let t = ops_of(both::door);
+    let t = ops_of(both::MACRO_DOOR.door_fn());
     let opened = open_answer(t);
 
     let other = open_answer(t);
@@ -994,7 +994,7 @@ fn combined_door_leases_instance_carriers_on_open_and_refresh() {
 /// THE COMBINED DOOR (`auth_door!(verify_and_outbound: ..)`): one instance verifies inbound and
 #[test]
 fn a_verify_and_outbound_door_serves_both_families() {
-    let t = ops_of(both::door);
+    let t = ops_of(both::MACRO_DOOR.door_fn());
     let inst = opened(t);
 
     let (o, bound) = open_outbound(t, inst, "bearer-test", Some(b"k"), b"{}");
@@ -1028,7 +1028,7 @@ fn a_verify_and_outbound_door_serves_both_families() {
     assert_eq!(out.verdict, VERDICT_IDENTITY);
 
     // SAFETY: the door's `'static` Statement and tail.
-    let st = unsafe { &*both::door().statement };
+    let st = unsafe { &*(both::MACRO_DOOR.door_fn())().statement };
     // SAFETY: as above.
     let tail = unsafe { &*st.kind_tail.cast::<AuthTail>() };
     assert_eq!(tail.caps, CAP_OUTBOUND | CAP_INBOUND);
@@ -1230,7 +1230,7 @@ fn cancel(t: &Ops, inst: *mut std::ffi::c_void, ticket: Ticket) -> (Outcome, u32
 /// THE DRIVER TICKET: `tick` runs the plugin on the instance's driver ticket with the host tables
 #[test]
 fn a_minting_plugin_runs_on_its_driver_ticket() {
-    let t = ops_of(minter::door);
+    let t = ops_of(minter::MACRO_DOOR.door_fn());
     let inst = opened(t);
 
     let (o, out) = tick(t, inst, DRIVER, 5_000);
@@ -1346,7 +1346,7 @@ fn error_text(head: &OutHead) -> String {
 /// A HANDLE IS GENERATION DATA: `open` and `refresh` hand the plugin the generation, so the
 #[test]
 fn open_and_refresh_hand_the_plugin_its_generation_and_its_refusals() {
-    let t = ops_of(generational::door);
+    let t = ops_of(generational::MACRO_DOOR.door_fn());
 
     let mut buf = vec![0_u8; 64];
     let input = crate::abi::mechanism::lifecycle::ValidateIn {
@@ -1402,7 +1402,7 @@ fn staged_diagnostics_read_back_in_order() {
     let mut d = Diags::default();
     assert!(d.is_empty());
     d.push(0, SEVERITY_WARN, "one");
-    d.push(2, SEVERITY_INFO, String::from("two"));
+    d.push(2, SEVERITY_INFO, "two".to_owned());
     assert_eq!(d.len(), 2);
     assert_eq!(
         d.iter().collect::<Vec<_>>(),
@@ -1525,7 +1525,7 @@ mod gated {
 
 #[test]
 fn a_combined_door_asks_the_verifier_half_and_a_refused_refresh_changes_nothing() {
-    let t = ops_of(gated::door);
+    let t = ops_of(gated::MACRO_DOOR.door_fn());
 
     let mut buf = vec![0_u8; 64];
     let input = crate::abi::mechanism::lifecycle::ValidateIn {
@@ -1672,6 +1672,12 @@ impl super::CombinedPlugin for Transactional {
 /// for a plugin without `CAP_PROVISION` answers `serve` REFUSED rather than leaving it NULL.
 #[test]
 fn the_outbound_and_combined_macros_fill_the_serve_slot() {
-    assert!(ops_of(plugin::door).serve.is_some(), "auth_outbound_door!");
-    assert!(ops_of(gated::door).serve.is_some(), "auth_door!");
+    assert!(
+        ops_of(plugin::MACRO_DOOR.door_fn()).serve.is_some(),
+        "auth_outbound_door!"
+    );
+    assert!(
+        ops_of(gated::MACRO_DOOR.door_fn()).serve.is_some(),
+        "auth_door!"
+    );
 }
