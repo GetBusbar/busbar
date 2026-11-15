@@ -231,3 +231,110 @@ async fn lost_keyset_acknowledgement_replays_before_publishing() {
     assert!(!backend.lose_reply.load(Ordering::SeqCst));
     assert!(owner.records.pending.lock().unwrap().is_none());
 }
+
+fn is_deployment_id(id: &str) -> bool {
+    id.strip_prefix("dep_").is_some_and(|hex| {
+        hex.len() == 32 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    })
+}
+
+#[tokio::test]
+async fn deployment_id_stable_across_restart() {
+    let backend = Arc::new(Backend::default());
+    let core = Arc::new(attach(backend).await);
+    let first = BootIdentity::new(core.clone()).unwrap();
+    let id = first.keep_deployment_id().await.unwrap();
+    assert!(is_deployment_id(&id), "{id}");
+    assert_eq!(first.keep_deployment_id().await.unwrap(), id);
+    // A restarted process, and a second node, are new owners over the same Store.
+    let restarted = BootIdentity::new(core).unwrap();
+    assert_eq!(restarted.keep_deployment_id().await.unwrap(), id);
+}
+
+#[tokio::test]
+async fn deployment_id_is_not_keyset() {
+    let backend = Arc::new(Backend::default());
+    let owner = BootIdentity::new(Arc::new(attach(backend).await)).unwrap();
+    let seed = "ab".repeat(32);
+    owner.keep_keyset(&seed).await.unwrap();
+    let id = owner.keep_deployment_id().await.unwrap();
+    assert!(!id.contains(&seed[..16]));
+    assert_eq!(
+        owner.stored_keyset().await.unwrap().as_deref(),
+        Some(seed.as_str()),
+        "keeping the deployment id leaves the secret keyset row alone"
+    );
+    let keyset_row = owner
+        .records
+        .records
+        .get(KEYSET_SCHEMA, KEYSET_KEY)
+        .await
+        .unwrap();
+    assert!(owner
+        .records
+        .records
+        .get(DEPLOYMENT_SCHEMA, KEYSET_KEY)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(keyset_row.is_some());
+}
+
+#[tokio::test]
+async fn node_id_changes_on_new_writer() {
+    let backend = Arc::new(Backend::default());
+    let core = Arc::new(attach(backend).await);
+    let first = Arc::new(BootIdentity::new(core.clone()).unwrap())
+        .take_node("host")
+        .await
+        .unwrap();
+    first.lease.as_ref().unwrap().release().await.unwrap();
+    let second = Arc::new(BootIdentity::new(core).unwrap())
+        .take_node("host")
+        .await
+        .unwrap();
+    assert_ne!(
+        first.id, second.id,
+        "a new owner never inherits the node id"
+    );
+}
+
+#[tokio::test]
+async fn nodes_lists_every_lease() {
+    let backend = Arc::new(Backend::default());
+    let core = Arc::new(attach(backend.clone()).await);
+    let owner = Arc::new(BootIdentity::new(core.clone()).unwrap());
+    let first = owner.take_node("host").await.unwrap();
+    let concurrent = Arc::new(BootIdentity::new(core.clone()).unwrap());
+    let second = concurrent.take_node("host").await.unwrap();
+    first.lease.as_ref().unwrap().release().await.unwrap();
+    let reopened = Arc::new(BootIdentity::new(core).unwrap());
+    let third = reopened.take_node("host").await.unwrap();
+
+    let nodes = reopened.nodes().await.unwrap();
+    let id = |n: u64| format!("node_{n:016x}");
+    assert_eq!(nodes.len(), 3, "{nodes:?}");
+    let row = |n: u64| nodes.iter().find(|r| r.node_id == id(n)).unwrap();
+    assert_eq!(row(first.id).state, "stopped");
+    assert_eq!(row(second.id).state, "live");
+    assert_eq!(row(third.id).state, "live");
+    assert_eq!(row(third.id).role, "writer");
+    assert_eq!(row(first.id).role, "replica");
+    assert!(nodes
+        .iter()
+        .all(|r| r.started_at > 0 && r.last_seen_at >= r.started_at));
+    let ids: Vec<_> = nodes.iter().map(|r| r.node_id.clone()).collect();
+    let mut sorted = ids.clone();
+    sorted.sort();
+    assert_eq!(ids.len(), sorted.len());
+
+    // Past the lease TTL with no refresh, the nodes that did not stop are lost, not stopped.
+    backend
+        .now
+        .fetch_add(LEASE_TTL_MS / 1_000 + 1, Ordering::SeqCst);
+    let later = reopened.nodes().await.unwrap();
+    let row = |n: u64| later.iter().find(|r| r.node_id == id(n)).unwrap();
+    assert_eq!(row(first.id).state, "stopped");
+    assert_eq!(row(second.id).state, "lost");
+    assert_eq!(row(third.id).state, "lost");
+}

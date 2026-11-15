@@ -231,6 +231,10 @@ fn internal_error(op: &str, e: &busbar_kernel::governance::RecordStoreError) -> 
 #[path = "tests/internal_error_tests.rs"]
 mod internal_error_tests;
 
+#[cfg(test)]
+#[path = "tests/key_view_tests.rs"]
+mod key_view_tests;
+
 fn key_etag(k: &VirtualKey) -> String {
     let meta = key_meta(k);
     busbar_contract::sha256_hex(meta.to_string().as_bytes())[..16].to_string()
