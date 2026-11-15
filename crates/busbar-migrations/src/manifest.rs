@@ -42,6 +42,16 @@ pub struct Identity {
     pub product_release: [u32; 3],
 }
 
+impl Identity {
+    /// Whether the opened Store described by `info` realizes this core target identity: core's
+    /// format on that very dataset. `info.physical_version` is the adapter's own physical format,
+    /// independent of core's: the Store refuses a physical format it cannot serve at open, and the
+    /// target's digests bind the one observed, so core neither selects nor compares it here.
+    pub fn realized_by(&self, info: &busbar_contract::persistence::BackendInfo) -> bool {
+        self.dataset == info.dataset.0 && self.format == CORE_FORMAT
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Bounds {
