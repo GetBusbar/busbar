@@ -357,9 +357,36 @@ pub fn sugars_of(candidates: &[Candidate]) -> Result<busbar_contract::secret_ref
                 c.name, e.at
             )
         })?;
-        sugars.declare(&c.name, &r.rewrites)?;
+        sugars
+            .declare(&c.name, &r.rewrites)
+            .map_err(|e| with_origins(e, candidates))?;
     }
     Ok(sugars)
+}
+
+/// Where a candidate comes from, as a refusal names it: `linked`, or its archive's file name.
+fn origin_of(c: &Candidate) -> &str {
+    match &c.origin {
+        Origin::Linked(_) => "linked",
+        Origin::Dropped { file, .. } => file,
+    }
+}
+
+/// `refusal`, then where each plugin it names comes from, so a conflict names both files.
+fn with_origins(mut refusal: String, candidates: &[Candidate]) -> String {
+    let mut named: Vec<String> = Vec::new();
+    for c in candidates {
+        let line = format!("'{}' from {}", c.name, origin_of(c));
+        if refusal.contains(&format!("'{}'", c.name)) && !named.contains(&line) {
+            named.push(line);
+        }
+    }
+    if !named.is_empty() {
+        refusal.push_str(" (");
+        refusal.push_str(&named.join("; "));
+        refusal.push(')');
+    }
+    refusal
 }
 
 pub fn one_owner(candidates: &[Candidate]) -> Result<(), String> {
@@ -381,9 +408,12 @@ pub fn one_owner(candidates: &[Candidate]) -> Result<(), String> {
             }
             if let Some(word) = a.words().find(|w| b.answers(w)) {
                 return Err(format!(
-                    "plugin claim conflict: '{word}' is claimed by both '{}' and '{}' - a name, \
-                     alias or former name must resolve to one plugin; remove one",
-                    a.name, b.name
+                    "plugin claim conflict: '{word}' is claimed by both '{}' ({}) and '{}' ({}) - \
+                     a name, alias or former name must resolve to one plugin; remove one",
+                    a.name,
+                    origin_of(a),
+                    b.name,
+                    origin_of(b)
                 ));
             }
         }

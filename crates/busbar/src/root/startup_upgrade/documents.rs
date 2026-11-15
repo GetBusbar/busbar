@@ -263,7 +263,9 @@ impl Documents {
                     )
                     .map_err(|_| "providers detection interpolation refused")?,
                 );
-                if config::providers::catalog_from_str(&detection).is_ok() {
+                if crate::root::boot::start_grammar().is_ok_and(|grammar| {
+                    config::providers::catalog_from_str(&detection, grammar).is_ok()
+                }) {
                     (original.clone(), false)
                 } else {
                     let output = busbar_migrations::config::migrate_catalog::migrate_catalog(
@@ -550,8 +552,8 @@ impl Documents {
         target: &Option<config::StoreCfg>,
         config_path: &Path,
     ) -> Result<bool, String> {
-        let sources =
-            busbar_contract::secret::SecretAxis::sugars(crate::root::linked::secret_rows());
+        // The process start grammar of this deployment, never the live secret axis.
+        let sources = crate::root::boot::start_grammar()?.sugars.clone();
         self.bootstrap_equivalent_with_sources(original, target, config_path, &sources)
     }
 

@@ -22,6 +22,9 @@ fn check_declared_paths(
     secret_slots: impl Fn(&str) -> Vec<String>,
     reference_slots: impl Fn(&str) -> Vec<String>,
 ) -> Result<(), String> {
+    // The grammar this configuration was read under: a bag holds a reference exactly where the
+    // read recognised one.
+    let sugars = &cfg.grammar()?.sugars;
     let declared = |module: &str| {
         let mut paths = secret_slots(module);
         paths.extend(reference_slots(module));
@@ -32,7 +35,7 @@ fn check_declared_paths(
                    settings: &busbar_contract::plugin_settings::Settings,
                    paths: &[String]|
      -> Result<(), String> {
-        match settings.undeclared_reference(paths, &crate::config::secret::sugars())? {
+        match settings.undeclared_reference(paths, sugars)? {
             Some(field) => Err(undeclared_refusal(&format!("{at}.{field}"), module)),
             None => Ok(()),
         }

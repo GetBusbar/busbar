@@ -139,7 +139,7 @@ async fn actual_retained_usage_resolution(compatibility_history: bool) {
     let config = busbar_kernel::config::deploy_from_deserializer(json!({
         "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": [busbar_kernel::config::operator_provider()]},
         "store": {"module": module, "settings": {}}
-    }))
+    }), &crate::root::boot::axis_test_grammar())
     .unwrap();
     let mut config = busbar_kernel::config::resolve(&config, &Default::default()).unwrap();
     let token_directory = crate::root::test_plugins::scratch("ledger-recovery-operator");

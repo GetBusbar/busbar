@@ -13,7 +13,7 @@
       "crates/busbar-contract/src/persistence/lifecycle/axis.rs": ["MigrationTarget", "PreparedStore"],
       "crates/busbar-contract/src/plane_calls.rs": ["AuthenticatedRouteInFlight", "PieceInFlight", "PlaneCalls", "ServeInFlight"],
       "crates/busbar-contract/src/plugin_rows.rs": ["PluginRows"],
-      "crates/busbar-contract/src/secret.rs": ["SecretAxis", "SecretCalls", "SecretResolve"],
+      "crates/busbar-contract/src/secret.rs": ["SecretCalls", "SecretResolve"],
       "crates/busbar-contract/src/services.rs": ["CredentialRead", "HookChildInvocation"],
       "crates/busbar-contract/src/yaml.rs": ["MappingExt", "ValueExt"],
       "crates/busbar-core-admin/src/admin_state.rs": ["AppAdmin"],

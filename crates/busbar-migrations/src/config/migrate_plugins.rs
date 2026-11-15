@@ -141,10 +141,17 @@ impl std::fmt::Display for Shown {
 }
 
 pub trait MigrateHost {
-    /// Source grammar declared by admitted owners; no source is inferred when absent.
+    /// The migration's grammar: the source shorthand the modules the migrated document's own
+    /// `plugins:` block admits declare ([`Self::bind_grammar`]), never the live secret axis. No
+    /// source is inferred when absent.
     fn source_declarations(&self) -> Result<busbar_contract::secret_ref::Sugars, String> {
         Ok(Default::default())
     }
+
+    /// The migrated document's `plugins:` block after the structural steps (SECRET-SHORTHAND-BOOT
+    /// §3.13): what [`Self::source_declarations`] is computed from for the rest of this migration.
+    /// A host with fixed declarations ignores it.
+    fn bind_grammar(&self, _plugins: Option<&busbar_contract::yaml::Value>) {}
 
     /// Accept opaque grammar/settings evidence for in-memory migration custody only.
     fn admit_config_profile(&self, _: &super::HistoricalConfigProof) -> Result<(), String> {
@@ -1057,79 +1064,7 @@ fn externalize_secret(
     Ok(())
 }
 
-/// Convert plugin JSON into real YAML scalars. serde_json arbitrary_precision exposes a
-/// private map marker through generic serializers, which would corrupt numeric settings.
-/// Refuse integers outside YAML's exact range instead of silently rounding their value.
-pub fn yaml_value(value: &serde_json::Value) -> Result<Value, String> {
-    use serde_json::Value as Json;
-    Ok(match value {
-        Json::Null => Value::Null,
-        Json::Bool(value) => Value::Bool(*value),
-        Json::String(value) => Value::Text(value.clone()),
-        Json::Number(value) => {
-            if let Some(value) = value.as_u64() {
-                Value::from(value)
-            } else if let Some(value) = value.as_i64() {
-                Value::from(value)
-            } else {
-                let text = value.to_string();
-                if !text.contains(['.', 'e', 'E']) {
-                    return Err("plugin migration integer exceeds the exact YAML range".into());
-                }
-                let value = value
-                    .as_f64()
-                    .filter(|value| value.is_finite())
-                    .ok_or("plugin migration number is not a finite YAML scalar")?;
-                let replay = serde_json::Number::from_f64(value)
-                    .ok_or("plugin migration number is not finite")?
-                    .to_string();
-                if decimal_value(&text) != decimal_value(&replay) {
-                    return Err(
-                        "plugin migration decimal cannot be represented exactly in YAML".into(),
-                    );
-                }
-                Value::Float(value)
-            }
-        }
-        Json::Array(values) => {
-            Value::Array(values.iter().map(yaml_value).collect::<Result<_, _>>()?)
-        }
-        Json::Object(values) => Value::Map(
-            values
-                .iter()
-                .map(|(key, value)| Ok((Value::Text(key.clone()), yaml_value(value)?)))
-                .collect::<Result<_, String>>()?,
-        ),
-    })
-}
-
-fn decimal_value(text: &str) -> Option<(bool, String, i64)> {
-    let (negative, text) = text
-        .strip_prefix('-')
-        .map_or((false, text), |text| (true, text));
-    let (coefficient, exponent) =
-        text.split_once(['e', 'E'])
-            .map_or(Some((text, 0_i64)), |(coefficient, exponent)| {
-                exponent
-                    .parse()
-                    .ok()
-                    .map(|exponent| (coefficient, exponent))
-            })?;
-    let decimals = coefficient
-        .split_once('.')
-        .map_or(0, |(_, fraction)| fraction.len());
-    let mut digits = coefficient.replace('.', "");
-    digits = digits.trim_start_matches('0').to_owned();
-    if digits.is_empty() {
-        return Some((false, "0".into(), 0));
-    }
-    let trailing = digits.len() - digits.trim_end_matches('0').len();
-    digits.truncate(digits.len() - trailing);
-    let exponent = exponent
-        .checked_sub(i64::try_from(decimals).ok()?)?
-        .checked_add(i64::try_from(trailing).ok()?)?;
-    Some((negative, digits, exponent))
-}
+pub use busbar_contract::json::to_yaml as yaml_value;
 
 fn write_back(
     root: &mut Pairs,

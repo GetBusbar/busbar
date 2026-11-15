@@ -92,7 +92,7 @@ impl<'de> Deserialize<'de> for RootSettings {
         }
         busbar_contract::secret_ref::context::deserialize::<Written, _>(
             de,
-            &super::secret::sugars(),
+            &super::secret::admitted_sugars(),
         )
         .map(|written| written.0)
     }
@@ -796,6 +796,7 @@ pub async fn read_state_with_revision_async(
 pub async fn unparseable_named_map_entries_async(
     store: Option<&OverlayStore>,
     section: crate::config::named_map::NamedMapSection,
+    grammar: &crate::config::Grammar,
 ) -> Result<BTreeMap<String, UnparseableNamedDef>, String> {
     let mut out = BTreeMap::new();
     let Some(doc) = (match store {
@@ -808,7 +809,7 @@ pub async fn unparseable_named_map_entries_async(
         return Ok(out);
     };
     for (name, def) in entries {
-        if let Err(error) = section.validate_def(name, def) {
+        if let Err(error) = section.validate_def(name, def, grammar) {
             out.insert(
                 name.clone(),
                 UnparseableNamedDef {

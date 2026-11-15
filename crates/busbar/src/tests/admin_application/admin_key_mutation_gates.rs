@@ -183,8 +183,11 @@ async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
     let at_rest_key = directory.join("at-rest-key");
     std::fs::write(&at_rest_key, hex::encode([3u8; 32])).expect("write original at-rest key input");
     document["credentials"]["at_rest"]["key"]["file"] = serde_json::json!(at_rest_key);
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -390,8 +393,11 @@ async fn test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete(
     let at_rest_key = directory.join("at-rest-key");
     std::fs::write(&at_rest_key, hex::encode([3u8; 32])).expect("write original at-rest key input");
     document["credentials"]["at_rest"]["key"]["file"] = serde_json::json!(at_rest_key);
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -531,8 +537,11 @@ async fn test_patch_interleaved_with_delete_never_resurrects_key() {
     let at_rest_key = directory.join("at-rest-key");
     std::fs::write(&at_rest_key, hex::encode([3u8; 32])).expect("write original at-rest key input");
     document["credentials"]["at_rest"]["key"]["file"] = serde_json::json!(at_rest_key);
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -693,8 +702,11 @@ async fn test_rotate_interleaved_with_delete_never_resurrects_key() {
     let at_rest_key = directory.join("at-rest-key");
     std::fs::write(&at_rest_key, hex::encode([3u8; 32])).expect("write original at-rest key input");
     document["credentials"]["at_rest"]["key"]["file"] = serde_json::json!(at_rest_key);
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -852,8 +864,11 @@ async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
     let at_rest_key = directory.join("at-rest-key");
     std::fs::write(&at_rest_key, hex::encode([3u8; 32])).expect("write original at-rest key input");
     document["credentials"]["at_rest"]["key"]["file"] = serde_json::json!(at_rest_key);
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -1012,8 +1027,11 @@ async fn a_delete_of_another_key_is_not_held_behind_a_patch_parked_in_the_store(
     let at_rest_key = directory.join("at-rest-key");
     std::fs::write(&at_rest_key, hex::encode([3u8; 32])).expect("write original at-rest key input");
     document["credentials"]["at_rest"]["key"]["file"] = serde_json::json!(at_rest_key);
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())

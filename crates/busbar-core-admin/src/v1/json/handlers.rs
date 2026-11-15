@@ -2165,7 +2165,7 @@ pub(crate) struct ApplyConfigReq {
     /// on dangling references.
     #[serde(
         default,
-        deserialize_with = "busbar_kernel::config::providers::catalog"
+        deserialize_with = "busbar_kernel::config::providers::catalog_admitted"
     )]
     providers: std::collections::HashMap<String, busbar_kernel::config::ProviderDef>,
 }
@@ -2202,8 +2202,11 @@ pub(crate) async fn apply_config(
         );
     }
 
+    // The body is read under what the serving generation admitted, as its providers are
+    // (SECRET-SHORTHAND-BOOT MR-B3 reads it under its own phase 1 after the authority pre-check).
+    let grammar = busbar_kernel::config::grammar::admitted();
     let req_deploy: busbar_kernel::config::DeployCfg =
-        match busbar_kernel::config::deploy_from_deserializer(req.config) {
+        match busbar_kernel::config::deploy_from_deserializer(req.config, &grammar) {
             Ok(d) => d,
             Err(e) => {
                 return reject(
@@ -4858,7 +4861,7 @@ pub(crate) struct ValidateConfigReq {
     /// dangling references as errors).
     #[serde(
         default,
-        deserialize_with = "busbar_kernel::config::providers::catalog"
+        deserialize_with = "busbar_kernel::config::providers::catalog_admitted"
     )]
     providers: std::collections::HashMap<String, busbar_kernel::config::ProviderDef>,
 }
@@ -4873,8 +4876,9 @@ pub(crate) async fn validate_config(
         return err_json(&AdminError::Validation(refusal));
     }
 
+    let grammar = busbar_kernel::config::grammar::admitted();
     let deploy: busbar_kernel::config::DeployCfg =
-        match busbar_kernel::config::deploy_from_deserializer(req.config) {
+        match busbar_kernel::config::deploy_from_deserializer(req.config, &grammar) {
             Ok(d) => d,
             Err(e) => {
                 return err_json(&AdminError::Validation(format!(

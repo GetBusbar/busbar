@@ -1,40 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
+use busbar_contract::abi::sdk::test_support::watch::Watch;
 
-thread_local! {
-    static PEAK_SINGLE_ALLOC: Cell<usize> = const { Cell::new(0) };
-}
-
-struct CountingAlloc;
-
-unsafe impl GlobalAlloc for CountingAlloc {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        PEAK_SINGLE_ALLOC.with(|p| {
-            if layout.size() > p.get() {
-                p.set(layout.size());
-            }
-        });
-        System.alloc(layout)
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        System.dealloc(ptr, layout)
-    }
-}
-
+/// The reviewed allocator probe: unarmed it is the system allocator; `armed_here` counts this
+/// thread's allocations and the largest single one.
 #[global_allocator]
-static ALLOC: CountingAlloc = CountingAlloc;
-
-fn peak_single_alloc() -> usize {
-    PEAK_SINGLE_ALLOC.with(|p| p.get())
-}
-
-fn reset_peak() {
-    PEAK_SINGLE_ALLOC.with(|p| p.set(0));
-}
+static ALLOC: Watch = Watch::new();
 
 fn raw_header(name: &str, size: u64) -> [u8; 512] {
     let mut h = tar::Header::new_gnu();
@@ -78,11 +50,17 @@ fn lying_size_tarball() -> Vec<u8> {
 
 #[test]
 fn truncated_lying_header_does_not_force_a_large_reservation() {
-    reset_peak();
     let bytes = lying_size_tarball();
 
-    let result = std::panic::catch_unwind(|| busbar_plugin_loader::tarball::unpack(&bytes));
-    let result = result.expect("unpack must not panic on a truncated/lying entry");
+    let mut caught = None;
+    let freed = ALLOC.armed_here(b"", || {
+        caught = Some(std::panic::catch_unwind(|| {
+            busbar_plugin_loader::tarball::unpack(&bytes)
+        }));
+    });
+    let result = caught
+        .expect("the armed scope ran")
+        .expect("unpack must not panic on a truncated/lying entry");
 
     if let Ok(unpacked) = &result {
         assert!(
@@ -92,7 +70,7 @@ fn truncated_lying_header_does_not_force_a_large_reservation() {
         );
     }
 
-    let peak = peak_single_alloc();
+    let peak = freed.largest_alloc;
     assert!(
         peak < 4 * 1024 * 1024,
         "peak single allocation was {peak} bytes (~{} MiB) — the reservation was sized off the \
