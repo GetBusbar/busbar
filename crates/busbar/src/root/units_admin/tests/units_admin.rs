@@ -957,12 +957,15 @@ async fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals
         settings.is_object(),
         "the actual Store settings are an object"
     );
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {}, "models": {},
-        "auth": {"chain": [], "admin_auth": []},
-        "store": {"module": module, "settings": settings},
-        "advanced": {"allow_destinations": ["127.0.0.1"]},
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {}, "models": {},
+            "auth": {"chain": [], "admin_auth": []},
+            "store": {"module": module, "settings": settings},
+            "advanced": {"allow_destinations": ["127.0.0.1"]},
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the real admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the real admin deployment resolves");
@@ -1504,9 +1507,10 @@ async fn answer_over_counts(
         .as_object()
         .and_then(|rows| rows.keys().next())
         .expect("the distribution links a model dialect");
-    let providers = busbar_kernel::config::providers::catalog_from_str(&format!(
-        "wire:\n  protocol: {dialect}\n  base_url: http://127.0.0.1:9\n"
-    ))
+    let providers = busbar_kernel::config::providers::catalog_from_str(
+        &format!("wire:\n  protocol: {dialect}\n  base_url: http://127.0.0.1:9\n"),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the actual wire provider has its catalog declaration");
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {"wire": {"protocol": dialect, "base_url": "http://127.0.0.1:9", "api_key": "none"}},
@@ -1515,7 +1519,7 @@ async fn answer_over_counts(
         "auth": {"chain": [], "admin_auth": []},
         "store": {"module": module, "settings": settings},
         "advanced": {"allow_destinations": ["127.0.0.1"]},
-    }))
+    }), &crate::root::boot::axis_test_grammar())
     .expect("the real admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &providers)
         .expect("the real admin deployment resolves");
@@ -1768,12 +1772,15 @@ async fn real_admin_dispatch() -> RouterDispatch {
         settings.is_object(),
         "the actual Store settings are an object"
     );
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {}, "models": {},
-        "auth": {"chain": [], "admin_auth": []},
-        "store": {"module": module, "settings": settings},
-        "advanced": {"allow_destinations": ["127.0.0.1"]},
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {}, "models": {},
+            "auth": {"chain": [], "admin_auth": []},
+            "store": {"module": module, "settings": settings},
+            "advanced": {"allow_destinations": ["127.0.0.1"]},
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the real admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the real admin deployment resolves");

@@ -64,8 +64,11 @@ async fn an_unmounted_plane_claims_no_path_by_url_shape() {
             document["store"] = serde_json::json!({"module": module, "settings": settings});
             document["auth"] = serde_json::json!({"chain": [], "admin_auth": []});
             document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
-            let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-                .expect("the product deployment parses");
+            let deploy = busbar_kernel::config::deploy_from_deserializer(
+                document,
+                &crate::root::boot::axis_test_grammar(),
+            )
+            .expect("the product deployment parses");
             let config = busbar_kernel::config::resolve(
                 &deploy,
                 &std::collections::HashMap::from([(

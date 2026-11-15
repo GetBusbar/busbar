@@ -46,7 +46,7 @@ pub const EPOCH_VALUE: &[u8] = b"BSE1";
 const SLOT_KEY_LENGTH: u64 = 20;
 
 /// The live epochs of a closed or absent writer row.
-const NONE_LIVE: RangeInclusive<u64> = 1..=0;
+const NONE_LIVE: RangeInclusive<u64> = RangeInclusive::new(1, 0);
 
 /// Whether a record in `namespace` makes a dataset non-empty for Initialize's emptiness proof.
 /// Every namespace counts except the reserved import set R = {[`IMPORT_NAMESPACE`]}; receipts

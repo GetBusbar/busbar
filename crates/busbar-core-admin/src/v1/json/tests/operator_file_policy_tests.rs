@@ -52,7 +52,8 @@ fn file() -> String {
 }
 
 fn base() -> DeployCfg {
-    busbar_kernel::config::deploy_from_yaml_str(&file()).expect("config.yaml parses")
+    busbar_kernel::config::deploy_from_yaml_str(&file(), &busbar_kernel::config::Grammar::empty())
+        .expect("config.yaml parses")
 }
 
 fn reference() -> OperatorFileDefs {
@@ -100,9 +101,12 @@ fn assert_audited(door: &str, what: &str) {
 
 /// The base file with only the operator definition, and the overlay a write would leave.
 fn named_map_candidate(name: &str, def: serde_json::Value) -> DeployCfg {
-    let mut deploy = busbar_kernel::config::deploy_from_yaml_str(&format!(
+    let mut deploy = busbar_kernel::config::deploy_from_yaml_str(
+        &format!(
         "identity-providers:\n  {OP}:\n    module: {OP}\n    settings: {{ sha256: \"{DIGEST}\" }}\n"
-    ))
+    ),
+        &busbar_kernel::config::Grammar::empty(),
+    )
     .expect("config.yaml parses");
     let mut doc = OverlayDoc::default();
     doc.named_maps.insert(
@@ -213,7 +217,11 @@ fn refused_bodies() -> [(&'static str, &'static str, serde_json::Value); 3] {
 }
 
 fn body(config: serde_json::Value) -> DeployCfg {
-    busbar_kernel::config::deploy_from_deserializer(config).expect("the body parses")
+    busbar_kernel::config::deploy_from_deserializer(
+        config,
+        &busbar_kernel::config::Grammar::empty(),
+    )
+    .expect("the body parses")
 }
 
 async fn body_answer(deploy: &DeployCfg, door: &str) -> Option<(StatusCode, serde_json::Value)> {

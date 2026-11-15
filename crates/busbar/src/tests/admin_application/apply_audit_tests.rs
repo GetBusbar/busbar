@@ -41,8 +41,11 @@ async fn admin_apply_parse_refusal_is_audited() {
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -156,13 +159,16 @@ async fn refused_commit_after_build_restores_the_secret_axis() {
     let (module, directory, settings) = crate::distribution::rig::actual_store(
         "refused_commit_after_build_restores_the_secret_axis-store",
     );
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {},
-        "models": {},
-        "auth": { "chain": [], "admin_auth": [] },
-        "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {},
+            "models": {},
+            "auth": { "chain": [], "admin_auth": [] },
+            "store": { "module": module, "settings": settings },
+            "advanced": { "allow_destinations": ["127.0.0.1"] },
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");

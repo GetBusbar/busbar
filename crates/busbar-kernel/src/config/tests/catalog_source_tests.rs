@@ -27,7 +27,11 @@ fn an_absent_default_catalog_is_the_empty_unchanged_catalog() {
         .expect("an absent default catalog is not refused");
     assert_eq!(source, CatalogSource::AbsentDefault);
     assert_eq!(source.text(), ABSENT_CATALOG);
-    assert!(catalog_from_str(source.text()).expect("parses").is_empty());
+    assert!(
+        catalog_from_str(source.text(), &crate::config::Grammar::empty())
+            .expect("parses")
+            .is_empty()
+    );
     assert!(!location.path.exists(), "reading never creates the file");
     let _ = std::fs::remove_dir_all(&dir);
 }

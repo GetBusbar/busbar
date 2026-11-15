@@ -248,6 +248,39 @@ pub struct InfoView {
     /// reload/apply re-merges the overlay.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub overlay_ignored: bool,
+    /// This deployment's identity (`dep_` + 32 hex, opaque): kept once in the Store, the same
+    /// for every node and every restart. Absent only before the process has booted its Store.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "openapi-schema",
+        schemars(regex(pattern = "^dep_[0-9a-f]{32}$"))
+    )]
+    pub deployment_id: Option<String>,
+    /// This process's node (`node_` + 16 hex, opaque): changes whenever a new writer takes over.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "openapi-schema",
+        schemars(regex(pattern = "^node_[0-9a-f]{16}$"))
+    )]
+    pub node_id: Option<String>,
+    /// Every node the Store holds a lease row for, so a client can prove it reads the whole
+    /// deployment.
+    pub nodes: Vec<NodeView>,
+}
+
+/// One node of `InfoView.nodes`: a Store node lease row.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub struct NodeView {
+    pub node_id: String,
+    /// Epoch seconds the node started.
+    pub started_at: u64,
+    /// Epoch seconds of the node's last lease refresh.
+    pub last_seen_at: u64,
+    /// `live` (lease unexpired), `lost` (expired without release) or `stopped` (released).
+    pub state: String,
+    /// `writer` for the node this Store's current writer authority runs, otherwise `replica`.
+    pub role: String,
 }
 
 /// The compiled-in feature proof (`InfoView.build`).

@@ -20,7 +20,11 @@ fn every_config_read_refuses_with_the_start_refusal() {
         "auth:\n  chain: []\n  admin_auth: []\n",
         "auth:\n  admin_auth: []\nidentity-providers:\n  idp: { module: some-idp }\n",
     ] {
-        let deploy = busbar_kernel::config::deploy_from_yaml_str(yaml).expect("the config parses");
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(
+            yaml,
+            &busbar_kernel::config::Grammar::empty(),
+        )
+        .expect("the config parses");
         let cfg = busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
             .expect("the config resolves");
         let errors = busbar_kernel::config_validate::validate(&cfg)

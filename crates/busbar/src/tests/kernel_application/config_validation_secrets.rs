@@ -50,6 +50,7 @@ fn unreferenced_identity_provider_token_is_not_resolved_by_actual_validate() {
                 root: &busbar_kernel::config_validate::no_root_rules,
                 fetch: None,
                 resolve_builtins: true,
+                secret_axis: busbar_kernel::config::secret::live_axis(),
             },
         )
         .map(|_| ())
@@ -58,7 +59,9 @@ fn unreferenced_identity_provider_token_is_not_resolved_by_actual_validate() {
             other => panic!("the actual config must reach built-in secret resolution: {other:?}"),
         })
     };
-    let deploy = config::deploy_from_deserializer(document.clone()).expect("the fixture parses");
+    let deploy =
+        config::deploy_from_deserializer(document.clone(), &crate::root::boot::axis_test_grammar())
+            .expect("the fixture parses");
     let cfg = config::resolve(&deploy, &Default::default()).expect("the fixture resolves");
     resolve_builtins(&cfg).unwrap_or_else(|e| {
         panic!("--validate refused a config boot serves (the unset env var is never read): {e}")
@@ -73,7 +76,9 @@ fn unreferenced_identity_provider_token_is_not_resolved_by_actual_validate() {
         "module": op, "token": { "env": "BUSBAR_TEST_NEVER_SET_ADMIN_TOKEN" },
     });
     document["auth"]["admin_auth"] = serde_json::json!([op]);
-    let deploy = config::deploy_from_deserializer(document).expect("the referenced fixture parses");
+    let deploy =
+        config::deploy_from_deserializer(document, &crate::root::boot::axis_test_grammar())
+            .expect("the referenced fixture parses");
     let cfg =
         config::resolve(&deploy, &Default::default()).expect("the referenced fixture resolves");
     let err = resolve_builtins(&cfg)

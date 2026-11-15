@@ -151,6 +151,7 @@ async fn governed_full(
         crate::register_diagnostics();
         let initial = busbar_kernel::config::deploy_from_yaml_str(
             "providers: {}\nmodels: {}\nadvanced:\n  allow_destinations: [127.0.0.1]\n",
+            &crate::root::boot::axis_test_grammar(),
         )
         .expect("the loopback deployment parses");
         let initial = busbar_kernel::config::resolve(&initial, &Default::default()).unwrap();
@@ -264,13 +265,16 @@ async fn governed_full(
     let store_module = store_module.expect("the actual Store module is declared");
     let signing_file = directory.join("token-signing.key");
     std::fs::write(&signing_file, [9u8; 32]).expect("the actual signing secret");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {}, "models": {},
-        "auth": {"chain": if keys_chain { vec!["keys"] } else { vec![] }, "admin_auth": [],
-            "signing_key": {"file": signing_file}},
-        "store": {"module": store_module, "settings": settings},
-        "advanced": {"allow_destinations": ["127.0.0.1"]}
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {}, "models": {},
+            "auth": {"chain": if keys_chain { vec!["keys"] } else { vec![] }, "admin_auth": [],
+                "signing_key": {"file": signing_file}},
+            "store": {"module": store_module, "settings": settings},
+            "advanced": {"allow_destinations": ["127.0.0.1"]}
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the money deployment parses");
     let mut config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
     let screen_hook = screen_cfg(&hook_module.unwrap(), &endpoint);

@@ -166,10 +166,13 @@ async fn routing_recipe_preserves_configured_float_prices_before_ranking() {
             None,
         ));
         let settings = crate::root::test_plugins::application_store_settings(&directory);
-        let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-            "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
-            "store": {"module": module, "settings": settings},
-        }))
+        let deploy = busbar_kernel::config::deploy_from_deserializer(
+            serde_json::json!({
+                "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+                "store": {"module": module, "settings": settings},
+            }),
+            &crate::root::boot::axis_test_grammar(),
+        )
         .expect("the door deployment parses");
         let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the door deployment resolves");
@@ -298,10 +301,13 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
                 crate::root::auth_bindings::operator_binding(None),
             );
             let settings = crate::root::test_plugins::application_store_settings(&directory);
-            let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-                "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
-                "store": {"module": module, "settings": settings},
-            }))
+            let deploy = busbar_kernel::config::deploy_from_deserializer(
+                serde_json::json!({
+                    "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+                    "store": {"module": module, "settings": settings},
+                }),
+                &crate::root::boot::axis_test_grammar(),
+            )
             .expect("the door deployment parses");
             let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
                 .expect("the door deployment resolves");
@@ -414,10 +420,13 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
             None,
         ));
         let settings = crate::root::test_plugins::application_store_settings(&directory);
-        let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-            "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
-            "store": {"module": module, "settings": settings},
-        }))
+        let deploy = busbar_kernel::config::deploy_from_deserializer(
+            serde_json::json!({
+                "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+                "store": {"module": module, "settings": settings},
+            }),
+            &crate::root::boot::axis_test_grammar(),
+        )
         .expect("the door deployment parses");
         let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the door deployment resolves");
@@ -994,10 +1003,13 @@ async fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() 
             None,
         ));
         let settings = crate::root::test_plugins::application_store_settings(&directory);
-        let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-            "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
-            "store": {"module": module, "settings": settings},
-        }))
+        let deploy = busbar_kernel::config::deploy_from_deserializer(
+            serde_json::json!({
+                "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+                "store": {"module": module, "settings": settings},
+            }),
+            &crate::root::boot::axis_test_grammar(),
+        )
         .expect("the door deployment parses");
         let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the door deployment resolves");
@@ -1171,23 +1183,26 @@ async fn money_book(
             None,
         ));
         let settings = crate::root::test_plugins::application_store_settings(&directory);
-        let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-            "providers": {"downgrade-upstream": {"api_key": "none"}},
-            "models": {
-                "big": {"provider": "downgrade-upstream"},
-                "small": {"provider": "downgrade-upstream"},
-                "tiny": {"provider": "downgrade-upstream"}
-            },
-            "pools": {
-                "frontier": {"members": ["big"]},
-                "value": {"members": ["small"]},
-                "first": {"members": ["big"]},
-                "second": {"members": ["small"]},
-                "third": {"members": ["tiny"]}
-            },
-            "auth": {"chain": [], "admin_auth": []},
-            "store": {"module": module, "settings": settings},
-        }))
+        let deploy = busbar_kernel::config::deploy_from_deserializer(
+            serde_json::json!({
+                "providers": {"downgrade-upstream": {"api_key": "none"}},
+                "models": {
+                    "big": {"provider": "downgrade-upstream"},
+                    "small": {"provider": "downgrade-upstream"},
+                    "tiny": {"provider": "downgrade-upstream"}
+                },
+                "pools": {
+                    "frontier": {"members": ["big"]},
+                    "value": {"members": ["small"]},
+                    "first": {"members": ["big"]},
+                    "second": {"members": ["small"]},
+                    "third": {"members": ["tiny"]}
+                },
+                "auth": {"chain": [], "admin_auth": []},
+                "store": {"module": module, "settings": settings},
+            }),
+            &crate::root::boot::axis_test_grammar(),
+        )
         .expect("the door deployment parses");
         let providers = std::collections::HashMap::from([(
             "downgrade-upstream".to_string(),
@@ -1637,6 +1652,7 @@ fn llm_baseline() -> busbar_kernel::config::RootCfg {
          pools:\n  oracle-fo:\n    members:\n      - {model: m-openai-chat, weight: 3}\n      \
          - {model: m-anthropic, weight: 1}\n  oracle-fb:\n    members: [{model: m-anthropic}]\n    \
          on_exhausted: {fallback_pool: oracle-fo}\n",
+        &crate::root::boot::axis_test_grammar(),
     )
     .expect("deployment");
     busbar_kernel::config::resolve(&deploy, &defs).expect("resolved configuration")
@@ -3241,7 +3257,11 @@ fn a_registration_member_is_reached_at_its_own_target() {
 #[test]
 fn the_limits_a_door_plane_is_handed_carry_the_operators_translate_cap() {
     let handed = |yaml: &str| {
-        let deploy = busbar_kernel::config::deploy_from_yaml_str(yaml).expect("a deployment");
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(
+            yaml,
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("a deployment");
         let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
         super::kernel_sections(&cfg).expect("projectable sections")["limits"]
             .at("request_body_max_bytes")
@@ -3265,6 +3285,7 @@ fn numeric_projection_config() -> busbar_kernel::config::RootCfg {
     let defs = std::collections::HashMap::from([("p".to_string(), def)]);
     let deploy = busbar_kernel::config::deploy_from_yaml_str(
         "providers:\n  p:\n    api_key: {env: BUSBAR_TEST_KEY}\nmodels:\n  over:\n    provider: p\n  plain:\n    provider: p\n",
+            &crate::root::boot::axis_test_grammar(),
     ).expect("deployment");
     busbar_kernel::config::resolve(&deploy, &defs).expect("resolved configuration")
 }
@@ -4660,10 +4681,13 @@ async fn the_configured_error_body_cap_reaches_both_egress_constructors() {
                 crate::root::auth_bindings::operator_binding(None),
             );
             let settings = crate::root::test_plugins::application_store_settings(&directory);
-            let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-                "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
-                "store": {"module": module, "settings": settings},
-            }))
+            let deploy = busbar_kernel::config::deploy_from_deserializer(
+                serde_json::json!({
+                    "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+                    "store": {"module": module, "settings": settings},
+                }),
+                &crate::root::boot::axis_test_grammar(),
+            )
             .expect("the door deployment parses");
             let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
                 .expect("the door deployment resolves");
@@ -4888,10 +4912,13 @@ async fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_
             None,
         ));
         let settings = crate::root::test_plugins::application_store_settings(&directory);
-        let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-            "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
-            "store": {"module": module, "settings": settings},
-        }))
+        let deploy = busbar_kernel::config::deploy_from_deserializer(
+            serde_json::json!({
+                "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+                "store": {"module": module, "settings": settings},
+            }),
+            &crate::root::boot::axis_test_grammar(),
+        )
         .expect("the door deployment parses");
         let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the door deployment resolves");
@@ -5045,6 +5072,7 @@ fn a_models_protocol_override_is_handed_to_the_plane() {
     let deploy = busbar_kernel::config::deploy_from_yaml_str(
         "store: {module: memory}\nproviders:\n  p:\n    api_key: { env: BUSBAR_TEST_KEY }\n\
          models:\n  over:\n    provider: p\n    protocol: dialect-b\n  plain:\n    provider: p\n",
+        &crate::root::boot::axis_test_grammar(),
     )
     .expect("parses");
     let cfg = busbar_kernel::config::resolve(&deploy, &defs).expect("resolves");
@@ -5121,6 +5149,7 @@ fn an_unopened_door_plane_is_awaiting_restart_once_a_configuration_writes_its_se
     use busbar_kernel::appbuild::RootRules as _;
     let deploy = busbar_kernel::config::deploy_from_yaml_str(
         "store: {module: memory}\nmodels: {}\nproviders: {}\n",
+        &crate::root::boot::axis_test_grammar(),
     )
     .expect("parses");
     let mut cfg = busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
@@ -5292,10 +5321,13 @@ async fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() 
             None,
         ));
         let settings = crate::root::test_plugins::application_store_settings(&directory);
-        let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-            "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
-            "store": {"module": module, "settings": settings},
-        }))
+        let deploy = busbar_kernel::config::deploy_from_deserializer(
+            serde_json::json!({
+                "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+                "store": {"module": module, "settings": settings},
+            }),
+            &crate::root::boot::axis_test_grammar(),
+        )
         .expect("the door deployment parses");
         let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the door deployment resolves");
@@ -5438,10 +5470,13 @@ async fn asking_whether_a_name_is_configured_allocates_nothing() {
             None,
         ));
         let settings = crate::root::test_plugins::application_store_settings(&directory);
-        let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-            "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
-            "store": {"module": module, "settings": settings},
-        }))
+        let deploy = busbar_kernel::config::deploy_from_deserializer(
+            serde_json::json!({
+                "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+                "store": {"module": module, "settings": settings},
+            }),
+            &crate::root::boot::axis_test_grammar(),
+        )
         .expect("the door deployment parses");
         let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the door deployment resolves");

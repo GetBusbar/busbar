@@ -231,10 +231,9 @@ fn internal_error(op: &str, e: &busbar_kernel::governance::RecordStoreError) -> 
 #[path = "tests/internal_error_tests.rs"]
 mod internal_error_tests;
 
-fn key_etag(k: &VirtualKey) -> String {
-    let meta = key_meta(k);
-    busbar_contract::sha256_hex(meta.to_string().as_bytes())[..16].to_string()
-}
+#[cfg(test)]
+#[path = "tests/key_view_tests.rs"]
+mod key_view_tests;
 
 #[allow(clippy::result_large_err)]
 fn parse_key_if_match(
@@ -262,7 +261,13 @@ fn parse_key_if_match(
     }
 }
 
-fn key_meta(k: &VirtualKey) -> Value {
+/// The ETag hashes the STORED row, never the view (ADMIN-API-1.6 4.2): today's `key_meta` body
+/// plus the stored fields 1.6 added, each omitted while it holds its default, so a key minted
+/// under 1.5.5 keeps its ETag value. The derived and foreign fields (`etag`, `state`,
+/// `revocation`, `credentials`, `last_used_at`) are never hashed, so a last-used flush or a
+/// denylist sync cannot move it; a rename or a rotation does. `origin` is fixed at import and is
+/// not hashed either, so a migrated key keeps the ETag it had.
+fn etag_basis(k: &VirtualKey) -> Value {
     let mut meta = json!({
         "id": k.id,
         "name": k.name,
@@ -296,7 +301,119 @@ fn key_meta(k: &VirtualKey) -> Value {
     for (field, values) in by_kind {
         meta[field] = json!(values);
     }
+    let stored: [(&str, Option<Value>); 6] = [
+        ("expires_at", k.expires_at.map(|v| json!(v))),
+        ("deleted_at", k.deleted_at.map(|v| json!(v))),
+        ("minted_by", k.minted_by.as_ref().map(|v| json!(v))),
+        ("minted_via", k.idp_provider.as_ref().map(|v| json!(v))),
+        ("idp_subject", k.idp_subject.as_ref().map(|v| json!(v))),
+        ("binding_mode", k.binding_mode.as_ref().map(|v| json!(v))),
+    ];
+    for (field, value) in stored {
+        if let Some(value) = value {
+            meta[field] = value;
+        }
+    }
+    if k.rotation_count > 0 || k.rotated_at.is_some() {
+        meta["rotation"] = rotation_json(k);
+    }
     meta
+}
+
+fn rotation_json(k: &VirtualKey) -> Value {
+    json!({
+        "generation": k.rotation_count.saturating_add(1).to_string(),
+        "rotated_at": k.rotated_at,
+        "count": k.rotation_count.to_string(),
+    })
+}
+
+fn key_etag(k: &VirtualKey) -> String {
+    busbar_contract::sha256_hex(etag_basis(k).to_string().as_bytes())[..16].to_string()
+}
+
+/// The key as every key response serves it: the stored row's fields, the ETag over that row, and
+/// the nullable members present as `null` while unset. `state`, `revocation` and `credentials`
+/// belong to [`key_view`], which reads what the row cannot say.
+fn key_meta(k: &VirtualKey) -> Value {
+    let mut meta = etag_basis(k);
+    for field in [
+        "expires_at",
+        "deleted_at",
+        "minted_by",
+        "minted_via",
+        "idp_subject",
+        "binding_mode",
+    ] {
+        if meta.get(field).is_none() {
+            meta[field] = Value::Null;
+        }
+    }
+    meta["rotation"] = rotation_json(k);
+    meta["origin"] = match &k.migrated_from {
+        Some(from) => json!({ "migrated_from": from }),
+        None => json!("created"),
+    };
+    meta["etag"] = json!(key_etag(k));
+    meta
+}
+
+type Revocations = std::collections::BTreeMap<String, (String, u64)>;
+
+async fn revocations_of(
+    gov: &busbar_kernel::governance::GovState,
+) -> busbar_kernel::governance::RecordStoreResult<Revocations> {
+    Ok(gov
+        .core_store()?
+        .identity()
+        .list_revocations()
+        .await?
+        .into_iter()
+        .map(|r| (r.subject, (r.reason, r.at)))
+        .collect())
+}
+
+/// `key_meta` plus what only the Store and the denylist know: the disposition, why and when a
+/// revoked key was revoked, and the credential index (public ids; never a secret).
+async fn key_view(
+    gov: &busbar_kernel::governance::GovState,
+    k: &VirtualKey,
+    revocations: Option<&Revocations>,
+) -> busbar_kernel::governance::RecordStoreResult<Value> {
+    let owned;
+    let revocations = match revocations {
+        Some(held) => held,
+        None => {
+            owned = revocations_of(gov).await?;
+            &owned
+        }
+    };
+    let credentials = gov.core_store()?.identity().list_credentials(&k.id).await?;
+    let mut meta = key_meta(k);
+    meta["state"] = json!(key_state(k, gov));
+    meta["revocation"] = revocations.get(&k.id).map_or(
+        Value::Null,
+        |(reason, at)| json!({ "reason": reason, "at": at }),
+    );
+    meta["credentials"] = json!(credentials
+        .iter()
+        .filter(|c| c.revoked_at.is_none())
+        .map(credential_json)
+        .collect::<Vec<_>>());
+    Ok(meta)
+}
+
+/// `key_view` for a handler that holds the app handle rather than the governance state.
+async fn key_view_of(
+    handle: &std::sync::Arc<busbar_kernel::state::AppHandle>,
+    k: &VirtualKey,
+) -> Result<Value, Box<Response>> {
+    let Some(gov) = handle.load().governance.clone() else {
+        return Ok(key_meta(k));
+    };
+    key_view(&gov, k, None)
+        .await
+        .map_err(|e| Box::new(internal_error("key_view", &e)))
 }
 
 fn lift_plane_grants(
@@ -333,15 +450,121 @@ fn lift_plane_grants(
 }
 
 fn key_state(k: &VirtualKey, gov: &busbar_kernel::governance::GovState) -> &'static str {
+    disposition(k, gov.is_revoked(&k.id), busbar_kernel::store::now())
+}
+
+/// The one derived disposition of a key row: tombstoned, then revoked, then expired (its own
+/// `expires_at` has passed), then disabled, else active.
+fn disposition(k: &VirtualKey, revoked: bool, now: u64) -> &'static str {
     if k.deleted_at.is_some() {
         "tombstoned"
-    } else if gov.is_revoked(&k.id) {
+    } else if revoked {
         "revoked"
+    } else if k.expires_at.is_some_and(|at| now >= at) {
+        "expired"
     } else if !k.enabled {
         "disabled"
     } else {
         "active"
     }
+}
+
+/// The `GET /keys` filters ADMIN-API-1.6 4.2 adds to `enabled`, `prefix` and `group`.
+#[derive(Default)]
+struct KeyFilter {
+    state: Option<String>,
+    labels: Vec<(String, String)>,
+    expires_before: Option<u64>,
+    grant: Option<(String, String)>,
+    admin: Option<bool>,
+    minted_via: Option<String>,
+}
+
+impl KeyFilter {
+    /// Reads the repeated query pairs; `label` repeats and ANDs, every other name's last value
+    /// wins. The error is the 400 text.
+    fn parse(pairs: &[(String, String)]) -> Result<Self, String> {
+        let mut filter = Self::default();
+        for (name, value) in pairs {
+            match name.as_str() {
+                "state" => {
+                    if !matches!(
+                        value.as_str(),
+                        "active" | "disabled" | "revoked" | "expired" | "tombstoned"
+                    ) {
+                        return Err(
+                            "invalid `state` filter: expected active|disabled|revoked|expired|tombstoned"
+                                .into(),
+                        );
+                    }
+                    filter.state = Some(value.clone());
+                }
+                "label" => match value.split_once(':') {
+                    Some((key, val)) if !key.is_empty() => {
+                        filter.labels.push((key.into(), val.into()));
+                    }
+                    _ => return Err("invalid `label` filter: expected <key>:<value>".into()),
+                },
+                "expires_before" => {
+                    filter.expires_before = Some(value.parse::<u64>().map_err(|_| {
+                        "invalid `expires_before` filter: expected unix seconds".to_string()
+                    })?);
+                }
+                "grant" => match value.split_once(':') {
+                    Some((kind, name)) if !kind.is_empty() && !name.is_empty() => {
+                        filter.grant = Some((kind.into(), name.into()));
+                    }
+                    _ => return Err("invalid `grant` filter: expected <kind>:<value>".into()),
+                },
+                // No key carries an admin grant until per-verb authorization lands, so
+                // `admin=false` matches every key and `admin=true` none.
+                "admin" => {
+                    filter.admin =
+                        Some(value.parse::<bool>().map_err(|_| {
+                            "invalid `admin` filter: expected true|false".to_string()
+                        })?);
+                }
+                "minted_via" => filter.minted_via = Some(value.clone()),
+                _ => {}
+            }
+        }
+        Ok(filter)
+    }
+
+    /// Whether a key in `state` passes. A tombstoned key is listed only on request: `include`
+    /// or `state=tombstoned`.
+    fn admits(&self, k: &VirtualKey, state: &str, include_tombstoned: bool) -> bool {
+        (include_tombstoned
+            || self.state.as_deref() == Some("tombstoned")
+            || k.deleted_at.is_none())
+            && self.state.as_deref().is_none_or(|s| s == state)
+            && self
+                .labels
+                .iter()
+                .all(|(key, val)| k.labels.get(key).is_some_and(|v| v == val))
+            && self
+                .expires_before
+                .is_none_or(|before| k.expires_at.is_some_and(|at| at < before))
+            && self
+                .grant
+                .as_ref()
+                .is_none_or(|(kind, value)| k.scope_allowed(kind, value))
+            && self.admin.is_none_or(|admin| !admin)
+            && self
+                .minted_via
+                .as_deref()
+                .is_none_or(|via| k.idp_provider.as_deref() == Some(via))
+    }
+}
+
+/// One entry of `credentials[]`: the public handle and where it sits, never a secret.
+fn credential_json(c: &busbar_contract::records::CredentialMeta) -> Value {
+    json!({
+        "public_id": c.public_id,
+        "kind": c.kind,
+        "slot": c.slot,
+        "created_at": c.created_at,
+    })
 }
 
 fn disabled_write(who: KeyAudit<'_>) -> Response {
@@ -1040,8 +1263,17 @@ async fn create_key_owned(
         audit::OUTCOME_APPLIED,
         &actor,
     );
-    let mut body = key_meta(&key);
-
+    // The mint is committed and its secret is returned once: a failed read of the credential index
+    // must not lose it, so the view falls back to the row's own fields.
+    let mut body = match key_view_of(&handle, &key).await {
+        Ok(view) => view,
+        Err(_) => {
+            let mut view = key_meta(&key);
+            view["revocation"] = Value::Null;
+            view["credentials"] = json!([]);
+            view
+        }
+    };
     body["state"] = json!("active");
 
     body["token"] = json!(token.expose(&busbar_kernel::seal::lend()));
@@ -1152,7 +1384,7 @@ async fn update_key_owned(
 
     enum UpdateOutcome {
         Applied,
-        Updated(Box<busbar_kernel::governance::VirtualKey>, &'static str),
+        Updated(Box<busbar_kernel::governance::VirtualKey>),
         NotFound,
         EtagStale,
 
@@ -1245,10 +1477,7 @@ async fn update_key_owned(
                     Err(busbar_kernel::governance::KeyMutationError::Applied { .. }) => UpdateOutcome::Applied,
                     Err(busbar_kernel::governance::KeyMutationError::Store(error)) => return Err(error),
                     Err(revoked @ busbar_kernel::governance::KeyMutationError::Revoked { .. }) => UpdateOutcome::Revoked(revoked.to_string()),
-                    Ok(Some(key)) => {
-                        let state = key_state(&key, &gov);
-                        UpdateOutcome::Updated(Box::new(key), state)
-                    }
+                    Ok(Some(key)) => UpdateOutcome::Updated(Box::new(key)),
                     Ok(None) => UpdateOutcome::NotFound,
                 })
             }.await;
@@ -1265,11 +1494,12 @@ async fn update_key_owned(
             audit::AUDIT.record_by("key.patch", &resource, audit::OUTCOME_APPLIED, &actor);
             applied_mutation("key.patch", &resource)
         }
-        Ok(UpdateOutcome::Updated(key, state)) => {
+        Ok(UpdateOutcome::Updated(key)) => {
             audit::AUDIT.record_by("key.patch", &resource, audit::OUTCOME_APPLIED, &actor);
-            let mut body = key_meta(&key);
-            body["state"] = json!(state);
-            json_response(StatusCode::OK, body)
+            match key_view_of(&handle, &key).await {
+                Ok(body) => json_response(StatusCode::OK, body),
+                Err(response) => *response,
+            }
         }
         Ok(UpdateOutcome::EtagStale) => {
             key_err(who,
@@ -1307,8 +1537,10 @@ async fn update_key_owned(
 
 pub(crate) async fn list_keys(
     busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
-    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+    axum::extract::Query(pairs): axum::extract::Query<Vec<(String, String)>>,
 ) -> Response {
+    // The last value of a repeated name wins, except `label`, which repeats and ANDs.
+    let q: std::collections::HashMap<String, String> = pairs.iter().cloned().collect();
     let enabled = match q.get("enabled") {
         None => None,
         Some(v) => match v.parse::<bool>() {
@@ -1367,28 +1599,41 @@ pub(crate) async fn list_keys(
             )
         }
     };
+    let filter = match KeyFilter::parse(&pairs) {
+        Ok(filter) => filter,
+        Err(why) => {
+            return key_err(
+                KeyAudit::Read,
+                &AdminError::Validation(why),
+                Cond::InvalidQueryValue,
+            )
+        }
+    };
     let Some(gov) = &app.governance else {
         return disabled_empty_list();
     };
     let gov = gov.clone();
+    let listed_gov = gov.clone();
     let res: busbar_kernel::governance::RecordStoreResult<_> = async move {
         let keys = gov.all_keys_async().await?;
+        let revocations = revocations_of(&gov).await?;
 
-        Ok::<_, busbar_kernel::governance::RecordStoreError>(
+        Ok::<_, busbar_kernel::governance::RecordStoreError>((
             keys.into_iter()
                 .map(|k| {
                     let state = key_state(&k, &gov);
                     (k, state)
                 })
                 .collect::<Vec<_>>(),
-        )
+            revocations,
+        ))
     }
     .await;
     match res {
-        Ok(keys) => {
+        Ok((keys, revocations)) => {
             let mut filtered: Vec<_> = keys
                 .iter()
-                .filter(|(k, _)| include_tombstoned || k.deleted_at.is_none())
+                .filter(|(k, state)| filter.admits(k, state, include_tombstoned))
                 .filter(|(k, _)| enabled.is_none_or(|e| k.enabled == e))
                 .filter(|(k, _)| prefix.as_deref().is_none_or(|p| k.id.starts_with(p)))
                 .filter(|(k, _)| {
@@ -1400,16 +1645,13 @@ pub(crate) async fn list_keys(
 
             filtered.sort_by(|(a, _), (b, _)| a.id.cmp(&b.id));
             let total = filtered.len();
-            let page: Vec<_> = filtered
-                .into_iter()
-                .skip(start)
-                .take(limit)
-                .map(|(k, state)| {
-                    let mut v = key_meta(k);
-                    v["state"] = json!(state);
-                    v
-                })
-                .collect();
+            let mut page = Vec::new();
+            for (k, _) in filtered.into_iter().skip(start).take(limit) {
+                match key_view(&listed_gov, k, Some(&revocations)).await {
+                    Ok(view) => page.push(view),
+                    Err(e) => return internal_error("list_keys", &e),
+                }
+            }
 
             let end = start.saturating_add(page.len());
             let next_cursor = (end < total).then(|| crate::v1::contract::encode_offset_cursor(end));
@@ -1425,10 +1667,7 @@ pub(crate) async fn list_keys(
 enum RotateOutcome {
     Forbidden,
     Applied,
-    Rotated(
-        &'static str,
-        Box<busbar_kernel::governance::RotatedCredential>,
-    ),
+    Rotated(Box<busbar_kernel::governance::RotatedCredential>),
 
     Unknown,
 
@@ -1531,6 +1770,7 @@ async fn rotate_key_owned(
     if let Some(r) = idem_reservation.as_mut() {
         r.in_flight();
     }
+    let handle_for_view = handle.clone();
     let res: busbar_kernel::governance::RecordStoreResult<_> = async move {
         let identity_guard = gov.identity_key_guard(&gid).await;
         let Some(_completion) = start_key_effect(&handle, &effect_guard).await else {
@@ -1574,9 +1814,7 @@ async fn rotate_key_owned(
                 Err(revoked @ busbar_kernel::governance::KeyMutationError::Revoked { .. }) => {
                     return Err(revoked.into())
                 }
-                Ok(Some(rotated)) => {
-                    RotateOutcome::Rotated(key_state(&rotated.key, &gov), Box::new(rotated))
-                }
+                Ok(Some(rotated)) => RotateOutcome::Rotated(Box::new(rotated)),
                 Ok(None) => RotateOutcome::Unknown,
             },
         )
@@ -1598,10 +1836,18 @@ async fn rotate_key_owned(
             settle_in_store(replay_store, claim, Settled::Applied(resource.clone())).await;
             applied_mutation("key.rotate", &resource)
         }
-        Ok(RotateOutcome::Rotated(state, rotated)) => {
+        Ok(RotateOutcome::Rotated(rotated)) => {
             audit::AUDIT.record_by("key.rotate", &resource, audit::OUTCOME_APPLIED, &actor);
-            let mut body = key_meta(&rotated.key);
-            body["state"] = json!(state);
+            let mut body = match key_view_of(&handle_for_view, &rotated.key).await {
+                Ok(view) => view,
+                Err(response) => {
+                    if let Some(r) = idem_reservation.take() {
+                        r.clear();
+                    }
+                    settle_in_store(replay_store, claim, Settled::Applied(resource.clone())).await;
+                    return *response;
+                }
+            };
 
             body["token"] = json!(rotated.token.expose(&busbar_kernel::seal::lend()));
             body["expires_at"] = json!(rotated.exp);
@@ -1771,19 +2017,16 @@ pub(crate) async fn get_key(
     let id2 = id.clone();
 
     let res: busbar_kernel::governance::RecordStoreResult<_> = async move {
-        gov.core_store()?
-            .identity()
-            .get_key(&id2)
-            .await
-            .map(|opt| opt.map(|k| (key_state(&k, &gov), k)))
+        let Some(k) = gov.core_store()?.identity().get_key(&id2).await? else {
+            return Ok(None);
+        };
+        let view = key_view(&gov, &k, None).await?;
+        Ok(Some((k, view)))
     }
     .await;
     match res {
-        Ok(Some((state, k))) => {
+        Ok(Some((k, meta))) => {
             let etag = key_etag(&k);
-
-            let mut meta = key_meta(&k);
-            meta["state"] = json!(state);
             let mut resp = json_response(StatusCode::OK, meta);
             if let Ok(v) = axum::http::HeaderValue::from_str(&format!("\"{etag}\"")) {
                 resp.headers_mut().insert(axum::http::header::ETAG, v);

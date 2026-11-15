@@ -1121,6 +1121,16 @@ pub fn to_writer<W: std::io::Write, T: Serialize + ?Sized>(
     Ok(serde_saphyr::to_io_writer(&mut writer, &Tagging(value))?)
 }
 
+/// The struct names a JSON library serializes a number or raw value under when it keeps the
+/// lexeme (sonic-rs, serde_json `arbitrary_precision`). Written as YAML they would become a
+/// marker map, so [`TagWriter`] refuses them; the spelling is the test because the name is a
+/// `&'static str` from the library's code.
+const JSON_TOKENS: [&str; 3] = [
+    "$sonic_rs::private::JsonNumber",
+    "$sonic_rs::LazyValue",
+    "$serde_json::private::Number",
+];
+
 /// ciborium's enum name for a tagged item, in its `Value`'s serde form.
 const CBOR_TAG: &str = "@@TAG@@";
 
@@ -1292,6 +1302,12 @@ impl<S: serde::Serializer> serde::Serializer for TagWriter<S> {
         name: &'static str,
         len: usize,
     ) -> Result<Self::SerializeStruct, S::Error> {
+        if JSON_TOKENS.contains(&name) {
+            return Err(serde::ser::Error::custom(
+                "a JSON number or raw value reached the YAML writer as its token struct; \
+                 convert JSON numbers with json::to_yaml",
+            ));
+        }
         self.0.serialize_struct(name, len).map(TagWriter)
     }
 

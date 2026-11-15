@@ -57,8 +57,11 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
     document["auth"]["role_bindings"] = serde_json::json!({
         "test-scope-module": { "admins": { "admin_scope": "full" } },
     });
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -180,8 +183,11 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
         "test-scope-module": { "admins": { "admin_scope": "full" } },
     });
     document["plugins"] = crate::root::test_plugins::trusted_config_document(&directory);
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -465,8 +471,11 @@ async fn test_admin_v1_equal_subjects_from_distinct_issuers_cannot_replay_secret
         "test-scope-module": { "admins": { "admin_scope": "full" } },
         "second-issuer": { "admins": { "admin_scope": "full" } },
     });
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -625,8 +634,11 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
         "test-scope-module": { "admins": { "verbs": ["get_info"] } },
         "second-issuer": { "admins": { "verbs": ["get_info"] } },
     });
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())

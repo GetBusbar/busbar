@@ -13,6 +13,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         authored_routing: None,
         document_source_fingerprints: None,
         operator_overlay_names: Vec::new(),
+        grammar: busbar_kernel::config::GrammarField::bound(busbar_kernel::config::Grammar::empty()),
 
         endpoint: Default::default(),
         oauth_as: None,
@@ -411,6 +412,7 @@ fn test_auth_policy_block_parses_and_resolves() {
                  allowed_pools: [growth, ops]\n        \
                  binding_modes: [time-bound]\n\
          providers: {}\nmodels: {}\npools: {}\n",
+        &crate::root::boot::axis_test_grammar(),
     )
     .expect("the 1.6.0 auth.policy grammar parses");
 
@@ -488,6 +490,7 @@ fn test_auth_policy_ceiling_allowed_pools_three_state() {
                no-pools: { allowed_pools: [] }\n      \
                some-pools: { allowed_pools: [a, b] }\n\
          providers: {}\nmodels: {}\npools: {}\n",
+        &crate::root::boot::axis_test_grammar(),
     )
     .expect("three-state allowed_pools parses");
     let policy = &deploy.auth.expect("auth").policy;

@@ -12,6 +12,7 @@ fn make_root_cfg(
         plane_defs: Default::default(),
         plane_pools: Default::default(),
         plane_sections: Default::default(),
+        grammar: crate::config::GrammarField::bound(crate::config::Grammar::empty()),
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
         listen_explicit: false,
 
@@ -840,6 +841,7 @@ fn datagram_line_memory_limit_accepts_unset_or_any_positive_usize() {
 fn datagram_line_memory_limit_zero_is_a_config_validation_error() {
     let deploy = crate::config::deploy_from_yaml_str(
         "providers: {}\nmodels: {}\nlimits:\n  datagram_line_memory_bytes: 0\n",
+        &crate::config::Grammar::empty(),
     )
     .expect("zero has the right type; validation must reject it");
     let cfg = crate::config::resolve(&deploy, &HashMap::new()).expect("resolve the config");

@@ -81,6 +81,7 @@ async fn read_snapshot(
                 busbar_kernel::config::overlay::unparseable_named_map_entries_async(
                     current.overlay_path.as_deref(),
                     section,
+                    &busbar_kernel::config::grammar::admitted(),
                 )
                 .await
             }
@@ -513,7 +514,13 @@ async fn apply(
 
 
             if let Some(def) = next_def.as_ref() {
-                if let Err(e) = txn_section.validate_def(&txn_name, def) {
+                let checked = loaded
+                    .deploy
+                    .grammar
+                    .get()
+                    .map_err(String::from)
+                    .and_then(|grammar| txn_section.validate_def(&txn_name, def, grammar));
+                if let Err(e) = checked {
                     return Ok(Outcome::Value(Err((
                         AdminError::Validation(e),
                         Cond::InvalidConfig,
