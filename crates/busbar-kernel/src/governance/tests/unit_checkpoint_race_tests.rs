@@ -386,7 +386,11 @@ impl UnitCheckpointAudit for Signer {
     fn sign_checkpoint(&self, body: &[u8]) -> RecordStoreResult<Vec<u8>> {
         Ok(self.0.sign_checkpoint_body(body))
     }
-    async fn confirm(&self, _: &UnitCheckpoint) -> RecordStoreResult<()> {
+    async fn confirm(
+        &self,
+        _: &UnitCheckpoint,
+        _: Option<crate::persistence::journal::runtime::Carried>,
+    ) -> RecordStoreResult<()> {
         Ok(())
     }
     async fn recover(&self, _: &UnitCheckpoint) -> RecordStoreResult<()> {

@@ -432,13 +432,16 @@ async fn book_mutations_keep_derived_indexes_exact() {
     assert_eq!(gov.check_unit_checkpoint_book(), 0);
 
     // The unit index: zero, one and two live entries for a unit.
-    assert!(gov.note_unit_audit(20, 1).is_err(), "no entry for the unit");
+    assert!(
+        gov.note_unit_audit(20, 1, [0; 32]).is_err(),
+        "no entry for the unit"
+    );
     gov.stage_unit_checkpoint(unit(20, 20, &[], &[]));
-    assert_eq!(gov.note_unit_audit(20, 2), Ok(()));
+    assert_eq!(gov.note_unit_audit(20, 2, [0; 32]), Ok(()));
     assert_eq!(gov.unit_checkpoint_audit_seq(&id(20)), Some(2));
     gov.stage_unit_checkpoint(unit(21, 20, &[], &[]));
     assert!(
-        gov.note_unit_audit(20, 3).is_err(),
+        gov.note_unit_audit(20, 3, [0; 32]).is_err(),
         "two live entries: a miss, never a guess"
     );
     assert_eq!(gov.unit_checkpoint_audit_seq(&id(20)), Some(2));
@@ -447,7 +450,7 @@ async fn book_mutations_keep_derived_indexes_exact() {
         Pending::recovered(recovered(30, "group:D@total"), Some(0)),
     );
     assert!(
-        gov.note_unit_audit(30, 4).is_err(),
+        gov.note_unit_audit(30, 4, [0; 32]).is_err(),
         "recovered entries are skipped"
     );
     assert_eq!(gov.unit_audit_misses(), 3);

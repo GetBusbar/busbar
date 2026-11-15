@@ -154,6 +154,59 @@ impl<'a> StoreJournal<'a> {
         proof: &VerifiedHead,
         extra: &[Predicate],
     ) -> Result<()> {
+        let (predicates, values) = self.owned_read(proof, extra).await?;
+        if predicates
+            .iter()
+            .zip(values)
+            .any(|(predicate, value)| !matches_value(&predicate.expected, &value))
+        {
+            return Err(Error::Authority);
+        }
+        Ok(())
+    }
+
+    /// `confirm_owned_with`'s one authoritative read, except that the selected head `H` is
+    /// returned as observed instead of compared: O, admission and every `extra` must match, and
+    /// the caller accepts `H` only if it is a head it knows (SHUTDOWN-HANG F1 `confirm_with`).
+    pub(crate) async fn observe_owned_with(
+        &self,
+        proof: &VerifiedHead,
+        extra: &[Predicate],
+    ) -> Result<Option<Secret<Vec<u8>>>> {
+        let (predicates, values) = self.owned_read(proof, extra).await?;
+        let mut values = values.into_iter();
+        // `owned_predicates` puts the selected head first.
+        let observed = values.next().ok_or(Error::Corrupt)?;
+        if predicates
+            .iter()
+            .skip(1)
+            .zip(values)
+            .any(|(predicate, value)| !matches_value(&predicate.expected, &value))
+        {
+            return Err(Error::Authority);
+        }
+        Ok(observed)
+    }
+
+    /// Whether `observed` is the selected head `proof` names.
+    pub(crate) fn names_head(
+        &self,
+        proof: &VerifiedHead,
+        observed: &Option<Secret<Vec<u8>>>,
+    ) -> Result<bool> {
+        Ok(matches_value(
+            &self.selected_head_predicate(proof)?.expected,
+            observed,
+        ))
+    }
+
+    /// One read of `proof`'s owned predicates, `extra`, the dataset root and this writer's control
+    /// row; root and admission are checked here, the predicates' values are returned in order.
+    async fn owned_read(
+        &self,
+        proof: &VerifiedHead,
+        extra: &[Predicate],
+    ) -> Result<(Vec<Predicate>, Vec<Option<Secret<Vec<u8>>>>)> {
         let mut predicates = self.owned_predicates(proof)?;
         predicates
             .try_reserve_exact(extra.len())
@@ -189,14 +242,11 @@ impl<'a> StoreJournal<'a> {
             || root.writer_epoch != authority.writer_epoch
             || !writer.admits(authority.execution_epoch)
             || self.store.authority()? != authority
-            || predicates
-                .iter()
-                .zip(values)
-                .any(|(predicate, value)| !matches_value(&predicate.expected, &value))
+            || values.len() != predicates.len()
         {
             return Err(Error::Authority);
         }
-        Ok(())
+        Ok((predicates, values))
     }
 
     async fn original_at(&self, ordinal: u64) -> Result<(JournalRecord, Secret<Vec<u8>>)> {

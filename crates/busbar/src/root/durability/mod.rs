@@ -95,6 +95,10 @@ pub struct Durability {
     history_budget: BufferBudget,
 
     resumed: bool,
+
+    /// Where a sealed terminal unit's audit line is noted for its checkpoint removal
+    /// (SHUTDOWN-HANG F1a). Weak: governance owns the checkpoint sink, which holds this book.
+    pub audit_hints: Option<std::sync::Weak<busbar_kernel::governance::GovState>>,
 }
 
 impl Durability {
@@ -502,6 +506,7 @@ pub(crate) async fn build_on_store(
         amendments_through: None,
         history_budget,
         resumed: true,
+        audit_hints: None,
     };
     let mut findings = Vec::new();
     if let Some(cards) = cards {

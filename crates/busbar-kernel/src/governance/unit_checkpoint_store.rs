@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Native custody for signed running-unit checkpoints. Journal framing, original
 //! record identity and selected evidence are retained across every uncertain call.
-use super::unit_checkpoint::{UnitCheckpoint, UnitCheckpointSink};
+use super::unit_checkpoint::{UnitCheckpoint, UnitCheckpointSink, UnitRemoval};
 use crate::persistence::{
     commit::SubmitResult,
     facade::CoreStore,
     journal::{
-        runtime::{Carried, LiveChange, RuntimeJournal, StagedRun},
+        runtime::{Carried, LiveChange, RuntimeError, RuntimeJournal, StagedRun},
         Selection, StoreJournal, VerifiedHead, WriteResult,
     },
     partition,
@@ -22,7 +22,7 @@ use busbar_kernel_audit::{AuditKeySet, AuditRecord};
 use busbar_kernel_wal::{BodyReader, BodyWriter, Entry, JournalRecord, Record, RecordClass};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex},
 };
 
@@ -42,6 +42,15 @@ fn error(e: impl std::fmt::Debug) -> RecordStoreError {
 fn refusal(message: &str) -> RecordStoreError {
     RecordStoreError(message.into())
 }
+/// A read against carried evidence: a different original at that place is named as such.
+fn carried_error(e: RuntimeError) -> RecordStoreError {
+    match e {
+        RuntimeError::Corrupt => {
+            refusal("journal original differs from carried evidence (Corrupt)")
+        }
+        other => error(other),
+    }
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,7 +67,13 @@ struct Head {
 pub trait UnitCheckpointAudit: Send + Sync {
     fn keys(&self) -> AuditKeySet;
     fn sign_checkpoint(&self, body: &[u8]) -> RecordStoreResult<Vec<u8>>;
-    async fn confirm(&self, snapshot: &UnitCheckpoint) -> RecordStoreResult<()>;
+    /// Confirm a terminal unit's sealed audit line. `hint` is the line's carried evidence when
+    /// this process sealed it (SHUTDOWN-HANG F1a): one read; `None` keeps the cold scan.
+    async fn confirm(
+        &self,
+        snapshot: &UnitCheckpoint,
+        hint: Option<Carried>,
+    ) -> RecordStoreResult<()>;
     async fn recover(&self, snapshot: &UnitCheckpoint) -> RecordStoreResult<()>;
 }
 
@@ -119,10 +134,25 @@ impl UnitCheckpointEvidence {
     }
     /// A terminal unit's live audit line, read by the evidence this process carried from its
     /// append (SHUTDOWN-HANG F1a).
-    pub async fn find_audit_at(&self, _line: Carried) -> RecordStoreResult<AuditRecord> {
-        Err(refusal(
-            "audit line lookup by its carried hint is not built",
-        ))
+    /// One original read at the line's computed ordinal, checked against the carried chain hash
+    /// (`RuntimeJournal::record`), then decoded as a Transaction audit line. A line staged but not
+    /// yet applied is published first (the journal flush), never searched for.
+    pub async fn find_audit_at(&self, line: Carried) -> RecordStoreResult<AuditRecord> {
+        let original = match self.journal.record(line).await {
+            Err(RuntimeError::Pending) => {
+                self.journal.flush().await.map_err(error)?;
+                self.journal.record(line).await
+            }
+            read => read,
+        }
+        .map_err(carried_error)?;
+        let record = JournalRecord::decode(&original.body).map_err(error)?;
+        if record.class != RecordClass::Transaction {
+            return Err(refusal("terminal unit's audit hint names no audit line"));
+        }
+        busbar_kernel_audit::from_journal_body(&record.body, &crate::Registration::meter_class)
+            .map_err(error)?
+            .ok_or_else(|| refusal("terminal unit's audit hint names no audit line"))
     }
     /// Retain the exact signed audit and original sealed frame before native IO.
     /// Callers reuse pending_audit after uncertainty rather than sealing a new line.
@@ -213,6 +243,10 @@ pub struct StoreUnitCheckpoints {
     audit: Arc<dyn UnitCheckpointAudit>,
     pending: Mutex<Option<Pending>>,
     driving: tokio::sync::Mutex<()>,
+    /// The selected original of each checkpoint in custody: inserted when P's append is
+    /// confirmed (or by the boot replay), replaced by a later revision, popped when R's delete
+    /// applies (SHUTDOWN-HANG F1). About 56 B per checkpoint; RAM only.
+    carried: Mutex<HashMap<[u8; 16], Carried>>,
 }
 impl StoreUnitCheckpoints {
     pub fn new(evidence: Arc<UnitCheckpointEvidence>, audit: Arc<dyn UnitCheckpointAudit>) -> Self {
@@ -221,12 +255,13 @@ impl StoreUnitCheckpoints {
             audit,
             pending: Mutex::new(None),
             driving: tokio::sync::Mutex::new(()),
+            carried: Mutex::new(HashMap::new()),
         }
     }
     /// Test probe: the evidence carried for checkpoint `id`'s selected original.
     #[cfg(test)]
-    pub(crate) fn carried(&self, _id: &[u8; 16]) -> Option<Carried> {
-        None
+    pub(crate) fn carried(&self, id: &[u8; 16]) -> Option<Carried> {
+        self.carried_of(id)
     }
     fn namespace(&self) -> NamespaceId {
         partition::namespace(FAMILY, &[&self.evidence.node.to_be_bytes()])
@@ -274,7 +309,7 @@ impl StoreUnitCheckpoints {
         id: &[u8; 16],
         raw: &Secret<Vec<u8>>,
         proof: &VerifiedHead,
-    ) -> RecordStoreResult<(Head, UnitCheckpoint, Record, Option<u64>)> {
+    ) -> RecordStoreResult<(Head, UnitCheckpoint, Record, Option<u64>, Carried)> {
         let head: Head = serde_json::from_slice(raw.expose(&crate::seal::lend())).map_err(error)?;
         if head.version != 1 || head.node != self.evidence.node || head.sequence == 0 {
             return Err(refusal("invalid running money head"));
@@ -286,10 +321,20 @@ impl StoreUnitCheckpoints {
             .journal
             .locate(proof, head.sequence)
             .map_err(error)?;
-        let original = journal
-            .read_verified_record_at(proof, head.sequence, ordinal)
-            .await
-            .map_err(error)?;
+        // An original this process appended (or the boot replay verified) is read against the
+        // hash it carries, so a rewritten own original is refused, not trusted (SHUTDOWN-HANG F1).
+        let original = match self.carried_of(id).filter(|c| c.seq == head.sequence) {
+            Some(carried) => self
+                .evidence
+                .journal
+                .record(carried)
+                .await
+                .map_err(carried_error)?,
+            None => journal
+                .read_verified_record_at(proof, head.sequence, ordinal)
+                .await
+                .map_err(error)?,
+        };
         let record = JournalRecord::decode(&original.body).map_err(error)?;
         let mut reader = BodyReader::new(&record.body);
         let tag = reader.text();
@@ -330,7 +375,29 @@ impl StoreUnitCheckpoints {
         if snapshot.id != *id || snapshot.revision != head.revision {
             return Err(refusal("running money head differs from journal evidence"));
         }
-        Ok((head, snapshot, original, Some(ordinal)))
+        let carried = Carried {
+            seq: head.sequence,
+            hash: record.hash,
+        };
+        Ok((head, snapshot, original, Some(ordinal), carried))
+    }
+    fn carried_of(&self, id: &[u8; 16]) -> Option<Carried> {
+        self.carried
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(id)
+            .copied()
+    }
+    fn carry(&self, id: [u8; 16], carried: Option<Carried>) {
+        let mut map = self.carried.lock().unwrap_or_else(|p| p.into_inner());
+        match carried {
+            Some(carried) => {
+                map.insert(id, carried);
+            }
+            None => {
+                map.remove(&id);
+            }
+        }
     }
     fn no_foreign_pending(&self) -> RecordStoreResult<()> {
         if self
@@ -448,6 +515,12 @@ impl StoreUnitCheckpoints {
         match outcome(result) {
             Ok(()) => {
                 self.clear();
+                // The selected original is this process's own sealing: carry it until the
+                // checkpoint's delete applies (SHUTDOWN-HANG F1).
+                match &pending {
+                    Pending::Persist(p) => self.carry(p.snapshot.id, p.run.carried().last()),
+                    Pending::Remove(p) => self.carry(p.snapshot.id, None),
+                }
                 Ok(Some(pending))
             }
             Err((true, _)) if redrive => {
@@ -478,6 +551,15 @@ impl StoreUnitCheckpoints {
                     };
                     if !unchanged {
                         return Err(why);
+                    }
+                    // (SHUTDOWN-HANG F2.2) With the head row unchanged, a definite no-effect
+                    // is our authority (a fence, a moved root epoch, an execution epoch no
+                    // longer admitted; a size refusal and a fenced send answer alike) or a
+                    // changed original. Authority first, in one read: then the attempt is kept
+                    // as it is and never retried as benign.
+                    if let Err(lost) = self.evidence.journal.confirm_with(&[]).await {
+                        self.save(pending);
+                        return Err(error(lost));
                     }
                     // Under the driver a no-effect is a real fence, epoch or
                     // foreign change, or changed original bytes: name changed
@@ -581,13 +663,15 @@ impl UnitCheckpointSink for StoreUnitCheckpoints {
             return Err(refusal("unit.accrued lacks captured admission audit facts"));
         }
         let previous = self.head(&snapshot.id).await?;
-        let proof = self.evidence.proof().await?;
+        // A lane-free snapshot: the selected original is located in it and read against its
+        // carried hash; every write below is a CAS on H and O (SHUTDOWN-HANG F1).
+        let proof = self.evidence.journal.verified().map_err(error)?;
         if let Some(raw) = &previous {
-            let (head, selected, _, _) = self.selected(&snapshot.id, raw, &proof).await?;
+            let (head, selected, _, _, _) = self.selected(&snapshot.id, raw, &proof).await?;
             if selected == *snapshot {
                 self.evidence
                     .journal
-                    .confirm_live_owned_with(&[busbar_contract::persistence::Predicate {
+                    .confirm_with(&[busbar_contract::persistence::Predicate {
                         address: self.address(&snapshot.id),
                         expected: ExpectedValue::Exact(raw.clone()),
                     }])
@@ -643,50 +727,16 @@ impl UnitCheckpointSink for StoreUnitCheckpoints {
         self.complete().await.map(|_| ())
     }
     async fn remove(&self, snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
-        let _driving = self.driving.lock().await;
-        if self
-            .complete()
-            .await?
-            .as_ref()
-            .is_some_and(|p| matches!(p, Pending::Remove(_)) && p.snapshot() == snapshot)
-        {
-            return Ok(());
+        self.remove_with(snapshot, None).await
+    }
+    /// One code path: each removal carries its unit's audit hint into the audit confirmation
+    /// (SHUTDOWN-HANG F1a, F3.1).
+    async fn remove_batch(&self, items: &[UnitRemoval<'_>]) -> Vec<RecordStoreResult<()>> {
+        let mut out = Vec::with_capacity(items.len());
+        for item in items {
+            out.push(self.remove_with(item.snapshot, item.audit).await);
         }
-        self.no_foreign_pending()?;
-        if snapshot.terminal.is_none() {
-            return Err(refusal(
-                "cannot remove running money before terminal custody",
-            ));
-        }
-        if snapshot.measurement.is_none() {
-            self.audit.confirm(snapshot).await?;
-        }
-        let Some(raw) = self.head(&snapshot.id).await? else {
-            self.evidence
-                .journal
-                .confirm_live_owned_with(&[busbar_contract::persistence::Predicate {
-                    address: self.address(&snapshot.id),
-                    expected: ExpectedValue::Absent,
-                }])
-                .await
-                .map_err(error)?;
-            return Ok(());
-        };
-        let proof = self.evidence.proof().await?;
-        let (_, selected, record, ordinal) = self.selected(&snapshot.id, &raw, &proof).await?;
-        if selected != *snapshot {
-            return Err(refusal("terminal running money custody changed"));
-        }
-        self.save(Pending::Remove(RemovePending {
-            snapshot: snapshot.clone(),
-            record,
-            expected: Arc::new(ExpectedValue::Exact(raw)),
-            proof: None,
-            reconciling: false,
-            ordinal,
-            operation: crate::door::op_id().0,
-        }));
-        self.complete().await.map(|_| ())
+        out
     }
     async fn replay(&self) -> RecordStoreResult<Vec<UnitCheckpoint>> {
         self.no_foreign_pending()?;
@@ -705,7 +755,9 @@ impl UnitCheckpointSink for StoreUnitCheckpoints {
                 .ok_or_else(|| refusal("invalid running money key"))?
                 .try_into()
                 .map_err(error)?;
-            let (_, snapshot, _, _) = self.selected(&id, &raw, &proof).await?;
+            let (_, snapshot, _, _, carried) = self.selected(&id, &raw, &proof).await?;
+            // Boot evidence: this chain was just verified, so later reads check against it.
+            self.carry(id, Some(carried));
             if out.insert(id, snapshot).is_some() {
                 return Err(refusal("duplicate running money checkpoint"));
             }
@@ -713,7 +765,7 @@ impl UnitCheckpointSink for StoreUnitCheckpoints {
         let guard = crate::persistence::fences::scan_guard(self.namespace(), collection.generation);
         self.evidence
             .journal
-            .confirm_live_owned_with(&[guard])
+            .confirm_with(&[guard])
             .await
             .map_err(error)?;
         self.no_foreign_pending()?;
@@ -725,5 +777,58 @@ impl UnitCheckpointSink for StoreUnitCheckpoints {
         } else {
             self.audit.recover(snapshot).await
         }
+    }
+}
+
+impl StoreUnitCheckpoints {
+    async fn remove_with(
+        &self,
+        snapshot: &UnitCheckpoint,
+        hint: Option<Carried>,
+    ) -> RecordStoreResult<()> {
+        let _driving = self.driving.lock().await;
+        if self
+            .complete()
+            .await?
+            .as_ref()
+            .is_some_and(|p| matches!(p, Pending::Remove(_)) && p.snapshot() == snapshot)
+        {
+            return Ok(());
+        }
+        self.no_foreign_pending()?;
+        if snapshot.terminal.is_none() {
+            return Err(refusal(
+                "cannot remove running money before terminal custody",
+            ));
+        }
+        if snapshot.measurement.is_none() {
+            self.audit.confirm(snapshot, hint).await?;
+        }
+        let Some(raw) = self.head(&snapshot.id).await? else {
+            self.evidence
+                .journal
+                .confirm_with(&[busbar_contract::persistence::Predicate {
+                    address: self.address(&snapshot.id),
+                    expected: ExpectedValue::Absent,
+                }])
+                .await
+                .map_err(error)?;
+            return Ok(());
+        };
+        let proof = self.evidence.journal.verified().map_err(error)?;
+        let (_, selected, record, ordinal, _) = self.selected(&snapshot.id, &raw, &proof).await?;
+        if selected != *snapshot {
+            return Err(refusal("terminal running money custody changed"));
+        }
+        self.save(Pending::Remove(RemovePending {
+            snapshot: snapshot.clone(),
+            record,
+            expected: Arc::new(ExpectedValue::Exact(raw)),
+            proof: None,
+            reconciling: false,
+            ordinal,
+            operation: crate::door::op_id().0,
+        }));
+        self.complete().await.map(|_| ())
     }
 }
