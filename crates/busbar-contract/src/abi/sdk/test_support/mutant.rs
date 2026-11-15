@@ -152,6 +152,15 @@ impl Mutant {
         self
     }
 
+    /// THE CORRUPTING ROW (SDK-SAFE-TEST-HOST §11.6): `door` with transport framer op `slot`
+    /// wrapped so that its `nth` wire-writing answer has one byte flipped. Not yet built: the
+    /// door is answered unchanged.
+    #[must_use]
+    pub fn corrupting(door: DoorFn, slot: u32, nth: u64) -> Self {
+        let _ = (slot, nth);
+        Self::of(door)
+    }
+
     /// READY crossings into any failing READY so far, process-wide.
     #[must_use]
     pub fn failed_readies() -> u64 {
