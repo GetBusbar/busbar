@@ -623,5 +623,9 @@ pub fn boot_route_paths_of(app: &state::App) -> Vec<String> {
 pub(crate) mod real_store;
 
 #[cfg(test)]
+#[path = "tests/store_conformance_tests.rs"]
+mod store_conformance_tests;
+
+#[cfg(test)]
 #[path = "tests/kind_boundary_matrix_tests.rs"]
 mod kind_boundary_matrix_tests;

@@ -13,12 +13,15 @@
 //! initialization; control records only conditionally replaced, never deleted; generation records
 //! adapter-owned; one generation step per mutated namespace per commit; scans that refuse empty
 //! limits, report a changed namespace as [`Failure::StaleScan`] unless the scan allows change, and
-//! refuse a first row larger than the page; an operation id replayed by fingerprint.
+//! refuse a first row larger than the page; and the slot-row commit rule (STORE-TRANSACTIONS §2.5):
+//! one row per (writer, slot) holding the last evaluated sequence, STALE below it, its recorded
+//! verdict replayed at it, and a closed writer's rows deleted, so nothing grows with commits.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use busbar_contract::abi::sdk::store::v4::slot::{SlotRow, Verdict};
 use busbar_contract::persistence::{
     control, Address, BackendInfo, Call, ClockObservation, CommitKey, DatasetId, Decision,
     Durability, ExpectedValue, Failure, Mutation, Page, PersistenceBackend, PreparedCandidate,
@@ -50,7 +53,8 @@ fn identity(role: u8) -> [u8; 16] {
 struct State {
     rows: BTreeMap<Address, Secret<Vec<u8>>>,
     generations: HashMap<[u8; 16], u64>,
-    receipts: HashMap<[u8; 16], [u8; 32]>,
+    /// Each writer's slot rows, by slot: the last evaluated sequence and its verdict.
+    slots: HashMap<[u8; 16], BTreeMap<u32, SlotRow>>,
 }
 
 impl State {
@@ -74,6 +78,8 @@ impl State {
 pub(crate) struct MemoryBackend {
     info: BackendInfo,
     state: Mutex<State>,
+    /// Seconds the store clock runs ahead of the system clock (a conformance clock jump).
+    skew: AtomicU64,
 }
 
 impl Default for MemoryBackend {
@@ -89,6 +95,7 @@ impl Default for MemoryBackend {
                 durability: Durability::Local,
             },
             state: Mutex::new(State::default()),
+            skew: AtomicU64::new(0),
         }
     }
 }
@@ -103,7 +110,7 @@ impl MemoryBackend {
     fn observed(&self) -> ClockObservation {
         ClockObservation {
             authority: self.info.clock_authority,
-            unix_seconds: now(),
+            unix_seconds: now().saturating_add(self.skew.load(Ordering::Relaxed)),
         }
     }
 
@@ -115,19 +122,48 @@ impl MemoryBackend {
         }
     }
 
-    fn commit_now(&self, prepared: &PreparedCandidate) -> Result<Decision, Failure> {
+    fn commit_now(
+        &self,
+        prepared: &PreparedCandidate,
+        key: CommitKey,
+    ) -> Result<Decision, Failure> {
         let seal = busbar_kernel::seal::lend();
         let candidate = prepared.candidate();
         self.dataset(candidate.id.dataset)?;
         let mut state = self.state();
         let observed_at = self.observed();
-        if let Some(digest) = state.receipts.get(&candidate.id.operation) {
-            return Ok(if *digest == prepared.fingerprint() {
-                Decision::Applied(candidate.result.clone())
-            } else {
-                Decision::OpIdConflict
-            });
+        let writer = candidate.id.writer;
+        // The slot row precedes fences (STORE-TRANSACTIONS §2.5): a later sequence already
+        // evaluated is STALE, an equal one replays its recorded verdict or is an op-id conflict.
+        let slot = (!key.is_self_fenced()).then(|| key.wire());
+        if let Some((index, seq)) = slot {
+            if let Some(row) = state.slots.get(&writer).and_then(|rows| rows.get(&index)) {
+                if seq < row.seq {
+                    return Ok(Decision::Stale);
+                }
+                if seq == row.seq {
+                    return Ok(if row.fp == prepared.fingerprint() {
+                        row.replay(self.info.clock_authority).0
+                    } else {
+                        Decision::OpIdConflict
+                    });
+                }
+            }
         }
+        // Every evaluated verdict is recorded in the slot row, conflicts included.
+        let record = |state: &mut State, verdict: Verdict| {
+            if let Some((index, seq)) = slot {
+                state.slots.entry(writer).or_default().insert(
+                    index,
+                    SlotRow {
+                        seq,
+                        fp: prepared.fingerprint(),
+                        verdict,
+                        observed: observed_at.unix_seconds,
+                    },
+                );
+            }
+        };
         let get = |state: &State, namespace: [u8; 16], key: &[u8]| {
             state
                 .rows
@@ -138,7 +174,7 @@ impl MemoryBackend {
                 .map(|value| value.expose(&seal).clone())
         };
         let fresh = state.rows.is_empty()
-            && state.receipts.is_empty()
+            && state.slots.is_empty()
             && control::initialization(prepared, self.info.dataset);
         if !fresh {
             let Some(root) = get(&state, control::NAMESPACE.0, control::DATASET_KEY) else {
@@ -166,6 +202,7 @@ impl MemoryBackend {
             .time
             .is_some_and(|guard| !guard.permits(observed_at.unix_seconds))
         {
+            record(&mut *state, Verdict::TimeGuard);
             return Ok(Decision::TimeGuardFailed { observed_at });
         }
         for predicate in &candidate.predicates {
@@ -175,6 +212,7 @@ impl MemoryBackend {
                 ExpectedValue::Exact(bytes) => found.as_ref() == Some(bytes),
             };
             if !matches {
+                record(&mut *state, Verdict::Conflict);
                 return Ok(Decision::ConditionConflict);
             }
         }
@@ -245,10 +283,24 @@ impl MemoryBackend {
             let generation = state.generations.entry(namespace).or_default();
             *generation = generation.checked_add(1).ok_or(Failure::Refused)?;
         }
-        state
-            .receipts
-            .insert(candidate.id.operation, prepared.fingerprint());
-        Ok(Decision::Applied(candidate.result.clone()))
+        record(&mut *state, Verdict::Applied);
+        // A Put of a closed control Writer row deletes every slot row of that writer.
+        for mutation in &candidate.mutations {
+            if let Mutation::Put { address, value } = mutation {
+                if address.namespace != control::NAMESPACE.0 {
+                    continue;
+                }
+                if let Some(control::Key::Writer(closed)) = control::Key::decode(&address.key) {
+                    if control::Writer::decode(value.expose(&seal))
+                        .is_some_and(|w| w.retired_through == w.admitted_through)
+                    {
+                        state.slots.remove(&closed);
+                    }
+                }
+            }
+        }
+        // Stores answer with empty bytes; the host attempt rebuilds the candidate's own result.
+        Ok(Decision::Applied(Secret::default()))
     }
 }
 
@@ -336,7 +388,22 @@ impl PersistenceBackend for MemoryBackend {
         })
     }
 
-    fn commit(&self, prepared: PreparedCandidate, _: CommitKey) -> Call<'_, Decision> {
-        Box::pin(async move { self.commit_now(&prepared) })
+    fn commit(&self, prepared: PreparedCandidate, key: CommitKey) -> Call<'_, Decision> {
+        Box::pin(async move { self.commit_now(&prepared, key) })
+    }
+}
+
+/// The shared Store v4 conformance cases run against this store as against every store.
+impl busbar_contract::abi::sdk::store::v4::conformance::Subject for MemoryBackend {
+    fn backend(&self) -> &dyn PersistenceBackend {
+        self
+    }
+    /// The writer's slot rows.
+    fn slot_rows(&self, writer: [u8; 16]) -> usize {
+        self.state().slots.get(&writer).map_or(0, BTreeMap::len)
+    }
+    fn jump_clock(&self, seconds: u64) -> bool {
+        self.skew.fetch_add(seconds, Ordering::Relaxed);
+        true
     }
 }

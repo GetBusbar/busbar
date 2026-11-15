@@ -718,4 +718,11 @@ pub mod legacy {
     pub fn rsa_oaep_sha1_encrypt(public_key_der: &[u8], msg: &[u8]) -> Result<Vec<u8>, Error> {
         b::legacy::rsa_oaep_sha1_encrypt(public_key_der, msg).map_err(map)
     }
+
+    /// Whether `public_key_der` (DER `SubjectPublicKeyInfo` or PKCS#1 `RSAPublicKey`) is an RSA
+    /// key [`rsa_oaep_sha1_encrypt`] encrypts to: the backend's own parse, so a key passes exactly
+    /// when that encryption would accept it.
+    pub fn rsa_oaep_public_key_check(public_key_der: &[u8]) -> Result<(), Error> {
+        b::legacy::rsa_oaep_public_key_check(public_key_der).map_err(map)
+    }
 }

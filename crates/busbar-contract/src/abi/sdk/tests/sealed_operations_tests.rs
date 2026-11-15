@@ -129,3 +129,57 @@ fn encoding_normalization_and_xor_remain_sealed_and_exact() {
     assert!(value(b"x").pbkdf2_sha256(b"salt", 0).is_err());
     assert!(value(b"x").pbkdf2_sha256(b"salt", 1_000_001).is_err());
 }
+
+/// `der` wrapped as the BIT STRING of an rsaEncryption `SubjectPublicKeyInfo`.
+fn spki(der: &[u8]) -> Vec<u8> {
+    fn tlv(tag: u8, body: &[u8]) -> Vec<u8> {
+        let mut out = vec![tag];
+        match u16::try_from(body.len()).unwrap() {
+            n @ 0..=0x7f => out.push(n as u8),
+            n @ 0x80..=0xff => out.extend_from_slice(&[0x81, n as u8]),
+            n => out.extend_from_slice(&[0x82, (n >> 8) as u8, n as u8]),
+        }
+        out.extend_from_slice(body);
+        out
+    }
+    // AlgorithmIdentifier { rsaEncryption (1.2.840.113549.1.1.1), NULL }.
+    const ALG: [u8; 15] = [
+        0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00,
+    ];
+    let bits = tlv(0x03, &[&[0][..], der].concat());
+    tlv(0x30, &[&ALG[..], &bits].concat())
+}
+
+/// The pin hash names a real RSA public key or refuses: a bare PKCS#1 key and one
+/// `SubjectPublicKeyInfo` hash to the SHA-256 of their own DER, but a key wrapped in a second
+/// `SubjectPublicKeyInfo` has SPKI framing without being an RSA key, so it is refused, exactly
+/// as encrypting to it is. A pin must never "match" a DER the exchange itself would refuse.
+#[test]
+fn rsa_key_hash_refuses_a_nested_spki_as_oaep_does() {
+    use base64::Engine as _;
+    let pem = |der: &[u8]| {
+        format!(
+            "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----\n",
+            base64::engine::general_purpose::STANDARD.encode(der)
+        )
+    };
+    let pkcs1 = crate::crypto::rsa::SigningKey::from_pkcs8(include_bytes!(
+        "../../../../../busbar-crypto/fixtures/rsa2048.pk8.der"
+    ))
+    .unwrap()
+    .public_key();
+    let one = spki(&pkcs1);
+    let nested = spki(&one);
+    for der in [&pkcs1, &one] {
+        let pem = pem(der);
+        assert_eq!(
+            super::rsa_public_key_sha256(pem.as_bytes()).unwrap(),
+            crate::crypto::sha256(der)
+        );
+        assert!(value(b"pw").rsa_oaep_sha1(pem.as_bytes()).is_ok());
+    }
+    let nested = pem(&nested);
+    assert!(value(b"pw").rsa_oaep_sha1(nested.as_bytes()).is_err());
+    assert!(super::rsa_public_key_sha256(nested.as_bytes()).is_err());
+    assert!(super::rsa_public_key_sha256(pem(b"\x30\x00").as_bytes()).is_err());
+}

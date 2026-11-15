@@ -67,19 +67,27 @@ fn der(pem: &[u8]) -> Result<Vec<u8>, Refused> {
     }
 }
 
-/// The SHA-256 of the PEM key's DER body.
-pub(crate) fn key_sha256(pem: &[u8]) -> Result<[u8; 32], Refused> {
-    Ok(crypto::sha256(&der(pem)?))
-}
-
-/// `message` encrypted to the PEM public key `pem` with OAEP over SHA-1 and a fresh seed.
-pub(crate) fn oaep_sha1(message: &[u8], pem: &[u8]) -> Result<Vec<u8>, Refused> {
-    let der = der(pem)?;
-    crypto::legacy::rsa_oaep_sha1_encrypt(&der, message).map_err(|e| match e {
+/// The backend's refusal as this exchange words it.
+fn refused(e: crypto::Error) -> Refused {
+    match e {
         crypto::Error::Unsupported(u) => Refused(u.reason),
         crypto::Error::Invalid(w) if w.contains("too long") => {
             Refused("the password is too long for the server's RSA key")
         }
         _ => BAD_KEY,
-    })
+    }
+}
+
+/// The SHA-256 of the PEM key's DER body, for a key the backend accepts as the RSA key
+/// [`oaep_sha1`] encrypts to. A pin names a real RSA public key: DER that only has SPKI framing (a
+/// key wrapped in a second SPKI) is refused, exactly as encrypting to it is.
+pub(crate) fn key_sha256(pem: &[u8]) -> Result<[u8; 32], Refused> {
+    let der = der(pem)?;
+    crypto::legacy::rsa_oaep_public_key_check(&der).map_err(refused)?;
+    Ok(crypto::sha256(&der))
+}
+
+/// `message` encrypted to the PEM public key `pem` with OAEP over SHA-1 and a fresh seed.
+pub(crate) fn oaep_sha1(message: &[u8], pem: &[u8]) -> Result<Vec<u8>, Refused> {
+    crypto::legacy::rsa_oaep_sha1_encrypt(&der(pem)?, message).map_err(refused)
 }

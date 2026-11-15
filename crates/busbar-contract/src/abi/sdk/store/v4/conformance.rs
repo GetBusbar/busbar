@@ -18,8 +18,44 @@ use crate::persistence::{
 };
 use crate::Secret;
 
-/// Commits per writer in [`no_growth`], as the design states (8.10).
-pub const NO_GROWTH_COMMITS: usize = 1_000_000;
+/// The writer's peak concurrency (leased slots) in the shared [`no_growth`] case.
+pub const NO_GROWTH_PEAK: u32 = 64;
+/// Full slot cycles the shared [`no_growth`] case runs: half before the clock jump, half after.
+pub const NO_GROWTH_CYCLES: usize = 64;
+/// Commits per writer in the shared [`no_growth`] case (8.10): [`NO_GROWTH_CYCLES`] full cycles of
+/// [`NO_GROWTH_PEAK`] slots, 4,096 commits.
+///
+/// The property is "a writer's slot rows never exceed its peak", and the row bound decides it, not
+/// the count: [`no_growth`] asserts the bound after every full cycle, so a store that keeps more
+/// than one row per (writer, slot) fails at the end of its second cycle, a store that compacts only
+/// every N commits fails at the first cycle boundary its backlog shows at, and one that holds rows
+/// for a retention window fails long before the +48 h jump. Thirty-two cycles on each side of the
+/// jump give every slot many leases with ever larger sequences under both clocks.
+///
+/// What the old 1,000,000 count guarded implicitly is now its own case: a counter that misbehaves
+/// only at a width boundary is [`counter_wrap`]'s (seeded at each boundary, committed across it),
+/// and growth that shows only over a long horizon is [`LONG_HORIZON_COMMITS`], run in core against
+/// the in-memory store, where a million commits take seconds. Against a real database a million
+/// commits take hours (9 to 25 ms a durable commit), so every store's CI runs this count unchanged.
+pub const NO_GROWTH_COMMITS: usize = NO_GROWTH_CYCLES * NO_GROWTH_PEAK as usize;
+/// Commits in the long-horizon [`no_growth`] run core makes against its in-memory store
+/// (2^20, at [`NO_GROWTH_PEAK`]): every slot leased 16,384 times, the bound asserted at each cycle.
+pub const LONG_HORIZON_COMMITS: usize = 1 << 20;
+/// The lease sequences [`counter_wrap`] commits at, ascending: each side of every signed and
+/// unsigned 32- and 64-bit boundary a store could hold a sequence in, up to `u64::MAX`.
+pub const WRAP_SEQS: [u64; 8] = [
+    0x7fff_ffff,
+    0x8000_0000,
+    0xffff_ffff,
+    0x1_0000_0000,
+    0x7fff_ffff_ffff_ffff,
+    0x8000_0000_0000_0000,
+    u64::MAX - 1,
+    u64::MAX,
+];
+/// The slots [`counter_wrap`] commits on: each side of the signed 16-bit boundary, and the last
+/// slot the contract admits (`MAX_SLOTS - 1`).
+pub const WRAP_SLOTS: [u32; 3] = [0x7fff, 0x8000, MAX_SLOTS - 1];
 /// The store-clock jump [`no_growth`] applies between its two halves (8.10).
 pub const CLOCK_JUMP_SECS: u64 = 48 * 60 * 60;
 
@@ -446,15 +482,34 @@ pub async fn zombie_fenced_in_doubt(subject: &impl Subject) {
     assert!(matches!(commit(b, &x, slot(6, 1)).await, Decision::Fenced));
 }
 
-/// 8.10 No growth: `commits` slotted commits over `peak` slots, with a +48 h store
-/// clock jump halfway, leave at most `peak` rows for the writer. Returns whether the
-/// store's clock could be moved.
+/// 8.10 No growth: `commits` slotted commits over `peak` slots, with a +48 h store clock
+/// jump halfway, never leave more than `peak` rows for the writer. The bound is asserted
+/// after every full cycle of `peak` commits and at the end, so storage that
+/// grows with commits is caught while it grows, not only if it is still grown at the end.
+/// `commits` must cover at least one full cycle on each side of the jump (the shared case
+/// is [`NO_GROWTH_COMMITS`] at [`NO_GROWTH_PEAK`]). Returns whether the store's clock could
+/// be moved.
 pub async fn no_growth(subject: &impl Subject, commits: usize, peak: u32) -> bool {
     assert!(peak > 0 && peak <= MAX_SLOTS);
+    let cycle = peak as usize;
+    assert!(
+        commits >= 2 * cycle,
+        "{commits} commits do not cycle {peak} slots on both sides of the clock jump"
+    );
+    let bounded = |after: usize| {
+        let rows = subject.slot_rows(REGISTRAR);
+        assert!(
+            rows <= cycle,
+            "{rows} slot rows for a peak of {peak} after {after} commits"
+        );
+    };
     let b = subject.backend();
     bootstrap(b).await;
     let mut jumped = false;
     for n in 0..commits {
+        if n > 0 && n % cycle == 0 {
+            bounded(n);
+        }
         if n == commits / 2 {
             jumped = subject.jump_clock(CLOCK_JUMP_SECS);
         }
@@ -471,12 +526,58 @@ pub async fn no_growth(subject: &impl Subject, commits: usize, peak: u32) -> boo
             Decision::Applied(_)
         ));
     }
-    let rows = subject.slot_rows(REGISTRAR);
-    assert!(
-        rows <= peak as usize,
-        "{rows} slot rows for a peak of {peak}"
-    );
+    bounded(commits);
     jumped
+}
+
+/// 8.10 Counter wrap: slot and sequence counters hold at every width boundary. On each of
+/// [`WRAP_SLOTS`] the writer commits at every [`WRAP_SEQS`] sequence in turn, starting near
+/// the boundary, as a long-lived writer would reach it. Each commit applies and its equal-sequence
+/// replay answers its recorded Applied; a fresh candidate at the sequence just passed is STALE
+/// and writes nothing, so a store that narrows or signs a sequence (and so sees the larger one as
+/// smaller) is caught where it wraps. The writer ends with one row per slot it used. A
+/// namespace generation is the store's own counter and cannot be seeded through the contract; the
+/// long-horizon [`no_growth`] run ([`LONG_HORIZON_COMMITS`]) drives it past a million.
+pub async fn counter_wrap(subject: &impl Subject) {
+    let b = subject.backend();
+    bootstrap(b).await;
+    let mut n = 2_000;
+    for (s, &index) in WRAP_SLOTS.iter().enumerate() {
+        let mut passed = None;
+        for &seq in &WRAP_SEQS {
+            n += 1;
+            let written = seq.to_be_bytes();
+            let c = candidate(b, REGISTRAR, op(n), vec![], vec![put(b"wrap", &written)]);
+            assert!(
+                matches!(commit(b, &c, slot(index, seq)).await, Decision::Applied(_)),
+                "slot {index} seq {seq:#x} did not apply"
+            );
+            assert!(
+                matches!(commit(b, &c, slot(index, seq)).await, Decision::Applied(_)),
+                "slot {index} seq {seq:#x} did not replay"
+            );
+            if let Some(before) = passed {
+                n += 1;
+                let late = candidate(b, REGISTRAR, op(n), vec![], vec![put(b"wrap", b"late")]);
+                assert!(
+                    matches!(commit(b, &late, slot(index, before)).await, Decision::Stale),
+                    "slot {index}: seq {before:#x} after {seq:#x} was not STALE"
+                );
+            }
+            assert_eq!(
+                value(b, at(b"wrap")).await.as_deref(),
+                Some(&written[..]),
+                "slot {index} seq {seq:#x}"
+            );
+            passed = Some(seq);
+        }
+        let rows = subject.slot_rows(REGISTRAR);
+        assert!(
+            rows <= s + 1,
+            "{rows} slot rows after {} wrapped slots",
+            s + 1
+        );
+    }
 }
 
 /// 8.11 A clean exit (writer closure) leaves zero rows; a crashed writer keeps at

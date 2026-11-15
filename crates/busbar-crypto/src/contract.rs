@@ -132,6 +132,7 @@ const _: () = {
     let _: fn(&[u8]) -> R<[u8; 20]> = b::legacy::sha1;
     let _: fn(&[u8], &[u8]) -> R<[u8; 20]> = b::legacy::hmac_sha1;
     let _: fn(&[u8], &[u8]) -> R<Vec<u8>> = b::legacy::rsa_oaep_sha1_encrypt;
+    let _: fn(&[u8]) -> R<()> = b::legacy::rsa_oaep_public_key_check;
 };
 
 #[cfg(feature = "tls")]

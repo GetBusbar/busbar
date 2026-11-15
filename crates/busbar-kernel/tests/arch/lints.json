@@ -110,17 +110,5 @@
       "crates/busbar-kernel/src/trust/validate.rs": "trust::validate::Grant is one scope or egress grant a visibility check needs (Copy by design), not the capability token"
     }
   },
-  "admitted": {
-    "crates/busbar-contract/src/json_grammar.rs Scalar": "owner R-CHECKS 2026-11-15: keep the one-implementation-trait check, freeze today's traits, new ones fail",
-    "crates/busbar-contract/src/yaml.rs MappingExt": "owner R-CHECKS 2026-11-15: keep the one-implementation-trait check, freeze today's traits, new ones fail",
-    "crates/busbar-contract/src/yaml.rs ValueExt": "owner R-CHECKS 2026-11-15: keep the one-implementation-trait check, freeze today's traits, new ones fail",
-    "crates/busbar-kernel-identity/src/lib.rs RevocationView": "owner R-CHECKS 2026-11-15: keep the one-implementation-trait check, freeze today's traits, new ones fail",
-    "crates/busbar-kernel/src/auth/login_limits/mod.rs CredentialDoor": "owner R-CHECKS 2026-11-15: keep the one-implementation-trait check, freeze today's traits, new ones fail",
-    "crates/busbar-kernel/src/plane_driver/route_tables.rs EngineTablesView": "owner R-CHECKS 2026-11-15: keep the one-implementation-trait check, freeze today's traits, new ones fail",
-    "crates/busbar-kernel/src/refresh.rs Report": "owner R-CHECKS 2026-11-15: keep the one-implementation-trait check, freeze today's traits, new ones fail",
-    "crates/busbar-kernel/src/store/vocab.rs LaneRuntime": "owner R-CHECKS 2026-11-15: keep the one-implementation-trait check, freeze today's traits, new ones fail",
-    "crates/busbar-migrations/src/legacy/transform.rs NativeProofs": "owner R-CHECKS 2026-11-15: keep the one-implementation-trait check, freeze today's traits, new ones fail",
-    "crates/busbar-migrations/src/verification.rs TargetRecoveryProbe": "owner R-CHECKS 2026-11-15: keep the one-implementation-trait check, freeze today's traits, new ones fail",
-    "crates/plugin-loader/src/cold/dispatch/services.rs Sweep": "owner R-CHECKS 2026-11-15: keep the one-implementation-trait check, freeze today's traits, new ones fail"
-  }
+  "admitted": {}
 }
