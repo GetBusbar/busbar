@@ -4785,3 +4785,7 @@ mod pool_prepared_ready_tests;
 #[cfg(test)]
 #[path = "tests/pool_prepared_target_tests.rs"]
 mod pool_prepared_target_tests;
+
+#[cfg(test)]
+#[path = "tests/waiter_order_tests.rs"]
+mod waiter_order_tests;

@@ -121,12 +121,15 @@ pub(crate) fn claim_rows_fault(f: Fault) -> LoadError {
     LoadError::KindTail(format!("{} breaks {:?}", f.field, f.rule))
 }
 
+/// A door's op table: each slot's op, and whether the plugin filled it.
+pub(crate) type OpTable = (Box<[Op]>, Box<[bool]>);
+
 /// A door's op table, read once at admission: each slot's op and whether the plugin filled it.
 #[cold]
 pub(crate) fn op_table(
     slots: u32,
     slot: impl FnMut(u32) -> Result<(Op, bool), LoadError>,
-) -> Result<(Box<[Op]>, Box<[bool]>), LoadError> {
+) -> Result<OpTable, LoadError> {
     let entries = (0..slots).map(slot).collect::<Result<Vec<_>, _>>()?;
     let (ops, operations): (Vec<_>, Vec<_>) = entries.into_iter().unzip();
     Ok((ops.into_boxed_slice(), operations.into_boxed_slice()))

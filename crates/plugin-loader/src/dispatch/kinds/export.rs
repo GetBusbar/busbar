@@ -39,15 +39,10 @@ pub struct ExportFacts {
     pub whole_batches: bool,
 }
 
-fn owned(s: AbiStr) -> Option<String> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a Statement string is copied out once, at bind"
-    )]
-    let owned = crate::dispatch::plugin::str_bytes(s)
+pub(crate) fn owned(s: AbiStr) -> Option<String> {
+    crate::dispatch::plugin::str_bytes(s)
         .and_then(|b| std::str::from_utf8(b).ok())
-        .map(str::to_owned);
-    owned
+        .map(crate::cold::dispatch::kinds::statement_text)
 }
 
 /// A `'static` Statement list of `len` entries at `ptr`, which the caller's check bounded and
@@ -64,7 +59,7 @@ unsafe fn listed<'a, T>(ptr: *const T, len: usize) -> &'a [T] {
     unsafe { std::slice::from_raw_parts(ptr, len) }
 }
 
-fn route(r: &export::Route) -> Result<Route, String> {
+pub(crate) fn route(r: &export::Route) -> Result<Route, String> {
     let path = owned(r.path).ok_or("an export route's path is over-long")?;
     let method = owned(r.method).ok_or("an export route's method is over-long")?;
     let methods = [
@@ -74,20 +69,30 @@ fn route(r: &export::Route) -> Result<Route, String> {
         RouteMethod::Patch,
         RouteMethod::Delete,
     ];
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a load-time Statement refusal"
-    )]
     let method = methods
         .into_iter()
         .find(|m| m.as_str() == method)
-        .ok_or_else(|| format!("the export route {path} names the method `{method}`"))?;
+        .ok_or_else(|| crate::cold::dispatch::kinds::export_route_method(&path, &method))?;
     let auth = match r.auth {
         export::ROUTE_AUTH_NONE => RouteAuth::None,
         export::ROUTE_AUTH_KEY => RouteAuth::Key,
         _ => RouteAuth::Admin,
     };
     Ok(Route { path, method, auth })
+}
+
+/// One declared metric family, copied out once at bind: its name, its `FAMILY_*` kind and its
+/// label keys.
+pub(crate) fn family(
+    f: &busbar_contract::abi::mechanism::door::MetricFamily,
+) -> Result<(String, u8, Vec<String>), String> {
+    // SAFETY: the loader's Statement check bounded each family's label keys and refused them
+    // behind NULL; they are `'static` plugin data.
+    let keys = unsafe { listed(f.label_keys, f.label_keys_len) };
+    let keys = crate::cold::dispatch::kinds::export_label_keys(keys)
+        .ok_or("a metric family's label key is over-long")?;
+    let name = owned(f.name).ok_or("a metric family's name is over-long")?;
+    Ok((name, f.kind, keys))
 }
 
 const EXPORT_TAIL_FROZEN: usize = std::mem::size_of::<Tail>();
@@ -97,11 +102,7 @@ fn facts(st: &Statement) -> Result<ExportFacts, String> {
     // lists of length 0); a non-NULL kind tail is `'static` plugin data of its stated size.
     let t: Tail =
         unsafe { crate::dispatch::plugin::kind_tail(st, "an export plugin", EXPORT_TAIL_FROZEN) }?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a load-time Statement refusal"
-    )]
-    let why = |f: Fault| format!("the export tail breaks {:?} at {}", f.rule, f.field);
+    let why = |f: Fault| crate::cold::dispatch::kinds::tail_fault("export", f);
     validate::check_tail(&t).map_err(why)?;
     // SAFETY: `check_tail` refused a count behind NULL and bounded both counts; the lists are
     // `'static` plugin data.
@@ -113,30 +114,10 @@ fn facts(st: &Statement) -> Result<ExportFacts, String> {
     };
     // SAFETY: the loaded Statement owns the static route path bytes for this plugin lifetime.
     unsafe { validate::check_tail_entries(streams, routes) }.map_err(why)?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the routes are copied out once, at bind"
-    )]
-    let routes = routes.iter().map(route).collect::<Result<Vec<_>, _>>()?;
+    let routes = crate::cold::dispatch::kinds::export_routes(routes)?;
     // SAFETY: the loader's Statement check bounded `families` and refused it behind NULL.
     let declared = unsafe { listed(st.families, st.families_len) };
-    // busbar:expect(bp::fresh_buffer, reason = "boot: the families are copied out once, at bind")
-    let mut families = Vec::with_capacity(declared.len());
-    for f in declared {
-        // SAFETY: as above, for each family's label keys.
-        let keys = unsafe { listed(f.label_keys, f.label_keys_len) };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the label keys are copied out once, at bind"
-        )]
-        let keys = keys
-            .iter()
-            .map(|k| owned(*k))
-            .collect::<Option<Vec<_>>>()
-            .ok_or("a metric family's label key is over-long")?;
-        let name = owned(f.name).ok_or("a metric family's name is over-long")?;
-        families.push((name, f.kind, keys));
-    }
+    let families = crate::cold::dispatch::kinds::export_families(declared)?;
     // SAFETY: a door's Statement is `'static` plugin data; its extensions blob holds its stated
     // length (a NULL one reads as none).
     let ext = unsafe { crate::dispatch::plugin::blob_bytes(st.extensions) };
@@ -161,11 +142,7 @@ fn facts(st: &Statement) -> Result<ExportFacts, String> {
     if recorder && !streams.contains(&(ExportStream::Metrics as u8)) {
         return Err("a recorder declaration requires the metrics stream".into());
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the streams are copied out once, at bind"
-    )]
-    let streams = streams.to_vec();
+    let streams = crate::cold::dispatch::kinds::statement_list(streams);
     Ok(ExportFacts {
         recorder,
         span_records,
