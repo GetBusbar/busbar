@@ -12,7 +12,6 @@ impl GovState {
         &self,
         snapshot: &UnitCheckpoint,
     ) -> RecordStoreResult<Vec<RecoveryEvent>> {
-        // busbar:expect(bp::fresh_buffer, reason = "boot: a terminated or recovered unit's raw custody is staged or reloaded once")
         let mut events = Vec::new();
         let mut cell = BudgetCell::default();
         // No counts, no row (#42): accrue_raw creates a lane row only from a non-zero count.
@@ -84,7 +83,6 @@ impl GovState {
             .map(|(name, count)| (name.clone(), *count))
             .collect();
         counts.usage_units = usage_units;
-        // busbar:expect(bp::clone_alloc, reason = "boot: a terminated or recovered unit's raw custody is staged or reloaded once")
         let key: MeterKey = (
             snapshot.principal.clone(),
             metering_bucket(snapshot.arrived),
@@ -155,7 +153,6 @@ impl GovState {
                         .binary_search(&self.budget.shard_index(&target.bucket))
                         .expect("target shard held");
                     let cell = guards[index].get(&target.bucket);
-                    // busbar:expect(bp::state_scan, reason = "boot: a terminated or recovered unit's raw custody is staged or reloaded once")
                     if cell.is_some_and(|cell| {
                         cell.dirty || cell.flushing != 0 || cell.correction.is_some()
                     }) || flights.keys().any(|(bucket, _)| bucket == &target.bucket)
@@ -193,7 +190,6 @@ impl GovState {
         };
         check_pending()?;
         let touched = crate::store::now();
-        // busbar:expect(bp::fresh_buffer, reason = "boot: a terminated or recovered unit's raw custody is staged or reloaded once")
         let mut refreshed = Vec::new();
         for (target, previous) in snapshot.targets.iter().zip(&before) {
             if previous
@@ -239,7 +235,6 @@ impl GovState {
             let index = shards
                 .binary_search(&self.budget.shard_index(&target.bucket))
                 .expect("target shard held");
-            // busbar:expect(bp::state_scan, reason = "boot: a terminated or recovered unit's raw custody is staged or reloaded once")
             if !same_checkpoint_cell(previous.as_ref(), guards[index].get(&target.bucket))
                 || flights.keys().any(|(bucket, _)| bucket == &target.bucket)
             {
@@ -259,7 +254,6 @@ impl GovState {
                 let index = shards
                     .binary_search(&self.budget.shard_index(&target.bucket))
                     .expect("target shard held");
-                // busbar:expect(bp::clone_alloc, reason = "boot: a terminated or recovered unit's raw custody is staged or reloaded once")
                 guards[index].insert(target.bucket.clone(), cell);
             }
         }

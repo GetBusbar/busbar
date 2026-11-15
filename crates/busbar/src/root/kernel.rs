@@ -9,12 +9,12 @@ use busbar_contract::caps::{Admittance, Grant, Hold, PrincipalId};
 use busbar_kernel::inflight::ArrivalDoor;
 
 #[must_use]
-pub fn new_kernel() -> busbar_kernel::teller::Kernel {
+pub(crate) fn new_kernel() -> busbar_kernel::teller::Kernel {
     busbar_kernel::teller::Kernel::new()
 }
 
 #[must_use]
-pub fn new_registration() -> busbar_kernel::Registration {
+pub(crate) fn new_registration() -> busbar_kernel::Registration {
     busbar_kernel::Registration::new()
 }
 
@@ -42,7 +42,7 @@ impl PinnedHistory {
 
     #[cfg(test)]
     #[must_use]
-    pub fn view_at(
+    pub(crate) fn view_at(
         &self,
         at: busbar_kernel_ledger::cost::EntryKey,
     ) -> busbar_kernel_ledger::cost::HistoryView<'_> {
@@ -57,7 +57,7 @@ impl PinnedHistory {
 
     #[cfg(test)]
     #[must_use]
-    pub fn for_test(
+    pub(crate) fn for_test(
         history: Arc<busbar_kernel_ledger::cost::History>,
         at: busbar_kernel_ledger::cost::HistorySeq,
     ) -> Self {
@@ -72,7 +72,10 @@ impl PinnedHistory {
 
     #[cfg(test)]
     #[must_use]
-    pub fn for_test_at(other: &PinnedHistory, at: busbar_kernel_ledger::cost::HistorySeq) -> Self {
+    pub(crate) fn for_test_at(
+        other: &PinnedHistory,
+        at: busbar_kernel_ledger::cost::HistorySeq,
+    ) -> Self {
         PinnedHistory {
             history: Arc::clone(&other.history),
             at: other
@@ -219,11 +222,15 @@ impl RootHistory {
     }
 
     #[must_use]
-    pub fn keeps_store(&self) -> bool {
+    pub(crate) fn keeps_store(&self) -> bool {
         self.store.get().is_some()
     }
 
-    pub fn card_applied(&self, card: &busbar_kernel::config::card::CardFields, origin: &str) {
+    pub(crate) fn card_applied(
+        &self,
+        card: &busbar_kernel::config::card::CardFields,
+        origin: &str,
+    ) {
         match self.card_store() {
             Some(_) => {
                 // Live configuration publishes through the confirmed RateApply
@@ -319,7 +326,7 @@ impl RootHistory {
         appended
     }
 
-    pub fn apply_rates(
+    pub(crate) fn apply_rates(
         &self,
         rates: &busbar_kernel::rate_apply::RawRates<'_>,
         _now_ms: u64,
@@ -443,7 +450,7 @@ impl RootHistory {
         self.amend_by(correction, "admin", seal).await
     }
 
-    pub async fn amend_by<E>(
+    pub(crate) async fn amend_by<E>(
         &self,
         correction: &Correction,
         actor: &str,
@@ -692,7 +699,7 @@ pub(crate) fn register_classes(rates: &busbar_kernel::rate_apply::RawRates<'_>) 
 }
 
 #[cfg(test)]
-pub const CARD_APPLIED_TAG: &str = "busbar/rate-card-applied/v1";
+pub(crate) const CARD_APPLIED_TAG: &str = "busbar/rate-card-applied/v1";
 
 #[cfg(test)]
 const RESERVED_CLASSES: [&str; 4] = [
@@ -827,7 +834,7 @@ impl CardForm {
 impl CardForm {
     #[cfg(test)]
     #[must_use]
-    pub fn to_fields(&self) -> busbar_kernel::config::card::CardFields {
+    pub(crate) fn to_fields(&self) -> busbar_kernel::config::card::CardFields {
         let unpriced: std::collections::BTreeSet<&str> = self
             .cells
             .iter()
@@ -984,7 +991,7 @@ impl CardApplied {
 
     #[cfg(test)]
     #[must_use]
-    pub fn from_body(bytes: &[u8]) -> Option<CardApplied> {
+    pub(crate) fn from_body(bytes: &[u8]) -> Option<CardApplied> {
         let mut body = busbar_kernel_wal::BodyReader::new(bytes);
         if body.text()? != CARD_APPLIED_TAG {
             return None;
@@ -1069,7 +1076,7 @@ pub struct Correction {
 
 impl Correction {
     #[must_use]
-    pub fn draft_over(
+    pub(crate) fn draft_over(
         &self,
         view: busbar_kernel_ledger::cost::HistoryView<'_>,
     ) -> Option<(CorrectionBase, busbar_kernel_ledger::cost::CardEntryDraft)> {
@@ -1093,7 +1100,7 @@ impl Correction {
     }
 
     #[cfg(test)]
-    pub fn rebuild_over(
+    pub(crate) fn rebuild_over(
         &self,
         history: &busbar_kernel_ledger::cost::History,
         sealed_over: CorrectionBase,
@@ -1413,7 +1420,7 @@ impl busbar_kernel::rate_apply::RateEpoch for RootHistory {
 }
 
 #[cfg(any(test, distribution_root))]
-pub fn install_card_repricer() {}
+pub(crate) fn install_card_repricer() {}
 
 /// The admission unit, standing at the in-flight table's arrival door.
 ///
@@ -1434,7 +1441,7 @@ impl ArrivalDoor for AdmissionDoor {
 pub type VerbStoreHandle =
     Option<Arc<dyn busbar_kernel::persistence::recovery_api::Store + Send + Sync>>;
 
-pub struct ProductionUnits {
+pub(crate) struct ProductionUnits {
     pub auth_bindings: auth_bindings::AuthBindings,
 
     #[cfg(test)]
@@ -1483,7 +1490,7 @@ impl ProductionUnits {
     }
 
     #[cfg(test)]
-    pub async fn admin_only(
+    pub(crate) async fn admin_only(
         dispatch: Arc<dyn crate::root::units_admin::AdminDispatch>,
         door: crate::root::units_admin::AdminDoorFn,
     ) -> Self {
@@ -1503,7 +1510,7 @@ impl ProductionUnits {
     }
 
     #[must_use]
-    pub fn admin_over_book(
+    pub(crate) fn admin_over_book(
         dispatch: Arc<dyn crate::root::units_admin::AdminDispatch>,
         door: crate::root::units_admin::AdminDoorFn,
         book: &crate::root::durability::NodeBook,
@@ -1517,7 +1524,7 @@ impl ProductionUnits {
     }
 
     #[must_use]
-    pub fn admin_only_sharing(
+    pub(crate) fn admin_only_sharing(
         dispatch: Arc<dyn crate::root::units_admin::AdminDispatch>,
         door: crate::root::units_admin::AdminDoorFn,
         durability: Arc<Mutex<crate::root::durability::Durability>>,
@@ -1542,7 +1549,7 @@ impl ProductionUnits {
     }
 
     #[must_use]
-    pub fn with_auth_bindings(mut self, bindings: auth_bindings::AuthBindings) -> Self {
+    pub(crate) fn with_auth_bindings(mut self, bindings: auth_bindings::AuthBindings) -> Self {
         self.auth_bindings = bindings;
         self
     }

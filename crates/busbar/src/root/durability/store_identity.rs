@@ -5,18 +5,18 @@ use busbar_kernel_audit::{AuditChain, AuditKeySet, AuditRecord};
 
 pub use busbar_kernel::persistence::boot_identity::{BootIdentity, TakenNode as NativeTakenNode};
 
-pub async fn take_node(
+pub(crate) async fn take_node(
     owner: &std::sync::Arc<BootIdentity>,
     host: &str,
 ) -> Result<NativeTakenNode, String> {
     owner.take_node(host).await
 }
 #[cfg(test)]
-pub async fn stored_keyset(owner: &BootIdentity) -> Result<Option<String>, String> {
+pub(crate) async fn stored_keyset(owner: &BootIdentity) -> Result<Option<String>, String> {
     owner.stored_keyset().await
 }
 #[must_use]
-pub fn host_identity() -> String {
+pub(crate) fn host_identity() -> String {
     let clean = |s: String| {
         let s = s.trim().to_string();
         (!s.is_empty()).then_some(s)
@@ -57,7 +57,7 @@ pub struct StoredWalk {
     pub findings: Vec<String>,
 }
 
-pub async fn walk_stored_chains(
+pub(crate) async fn walk_stored_chains(
     lane: &std::sync::Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>,
     own: u64,
     keys: &AuditKeySet,
