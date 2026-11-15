@@ -1004,3 +1004,11 @@ fn a_const_strip_is_the_field_strip_and_a_bare_verdict_names_none() {
     let bare = Answer::from(Verdict::Reject);
     assert!(bare.strips.is_empty() && bare.fixed_strips.is_empty());
 }
+
+/// The verify macro fills every auth slot the loader requires, `serve` (auth v4) included: a door
+/// it builds for a plugin without `CAP_PROVISION` answers `serve` REFUSED rather than leaving it
+/// NULL (the loader refused such doors with `NullSlot(16)`).
+#[test]
+fn the_verify_macro_fills_the_serve_slot() {
+    assert!(ops().serve.is_some());
+}

@@ -548,3 +548,12 @@ fn the_issued_credential_read_binds_no_row() {
         .clone();
     assert_eq!(bound, Vec::<String>::new(), "a fact read binds no row");
 }
+
+/// A door `auth_verify_door!` builds loads: the loader requires every auth slot it does not hold
+/// optional, and a plugin without `CAP_PROVISION` states no serve op of its own.
+#[test]
+fn a_door_built_by_the_verify_macro_passes_load_validation() {
+    let validated =
+        crate::dispatch::load::validate_door::<crate::dispatch::kinds::auth::Auth>(plain::door());
+    assert!(validated.is_ok(), "{:?}", validated.err());
+}
