@@ -180,6 +180,9 @@ pub struct Retirement {
     capability: Option<Capability>,
     consumed: Vec<Handle>,
     waiting: Option<Acknowledgement>,
+    /// The `seq` of every handle in `consumed` or `waiting`, kept on insert and on hand-back, so a
+    /// duplicate is refused without a sweep of either list.
+    held: foldhash::HashSet<u32>,
 }
 
 impl Retirement {
@@ -222,6 +225,9 @@ impl Retirement {
             (None, true) => std::mem::take(&mut self.consumed),
             (None, false) => Vec::new(),
         };
+        for handle in &reusable {
+            self.held.remove(&handle.seq);
+        }
         self.capability = Some(next);
         Ok(reusable)
     }
@@ -230,12 +236,7 @@ impl Retirement {
         if self.capability.is_none() {
             return Err(Error::Unsupported);
         }
-        if self
-            .consumed
-            .iter()
-            .chain(self.waiting.iter().flat_map(|a| a.handles.iter()))
-            .any(|h| h.seq == handle.seq)
-        {
+        if !self.held.insert(handle.seq) {
             return Err(Error::Invalid);
         }
         self.consumed.push(handle);

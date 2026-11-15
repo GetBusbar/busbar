@@ -17,13 +17,13 @@ pub(super) use environment::capture as capture_environment;
 pub(crate) use environment::ignored_launch_env;
 
 mod index_field {
-    pub const PLUGINS: &str = "plugins";
+    pub(crate) const PLUGINS: &str = "plugins";
     pub(crate) const REPO: &str = "repo";
     pub(crate) const FORMER_REPOS: &str = "former_repos";
-    pub const KIND: &str = "kind";
+    pub(crate) const KIND: &str = "kind";
     pub(crate) const ANSWERS_TO: &str = "answers_to";
-    pub const RELEASES: &str = "releases";
-    pub const TAG: &str = "tag";
+    pub(crate) const RELEASES: &str = "releases";
+    pub(crate) const TAG: &str = "tag";
     pub(crate) const ABI_VERSION_KEY: &str = "abi_version";
 }
 
@@ -55,14 +55,14 @@ fn release_download(url: &str) -> Result<Vec<u8>, String> {
 /// was published from before, its kind, the words a configuration may name it by, and its
 /// releases with the ABI version each was built for.
 #[derive(Debug, Clone, Default)]
-pub struct Index {
+pub(crate) struct Index {
     /// The plugins.
     pub plugins: Vec<IndexPlugin>,
 }
 
 /// One plugin in the [`Index`].
 #[derive(Debug, Clone)]
-pub struct IndexPlugin {
+pub(crate) struct IndexPlugin {
     /// `org/repo`, as a `plugins.fetch` GitHub pin names it.
     pub repo: String,
     /// The repositories its earlier releases were published from.
@@ -192,7 +192,7 @@ impl Index {
 
 impl IndexPlugin {
     #[must_use]
-    pub fn pin_for_this_core(&self) -> Option<String> {
+    pub(crate) fn pin_for_this_core(&self) -> Option<String> {
         let speaks = crate::root::loader::registry::supported_abi(&self.kind);
         self.releases
             .iter()
@@ -428,7 +428,7 @@ impl RootHost {
         }
     }
     #[must_use]
-    pub fn for_document(raw: &str, config: &std::path::Path) -> Self {
+    pub(crate) fn for_document(raw: &str, config: &std::path::Path) -> Self {
         use busbar_contract::yaml::ValueExt;
         let doc = busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(raw).ok();
         let plugins = doc

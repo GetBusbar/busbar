@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::abi::mechanism::call::RawOutcome;
+use busbar_contract::abi::mechanism::call::{RawOutcome, BLOB_SECRET};
 
 fn limits() -> Limits {
     Limits {
@@ -739,7 +739,7 @@ mod linked {
         let plugin = load_linked::<StoreV4>(
             &row,
             Bind {
-                instance: Arc::from("v4-cancel-test"),
+                instance: crate::cold::store_v4::instance("v4-cancel-test"),
                 max_inflight_cap: 32,
                 sink: Arc::new(NoSink),
                 dispatcher: dispatcher.adopter(),
@@ -819,7 +819,7 @@ mod linked {
         let plugin = load_linked::<StoreV4>(
             &row,
             Bind {
-                instance: Arc::from("v4-test"),
+                instance: crate::cold::store_v4::instance("v4-test"),
                 max_inflight_cap: 32,
                 sink: Arc::new(NoSink),
                 dispatcher: dispatcher.adopter(),

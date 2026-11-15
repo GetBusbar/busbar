@@ -16,15 +16,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub(crate) struct HookPolicy {
-    calls: Arc<dyn HookCalls>,
+    pub(crate) calls: Arc<dyn HookCalls>,
 
-    name: Arc<str>,
-    signals: Vec<busbar_contract::Signal>,
-    child: Option<Arc<crate::hook_child::Grant>>,
+    pub(crate) name: Arc<str>,
+    pub(crate) signals: Vec<busbar_contract::Signal>,
+    pub(crate) child: Option<Arc<crate::hook_child::Grant>>,
 
     /// Each candidate set's static half, keyed by the set's [`identity`] and confirmed by
     /// [`CandidateStatics::matches`]; at most [`STATIC_HALVES`] sets are kept.
-    statics: std::sync::Mutex<foldhash::HashMap<u64, Arc<CandidateStatics>>>,
+    pub(crate) statics: std::sync::Mutex<foldhash::HashMap<u64, Arc<CandidateStatics>>>,
 }
 
 const STATIC_HALVES: usize = 16;
@@ -45,40 +45,6 @@ fn identity(candidates: &[Candidate<'_>]) -> u64 {
 }
 
 impl HookPolicy {
-    pub(crate) fn policy(
-        calls: Arc<dyn HookCalls>,
-        name: &str,
-        signals: &[busbar_contract::Signal],
-        child: Option<&crate::hook_child::Grant>,
-    ) -> Arc<dyn RoutingPolicy> {
-        // busbar:expect(bp::into_alloc, reason = "config: a hook policy is built once per generation")
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a hook policy is built once per generation"
-        )]
-        let policy = Arc::new(Self {
-            calls,
-            name: Arc::from(name),
-            signals: signals.to_vec(),
-            child: child.cloned().map(Arc::new),
-            statics: std::sync::Mutex::default(),
-        });
-        policy
-    }
-
-    /// A built-in ranking strategy: the gate hook that declares the word `name`, asked for no
-    /// signals and granted no child dispatch, answering only `decide`. It is content-blind
-    /// ([`RoutingPolicy::content_blind`]); every other hook policy is not.
-    pub(crate) fn ranking(calls: Arc<dyn HookCalls>, name: &str) -> Arc<dyn RoutingPolicy> {
-        Arc::new(Ranking(Self {
-            calls,
-            name: Arc::from(name),
-            signals: Vec::new(),
-            child: None,
-            statics: std::sync::Mutex::default(),
-        }))
-    }
-
     async fn decided(
         &self,
         req: &RoutingRequest<'_>,
@@ -152,26 +118,9 @@ fn reject_of(verbs: u32, status: u16, message: &str) -> (u16, String) {
 
 fn unanswered<O>(name: &str, budget: Duration, a: Answered<O>) -> String {
     match a {
-        Answered::TimedOut => {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a hook past its deadline is reported once, in words"
-            )]
-            let why = format!("hook plugin deadline ({budget:?}) exceeded");
-            why
-        }
+        Answered::TimedOut => crate::cold::hook_policy_deadline_exceeded(budget),
         Answered::Broken(why) => why,
-        Answered::Answer { error, .. } => {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a hook that could not answer is reported once, in words"
-            )]
-            let why = format!(
-                "hook {name} could not answer: {}",
-                error.unwrap_or_default()
-            );
-            why
-        }
+        Answered::Answer { error, .. } => crate::cold::hook_policy_could_not_answer(name, error),
     }
 }
 
@@ -354,11 +303,8 @@ impl RoutingPolicy for HookPolicy {
             .map_err(PolicyError::from)
     }
 
-    async fn describe(&self, budget: Duration) -> Option<serde_json::Value> {
-        let bytes = self.calls.describe(budget).await?;
-        serde_json::from_slice::<wire::DescribeReply>(&bytes)
-            .ok()?
-            .schema
+    async fn describe(&self, budget: Duration) -> Option<crate::off_path::plane_hooks::Described> {
+        crate::off_path::plane_hooks::described(&*self.calls, budget).await
     }
 
     async fn status(&self, budget: Duration) -> Option<HookStatus> {
@@ -377,7 +323,7 @@ impl RoutingPolicy for HookPolicy {
 /// [`HookPolicy::ranking`]: a pool's built-in ranking strategy. It is only ever asked to rank
 /// (pool ordering or an `on_error` fallback link), so it answers `decide` and its name and keeps
 /// every other call at the trait default.
-struct Ranking(HookPolicy);
+pub(crate) struct Ranking(pub(crate) HookPolicy);
 
 #[async_trait::async_trait]
 impl RoutingPolicy for Ranking {

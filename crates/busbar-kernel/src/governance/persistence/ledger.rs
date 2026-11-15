@@ -470,7 +470,6 @@ impl<'a> Tx<'a> {
     ) -> Result<Vec<(Address, Secret<Vec<u8>>)>> {
         let collection = self.store.scan(namespace, prefix, None).await?;
         let guard = scan_guard(namespace, collection.generation);
-        // busbar:expect(bp::state_scan, reason = "config: ledger rows are read and written only by the background budget and metering flush, operator usage views and corrections, never inline with a request")
         if let Some(previous) = self.guards.iter().find(|p| p.address == guard.address) {
             let seal = crate::seal::lend();
             let same = match (&previous.expected, &guard.expected) {
@@ -538,7 +537,6 @@ impl Change<'_> {
             Self::Meter(deltas) => deltas.len(),
             Self::Correction(request) => request.usage.len().checked_add(1).ok_or_else(corrupt)?,
         };
-        // busbar:expect(bp::fresh_buffer, reason = "config: ledger rows are read and written only by the background budget and metering flush, operator usage views and corrections, never inline with a request")
         let mut addresses = Vec::new();
         addresses
             .try_reserve_exact(count.checked_mul(2).ok_or_else(corrupt)?)
@@ -805,7 +803,6 @@ impl Ledger<'_> {
         } else {
             keys::framed(b'M', &[&METERING.0, &bucket_bytes])?
         };
-        // busbar:expect(bp::fresh_buffer, reason = "config: ledger rows are read and written only by the background budget and metering flush, operator usage views and corrections, never inline with a request")
         let mut result = Vec::new();
         for (at, bytes) in tx.scan(time_namespace(METERING, bucket), prefix).await? {
             let mut row: MeteringRow = decode(&bytes)?;

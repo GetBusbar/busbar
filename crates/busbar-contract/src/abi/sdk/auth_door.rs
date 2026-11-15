@@ -36,10 +36,6 @@ pub use crate::auth_calls::{Decision, Strip, StripPlace, VerifiedIdentity};
 /// serialization cannot encounter unsupported numeric values or non-string object keys.
 #[must_use]
 pub fn presentation_extensions(presentation: &crate::auth_calls::LoginPresentation) -> Vec<u8> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the presentation is encoded once, into the open reply's extensions"
-    )]
     let json = serde_json::to_vec(presentation)
         .expect("presentation consists of JSON strings and integers");
     crate::abi::mechanism::extensions::encode(&[(
@@ -449,10 +445,6 @@ pub fn validate_by_opening<T: VerifyPlugin>(settings: &[u8]) -> Result<(), Refus
 
 pub(crate) fn carrier_extensions(plugin: &impl VerifyPlugin) -> Vec<u8> {
     plugin.carriers().map_or_else(Vec::new, |carriers| {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the carrier names are encoded once, into the open reply's extensions"
-        )]
         let value = serde_json::to_vec(&carriers).expect("carrier names serialize as JSON");
         crate::abi::mechanism::extensions::encode(&[(crate::abi::auth::EXT_CARRIERS, &value)])
     })

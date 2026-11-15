@@ -118,7 +118,6 @@ impl StoredEntry {
         )]
         let card: serde_json::Value =
             serde_json::from_slice(&self.card.to_bytes()).unwrap_or(serde_json::Value::Null);
-        // busbar:expect(bp::clone_alloc, reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced")
         let json = EntryJson {
             v: 1,
             from: self.effective_from,
@@ -299,7 +298,6 @@ impl Snapshot {
         own_opening: Option<EntryKey>,
         rate_card: &impl Fn(&CardFields) -> RateCard,
     ) -> History {
-        // busbar:expect(bp::state_scan, reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced")
         let winner =
             own_opening.or_else(|| self.entries.values().find(|e| is_opening(e)).map(|e| e.key));
         let mut history = History::new();
@@ -335,7 +333,6 @@ impl Snapshot {
                 },
             );
         }
-        // busbar:expect(bp::state_scan, reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced")
         for entry in self
             .entries
             .values()
@@ -590,7 +587,6 @@ impl Prices<'_> {
             addresses.push(at(b'E', Some(base)));
             addresses.push(at(b'S', Some(base)));
         }
-        // busbar:expect(bp::clone_alloc, reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced")
         let values = self.read(addresses.clone()).await?;
         if values[0].is_some() || values[1].is_some() {
             return Err(Error::Conflict);
@@ -674,7 +670,6 @@ impl Prices<'_> {
         activation: Option<Activation>,
     ) -> Result<PricePlan> {
         let addresses = vec![at(b'E', Some(key)), at(b'S', Some(key)), at(b'H', None)];
-        // busbar:expect(bp::clone_alloc, reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced")
         let values = self.read(addresses.clone()).await?;
         let bytes = values[0].as_ref().ok_or(Error::Missing)?;
         let (entry, mut status) = validated(key, bytes, values[1].as_ref().ok_or(Error::Missing)?)?;
@@ -718,7 +713,6 @@ impl Prices<'_> {
         }
         let void_at = void_address(key, record.voider);
         let addresses = vec![at(b'E', Some(key)), at(b'S', Some(key)), void_at.clone()];
-        // busbar:expect(bp::clone_alloc, reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced")
         let values = self.read(addresses.clone()).await?;
         let (entry, status) = validated(
             key,

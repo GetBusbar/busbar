@@ -15,7 +15,7 @@
 //! * [`TrustStore::sweep`] (hourly) withdraws an anchor past `notAfter` from new connections,
 //!   repeats the 30-day expiry warning once a day, and warns when an anchor file changed on disk.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::BTreeSet;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
@@ -23,24 +23,25 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use busbar_kernel::config::tls::{OutboundTlsCfg, TlsRoots, TlsSource};
 use busbar_kernel::diagnostics as diag;
+use foldhash::{HashMap, HashSet};
 use rustls::pki_types::pem::PemObject as _;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
 /// How long before `notAfter` an anchor starts warning (BUSBAR-3139).
-pub const EXPIRY_WARNING: Duration = Duration::from_secs(30 * 24 * 3600);
+const EXPIRY_WARNING: Duration = Duration::from_secs(30 * 24 * 3600);
 /// How often the expiry warning repeats.
-pub const EXPIRY_WARNING_REPEAT: Duration = Duration::from_secs(24 * 3600);
+const EXPIRY_WARNING_REPEAT: Duration = Duration::from_secs(24 * 3600);
 /// How often [`TrustStore::sweep`] runs.
 pub const SWEEP_EVERY: Duration = Duration::from_secs(3600);
 /// The clock-skew tolerance on `notBefore` (container clocks).
-pub const NOT_BEFORE_TOLERANCE: Duration = Duration::from_secs(5 * 60);
+const NOT_BEFORE_TOLERANCE: Duration = Duration::from_secs(5 * 60);
 
 /// The audit action of one accepted operator anchor.
-pub const AUDIT_ANCHOR: &str = "config.tls_trust_anchor";
+const AUDIT_ANCHOR: &str = "config.tls_trust_anchor";
 /// The audit action of an anchor withdrawn at runtime because it expired.
-pub const AUDIT_WITHDRAWN: &str = "egress.tls_anchor_withdrawn";
+const AUDIT_WITHDRAWN: &str = "egress.tls_anchor_withdrawn";
 /// The audit action of an anchor file whose contents changed since boot.
-pub const AUDIT_FILE_CHANGED: &str = "egress.tls_anchor_file_changed";
+const AUDIT_FILE_CHANGED: &str = "egress.tls_anchor_file_changed";
 
 /// Where the operating system keeps its CA bundle, tried in order when `SSL_CERT_FILE` and
 /// `SSL_CERT_DIR` are unset (`roots: system`).
@@ -171,6 +172,9 @@ struct Base {
     dropped: Vec<String>,
 }
 
+/// The client configs built so far, keyed by the matched entries and the withdrawal generation.
+type ConfigCache = HashMap<(Vec<usize>, u64), Arc<rustls::ClientConfig>>;
+
 /// THE TRUST STORE.
 #[derive(Debug)]
 pub struct TrustStore {
@@ -180,7 +184,7 @@ pub struct TrustStore {
     entries: Vec<Entry>,
     withdrawn: RwLock<HashSet<[u8; 32]>>,
     generation: std::sync::atomic::AtomicU64,
-    cache: Mutex<HashMap<(Vec<usize>, u64), Arc<rustls::ClientConfig>>>,
+    cache: Mutex<ConfigCache>,
     warned: Mutex<HashMap<[u8; 32], SystemTime>>,
     changed: Mutex<HashSet<PathBuf>>,
 }

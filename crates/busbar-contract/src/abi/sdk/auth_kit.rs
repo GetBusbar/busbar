@@ -14,37 +14,7 @@ use crate::auth::Principal;
 
 /// The `map_err` for a decode of `what` whose input may carry a secret: `<what>: <serde's words>`
 pub fn json_error(what: &'static str) -> impl FnOnce(serde_json::Error) -> String {
-    move |e: serde_json::Error| {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a decode failure's text, read once to choose the answer"
-        )]
-        let text = e.to_string();
-        if e.is_data()
-            && (text.starts_with("missing field `") || text.starts_with("unknown field `"))
-        {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a decode failure's answer text, written once per failure"
-            )]
-            return format!("{what}: {text}");
-        }
-        let class = match e.classify() {
-            serde_json::error::Category::Io => "the input could not be read",
-            serde_json::error::Category::Syntax => "it is not well-formed JSON",
-            serde_json::error::Category::Data => "a field is missing or has the wrong type",
-            serde_json::error::Category::Eof => "it ends before the JSON does",
-        };
-        let (line, column) = (e.line(), e.column());
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a decode failure's answer text, written once per failure"
-        )]
-        let answer = format!(
-            "{what}: {class} (line {line}, column {column}; the decoder's text is withheld)"
-        );
-        answer
-    }
+    move |e: serde_json::Error| super::cold::wire::json_error(what, &e)
 }
 
 /// No span: the field is absent.

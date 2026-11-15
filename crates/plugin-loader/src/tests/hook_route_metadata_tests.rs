@@ -171,7 +171,6 @@ fn nonempty_route_metadata_keeps_validation_and_binding() {
 }
 
 #[test]
-#[allow(unsafe_code)]
 fn route_metadata_returns_owned_routes_after_row_retirement() {
     for way in [Way::Linked, Way::Dropped] {
         let returned = {

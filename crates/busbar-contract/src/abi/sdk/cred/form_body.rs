@@ -3,7 +3,7 @@
 
 //! An `application/x-www-form-urlencoded` body whose credential values are the chip's: the
 
-use crate::secure::SecureVec;
+use crate::secure::{SecureString, SecureVec};
 
 use super::{Cred, SealedWrite};
 
@@ -30,35 +30,53 @@ pub enum FormValue {
 
 /// A form body: pairs in order, encoded as `serde_urlencoded` writes them (space as `+`, every
 /// byte but ASCII alphanumerics and `*-._` as upper-case `%XX`).
-#[derive(Clone, PartialEq, Eq, Default)]
+#[derive(Clone, Default)]
 pub struct FormBody {
-    pairs: Vec<(String, FormValue)>,
+    /// The pairs; a name is held in custody and wiped when the form drops.
+    pairs: Vec<(SecureString, FormValue)>,
+    /// The encoded body's length, kept up to date as each pair is appended (an RS256 signature
+    /// counted at its key's modulus length), so encoding sizes its one buffer without a sweep.
+    len: usize,
+    /// Whether `len` overflowed on the way.
+    too_large: bool,
+    /// The union of the credential values' connection-security requirements.
+    secure: bool,
 }
+
+/// Equal when the pairs are equal: the kept aggregates follow from them.
+impl PartialEq for FormBody {
+    fn eq(&self, other: &Self) -> bool {
+        self.pairs == other.pairs
+    }
+}
+
+impl Eq for FormBody {}
 
 impl core::fmt::Debug for FormBody {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_list()
-            .entries(self.pairs.iter().map(|(n, _)| n))
+            .entries(self.pairs.iter().map(|(n, _)| n.as_str()))
             .finish()
     }
 }
 
 impl Drop for FormBody {
     fn drop(&mut self) {
-        use zeroize::Zeroize;
-        for (name, value) in &mut self.pairs {
-            #[cfg(test)]
+        // A name is a `SecureString`: it wipes itself as it drops, right after this.
+        #[cfg(test)]
+        for (name, _) in &self.pairs {
             wipe_tests::watch(name.as_bytes());
-            name.zeroize();
+        }
+        for (_, value) in &mut self.pairs {
             if let FormValue::Public(v) = value {
                 #[cfg(test)]
                 wipe_tests::watch(v.as_bytes());
-                v.zeroize();
+                crate::secure::wipe_string(v);
             }
             if let FormValue::JwsRs256 { signing_input, .. } = value {
                 #[cfg(test)]
                 wipe_tests::watch(signing_input.as_bytes());
-                signing_input.zeroize();
+                crate::secure::wipe_string(signing_input);
             }
         }
     }
@@ -100,24 +118,50 @@ impl FormBody {
 
     /// Append `name=value` (public).
     #[must_use]
-    pub fn public(mut self, name: &str, value: &str) -> Self {
-        self.pairs
-            .push((name.to_owned(), FormValue::Public(value.to_owned())));
-        self
+    pub fn public(self, name: &str, value: &str) -> Self {
+        self.push(name, FormValue::Public(value.to_owned()))
     }
 
     /// Append `name=<the credential>`.
     #[must_use]
-    pub fn sealed(mut self, name: &str, value: &Cred) -> Self {
-        self.pairs
-            .push((name.to_owned(), FormValue::Sealed(value.clone())));
-        self
+    pub fn sealed(self, name: &str, value: &Cred) -> Self {
+        self.push(name, FormValue::Sealed(value.clone()))
     }
 
     /// Append `name=<value>`.
     #[must_use]
-    pub fn value(mut self, name: &str, value: FormValue) -> Self {
-        self.pairs.push((name.to_owned(), value));
+    pub fn value(self, name: &str, value: FormValue) -> Self {
+        self.push(name, value)
+    }
+
+    /// Append the pair, keeping the encoded length and the security requirement up to date.
+    fn push(mut self, name: &str, value: FormValue) -> Self {
+        let value_len = match &value {
+            FormValue::Public(v) => encoded_len(v.as_bytes()),
+            FormValue::Sealed(c) => {
+                self.secure |= c.secure_required();
+                encoded_len(c.wire())
+            }
+            FormValue::JwsRs256 { key, signing_input } => {
+                // The signature's seal carries the key's requirement. It is counted at the key's
+                // signature length (base64url: every byte is kept as it is); a key that is not one
+                // adds nothing here and is refused as the body is encoded.
+                self.secure |= key.secure_required();
+                encoded_len(signing_input.as_bytes())
+                    .and_then(|n| n.checked_add(1))
+                    .and_then(|n| n.checked_add(key.jws_rs256_len().unwrap_or(0)))
+            }
+        };
+        let separators = usize::from(!self.pairs.is_empty()) + 1;
+        let pair_len = encoded_len(name.as_bytes())
+            .and_then(|n| n.checked_add(separators))
+            .zip(value_len)
+            .and_then(|(name_len, value_len)| name_len.checked_add(value_len));
+        match pair_len.and_then(|n| self.len.checked_add(n)) {
+            Some(len) => self.len = len,
+            None => self.too_large = true,
+        }
+        self.pairs.push((SecureString::from(name), value));
         self
     }
 
@@ -131,46 +175,11 @@ impl FormBody {
         use crate::abi::sdk::chip::Refused;
 
         let too_large = || Refused("the encoded form body is too large");
-        let mut signatures = Vec::new();
-        signatures
-            .try_reserve_exact(
-                self.pairs
-                    .iter()
-                    .filter(|(_, value)| matches!(value, FormValue::JwsRs256 { .. }))
-                    .count(),
-            )
-            .map_err(|_| too_large())?;
-        let mut len = 0usize;
-        let mut secure = false;
-        for (i, (name, value)) in self.pairs.iter().enumerate() {
-            let mut add = |n: usize| -> Result<(), Refused> {
-                len = len.checked_add(n).ok_or_else(too_large)?;
-                Ok(())
-            };
-            add(usize::from(i > 0))?;
-            add(encoded_len(name.as_bytes()).ok_or_else(too_large)?)?;
-            add(1)?;
-            match value {
-                FormValue::Public(v) => {
-                    add(encoded_len(v.as_bytes()).ok_or_else(too_large)?)?;
-                }
-                FormValue::Sealed(c) => {
-                    secure |= c.secure_required();
-                    add(encoded_len(c.wire()).ok_or_else(too_large)?)?;
-                }
-                FormValue::JwsRs256 { key, signing_input } => {
-                    let sig = key.jws_rs256(signing_input.as_bytes())?;
-                    secure |= sig.secure_required();
-                    add(encoded_len(signing_input.as_bytes()).ok_or_else(too_large)?)?;
-                    add(1)?;
-                    add(encoded_len(sig.wire()).ok_or_else(too_large)?)?;
-                    signatures.push(sig);
-                }
-            }
+        if self.too_large {
+            return Err(too_large());
         }
-        // Sized by the counting pass above: the buffer never grows.
-        let mut out = SecureVec::with_capacity(len).map_err(|_| too_large())?;
-        let mut signatures = signatures.iter();
+        // Sized by the lengths kept as each pair was appended: the buffer never grows.
+        let mut out = SecureVec::with_capacity(self.len).map_err(|_| too_large())?;
         for (i, (name, value)) in self.pairs.iter().enumerate() {
             if i > 0 {
                 out.extend_from_slice(b"&");
@@ -180,19 +189,17 @@ impl FormBody {
             match value {
                 FormValue::Public(v) => encode(&mut out, v.as_bytes()),
                 FormValue::Sealed(c) => encode(&mut out, c.wire()),
-                FormValue::JwsRs256 { signing_input, .. } => {
+                FormValue::JwsRs256 { key, signing_input } => {
+                    let sig = key.jws_rs256(signing_input.as_bytes())?;
                     encode(&mut out, signing_input.as_bytes());
                     encode(&mut out, b".");
-                    encode(
-                        &mut out,
-                        signatures.next().expect("prepared signature").wire(),
-                    );
+                    encode(&mut out, sig.wire());
                 }
             }
         }
         #[cfg(test)]
         wipe_tests::watch(&out);
-        Ok(SealedWrite::from_bytes(out, secure))
+        Ok(SealedWrite::from_bytes(out, self.secure))
     }
 }
 

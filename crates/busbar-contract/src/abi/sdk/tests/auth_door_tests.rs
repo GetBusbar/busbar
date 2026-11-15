@@ -91,7 +91,7 @@ mod plugin {
                     name: Some("Alice".into()),
                     groups: vec!["ops".into(), "dev".into()],
                     ttl_secs: Some(60),
-                    credential: Some(String::from("good").into()),
+                    credential: Some("good".to_owned().into()),
                     ..VerifiedIdentity::default()
                 }),
                 Some(b"body")
@@ -162,7 +162,7 @@ mod plugin {
 }
 
 fn ops() -> &'static Ops {
-    let d: &Door = plugin::door();
+    let d: &Door = (plugin::MACRO_DOOR.door_fn())();
     // SAFETY: as above; the door's ops are an auth table.
     unsafe { &*d.ops.cast::<Ops>() }
 }
@@ -677,7 +677,7 @@ fn the_ops_it_does_not_serve_are_refused_and_the_tail_states_inbound_only() {
     }
     assert!(t.fields.is_some());
     // SAFETY: the door's `'static` Statement and tail.
-    let st = unsafe { &*plugin::door().statement };
+    let st = unsafe { &*(plugin::MACRO_DOOR.door_fn())().statement };
     // SAFETY: as above.
     let tail = unsafe { &*st.kind_tail.cast::<AuthTail>() };
     assert_eq!(tail.caps, crate::abi::auth::CAP_INBOUND);

@@ -8,6 +8,7 @@ use core::fmt;
 use serde::de::DeserializeOwned;
 
 use super::{Cred, SealedWrite};
+use crate::secure::SecureString;
 
 /// The class of a reply that did not read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,16 +110,29 @@ enum Member {
 /// encodes it ([`SealedJson::encoded`]) as `serde_json::to_vec` writes the same members in the same
 /// order: compact, every string escaped as `serde_json` escapes it. (`serde_json::json!` without
 /// `preserve_order` writes an object's members sorted by name: name them sorted to match it.)
-#[derive(Clone, PartialEq, Eq, Default)]
+#[derive(Clone, Default)]
 pub struct SealedJson {
-    members: Vec<(String, Member)>,
+    /// The members; a name is held in custody and wiped when the object drops.
+    members: Vec<(SecureString, Member)>,
+    /// The union of the credential members' connection-security requirements, kept up to date
+    /// as each is appended.
+    secure: bool,
 }
+
+/// Equal when the members are equal: the kept requirement follows from them.
+impl PartialEq for SealedJson {
+    fn eq(&self, other: &Self) -> bool {
+        self.members == other.members
+    }
+}
+
+impl Eq for SealedJson {}
 
 /// The member names only.
 impl fmt::Debug for SealedJson {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_list()
-            .entries(self.members.iter().map(|(n, _)| n))
+            .entries(self.members.iter().map(|(n, _)| n.as_str()))
             .finish()
     }
 }
@@ -156,15 +170,16 @@ impl SealedJson {
     #[must_use]
     pub fn public(mut self, name: &str, value: impl Into<serde_json::Value>) -> Self {
         self.members
-            .push((name.to_owned(), Member::Public(value.into())));
+            .push((SecureString::from(name), Member::Public(value.into())));
         self
     }
 
     /// Append `name: <the credential, as a JSON string>`.
     #[must_use]
     pub fn sealed(mut self, name: &str, value: &Cred) -> Self {
+        self.secure |= value.secure_required();
         self.members
-            .push((name.to_owned(), Member::Sealed(value.clone())));
+            .push((SecureString::from(name), Member::Sealed(value.clone())));
         self
     }
 
@@ -181,11 +196,7 @@ impl SealedJson {
         // Sized by the counting pass, so the wiping buffer never grows (LINT-RULES LR-117).
         self.write(&mut |b| buf.extend_from_slice(b))?;
         debug_assert_eq!(buf.len(), buf.capacity());
-        let secure = self.members.iter().any(|(_, m)| match m {
-            Member::Sealed(c) => c.secure_required(),
-            Member::Public(_) => false,
-        });
-        Ok(SealedWrite::from_bytes(buf, secure))
+        Ok(SealedWrite::from_bytes(buf, self.secure))
     }
 
     /// Hand the encoding to `put`, piece by piece. A credential's piece is encoded into a buffer
@@ -202,7 +213,7 @@ impl SealedJson {
                 Member::Public(v) => put(&json(v)),
                 Member::Sealed(c) => {
                     let text = core::str::from_utf8(c.wire()).map_err(|_| NotJsonText {
-                        member: name.clone(),
+                        member: crate::abi::sdk::cold::cred::member_name(name),
                     })?;
                     put(&json(&text));
                 }

@@ -9,7 +9,7 @@ use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
 use busbar_contract::abi::secret::{cancel, CheckIn, ResolveIn, ResolveOut, ERROR_KIND_NOT_FOUND};
 
 pub const NAME: &str = "neutral-secret-witness";
-pub const MATERIAL: &str = "sdk-secret-crossing-witness";
+pub(crate) const MATERIAL: &str = "sdk-secret-crossing-witness";
 
 pub struct Witness;
 impl Life for Witness {

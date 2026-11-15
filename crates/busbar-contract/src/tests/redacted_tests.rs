@@ -166,7 +166,7 @@ fn sha256_hex_matches_the_published_test_vectors() {
     );
 }
 
-crate::own_seal!(Own);
+use crate::support::Own;
 
 /// A PLUGIN'S OWN SECRET (Part 2 #54, coordinator ruling on #1192): the same `Secret`, under the
 #[test]

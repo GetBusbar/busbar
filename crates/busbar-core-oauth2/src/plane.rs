@@ -14,6 +14,26 @@ use busbar_kernel::diagnostics::{
 
 use super::signer::{Es256Key, Es256Verifier, Ps256Verifier};
 
+// busbar:request-path
+#[cfg_attr(
+    not(test),
+    deny(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        clippy::disallowed_types,
+        clippy::redundant_clone,
+        clippy::format_push_string,
+        clippy::needless_collect,
+        clippy::or_fun_call,
+        clippy::needless_pass_by_value,
+        clippy::allow_attributes,
+        clippy::allow_attributes_without_reason
+    )
+)]
+mod serve;
+
+pub(crate) use serve::seam_verify_dpop;
+
 pub(crate) type AsStore = super::cimd::CimdStore;
 
 pub(crate) type AsServer = AuthorizationServer<AsStore, SystemClock>;
@@ -44,34 +64,10 @@ pub(crate) struct Carried {
     /// `signing_key` and signed with by every later one that runs without it: a reload does not
     /// void the tokens it signed.
     ephemeral_key: std::sync::OnceLock<Vec<u8>>,
-    /// The throttle every generation's server asks ([`Throttle`]): one budget across reloads.
+    /// The throttle every generation's server asks ([`serve::Throttle`]): one budget across reloads.
     limiter: Arc<oauth_as::FixedWindowRateLimiter>,
     /// The node's registration budget ([`Registrations`]): one across reloads, as the limiter is.
     registrations: Arc<Registrations>,
-}
-
-struct Throttle {
-    limiter: Arc<oauth_as::FixedWindowRateLimiter>,
-    registrations: Arc<Registrations>,
-}
-
-impl oauth_as::RateLimiter for Throttle {
-    fn check(&self, attempt: oauth_as::Attempt<'_>) -> oauth_as::RateLimitDecision {
-        if let oauth_as::Attempt::ClientRegistration = attempt {
-            return self.registrations.check();
-        }
-        oauth_as::RateLimiter::check(&*self.limiter, attempt)
-    }
-
-    fn record(&self, attempt: oauth_as::Attempt<'_>, outcome: oauth_as::AttemptOutcome) {
-        if let oauth_as::Attempt::ClientRegistration = attempt {
-            if outcome == oauth_as::AttemptOutcome::Succeeded {
-                self.registrations.admitted();
-            }
-            return;
-        }
-        oauth_as::RateLimiter::record(&*self.limiter, attempt, outcome);
-    }
 }
 
 const REGISTRATIONS_PER_WINDOW: u64 = oauth_as::rate_limit::DEFAULT_CLIENT_REGISTRATION_CAPACITY;
@@ -95,10 +91,6 @@ struct RegistrationWindow {
 
 impl Default for Registrations {
     fn default() -> Self {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the registration window's origin, read once when the plane is built"
-        )]
         let base = std::time::Instant::now();
         Self {
             base,
@@ -107,71 +99,17 @@ impl Default for Registrations {
     }
 }
 
-tokio::task_local! {
-    /// The registration request this task is answering ([`AsPlane::handle`]), and whether it holds
-    /// a share of the budget.
-    static REGISTERING: Answering;
-    /// The device route's settled session/CSRF work, lent to synchronous library hooks for this
-    /// request only. No cross-request or node-local token cache.
-    static DEVICE_FORM: DeviceForm;
-}
-
-struct DeviceForm {
-    subject: String,
-    issued: String,
-    consumed: std::cell::RefCell<Option<String>>,
-}
-
-struct Answering {
-    budget: Arc<Registrations>,
-    held: std::cell::Cell<bool>,
-}
-
-impl Drop for Answering {
-    fn drop(&mut self) {
-        if self.held.get() {
-            self.budget.release();
-        }
-    }
-}
-
-impl Registrations {
-    fn window(&self) -> std::sync::MutexGuard<'_, RegistrationWindow> {
-        let mut w = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let index = self.base.elapsed().as_secs() / REGISTRATION_WINDOW.as_secs();
-        if w.index != index {
-            w.index = index;
-            w.admitted = 0;
-        }
-        w
-    }
-
-    fn check(&self) -> oauth_as::RateLimitDecision {
-        let mut w = self.window();
-        if w.admitted + w.in_flight >= REGISTRATIONS_PER_WINDOW {
-            return oauth_as::RateLimitDecision::Deny;
-        }
-        match REGISTERING.try_with(|answering| answering.held.replace(true)) {
-            Ok(false) => w.in_flight += 1,
-
-            Ok(true) => {}
-            Err(_) => w.admitted += 1,
-        }
-        oauth_as::RateLimitDecision::Allow
-    }
-
-    fn admitted(&self) {
-        if REGISTERING.try_with(|_| ()).is_ok() {
-            self.window().admitted += 1;
-        }
-    }
-
-    fn release(&self) {
-        let mut w = self.window();
-        w.in_flight = w.in_flight.saturating_sub(1);
+impl super::shared::Shared {
+    /// Every schema the authorization server's store scope holds: named once, when the scope is
+    /// opened at boot.
+    pub(crate) fn schemas() -> Vec<String> {
+        [
+            "bucket", "family", "uc", "key", "ix.tok", "ix.rt", "ix.code", "ix.par", "ix.dev",
+            "ix.cons", "ix.fam", "ix.subj", "session", "stake", "replay",
+        ]
+        .into_iter()
+        .map(Self::schema)
+        .collect()
     }
 }
 
@@ -179,10 +117,6 @@ impl Carried {
     pub(crate) fn over(
         store: Arc<busbar_kernel::persistence::facade::CoreStore>,
     ) -> Result<Self, String> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: names why the authorization server's store could not be scoped"
-        )]
         let scoped = busbar_kernel::persistence::scoped::ScopedStore::host_private(
             store,
             "oauth-as",
@@ -273,10 +207,6 @@ impl AsPlane {
         let key = match key_material {
             Some(b64) => {
                 use base64::Engine as _;
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: names why the configured signing key is not base64"
-                )]
                 let der = base64::engine::general_purpose::STANDARD
                     .decode(b64.trim())
                     .map_err(|e| AsBuildError::SigningKeyMaterial(e.to_string()))?;
@@ -287,10 +217,6 @@ impl AsPlane {
                 let der = match carried.ephemeral_key.get() {
                     Some(der) => der,
                     None => {
-                        #[expect(
-                            clippy::disallowed_methods,
-                            reason = "error: names why a signing key could not be minted"
-                        )]
                         let fresh = carried
                             .store()
                             .signing_key(|| Es256Key::generate_pkcs8().map_err(|e| e.to_string()))
@@ -305,10 +231,6 @@ impl AsPlane {
         };
 
         let mut config = ServerConfig::new(identity.issuer(), identity.verification_url());
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the endpoints are spelled once, when the authorization server is built"
-        )]
         let (authorization, token, device, revocation) = (
             format!("{}/authorize", identity.issuer()),
             format!("{}/token", identity.issuer()),
@@ -328,28 +250,16 @@ impl AsPlane {
         config.access_token_ttl = identity.access_token_ttl();
 
         config.refresh_token_ttl = Some(identity.refresh_token_ttl());
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the scopes are listed once, when the authorization server is built"
-        )]
         let scopes =
             (!identity.default_grant().is_empty()).then(|| identity.default_grant().to_vec());
         config.scopes_supported = scopes;
 
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the resources are listed once, when the authorization server is built"
-        )]
         let allowed: Box<[Box<str>]> = protected_resources
             .iter()
             .map(|r| r.as_str().into())
             .collect::<Vec<Box<str>>>()
             .into_boxed_slice();
         config.allowed_resources = Some(allowed);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the audience is named once, when the authorization server is built"
-        )]
         let audience = protected_resources
             .first()
             .cloned()
@@ -380,7 +290,7 @@ impl AsPlane {
             .with_jws_verifier(Arc::new(Es256Verifier))
             .with_jws_verifier(Arc::new(Ps256Verifier))
             .with_registration_policy(Box::new(super::policy::OpenRegistration))
-            .with_rate_limiter(Box::new(Throttle {
+            .with_rate_limiter(Box::new(serve::Throttle {
                 limiter: Arc::clone(&carried.limiter),
                 registrations: Arc::clone(&carried.registrations),
             })),
@@ -390,20 +300,9 @@ impl AsPlane {
         let consent_subject = super::consent::subject_resolver(Arc::clone(&sessions));
         let service = oauth_as::http::ServiceBuilder::new(Arc::clone(&server))
             .with_subject_resolver(move |headers| {
-                DEVICE_FORM
-                    .try_with(|form| form.subject.clone())
-                    .ok()
-                    .or_else(|| consent_subject(headers))
+                serve::device_subject().or_else(|| consent_subject(headers))
             })
-            .with_csrf_tokens(
-                |_| DEVICE_FORM.try_with(|form| form.issued.clone()).ok(),
-                |_| {
-                    DEVICE_FORM
-                        .try_with(|form| form.consumed.borrow_mut().take())
-                        .ok()
-                        .flatten()
-                },
-            )
+            .with_csrf_tokens(|_| serve::device_issued(), |_| serve::device_consumed())
             .with_approval_resolver(super::consent::approval_resolver(
                 Arc::clone(&sessions),
                 identity.consent_url(),
@@ -427,225 +326,6 @@ impl AsPlane {
         })
     }
 
-    pub(crate) async fn verify_dpop(
-        &self,
-        presented: busbar_kernel::oauth_as::seam::DpopPresentation,
-    ) -> bool {
-        use base64::Engine as _;
-        use oauth_as::store::Storage as _;
-        let htu = format!("{}{}", self.identity.origin(), presented.path);
-        let Ok(proof) = oauth_as::dpop::verify_proof_with_crypto(
-            &super::crypto_provider::FacadeCrypto,
-            &self.dpop_verifiers,
-            &presented.proof,
-            &presented.method,
-            &htu,
-            std::time::SystemTime::now(),
-        ) else {
-            return false;
-        };
-        let ath = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(busbar_contract::crypto::sha256(presented.token.as_bytes()));
-        let ath_matches = oauth_as::jwt::CompactJws::parse(&presented.proof)
-            .is_ok_and(|jws| jws.claim_str("ath") == Some(ath.as_str()));
-        let bound_to_proof_key =
-            oauth_as::jwt::CompactJws::parse(&presented.token).is_ok_and(|jws| {
-                jws.payload
-                    .get("cnf")
-                    .and_then(|cnf| cnf.get("jkt"))
-                    .and_then(|jkt| jkt.as_str())
-                    == Some(proof.jkt.as_str())
-            });
-        if !ath_matches || !bound_to_proof_key {
-            return false;
-        }
-
-        if !matches!(
-            self.server.store().get_token(&presented.token).await,
-            Ok(Some(_))
-        ) {
-            return false;
-        }
-
-        let replay_id = format!("dpop-resource:{}:{}", proof.jkt, proof.jti);
-        matches!(
-            self.server
-                .store()
-                .claim_replay_id(&replay_id, proof.replay_until)
-                .await,
-            Ok(true)
-        )
-    }
-
-    pub(crate) async fn handle<B>(&self, request: http::Request<B>) -> oauth_as::http::Response
-    where
-        B: axum::body::HttpBody,
-    {
-        if let Some(document) = &self.plain_metadata {
-            if request.method() == http::Method::GET
-                && request.uri().path() == self.identity.metadata_path()
-            {
-                let mut response =
-                    http::Response::new(oauth_as::http::Body::from(document.clone()));
-                response.headers_mut().insert(
-                    http::header::CONTENT_TYPE,
-                    http::HeaderValue::from_static("application/json;charset=UTF-8"),
-                );
-                return response;
-            }
-        }
-        let registering = request.method() == http::Method::POST
-            && request.uri().path() == self.identity.register_path();
-        self.prepare(Seen::of(&request)).await;
-
-        let answer = Box::pin(self.service.handle(request));
-        if !registering {
-            return answer.await;
-        }
-
-        let answering = Answering {
-            budget: Arc::clone(&self.carried.registrations),
-            held: std::cell::Cell::new(false),
-        };
-        REGISTERING.scope(answering, answer).await
-    }
-
-    pub(crate) async fn granted_scope(
-        &self,
-        client_id: &str,
-        requested: Option<&str>,
-    ) -> Result<String, oauth_as::store::StorageError> {
-        use oauth_as::store::Storage as _;
-        if let Some(raw) = requested {
-            return Ok(oauth_as::scope::ScopeSet::parse(raw)
-                .map_or_else(|_| raw.to_string(), |set| set.to_string()));
-        }
-        let client = self
-            .server
-            .store()
-            .get_client(&oauth_as::client::ClientId::new(client_id))
-            .await?
-            .ok_or_else(|| {
-                oauth_as::store::StorageError::new("the client could not be resolved")
-            })?;
-        Ok(granted_default(&client).to_string())
-    }
-
-    pub(crate) async fn pushed(&self, request_uri: &str) -> Option<super::cimd::Pushed> {
-        self.server.store().pushed(request_uri).await
-    }
-
-    pub(crate) async fn mark_pushed_shown(&self, request_uri: &str) -> bool {
-        self.server.store().mark_pushed_shown(request_uri).await
-    }
-
-    /// Open a consent session: kept in the store first, cached here only once the store took it.
-    pub(crate) async fn open_session(
-        &self,
-        subject: &str,
-        id: String,
-    ) -> Result<String, oauth_as::store::StorageError> {
-        self.carried
-            .store()
-            .open_session(&id, subject, super::consent::SESSION_TTL)
-            .await?;
-        Ok(self.sessions.open(subject, id))
-    }
-
-    /// Record a consent answer in the store. An answer the store did not keep is an error, never a
-    /// silent success.
-    pub(crate) async fn stake(
-        &self,
-        id: &str,
-        key: String,
-        approve: bool,
-    ) -> Result<(), oauth_as::store::StorageError> {
-        self.carried
-            .store()
-            .stake(id, &key, approve, super::consent::SESSION_TTL)
-            .await
-    }
-
-    pub(crate) async fn is_staked(&self, id: &str, key: &str) -> bool {
-        self.carried
-            .store()
-            .is_staked(id, key)
-            .await
-            .unwrap_or(false)
-    }
-
-    pub(crate) async fn issue_device_form(
-        &self,
-        id: &str,
-        csrf: &str,
-        subject: &str,
-    ) -> Result<(), oauth_as::store::StorageError> {
-        let key = format!("device-csrf:{csrf}");
-        let store = self.carried.store();
-        store
-            .open_session(id, subject, super::consent::SESSION_TTL)
-            .await?;
-        store
-            .stake(id, &key, true, super::consent::SESSION_TTL)
-            .await?;
-        Ok(())
-    }
-
-    pub(crate) async fn consume_device_form(
-        &self,
-        id: &str,
-        csrf: &str,
-        subject: &str,
-    ) -> Result<bool, oauth_as::store::StorageError> {
-        let key = format!("device-csrf:{csrf}");
-        let store = self.carried.store();
-        if store.session_subject(id).await?.as_deref() != Some(subject) {
-            return Ok(false);
-        }
-        Ok(store.spend(id, &key).await? == Some(true))
-    }
-
-    pub(crate) async fn handle_device<B>(
-        &self,
-        request: http::Request<B>,
-        subject: &str,
-        issued: String,
-        consumed: Option<String>,
-    ) -> oauth_as::http::Response
-    where
-        B: axum::body::HttpBody,
-    {
-        DEVICE_FORM
-            .scope(
-                DeviceForm {
-                    subject: subject.to_string(),
-                    issued,
-                    consumed: std::cell::RefCell::new(consumed),
-                },
-                self.handle(request),
-            )
-            .await
-    }
-
-    async fn prepare(&self, seen: Seen) {
-        let store = self.carried.store();
-        let Some(id) = seen.session else {
-            return;
-        };
-        let Ok(Some(subject)) = store.session_subject(&id).await else {
-            return;
-        };
-        self.sessions.hydrate(&id, &subject);
-        let Some(key) = seen.staked_key else {
-            return;
-        };
-        match store.spend(&id, &key).await {
-            Ok(Some(approve)) => self.sessions.plant(&id, key, approve),
-            Ok(None) => {}
-            Err(e) => tracing::debug!(error = %e, "oauth_as: the consent answer could not be read"),
-        }
-    }
-
     pub(crate) fn identity(&self) -> &AsIdentity {
         &self.identity
     }
@@ -660,65 +340,8 @@ impl AsPlane {
     }
 }
 
-struct Seen {
-    session: Option<String>,
-    staked_key: Option<String>,
-}
-
-impl Seen {
-    fn of<B>(request: &http::Request<B>) -> Self {
-        let session = super::consent::session_id(request.headers());
-        let staked_key = request
-            .uri()
-            .path()
-            .ends_with("/authorize")
-            .then(|| {
-                let pairs = request
-                    .uri()
-                    .query()
-                    .map(super::routes::form_urlencoded_pairs)
-                    .unwrap_or_default();
-                let param = |name: &str| {
-                    pairs
-                        .iter()
-                        .find(|(k, _)| k == name)
-                        .map(|(_, v)| v.clone())
-                };
-                let client_id = param("client_id")?;
-                Some(match param("request_uri") {
-                    Some(handle) => super::consent::pushed_key(&client_id, &handle),
-                    None => super::consent::request_key(
-                        &client_id,
-                        request.uri().path_and_query().map_or("", |p| p.as_str()),
-                    ),
-                })
-            })
-            .flatten();
-        Self {
-            session,
-            staked_key,
-        }
-    }
-}
-
-fn granted_default(client: &oauth_as::client::Client) -> oauth_as::scope::ScopeSet {
-    oauth_as::scope::ScopeSet::from_tokens(
-        client
-            .default_scopes
-            .iter()
-            .map(|s| s.as_str())
-            .filter(|s| client.allowed_scopes.contains(s)),
-    )
-    .unwrap_or_default()
-}
-
 fn provisioned_clients(identity: &AsIdentity) -> Vec<oauth_as::client::Client> {
     let ceiling = super::policy::default_grant_scopes(identity);
-    // busbar:expect(bp::clone_alloc, reason = "boot: the provisioned clients are built once, with the authorization server")
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the provisioned clients are built once, with the authorization server"
-    )]
     let clients = identity
         .clients
         .iter()
@@ -755,17 +378,14 @@ fn provisioned_clients(identity: &AsIdentity) -> Vec<oauth_as::client::Client> {
 }
 
 fn public_jwk(k: &crate::config::StaticClientJwk) -> oauth_as::jwt::Jwk {
-    // busbar:expect(bp::clone_alloc, reason = "boot: a provisioned client's key is copied once, with the authorization server")
     let member = |v: &Option<String>| v.clone().unwrap_or_default();
     if k.kty == "RSA" {
-        // busbar:expect(bp::clone_alloc, reason = "boot: a provisioned client's key is copied once, with the authorization server")
         oauth_as::jwt::Jwk::Rsa {
             n: member(&k.n),
             e: member(&k.e),
             kid: k.kid.clone(),
         }
     } else {
-        // busbar:expect(bp::clone_alloc, reason = "boot: a provisioned client's key is copied once, with the authorization server")
         oauth_as::jwt::Jwk::Ec {
             crv: oauth_as::jwt::EcCurve::P256,
             x: member(&k.x),
@@ -791,36 +411,15 @@ fn fapi2_posture(mut config: ServerConfig, identity: &AsIdentity) -> ServerConfi
 
 fn plain_metadata(server: &AsServer) -> bytes::Bytes {
     let mut meta = server.metadata();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the plain metadata document is rendered once, when the plane is built"
-    )]
     meta.token_endpoint_auth_methods_supported.retain(|m| {
         m != oauth_as::client_assertion::CLIENT_SECRET_JWT
             && m != oauth_as::client_assertion::PRIVATE_KEY_JWT
     });
     meta.token_endpoint_auth_signing_alg_values_supported = None;
     meta.dpop_signing_alg_values_supported = None;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the plain metadata document is rendered once, when the plane is built"
-    )]
     let document =
         serde_json::to_vec(&meta).expect("the RFC 8414 document is plain JSON and serializes");
     bytes::Bytes::from(document)
-}
-
-pub(crate) fn seam_verify_dpop(
-    plane: &Arc<dyn std::any::Any + Send + Sync>,
-    presented: busbar_kernel::oauth_as::seam::DpopPresentation,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
-    let plane = Arc::clone(plane).downcast::<AsPlane>().ok();
-    Box::pin(async move {
-        match plane {
-            Some(plane) => plane.verify_dpop(presented).await,
-            None => false,
-        }
-    })
 }
 
 type BuildFuture = std::pin::Pin<
@@ -858,10 +457,6 @@ pub(crate) fn seam_build<C: crate::Connections>(
                 None
             }
             Some(_) => Some({
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: names the signing-key reference that did not resolve"
-                )]
                 let found = secrets
                     .iter()
                     .find(|(path, _)| path == crate::config::SIGNING_KEY_PATH)
@@ -877,10 +472,6 @@ pub(crate) fn seam_build<C: crate::Connections>(
         };
 
         let fetch = Arc::new(super::cimd::ConnectorFetch { table: C::table });
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: names why the authorization server could not be built"
-        )]
         let mut plane =
             AsPlane::build_carrying(identity, key_material, protected_resources, fetch, carried)
                 .await
@@ -914,10 +505,6 @@ impl AsPlane {
 }
 
 pub(crate) fn sweep_on_clock(server: &Arc<AsServer>, every: std::time::Duration) -> Sweeper {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the sweep's first due time, read once when it is registered"
-    )]
     let work = Arc::new(SweepWork {
         server: Arc::downgrade(server),
         every,

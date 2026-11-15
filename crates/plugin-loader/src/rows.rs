@@ -4,59 +4,10 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use busbar_contract::plugin_rows::{PluginRows, Row, Skipped, Trust};
+use busbar_contract::plugin_rows::{PluginRows, Row, Skipped};
 
-use crate::registry::{LoadablePlugin, SkippedPlugin};
-use crate::sign::Verdict;
+use crate::cold::rows::{archive_sha256, linked_rows, loadable_rows, row, skipped, skipped_rows};
 use crate::PluginRegistry;
-
-fn row(p: &LoadablePlugin) -> Row {
-    let m = &p.manifest;
-    // busbar:expect(bp::clone_alloc, reason = "config: a registry row is an owned snapshot for config validation and the admin listing")
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a registry row is an owned snapshot for config validation and the admin listing"
-    )]
-    let row = Row {
-        file: p.file.clone(),
-        key: p.key().to_string(),
-        name: m.name.clone(),
-        alias: m.alias.clone(),
-        kind: m.kind.clone(),
-        version: m.version.clone(),
-        abi_version: m.abi_version,
-        trust: match &p.verdict {
-            Verdict::Trusted {
-                publisher,
-                first_party,
-            } => Trust::Trusted {
-                publisher: publisher.clone(),
-                first_party: *first_party,
-            },
-            Verdict::Allowed { reason, .. } => Trust::Allowed {
-                reason: reason.clone(),
-            },
-        },
-        ephemeral: p.ephemeral,
-        in_process: p.in_process(),
-        linked: p.linked(),
-        needs_prompt: m.needs.prompt,
-        needs_user: m.needs.user,
-        settings_schema: p.settings_schema.clone(),
-    };
-    row
-}
-
-fn skipped(s: &SkippedPlugin) -> Skipped {
-    // busbar:expect(bp::clone_alloc, reason = "config: a skipped row is an owned snapshot for config validation and the admin listing")
-    Skipped {
-        file: s.file.clone(),
-        name: s.manifest.name.clone(),
-        alias: s.manifest.alias.clone(),
-        reason: s.reason.clone(),
-        code: s.kind.code(),
-    }
-}
 
 impl PluginRows for PluginRegistry {
     fn resolve(&self, name_or_alias: &str) -> Option<Row> {
@@ -64,9 +15,7 @@ impl PluginRows for PluginRegistry {
     }
 
     fn archive_sha256(&self, name_or_alias: &str) -> Option<String> {
-        let plugin = PluginRegistry::resolve(self, name_or_alias)?;
-        // busbar:expect(bp::clone_alloc, reason = "config: the archive digest is read when config names a plugin")
-        plugin.archive_sha256.clone()
+        PluginRegistry::resolve(self, name_or_alias).and_then(archive_sha256)
     }
 
     fn unresolved_reason(&self, name_or_alias: &str) -> Option<Skipped> {
@@ -74,30 +23,15 @@ impl PluginRows for PluginRegistry {
     }
 
     fn loadable(&self) -> Vec<Row> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the registry's rows, listed for config validation and the admin listing"
-        )]
-        let rows: Vec<Row> = PluginRegistry::loadable(self).iter().map(row).collect();
-        rows
+        loadable_rows(self)
     }
 
     fn linked(&self) -> Vec<Row> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the registry's rows, listed for config validation and the admin listing"
-        )]
-        let rows: Vec<Row> = PluginRegistry::linked(self).iter().map(row).collect();
-        rows
+        linked_rows(self)
     }
 
     fn skipped(&self) -> Vec<Skipped> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the registry's rows, listed for config validation and the admin listing"
-        )]
-        let rows: Vec<Skipped> = PluginRegistry::skipped(self).iter().map(skipped).collect();
-        rows
+        skipped_rows(self)
     }
 
     fn store_door(

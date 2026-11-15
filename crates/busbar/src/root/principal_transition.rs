@@ -12,12 +12,12 @@ use busbar_kernel::persistence::facade::CoreStore;
 use serde::de::DeserializeOwned;
 use std::sync::Arc;
 
-pub const INPUT_FLAG: &str = "--principal-transition";
-pub const ACTION_FLAG: &str = "--transition-action";
-pub const ATTESTATION_FLAG: &str = "--transition-attestation";
-pub const RECORD_BOOTSTRAP_FLAG: &str = "--fresh-record-bootstrap";
+pub(crate) const INPUT_FLAG: &str = "--principal-transition";
+pub(crate) const ACTION_FLAG: &str = "--transition-action";
+pub(crate) const ATTESTATION_FLAG: &str = "--transition-attestation";
+pub(crate) const RECORD_BOOTSTRAP_FLAG: &str = "--fresh-record-bootstrap";
 /// The command line's `Argv::transition` slots, in order.
-pub const FLAGS: [&str; 4] = [
+pub(crate) const FLAGS: [&str; 4] = [
     INPUT_FLAG,
     ACTION_FLAG,
     ATTESTATION_FLAG,
@@ -26,7 +26,7 @@ pub const FLAGS: [&str; 4] = [
 const MAX_INPUT_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Action {
+pub(crate) enum Action {
     Inspect,
     Prepare,
     Check,
@@ -38,7 +38,7 @@ pub enum Action {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct Command {
+pub(crate) struct Command {
     input: PathBuf,
     action: Action,
     attestation: Option<PathBuf>,
@@ -47,11 +47,11 @@ pub struct Command {
 
 impl Command {
     /// Only this action consumes a fresh ephemeral-instance receipt and resumes ordinary boot.
-    pub fn continues_serving(&self) -> bool {
+    pub(crate) fn continues_serving(&self) -> bool {
         self.action == Action::InitializeFreshAndServe
     }
 
-    pub fn validate_record_bootstrap_input(
+    pub(crate) fn validate_record_bootstrap_input(
         &self,
         cold_receipt_present: bool,
     ) -> Result<(), &'static str> {
@@ -61,7 +61,7 @@ impl Command {
         Ok(())
     }
 
-    pub fn validate_overlay_mode(
+    pub(crate) fn validate_overlay_mode(
         &self,
         locked: bool,
         retained_overlay: bool,
@@ -85,7 +85,7 @@ impl Command {
 }
 
 /// Read maintenance off the command line, refusing accidental combinations with serving flags.
-pub fn command(argv: &super::cli::Argv) -> Result<Option<Command>, &'static str> {
+pub(crate) fn command(argv: &super::cli::Argv) -> Result<Option<Command>, &'static str> {
     if let Some(refusal) = argv.refusal {
         return Err(refusal);
     }
@@ -166,7 +166,7 @@ fn input<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
 
 /// Hash exactly the interpolated sources consumed by the loader, rather than reinterpreting
 /// RootCfg's non-serializable fields or recording secret-bearing configuration in the plan.
-pub fn source_fingerprint(
+pub(crate) fn source_fingerprint(
     config_path: &Path,
     providers_path: &Path,
     expected: Option<config::document_patch::SourceFingerprints>,
@@ -307,7 +307,7 @@ fn check_groups(plan: &transition::Plan, cfg: &config::RootCfg) -> Result<(), St
 }
 
 /// All context is from the real boot reconstruction. No Store is reopened or selected by a plan.
-pub struct Execution {
+pub(crate) struct Execution {
     pub report: serde_json::Value,
     pub record_bootstrap: Option<busbar_kernel::host_record_bootstrap::ColdRecordReceipt>,
 }
@@ -321,7 +321,7 @@ impl From<serde_json::Value> for Execution {
     }
 }
 
-pub async fn execute(
+pub(crate) async fn execute(
     command: &Command,
     cfg: &config::RootCfg,
     plugins: &config::PluginsCfg,

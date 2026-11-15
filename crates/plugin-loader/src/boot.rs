@@ -972,7 +972,6 @@ pub fn public_settings(stated: &[u8], words: &[&str]) -> Result<Option<PublicSet
 }
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/boot_tests.rs"]
 mod tests;
 
