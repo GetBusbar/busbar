@@ -527,6 +527,28 @@ A plane registration (an MCP server under `tools:`, an A2A agent under `agents:`
 
 **What to do:** Run `busbar --migrate-config`: it removes the key and lists exactly that registration's host in `advanced.allow_destinations`. Or do the same by hand: delete `allow_private` and add the host (or its address) to `advanced.allow_destinations`. A cloud-metadata address stays refused whatever is listed.
 
+<a id="config-legacy-overlay-not-read"></a>
+### BUSBAR-3028 — A 1.5.5 overlay selector, variable or file is not read (nothing to import)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `config-legacy-overlay-not-read`
+
+The deployment still carries a 1.5.5 file-overlay input that 1.6 serving does not read: a config.overlay selector or BUSBAR_CONFIG_OVERLAY naming a file that does not exist, an overlay file that holds no settings, a file whose settings this Store has already imported, or a file beside a locked config (which 1.5.5 ignored too). Nothing is lost, so the boot continues; the message names the file and how it was selected.
+
+**What to do:** Remove the leftover input: delete the imported or empty overlay file, and remove BUSBAR_CONFIG_OVERLAY from the launcher. `busbar --migrate-config` removes config.overlay from config.yaml. See docs/migration-1.6.md.
+
+<a id="retired-env-var-ignored"></a>
+### BUSBAR-3029 — A retired launch environment variable is set and IGNORED
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `retired-env-var-ignored`
+
+busbar 1.6 no longer reads BUSBAR_PROVIDERS, BUSBAR_WORKER_THREADS, BUSBAR_UPSTREAM_HTTP1_ONLY or BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE. A set one has NO effect: the config key (or its default) is in force. Emitted pre-tracing, to stderr, at boot and by --validate.
+
+**What to do:** Run busbar --migrate-config in the old launch environment to write the value into config.yaml, validate, then remove the variable from the launcher.
+
 ## 4xxx — Auth & identity
 
 <a id="token-exchange-mint-failed"></a>
