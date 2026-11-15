@@ -26,7 +26,8 @@ pub fn installed() -> Option<&'static Arc<Connector>> {
     ONE.get()
 }
 
-pub const ROOT_OWNER: busbar_contract::conn::InstanceId = busbar_contract::conn::InstanceId(0);
+pub(crate) const ROOT_OWNER: busbar_contract::conn::InstanceId =
+    busbar_contract::conn::InstanceId(0);
 
 pub struct AuthServerConns;
 
@@ -120,7 +121,7 @@ pub fn declared(
 }
 
 #[must_use]
-pub fn carrier_name(via: Option<&busbar_core_connector::compose::Via>) -> &'static str {
+pub(crate) fn carrier_name(via: Option<&busbar_core_connector::compose::Via>) -> &'static str {
     via.and_then(|v| v.door.facts().claims.first().copied())
         .unwrap_or("host")
 }
@@ -145,7 +146,7 @@ fn trust_store(cfg: &RootCfg) -> Arc<busbar_core_connector::tls::store::TrustSto
 }
 
 /// The trust store `tls` states, or every coded reason it is refused.
-pub fn trust_store_of(
+pub(crate) fn trust_store_of(
     tls: &busbar_kernel::config::tls::OutboundTlsCfg,
 ) -> Result<Arc<busbar_core_connector::tls::store::TrustStore>, Vec<String>> {
     busbar_core_connector::tls::store::TrustStore::build(
@@ -159,7 +160,7 @@ pub fn trust_store_of(
 /// INSTALL `cfg`'s trust store on the process connector and, once logging is up, report it
 /// (BUSBAR-3138 per anchor, audited) and start its hourly sweep (expiry withdrawal, the daily
 /// expiry warning, anchor-file drift). Restart to apply a change: the store is boot-time.
-pub fn install_trust_store(cfg: &RootCfg, report: bool) {
+pub(crate) fn install_trust_store(cfg: &RootCfg, report: bool) {
     let Some(connector) = installed() else {
         return;
     };
@@ -188,12 +189,12 @@ pub fn install_trust_store(cfg: &RootCfg, report: bool) {
     }
 }
 
-pub fn guard_for(d: &Destinations) -> Result<Arc<process::GuardJudge>, String> {
+pub(crate) fn guard_for(d: &Destinations) -> Result<Arc<process::GuardJudge>, String> {
     process::dest_judge(d)
 }
 
 #[must_use]
-pub fn pool_posture(settings: &TransportSettings) -> PoolPosture {
+pub(crate) fn pool_posture(settings: &TransportSettings) -> PoolPosture {
     PoolPosture {
         max_idle_per_host: settings.pool_max_idle_per_host,
         idle_timeout: std::time::Duration::from_secs(settings.pool_idle_timeout_secs),
@@ -242,7 +243,7 @@ pub fn boot(
     })
 }
 
-pub fn finalize_boot(settings: &TransportSettings, listens: &[&str]) -> Result<(), String> {
+pub(crate) fn finalize_boot(settings: &TransportSettings, listens: &[&str]) -> Result<(), String> {
     let connector = installed().ok_or("the bootstrap connector is not installed")?;
     let dropped = crate::root::boot::open_dropped_transports(settings)?;
     let dropped = finalize_prepared(

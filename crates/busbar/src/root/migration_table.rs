@@ -7,7 +7,7 @@ pub fn install() {
     busbar_kernel::config::declared_vocabulary::install(MIGRATION_ROWS);
 }
 
-pub fn export_order() -> Vec<&'static str> {
+pub(crate) fn export_order() -> Vec<&'static str> {
     MIGRATION_ROWS
         .iter()
         .find(|(k, _)| *k == "export_modules")

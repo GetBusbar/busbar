@@ -174,7 +174,6 @@ impl GovState {
             }
         }
         if let Err(failed) = self.flush_unit_checkpoints().await {
-            // busbar:expect(bp::state_scan, reason = "boot: the sink is attached once, before any unit is admitted")
             let owned = self.unit_checkpoints.pending.lock().all(|entry| {
                 entry.persisted() == Some(entry.snapshot().revision)
                     && entry.snapshot().terminal.as_ref().is_some_and(|events| {

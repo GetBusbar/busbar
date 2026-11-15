@@ -34,7 +34,7 @@ impl AuthBindings {
     }
 
     #[must_use]
-    pub fn without_directory() -> Self {
+    pub(crate) fn without_directory() -> Self {
         AuthBindings { revocations: None }
     }
 
@@ -69,7 +69,7 @@ impl RevocationView for GovernanceDirectory {
     }
 }
 
-pub const ADMIN_PRINCIPAL_ID: &str = "admin";
+pub(crate) const ADMIN_PRINCIPAL_ID: &str = "admin";
 
 #[must_use]
 pub(crate) fn operator_auth_module() -> &'static str {
@@ -77,7 +77,7 @@ pub(crate) fn operator_auth_module() -> &'static str {
 }
 
 #[must_use]
-pub fn operator_words() -> busbar_kernel_identity::operator::OperatorWords {
+pub(crate) fn operator_words() -> busbar_kernel_identity::operator::OperatorWords {
     busbar_kernel_identity::operator::OperatorWords {
         provider: operator_auth_module(),
         principal_id: ADMIN_PRINCIPAL_ID,

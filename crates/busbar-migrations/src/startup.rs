@@ -230,7 +230,7 @@ impl StartupUpgrade {
         if self.documents.is_none() {
             let derive = |domain: &[u8]| {
                 let mut hash = Sha256::new();
-                hash.update(&domain[..]);
+                hash.update(domain);
                 hash.update(&backend.info().dataset.0[..]);
                 hash.update(&custody_id[..]);
                 let digest: Digest32 = hash.finish();
@@ -370,7 +370,7 @@ impl StartupUpgrade {
                 let source = inspection.source.as_ref().ok_or(Error::Corrupt)?;
                 let marker = inspection.admission_marker.as_ref().ok_or(Error::Corrupt)?;
                 let digest: Digest32 =
-                    busbar_contract::crypto::sha256(marker.expose(&crate::seal::lend())).into();
+                    busbar_contract::crypto::sha256(marker.expose(&crate::seal::lend()));
                 (
                     native::OpenBinding::Current {
                         source: source.clone(),

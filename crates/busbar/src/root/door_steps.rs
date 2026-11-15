@@ -230,7 +230,7 @@ impl DoorPools {
     /// The `pool` label a finished model request is counted under: the downgrade target, else
     /// the pool the arrival named, where either is configured here; else `unresolved`.
     #[must_use]
-    pub fn metric_label<'a>(
+    pub(crate) fn metric_label<'a>(
         &self,
         downgraded: Option<&'a str>,
         named: Option<&'a [u8]>,
@@ -333,7 +333,7 @@ impl DoorPools {
     }
 
     #[must_use]
-    pub fn granted_to(
+    pub(crate) fn granted_to(
         &self,
         kind: Option<&str>,
         key: Option<&VirtualKey>,
@@ -426,7 +426,7 @@ fn opened_lane(plane: &str, routed: Option<&Routed>) -> Result<String, Refusal> 
 }
 
 #[must_use]
-pub fn egress_pool(plane: &str, routed: &Routed) -> String {
+pub(crate) fn egress_pool(plane: &str, routed: &Routed) -> String {
     match routed {
         (label, _) if !label.is_empty() => label.clone(),
         (_, members) => members
@@ -815,7 +815,7 @@ impl<'s> DoorSteps<'s> {
     }
 
     #[cfg(test)]
-    pub fn parent_admission<'a>(
+    pub(crate) fn parent_admission<'a>(
         &'a self,
         ctx: &UnitCtx,
         cell: &'a busbar_contract::caps::HoldCell,
@@ -843,7 +843,7 @@ impl<'s> DoorSteps<'s> {
 
     #[cfg(test)]
     #[must_use]
-    pub fn under_admission(mut self, parent: &'s ParentAdmission<'s>) -> Self {
+    pub(crate) fn under_admission(mut self, parent: &'s ParentAdmission<'s>) -> Self {
         self.parent = Some(parent.cell);
         self.parent_admission = Some(parent);
         self
@@ -871,12 +871,12 @@ impl<'s> DoorSteps<'s> {
     }
 
     /// Read the unit's route in place (SP-V1): no copy of its label and members.
-    pub fn with_routed<R>(&self, read: impl FnOnce(&Routed) -> R) -> Option<R> {
+    pub(crate) fn with_routed<R>(&self, read: impl FnOnce(&Routed) -> R) -> Option<R> {
         self.lock().routed.as_ref().map(read)
     }
 
     #[must_use]
-    pub fn connection_required(&self) -> bool {
+    pub(crate) fn connection_required(&self) -> bool {
         self.app.upstream_creds() == busbar_contract::config::UpstreamCreds::Connection
     }
 
@@ -895,11 +895,11 @@ impl<'s> DoorSteps<'s> {
     }
 
     #[must_use]
-    pub fn lane_prefix(&self) -> &str {
+    pub(crate) fn lane_prefix(&self) -> &str {
         self.facts.plane.lane_prefix()
     }
 
-    pub fn route_cost(&self, lane: &str) -> busbar_contract::SignalBag {
+    pub(crate) fn route_cost(&self, lane: &str) -> busbar_contract::SignalBag {
         use busbar_contract::signal::route_cost::{append, Term};
         let mut bag = busbar_contract::SignalBag::new();
         append(
@@ -926,7 +926,7 @@ impl<'s> DoorSteps<'s> {
     }
 
     #[must_use]
-    pub fn charged(&self) -> bool {
+    pub(crate) fn charged(&self) -> bool {
         self.lock().charged
     }
 
@@ -936,7 +936,7 @@ impl<'s> DoorSteps<'s> {
     }
 
     #[must_use]
-    pub fn stream_cut(&self) -> bool {
+    pub(crate) fn stream_cut(&self) -> bool {
         let u = self.lock();
         u.answered.1 && u.stream
     }
@@ -1817,7 +1817,7 @@ impl DriverSteps for DoorSteps<'_> {
 }
 
 #[must_use]
-pub fn door_facts(
+pub(crate) fn door_facts(
     plane: busbar_kernel::plane_driver::dispatch::LaneQualifier,
     scope_kinds: &[&str],
     classes: &[&'static str],
@@ -1849,7 +1849,7 @@ pub fn door_facts(
 }
 
 #[must_use]
-pub fn label_bound(
+pub(crate) fn label_bound(
     plane: &str,
     pools: &DoorPools,
     vocabulary: &[String],
@@ -1876,7 +1876,7 @@ pub fn label_bound(
     clippy::too_many_arguments,
     reason = "the egress composition takes each configured part unbundled"
 )]
-pub fn compose_egress(
+pub(crate) fn compose_egress(
     facts: &DoorFacts,
     pools: &DoorPools,
     caller: busbar_contract::conn::InstanceId,
@@ -2026,7 +2026,7 @@ pub fn compose_egress(
 /// `busbar_kernel::preflight::RootInstall::config_projection`), and read back when that generation
 /// is swapped in.
 #[derive(Debug)]
-pub struct DoorConfig {
+pub(crate) struct DoorConfig {
     /// Candidate-owned physical handlers, constructed by its root rules before publication.
     pub listener_routes: std::sync::OnceLock<crate::root::serve::PreparedListeners>,
     /// Effective physical listener settings of this candidate, before publication.
@@ -2046,7 +2046,9 @@ pub struct DoorConfig {
 }
 
 #[must_use]
-pub fn door_config(cfg: &busbar_kernel::config::RootCfg) -> Arc<dyn std::any::Any + Send + Sync> {
+pub(crate) fn door_config(
+    cfg: &busbar_kernel::config::RootCfg,
+) -> Arc<dyn std::any::Any + Send + Sync> {
     let sections = kernel_sections(cfg).map(|mut sections| {
         for (key, value) in raw_sections(cfg) {
             sections.entry(key).or_insert(value);
@@ -2075,7 +2077,7 @@ pub fn door_config(cfg: &busbar_kernel::config::RootCfg) -> Arc<dyn std::any::An
     Arc::new(config)
 }
 
-pub fn listener_needs(
+pub(crate) fn listener_needs(
     cfg: &busbar_kernel::config::RootCfg,
 ) -> Result<crate::root::boot::ListenerNeeds, String> {
     let mut sections = kernel_sections(cfg)?;
@@ -2096,7 +2098,7 @@ fn raw_sections(
         .collect()
 }
 
-pub fn owned_anchor_refusal(at: &str, written: &str) -> Result<(), String> {
+pub(crate) fn owned_anchor_refusal(at: &str, written: &str) -> Result<(), String> {
     busbar_core_connector::tls::client::operator_ca_config(written.as_bytes())
         .map(|_| ())
         .map_err(|_| {
@@ -2107,7 +2109,7 @@ pub fn owned_anchor_refusal(at: &str, written: &str) -> Result<(), String> {
         })
 }
 
-pub fn owned_anchors_refusal<P: AsRef<str>>(
+pub(crate) fn owned_anchors_refusal<P: AsRef<str>>(
     paths: &[P],
     sections: &BTreeMap<&'static str, busbar_contract::yaml::Value>,
 ) -> Result<(), String> {
@@ -2170,7 +2172,7 @@ impl std::fmt::Debug for Rules {
 }
 
 impl Rules {
-    pub fn hearing_with_documents(
+    pub(crate) fn hearing_with_documents(
         guard: Arc<dyn busbar_kernel::host_services::DestJudge>,
         documents: Arc<crate::root::startup_upgrade::documents::Documents>,
     ) -> Self {
@@ -2180,7 +2182,7 @@ impl Rules {
             ..Self::default()
         }
     }
-    pub fn hold_listeners(
+    pub(crate) fn hold_listeners(
         &self,
         listeners: Arc<crate::root::serve::ListenerPlan>,
     ) -> Result<(), String> {
@@ -2191,14 +2193,14 @@ impl Rules {
 
     #[cfg(test)]
     #[must_use]
-    pub fn hearing(guard: Arc<dyn busbar_kernel::host_services::DestJudge>) -> Self {
+    pub(crate) fn hearing(guard: Arc<dyn busbar_kernel::host_services::DestJudge>) -> Self {
         Self {
             guard: Some(guard),
             ..Self::default()
         }
     }
 
-    pub fn hold_member_tls_sections(&self, sections: &[&'static str]) {
+    pub(crate) fn hold_member_tls_sections(&self, sections: &[&'static str]) {
         let mut held = self
             .member_tls_sections
             .lock()
@@ -2210,7 +2212,7 @@ impl Rules {
         }
     }
 
-    pub fn hold_owned_anchors(&self, paths: &[&'static str]) {
+    pub(crate) fn hold_owned_anchors(&self, paths: &[&'static str]) {
         let mut held = self
             .owned_anchors
             .lock()
@@ -2225,14 +2227,14 @@ impl Rules {
         }
     }
 
-    pub fn hold_unloaded(&self, candidates: Vec<crate::root::loader::boot::Candidate>) {
+    pub(crate) fn hold_unloaded(&self, candidates: Vec<crate::root::loader::boot::Candidate>) {
         self.unloaded
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .extend(candidates);
     }
 
-    pub fn hold_unopened(&self, sections: impl IntoIterator<Item = &'static str>) {
+    pub(crate) fn hold_unopened(&self, sections: impl IntoIterator<Item = &'static str>) {
         let mut held = self
             .unopened
             .lock()
@@ -2250,7 +2252,7 @@ pub(crate) fn writes_plane(section: &str, cfg: &busbar_kernel::config::RootCfg) 
 }
 
 #[must_use]
-pub fn unloaded_doors() -> Vec<crate::root::loader::boot::Candidate> {
+pub(crate) fn unloaded_doors() -> Vec<crate::root::loader::boot::Candidate> {
     let bound = crate::root::boot::door_planes();
     crate::root::boot::DOOR_CANDIDATES
         .get()
@@ -2263,7 +2265,7 @@ pub fn unloaded_doors() -> Vec<crate::root::loader::boot::Candidate> {
 }
 
 #[must_use]
-pub fn unloaded_plane_refusal(
+pub(crate) fn unloaded_plane_refusal(
     unloaded: &[crate::root::loader::boot::Candidate],
     keys: &[&str],
 ) -> Option<String> {
@@ -2381,7 +2383,7 @@ fn offline_root_rules(cfg: &busbar_kernel::config::RootCfg) -> Result<(), Vec<St
 
 /// Project the kernel-owned configuration without passing JSON's arbitrary-precision
 /// serialization markers to YAML. A provider number outside YAML's scalar domain is refused.
-pub fn kernel_sections(
+pub(crate) fn kernel_sections(
     cfg: &busbar_kernel::config::RootCfg,
 ) -> Result<BTreeMap<&'static str, busbar_contract::yaml::Value>, String> {
     use busbar_contract::yaml::{Pairs, Value};
@@ -2692,7 +2694,7 @@ pub struct StyleParams {
 
 impl StyleParams {
     #[must_use]
-    pub fn to_json(&self) -> serde_json::Value {
+    pub(crate) fn to_json(&self) -> serde_json::Value {
         let mut object = serde_json::Map::new();
         for (key, value) in [
             ("token_url", &self.token_url),
@@ -2713,7 +2715,7 @@ fn style_word(auth: &busbar_kernel::config::ProviderAuth) -> &str {
 }
 
 #[must_use]
-pub fn declared_styles() -> Vec<busbar_contract::auth_calls::DeclaredStyle> {
+pub(crate) fn declared_styles() -> Vec<busbar_contract::auth_calls::DeclaredStyle> {
     use crate::root::loader::dispatch::kinds::auth::{rendered_facts, stated_facts};
     let linked = crate::LINKED
         .auths
@@ -2800,7 +2802,7 @@ pub fn provider_routes(
 }
 
 #[must_use]
-pub fn dialect_facts(
+pub(crate) fn dialect_facts(
     section: &busbar_contract::yaml::Value,
     providers: &BTreeMap<String, ProviderRoute>,
 ) -> Vec<busbar_contract::plane_calls::DialectFacts> {
@@ -2969,7 +2971,7 @@ impl OutboundAuths {
     }
 
     #[must_use]
-    pub fn style_flags(&self, style: &str) -> Option<u32> {
+    pub(crate) fn style_flags(&self, style: &str) -> Option<u32> {
         self.stating(style)
             .next()
             .and_then(|row| row.styles.iter().find(|s| s.name == style))
@@ -3469,7 +3471,7 @@ impl busbar_contract::conn::DeclaredConns for PresentingConns {
 }
 
 impl OutboundAuths {
-    pub fn check_settings(
+    pub(crate) fn check_settings(
         &self,
         style: &str,
         settings: &serde_json::Value,
@@ -3595,7 +3597,7 @@ impl crate::root::loader::dispatch::EnvelopeSink for MainLogSink {
     }
 }
 
-pub fn process_auths() -> Arc<OutboundAuths> {
+pub(crate) fn process_auths() -> Arc<OutboundAuths> {
     static AUTHS: std::sync::OnceLock<Arc<OutboundAuths>> = std::sync::OnceLock::new();
     Arc::clone(AUTHS.get_or_init(|| {
         Arc::new(OutboundAuths::new(
@@ -4484,7 +4486,7 @@ pub(crate) fn refresh_credentials() {
     busbar_kernel::refresh::process().refresh_all_now();
 }
 
-pub fn bind_member_fetches(
+pub(crate) fn bind_member_fetches(
     served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
     routes: &BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>,
     instance: busbar_contract::conn::InstanceId,
@@ -4549,7 +4551,7 @@ fn ridden(
         .collect()
 }
 
-pub fn member_routes(
+pub(crate) fn member_routes(
     section: &busbar_contract::yaml::Value,
     pools: &DoorPools,
     served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
@@ -4869,7 +4871,7 @@ pub fn member_routes(
     Ok(routes)
 }
 
-pub fn sealed_settings(
+pub(crate) fn sealed_settings(
     params: &[u8],
     base_url: &str,
     provider: &serde_json::Value,
@@ -4970,7 +4972,7 @@ fn sealed_params(
 }
 
 #[must_use]
-pub fn spelled_for(base_url: &str, transport: &str, upgrades: &[&str]) -> Option<String> {
+pub(crate) fn spelled_for(base_url: &str, transport: &str, upgrades: &[&str]) -> Option<String> {
     if !upgrades.contains(&transport) {
         return None;
     }
