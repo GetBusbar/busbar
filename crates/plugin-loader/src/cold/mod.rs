@@ -9,7 +9,6 @@
 
 pub(crate) mod auth_axis;
 pub(crate) mod auth_door;
-pub(crate) mod auth_login;
 pub(crate) mod durable_documents;
 pub(crate) mod export_axis;
 pub(crate) mod export_door;
