@@ -848,14 +848,13 @@ async fn healthz_returns_a_real_response_not_the_default() {
     let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
     assert_eq!(
         status,
-        axum::http::StatusCode::SERVICE_UNAVAILABLE,
-        "a lane-less fixture must report unready (503), not Default::default()'s 200 nor an \
-             inverted readiness condition"
+        axum::http::StatusCode::OK,
+        "an admin-only fixture (no providers, no models, no planes) is healthy"
     );
     assert_eq!(
         body,
-        "no usable lanes".as_bytes(),
-        "a real 503 healthz response must carry the real status text, not \
-             Response::default()'s empty body: {body:?}"
+        "ok".as_bytes(),
+        "a real healthz response must carry the real status text, not \
+             Response::default's empty body: {body:?}"
     );
 }
