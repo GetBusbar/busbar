@@ -682,6 +682,13 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
                 busbar_contract::conn::ConnError::UndeclaredNeed.text(),
                 "service {service}"
             );
+        } else if service == op::MIGRATE_ADMIT {
+            assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
+            assert_eq!(
+                error(&o),
+                crate::dispatch::migrate::NOT_IN_OPEN,
+                "service {service}"
+            );
         } else if service == op::TRUST_STATE {
             assert_eq!(ret.outcome(), Outcome::Ready, "service {service}");
         } else if service == op::SESSION_EMIT {
@@ -3768,6 +3775,7 @@ fn slots_of(slots: &HostSlots) -> [Option<svc::ServiceFn>; SERVICES as usize] {
         slots.directory_create,
         slots.directory_apply,
         slots.directory_delete,
+        slots.migrate_admit,
     ]
 }
 
@@ -4306,4 +4314,79 @@ fn authenticated_route_preserves_declared_record_reads_but_no_connector_or_exten
         )
         .is_err());
     }
+}
+
+/// The boot's `migrate.admit` answer in this test binary: two recoverable rows can be sealed, any
+/// other count cannot (the seam's real answer is core's, from `credentials.at_rest`).
+fn fixture_admit(recoverable: u64) -> Result<(), &'static str> {
+    if recoverable == 2 {
+        Ok(())
+    } else {
+        Err("CONFIG: fixture: no at-rest key")
+    }
+}
+
+/// THE RECOVERABLE GATE, the host's side (MIGRATE-ON-BOOT §3 step 2, §4): only a store inside its
+/// `open` (its data step) is answered, and the answer is the boot's, never the loader's own. Any
+/// other kind, or a store outside `open`, is refused with the gate's text and the boot's answer is
+/// never asked; with no answer installed, every call is refused (fail closed).
+#[test]
+fn migrate_admit_answers_only_a_store_inside_open_with_the_boots_verdict() {
+    use crate::dispatch::migrate::{admit_verdict, install_admit, NOT_IN_OPEN, NO_ADMIT};
+    use busbar_contract::abi::mechanism::{lifecycle::slot as life, KindCode};
+    let store = double_for(KindCode::Store);
+    assert_eq!(admit_verdict(None, Some(life::OPEN), 2), Err(NOT_IN_OPEN));
+    assert_eq!(
+        admit_verdict(Some(store.wake), Some(life::OPEN), 2),
+        Err(NO_ADMIT),
+        "no answer installed: refused, never admitted"
+    );
+    if !install_admit(fixture_admit) {
+        panic!("one test installs the boot's answer");
+    }
+    assert!(!install_admit(fixture_admit), "installed once");
+    assert_eq!(admit_verdict(Some(store.wake), Some(life::OPEN), 2), Ok(()));
+    assert_eq!(
+        admit_verdict(Some(store.wake), Some(life::MIGRATE), 2),
+        Ok(()),
+        "the door migrate entry, where the data step moves at MIN-3"
+    );
+    assert_eq!(
+        admit_verdict(Some(store.wake), Some(life::OPEN), 3),
+        Err("CONFIG: fixture: no at-rest key")
+    );
+    for outside in [
+        None,
+        Some(life::READY),
+        Some(life::VALIDATE),
+        Some(life::CLOSE),
+    ] {
+        assert_eq!(
+            admit_verdict(Some(store.wake), outside, 2),
+            Err(NOT_IN_OPEN),
+            "a store outside open: {outside:?}"
+        );
+    }
+    for kind in KindCode::ALL.into_iter().filter(|k| *k != KindCode::Store) {
+        let other = double_for(kind);
+        assert_eq!(
+            admit_verdict(Some(other.wake), Some(life::OPEN), 2),
+            Err(NOT_IN_OPEN),
+            "{kind:?} may not ask"
+        );
+    }
+}
+
+/// The advertised tables: only a store's carries `migrate.admit`.
+#[test]
+fn only_the_store_table_advertises_migrate_admit() {
+    use busbar_contract::abi::mechanism::KindCode;
+    for kind in KindCode::ALL {
+        assert_eq!(
+            host_slots(kind).migrate_admit.is_some(),
+            kind == KindCode::Store,
+            "{kind:?}"
+        );
+    }
+    assert!(HOST_SLOTS.migrate_admit.is_some());
 }

@@ -671,3 +671,95 @@ fn disk_append_preserves_octets_ticket_and_resumed_issue_order() {
 type Host = crate::abi::sdk::conn::Host<FixtureKind>;
 
 type FixtureKind = crate::plugin::markers::TransportKind;
+
+/// How many `migrate.admit` calls reached the fixture host.
+static ADMIT_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// One ADMIT_CALLS-reading test at a time.
+static ADMIT_SERIAL: Mutex<()> = Mutex::new(());
+
+/// `migrate.admit` on a host that can seal: admitted.
+extern "C" fn admits(_: HostCtx, _: *const c_void, _: *mut ServiceOut) -> RawOutcome {
+    ADMIT_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    RawOutcome::of(Outcome::Ready)
+}
+
+/// `migrate.admit` on a host with no at-rest key: refused.
+extern "C" fn refuses(_: HostCtx, _: *const c_void, _: *mut ServiceOut) -> RawOutcome {
+    ADMIT_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    RawOutcome::of(Outcome::Refused)
+}
+
+/// A store's host whose services table offers `migrate.admit` through `slot` (none = no table).
+fn store_host(
+    slot: Option<Option<ServiceFn>>,
+) -> crate::abi::sdk::conn::Host<crate::plugin::markers::StoreKind> {
+    let services = slot.map(|admit| crate::abi::host::service::HostSlots {
+        size: std::mem::size_of::<crate::abi::host::service::HostSlots>() as u32,
+        slots: crate::abi::host::service::SERVICES,
+        migrate_admit: admit,
+        ..crate::abi::sdk::test_support::zeroed()
+    });
+    crate::abi::sdk::conn::Host::<crate::plugin::markers::StoreKind> {
+        _kind: std::marker::PhantomData,
+        ctx: HostCtx::NONE,
+        wake: None,
+        conns: None,
+        services,
+        io: None,
+    }
+}
+
+/// THE RECOVERABLE GATE, the store's side (MIGRATE-ON-BOOT §4): a store with no recoverable row
+/// asks nothing, so a store that holds none migrates on any host, with or without an at-rest key.
+#[test]
+fn admit_recoverable_of_zero_makes_no_host_call() {
+    use crate::abi::sdk::store::admit_recoverable;
+    let _g = ADMIT_SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ADMIT_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        admit_recoverable(&store_host(Some(Some(refuses))), 0),
+        Ok(())
+    );
+    assert_eq!(admit_recoverable(&store_host(Some(None)), 0), Ok(()));
+    assert_eq!(admit_recoverable(&store_host(None), 0), Ok(()));
+    assert_eq!(ADMIT_CALLS.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+/// `n > 0`: one call, and the host's verdict is the answer: admitted, or a REFUSED the store's
+/// `open` returns unchanged, before it has written anything.
+#[test]
+fn admit_recoverable_asks_the_host_once_and_returns_its_verdict() {
+    use crate::abi::mechanism::call::Outcome;
+    use crate::abi::sdk::store::admit_recoverable;
+    let _g = ADMIT_SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ADMIT_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        admit_recoverable(&store_host(Some(Some(admits))), 2),
+        Ok(())
+    );
+    assert_eq!(ADMIT_CALLS.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let refused = admit_recoverable(&store_host(Some(Some(refuses))), 2).expect_err("refused");
+    assert_eq!(ADMIT_CALLS.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(refused.outcome(), Outcome::Refused);
+    assert!(
+        refused.text().is_some_and(|t| t.starts_with("CONFIG")),
+        "a refusal names its class: {refused}"
+    );
+}
+
+/// A host that does not offer the slot (a table without it, or no table) cannot seal: the store
+/// refuses rather than hand core plaintext it cannot seal (fail closed, never default open).
+#[test]
+fn admit_recoverable_on_a_host_without_the_slot_refuses() {
+    use crate::abi::mechanism::call::Outcome;
+    use crate::abi::sdk::store::admit_recoverable;
+    for host in [store_host(Some(None)), store_host(None)] {
+        let refused = admit_recoverable(&host, 1).expect_err("no slot, no admission");
+        assert_eq!(refused.outcome(), Outcome::Refused);
+        assert!(refused.text().is_some_and(|t| t.starts_with("CONFIG")));
+    }
+}
