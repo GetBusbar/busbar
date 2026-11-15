@@ -24,7 +24,7 @@
       "crates/busbar-contract/src/abi/sdk/out.rs",
       "crates/busbar-contract/src/abi/sdk/publish.rs",
       "crates/busbar-contract/src/caps/mod.rs",
-    "crates/busbar-contract/src/json_grammar.rs",
+      "crates/busbar-contract/src/json_grammar.rs",
       "crates/busbar-contract/src/secure.rs",
       "crates/busbar-contract/src/yaml.rs",
       "crates/busbar-core-admin/src/admin_codec/mod.rs",
