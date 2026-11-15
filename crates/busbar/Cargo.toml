@@ -24,6 +24,12 @@ bench = false
 name = "test_source_gen"
 path = "src/test_source_gen_tests.rs"
 
+# LINT-RULES R16 (SHUTDOWN-HANG §7a): parses root/shutdown.rs and main.rs; every shutdown wait is
+# bounded by the drain owner, nothing is aborted, nothing blocks the control thread.
+[[test]]
+name = "shutdown_waits"
+path = "tests/shutdown_waits.rs"
+
 [dependencies]
 async-trait = { workspace = true }
 busbar-core-oauth2 = { path = "../busbar-core-oauth2" }
