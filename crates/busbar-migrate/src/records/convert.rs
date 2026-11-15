@@ -2,8 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! One R0 row in, one native record out (§A4 tables, §A6 conversion): pure, so the read-only pass
-//! and the page conversion read every row the same way. Counts arrive in 1.5.5 whole units and
-//! leave in scale 6 through [`scale6`]; every sum is `checked_add`. Overflow is BOUNDS, never a wrap
+//! and the page conversion read every row the same way. Counts arrive in 1.5.5 whole units. Token
+//! counts leave in scale 6 through [`scale6`] (the native usage units); request counts stay whole,
+//! as the native ledger keeps them. Every sum is `checked_add`. Overflow is BOUNDS, never a wrap
 //! or a saturate.
 
 use busbar_contract::abi::sdk::store::cells::{self, table, Cell, HEADLESS};
@@ -106,11 +107,16 @@ impl<'a> Cols<'a> {
         scale6(v).ok_or_else(|| bounds(self.tag, field, v, at))
     }
 
+    /// A request count: whole, as the native ledger keeps it (1.5.5 never stores a negative one).
+    fn whole(&self, i: usize) -> Result<u64, Refusal> {
+        u64::try_from(self.int(i)?).map_err(|_| self.unknown("a request count is negative"))
+    }
+
     /// The six counters starting at column `i` (requests, billable, 4 token fields).
     fn six(&self, i: usize, at: &str) -> Result<Units, Refusal> {
         Ok(Units {
-            requests: self.units(i, "requests", at)?,
-            billable_requests: self.units(i + 1, "billable_requests", at)?,
+            requests: self.whole(i)?,
+            billable_requests: self.whole(i + 1)?,
             tokens_input: self.units(i + 2, "tokens_input", at)?,
             tokens_output: self.units(i + 3, "tokens_output", at)?,
             tokens_cache_read: self.units(i + 4, "tokens_cache_read", at)?,
@@ -313,8 +319,8 @@ fn usage(cols: &Cols<'_>) -> Result<Row, Refusal> {
     let window_start = cols.int(2)?;
     let at = format!("bucket {bucket}, window {window_start}");
     let head = Units {
-        requests: cols.units(3, "requests", &at)?,
-        billable_requests: cols.units(4, "billable_requests", &at)?,
+        requests: cols.whole(3)?,
+        billable_requests: cols.whole(4)?,
         ..Units::default()
     };
     let rest = cols.cells.len().saturating_sub(5);

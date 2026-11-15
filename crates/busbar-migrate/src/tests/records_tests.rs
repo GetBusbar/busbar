@@ -311,7 +311,7 @@ fn every_r0_table_converts_and_the_final_commit_consumes_summary() {
         let Some(Native::Usage(cell)) = natives.get("usage/b1/60") else {
             panic!("the usage cell");
         };
-        assert_eq!(cell.head.requests, 4_000_000);
+        assert_eq!(cell.head.requests, 4, "request counts stay whole");
         assert_eq!(cell.models[0].1.tokens_output, 20_000_000);
         let Some(Native::Metering(meter)) = natives.get("meter/2026-01/vk_1/openai/gpt") else {
             panic!("the metering row");
@@ -469,7 +469,12 @@ fn scale6_never_overflows_and_bounds_refuses_before_any_write() {
             Some((1, 1)),
             &[("gpt", [1, 1, over, 0, 0, 0])],
         )],
-        vec![usage_row("b1", 60, Some((i64::MAX, 1)), &[])],
+        vec![usage_row(
+            "b1",
+            60,
+            Some((1, 1)),
+            &[("gpt", [1, 1, 0, i64::MAX, 0, 0])],
+        )],
         vec![metering_row("gpt", over)],
         vec![usage_row(
             "b1",

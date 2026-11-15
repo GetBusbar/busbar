@@ -96,12 +96,13 @@ pub trait RecordStore {
     fn register(&self) -> Result<(), StoreFail>;
 }
 
-/// The counters one R0 table converts in scale 6 (whole units × 10^6).
+/// The counters of one R0 row: request counts whole, token counts in scale 6 (whole units ×
+/// 10^6), as the native ledger and its usage units keep them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Units {
-    /// Requests.
+    /// Requests (whole).
     pub requests: u64,
-    /// Billable requests.
+    /// Billable requests (whole).
     pub billable_requests: u64,
     /// Input tokens.
     pub tokens_input: u64,
