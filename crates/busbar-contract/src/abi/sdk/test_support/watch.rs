@@ -121,7 +121,7 @@ impl Watch {
         // SAFETY: `canary`/`canary_len` were stored together from a `&'static [u8]` before the
         // scope armed, and are only replaced by the next scope, which `SCOPE` serializes.
         let canary = unsafe { std::slice::from_raw_parts(at.cast_const(), len) };
-        if block.windows(len).any(|w| std::ptr::eq(w, canary)) {
+        if block.windows(len).any(|w| w == canary) {
             self.canary_blocks.fetch_add(1, Ordering::SeqCst);
         }
     }

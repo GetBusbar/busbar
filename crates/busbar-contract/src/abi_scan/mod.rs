@@ -454,7 +454,7 @@ pub fn test_reachable(root: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = walk
         .reached
         .into_iter()
-        .filter_map(|(p, test)| (test && p.as_os_str().is_empty()).then_some(p))
+        .filter_map(|(p, test)| test.then_some(p))
         .collect();
     for f in all {
         let rel = f.strip_prefix(root).unwrap_or(&f);

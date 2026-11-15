@@ -82,7 +82,7 @@ impl<T: Copy + Pairs> Loans<T> {
     #[doc(hidden)]
     #[must_use]
     pub fn seal(&mut self) -> T {
-        let _ = T::stamp;
+        T::stamp(self);
         self.input
     }
 }
