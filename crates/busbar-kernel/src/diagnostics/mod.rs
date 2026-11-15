@@ -345,6 +345,12 @@ diagnostics! {
         "The auth chain names the built-in `keys` verifier while `auth.admin_auth` is explicitly empty, so the admin API has no credential gating it — ANYONE can mint virtual keys through it. Acceptable only for local development.",
         "Configure `auth.admin_auth` (an admin credential entry, or an admin module granting `mint`/`full`) before exposing busbar's admin API to any untrusted network, so key minting is gated by an operator credential.";
 
+    /// An auth plugin states the operator credential but is not first-party; nothing references it.
+    CONFIG_OPERATOR_INERT = 3030, Config, Actionable, "config-operator-inert", "1.6.0", false,
+        "An auth plugin states the operator credential but is not first-party (ignored)",
+        "An admitted auth plugin states the operator credential, but it is not first-party (not signed by a busbar release key), so it never becomes the operator credential. Nothing in the configuration references it, so it is ignored and the boot continues; each boot also writes an auth.operator.inert audit row naming it.",
+        "Remove the plugin from plugins.dir, or narrow plugins.trust so it is not admitted. To make a plugin the operator credential, install the first-party operator credential plugin.";
+
     /// upstream_credentials: passthrough with a non-empty configured api_key on a provider; key is inert.
     CONFIG_PASSTHROUGH_UNUSED_APIKEY = 3013, Config, Actionable, "config-passthrough-unused-apikey", "1.6.0", false,
         "passthrough provider has a non-empty api_key that is never forwarded (inert config)",

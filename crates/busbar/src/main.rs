@@ -309,12 +309,10 @@ fn register_planes() {
     root::migration_table::install();
 
     root::linked::register_stores(&LINKED);
-    busbar_kernel::preflight::install_linked_auth(
-        LINKED.auths,
-        root::auth_bindings::operator_words(),
-    );
+    busbar_kernel::preflight::install_linked_auth(LINKED.auths);
 
     let dropped = root::boot::dropped_from_config(&LINKED);
+    busbar_kernel::preflight::install_operator(root::auth_bindings::operator_binding(dropped));
 
     busbar_kernel::preflight::install_declared_styles(root::door_steps::declared_styles());
     root::boot::discover_planes(&LINKED, dropped);

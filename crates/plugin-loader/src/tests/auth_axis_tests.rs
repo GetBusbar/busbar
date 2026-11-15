@@ -308,7 +308,10 @@ fn a_linked_row_the_configuration_does_not_name_is_never_bound() {
     };
     assert_eq!(rows.default_inbound_style().map(|c| c.len()), Ok(3));
     assert!(rows.credential_readers().is_empty());
-    assert_eq!(rows.operator(), None);
+    assert_eq!(
+        rows.operator_claims(),
+        busbar_contract::auth_calls::OperatorClaims::default()
+    );
     assert_eq!(rows.carriers("plain").len(), 3);
     assert_eq!(bound(), Vec::<String>::new(), "a fact read binds no row");
     rows.open(
@@ -412,7 +415,10 @@ fn dropping(alias: &str, door: busbar_contract::abi::mechanism::door::DoorFn) ->
 fn red_a_dropped_rows_tail_facts_are_read_from_its_signed_manifest_with_no_dlopen() {
     let rows = dropping("manifest-operator", operator_row::door);
     assert_eq!(
-        rows.operator(),
+        rows.operator_claims()
+            .claims
+            .first()
+            .map(|c| (c.provider.clone(), c.principal.clone())),
         Some((
             "manifest-operator".to_string(),
             OPERATOR_PRINCIPAL.to_string()

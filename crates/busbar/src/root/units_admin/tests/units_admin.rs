@@ -616,7 +616,7 @@ impl busbar_kernel_identity::RevocationView for Denylist {
 fn a_door_that_identifies_the_operator() -> AdminDoorFn {
     door_identifying(
         "admin-token",
-        crate::root::auth_bindings::ADMIN_PRINCIPAL_ID,
+        busbar_kernel::config::operator_principal_id(),
     )
 }
 

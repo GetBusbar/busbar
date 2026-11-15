@@ -677,7 +677,9 @@ impl AuthCfg {
         }
     }
 
-    pub fn admin_token_ref(&self) -> Option<&SecretRef> {
+    /// The 1.5 `token:` on the operator-backed entry, if any: refused by validation (OPERATOR-FROM-
+    /// ADMITTED-AUTH §3.5) and kept only as the 1.5 migration source. Nothing at runtime reads it.
+    pub fn operator_token_ref(&self) -> Option<&SecretRef> {
         self.admin_auth
             .iter()
             .chain(self.chain.iter())
@@ -691,7 +693,7 @@ impl AuthCfg {
         }
         self.admin_auth.iter().any(|e| {
             let operator = names_operator(&e.module);
-            (operator && e.token.is_some())
+            (operator && !e.settings.is_empty())
                 || (!operator && matches!(e.max_admin_scope.as_deref(), Some("full")))
         })
     }
@@ -709,8 +711,14 @@ pub fn names_operator(module: &str) -> bool {
     busbar_kernel_identity::operator::names(operator_provider(), module)
 }
 
-pub fn builtin_identity_providers() -> [&'static str; 2] {
-    [KEYS_MODULE, operator_provider()]
+/// The bare built-in provider names: `keys`, and the operator's word only when an admitted row is the
+/// operator. Never the empty word, so a missing operator never resolves as a provider.
+pub fn builtin_identity_providers() -> Vec<&'static str> {
+    let op = operator_provider();
+    match op.is_empty() {
+        true => vec![KEYS_MODULE],
+        false => vec![KEYS_MODULE, op],
+    }
 }
 
 pub fn is_builtin_identity_module(module: &str) -> bool {

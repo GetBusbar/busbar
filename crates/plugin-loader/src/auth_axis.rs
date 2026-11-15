@@ -171,8 +171,8 @@ impl AuthRows {
     }
 
     #[must_use]
-    pub fn operator(&self) -> Option<(String, String)> {
-        cold::operator(self)
+    pub fn operator_claims(&self) -> busbar_contract::auth_calls::OperatorClaims {
+        cold::operator_claims(self.auth_rows())
     }
 
     #[must_use]
@@ -348,8 +348,8 @@ impl busbar_contract::auth_calls::AuthAxis for AuthRows {
         AuthRows::linked(self, module)
     }
 
-    fn operator(&self) -> Option<(String, String)> {
-        AuthRows::operator(self)
+    fn operator_claims(&self) -> busbar_contract::auth_calls::OperatorClaims {
+        AuthRows::operator_claims(self)
     }
 
     fn credential_readers(&self) -> Vec<String> {

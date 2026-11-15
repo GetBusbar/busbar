@@ -69,20 +69,30 @@ impl RevocationView for GovernanceDirectory {
     }
 }
 
-pub(crate) const ADMIN_PRINCIPAL_ID: &str = "admin";
-
+/// THE OPERATOR CREDENTIAL, judged at process start from the auth rows the start scan admits:
+/// the linked rows and the dropped-in ones alike (OPERATOR-FROM-ADMITTED-AUTH §3.1, §3.4). A start
+/// whose `plugins:` block is in a pre-1.6 shape is `Deferred`: the startup upgrade binds it from
+/// its own converted view (§3.4.1).
 #[must_use]
-pub(crate) fn operator_auth_module() -> &'static str {
-    crate::LINKED.operator_auth
+pub(crate) fn operator_binding(
+    dropped: Option<&crate::root::loader::PluginRegistry>,
+) -> busbar_kernel::preflight::OperatorBinding {
+    if crate::root::boot::plugins_block_is_historical() {
+        return busbar_kernel::preflight::OperatorBinding::Deferred;
+    }
+    busbar_kernel::preflight::OperatorBinding::Bound(judged_operator(dropped))
 }
 
+/// The operator judged from the linked rows and the rows of `dropped`.
 #[must_use]
-pub(crate) fn operator_words() -> busbar_kernel_identity::operator::OperatorWords {
-    busbar_kernel_identity::operator::OperatorWords {
-        provider: operator_auth_module(),
-        principal_id: ADMIN_PRINCIPAL_ID,
-        ..Default::default()
-    }
+pub(crate) fn judged_operator(
+    dropped: Option<&crate::root::loader::PluginRegistry>,
+) -> busbar_kernel::preflight::Judged {
+    let linked = crate::root::boot::linked_registry();
+    let dropped = dropped.map_or(&[][..], crate::root::loader::PluginRegistry::loadable);
+    let claims =
+        crate::root::loader::auth_axis::operator_claims(linked.linked().iter().chain(dropped));
+    busbar_kernel::preflight::choose_operator(&claims)
 }
 
 #[cfg(test)]
