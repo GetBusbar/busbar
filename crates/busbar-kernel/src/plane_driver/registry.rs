@@ -85,22 +85,15 @@ pub fn builtin_plane_decls() -> &'static [&'static PlaneDecl] {
     BUILTIN_PLANE_DECLS
 }
 
-#[cfg(test)]
-pub fn default_section_plane_test_runtime() -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
-    std::sync::Arc::new(())
-}
+/// The process plane list, once folded: `None` until its first read (or a test binary's first
+/// publish). Each list is leaked for the process, so a reader copies the `&'static` slice out.
+static PLANES: std::sync::RwLock<Option<&'static [&'static PlaneDecl]>> =
+    std::sync::RwLock::new(None);
 
-static PLANES: std::sync::atomic::AtomicPtr<&'static [&'static PlaneDecl]> =
-    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
-
-#[expect(
-    unsafe_code,
-    reason = "reads the leaked plane-list pointer PLANES publishes; see SAFETY"
-)]
-fn planes_at(ptr: *mut &'static [&'static PlaneDecl]) -> &'static [&'static PlaneDecl] {
-    // SAFETY: `ptr` is non-null and was stored in `PLANES` from `Box::leak`, which is never freed
-    // or mutated; the Acquire load that read it pairs with the Release/AcqRel store that wrote it.
-    unsafe { *ptr }
+fn published_planes() -> Option<&'static [&'static PlaneDecl]> {
+    *PLANES
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 static INSTALLED: std::sync::OnceLock<&'static [&'static PlaneDecl]> = std::sync::OnceLock::new();
@@ -111,50 +104,14 @@ pub fn install_planes(decls: &'static [&'static PlaneDecl]) {
         "install_planes called twice: there is one composition root, and it registers once"
     );
     assert!(
-        PLANES.load(std::sync::atomic::Ordering::Acquire).is_null(),
+        published_planes().is_none(),
         "install_planes called after the plane list was first read; register in main before any \
          config load or validation touches a plane"
     );
 }
 
-pub fn merged_boot_plane_decls(
-    installed: &[&'static PlaneDecl],
-    builtins: &[&'static PlaneDecl],
-) -> Vec<&'static PlaneDecl> {
-    // busbar:expect(bp::fresh_buffer, reason = "boot: the process plane list is folded once, at first read")
-    let mut decls: Vec<&'static PlaneDecl> = Vec::new();
-    for d in installed.iter().chain(builtins) {
-        if decls.iter().any(|p| p.key == d.key) {
-            tracing::info!(
-                plane = d.key,
-                "skipping a later registration of an already-declared plane (composition-root copy \
-                 and built-in copy of one plane)"
-            );
-            continue;
-        }
-        decls.push(d);
-    }
-
-    // Every key is distinct (deduplicated above) and has a distinct canonical position, so a
-    // stable sort orders them exactly as one without ties would.
-    let canonical = canonical_key_order(installed, builtins);
-    decls.sort_by_key(|d| {
-        canonical
-            .iter()
-            .position(|k| *k == d.key)
-            .unwrap_or(canonical.len())
-    });
-
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the plane list's declarations are gathered once for the dup-claim guard"
-    )]
-    let declared: Vec<&PlaneDeclaration> = decls.iter().map(|d| &d.declaration).collect();
-    if let Err(refusal) = check_owned_config_claims(&declared, CORE_OWNED_CONCRETE_SECTIONS) {
-        panic!("plane-owned-config dup-claim guard: {refusal}");
-    }
-    decls
-}
+pub use crate::off_path::plane_registry::build_dispatch;
+pub(crate) use crate::off_path::plane_registry::merged_boot_plane_decls;
 
 pub const CORE_OWNED_CONCRETE_SECTIONS: &[&str] = &[
     "providers",
@@ -166,40 +123,18 @@ pub const CORE_OWNED_CONCRETE_SECTIONS: &[&str] = &[
     "credentials",
 ];
 
-fn canonical_key_order(
-    installed: &[&'static PlaneDecl],
-    builtins: &[&'static PlaneDecl],
-) -> Vec<&'static str> {
-    // busbar:expect(bp::fresh_buffer, reason = "boot: the canonical plane order is computed once, at the plane list's fold")
-    let mut order: Vec<&'static str> = Vec::new();
-    for d in builtins.iter().chain(installed) {
-        if !order.contains(&d.key) {
-            order.push(d.key);
-        }
-    }
-    order
-}
-
 pub fn plane_decls() -> &'static [&'static PlaneDecl] {
-    use std::sync::atomic::Ordering;
-    let ptr = PLANES.load(Ordering::Acquire);
-    if !ptr.is_null() {
-        return planes_at(ptr);
+    if let Some(planes) = published_planes() {
+        return planes;
     }
     let installed = INSTALLED.get().copied().unwrap_or(&[]);
     let folded: &'static [&'static PlaneDecl] =
         merged_boot_plane_decls(installed, builtin_plane_decls()).leak();
-    let fresh: *mut &'static [&'static PlaneDecl] = Box::leak(Box::new(folded));
-    match PLANES.compare_exchange(
-        std::ptr::null_mut(),
-        fresh,
-        Ordering::AcqRel,
-        Ordering::Acquire,
-    ) {
-        Ok(_) => planes_at(fresh),
-
-        Err(set) => planes_at(set),
-    }
+    // A list another reader folded and published first wins; this fold stays leaked unread.
+    *PLANES
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get_or_insert(folded)
 }
 
 /// Set the process plane list to the fold of the installed declarations plus `registered` (ahead of
@@ -208,18 +143,13 @@ pub fn plane_decls() -> &'static [&'static PlaneDecl] {
 /// registration set through it.
 #[doc(hidden)]
 pub fn publish_planes(registered: &[&'static PlaneDecl]) {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a test binary's plane registrations are folded once per registration set"
-    )]
-    let mut all: Vec<&'static PlaneDecl> = INSTALLED.get().copied().unwrap_or(&[]).to_vec();
-    all.extend_from_slice(registered);
-    let folded: &'static [&'static PlaneDecl] =
-        merged_boot_plane_decls(&all, builtin_plane_decls()).leak();
-    PLANES.store(
-        Box::leak(Box::new(folded)),
-        std::sync::atomic::Ordering::Release,
+    let folded = crate::off_path::plane_registry::published_fold(
+        INSTALLED.get().copied().unwrap_or(&[]),
+        registered,
     );
+    *PLANES
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(folded);
 }
 
 /// Every scope kind, `pool` first, then each plane's in plane order, with repeats.
@@ -259,43 +189,6 @@ pub fn plane_decl_for_config_section(section: &str) -> Option<&'static PlaneDecl
         .iter()
         .copied()
         .find(|d| d.config_section == section)
-}
-
-pub fn build_dispatch(
-    decls: &[&'static PlaneDecl],
-    slots: &std::collections::BTreeMap<&'static str, &dyn std::any::Any>,
-    key_chain: bool,
-) -> Result<super::dispatch::PlaneDispatch, String> {
-    let mut dispatch = super::dispatch::PlaneDispatch::default();
-    for decl in decls {
-        let Some(slot) = slots.get(decl.key).copied() else {
-            continue;
-        };
-        let claims = (decl.claims)(slot);
-        let admission = (decl.admission)(slot);
-
-        let key_admitted = key_chain && crate::plane_driver::door::is_door(decl);
-        if !claims.is_empty() && admission.is_none() && !key_admitted {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a mounted plane with no admission is refused once, at the dispatch build"
-            )]
-            return Err(format!(
-                "plane `{}` mounts {} path(s) but bound no admission; a mounted plane must bind an \
-                 RFC 8707 audience (see PlaneDispatch::admission_for) or claim no path — serving a \
-                 claimed path with no audience admits a token minted for any other resource",
-                decl.key,
-                claims.len()
-            ));
-        }
-        for (path, wire) in claims {
-            dispatch = dispatch.mount_key(decl.key, &path, wire);
-        }
-        if let Some(admission) = admission {
-            dispatch = dispatch.admit_key(decl.key, admission);
-        }
-    }
-    Ok(dispatch)
 }
 
 pub struct BuildCtx<'a> {
@@ -376,52 +269,77 @@ macro_rules! plane_behaviour {
     };
 }
 
-#[cfg(feature = "openapi-schema")]
-pub(crate) type OpenapiSchemasHook = fn(
-    &PlaneDecl,
-    &mut schemars::SchemaGenerator,
-    &mut schemars::SchemaGenerator,
-    &mut serde_json::Map<String, serde_json::Value>,
-);
+pub(crate) use crate::off_path::plane_registry::{
+    ConfigValidateHook, OpenapiHook, OpenapiSchemasHook,
+};
 
-#[cfg(not(feature = "openapi-schema"))]
-pub(crate) type OpenapiSchemasHook = fn(&PlaneDecl, std::convert::Infallible);
+/// [`PlaneDecl::routes`]: the plane's neutral data routes, from its runtime slot.
+pub(crate) type RoutesHook = fn(&dyn std::any::Any) -> Vec<crate::plane_routes::PlaneRouteSpec>;
+
+/// [`PlaneDecl::admin_routes`]: the plane's neutral admin verbs, from its runtime slot.
+pub(crate) type AdminRoutesHook =
+    fn(&PlaneDecl, &dyn std::any::Any) -> Vec<crate::admin_verbs::AdminRouteSpec>;
+
+/// [`PlaneDecl::named_def_list`]: the plane's registrations, projected for the admin list.
+pub(crate) type NamedDefListHook =
+    fn(&PlaneDecl, &dyn crate::plane_driver::slots::PlaneSlots) -> Vec<crate::api::NamedDefView>;
+
+/// [`PlaneDecl::named_def_get`]: one registration by name, projected for the admin read.
+pub(crate) type NamedDefGetHook = fn(
+    &PlaneDecl,
+    &dyn crate::plane_driver::slots::PlaneSlots,
+    &str,
+) -> Option<crate::api::NamedDefView>;
+
+/// [`PlaneDecl::registry_contains`]: whether a name is a live registration.
+pub(crate) type RegistryContainsHook =
+    fn(&PlaneDecl, &dyn crate::plane_driver::slots::PlaneSlots, &str) -> bool;
+
+/// [`PlaneDecl::parse_section`]: the plane's registry section, parsed.
+pub(crate) type ParseSectionHook =
+    fn(
+        &PlaneDecl,
+        &busbar_contract::yaml::Value,
+    ) -> Result<Box<dyn crate::config::plane_sections::PlaneCfg>, String>;
+
+/// [`PlaneDecl::parse_endpoint`]: the plane's endpoint block, parsed.
+pub(crate) type ParseEndpointHook =
+    fn(
+        &PlaneDecl,
+        &busbar_contract::yaml::Value,
+    ) -> Result<Box<dyn crate::config::plane_sections::PlaneEndpointCfg>, String>;
+
+/// [`PlaneDecl::lower_endpoint`]: the plane's endpoint block, lowered to its runtime resource.
+pub(crate) type LowerEndpointHook =
+    fn(
+        &dyn crate::config::plane_sections::PlaneEndpointCfg,
+    ) -> Result<std::sync::Arc<dyn std::any::Any + Send + Sync>, String>;
+
+/// [`PlaneDecl::build_runtime`]: the plane's per-generation runtime object.
+pub(crate) type BuildRuntimeHook = fn(
+    &dyn std::any::Any,
+    Option<&dyn crate::plane_driver::slots::PlaneSlots>,
+) -> std::sync::Arc<dyn std::any::Any + Send + Sync>;
+
+/// [`PlaneDecl::viewer`]: the plane's runtime slot, viewed as routing tables.
+pub(crate) type ViewerHook = fn(
+    &(dyn std::any::Any + Send + Sync),
+) -> &dyn crate::plane_driver::route_tables::EngineTablesView;
+
+/// [`PlaneDecl::resolve_provider`]: one provider's catalog definition merged with its deployment.
+pub(crate) type ResolveProviderHook = fn(
+    &crate::config::providers::ProviderDef,
+    &crate::config::providers::ProviderDeploy,
+) -> crate::config::providers::ResolvedProvider;
 
 #[cfg(feature = "openapi-schema")]
 pub(crate) const fn stated_schemas_hook() -> Option<OpenapiSchemasHook> {
-    Some(stated_schemas)
+    Some(crate::off_path::plane_registry::stated_schemas)
 }
 
 #[cfg(not(feature = "openapi-schema"))]
 pub(crate) const fn stated_schemas_hook() -> Option<OpenapiSchemasHook> {
     None
-}
-
-#[cfg(feature = "openapi-schema")]
-fn stated_schemas(
-    decl: &PlaneDecl,
-    schema_gen: &mut schemars::SchemaGenerator,
-    _req_gen: &mut schemars::SchemaGenerator,
-    _paths: &mut serde_json::Map<String, serde_json::Value>,
-) {
-    #[expect(
-        clippy::disallowed_types,
-        reason = "config: a door's stated admin schemas are read once per OpenAPI document build"
-    )]
-    let schemas = crate::plane_driver::door::admin_openapi(decl)
-        .and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok())
-        .and_then(|mut blob| {
-            blob.get_mut(crate::plane_driver::door::OPENAPI_COMPONENTS)
-                .map(serde_json::Value::take)
-        })
-        .and_then(|mut components| components.get_mut("schemas").map(serde_json::Value::take))
-        .and_then(|schemas| match schemas {
-            serde_json::Value::Object(schemas) => Some(schemas),
-            _ => None,
-        });
-    if let Some(schemas) = schemas {
-        schema_gen.definitions_mut().extend(schemas);
-    }
 }
 
 impl std::ops::Deref for PlaneDecl {
@@ -493,8 +411,7 @@ plane_behaviour! {
     ///
     /// `None` for a plane that answers on no data path (the LLM plane, whose endpoints are the
     /// protocol catch-all, mounted in `base_data_router` directly rather than through this seam).
-    #[allow(clippy::type_complexity)]
-    routes: Option<fn(&dyn std::any::Any) -> Vec<crate::plane_routes::PlaneRouteSpec>>,
+    routes: Option<RoutesHook>,
 
     /// CONTRIBUTE THE PLANE'S ADMIN VERBS to the Admin API v1 router — the operator surface a plane
     /// adds ON TOP of the generic named-definition CRUD (MCP's `connect`/`changes`/`health`, A2A's
@@ -513,9 +430,7 @@ plane_behaviour! {
     /// CORE adapter (`busbar_core_admin::v1::json::mount_plane_admin_routes`) registers each spec at
     /// its VERBATIM `(method, path)`, so the auth middleware's `required_scope(method, path)` is
     /// byte-identical — the security invariant this seam preserves.
-    #[allow(clippy::type_complexity)]
-    admin_routes:
-        Option<fn(&PlaneDecl, &dyn std::any::Any) -> Vec<crate::admin_verbs::AdminRouteSpec>>,
+    admin_routes: Option<AdminRoutesHook>,
 
     /// CONTRIBUTE THE PLANE'S OpenAPI PATH FRAGMENT — a JSON object whose keys are the ABSOLUTE admin
     /// paths this plane's verbs answer on and whose values are the OpenAPI path items. Merged into the
@@ -524,7 +439,7 @@ plane_behaviour! {
     /// here, so the document can never silently omit a mounted verb.
     // Read only by the OpenAPI generator (feature `openapi-schema`) and the non-vacuity floor test; a
     // default `--no-default-features` build has neither, so the field is genuinely unread there.
-    openapi: Option<fn(&PlaneDecl) -> serde_json::Value>,
+    openapi: Option<OpenapiHook>,
 
     /// RESTORE THIS PLANE'S DURABLE STATE, in order, BEFORE a listener is bound — the plane half of
     /// `busbar_kernel::boot::hydrate_all`. The [`PlaneBootCtx`] reports admitted Store availability
@@ -557,9 +472,7 @@ plane_behaviour! {
     /// `None` for a plane whose section is not a 1.5.3 named-definition map (the LLM plane — `pools:`
     /// predates the generic path and keeps its own richer validation — and the residual `proto`
     /// plane, which owns no config section of its own).
-    #[allow(clippy::type_complexity)]
-    config_validate:
-        Option<fn(&PlaneDecl, name: &str, def: &serde_json::Value) -> Result<(), String>>,
+    config_validate: Option<ConfigValidateHook>,
 
     /// PROJECT THIS PLANE'S NAMED-DEFINITION REGISTRATIONS onto the shared read view — the plane half
     /// of the generic `GET /api/v1/admin/<section>` list, so `admin::v1::service` reads a plane's
@@ -570,24 +483,19 @@ plane_behaviour! {
     /// Handed the neutral [`crate::plane_driver::slots::PlaneSlots`] seam (NOT `&App`), so a plane crate reads
     /// its own per-generation runtime object off the snapshot without the callback naming a core type;
     /// an in-core plane (A2A) recovers its snapshot through the seam's `as_any` hatch.
-    #[allow(clippy::type_complexity)]
-    named_def_list:
-        Option<fn(&PlaneDecl, &dyn crate::plane_driver::slots::PlaneSlots) -> Vec<crate::api::NamedDefView>>,
+    named_def_list: Option<NamedDefListHook>,
 
     /// PROJECT ONE NAMED-DEFINITION REGISTRATION by name onto the shared read view — the single-entry
     /// twin of [`Self::named_def_list`], the plane half of `GET /api/v1/admin/<section>/{name}`.
     /// `None` (the fn returns `None`) when the plane has no entry by that name; the FIELD is `None` for
     /// a plane with no named-definition map. Handed the same neutral [`crate::plane_driver::slots::PlaneSlots`]
     /// seam as [`Self::named_def_list`].
-    #[allow(clippy::type_complexity)]
-    named_def_get:
-        Option<fn(&PlaneDecl, &dyn crate::plane_driver::slots::PlaneSlots, &str) -> Option<crate::api::NamedDefView>>,
+    named_def_get: Option<NamedDefGetHook>,
 
     /// IS `name` A LIVE REGISTRATION on this plane's effective snapshot — the read-side membership
     /// check the admin write path consults so it names no plane registry type. `None` for a plane with
     /// no named-definition map.
-    #[allow(clippy::type_complexity)]
-    registry_contains: Option<fn(&PlaneDecl, &dyn crate::plane_driver::slots::PlaneSlots, &str) -> bool>,
+    registry_contains: Option<RegistryContainsHook>,
 
     /// RE-RESOLVE THIS PLANE'S PER-REGISTRATION HOOK GATES against the next snapshot — the plane half
     /// of the config-swap gate rebuild. Reads the plane's own registry off the `&mut App` and writes
@@ -627,29 +535,19 @@ plane_behaviour! {
     /// own typed config, boxed as the neutral [`crate::config::plane_sections::PlaneCfg`] — the seam
     /// `DeployCfg`'s `tools:`/`agents:` field deserializes through, so core names no plane config type.
     /// `None` for a plane with no registry section (the LLM / `proto` planes).
-    #[allow(clippy::type_complexity)]
-    parse_section:
-        Option<fn(&PlaneDecl, &busbar_contract::yaml::Value) -> Result<Box<dyn crate::config::plane_sections::PlaneCfg>, String>>,
+    parse_section: Option<ParseSectionHook>,
 
     /// PARSE THIS PLANE'S TOP-LEVEL ENDPOINT block (the MCP plane's `mcp:` door) from a positionless
     /// `busbar_contract::yaml::Value`, boxed as the neutral [`crate::config::plane_sections::PlaneEndpointCfg`] — the seam
     /// `DeployCfg`'s `mcp:` field deserializes through. `None` for a plane with no endpoint block
     /// (every plane but MCP).
-    #[allow(clippy::type_complexity)]
-    parse_endpoint: Option<
-        fn(&PlaneDecl, &busbar_contract::yaml::Value) -> Result<Box<dyn crate::config::plane_sections::PlaneEndpointCfg>, String>,
-    >,
+    parse_endpoint: Option<ParseEndpointHook>,
 
     /// LOWER THIS PLANE'S ENDPOINT block into its validated runtime resource, type-erased as
     /// `Arc<dyn Any>` — the seam `config::resolve` derives `RootCfg::mcp` through, so core derives the
     /// validated resource without naming the plane's resource type. An `Err` is collected into the
     /// resolve error list verbatim. `None` for a plane with no endpoint block.
-    #[allow(clippy::type_complexity)]
-    lower_endpoint: Option<
-        fn(
-            &dyn crate::config::plane_sections::PlaneEndpointCfg,
-        ) -> Result<std::sync::Arc<dyn std::any::Any + Send + Sync>, String>,
-    >,
+    lower_endpoint: Option<LowerEndpointHook>,
 
     /// BUILD THIS PLANE'S PER-GENERATION RUNTIME OBJECT from its type-erased registry section — the
     /// seam `appbuild` composes the MCP runtime slot (`plane_slots[runtime_slot_key(<mcp decl key>)]`) through,
@@ -658,13 +556,7 @@ plane_behaviour! {
     /// carry-over, read through the neutral [`crate::plane_driver::slots::PlaneSlots`] seam (NOT `&App`).
     /// `None` for a plane whose runtime is not carried through this seam (A2A's lives in `plane_slots`
     /// under its decl key; the LLM plane's is the many `App` fields it already reads).
-    #[allow(clippy::type_complexity)]
-    build_runtime: Option<
-        fn(
-            &dyn std::any::Any,
-            prior: Option<&dyn crate::plane_driver::slots::PlaneSlots>,
-        ) -> std::sync::Arc<dyn std::any::Any + Send + Sync>,
-    >,
+    build_runtime: Option<BuildRuntimeHook>,
 
     /// PROJECT THIS PLANE'S PER-GENERATION RUNTIME SLOT into the NEUTRAL [`crate::plane_driver::route_tables::EngineTablesView`]
     /// read seam — the cold/scrape-path viewer the core-resident `/metrics`, `/v1/models` and telemetry
@@ -677,9 +569,7 @@ plane_behaviour! {
     /// [`crate::plane_driver::route_tables::ConfigTables`] when the plane contributed no runtime slot (the zero-plane binary).
     /// `None` for a plane whose runtime exposes no routing tables (MCP/A2A: they contribute no
     /// `EngineTablesView`); the LLM plane sets it once its `NativeRuntime` lives in the retired engine crate.
-    #[allow(clippy::type_complexity)]
-    viewer:
-        Option<fn(&(dyn std::any::Any + Send + Sync)) -> &dyn crate::plane_driver::route_tables::EngineTablesView>,
+    viewer: Option<ViewerHook>,
 
     /// PRUNE THIS PLANE'S VERIFY-ON-CALL COALESCING STATE to the subjects the freshly-built generation
     /// still fronts — the seam `appbuild` runs after building the `App`, so the carried per-subject
@@ -713,13 +603,7 @@ plane_behaviour! {
     /// falls back to its OWN byte-identical copy of this same merge, so a build compiled without the
     /// LLM plane keeps merging providers exactly as every prior release has, rather than silently
     /// dropping configured providers out of `RootCfg::providers`.
-    #[allow(clippy::type_complexity)]
-    resolve_provider: Option<
-        fn(
-            &crate::config::providers::ProviderDef,
-            &crate::config::providers::ProviderDeploy,
-        ) -> crate::config::providers::ResolvedProvider,
-    >,
+    resolve_provider: Option<ResolveProviderHook>,
 }
 
 #[cfg(test)]
