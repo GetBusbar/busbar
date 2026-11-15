@@ -864,6 +864,10 @@ pub enum RejectKind {
     RetiredKey,
     /// An authenticated artifact or signer was revoked; no trust opt-in can admit it.
     Revoked,
+    /// Not busbar's own verified release, on a crypto backend that admits no external plugin
+    /// (`busbar_crypto::EXTERNAL_PLUGINS == false`, a FIPS build). No trust opt-in or allowlisted
+    /// publisher admits it (`backend_admission`).
+    ExternalCrypto,
 }
 
 impl RejectKind {
@@ -879,6 +883,7 @@ impl RejectKind {
             Self::Superseded => "superseded",
             Self::RetiredKey => "retired_key",
             Self::Revoked => "revoked",
+            Self::ExternalCrypto => "external_crypto",
         }
     }
 }
@@ -1312,6 +1317,84 @@ pub fn validate_abi(
     }
 }
 
+/// Whether the linked crypto backend admits a dropped-in plugin that is not busbar's own release:
+/// `busbar_crypto::EXTERNAL_PLUGINS`, the backend's required compile-time answer (IF §5.2 round
+/// 13; `false` in a FIPS build, CRYPTO-SEAM §9 "no external"). It is the whole gate: no operator
+/// switch, no config key, and no field a plugin states (a stamp's or manifest's own crypto claim
+/// is never read).
+fn backend_admits_external() -> bool {
+    busbar_contract::crypto::EXTERNAL_PLUGINS && !fips_backend_linked()
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn fips_backend_linked() -> bool {
+    FIPS_BACKEND.with(std::cell::Cell::get)
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
+const fn fips_backend_linked() -> bool {
+    false
+}
+
+/// FIPS ADMISSION. On a backend that admits no external plugin, only a dropped-in plugin whose
+/// manifest verified against busbar's embedded release roots (`Verdict::Trusted { first_party:
+/// true }`; never the self-declared `publisher` string) passes. Everything else that phase 2
+/// would load, through an allowlisted publisher or an `allow_unsigned`/`allow_third_party`
+/// opt-in, is refused [`RejectKind::ExternalCrypto`], and so is an unsigned, tampered or
+/// unknown-publisher reject, so its remedy never names an opt-in that cannot help. The hard
+/// rejects (revoked, retired, below a floor) keep their own code. A compiled-in plugin never
+/// reaches here: it is built in the same build, against the same backend.
+///
+/// GAP (#260, DES-1): busbar's release seal does not yet attest that the crypto-graph and
+/// fips-verify gates ran for the artefact; until it does, the first-party signature is the whole
+/// proof.
+fn backend_admission(
+    manifest: &Manifest,
+    judged: Result<Verdict, Rejected>,
+) -> Result<Verdict, Rejected> {
+    let stands = match &judged {
+        Ok(verdict) => matches!(
+            verdict,
+            Verdict::Trusted {
+                first_party: true,
+                ..
+            }
+        ),
+        Err(rejected) => !matches!(
+            rejected.kind,
+            RejectKind::Unsigned | RejectKind::Tampered | RejectKind::UnknownPublisher
+        ),
+    };
+    if stands || backend_admits_external() {
+        return judged;
+    }
+    let (how, trusted_keys) = match judged {
+        Ok(Verdict::Trusted { publisher, .. }) => (
+            format!("it is signed by the allowlisted third-party publisher '{publisher}'"),
+            Vec::new(),
+        ),
+        Ok(Verdict::Allowed { reason, .. }) => (
+            format!("it is admitted only by a plugins.trust opt-in ({reason})"),
+            Vec::new(),
+        ),
+        Err(rejected) => (rejected.reason, rejected.trusted_keys),
+    };
+    Err(Rejected {
+        trusted_keys,
+        ..Rejected::new(
+            RejectKind::ExternalCrypto,
+            format!(
+                "plugin '{}' version {} is not busbar's own verified release, and this binary's \
+                 crypto backend admits no external plugin (EXTERNAL_PLUGINS is false, as in a \
+                 FIPS build): {how}. No plugins.trust setting (publishers, allow_unsigned, \
+                 allow_third_party) admits it. Install busbar's first-party release of the \
+                 plugin, or run a build whose crypto backend admits external plugins.",
+                manifest.name, manifest.version
+            ),
+        )
+    })
+}
+
 #[cfg(any(test, feature = "test-support"))]
 std::thread_local! {
     static FIPS_BACKEND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -1390,6 +1473,9 @@ enum Untrusted {
 ///   * Unsigned/tampered -> [`Verdict::Allowed`] only under `allow_unsigned`; else [`Rejected`].
 ///   * Signed by an unknown publisher -> [`Verdict::Allowed`] only under `allow_third_party`; else
 ///     [`Rejected`].
+///   * On a crypto backend that admits no external plugin (`EXTERNAL_PLUGINS == false`, a FIPS
+///     build), only first-party TRUSTED passes; every other outcome above that would load is
+///     [`RejectKind::ExternalCrypto`] (`backend_admission`).
 ///
 /// Anti-downgrade floors (`min_versions`, keyed by manifest `name`) are checked BEFORE any opt-in
 /// relaxation and require a TRUSTED manifest at/above the floor - so a stripped-signature or
@@ -1754,7 +1840,7 @@ fn evaluate_against_with_evidence(
             ))
         }
     };
-    verdict.map(|verdict| {
+    backend_admission(manifest, verdict).map(|verdict| {
         let version = matches!(
             verdict,
             Verdict::Trusted {

@@ -1442,9 +1442,9 @@ During a reload, fetching a pinned plugin artifact missed (the source did not re
 - **Since:** 1.6.0
 - **Slug:** `plugin-skipped-trust-policy`
 
-A plugin artifact is present in the plugins directory but was NOT loaded because the configured trust policy skipped it (unsigned, an untrusted publisher, or a failed signature/floor check). busbar fails closed: an untrusted plugin is left inert rather than loaded. Emitted once per skipped plugin at boot.
+A plugin artifact is present in the plugins directory but was NOT loaded because the configured trust policy skipped it (unsigned, an untrusted publisher, or a failed signature/floor check), or because this build's crypto backend admits no external plugin (a FIPS build loads only busbar's own verified release, whatever `plugins.trust` allows; reason code `external_crypto`). busbar fails closed: an untrusted plugin is left inert rather than loaded. Emitted once per skipped plugin at boot.
 
-**What to do:** If the plugin should load, sign it with a trusted publisher key or add that publisher to `plugins.trust` (the log names the plugin, file, and reason). If the skip is intended, remove the artifact from the directory to silence the notice.
+**What to do:** If the plugin should load, sign it with a trusted publisher key or add that publisher to `plugins.trust` (the log names the plugin, file, and reason). Under `external_crypto` no `plugins.trust` setting helps: install busbar's first-party release of the plugin. If the skip is intended, remove the artifact from the directory to silence the notice.
 
 <a id="plugin-loaded-unverified"></a>
 ### BUSBAR-6003 — Plugin loaded UNVERIFIED (permitted by an explicit plugins.trust opt-in)
