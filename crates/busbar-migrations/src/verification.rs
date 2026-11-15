@@ -82,10 +82,7 @@ impl Verifier for ArchiveVerifier {
         target: &Identity,
         authority: WriterAuthority,
     ) -> Result<(), Error> {
-        if target.dataset != self.backend.info().dataset.0
-            || target.format != CORE_FORMAT
-            || target.format.physical != self.backend.info().physical_version
-        {
+        if !target.realized_by(&self.backend.info()) {
             return Err(Error::IdentityMismatch);
         }
         super::activation::require_offline(self.backend.as_ref(), authority).await
