@@ -246,6 +246,28 @@ impl Inventory {
             {
                 return Err(failure());
             }
+            if publication.absent {
+                // The intent binds the absence itself: there is no file to retain or replace.
+                match fs.inspect_document(
+                    &publication.path,
+                    &publication.original,
+                    &publication.converted,
+                ) {
+                    Ok(DocumentInspection::Missing) | Err(_) => {}
+                    Ok(_) => {
+                        return Err(
+                            "configuration changed before its migration intent was confirmed"
+                                .into(),
+                        );
+                    }
+                }
+                captured.push(Document {
+                    publication,
+                    metadata: None,
+                    read_only: false,
+                });
+                continue;
+            }
             let (metadata, read_only) = match fs.inspect_document(
                 &publication.path,
                 &publication.original,
@@ -299,6 +321,16 @@ impl Inventory {
             {
                 return Err(failure());
             }
+            // An absent default is its empty form on both sides, with no file metadata to keep.
+            if p.absent
+                && (document.metadata.is_some()
+                    || document.read_only
+                    || p.original.as_slice()
+                        != busbar_kernel::config::providers::ABSENT_CATALOG.as_bytes()
+                    || p.converted.as_slice() != p.original.as_slice())
+            {
+                return Err(failure());
+            }
         }
         for secret in &self.secrets {
             if !self
@@ -330,11 +362,13 @@ impl Inventory {
                 &mut out,
                 &[u8::from(p.locked), u8::from(document.read_only)],
             )?;
+            // 0: no retained metadata; 1: the original file's metadata; 2: the file is absent.
             match &document.metadata {
                 Some(bytes) => {
                     raw(&mut out, &[1])?;
                     put(&mut out, bytes)?;
                 }
+                None if p.absent => raw(&mut out, &[2])?,
                 None => raw(&mut out, &[0])?,
             };
             put(&mut out, &p.original)?;
@@ -417,9 +451,10 @@ impl Inventory {
                 1 => true,
                 _ => return Err(failure()),
             };
-            let metadata = match r.take(1)?[0] {
-                0 => None,
-                1 => Some(SecureVec::from(r.field()?)),
+            let (metadata, absent) = match r.take(1)?[0] {
+                0 => (None, false),
+                1 => (Some(SecureVec::from(r.field()?)), false),
+                2 => (None, true),
                 _ => return Err(failure()),
             };
             let original = SecureVec::from(r.field()?);
@@ -433,6 +468,7 @@ impl Inventory {
                     target_digest,
                     transform_id,
                     locked,
+                    absent,
                 },
                 metadata,
                 read_only,
@@ -491,8 +527,9 @@ impl Inventory {
                 .find(|held| held.publication.path == document.path)
                 .ok_or_else(failure)?;
             let original = document.original.as_slice();
-            if (original != held.publication.original.as_slice()
-                && original != held.publication.converted.as_slice())
+            if document.absent != held.publication.absent
+                || (original != held.publication.original.as_slice()
+                    && original != held.publication.converted.as_slice())
                 || document.converted.as_slice() != held.publication.converted.as_slice()
             {
                 return Err("configuration was edited outside its retained startup upgrade".into());
@@ -671,6 +708,17 @@ impl Inventory {
             let observed = fs.inspect_document(&p.path, &p.original, &p.converted);
             let missing = matches!(observed, Ok(DocumentInspection::Missing));
             let outcome = match observed {
+                // An absent default is already in its target form; it is never created.
+                Ok(DocumentInspection::Missing) | Err(_) if p.absent => {
+                    documents.mark_published(p)?;
+                    FileOutcome::AlreadyConverted
+                }
+                Ok(_) if p.absent => {
+                    return Err(
+                        "configuration changed after target validation; serving remains blocked"
+                            .into(),
+                    );
+                }
                 Ok(DocumentInspection::Changed) => {
                     return Err(
                         "configuration changed after target validation; serving remains blocked"
@@ -914,6 +962,80 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.path);
         }
+    }
+    /// First boot reads its documents through the one loader, as `main` does.
+    fn load_through_custody(config: &Path) -> Result<Arc<Documents>, String> {
+        let documents = Arc::new(Documents::default());
+        busbar_kernel::appbuild::load_config_from_disk_judged(
+            config,
+            None,
+            false,
+            busbar_kernel::config::EnvSubst::Strict,
+            &super::super::documents::BootstrapRules(documents.clone()),
+        )?;
+        Ok(documents)
+    }
+    async fn commit(
+        documents: &Documents,
+        checkpoint: &CheckpointMemory,
+    ) -> Result<Report, String> {
+        let (inventory, intent) = Inventory::prepare(
+            documents,
+            &crate::root::admission::DURABLE,
+            checkpoint,
+            [8; 16],
+        )
+        .await?;
+        let proof = inventory.validated(intent, checkpoint).await?;
+        inventory
+            .publish(
+                proof,
+                checkpoint,
+                &crate::root::admission::DURABLE,
+                documents,
+            )
+            .await
+    }
+    /// The loader reads an absent default providers.yaml as the empty catalog, so `--validate`
+    /// passes. First boot plans, fingerprints and commits the same absence: it never refuses the
+    /// absent file as a changed document (BUSBAR-9007) and never creates it.
+    #[tokio::test]
+    async fn first_boot_without_a_default_providers_file_commits_and_restarts() {
+        let fixture = Fixture::new();
+        let providers = fixture.publications[1].0.clone();
+        std::fs::remove_file(&providers).unwrap();
+        let config = fixture.publications[0].0.clone();
+        let checkpoint = CheckpointMemory {
+            stored: Mutex::new(None),
+            fault: AtomicU8::new(0),
+        };
+        let documents = load_through_custody(&config).expect("the loader reads an empty catalog");
+        let report = commit(&documents, &checkpoint)
+            .await
+            .expect("first boot without providers.yaml commits its migration intent");
+        assert!(report.complete);
+        assert!(!providers.exists(), "the absent catalog is never written");
+        assert_eq!(
+            std::fs::read(&config).unwrap(),
+            b"store: {module: custom}\n"
+        );
+
+        // A restart recovers the completed checkpoint and the same absence.
+        let completed = checkpoint.stored.lock().unwrap().clone();
+        let restarted = load_through_custody(&config).unwrap();
+        let report = commit(&restarted, &checkpoint)
+            .await
+            .expect("a restart recognizes the retained absence");
+        assert!(report.complete);
+        assert!(!providers.exists());
+        assert_eq!(*checkpoint.stored.lock().unwrap(), completed);
+
+        // A providers.yaml that appears under a retained checkpoint is a changed source.
+        std::fs::write(&providers, b"{}\n").unwrap();
+        let appeared = load_through_custody(&config).unwrap();
+        assert!(commit(&appeared, &checkpoint).await.is_err());
+        assert_eq!(*checkpoint.stored.lock().unwrap(), completed);
+        assert_eq!(std::fs::read(&providers).unwrap(), b"{}\n");
     }
     #[tokio::test]
     async fn a_different_checkpoint_readback_never_grants_publication_authority() {
