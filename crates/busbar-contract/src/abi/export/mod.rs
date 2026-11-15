@@ -63,6 +63,12 @@ use super::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead};
 use serde::{Deserialize, Serialize};
 
 pub mod validate;
+
+/// Compatibility path only: export plugins pinned to a pre-1.6.0 contract name the stream vocabulary
+/// here. The one definition is [`crate::export_stream::ExportStream`]; this line goes when the export
+/// plugins repin onto the MIN-3 interface (W1-P-EXPORT-*).
+pub use crate::export_stream::ExportStream;
+
 use super::mechanism::door::KindTailHead;
 use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 
