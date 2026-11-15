@@ -227,7 +227,7 @@ pub struct InfoView {
     /// process-local counter) resets on restart, so a consumer that sees `started_at` change knows
     /// to read a counter reset as "new epoch", never as "reverted".
     pub started_at: Option<u64>,
-    /// Random 128-bit process generation, shared with `GET /telemetry` and available even when
+    /// Random 128-bit process generation, shared with the `/metrics` build_info series and available even when
     /// metrics are disabled. Stable across configuration reloads; a new process generates a new
     /// nonce. Null when OS randomness failed; clients must not fabricate a restart identity.
     #[cfg_attr(

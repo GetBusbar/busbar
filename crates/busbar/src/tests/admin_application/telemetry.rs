@@ -102,122 +102,6 @@ async fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
 }
 
 #[tokio::test]
-async fn telemetry_is_an_admin_read_protected_by_the_operator_door() {
-    if isolated() {
-        return;
-    }
-    assert_eq!(
-        busbar_core_admin::required_scope(busbar_core_admin::KernelVerb::GetTelemetry),
-        busbar_core_admin::VerbScope::ReadOnly
-    );
-    let (app, _scratch) = application().await;
-    let router = busbar_core_admin::build_router(app);
-    use tower::ServiceExt as _;
-    for bearer in [None, Some("wrong")] {
-        let request = axum::http::Request::builder().uri("/api/v1/admin/telemetry");
-        let request = match bearer {
-            Some(token) => request.header("authorization", format!("Bearer {token}")),
-            None => request,
-        };
-        let response = router
-            .clone()
-            .oneshot(request.body(axum::body::Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(response.status(), 401);
-        let body = axum::body::to_bytes(response.into_body(), 4096)
-            .await
-            .unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(body["error"]["code"], "unauthorized");
-    }
-    let response = router
-        .oneshot(
-            axum::http::Request::builder()
-                .uri("/api/v1/admin/telemetry")
-                .header("authorization", format!("Bearer {TOKEN}"))
-                .body(axum::body::Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        response.status(),
-        503,
-        "authorized request reaches the unavailable source"
-    );
-}
-
-#[tokio::test]
-async fn telemetry_http_route_reads_the_bounded_source_after_admin_authorization() {
-    if isolated() {
-        return;
-    }
-    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(60));
-    let (app, _scratch) = application().await;
-    let router = busbar_core_admin::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .unwrap();
-    let url = format!("http://{addr}/api/v1/admin/telemetry");
-    for bearer in [None, Some("wrong")] {
-        let request = client.get(&url);
-        let request = match bearer {
-            Some(token) => request.bearer_auth(token),
-            None => request,
-        };
-        let answer = request.send().await.unwrap();
-        assert_eq!(answer.status(), 401);
-        assert_eq!(
-            answer.json::<serde_json::Value>().await.unwrap()["error"]["code"],
-            "unauthorized"
-        );
-    }
-    let mut nonce = None;
-    let mut uptime = 0;
-    for _ in 0..2 {
-        let answer = client.get(&url).bearer_auth(TOKEN).send().await.unwrap();
-        assert_eq!(answer.status(), 200);
-        assert_eq!(answer.headers()["cache-control"], "no-store");
-        let bytes = answer.bytes().await.unwrap();
-        assert!(bytes.len() <= 65_536);
-        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(body["identities"].as_array().unwrap().len() <= 32);
-        let observed_nonce = body["process_boot_nonce"].as_str().unwrap();
-        assert_eq!(observed_nonce.len(), 32);
-        assert!(observed_nonce
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
-        if let Some(prior) = &nonce {
-            assert_eq!(prior, observed_nonce);
-        }
-        nonce = Some(observed_nonce.to_string());
-        let next_uptime = body["uptime_since_start_ms"]
-            .as_str()
-            .unwrap()
-            .parse::<u64>()
-            .unwrap();
-        assert!(next_uptime >= uptime);
-        uptime = next_uptime;
-        assert!(
-            body["captured_at_unix_ms"]
-                .as_str()
-                .unwrap()
-                .parse::<u64>()
-                .unwrap()
-                > 0
-        );
-        assert_eq!(body["upper_bounds_ms"].as_array().unwrap().len(), 16);
-    }
-    server.abort();
-    let _ = server.await;
-}
-
-#[tokio::test]
 async fn info_process_generation_is_available_without_metrics_and_changes_on_restart() {
     const CHILD: &str = "BUSBAR_TEST_INFO_PROCESS_GENERATION";
     const MARKER: &str = "BUSBAR_INFO_PROCESS_NONCE=";
@@ -289,17 +173,6 @@ async fn info_process_generation_is_available_without_metrics_and_changes_on_res
         "info must not enable metrics"
     );
     assert!(busbar_kernel::snapshot::request_snapshot(32).is_none());
-    let telemetry_url = format!("http://{addr}/api/v1/admin/telemetry");
-    assert_eq!(
-        client
-            .get(&telemetry_url)
-            .bearer_auth(TOKEN)
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        503
-    );
     let mut next = (*handle.load()).clone();
     next.config_version += 1;
     handle.swap(Arc::new(next)).await;
@@ -319,15 +192,6 @@ async fn info_process_generation_is_available_without_metrics_and_changes_on_res
     );
     assert!(!busbar_kernel::snapshot::recorder_installed());
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(60));
-    let telemetry = client
-        .get(&telemetry_url)
-        .bearer_auth(TOKEN)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(telemetry.status(), 200);
-    let telemetry: serde_json::Value = telemetry.json().await.unwrap();
-    assert_eq!(telemetry["process_boot_nonce"], nonce);
     let again: serde_json::Value = client
         .get(&info_url)
         .bearer_auth(TOKEN)
