@@ -101,3 +101,106 @@ fn a_forged_door_is_refused_at_load() {
 fn a_missing_cdylib_panics_naming_where_it_looked() {
     let _ = Image::<Transport>::cdylib("no_such_fixture", transport_door::door);
 }
+
+#[test]
+fn a_mutant_stating_another_version_is_refused_against_its_twin() {
+    let wrong = host().open(
+        Image::<Transport>::mutant_as(
+            Mutant::of(transport_door::door).version("0.0.0-restated"),
+            transport_door::door,
+        ),
+        "mutant-version",
+        b"{}",
+    );
+    assert!(
+        matches!(wrong, Err(Refused::Load(LoadError::StatementMismatch))),
+        "{:?}",
+        wrong.err()
+    );
+}
+
+#[test]
+fn a_transport_stating_another_frame_piece_size_is_refused() {
+    let host_size = busbar_contract::abi::transport::FRAME_PIECE_SIZE;
+    let wrong = host().open(
+        Image::<Transport>::mutant(
+            Mutant::of(transport_door::door).frame_piece_size(host_size - 8),
+        ),
+        "mutant-frame-piece",
+        b"{}",
+    );
+    assert!(
+        matches!(
+            wrong,
+            Err(Refused::Load(LoadError::FramePieceSize { stated, host, .. }))
+                if stated == host_size - 8 && host == host_size
+        ),
+        "{:?}",
+        wrong.err()
+    );
+}
+
+#[test]
+#[should_panic(expected = "this row edits a Plane tail only")]
+fn a_tail_row_refuses_another_kind_s_door() {
+    let _ = Mutant::of(transport_door::door).answer_layout(1);
+}
+
+#[test]
+fn a_failing_ready_refuses_the_open_once_with_its_text() {
+    let before = Mutant::failed_readies();
+    let refused = host().open(
+        Image::<Transport>::mutant(
+            Mutant::of(transport_door::door).failing_ready("fixture: discovery refused"),
+        ),
+        "mutant-ready",
+        b"{}",
+    );
+    assert!(
+        matches!(
+            &refused,
+            Err(Refused::Ready(text))
+                if text == "plugin 'host-fixture-transport' ready failed: fixture: discovery refused"
+        ),
+        "{:?}",
+        refused.err()
+    );
+    assert_eq!(Mutant::failed_readies() - before, 1, "READY is not retried");
+}
+
+#[test]
+fn scripted_services_answer_what_the_test_says_and_name_the_rest() {
+    use busbar_contract::abi::mechanism::KindCode;
+    use busbar_contract::services::HostServices;
+    use busbar_plugin_test::{Caller, Reading, Services, Stored, UNSERVED};
+
+    let svc = std::sync::Arc::new(
+        Services::new()
+            .on_now(|| Reading {
+                wall_ns: 5,
+                mono_ns: 6,
+            })
+            .on_sign(|_, data| Stored::ready(data.len() as u64)),
+    );
+    let caller = Caller::for_test("services-fixture".into(), KindCode::Plane);
+    assert_eq!(
+        HostServices::now(&*svc),
+        Reading {
+            wall_ns: 5,
+            mono_ns: 6
+        }
+    );
+    assert_eq!(HostServices::sign(&*svc, &caller, b"four").value, 4);
+    let unserved = HostServices::random_fill(&*svc, 16);
+    assert_eq!(
+        (unserved.outcome, unserved.value, unserved.error),
+        (
+            Outcome::Refused,
+            busbar_contract::abi::host::service::REFUSED_UNSERVED,
+            UNSERVED
+        )
+    );
+    assert_eq!(svc.unscripted(), ["random_fill"]);
+    // The double is what a host binds.
+    let _ = host().services(svc);
+}

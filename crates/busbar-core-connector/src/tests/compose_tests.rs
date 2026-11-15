@@ -185,7 +185,7 @@ fn a_silent_far_end_is_held_to_the_framers_deadline() {
             .await
             .expect("the deadline fires, the connection does not hang");
         assert_eq!(r, Err(Failure::Timeout));
-        let took = start.elapsed();
+        let took = crate::support::since(start);
         assert!(
             took >= Duration::from_millis(300),
             "not before the deadline: {took:?}"

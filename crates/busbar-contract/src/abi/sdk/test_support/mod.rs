@@ -12,6 +12,7 @@ mod sealed {
 
 #[cfg(any(test, feature = "test-seal"))]
 pub mod chip;
+pub mod cpu;
 pub mod loans;
 pub mod metrics;
 pub mod mutant;
