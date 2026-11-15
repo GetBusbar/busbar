@@ -253,7 +253,7 @@ impl Mount {
     }
 }
 
-/// The route table: a [`Subject`] serving it on every image's listener.
+/// The route table, served on every image's listener: [`Subject::Routes`].
 #[derive(Clone)]
 pub struct Routes {
     table: Vec<Mount>,
@@ -311,8 +311,20 @@ impl Routes {
     }
 }
 
-impl Subject for Routes {
-    fn bind(&mut self, image: &'static str, at: &Binding<'_>) -> Result<Listening, Refused> {
+impl From<Routes> for Subject {
+    fn from(routes: Routes) -> Self {
+        Self::Routes(routes)
+    }
+}
+
+impl Routes {
+    /// Binds `image`'s listener at the next address `at` hands out and serves this table on it, h1
+    /// and h2c. A datagram or stream target serving beside the carrier calls this for its HTTP
+    /// listener and adds its own sockets to the [`Listening`] it returns.
+    ///
+    /// # Errors
+    /// When the listener cannot bind.
+    pub fn bind(&self, image: &'static str, at: &Binding<'_>) -> Result<Listening, Refused> {
         let shared = Arc::new(Shared {
             image,
             routes: self.clone(),
@@ -327,7 +339,11 @@ impl Subject for Routes {
         })
     }
 
-    fn flag(&mut self, flag: &str, value: &str) -> Result<(), Refused> {
+    /// The carrier's one flag, `--max-body BYTES`: the largest request body a route takes.
+    ///
+    /// # Errors
+    /// When `flag` is not `--max-body`, or its value is not a byte count.
+    pub fn flag(&mut self, flag: &str, value: &str) -> Result<(), Refused> {
         if flag != "--max-body" {
             return Err(Refused::Args(format!("unknown flag {flag} {value}")));
         }
