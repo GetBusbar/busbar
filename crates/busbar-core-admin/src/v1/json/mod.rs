@@ -680,5 +680,9 @@ mod envelope_reasons;
 #[path = "tests/operator_file_policy_tests.rs"]
 mod operator_file_policy_tests;
 
+#[cfg(test)]
+#[path = "tests/hook_attachment_tests.rs"]
+mod hook_attachment_tests;
+
 #[cfg(feature = "test-support")]
 pub use handlers::credential_flush_response_for_test;
