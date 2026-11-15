@@ -36,12 +36,7 @@ fn a_template_slot_is_kept_as_written_and_the_parse_reads_it_interpolated() {
         Ok(())
     };
     let facts = with_env();
-    let planned = plan(&Inputs {
-        path: &path,
-        facts: &facts,
-        check: &check,
-    })
-    .expect("planned");
+    let planned = plan(&Inputs::new(&path, &facts, &check)).expect("planned");
     assert!(
         seen.borrow().contains("admin_listen: '127.0.0.1:8081'"),
         "{}",
@@ -64,12 +59,7 @@ fn a_value_computed_from_a_template_slot_is_refused() {
         open_units: vec!["cache_write_30m".to_owned()],
         ..with_env()
     };
-    let refused = plan(&Inputs {
-        path: &path,
-        facts: &facts,
-        check: &accept,
-    })
-    .unwrap_err();
+    let refused = plan(&Inputs::new(&path, &facts, &accept)).unwrap_err();
     assert_eq!(refused.word(), "CONFIG");
     let text = refused.to_string();
     assert!(
@@ -88,12 +78,7 @@ fn a_value_computed_from_a_template_slot_is_refused() {
 fn an_unset_variable_refuses() {
     let scratch = Scratch::new();
     let path = scratch.deployment("listen: '${NOT_SET}'\nstore: {module: sqlite}\n");
-    let refused = plan(&Inputs {
-        path: &path,
-        facts: &with_env(),
-        check: &accept,
-    })
-    .unwrap_err();
+    let refused = plan(&Inputs::new(&path, &with_env(), &accept)).unwrap_err();
     assert_eq!(refused.word(), "CONFIG");
     assert!(refused.to_string().contains("NOT_SET"), "{refused}");
     assert_eq!(scratch.names(), ["config.yaml", "providers.yaml"]);

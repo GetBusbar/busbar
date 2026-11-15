@@ -158,12 +158,7 @@ fn busbar_providers_selects_the_catalog_and_is_captured() {
 fn a_missing_catalog_is_refused_as_1_5_5_refused_it() {
     let scratch = Scratch::new();
     let path = scratch.config("listen: x\nstore: {module: sqlite}\n");
-    let refused = plan(&Inputs {
-        path: &path,
-        facts: &facts(),
-        check: &crate::scratch::accept,
-    })
-    .unwrap_err();
+    let refused = plan(&Inputs::new(&path, &facts(), &crate::scratch::accept)).unwrap_err();
     assert_eq!(refused.word(), "CONFIG");
     let text = refused.to_string();
     assert!(

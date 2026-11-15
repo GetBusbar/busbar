@@ -82,12 +82,7 @@ fn a_1_4_and_a_1_5_0_config_are_unsupported() {
         let never = |_: &str, _: Option<&str>| -> Result<(), String> {
             panic!("1a refuses before the parse")
         };
-        let refused = plan(&Inputs {
-            path: &path,
-            facts: &facts(),
-            check: &never,
-        })
-        .unwrap_err();
+        let refused = plan(&Inputs::new(&path, &facts(), &never)).unwrap_err();
         assert_eq!(refused.word(), "UNSUPPORTED", "{refused}");
         let text = refused.to_string();
         let listed = format!("\n  - {}\n", markers.join("\n  - "));

@@ -20,6 +20,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -29,10 +30,14 @@ mod files;
 mod legacy_markers;
 mod lock;
 mod migrate_1_6;
+mod overlay;
+mod overlay_hooks;
 pub mod patch;
 pub mod records;
 mod steps;
 mod templates;
+
+pub use overlay::{Selected, SelectedBy};
 
 pub use busbar_contract::upgrade::{CONFIG_FORMAT, MIGRATED_ENV, STAMP_KEY, UPGRADE_FIRST};
 
@@ -65,6 +70,8 @@ pub enum Refusal {
     Config(String),
     /// Something else wrote config.yaml (or holds its directory) during the upgrade.
     LiveWriter(String),
+    /// The 1.5.5 overlay carries a schema `version` above 1 (1.5.5 refused it too).
+    NewerOverlay { path: String, found: u64 },
 }
 
 impl Refusal {
@@ -72,7 +79,7 @@ impl Refusal {
     #[must_use]
     pub fn word(&self) -> &'static str {
         match self {
-            Self::Newer { .. } => "NEWER",
+            Self::Newer { .. } | Self::NewerOverlay { .. } => "NEWER",
             Self::Verify | Self::Authored(_) => "VERIFY",
             Self::Unsupported(_) => "UNSUPPORTED",
             Self::Config(_) => "CONFIG",
@@ -100,6 +107,12 @@ impl fmt::Display for Refusal {
             Self::Unsupported(text) => write!(f, "UNSUPPORTED: {text}"),
             Self::Config(text) => write!(f, "CONFIG: {text}"),
             Self::LiveWriter(text) => write!(f, "LIVE_WRITER: {text}"),
+            Self::NewerOverlay { path, found } => write!(
+                f,
+                "NEWER: the 1.5.5 overlay {path} has `version: {found}`, written by a newer \
+                 busbar (1.5.5 refused it too); boot the busbar that wrote it, or move the file \
+                 aside to drop it; nothing was written"
+            ),
         }
     }
 }
@@ -177,6 +190,13 @@ impl fmt::Debug for Facts {
     }
 }
 
+/// The process environment as 1.5.5 read it: a variable's value, `None` when unset.
+pub type OsEnv<'a> = &'a dyn Fn(&str) -> Option<OsString>;
+
+/// v1.5.5's interpolation of config.yaml's text (the kernel's strict `interpolate_env`), for the
+/// values 1.5.5 decided on resolved text (1b's `config:` block). `Err` is its refusal text.
+pub type Interpolate<'a> = &'a dyn Fn(&str) -> Result<String, String>;
+
 /// What [`plan`] reads.
 pub struct Inputs<'a> {
     /// config.yaml.
@@ -185,6 +205,36 @@ pub struct Inputs<'a> {
     pub facts: &'a Facts,
     /// The boot's own strict parse, run on the planned document and catalog.
     pub check: Check<'a>,
+    /// The environment (`BUSBAR_CONFIG_OVERLAY`, read only for an unstamped config).
+    pub env: OsEnv<'a>,
+    /// v1.5.5's interpolation of config.yaml.
+    pub interpolate: Interpolate<'a>,
+    /// `--ignore-overlay` (1.5.5's `--safe-mode`): a pending 1.5.5 overlay then refuses.
+    pub ignore_overlay: bool,
+}
+
+impl<'a> Inputs<'a> {
+    /// `path`, `facts` and `check`, with an empty overlay environment, the text taken as already
+    /// resolved, and `--ignore-overlay` unset.
+    #[must_use]
+    pub fn new(path: &'a Path, facts: &'a Facts, check: Check<'a>) -> Self {
+        Self {
+            path,
+            facts,
+            check,
+            env: &no_env,
+            interpolate: &verbatim,
+            ignore_overlay: false,
+        }
+    }
+}
+
+fn no_env(_: &str) -> Option<OsString> {
+    None
+}
+
+fn verbatim(text: &str) -> Result<String, String> {
+    Ok(text.to_owned())
 }
 
 /// An upgrade planned in memory. Nothing has been written.
@@ -197,9 +247,25 @@ pub struct Plan {
     catalog: Option<catalog::Planned>,
     digest: [u8; 32],
     report: Vec<String>,
+    warnings: Vec<String>,
+    /// The 1.5.5 overlay path 1b selected (`None`: locked, or not a 1.5.5 source).
+    overlay: Option<overlay::Selected>,
+    ignore_overlay: bool,
 }
 
 impl Plan {
+    /// The lines the boot logs at WARN (an overlay that is not folded, each dropped plugin pin).
+    #[must_use]
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    /// The 1.5.5 overlay path 1b selected, if any.
+    #[must_use]
+    pub fn overlay(&self) -> Option<&Selected> {
+        self.overlay.as_ref()
+    }
+
     /// The stamped document [`write`] puts in place of config.yaml.
     #[must_use]
     pub fn planned(&self) -> &str {
@@ -221,7 +287,8 @@ impl Plan {
         &self.report
     }
 
-    /// SHA-256 of the source bytes the plan was made from; [`write`] refuses if they changed.
+    /// SHA-256 over the source bytes the plan was made from and the 1.5.5 overlay bytes it folds
+    /// (or "none"), not over where the overlay sat; [`write`] refuses if either changed.
     #[must_use]
     pub fn digest(&self) -> [u8; 32] {
         self.digest
@@ -259,7 +326,33 @@ pub fn plan(inputs: &Inputs<'_>) -> Result<Plan, Refusal> {
     }
     files::probe_in_place(inputs.path)?;
     let mut report = Vec::new();
-    let chained = chain(inputs.path, &source, from, inputs.facts, &mut report)?;
+    let mut warnings = Vec::new();
+    // 1b: only a 1.5.5 source had an overlay file.
+    let selected = if from == 0 {
+        overlay::select(inputs.path, &source, inputs.env, inputs.interpolate)?
+    } else {
+        None
+    };
+    let read = match &selected {
+        Some(selected) => Some(overlay::read(selected, inputs.ignore_overlay)?),
+        None => None,
+    };
+    match &read {
+        Some(read) => {
+            report.push(read.line());
+            warnings.extend(read.warnings());
+        }
+        None if from == 0 => report.push(overlay::LOCKED_LINE.to_owned()),
+        None => {}
+    }
+    let chained = chain(
+        inputs.path,
+        &source,
+        from,
+        inputs.facts,
+        read.as_ref(),
+        &mut report,
+    )?;
     judge(&chained, inputs.facts, inputs.check)?;
     Ok(Plan {
         path: inputs.path.to_path_buf(),
@@ -267,9 +360,32 @@ pub fn plan(inputs: &Inputs<'_>) -> Result<Plan, Refusal> {
         facts: inputs.facts.clone(),
         planned: chained.text,
         catalog: chained.catalog,
-        digest: busbar_contract::crypto::sha256(source.as_bytes()),
+        digest: digest(&source, read.as_ref()),
         report,
+        warnings,
+        overlay: selected,
+        ignore_overlay: inputs.ignore_overlay,
     })
+}
+
+/// [`Plan::digest`]: the source's length and bytes, then the folded overlay's bytes or none.
+fn digest(source: &str, overlay: Option<&overlay::Read>) -> [u8; 32] {
+    let length = u64::try_from(source.len())
+        .unwrap_or(u64::MAX)
+        .to_le_bytes();
+    match overlay.and_then(overlay::Read::bytes) {
+        Some(folded) => busbar_contract::crypto::sha256_parts(&[
+            length.as_slice(),
+            source.as_bytes(),
+            b"\x01".as_slice(),
+            folded,
+        ]),
+        None => busbar_contract::crypto::sha256_parts(&[
+            length.as_slice(),
+            source.as_bytes(),
+            b"\x00".as_slice(),
+        ]),
+    }
 }
 
 /// How [`write`] ended.
@@ -297,18 +413,34 @@ pub enum Written {
 #[inline(never)]
 pub fn write(plan: &Plan, check: Check<'_>) -> Result<Written, Refusal> {
     let _held = lock::Held::take(&plan.path)?;
+    if let Some(selected) = &plan.overlay {
+        overlay::sweep(selected);
+    }
     let now = files::read_bounded(&plan.path)?;
     if read_version(&now)? >= CONFIG_FORMAT {
         return Ok(Written::StampedByPeer);
     }
-    if busbar_contract::crypto::sha256(now.as_bytes()) != plan.digest {
+    // 5R re-runs 1b from disk too: an interrupted 5c reads back to the same bytes.
+    let read = match &plan.overlay {
+        Some(selected) => Some(overlay::read(selected, plan.ignore_overlay)?),
+        None => None,
+    };
+    if digest(&now, read.as_ref()) != plan.digest {
         return Err(Refusal::LiveWriter(format!(
-            "{} changed between the plan and the write: stop every 1.5.5 instance and every \
-             other writer of this file, then boot again; nothing was written",
+            "{} or the 1.5.5 overlay changed between the plan and the write: stop every 1.5.5 \
+             instance and every other writer of these files, then boot again; nothing was \
+             written",
             plan.path.display()
         )));
     }
-    let again = chain(&plan.path, &now, plan.from, &plan.facts, &mut Vec::new())?;
+    let again = chain(
+        &plan.path,
+        &now,
+        plan.from,
+        &plan.facts,
+        read.as_ref(),
+        &mut Vec::new(),
+    )?;
     if again.text != plan.planned || again.catalog != plan.catalog {
         return Err(Refusal::Config(format!(
             "the upgrade of {} did not plan the same document twice from the same bytes; nothing \
@@ -319,11 +451,21 @@ pub fn write(plan: &Plan, check: Check<'_>) -> Result<Written, Refusal> {
     judge(&again, &plan.facts, check)?;
     let backup = backup_path(&plan.path);
     files::backup_absent_or_equal(&backup, now.as_bytes())?;
+    if let Some(read) = &read {
+        overlay::backup_absent_or_equal(read)?;
+    }
     if let Some(planned) = &again.catalog {
         catalog::write(planned)?;
     }
     let fresh = files::create_like(&plan.path, again.text.as_bytes())?;
     files::keep_backup(&plan.path, &backup)?;
+    if let Some(read) = &read {
+        // 5c: before the stamp, so a 1.5.5 still writing the overlay is caught, never lost.
+        if let Err(refusal) = overlay::guard(read) {
+            let _ = std::fs::remove_file(&fresh);
+            return Err(refusal);
+        }
+    }
     files::replace(&fresh, &plan.path)?;
     Ok(Written::Stamped)
 }
@@ -340,12 +482,14 @@ fn chain(
     source: &str,
     from: u64,
     facts: &Facts,
+    overlay: Option<&overlay::Read>,
     report: &mut Vec<String>,
 ) -> Result<Chained, Refusal> {
     let first = usize::try_from(from).unwrap_or(usize::MAX);
     let mut work = steps::Work {
         path,
         facts,
+        overlay,
         report,
         catalog: None,
     };

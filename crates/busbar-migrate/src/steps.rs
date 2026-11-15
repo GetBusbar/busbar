@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use crate::templates::Template;
-use crate::{absent_store, catalog, legacy_markers, migrate_1_6, patch, Facts, Refusal};
+use crate::{absent_store, catalog, legacy_markers, migrate_1_6, overlay, patch, Facts, Refusal};
 
 /// What a step reads beside the text, and what it plans besides it.
 pub(crate) struct Work<'a> {
@@ -15,6 +15,8 @@ pub(crate) struct Work<'a> {
     pub(crate) path: &'a Path,
     /// The boot's facts.
     pub(crate) facts: &'a Facts,
+    /// The 1.5.5 overlay 1b selected and read (`None`: a locked config, or not a 1.5.5 source).
+    pub(crate) overlay: Option<&'a overlay::Read>,
     /// One line per change, for the boot's log (never a resolved value).
     pub(crate) report: &'a mut Vec<String>,
     /// The new providers catalog, when 1k plans one.
@@ -28,14 +30,25 @@ pub(crate) type Step = fn(&str, &mut Work<'_>) -> Result<String, Refusal>;
 pub(crate) const STEPS: [Step; 1] = [v0];
 
 /// 1.5.5 -> 1, in §A3's order: 1t reads the template and its interpolation; 1a refuses a pre-1.5.5
-/// document; 1b and 1c select and fold the 1.5.5 overlay; 1d runs core's own passes and writes the
-/// store 1.5.5 implied; 1k plans the providers catalog. The result is the patch writer's, over the
-/// operator's text, checked by proof one (in the writer) and proof two (interpolation parity); the
-/// boot's strict parse (proof three) judges it after the stamp. A document that is not a mapping
-/// passes as written, and the stamp and the strict parse refuse it in their own words.
+/// document; 1b and 1c fold the 1.5.5 overlay 1b read into the operator's text (itself a patch
+/// edit, checked by proof one), so core's passes read the folded document as template and
+/// interpolation alike; 1d runs core's own passes and writes the store 1.5.5 implied; 1k plans the
+/// providers catalog. The result is the patch writer's, over the operator's text, checked by proof
+/// one (in the writer) and proof two (interpolation parity); the boot's strict parse (proof three)
+/// judges it after the stamp. A document that is not a mapping passes as written, and the stamp
+/// and the strict parse refuse it in their own words.
 fn v0(text: &str, work: &mut Work<'_>) -> Result<String, Refusal> {
     let template = Template::read(text, work.facts.env, "config.yaml")?;
     legacy_markers::refuse(template.resolved())?;
+    let folded;
+    let (text, template) = match work.overlay {
+        Some(read) => {
+            folded = overlay::fold(text, read, work.report)?;
+            let template = Template::read(&folded, work.facts.env, "config.yaml")?;
+            (folded.as_str(), template)
+        }
+        None => (text, template),
+    };
     let mut after = template.tree().clone();
     if after.is_null() {
         after = busbar_contract::yaml::Value::Map(Vec::new());
@@ -43,8 +56,6 @@ fn v0(text: &str, work: &mut Work<'_>) -> Result<String, Refusal> {
     let busbar_contract::yaml::Value::Map(root) = &mut after else {
         return Ok(text.to_owned());
     };
-    // 1b, 1c: the 1.5.5 overlay's selection and fold join here, before core's passes read the
-    // folded document.
     migrate_1_6::run(root, template.resolved(), work.facts, work.report)?;
     absent_store::name_the_implied_store(root, template.resolved(), work.report);
     work.catalog = catalog::plan(

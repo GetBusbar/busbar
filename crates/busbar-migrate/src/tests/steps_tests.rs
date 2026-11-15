@@ -14,12 +14,8 @@ use crate::{plan, write, Facts, Inputs, Refusal, Written, UPGRADE_FIRST};
 fn upgrade(config: &str, facts: &Facts) -> (String, Vec<String>) {
     let scratch = Scratch::new();
     let path = scratch.deployment(config);
-    let planned = plan(&Inputs {
-        path: &path,
-        facts,
-        check: &accept,
-    })
-    .unwrap_or_else(|refusal| panic!("planned: {refusal}"));
+    let planned = plan(&Inputs::new(&path, facts, &accept))
+        .unwrap_or_else(|refusal| panic!("planned: {refusal}"));
     let report = planned.report().to_vec();
     assert_eq!(write(&planned, &accept), Ok(Written::Stamped));
     assert_eq!(
@@ -122,12 +118,8 @@ fn module_words_are_left_as_written() {
         };
         let scratch = Scratch::new();
         let path = scratch.deployment(&source);
-        let planned = plan(&Inputs {
-            path: &path,
-            facts: &facts(),
-            check: &check,
-        })
-        .unwrap_or_else(|refusal| panic!("{module}: {refusal}"));
+        let planned = plan(&Inputs::new(&path, &facts(), &check))
+            .unwrap_or_else(|refusal| panic!("{module}: {refusal}"));
         assert_eq!(planned.planned(), format!("config_version: 1\n{source}"));
         assert_eq!(seen.borrow().as_deref(), Some(planned.planned()));
     }
@@ -153,12 +145,7 @@ fn the_deleted_passes_inputs_reach_the_strict_parse_unchanged() {
         };
         let scratch = Scratch::new();
         let path = scratch.deployment(&source);
-        let refused = plan(&Inputs {
-            path: &path,
-            facts: &facts(),
-            check: &check,
-        })
-        .unwrap_err();
+        let refused = plan(&Inputs::new(&path, &facts(), &check)).unwrap_err();
         assert_eq!(
             seen.borrow().as_deref(),
             Some(format!("config_version: 1\n{source}").as_str()),
@@ -187,12 +174,7 @@ fn the_deleted_passes_inputs_reach_the_strict_parse_unchanged() {
         let never = |_: &str, _: Option<&str>| -> Result<(), String> {
             panic!("1a refuses before the parse")
         };
-        let refused = plan(&Inputs {
-            path: &path,
-            facts: &facts(),
-            check: &never,
-        })
-        .unwrap_err();
+        let refused = plan(&Inputs::new(&path, &facts(), &never)).unwrap_err();
         assert_eq!(refused.word(), "UNSUPPORTED", "{refused}");
         assert!(
             refused.to_string().contains(&format!("\n  - {marker}\n")),
@@ -244,12 +226,7 @@ fn the_open_units_are_the_boots_facts_and_the_boots_parse_judges_them() {
     };
     let scratch = Scratch::new();
     let path = scratch.deployment(source);
-    let refused = plan(&Inputs {
-        path: &path,
-        facts: &with(&[]),
-        check: &requires,
-    })
-    .unwrap_err();
+    let refused = plan(&Inputs::new(&path, &with(&[]), &requires)).unwrap_err();
     assert!(
         matches!(&refused, Refusal::Config(text) if text.contains("rate_card.claude") && text.contains("web_search")),
         "{refused}"

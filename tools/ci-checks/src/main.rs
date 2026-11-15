@@ -14,6 +14,8 @@
 //!   kind), `ring`, `sha2` and `ed25519-dalek` are built only beneath `busbar-crypto*`. Dev edges
 //!   count: tests use the facade too.
 //! - `migrate-flag-text`, `migrate-anchors`: the migrate-on-boot checks (`migrate.rs`).
+//! - `migrate-overlay-separation`, `migrate-overlay-keys`, `migrate-overlay-docs`: the 1.5.5
+//!   overlay's separation, key and upgrade-page checks (`migrate_overlay.rs`).
 //!
 //! Usage: `busbar-ci-checks [check...]`; with no argument every check runs. Each finding prints as
 //! one line; any finding or error fails the run.
@@ -31,12 +33,16 @@ use syn::{
 };
 
 mod migrate;
+mod migrate_overlay;
 
-const CHECKS: [&str; 4] = [
+const CHECKS: [&str; 7] = [
     "no-getrandom",
     "crypto-graph",
     "migrate-flag-text",
     "migrate-anchors",
+    "migrate-overlay-separation",
+    "migrate-overlay-keys",
+    "migrate-overlay-docs",
 ];
 /// The crypto seam: `busbar-crypto` and `busbar-crypto-backend` (crate directories and packages).
 const SEAM: &str = "busbar-crypto";
@@ -58,6 +64,9 @@ fn main() -> ExitCode {
             "crypto-graph" => crypto_graph(&root),
             "migrate-flag-text" => migrate::flag_text(&root),
             "migrate-anchors" => migrate::anchors(&root),
+            "migrate-overlay-separation" => migrate_overlay::separation(&root),
+            "migrate-overlay-keys" => migrate_overlay::hook_keys(&root),
+            "migrate-overlay-docs" => migrate_overlay::docs(&root),
             other => Err(format!(
                 "unknown check `{other}` (checks: {})",
                 CHECKS.join(", ")

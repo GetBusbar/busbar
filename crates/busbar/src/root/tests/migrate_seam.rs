@@ -30,12 +30,12 @@ fn step_one_reads_one_field() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let config = dir.join("config.yaml");
-    assert_eq!(run(&config, false), Ok(()));
+    assert_eq!(run(&config, false, false), Ok(()));
     std::fs::write(&config, "config_version: 1\nlisten: 0.0.0.0:8080\n").unwrap();
-    assert_eq!(run(&config, true), Ok(()));
+    assert_eq!(run(&config, true, false), Ok(()));
     assert!(PENDING.get().is_none(), "a stamped boot plans nothing");
     std::fs::write(&config, "config_version: 2\nlisten: 0.0.0.0:8080\n").unwrap();
-    let refused = run(&config, false).unwrap_err();
+    let refused = run(&config, false, false).unwrap_err();
     assert!(refused.starts_with("NEWER: "), "{refused}");
     assert_eq!(
         std::fs::read_dir(&dir).unwrap().count(),
@@ -115,9 +115,51 @@ fn the_gate_names_the_absolute_config_directory() {
 /// stamped config can still meet a 1.5.5 store restored beside it).
 #[test]
 fn run_installs_the_gate_for_the_loader() {
-    let _ = run(Path::new("/nonexistent/busbar/config.yaml"), false);
+    let _ = run(Path::new("/nonexistent/busbar/config.yaml"), false, false);
     assert!(
         !busbar_plugin_loader::dispatch::migrate::install_admit(migrate_admit),
         "the seam's answer is installed already"
     );
+}
+
+/// (f2, r17) a stamped boot reads config.yaml's one field and nothing else: with a writable
+/// regular file at the default overlay path and at `$BUSBAR_CONFIG_OVERLAY`, step 1 opens exactly
+/// one path (config.yaml) and reads no environment variable but the re-exec marker.
+#[test]
+fn a_stamped_boot_reads_config_yaml_alone() {
+    use std::cell::RefCell;
+    let dir = std::env::temp_dir().join(format!("busbar-migrate-seam-f2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let config = dir.join("config.yaml");
+    std::fs::write(&config, "config_version: 1\nlisten: 0.0.0.0:8080\n").unwrap();
+    std::fs::write(dir.join("busbar-overlay.json"), r#"{"groups":{"G":{}}}"#).unwrap();
+    let selected = dir.join("selected.json");
+    std::fs::write(&selected, r#"{"groups":{"G":{}}}"#).unwrap();
+    let paths = RefCell::new(Vec::new());
+    let variables = RefCell::new(Vec::new());
+    let env = |name: &str| {
+        variables.borrow_mut().push(name.to_owned());
+        (name == "BUSBAR_CONFIG_OVERLAY").then(|| selected.clone().into_os_string())
+    };
+    let read = |path: &Path| {
+        paths.borrow_mut().push(path.to_path_buf());
+        read_config(path)
+    };
+    let probe = Probe {
+        env: &env,
+        read: &read,
+    };
+    assert_eq!(run_in(&config, false, false, &probe), Ok(()));
+    assert_eq!(*paths.borrow(), [config.clone()]);
+    assert!(
+        !variables
+            .borrow()
+            .iter()
+            .any(|name| name == "BUSBAR_CONFIG_OVERLAY"),
+        "{:?}",
+        variables.borrow()
+    );
+    assert!(PENDING.get().is_none());
+    let _ = std::fs::remove_dir_all(&dir);
 }

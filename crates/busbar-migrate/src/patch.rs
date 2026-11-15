@@ -152,8 +152,18 @@ pub fn rewrite(
     if yaml::same_tree(&reread, after) {
         Ok(out)
     } else {
-        Err(writer_refusal(shown, "(the document)"))
+        Err(proof_one_refusal(shown))
     }
+}
+
+/// Proof one failed: the written bytes parse, but not as the planned tree (§A7 "Authored text":
+/// an anchor shared by aliases the chain changed differently fails here, CONFIG naming it).
+fn proof_one_refusal(shown: &str) -> Refusal {
+    Refusal::Config(format!(
+        "the upgrade's rewrite of {shown} does not read back as planned (an anchor whose aliases \
+         the upgrade would change differently, for example); nothing was written. Write that part \
+         without the anchor, then boot again"
+    ))
 }
 
 fn writer_refusal(shown: &str, at: &str) -> Refusal {
@@ -767,6 +777,25 @@ fn flow_end(text: &str, start: usize) -> Option<usize> {
         i += 1;
     }
     None
+}
+
+/// The document's tree: a mapping (a blank or comments-only document is the empty mapping).
+///
+/// # Errors
+/// CONFIG when the text is not YAML or its top level is not a mapping.
+pub fn document(text: &str) -> Result<yaml::Value, Refusal> {
+    if first_key_offset(text) == text.len() {
+        return Ok(yaml::Value::Map(Vec::new()));
+    }
+    let value: yaml::Value = yaml::from_str(text)
+        .map_err(|error| Refusal::Config(format!("config.yaml is not valid YAML: {error}")))?;
+    match value {
+        yaml::Value::Null => Ok(yaml::Value::Map(Vec::new())),
+        value if value.is_mapping() => Ok(value),
+        _ => Err(Refusal::Config(
+            "config.yaml's top level is not a mapping; 1.5.5 did not boot it either".to_owned(),
+        )),
+    }
 }
 
 #[cfg(test)]
