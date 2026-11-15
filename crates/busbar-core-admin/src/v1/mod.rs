@@ -5,6 +5,7 @@ pub mod contract;
 pub mod json;
 mod named_def_views;
 mod plugin_configuration;
+pub(crate) mod secret_rule;
 pub mod service;
 
 #[cfg(feature = "openapi-schema")]

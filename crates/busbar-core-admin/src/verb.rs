@@ -137,6 +137,7 @@ pub enum KernelVerb {
     GetInfo,
     GetTelemetry,
     GetOperationsKey,
+    GetConfigTree,
     GetUsage,
     GetOpenapiJson,
 
@@ -315,6 +316,7 @@ pub const TABLE: &[VerbRow] = table! {
     New RecoveryResolve "POST" "/api/v1/admin/ledger/recovery/resolve" "recovery_resolve";
     New GetTelemetry "GET" "/api/v1/admin/telemetry" "get_telemetry";
     New GetOperationsKey "GET" "/api/v1/admin/operations/{key}" "get_operations_key";
+    New GetConfigTree "GET" "/api/v1/admin/config/tree" "get_config_tree";
     New GetTrust "GET" "/api/v1/admin/trust" "get_trust";
     New TrustApprove "POST" "/api/v1/admin/trust/approve" "trust_approve";
     New TrustRevoke "POST" "/api/v1/admin/trust/revoke" "trust_revoke";
