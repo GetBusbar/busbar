@@ -55,7 +55,7 @@ struct AdmittedRequest<C> {
 }
 
 impl DataRoutes {
-    pub(super) fn inbound_audit_kind(&self, line: u32) -> OpClassId {
+    pub(crate) fn inbound_audit_kind(&self, line: u32) -> OpClassId {
         self.guests
             .lines()
             .get(line as usize)

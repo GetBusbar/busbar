@@ -708,7 +708,7 @@ impl RootHost {
             };
             return crate::root::loader::dispatch::migrate::validate_migrated_door(
                 crate::root::loader::dispatch::load::raw(door),
-                &probe,
+                &*probe,
             )
             .map_err(Checked::Refused);
         }
