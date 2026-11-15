@@ -395,10 +395,6 @@ fn the_committed_header_is_what_the_sources_render() {
         std::fs::write(root.join(render::HEADER), &rendered).expect("write the header");
         return;
     }
-    if read(render::HEADER) != rendered {
-        let lines: String = rendered.lines().map(|l| format!("@@H\t{l}\n")).collect();
-        panic!("DUMPBEGIN\n{lines}DUMPEND {}", rendered.ends_with('\n'));
-    }
     if let Some(d) = first_difference(&read(render::HEADER), &rendered) {
         panic!(
             "{} drifted at {d}; run `{}`",
