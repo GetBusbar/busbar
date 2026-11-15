@@ -114,7 +114,7 @@ pub(crate) fn bind_from_upgraded_view(
     let plugins = view
         .map(busbar_contract::yaml::from_value::<busbar_kernel::config::PluginsCfg>)
         .transpose()
-        .map_err(|e| format!("the upgraded `plugins:` block does not read: {e}"))?;
+        .map_err(|e| crate::root::cold::upgraded_plugins_unreadable(&e))?;
     let data_dir = busbar_kernel::preflight::fleet_data_dir();
     let registry = match &plugins {
         Some(p) if p.enabled => Some(crate::root::boot::registry(

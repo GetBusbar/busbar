@@ -581,6 +581,12 @@ pub fn resolve_auth(
                 }
             }
 
+            // The admin default with no operator row bound: config_validate refuses it with its own
+            // remedy (`no_default_admin_chain`), never as an undefined reference and never by
+            // dropping it into the empty (open) chain.
+            None if plane == "admin_auth" && name.trim().is_empty() => {
+                AuthChainEntry::bare(name.clone())
+            }
             None if builtin_identity_providers().contains(&name.as_str()) => {
                 AuthChainEntry::bare(name.clone())
             }
