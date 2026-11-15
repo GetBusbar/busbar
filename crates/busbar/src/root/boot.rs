@@ -1752,6 +1752,10 @@ pub(crate) async fn book_with_lease_watch(
 mod tests;
 
 #[cfg(test)]
+#[path = "tests/start_scan_tests.rs"]
+mod start_scan_tests;
+
+#[cfg(test)]
 include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
 #[cfg(test)]
 owner_test_sources!(transport_inventory);
