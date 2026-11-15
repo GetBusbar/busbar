@@ -107,10 +107,6 @@ version = "1.8.3"
 criteria = "safe-to-deploy"
 notes = "spki's optional constant-time Base64 (not enabled in busbar's build; cargo-vet resolves all features); no imported audit from the trusted registries covers it."
 
-[[exemptions.blake3]]
-version = "1.8.7"
-criteria = "safe-to-deploy"
-
 [[exemptions.borrow-or-share]]
 version = "0.2.4"
 criteria = "safe-to-deploy"

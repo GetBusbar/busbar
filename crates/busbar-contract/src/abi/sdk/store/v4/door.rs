@@ -515,12 +515,13 @@ safe_slot!(Commit, wire::CommitIn, wire::CommitOut);
 safe_slot!(Clock, wire::ClockIn, wire::ClockOut);
 
 /// Emit a primitive v4 table with the shared lifecycle and ordinary declarations.
-/// Optional arguments, in order: `needs`, `extensions`, `secret_refs`, `settings_schema`, `migrate`.
+/// Optional arguments, in order: `needs`, `extensions`, `secret_refs`, `settings_schema`, `migrate`, `former_names` (`&["old-name"]`: the
+/// names an earlier release of this store answered to, so a config naming one still resolves).
 #[macro_export]
 macro_rules! store_v4_door {
     ($store:ty, $name:expr, $version:expr, $max:expr
         $(, needs: $needs:expr)? $(, extensions: $extensions:expr)?
-        $(, secret_refs: $refs:expr)? $(, settings_schema: $schema:expr)? $(, migrate: $migrate:ty)? $(,)?) => {
+        $(, secret_refs: $refs:expr)? $(, settings_schema: $schema:expr)? $(, migrate: $migrate:ty)? $(, former_names: $former:expr)? $(,)?) => {
         const __BUSBAR_V4_NEEDS: &[$crate::abi::host::conn::connector::Need] = $crate::store_v4_door!(@default &[] $(, $needs)?);
         const __BUSBAR_V4_REFS: &[$crate::abi::mechanism::call::AbiStr] = $crate::store_v4_door!(@default &[] $(, $refs)?);
         $crate::plugin_door! {
@@ -550,7 +551,8 @@ macro_rules! store_v4_door {
                 commit: $crate::abi::sdk::Safe<$crate::abi::sdk::store::v4::door::Commit<$store>>,
                 clock: $crate::abi::sdk::Safe<$crate::abi::sdk::store::v4::door::Clock<$store>>,
                 bootstrap: $crate::abi::sdk::Safe<$crate::abi::sdk::store::v4::door::Bootstrap<$store>>,
-            },
+            }
+            $(, former_names: $former)?,
         }
     };
     (@default $default:expr) => { $default };

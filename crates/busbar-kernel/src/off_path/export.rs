@@ -538,7 +538,7 @@ pub(crate) fn sink_settings_with_resolver(
     let tree = settings.prepare();
     if declared.is_empty()
         || settings
-            .undeclared_reference(&declared, &crate::config::secret::sugars())?
+            .undeclared_reference(&declared, &crate::config::secret::admitted_sugars())?
             .is_some()
     {
         return Ok(tree);
