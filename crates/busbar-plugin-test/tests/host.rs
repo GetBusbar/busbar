@@ -4,15 +4,22 @@
 //! THE SAFE TEST HOST end to end (SDK-SAFE-TEST-HOST §7 MR 2): the facade's own fixtures, linked
 //! and cdylib, opened and driven with no `unsafe`; forged doors refused at load. The SHORT re-call
 //! (r4's `Pending`) keeps its loans wherever it is moved, belongs to its own instance, and blocks
-//! the instance until it is spent (§11.9 T0a); the corrupting mutant flips one wire byte (§11.6).
+//! the instance until it is spent (§11.9 T0a); the corrupting mutant flips one wire byte (§11.6);
+//! the dropping-media mutant drops RTP/RTCP routes and keeps STUN, DTLS and secured ones (r7.2 §5).
 
+#[path = "fixtures/media_door.rs"]
+mod media_door;
 #[path = "fixtures/store_door.rs"]
 mod store_door;
 #[path = "fixtures/transport_door.rs"]
 mod transport_door;
 
 use busbar_contract::abi::mechanism::call::Outcome;
-use busbar_contract::abi::transport::{slot, EmitIn, LocateIn, LocateOut, WriteIn};
+use busbar_contract::abi::sdk::door::blank_out;
+use busbar_contract::abi::transport::check::check_datagram;
+use busbar_contract::abi::transport::{
+    slot, DatagramLane, EmitIn, FramerOut, LocateIn, LocateOut, WriteIn,
+};
 use busbar_contract::persistence::{DatasetId, PersistenceBackend};
 use busbar_plugin_loader::dispatch::kinds::{store_v4::StoreV4, transport::Transport};
 use busbar_plugin_loader::dispatch::LoadError;
@@ -359,4 +366,149 @@ fn a_corrupting_mutant_flips_one_byte_of_the_nth_emit_s_wire() {
 #[should_panic(expected = "this row corrupts a framer op that writes a sink")]
 fn a_corrupting_row_refuses_a_slot_with_no_sink() {
     let _ = Mutant::corrupting(transport_door::door, slot::WRITE, 1);
+}
+
+/// An EMIT on the media fixture `t`: the datagrams the host reads back (each route's lane and
+/// bytes, in order), once the answer has passed the host's own datagram check.
+fn emit_datagrams(t: &mut Opened<Transport>) -> Vec<(u32, Vec<u8>)> {
+    let mut i = Loans::<EmitIn>::new();
+    let (mut wire, mut routes) = (None, None);
+    i.bytes(b"media")
+        .stream(1)
+        .sink(|s| wire = Some(s.wire(64)))
+        .lane(|l| {
+            l.push(|lane| {
+                let size = u32::try_from(std::mem::size_of::<DatagramLane>()).expect("a size");
+                lane.size(size).bound(media_door::PATH).verified(1);
+                routes = Some(lane.routes(8));
+            });
+        });
+    let wire = wire.expect("the sink lends a wire buffer");
+    let routes = routes.expect("the lane lends a routes buffer");
+    match t.call::<{ slot::EMIT }>(i) {
+        Called::Ready(a) => {
+            assert_eq!(a.outcome(), Outcome::Ready, "{:?}", a.error());
+            let mut out: FramerOut = blank_out();
+            out.yielded = a.get(|o| o.yielded);
+            out.datagram = a.get(|o| o.datagram);
+            let lent = a.read(&routes);
+            let cap = u64::try_from(lent.len()).expect("a capacity");
+            check_datagram(a.outcome(), &out, lent, cap)
+                .unwrap_or_else(|f| panic!("the answer passes the host's datagram check: {f:?}"));
+            let n = usize::try_from(out.datagram.routes_len).expect("a count");
+            let wire = a.read(&wire);
+            lent.get(..n)
+                .expect("the routes answered lie within the routes buffer")
+                .iter()
+                .map(|r| {
+                    let at = usize::try_from(r.offset).expect("an offset");
+                    let len = usize::try_from(r.len).expect("a length");
+                    let bytes = wire
+                        .get(at..at + len)
+                        .expect("each route lies within the wire buffer");
+                    (r.lane, bytes.to_vec())
+                })
+                .collect()
+        }
+        Called::Pending(p) => {
+            p.leak_loans();
+            panic!("emit never answers SHORT");
+        }
+    }
+}
+
+/// The fixture's datagrams at these (0-based) positions of [`media_door::DATAGRAMS`].
+fn datagrams(at: &[usize]) -> Vec<(u32, Vec<u8>)> {
+    at.iter()
+        .map(|&k| {
+            let (bytes, lane) = media_door::DATAGRAMS[k];
+            (lane, bytes.to_vec())
+        })
+        .collect()
+}
+
+#[test]
+fn a_dropping_media_mutant_drops_rtp_and_keeps_stun_dtls_and_secured_routes() {
+    let h = host();
+    let mut real = h
+        .open(
+            Image::<Transport>::linked(media_door::door),
+            "host-fixture-media",
+            b"{}",
+        )
+        .expect("the media fixture opens");
+    assert_eq!(
+        emit_datagrams(&mut real),
+        datagrams(&[0, 1, 2, 3, 4, 5]),
+        "the real door answers STUN, RTP, RTP, DTLS, RTP and a secured route"
+    );
+    drop(real);
+
+    // The only case in this binary that sends media through a dropping mutant, so the
+    // process-wide count moves only here.
+    let before = Mutant::dropped_media();
+    let mut all = h
+        .open(
+            Image::<Transport>::mutant(Mutant::dropping_media(media_door::door, 1)),
+            "host-fixture-media-all",
+            b"{}",
+        )
+        .expect("a dropping mutant states what its door states, so it opens");
+    assert_eq!(
+        emit_datagrams(&mut all),
+        datagrams(&[0, 3, 5]),
+        "every = 1: all three RTP routes go; STUN, DTLS and the secured route (first byte 0x90) stay"
+    );
+    assert_eq!(
+        Mutant::dropped_media() - before,
+        3,
+        "three media routes dropped"
+    );
+    drop(all);
+
+    let mut half = h
+        .open(
+            Image::<Transport>::mutant(Mutant::dropping_media(media_door::door, 2)),
+            "host-fixture-media-half",
+            b"{}",
+        )
+        .expect("a dropping mutant states what its door states, so it opens");
+    assert_eq!(
+        emit_datagrams(&mut half),
+        datagrams(&[0, 1, 3, 4, 5]),
+        "every = 2: routes 1, 2, 4, 5 and 6 reach the host; RTP number 2 is dropped"
+    );
+    assert_eq!(
+        emit_datagrams(&mut half),
+        datagrams(&[0, 2, 3, 5]),
+        "the count runs on across answers: this mutant's media 4 and 6 are dropped"
+    );
+    assert_eq!(
+        Mutant::dropped_media() - before,
+        6,
+        "each forged mutant counts its own media"
+    );
+}
+
+#[test]
+fn a_dropping_media_mutant_forwards_a_stream_framer_s_answer_untouched() {
+    let h = host();
+    let mut t = h
+        .open(
+            Image::<Transport>::mutant(Mutant::dropping_media(transport_door::door, 1)),
+            "host-fixture-transport",
+            b"{}",
+        )
+        .expect("a dropping mutant states what its door states, so it opens");
+    assert_eq!(
+        emit(&mut t, b"hello", "mutant"),
+        b"hello",
+        "a stream framer is lent no lane (NULL), so its answer passes as the door wrote it"
+    );
+}
+
+#[test]
+#[should_panic(expected = "the first media route is number 1")]
+fn a_dropping_media_row_refuses_every_zero() {
+    let _ = Mutant::dropping_media(media_door::door, 0);
 }
