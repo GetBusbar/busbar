@@ -272,3 +272,10 @@ pub(crate) fn lossy_name(bytes: &[u8]) -> String {
 pub(crate) fn admission_refused(reason: &'static str) -> String {
     reason.to_owned()
 }
+
+/// `auth_bindings`: the startup upgrade's converted `plugins:` view does not read as the current
+/// block, so the operator credential cannot be judged from it.
+#[cold]
+pub(crate) fn upgraded_plugins_unreadable(e: &busbar_contract::yaml::Error) -> String {
+    format!("the upgraded `plugins:` block does not read: {e}")
+}

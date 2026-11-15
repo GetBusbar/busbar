@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::config::RootCfg;
 use crate::diagnostics::{
-    coded, diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT,
+    coded, diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT, CONFIG_OPERATOR_INERT,
     CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO,
     CONFIG_RATE_CARD_MISSING,
 };
@@ -932,7 +932,10 @@ fn judge_with_plugins(
                 }
             }
 
-            if entry.token.is_some() && !crate::config::names_operator(&entry.module) {
+            if entry.token.is_some()
+                && !operator_provider().is_empty()
+                && !crate::config::names_operator(&entry.module)
+            {
                 errors.push(
                     coded::config_auth_chain_invalid(operator::misplaced_token(
                         operator_provider(),
@@ -1023,7 +1026,7 @@ fn judge_with_plugins(
                     ).into());
         }
 
-        if verifies_signed_keys && !auth.usable_mint_path() {
+        if verifies_signed_keys && !auth.usable_mint_path() && !operator_token_configured(cfg) {
             errors.push(
                 coded::config_auth_chain_invalid(operator::no_mint_path(operator_provider()))
                     .into(),
@@ -1849,12 +1852,115 @@ fn judge_cost_model(cfg: &RootCfg, errors: &mut Vec<String>, advisories: &mut Ad
         }
     }
 
-    let token = cfg.auth.as_ref().and_then(|a| a.admin_token_ref());
-    if token.is_some() && !operator::answered(operator_provider()) {
-        errors.push(
-            coded::config_auth_chain_invalid(operator::unanswered_token(operator_provider()))
-                .into(),
+    judge_operator(cfg, errors, advisories);
+}
+
+/// Whether a definition carries the 1.5 `token:` that is the operator credential's: on an
+/// operator-backed definition, or on any definition when no admitted row is the operator. Refused
+/// by [`judge_operator`], in place of the no-mint-path refusal it would otherwise cause.
+fn operator_token_configured(cfg: &RootCfg) -> bool {
+    let no_operator = operator_provider().is_empty();
+    cfg.identity_providers.values().any(|def| {
+        def.token.is_some() && (no_operator || crate::config::names_operator(def.module.trim()))
+    })
+}
+
+/// THE OPERATOR CREDENTIAL'S RULES (OPERATOR-FROM-ADMITTED-AUTH §3.5), on every config read: the
+/// start refusal; a referenced claimant that is not first-party; a 1.5 `token:`; and an admin chain
+/// that names no credential because no admitted row is the operator.
+fn judge_operator(cfg: &RootCfg, errors: &mut Vec<String>, advisories: &mut Advisories) {
+    let refuse = |errors: &mut Vec<String>, text: String| {
+        errors.push(coded::config_auth_chain_invalid(text).into());
+    };
+    let judged = match operator::judged() {
+        Ok(judged) => judged,
+        Err(refusal) => {
+            refuse(errors, refusal);
+            return;
+        }
+    };
+    if let Err(refusal) = &judged.words {
+        refuse(errors, refusal.clone());
+    }
+
+    for claim in &judged.inert {
+        let names = |m: &str| !m.is_empty() && (m == claim.provider || m == claim.canonical);
+        let mut referrers: Vec<String> = cfg
+            .identity_providers
+            .iter()
+            .filter(|(_, def)| names(def.module.trim()))
+            .map(|(name, _)| format!("identity-providers.{name}"))
+            .collect();
+        if let Some(auth) = &cfg.auth {
+            for (plane, entries) in [("chain", &auth.chain), ("admin_auth", &auth.admin_auth)] {
+                referrers.extend(
+                    entries
+                        .iter()
+                        .filter(|e| names(&e.module) || names(&e.name))
+                        .map(|e| format!("auth.{plane}[{}]", e.name)),
+                );
+            }
+        }
+        if referrers.is_empty() {
+            let row = claim.provider.clone();
+            let text = operator::inert_operator(&row);
+            advisories.raise(move || diag_warn!(CONFIG_OPERATOR_INERT, row = %row, "{text}"));
+        }
+        for referrer in referrers {
+            crate::audit::auditlog::record_operator(
+                crate::audit::auditlog::OperatorAudit::RefusedThirdParty,
+                &claim.provider,
+                &referrer,
+            );
+            refuse(
+                errors,
+                operator::third_party_operator(&claim.provider, &referrer),
+            );
+        }
+    }
+
+    let no_operator = operator_provider().is_empty();
+    for (name, def) in &cfg.identity_providers {
+        if def.token.is_none() || !(no_operator || crate::config::names_operator(def.module.trim()))
+        {
+            continue;
+        }
+        crate::audit::auditlog::record_operator(
+            crate::audit::auditlog::OperatorAudit::RefusedToken,
+            name,
+            "token",
         );
+        let mut text = operator::operator_token(name);
+        if no_operator {
+            text.push(' ');
+            text.push_str(&operator::operator_install_remedy());
+        }
+        refuse(errors, text);
+    }
+
+    if cfg.admin_auth.iter().any(|name| name.trim().is_empty()) {
+        refuse(errors, operator::no_default_admin_chain());
+    }
+
+    // THE FILE POLICY (ruling 2, §3.5/§3.6.1): an operator-backed definition the overlay holds is
+    // refused; a candidate held to the base file's reference is refused on any difference.
+    let file_policy = crate::config::operator_file::overlay_operator_definition(cfg)
+        .map(|name| (name, operator::operator_file_policy(name)))
+        .or_else(|| {
+            let reference = cfg.operator_file_defs.as_deref()?;
+            let name = crate::config::operator_file::operator_file_difference(
+                &cfg.identity_providers,
+                reference,
+            )?;
+            Some((name, operator::operator_file_policy(name)))
+        });
+    if let Some((name, text)) = file_policy {
+        crate::audit::auditlog::record_operator(
+            crate::audit::auditlog::OperatorAudit::RefusedFilePolicy,
+            name,
+            "config",
+        );
+        refuse(errors, text);
     }
 }
 
@@ -2596,3 +2702,7 @@ mod credential_echo_tests;
 #[cfg(test)]
 #[path = "tests/boot_advice_tests.rs"]
 mod boot_advice_tests;
+
+#[cfg(test)]
+#[path = "tests/operator_third_party_tests.rs"]
+mod operator_third_party_tests;

@@ -222,6 +222,7 @@ BUSBAR-1014	store-time-guard-inconsistent	1.6.0
 BUSBAR-3027	config-legacy-overlay-not-imported	1.6.0
 BUSBAR-3028	config-legacy-overlay-not-read	1.6.0
 BUSBAR-3029	retired-env-var-ignored	1.6.0
+BUSBAR-3030	config-operator-inert	1.6.0
 BUSBAR-3133	config-login-limits-invalid	1.6.0
 BUSBAR-3134	config-destination-names-metadata	1.6.0
 BUSBAR-3135	config-private-reach-retired	1.6.0

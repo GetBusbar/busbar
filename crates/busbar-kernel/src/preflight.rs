@@ -299,6 +299,39 @@ pub use busbar_kernel_identity::operator::{
     linked_names as linked_auth_names,
 };
 
+pub use busbar_kernel_identity::operator::{choose as choose_operator, Judged, OperatorBinding};
+
+/// Bind the operator credential for the process lifetime, at process start (OPERATOR-FROM-
+/// ADMITTED-AUTH §3.4), and raise its held `auth.operator` rows: one per inert claimant, and the
+/// refusal of an ambiguous or unreadable set of claims.
+pub fn install_operator(binding: OperatorBinding) {
+    if let OperatorBinding::Bound(judged) = &binding {
+        audit_judged(judged);
+    }
+    busbar_kernel_identity::operator::install_operator(binding);
+}
+
+/// Bind a `Deferred` start's operator credential from the startup upgrade's own converted
+/// `plugins:` view (§3.4.1), once, and raise its held `auth.operator` rows.
+pub fn bind_deferred(judged: Judged) -> Result<(), String> {
+    audit_judged(&judged);
+    busbar_kernel_identity::operator::bind_deferred(judged)
+}
+
+fn audit_judged(judged: &Judged) {
+    use crate::audit::auditlog::{record_operator, OperatorAudit};
+    for claim in &judged.inert {
+        record_operator(OperatorAudit::Inert, &claim.provider, &claim.signer);
+    }
+    if let Err(refusal) = &judged.words {
+        let event = match refusal.contains("do not read") {
+            true => OperatorAudit::RefusedUnreadable,
+            false => OperatorAudit::RefusedAmbiguous,
+        };
+        record_operator(event, "operator", refusal);
+    }
+}
+
 #[must_use]
 pub fn inbound_auth_names(rows: &[LinkedAuth]) -> Vec<&'static str> {
     let Some(declares) = root_rows().auth_chain_module else {
@@ -879,50 +912,6 @@ fn log_scanned_rows(
             }
         }
     }
-}
-
-pub(crate) fn resolve_admin_token(
-    auth: Option<&config::AuthCfg>,
-    resolver: &config::secret::SecretResolver,
-) -> Result<Option<busbar_contract::redacted::Secret<String>>, String> {
-    let Some(r) = auth.and_then(|a| a.admin_token_ref()) else {
-        return Ok(None);
-    };
-    use busbar_kernel_identity::operator::{blank_token, unresolved_token};
-    let op = config::operator_provider();
-    let token = resolver
-        .resolve_string_at_config(r, &busbar_contract::config_time::ConfigScope::config_time())
-        .map_err(|e| {
-            if e.contains(config::secret::BLANK_MARKER) {
-                blank_token(op)
-            } else {
-                unresolved_token(op, &e)
-            }
-        })?;
-    if token.expose(&crate::seal::lend()).trim().is_empty() {
-        return Err(blank_token(op));
-    }
-    warn_short_operator_token(token.expose(&crate::seal::lend()).trim().len());
-    Ok(Some(token))
-}
-
-/// The operator token's entropy floor, bytes.
-pub(crate) const OPERATOR_TOKEN_MIN_BYTES: usize = 32;
-
-/// Warn (BUSBAR-4042) at every boot and reload when the operator token is shorter than
-/// [`OPERATOR_TOKEN_MIN_BYTES`]; `true` when it warned. Refused from 1.7.
-pub(crate) fn warn_short_operator_token(len: usize) -> bool {
-    if len >= OPERATOR_TOKEN_MIN_BYTES {
-        return false;
-    }
-    crate::diagnostics::diag_warn!(
-        crate::diagnostics::ADMIN_OPERATOR_TOKEN_SHORT,
-        bytes = len,
-        minimum = OPERATOR_TOKEN_MIN_BYTES,
-        "the operator token is shorter than {OPERATOR_TOKEN_MIN_BYTES} bytes; replace it with at \
-         least {OPERATOR_TOKEN_MIN_BYTES} random bytes (refused from 1.7)"
-    );
-    true
 }
 
 pub(crate) fn parse_signing_secret(bytes: &[u8]) -> Result<[u8; 32], String> {

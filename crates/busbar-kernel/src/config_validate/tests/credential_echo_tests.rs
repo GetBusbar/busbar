@@ -20,8 +20,8 @@ impl AuthAxis for Echoing {
     fn linked(&self, _: &str) -> bool {
         false
     }
-    fn operator(&self) -> Option<(String, String)> {
-        None
+    fn operator_claims(&self) -> busbar_contract::auth_calls::OperatorClaims {
+        busbar_contract::auth_calls::OperatorClaims::default()
     }
     fn open(
         &self,

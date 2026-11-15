@@ -1,0 +1,120 @@
+# The 1.5.5 corpus configuration after full normalization with no operator words: the
+# `token:` definition is kept as written.
+listen: "0.0.0.0:8080"
+identity-providers:
+  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+auth:
+  chain: [keys]
+  admin_auth: [admin-tokens]
+  signing_key: { file: /var/lib/busbar/signing.key }
+providers:
+  anthropic:
+    api_key: { env: ANTHROPIC_KEY }
+  openai:
+    api_key: { env: OPENAI_KEY }
+  gemini:
+    api_key: { env: GEMINI_KEY }
+  z.ai:
+    api_key: { env: ZAI_KEY }
+  bedrock:
+    api_key: { env: AWS_BEDROCK_CREDS }
+models:
+  claude-sonnet:
+    provider: anthropic
+    max_concurrent: 20
+    max_requests: -1
+  claude-haiku:
+    provider: anthropic
+    max_concurrent: 40
+    max_requests: -1
+  gpt-4o:
+    provider: openai
+    max_concurrent: 20
+    max_requests: -1
+  gpt-4o-mini:
+    provider: openai
+    max_concurrent: 50
+    max_requests: -1
+  gemini-1.5-pro:
+    provider: gemini
+    max_concurrent: 15
+    max_requests: -1
+  glm-4.6:
+    provider: z.ai
+    max_concurrent: 10
+    max_requests: -1
+  claude-sonnet-bedrock:
+    provider: bedrock
+    max_concurrent: 20
+    max_requests: -1
+pools:
+  upstream_credentials: own
+  haiku:
+    members:
+      - model: claude-haiku
+  fast:
+    members:
+      - model: claude-haiku
+      - model: gpt-4o-mini
+  balanced:
+    members:
+      - model: claude-sonnet
+        weight: 8
+      - model: gpt-4o
+        weight: 2
+  long-context:
+    members:
+      - model: claude-sonnet
+        context_max: 200000
+      - model: gemini-1.5-pro
+        context_max: 2000000
+  resilient:
+    members:
+      - model: claude-sonnet
+        weight: 3
+      - model: gpt-4o
+        weight: 2
+      - model: glm-4.6
+        weight: 1
+    failover:
+      timeout_secs: 30
+      max_hops: 3
+      exclusions:
+        - glm-4.6
+  realtime:
+    members:
+      - model: gemini-1.5-pro
+        attempt_timeout_ms: 250
+      - model: claude-haiku
+  primary:
+    members:
+      - model: claude-sonnet
+      - model: gpt-4o
+    on_exhausted: { fallback_pool: overflow }
+  overflow:
+    members:
+      - model: claude-haiku
+      - model: gpt-4o-mini
+      - model: glm-4.6
+    on_exhausted: least_bad
+  smart:
+    members:
+      - model: claude-sonnet
+        weight: 2
+      - model: gpt-4o
+        weight: 2
+      - model: gemini-1.5-pro
+        weight: 1
+    affinity:
+      mode: session
+      header_name: x-session-id
+  sensitive:
+    members:
+      - model: claude-sonnet
+      - model: gpt-4o
+    breaker:
+      trip:
+        mode: consecutive
+        consecutive_n: 2
+      base_cooldown_secs: 5
+      max_cooldown_secs: 60

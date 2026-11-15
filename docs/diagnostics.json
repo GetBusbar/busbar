@@ -588,6 +588,18 @@
     "retired": false
   },
   {
+    "code": "BUSBAR-3030",
+    "number": 3030,
+    "class": "config",
+    "slug": "config-operator-inert",
+    "title": "An auth plugin states the operator credential but is not first-party (ignored)",
+    "severity": "actionable",
+    "summary": "An admitted auth plugin states the operator credential, but it is not first-party (not signed by a busbar release key), so it never becomes the operator credential. Nothing in the configuration references it, so it is ignored and the boot continues; each boot also writes an auth.operator.inert audit row naming it.",
+    "action": "Remove the plugin from plugins.dir, or narrow plugins.trust so it is not admitted. To make a plugin the operator credential, install the first-party operator credential plugin.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
     "code": "BUSBAR-4001",
     "number": 4001,
     "class": "auth",

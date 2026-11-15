@@ -11,10 +11,8 @@ const TOKEN: &str = "admintok";
 
 fn link() {
     crate::dist_root_install::install();
-    busbar_kernel::preflight::install_linked_auth(
-        crate::LINKED.auths,
-        crate::root::auth_bindings::operator_words(),
-    );
+    busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
     crate::root::test_plane_registry::register();
 }
 

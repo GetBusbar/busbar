@@ -1597,7 +1597,7 @@ pub(crate) fn door_identifying(token: &'static str, id: &'static str) -> AdminDo
         if credential != Some(token) {
             return busbar_kernel::auth::AdminDoor::Denied;
         }
-        let grants = if id == crate::root::auth_bindings::ADMIN_PRINCIPAL_ID {
+        let grants = if id == busbar_kernel::config::operator_principal_id() {
             busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full)
         } else {
             busbar_contract::authz::Grants::default()

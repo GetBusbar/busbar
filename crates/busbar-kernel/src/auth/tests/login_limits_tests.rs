@@ -784,14 +784,6 @@ fn a_provider_override_wins_for_its_method() {
     assert_eq!(p.account_for("other"), p.account);
 }
 
-#[test]
-fn a_short_operator_token_is_warned_and_a_long_one_is_not() {
-    assert!(crate::preflight::warn_short_operator_token(16));
-    assert!(crate::preflight::warn_short_operator_token(31));
-    assert!(!crate::preflight::warn_short_operator_token(32));
-    assert!(!crate::preflight::warn_short_operator_token(64));
-}
-
 #[tokio::test]
 async fn concurrent_replays_of_one_login_state_have_exactly_one_winner() {
     let store = store().await;

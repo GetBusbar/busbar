@@ -120,6 +120,10 @@ pub enum Cond {
     /// A named-map mutation tried to RAISE an `identity-providers.<name>.max_admin_scope` trust
     /// ceiling. Refused outright over the API (1.5.3) — the ceiling is operator FILE policy.
     TrustCeilingRaise,
+    /// A write would create, re-point, re-key or remove a definition backed by the operator
+    /// credential, or touch the plugin admission set that decides it. The operator credential is
+    /// operator FILE policy (OPERATOR-FROM-ADMITTED-AUTH §3.6): set only in config.yaml.
+    OperatorFilePolicy,
     /// A named-map DELETE would leave a DANGLING REFERENCE: another config site still names the
     /// definition by bare name (e.g. `auth.chain`).
     StillReferenced,
@@ -179,6 +183,7 @@ impl Cond {
             Cond::NameCollision => "name_collision",
             Cond::InvalidLabels => "invalid_labels",
             Cond::TrustCeilingRaise => "trust_ceiling_raise",
+            Cond::OperatorFilePolicy => "operator_file_policy",
             Cond::StillReferenced => "still_referenced",
             Cond::Unpriced => "unpriced",
             Cond::RestartUnreachable => "restart_unreachable",
@@ -253,6 +258,10 @@ impl Cond {
             Cond::TrustCeilingRaise => {
                 "raising `max_admin_scope` is refused over the admin API; the trust ceiling is \
                  operator file policy; lower it here, raise it in config.yaml"
+            }
+            Cond::OperatorFilePolicy => {
+                "the operator credential is operator file policy; set or change it in config.yaml \
+                 and POST /config/reload"
             }
             Cond::StillReferenced => {
                 "another config section still references this definition by bare name (remove the \
@@ -452,6 +461,7 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
             Validation / InvalidConfig,
             Validation / MalformedBody,
             Validation / MalformedIfMatch,
+            Conflict / OperatorFilePolicy,
             VersionConflict / StaleIfMatch,
         ],
         (Post, "/config/reload") => de![Validation / InvalidConfig, Validation / NoDiskBase,],
@@ -469,8 +479,11 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
             Validation / NoDiskBase,
             VersionConflict / StaleIfMatch,
             Conflict / RestartUnreachable,
+            Conflict / OperatorFilePolicy,
         ],
-        (Post, "/config/validate") => de![Validation / MalformedBody],
+        (Post, "/config/validate") => {
+            de![Validation / MalformedBody, Conflict / OperatorFilePolicy]
+        }
         (Post, "/auth/cache/flush") => de![Validation / MalformedBody],
         (Delete, "/overlay/{section}") => de![
             Validation / UnknownSection,
@@ -608,6 +621,7 @@ fn named_map_declared_errors(
             Validation / NoDiskBase,
             Conflict / BaseDefined,
             Conflict / TrustCeilingRaise,
+            Conflict / OperatorFilePolicy,
             VersionConflict / StaleIfMatch,
             Conflict / RestartUnreachable,
         ],
@@ -634,6 +648,17 @@ fn named_map_declared_errors(
             Validation / NoDiskBase,
             NotFound / UnknownResource,
             Conflict / BaseDefined,
+            VersionConflict / StaleIfMatch,
+            Conflict / RestartUnreachable,
+        ],
+        (Patch, NamedMapShape::Settings) if section.has_trust_ceiling() => de![
+            Validation / MalformedBody,
+            Validation / MalformedIfMatch,
+            Validation / InvalidConfig,
+            Validation / NoDiskBase,
+            NotFound / UnknownResource,
+            Conflict / BaseDefined,
+            Conflict / OperatorFilePolicy,
             VersionConflict / StaleIfMatch,
             Conflict / RestartUnreachable,
         ],

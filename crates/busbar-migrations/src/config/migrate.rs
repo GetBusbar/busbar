@@ -900,34 +900,40 @@ fn migrate_governance(root: &mut Pairs, changes: &mut Vec<String>, todos: &mut V
     }
     if let Some(token) = take(&mut gov, field::ADMIN_TOKEN) {
         let operator = busbar_kernel::config::operator_provider();
-        let auth = root.entry_or_insert_with(field::AUTH, || Value::Map(Pairs::new()));
-        if auth.is_null() {
-            *auth = Value::Map(Pairs::new());
+        // No operator words: there is no name to write the entry under, and an entry under "" is
+        // never valid. Write nothing and leave the install remedy.
+        if operator.is_empty() {
+            todos.push(operator_install_todo());
+        } else {
+            let auth = root.entry_or_insert_with(field::AUTH, || Value::Map(Pairs::new()));
+            if auth.is_null() {
+                *auth = Value::Map(Pairs::new());
+            }
+            if let Value::Map(auth) = auth {
+                let secret_ref: Value = match token.as_str() {
+                    Some(s) if s.starts_with("${") && s.ends_with('}') => {
+                        let var = &s[2..s.len() - 1];
+                        let mut m = Pairs::new();
+                        m.insert_key(field::ENV, var.into());
+                        Value::Map(m)
+                    }
+                    _ => {
+                        todos.push(busbar_kernel_identity::operator::literal_token_todo(
+                            operator,
+                        ));
+                        let mut m = Pairs::new();
+                        m.insert_key(field::ENV, "BUSBAR_ADMIN_TOKEN".into());
+                        Value::Map(m)
+                    }
+                };
+                let mut body = Pairs::new();
+                body.insert_key(field::TOKEN, secret_ref);
+                let mut entry = Pairs::new();
+                entry.insert_key(operator, Value::Map(body));
+                auth.insert_key(field::ADMIN_AUTH, Value::Array(vec![Value::Map(entry)]));
+            }
+            changes.push(busbar_kernel_identity::operator::migrated_token(operator));
         }
-        if let Value::Map(auth) = auth {
-            let secret_ref: Value = match token.as_str() {
-                Some(s) if s.starts_with("${") && s.ends_with('}') => {
-                    let var = &s[2..s.len() - 1];
-                    let mut m = Pairs::new();
-                    m.insert_key(field::ENV, var.into());
-                    Value::Map(m)
-                }
-                _ => {
-                    todos.push(busbar_kernel_identity::operator::literal_token_todo(
-                        operator,
-                    ));
-                    let mut m = Pairs::new();
-                    m.insert_key(field::ENV, "BUSBAR_ADMIN_TOKEN".into());
-                    Value::Map(m)
-                }
-            };
-            let mut body = Pairs::new();
-            body.insert_key(field::TOKEN, secret_ref);
-            let mut entry = Pairs::new();
-            entry.insert_key(operator, Value::Map(body));
-            auth.insert_key(field::ADMIN_AUTH, Value::Array(vec![Value::Map(entry)]));
-        }
-        changes.push(busbar_kernel_identity::operator::migrated_token(operator));
     }
 
     if take(&mut gov, field::ENABLED).is_some() {
@@ -939,6 +945,16 @@ fn migrate_governance(root: &mut Pairs, changes: &mut Vec<String>, todos: &mut V
             k.as_str().unwrap_or("?")
         ));
     }
+}
+
+/// The TODO left when `governance.admin_token` is found and this build names no operator credential:
+/// the install remedy for the operator credential, which keeps only a SHA-256 of the token.
+fn operator_install_todo() -> String {
+    "governance.admin_token was not migrated: this build names no operator credential. Install the \
+     first-party operator credential plugin, then give it `settings: {sha256: \"<SHA-256 of the \
+     token>\"}` in identity-providers and list it in auth.admin_auth; the token itself is not \
+     stored"
+        .to_owned()
 }
 
 fn migrate_auth(
