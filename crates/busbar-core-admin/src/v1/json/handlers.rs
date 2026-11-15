@@ -2175,20 +2175,42 @@ pub(crate) async fn apply_config(
     let actor = principal.actor_id().to_string();
     let card_origin = format!("config/apply by {actor}");
     let expected = ok_or_respond!(if_match_version(&headers));
-    let req: ApplyConfigReq = ok_or_respond!(boxed json_body(&body, "config"));
+    // A body refused before the transaction is a refused apply like any other: audited.
+    let req: ApplyConfigReq = match json_body(&body, "config") {
+        Ok(req) => req,
+        Err(refused) => {
+            audit::AUDIT.record_by(
+                "config.apply",
+                "config:body",
+                audit::OUTCOME_REJECTED,
+                &actor,
+            );
+            return *refused;
+        }
+    };
 
     if let Some(refusal) = unloaded_plane_refusal(&handle, &req.config) {
-        return err_json(&AdminError::Validation(refusal));
+        return reject(
+            "config.apply",
+            "config:body",
+            &actor,
+            &AdminError::Validation(refusal),
+        );
     }
 
     let req_deploy: busbar_kernel::config::DeployCfg =
         match busbar_kernel::config::deploy_from_deserializer(req.config) {
             Ok(d) => d,
             Err(e) => {
-                return err_json(&AdminError::Validation(format!(
-                    "malformed config body: {}",
-                    describe_body_error(&e)
-                )))
+                return reject(
+                    "config.apply",
+                    "config:body",
+                    &actor,
+                    &AdminError::Validation(format!(
+                        "malformed config body: {}",
+                        describe_body_error(&e)
+                    )),
+                )
             }
         };
     let req_providers = req.providers;
