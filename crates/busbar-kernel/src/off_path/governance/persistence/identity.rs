@@ -152,6 +152,13 @@ struct Record<T> {
 struct Index {
     id: String,
 }
+/// A revoked subject: why, and when (unix seconds).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Revocation {
+    pub subject: String,
+    pub reason: String,
+    pub at: u64,
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Denied {
@@ -210,6 +217,9 @@ const KEY_FIELDS: &[&str] = &[
     "binding_mode",
     "minted_by",
     "idp_provider",
+    "rotated_at",
+    "rotation_count",
+    "migrated_from",
 ];
 const CREDENTIAL_FIELDS: &[&str] = &[
     "id",
@@ -984,6 +994,13 @@ impl Identity<'_> {
                 _ => unreachable!(),
             })
     }
+    /// Every revoked subject with the reason and the time it was revoked, by subject.
+    pub async fn list_revocations(&self) -> RecordStoreResult<Vec<Revocation>> {
+        self.query(Query::Revocations).await.map(|v| match v {
+            Output::Revocations(revocations) => revocations,
+            _ => unreachable!(),
+        })
+    }
     pub async fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
         self.query(Query::Denylist).await.map(|v| match v {
             Output::Denied(subjects) => subjects,
@@ -1223,6 +1240,22 @@ impl Identity<'_> {
                 credentials.sort_by_key(|c| c.meta.revision);
                 Output::Credentials(credentials)
             }
+            Query::Revocations => {
+                let mut revocations = Vec::new();
+                for (at, value) in tx.scan(vec![b'D']).await? {
+                    let denied: Denied = decode(&value, None, false)?;
+                    if row(b'D', &denied.subject)? != at {
+                        return Err(corrupt());
+                    }
+                    revocations.push(Revocation {
+                        subject: denied.subject,
+                        reason: denied.reason,
+                        at: denied.created_at,
+                    });
+                }
+                revocations.sort_by(|a, b| a.subject.cmp(&b.subject));
+                Output::Revocations(revocations)
+            }
             Query::Denylist => {
                 let mut subjects = Vec::new();
                 for (at, value) in tx.scan(vec![b'D']).await? {
@@ -1279,6 +1312,7 @@ enum Query<'a> {
     Credentials(&'a str),
     CredentialsSince(u64),
     Denylist,
+    Revocations,
 }
 enum Output {
     Snapshot(IdentitySnapshot),
@@ -1286,6 +1320,7 @@ enum Output {
     Metadata(Vec<CredentialMeta>),
     Credentials(Vec<CredentialSecret>),
     Denied(Vec<String>),
+    Revocations(Vec<Revocation>),
 }
 impl Tx<'_> {
     async fn since(&self, family: u8, since: u64) -> Result<Vec<(String, u64)>> {
@@ -1326,7 +1361,9 @@ mod tests;
 pub(crate) fn migration_key(
     key: &VirtualKey,
 ) -> RecordStoreResult<Vec<(Address, Secret<Vec<u8>>)>> {
-    let mut rows = vec![(row(b'K', &key.id)?, Secret::new(encode(key)?))];
+    let mut stamped = key.clone();
+    stamped.migrated_from.get_or_insert_with(|| "1.5.5".into());
+    let mut rows = vec![(row(b'K', &key.id)?, Secret::new(encode(&stamped)?))];
     if key.revision != 0 {
         rows.push((
             revision_key(b'K', key.revision, &key.id)?,

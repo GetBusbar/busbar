@@ -222,6 +222,9 @@ pub struct DocumentPatchLoad<'a> {
 
 /// Reuse the exact file/env preprocessing while returning a compacted guarded Store carrier.
 /// The admin caller persists these edits only after typed parsing and runtime validation succeed.
+///
+/// The read's grammar is its own (SECRET-SHORTHAND-BOOT §3.1): phase 1 over this read's effective
+/// `plugins:` block (patch applied, in this read's env mode), never the live secret axis.
 pub fn load_config_from_disk_compacting_document_patches(
     config_path: &std::path::Path,
     providers_override: Option<&std::path::Path>,
@@ -230,6 +233,121 @@ pub fn load_config_from_disk_compacting_document_patches(
     rules: &dyn RootRules,
     edits: DocumentPatchLoad<'_>,
 ) -> Result<LoadedConfig, String> {
+    let raw = read_config_documents(
+        config_path,
+        providers_override,
+        ignore_overlay,
+        env_mode,
+        rules,
+        edits,
+    )?;
+    let grammar = raw.own_grammar()?;
+    raw.typed(&grammar)
+}
+
+/// The deployment document as one read sees it before its typed parse: read, normalized,
+/// interpolated in the read's env mode, judged for legacy markers and unloaded plane sections, and
+/// with the durable document patch applied. What the read's grammar is computed from
+/// ([`RawDocuments::plugins_block`]) and then typed under ([`RawDocuments::typed`]).
+pub struct RawDocuments<'a> {
+    inputs: ReadInputs<'a>,
+    /// The interpolated deployment text as the operator wrote it (no patch): what the source
+    /// fingerprints bind.
+    source_text: busbar_contract::secure::SecureString,
+    /// The effective deployment text: interpolated, with the document patch applied.
+    config_text: busbar_contract::secure::SecureString,
+    /// Whether `config_text` carries a durable document patch (its parse refusal says so).
+    patched: bool,
+    unset_env_vars: Vec<String>,
+}
+
+/// What one read was asked for, kept for its providers half.
+struct ReadInputs<'a> {
+    config_path: &'a std::path::Path,
+    providers_override: Option<&'a std::path::Path>,
+    ignore_overlay: bool,
+    env_mode: config::EnvSubst,
+    rules: &'a dyn RootRules,
+    providers_patch: Option<&'a mut config::document_patch::DocumentPatch>,
+    admission: Option<&'a mut config::document_patch::SourceAdmission>,
+}
+
+impl RawDocuments<'_> {
+    /// The read's effective `plugins:` block, typed without a grammar: it holds no secret
+    /// reference (G18). An absent block is the default (`enabled: false`). A document that does not
+    /// read as YAML at all has no block here; the typed parse reports it.
+    pub fn plugins_block(&self) -> Result<config::PluginsCfg, String> {
+        use busbar_contract::yaml::ValueExt as _;
+        let Ok(doc) = busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(
+            self.config_text.as_ref(),
+        ) else {
+            return Ok(config::PluginsCfg::default());
+        };
+        match doc.get("plugins") {
+            None => Ok(config::PluginsCfg::default()),
+            Some(block) => busbar_contract::yaml::from_value::<config::PluginsCfg>(block.clone())
+                .map_err(|e| format!("config.yaml: plugins: {e}")),
+        }
+    }
+
+    /// Phase 1 over this read's own block alone: its own directory, no pins, no fetch.
+    pub fn own_grammar(&self) -> Result<config::Grammar, String> {
+        let plugins = self.plugins_block()?;
+        config::grammar::grammar_for(&config::grammar::PhaseOneIn::of(&plugins))
+            .map_err(|refusal| format!("config.yaml: {refusal}"))
+    }
+
+    /// The typed read under `grammar`: the deployment document, then the providers catalog it
+    /// names. A refused word carries the grammar's report (one line per file not admitted).
+    pub fn typed(self, grammar: &config::Grammar) -> Result<LoadedConfig, String> {
+        let RawDocuments {
+            inputs,
+            source_text,
+            config_text,
+            patched,
+            mut unset_env_vars,
+        } = self;
+        let mut deploy =
+            config::deploy_from_yaml_str(config_text.as_ref(), grammar).map_err(|e| {
+                grammar.with_report(if patched {
+                    "patched configuration failed boot parsing".to_owned()
+                } else {
+                    format!(
+                        "config.yaml: invalid YAML: {}",
+                        config::augment_config_error(e)
+                    )
+                })
+            })?;
+        let (defs, providers_path) = typed_rest(
+            inputs,
+            &source_text,
+            &mut deploy,
+            &mut unset_env_vars,
+            grammar,
+        )?;
+        let resolution = config::overlay::resolve_backend(&deploy.config);
+        Ok(LoadedConfig {
+            deploy,
+            defs,
+            providers_path,
+            overlay_path: None,
+            config_locked: resolution.locked,
+            config_read_only: false,
+            overlay_doc: None,
+            unset_env_vars,
+        })
+    }
+}
+
+/// Read the deployment document up to (not including) its typed parse ([`RawDocuments`]).
+pub fn read_config_documents<'a>(
+    config_path: &'a std::path::Path,
+    providers_override: Option<&'a std::path::Path>,
+    ignore_overlay: bool,
+    env_mode: config::EnvSubst,
+    rules: &'a dyn RootRules,
+    edits: DocumentPatchLoad<'a>,
+) -> Result<RawDocuments<'a>, String> {
     let DocumentPatchLoad {
         patch,
         providers_patch,
@@ -293,20 +411,54 @@ pub fn load_config_from_disk_compacting_document_patches(
         }
     }
 
-    let mut deploy: config::DeployCfg = if let Some(patch) = patch.filter(|_| !ignore_overlay) {
-        *patch = patch.compacted_against_yaml(&interpolated_config)?;
-        patch.parse_deploy_yaml_checked(&interpolated_config, |keys| {
-            rules.unloaded_plane_refusal(keys).map_or(Ok(()), Err)
-        })?
-    } else {
-        config::deploy_from_yaml_str(&interpolated_config).map_err(|e| {
-            format!(
-                "config.yaml: invalid YAML: {}",
-                config::augment_config_error(e)
-            )
-        })?
+    let (config_text, patched) = match patch.filter(|_| !ignore_overlay) {
+        Some(patch) => {
+            *patch = patch.compacted_against_yaml(&interpolated_config)?;
+            let text = patch.patched_text(&interpolated_config, |keys| {
+                rules.unloaded_plane_refusal(keys).map_or(Ok(()), Err)
+            })?;
+            (text, true)
+        }
+        None => (
+            busbar_contract::secure::SecureString::from(interpolated_config.as_str()),
+            false,
+        ),
     };
+    Ok(RawDocuments {
+        inputs: ReadInputs {
+            config_path,
+            providers_override,
+            ignore_overlay,
+            env_mode,
+            rules,
+            providers_patch,
+            admission,
+        },
+        source_text: busbar_contract::secure::SecureString::from(interpolated_config),
+        config_text,
+        patched,
+        unset_env_vars,
+    })
+}
 
+/// The providers half of a typed read: the catalog file `deploy` names (or the override), read,
+/// normalized and interpolated as the deployment document was, and typed under `grammar`.
+fn typed_rest(
+    inputs: ReadInputs<'_>,
+    source_text: &str,
+    deploy: &mut config::DeployCfg,
+    unset_env_vars: &mut Vec<String>,
+    grammar: &config::Grammar,
+) -> Result<(HashMap<String, config::ProviderDef>, std::path::PathBuf), String> {
+    let ReadInputs {
+        config_path,
+        providers_override,
+        ignore_overlay,
+        env_mode,
+        rules,
+        providers_patch,
+        admission,
+    } = inputs;
     // A providers file the operator NAMED (--providers / env, or `providers_file:`) must exist. The
     // default one beside config.yaml is optional: absent means an empty catalog (an admin-only
     // deployment configures no provider). Custody learns of the absence itself, never a stand-in.
@@ -333,7 +485,7 @@ pub fn load_config_from_disk_compacting_document_patches(
     let interpolated_providers = config::interpolate_env_with(
         normalized_providers.as_deref().unwrap_or(source.text()),
         env_mode,
-        &mut unset_env_vars,
+        unset_env_vars,
     )
     .map_err(|e| format!("providers.yaml: {e}"))?;
     if let Some(admission) = admission {
@@ -341,34 +493,18 @@ pub fn load_config_from_disk_compacting_document_patches(
     }
     deploy.document_source_fingerprints =
         Some(config::document_patch::SourceFingerprints::from_sources(
-            &interpolated_config,
+            source_text,
             &interpolated_providers,
         ));
     let defs: HashMap<String, config::ProviderDef> =
         if let Some(patch) = providers_patch.filter(|_| !ignore_overlay) {
             *patch = patch.compacted_against_yaml(&interpolated_providers)?;
-            patch.parse_catalog_yaml(&interpolated_providers)?
+            patch.parse_catalog_yaml(&interpolated_providers, grammar)?
         } else {
-            config::providers::catalog_from_str(&interpolated_providers)
-                .map_err(|e| format!("providers.yaml: invalid YAML: {e}"))?
+            config::providers::catalog_from_str(&interpolated_providers, grammar)
+                .map_err(|e| grammar.with_report(format!("providers.yaml: invalid YAML: {e}")))?
         };
-
-    let resolution = config::overlay::resolve_backend(&deploy.config);
-    let overlay_path = None;
-    let config_locked = resolution.locked;
-    let config_read_only = false;
-
-    let overlay_doc = None;
-    Ok(LoadedConfig {
-        deploy,
-        defs,
-        providers_path,
-        overlay_path,
-        config_locked,
-        config_read_only,
-        overlay_doc,
-        unset_env_vars,
-    })
+    Ok((defs, providers_path))
 }
 
 pub async fn load_config_from_disk_with_store(
@@ -767,10 +903,13 @@ pub fn bootstrap_dependency_names_from_metadata(
     };
     if let Some(store) = &cfg.store {
         add(&store.module);
-        if let Ok(references) = store
-            .settings
-            .reference_modules(fields, &config::secret::sugars())
-        {
+        // The store's settings are read under the grammar its document was read under, not the
+        // live axis: bootstrap admission has not run yet (SECRET-SHORTHAND-BOOT F7).
+        let references = cfg
+            .grammar()
+            .map_err(String::from)
+            .and_then(|grammar| store.settings.reference_modules(fields, &grammar.sugars));
+        if let Ok(references) = references {
             for module in references {
                 add(&module);
             }
@@ -1079,6 +1218,7 @@ async fn build_app_native(
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
     config::security_policy::check_candidate(prior, &cfg, &plugins_cfg)?;
     let configured_card = config::card::CardFields::of_root(&cfg);
+    let grammar = cfg.grammar.clone();
     let configured_view = Arc::new(config::readback::ConfiguredView::from_root(
         &cfg,
         &plugins_cfg,
@@ -1147,6 +1287,7 @@ async fn build_app_native(
             root: &root_rules,
             fetch: wants_fetch.then_some(&fetch as &dyn Fn() -> Result<(), String>),
             resolve_builtins: false,
+            secret_axis: config::secret::live_axis(),
         },
     )
     .map_err(|refused| match refused {
@@ -2028,6 +2169,7 @@ async fn build_app_native(
     }
 
     app.configured_view = Some(configured_view);
+    app.grammar = grammar;
     // Existing direct builders pass an explicit providers path. The executable replaces this
     // initial default with its actual CLI/env provenance; subsequent generations inherit it.
     if let Some(prior) = prior {

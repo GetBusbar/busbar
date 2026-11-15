@@ -619,8 +619,11 @@ async fn test_max_keys_per_principal_atomic_under_concurrent_mint() {
     document["groups"] =
         serde_json::to_value(&groups).expect("the actual group definitions serialize");
     document["limits"] = serde_json::json!({"max_keys_per_principal": 3});
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())

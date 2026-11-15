@@ -2,9 +2,10 @@ use super::*;
 use std::collections::HashMap;
 
 fn wire_provider(dialect: &str) -> HashMap<String, busbar_kernel::config::ProviderDef> {
-    busbar_kernel::config::providers::catalog_from_str(&format!(
-        "wire:\n  protocol: {dialect}\n  base_url: http://127.0.0.1:9\n"
-    ))
+    busbar_kernel::config::providers::catalog_from_str(
+        &format!("wire:\n  protocol: {dialect}\n  base_url: http://127.0.0.1:9\n"),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the configured wire provider has its actual catalog declaration")
 }
 
@@ -27,7 +28,11 @@ async fn queue_depth_counts_waiters_from_overlapping_egress_generations() {
         let yaml = format!(
             "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
         );
-        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(
+            &yaml,
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::core().await;
@@ -157,7 +162,11 @@ async fn retained_destinations_follow_the_model_name_across_reorder_and_removal(
         let yaml = format!(
             "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
         );
-        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(
+            &yaml,
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::core().await;
@@ -218,7 +227,11 @@ async fn retained_destinations_follow_the_model_name_across_reorder_and_removal(
         let yaml = format!(
             "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
         );
-        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(
+            &yaml,
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::core().await;
@@ -279,7 +292,11 @@ async fn retained_destinations_follow_the_model_name_across_reorder_and_removal(
         let yaml = format!(
             "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
         );
-        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(
+            &yaml,
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::core().await;
@@ -402,7 +419,11 @@ async fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
         let yaml = format!(
             "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
         );
-        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(
+            &yaml,
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::core().await;
@@ -464,7 +485,11 @@ async fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
         let yaml = format!(
             "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
         );
-        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(
+            &yaml,
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::core().await;
@@ -564,7 +589,11 @@ async fn a_successful_probe_counts_once_on_the_lanes_ok_whatever_its_pools() {
         let yaml = format!(
             "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
         );
-        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(
+            &yaml,
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::core().await;
@@ -647,7 +676,11 @@ async fn a_success_is_recorded_on_the_walks_clock() {
         let yaml = format!(
             "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
         );
-        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(
+            &yaml,
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::core().await;
@@ -741,7 +774,11 @@ async fn a_probe_success_joins_the_walks_window() {
         let yaml = format!(
             "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
         );
-        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(
+            &yaml,
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::core().await;
@@ -840,7 +877,11 @@ async fn probe_failures_and_hard_downs_cool_on_the_walks_clock() {
             let yaml = format!(
                 "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
             );
-            let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+            let deploy = busbar_kernel::config::deploy_from_yaml_str(
+                &yaml,
+                &crate::root::boot::axis_test_grammar(),
+            )
+            .expect("parses");
             let cfg =
                 busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
             let store = crate::root::real_store::core().await;
@@ -922,9 +963,10 @@ async fn probe_failures_and_hard_downs_cool_on_the_walks_clock() {
 
 fn pools_of(section: &str) -> ModelPools {
     crate::root::test_plane_registry::register();
-    let deploy = busbar_kernel::config::deploy_from_yaml_str(&format!(
-        "providers: {{}}\nmodels: {{}}\npools:\n{section}"
-    ))
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        &format!("providers: {{}}\nmodels: {{}}\npools:\n{section}"),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the deployment parses");
     let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
     ModelPools::of(&cfg)
@@ -976,7 +1018,11 @@ async fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
         let yaml = format!(
             "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
         );
-        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(
+            &yaml,
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::core().await;
@@ -1067,7 +1113,11 @@ async fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
         let yaml = format!(
             "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
         );
-        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(
+            &yaml,
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::core().await;
@@ -1157,7 +1207,11 @@ async fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retire
         let yaml = format!(
             "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
         );
-        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(
+            &yaml,
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::core().await;
@@ -1225,7 +1279,11 @@ async fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retire
         let yaml = format!(
             "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
         );
-        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(
+            &yaml,
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::core().await;
@@ -1302,7 +1360,9 @@ async fn a_keyless_lane_is_not_probed() {
                 keyed:\n    api_key: { env: BUSBAR_TEST_KEY }\n    health: { mode: active }\n  \
                 local:\n    api_key: none\n    health: { mode: active }\n\
                 models:\n  m-keyed:\n    provider: keyed\n  m-local:\n    provider: local\n";
-    let deploy = busbar_kernel::config::deploy_from_yaml_str(yaml).expect("parses");
+    let deploy =
+        busbar_kernel::config::deploy_from_yaml_str(yaml, &crate::root::boot::axis_test_grammar())
+            .expect("parses");
     let cfg = busbar_kernel::config::resolve(&deploy, &defs).expect("resolves");
     let serving = ModelServing {
         pools: ModelPools::of(&cfg),
@@ -1324,7 +1384,11 @@ async fn a_keyless_lane_is_not_probed() {
             let yaml = format!(
                 "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
             );
-            let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+            let deploy = busbar_kernel::config::deploy_from_yaml_str(
+                &yaml,
+                &crate::root::boot::axis_test_grammar(),
+            )
+            .expect("parses");
             let cfg =
                 busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
             let store = crate::root::real_store::core().await;
@@ -1397,7 +1461,11 @@ async fn semantic_rate_limit_preserves_the_store_ladder_without_reading_protocol
         let yaml = format!(
             "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
         );
-        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(
+            &yaml,
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::core().await;

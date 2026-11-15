@@ -1012,3 +1012,35 @@ fn a_const_strip_is_the_field_strip_and_a_bare_verdict_names_none() {
 fn the_verify_macro_fills_the_serve_slot() {
     assert!(ops().serve.is_some());
 }
+
+/// A verify-only door declared through `auth_verify_door!` reports the `former_names` it names (a
+/// 1.5.5 config naming the renamed module still resolves on a drop-in upgrade).
+mod named {
+    use super::*;
+    use crate::abi::sdk::auth_door::{verify_tail, SyncVerifyPlugin};
+    use crate::abi::sdk::door::statement;
+    struct Quiet;
+    impl SyncVerifyPlugin for Quiet {
+        fn open_refusing(_: &[u8], _: &[&[u8]]) -> Result<Self, Refusal> {
+            Ok(Self)
+        }
+        fn verify(&self, _: &VerifyView<'_>) -> Answer {
+            Verdict::Pass.into()
+        }
+        fn reload(&self, _: &[u8], _: &[&[u8]]) -> Result<u64, Refusal> {
+            Ok(0)
+        }
+    }
+    crate::auth_verify_door!(
+        Quiet,
+        with_tail(
+            statement("quiet", "1", 1),
+            &verify_tail(0, crate::abi::auth::AuthPoints::HEAD)
+        ),
+        former_names: &["quiet-verify-1-5-5"]
+    );
+    #[test]
+    fn auth_verify_door_declares_former_names() {
+        assert_eq!(MACRO_DOOR.former_names(), &["quiet-verify-1-5-5"]);
+    }
+}

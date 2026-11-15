@@ -80,8 +80,11 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
     });
     document["auth"]["policy"] =
         serde_json::json!({"mint_ceilings":{"app-admin":{"binding_modes":allowed_modes}}});
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -221,8 +224,11 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin_allowed() {
     });
     document["auth"]["policy"] =
         serde_json::json!({"mint_ceilings":{"app-admin":{"binding_modes":allowed_modes}}});
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -335,8 +341,11 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
         "module": operator, "token": { "file": operator_token },
     });
     document["auth"]["policy"] = serde_json::json!({"max_ttl":"24h"});
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -439,8 +448,11 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default_default_clampe
         "module": operator, "token": { "file": operator_token },
     });
     document["auth"]["policy"] = serde_json::json!({"max_ttl":"24h"});
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -578,8 +590,11 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
         "test-scope-module": { "app-admin": { "admin_scope": "full" } },
     });
     document["auth"]["policy"] = serde_json::json!({"mint_ceilings":{"app-admin":{"max_ttl":format!("{ROLE_TTL}s"),"allowed_pools":["pool-ok"]}}});
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -722,8 +737,11 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_over_ttl() {
         "test-scope-module": { "app-admin": { "admin_scope": "full" } },
     });
     document["auth"]["policy"] = serde_json::json!({"mint_ceilings":{"app-admin":{"max_ttl":format!("{ROLE_TTL}s"),"allowed_pools":["pool-ok"]}}});
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -866,8 +884,11 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_allowed() {
         "test-scope-module": { "app-admin": { "admin_scope": "full" } },
     });
     document["auth"]["policy"] = serde_json::json!({"mint_ceilings":{"app-admin":{"max_ttl":format!("{ROLE_TTL}s"),"allowed_pools":["pool-ok"]}}});
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())

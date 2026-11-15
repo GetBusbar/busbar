@@ -87,6 +87,31 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
     assert_eq!(body["config_persistence"], true);
     assert!(body.get("overlay_ignored").is_none());
 
+    let deployment_id = body["deployment_id"].as_str().expect("deployment_id");
+    assert!(
+        deployment_id
+            .strip_prefix("dep_")
+            .is_some_and(|h| h.len() == 32
+                && h.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))),
+        "deployment_id is dep_ + 32 lowercase hex: {deployment_id}"
+    );
+    let node_id = body["node_id"].as_str().expect("node_id");
+    assert!(
+        node_id.strip_prefix("node_").is_some_and(|h| h.len() == 16
+            && h.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))),
+        "node_id is node_ + 16 lowercase hex: {node_id}"
+    );
+    let nodes = body["nodes"].as_array().expect("nodes");
+    let own = nodes
+        .iter()
+        .find(|n| n["node_id"] == node_id)
+        .expect("nodes lists this process's own lease row");
+    assert_eq!(own["state"], "live");
+    assert_eq!(own["role"], "writer");
+    assert!(own["started_at"].as_u64().unwrap() <= own["last_seen_at"].as_u64().unwrap());
+
     handle.abort();
     println!("{WITNESS}");
 }

@@ -189,14 +189,17 @@ async fn locked_reload_never_reads_the_overlay_even_when_its_store_is_unreadable
 
 #[test]
 fn bootstrap_dependency_closure_uses_declared_reference_paths_and_canonical_identities() {
-    let deploy = crate::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {}, "models": {},
-        "auth": {"chain": [], "admin_auth": []},
-        "store": {"module": "store-alias", "settings": {
-            "token": {"module": "secret-alias", "settings": {}},
-            "data": {"literal": {"module": "unrelated", "settings": {}}}
-        }}
-    }))
+    let deploy = crate::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {}, "models": {},
+            "auth": {"chain": [], "admin_auth": []},
+            "store": {"module": "store-alias", "settings": {
+                "token": {"module": "secret-alias", "settings": {}},
+                "data": {"literal": {"module": "unrelated", "settings": {}}}
+            }}
+        }),
+        &crate::config::Grammar::empty(),
+    )
     .unwrap();
     let cfg = crate::config::resolve(&deploy, &Default::default()).unwrap();
     assert_eq!(

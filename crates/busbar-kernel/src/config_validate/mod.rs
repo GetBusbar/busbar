@@ -1800,7 +1800,14 @@ fn judge_cost_model(cfg: &RootCfg, errors: &mut Vec<String>, advisories: &mut Ad
         Some(_) => {}
     }
 
-    let sugars = crate::config::secret::sugars();
+    let read_sugars = match cfg.grammar() {
+        Ok(grammar) => grammar.sugars.clone(),
+        Err(refusal) => {
+            errors.push(refusal.0);
+            busbar_contract::secret_ref::Sugars::default()
+        }
+    };
+    let sugars = &read_sugars;
     let mut check_secret = |what: String, r: &crate::config::SecretRef| {
         if r.is_none() {
             if !keyless_credential_allowed(&what) {
@@ -2377,7 +2384,7 @@ fn validate_providers_with(
                     } else {
                         errors.push(coded::config_provider_credential_invalid(format!(
                             "provider '{provider_name}' {style} credential (from {}) is invalid: {e}",
-                            describe_reference(&provider_cfg.api_key)
+                            describe_reference(cfg, &provider_cfg.api_key)
                         )).into());
                     }
                 }
@@ -2451,7 +2458,7 @@ fn validate_providers_with(
                     errors.push(
                         coded::config_provider_credential_invalid(format!(
                         "provider '{provider_name}' {style} credential (from {}) is invalid: {e}",
-                        describe_reference(&provider_cfg.api_key)
+                        describe_reference(cfg, &provider_cfg.api_key)
                     ))
                         .into(),
                     );
@@ -2601,8 +2608,11 @@ fn names_token_url(refusal: &str) -> bool {
 /// A credential reference as the operator wrote it: the admitted shorthand (`env:VAR`,
 /// `file:/path`, 1.5.5's spelling) when the reference is exactly one declared sugar, else the
 /// source metadata alone.
-fn describe_reference(reference: &busbar_contract::secret_ref::SecretRef) -> String {
-    crate::config::secret::sugars().describe(reference)
+fn describe_reference(cfg: &RootCfg, reference: &busbar_contract::secret_ref::SecretRef) -> String {
+    match cfg.grammar() {
+        Ok(grammar) => grammar.sugars.describe(reference),
+        Err(_) => busbar_contract::secret_ref::Sugars::default().describe(reference),
+    }
 }
 
 pub fn vet_token_uri(token_uri: &str, posture: &MetadataPosture) -> Result<(), String> {

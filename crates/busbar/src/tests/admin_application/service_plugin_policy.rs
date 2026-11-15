@@ -51,8 +51,11 @@ async fn inspect_bounds_pathological_schema_nesting_depth() {
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the product deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
@@ -191,8 +194,11 @@ async fn install_rejects_bad_filenames() {
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the product deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
@@ -301,8 +307,11 @@ async fn inspect_verdicts_refuse_malformed_archives_without_publication() {
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the product deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);

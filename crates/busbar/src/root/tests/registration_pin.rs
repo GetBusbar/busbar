@@ -693,6 +693,7 @@ fn member_tls_rules_reject_candidate_before_apply_and_ignore_unselected_sections
     use busbar_kernel::appbuild::RootRules as _;
     let deploy = busbar_kernel::config::deploy_from_yaml_str(
         "store: {module: memory}\nmodels: {}\nproviders: {}\n",
+        &crate::root::boot::axis_test_grammar(),
     )
     .unwrap();
     let mut cfg =

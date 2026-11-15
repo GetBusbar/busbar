@@ -31,16 +31,63 @@ pub struct KeyView {
     pub labels: std::collections::BTreeMap<String, String>,
     /// `enabled` alone cannot distinguish a reversible pause from either of the two permanent
     /// dispositions. `PATCH {enabled:false}`, `POST /keys/{id}/revoke`, and `DELETE /keys/{id}` all
-    /// used to leave `enabled: false` with nothing else to tell them apart. One of exactly four
+    /// used to leave `enabled: false` with nothing else to tell them apart. One of exactly five
     /// values, additive and derived (never independently settable):
     /// - `"active"`: enabled, not revoked, not deleted.
     /// - `"disabled"`: `PATCH {enabled:false}`. Reversible: `PATCH {enabled:true}` restores it.
     /// - `"revoked"`: `POST /keys/{id}/revoke`. Permanent: denylisted, but the binding row (and
     ///   `GET /keys/{id}`) stays live for audit/usage attribution.
+    /// - `"expired"`: `expires_at` has passed.
     /// - `"tombstoned"`: `DELETE /keys/{id}`. Permanent: denylisted AND hard-deleted; the row is
     ///   kept only so id-attributed billing/audit history keeps resolving. Omitted from a plain
     ///   `GET /keys` by default; visible there with `?include=tombstoned`.
     pub state: String,
+    /// Unix seconds the key expires; `null` = never. Once passed, `state` is `"expired"`.
+    pub expires_at: Option<u64>,
+    /// The key's ETag over its stored row (`If-Match` takes it). It never moves for a last-used
+    /// flush or a denylist sync; a rename, a rotation or any other edit of the row moves it.
+    pub etag: String,
+    /// The principal that minted the key (an app-admin's id); `null` for a self-minted key.
+    pub minted_by: Option<String>,
+    /// The identity-provider instance that minted a self-serve key.
+    pub minted_via: Option<String>,
+    pub idp_subject: Option<String>,
+    pub binding_mode: Option<String>,
+    /// Why and when the key was revoked; `null` unless `state` is `revoked`.
+    pub revocation: Option<KeyRevocationView>,
+    pub deleted_at: Option<u64>,
+    pub rotation: KeyRotationView,
+    /// The request-signing credential index: public ids only, never a secret.
+    pub credentials: Vec<KeyCredentialView>,
+    /// `"created"`, or `{"migrated_from": "1.5.5"}` for a key the migration carried over.
+    pub origin: serde_json::Value,
+}
+
+/// `KeyView.revocation`.
+#[derive(Serialize, JsonSchema)]
+pub struct KeyRevocationView {
+    pub reason: String,
+    /// Unix seconds.
+    pub at: u64,
+}
+
+/// `KeyView.rotation`: `generation` and `count` are decimal strings.
+#[derive(Serialize, JsonSchema)]
+pub struct KeyRotationView {
+    pub generation: String,
+    /// Unix seconds of the last rotation; `null` until the key is first rotated.
+    pub rotated_at: Option<u64>,
+    pub count: String,
+}
+
+/// One entry of `KeyView.credentials`.
+#[derive(Serialize, JsonSchema)]
+pub struct KeyCredentialView {
+    pub public_id: String,
+    pub kind: String,
+    pub slot: u8,
+    /// Unix seconds.
+    pub created_at: u64,
 }
 
 /// `POST /keys` (mint): the key metadata plus the ONCE-shown signed token, and (when an AWS SigV4
@@ -58,6 +105,23 @@ pub struct CreatedKeyView {
     /// Same field as `KeyView.state`; a fresh mint is always `"active"` (enabled, not
     /// revoked, not deleted).
     pub state: String,
+    /// The key's ETag over its stored row (`If-Match` takes it). It never moves for a last-used
+    /// flush or a denylist sync; a rename, a rotation or any other edit of the row moves it.
+    pub etag: String,
+    /// The principal that minted the key (an app-admin's id); `null` for a self-minted key.
+    pub minted_by: Option<String>,
+    /// The identity-provider instance that minted a self-serve key.
+    pub minted_via: Option<String>,
+    pub idp_subject: Option<String>,
+    pub binding_mode: Option<String>,
+    /// Why and when the key was revoked; `null` unless `state` is `revoked`.
+    pub revocation: Option<KeyRevocationView>,
+    pub deleted_at: Option<u64>,
+    pub rotation: KeyRotationView,
+    /// The request-signing credential index: public ids only, never a secret.
+    pub credentials: Vec<KeyCredentialView>,
+    /// `"created"`, or `{"migrated_from": "1.5.5"}` for a key the migration carried over.
+    pub origin: serde_json::Value,
     /// The busbar-SIGNED token: the key credential (1.5.0), shown EXACTLY once and never
     /// returned by any read. (This is the field a client must capture to authenticate.)
     #[schemars(with = "String")]
@@ -93,6 +157,23 @@ pub struct RotatedKeyView {
     /// `revoked` key is legal and leaves it exactly that; only a `tombstoned` key refuses to rotate,
     /// which surfaces as 404 instead of this response).
     pub state: String,
+    /// The key's ETag over its stored row (`If-Match` takes it). It never moves for a last-used
+    /// flush or a denylist sync; a rename, a rotation or any other edit of the row moves it.
+    pub etag: String,
+    /// The principal that minted the key (an app-admin's id); `null` for a self-minted key.
+    pub minted_by: Option<String>,
+    /// The identity-provider instance that minted a self-serve key.
+    pub minted_via: Option<String>,
+    pub idp_subject: Option<String>,
+    pub binding_mode: Option<String>,
+    /// Why and when the key was revoked; `null` unless `state` is `revoked`.
+    pub revocation: Option<KeyRevocationView>,
+    pub deleted_at: Option<u64>,
+    pub rotation: KeyRotationView,
+    /// The request-signing credential index: public ids only, never a secret.
+    pub credentials: Vec<KeyCredentialView>,
+    /// `"created"`, or `{"migrated_from": "1.5.5"}` for a key the migration carried over.
+    pub origin: serde_json::Value,
     /// The fresh busbar-SIGNED token, shown EXACTLY once (signed-token keys).
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<String>")]

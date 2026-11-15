@@ -31,6 +31,11 @@ pub struct Check<'a> {
     pub fetch: Option<&'a dyn Fn() -> Result<(), String>>,
 
     pub resolve_builtins: bool,
+
+    /// The secret axis the references are checked against (each secret module's own check of its
+    /// settings): the live axis for a build ([`crate::config::secret::live_axis`]), a read-scoped
+    /// view of what start judged for `--validate`. `None`: no module checks its settings.
+    pub secret_axis: Option<&'a dyn busbar_contract::secret::SecretAxis>,
 }
 
 #[cold]
@@ -90,7 +95,8 @@ pub fn check_with(
     })
     .map_err(Refusal::Config)?;
     crate::preflight::validate_pool_strategies(cfg, &registry).map_err(Refusal::Plugins)?;
-    secret_refs::registry_refusal(registry.as_ref(), cfg).map_err(Refusal::Plugins)?;
+    secret_refs::registry_refusal_with(registry.as_ref(), cfg, c.secret_axis)
+        .map_err(Refusal::Plugins)?;
 
     super::undeclared_secret_refs(registry.as_ref(), cfg).map_err(Refusal::Plugins)?;
     if c.resolve_builtins {
