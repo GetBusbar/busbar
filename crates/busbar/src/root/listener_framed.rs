@@ -35,7 +35,7 @@ pub(crate) const FIRST_BYTE_BOUND: std::time::Duration = std::time::Duration::fr
 const BODY_LIMIT_REFUSAL: u32 =
     busbar_kernel::plane_driver::class_status(busbar_contract::abi::plane::RefusalClass::TooLarge);
 
-pub type FramerFor = Arc<dyn Fn(&str) -> Option<Arc<dyn FramerDoor>> + Send + Sync>;
+pub(crate) type FramerFor = Arc<dyn Fn(&str) -> Option<Arc<dyn FramerDoor>> + Send + Sync>;
 pub type DispatchFor = Arc<
     dyn Fn(&busbar_kernel::inbound::RequestAdmission) -> Option<Arc<crate::root::serve::DataRoutes>>
         + Send
@@ -70,7 +70,7 @@ pub use crate::root::off_path::listener::listener_framer;
 
 impl DataFramer {
     #[cfg(test)]
-    pub fn validate_policy(&self) -> Result<(), String> {
+    pub(crate) fn validate_policy(&self) -> Result<(), String> {
         self.listener.validate()
     }
 
@@ -83,12 +83,12 @@ impl DataFramer {
         self.listener.guests()
     }
 
-    pub fn with_dispatch(mut self, dispatch: DispatchFor) -> Self {
+    pub(crate) fn with_dispatch(mut self, dispatch: DispatchFor) -> Self {
         self.dispatch = Some(dispatch);
         self
     }
 
-    pub fn with_inbound_limit(mut self, limit: usize) -> Self {
+    pub(crate) fn with_inbound_limit(mut self, limit: usize) -> Self {
         self.inbound_limit = (limit != 0).then(|| Arc::new(tokio::sync::Semaphore::new(limit)));
         self
     }

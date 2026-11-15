@@ -45,7 +45,7 @@ impl Durability {
     }
 }
 
-pub async fn report_operator_breaks(book: &Durability) {
+pub(crate) async fn report_operator_breaks(book: &Durability) {
     match book.operator_breaks().await {
         Ok(Ok(breaks)) => {
             if let Some(latest) = breaks.last() {
@@ -153,7 +153,7 @@ impl busbar_kernel::persistence::recovery_api::Store for NodeRecovery {
 }
 
 #[must_use]
-pub fn node_verb_store(
+pub(crate) fn node_verb_store(
     book: Arc<Mutex<Durability>>,
     _token: Grant<DurableWrite>,
     store: &str,
