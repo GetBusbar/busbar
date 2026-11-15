@@ -184,7 +184,7 @@ pub fn judge(canary: &Canary, hits: &[Hit]) -> Verdict {
     Verdict { ok, text }
 }
 
-pub fn report_dir() -> PathBuf {
+fn report_dir() -> PathBuf {
     let exe = std::env::current_exe().expect("the test binary's path");
     let target = exe
         .ancestors()

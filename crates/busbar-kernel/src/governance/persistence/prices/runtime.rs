@@ -190,7 +190,6 @@ impl ConfirmedCard {
     pub fn commit(mut self) -> EntryKey {
         let key = self.prepared.key.take().expect("confirmed price identity");
         let mut state = self.prepared.book.lock();
-        // busbar:expect(bp::state_scan, reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced")
         #[expect(
             clippy::disallowed_methods,
             reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
@@ -386,7 +385,6 @@ impl CardStore {
     }
     fn check_alarms(&self, state: &mut State) {
         let now = now_ms();
-        // busbar:expect(bp::clone_alloc, reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced")
         #[expect(
             clippy::disallowed_methods,
             reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
@@ -397,7 +395,6 @@ impl CardStore {
             .iter()
             .map(|v| v.voided.clone())
             .collect();
-        // busbar:expect(bp::fresh_buffer, reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced")
         let mut messages = Vec::new();
         for entry in state.snapshot.entries.values() {
             let from = state

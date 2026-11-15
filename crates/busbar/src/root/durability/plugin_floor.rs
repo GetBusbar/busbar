@@ -68,7 +68,7 @@ async fn enforce(
     owner.enforce_release_keys(host, &versions, raise).await
 }
 #[cfg(test)]
-pub async fn check_candidate(
+pub(crate) async fn check_candidate(
     owner: &PluginFloor,
     host: &str,
     row: &busbar_contract::plugin_rows::Row,
@@ -83,7 +83,7 @@ pub async fn check_candidate(
         .await
 }
 
-pub async fn prepare_candidate(
+pub(crate) async fn prepare_candidate(
     owner: &PluginFloor,
     host: &str,
     row: &busbar_contract::plugin_rows::Row,
@@ -101,7 +101,7 @@ pub async fn prepare_candidate(
         .await
 }
 
-pub fn check_prepared_candidate(
+pub(crate) fn check_prepared_candidate(
     proof: &AdmissionProof,
     host: &str,
     row: &busbar_contract::plugin_rows::Row,
