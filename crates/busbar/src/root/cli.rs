@@ -186,7 +186,7 @@ pub(crate) enum Parsed {
 /// The command line, read once by one lexopt parser. Every option takes its own value, so a value
 /// spelled like a flag (`--migrate-config --config`) is never read as one.
 #[derive(Default)]
-pub struct Argv {
+pub(crate) struct Argv {
     pub(crate) config: Option<String>,
     pub(crate) providers: Option<String>,
     pub(crate) ignore_overlay: bool,

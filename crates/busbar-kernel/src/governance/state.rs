@@ -893,7 +893,6 @@ impl GovState {
             }
         }
         let metering = &self.pending_metering;
-        // busbar:expect(bp::state_scan, reason = "boot: custody is inspected only at shutdown, after admission has stopped")
         if metering.flush_runner.is_running()
             || !metering
                 .flight
@@ -1102,7 +1101,6 @@ impl GovState {
         now: u64,
     ) -> RecordStoreResult<()> {
         let keys = self.core_store()?.identity().list_keys().await?;
-        // busbar:expect(bp::fresh_buffer, reason = "boot: budgets hydrate only when governance starts or recovers")
         let mut buckets = Vec::new();
         for key in &keys {
             buckets.push((key.id.clone(), super::WINDOW_TOTAL, None));
@@ -1809,7 +1807,6 @@ impl GovState {
         // One fee request on a plane's fee lane: the unit map is built once per process.
         static PER_REQUEST_ONE: std::sync::OnceLock<BTreeMap<String, Count>> =
             std::sync::OnceLock::new();
-        // busbar:expect(bp::into_alloc, reason = "boot: the one-fee-request unit map is built once per process")
         #[expect(
             clippy::disallowed_methods,
             reason = "boot: the one-fee-request unit map is built once per process"
@@ -2060,7 +2057,6 @@ impl GovState {
                 // Include accrual that arrived while retained operations were awaiting their
                 // receipts. Capture is entirely in memory; each immutable flight owns its debt
                 // before any Store call can suspend this future.
-                // busbar:expect(bp::fresh_buffer, reason = "config: budget flights are captured only by the background budget flush, never inline with a request")
                 let mut new_flights = Vec::new();
                 let mask2 = mask1 | self.budget.take_flags();
                 for (index, mut map) in self.budget.write_masked(mask2) {
@@ -2354,9 +2350,7 @@ pub(super) fn durable_cell(
         ));
     }
     for m in &mut cell.models {
-        // busbar:expect(bp::clone_alloc, reason = "config: a cell is rebuilt from its durable row only for operator usage views, corrections and recovery")
         m.flushed = m.cur.clone();
-        // busbar:expect(bp::clone_alloc, reason = "config: a cell is rebuilt from its durable row only for operator usage views, corrections and recovery")
         m.flushed_era = m.cur.clone();
     }
     cell.fee_eras = busbar_kernel_ledger::usage::FeeEras::of(fees);

@@ -31,7 +31,7 @@ impl Durability {
 
     /// Bound memory-only hot sealing. Returning this pair is not persistence;
     /// its shared native owner must confirm the exact run before publication.
-    pub fn stage_unit(
+    pub(crate) fn stage_unit(
         &mut self,
         mut inputs: AuditInputs,
         pass: busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
@@ -53,7 +53,7 @@ impl Durability {
         Ok((record, run))
     }
 
-    pub async fn seal_unit(
+    pub(crate) async fn seal_unit(
         book: &Arc<std::sync::Mutex<Self>>,
         inputs: AuditInputs,
         pass: busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
@@ -73,7 +73,7 @@ impl Durability {
 
     #[cfg(test)]
     #[must_use]
-    pub async fn audit_window(&self, from: u64, to: u64) -> Option<Vec<AuditRecord>> {
+    pub(crate) async fn audit_window(&self, from: u64, to: u64) -> Option<Vec<AuditRecord>> {
         match self.audit_window_at(from, to) {
             AuditWindowAt::Cached(records) => Some(records),
             AuditWindowAt::OnChain { chain, .. } => chain.audit_window(from, to).await,
@@ -81,7 +81,7 @@ impl Durability {
     }
 
     #[must_use]
-    pub fn audit_window_at(&self, from: u64, to: u64) -> AuditWindowAt {
+    pub(crate) fn audit_window_at(&self, from: u64, to: u64) -> AuditWindowAt {
         let covered = self.audit_records().first().is_some_and(|r| r.seq <= from);
         let pick = |r: &&AuditRecord| r.seq >= from && r.seq <= to;
         if covered || self.audit_records().is_empty() && !self.keeps_chain() {
@@ -95,7 +95,7 @@ impl Durability {
     }
 
     #[must_use]
-    pub fn audit_window_since(
+    pub(crate) fn audit_window_since(
         &self,
         window: &mut Vec<AuditRecord>,
         sealed_before: u64,
@@ -121,7 +121,7 @@ impl Durability {
     }
 
     #[must_use]
-    pub fn retained_audit_findings(&self) -> Vec<String> {
+    pub(crate) fn retained_audit_findings(&self) -> Vec<String> {
         let mut findings = Vec::new();
         if let Err(broken) = AuditChain::verify_window(self.audit_records()) {
             findings.push(format!("{broken:?}"));
@@ -160,7 +160,7 @@ pub enum AuditWindowAt {
 
 impl ChainAt {
     #[must_use]
-    pub async fn audit_window(self, from: u64, to: u64) -> Option<Vec<AuditRecord>> {
+    pub(crate) async fn audit_window(self, from: u64, to: u64) -> Option<Vec<AuditRecord>> {
         let store = self.store().map(str::to_string);
         let records = match self.read().await {
             Ok(Ok(records)) => records,

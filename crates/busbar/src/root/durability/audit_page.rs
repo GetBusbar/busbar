@@ -86,7 +86,7 @@ pub struct AuditPagePlan {
 }
 
 impl Durability {
-    pub fn prepare_audit_page(
+    pub(crate) fn prepare_audit_page(
         &self,
         from: u64,
         to: u64,
