@@ -80,21 +80,11 @@ fn secs_of(t: SystemTime) -> u64 {
 }
 
 fn failed(what: &str, f: impl std::fmt::Debug) -> StorageError {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: names the store operation that failed"
-    )]
-    let message = format!("oauth_as store: {what}: {f:?}");
-    StorageError::new(message)
+    super::cold::store_failed(what, f)
 }
 
 fn decode_failed(what: &str, e: &serde_json::Error) -> StorageError {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: names the store record that did not decode"
-    )]
-    let message = format!("oauth_as store: {what} did not decode: {e}");
-    StorageError::new(message)
+    super::cold::store_decode_failed(what, e)
 }
 
 fn encode<T: Serialize>(what: &str, value: &T) -> Result<Vec<u8>, StorageError> {
@@ -272,16 +262,6 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
-    pub(crate) fn schemas() -> Vec<String> {
-        [
-            "bucket", "family", "uc", "key", "ix.tok", "ix.rt", "ix.code", "ix.par", "ix.dev",
-            "ix.cons", "ix.fam", "ix.subj", "session", "stake", "replay",
-        ]
-        .into_iter()
-        .map(Self::schema)
-        .collect()
-    }
-
     pub(crate) fn new(store: Arc<ScopedStore>) -> Self {
         Self {
             store,
@@ -655,7 +635,7 @@ impl Shared {
         Ok(value)
     }
 
-    fn schema(name: &str) -> String {
+    pub(crate) fn schema(name: &str) -> String {
         if atomic_kind(name) {
             atomic_schema(name)
         } else {

@@ -36,7 +36,7 @@ impl BootstrapIds {
         }
         let derive = |domain: &[u8]| -> Result<super::Id, Error> {
             let mut hash = Sha256::new();
-            hash.update(&domain[..]);
+            hash.update(domain);
             hash.update(&plan.plan_digest()[..]);
             let digest = hash.finish();
             let id: super::Id = digest[..16].try_into().map_err(|_| Error::Corrupt)?;

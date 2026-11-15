@@ -1,122 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::sync::Arc;
-
 use axum::response::{IntoResponse, Response};
-use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
-use busbar_kernel::core_routes::CoreRouter;
-
-pub(crate) fn seam_mount(
-    router: CoreRouter,
-    plane: Option<&Arc<dyn std::any::Any + Send + Sync>>,
-) -> CoreRouter {
-    mount(
-        router,
-        plane.and_then(|p| p.downcast_ref::<super::plane::AsPlane>()),
-    )
-}
-
-pub(crate) fn mount(router: CoreRouter, plane: Option<&super::plane::AsPlane>) -> CoreRouter {
-    let Some(plane) = plane else {
-        return router;
-    };
-    let id = plane.identity();
-
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the authorization server's routes are mounted once, when the node starts"
-    )]
-    let router = if id.fapi2() {
-        router.route(
-            id.par_path().to_string(),
-            RouteMethod::Post,
-            RouteAuth::None,
-            forward,
-        )
-    } else {
-        router
-    };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the authorization server's routes are mounted once, when the node starts"
-    )]
-    let router = router
-        .route(
-            id.metadata_path().to_string(),
-            RouteMethod::Get,
-            RouteAuth::None,
-            forward,
-        )
-        .route(
-            id.jwks_path().to_string(),
-            RouteMethod::Get,
-            RouteAuth::None,
-            forward,
-        )
-        .route(
-            id.authorize_path().to_string(),
-            RouteMethod::Get,
-            RouteAuth::None,
-            authorize,
-        )
-        .route(
-            id.token_path().to_string(),
-            RouteMethod::Post,
-            RouteAuth::None,
-            forward,
-        )
-        .route(
-            id.device_authorization_path().to_string(),
-            RouteMethod::Post,
-            RouteAuth::None,
-            forward,
-        )
-        .route(
-            id.revocation_path().to_string(),
-            RouteMethod::Post,
-            RouteAuth::None,
-            forward,
-        )
-        .route(
-            id.verification_path().to_string(),
-            RouteMethod::Get,
-            RouteAuth::Admin,
-            device_verification,
-        )
-        .route(
-            id.verification_path().to_string(),
-            RouteMethod::Post,
-            RouteAuth::Admin,
-            device_verification,
-        )
-        .route(
-            id.consent_path().to_string(),
-            RouteMethod::Get,
-            RouteAuth::Admin,
-            consent_screen,
-        )
-        .route(
-            id.consent_path().to_string(),
-            RouteMethod::Post,
-            RouteAuth::Admin,
-            consent_submit,
-        )
-        .route(
-            id.register_path().to_string(),
-            RouteMethod::Post,
-            RouteAuth::None,
-            forward,
-        );
-    router
-}
 
 fn as_plane(app: &busbar_kernel::state::App) -> Option<&super::plane::AsPlane> {
     app.oauth_as_any()
         .and_then(|p| p.downcast_ref::<super::plane::AsPlane>())
 }
 
-async fn forward(
+pub(crate) async fn forward(
     busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
     request: axum::extract::Request,
 ) -> Response {
@@ -132,7 +24,7 @@ fn into_axum(response: oauth_as::http::Response) -> Response {
         .into_response()
 }
 
-async fn device_verification(
+pub(crate) async fn device_verification(
     busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
     request: axum::extract::Request,
 ) -> Response {
@@ -254,7 +146,7 @@ fn store_unavailable() -> Response {
 /// 2. **A refusal is a page.** `oauth-as` answers a request it will not redirect (RFC 6749
 ///    s4.1.2.1: never to an unvalidated `redirect_uri`) with a direct JSON error, which a browser
 ///    shows as raw text. The same status and the same error code go back as HTML instead.
-async fn authorize(
+pub(crate) async fn authorize(
     busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
     request: axum::extract::Request,
 ) -> Response {
@@ -326,31 +218,7 @@ fn error_page(response: oauth_as::http::Response) -> Response {
         return into_axum(response);
     }
     let (parts, body) = response.into_parts();
-    #[expect(
-        clippy::disallowed_types,
-        reason = "error: reads the refusal the authorization server answered, to show it"
-    )]
-    let error: serde_json::Value = serde_json::from_slice(&body.into_bytes()).unwrap_or_default();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: names the refusal the authorization server answered"
-    )]
-    let code = error["error"]
-        .as_str()
-        .map_or_else(|| format!("HTTP {}", parts.status.as_u16()), str::to_string);
-    let description = error["error_description"].as_str().unwrap_or_default();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the page that shows an authorization refusal"
-    )]
-    let page = format!(
-        "<!doctype html><meta charset=utf-8><title>busbar — authorization error</title>\
-         <h1>Authorization error</h1>\
-         <p>error: <code>{code}</code></p>\
-         <p>{description}</p>",
-        code = Escaped(&code),
-        description = Escaped(description),
-    );
+    let page = super::cold::authorization_error_page(parts.status, &body.into_bytes());
     (
         parts.status,
         [(axum::http::header::CACHE_CONTROL, "no-store")],
@@ -369,7 +237,7 @@ fn unresolved_grant(error: &oauth_as::store::StorageError) -> Response {
         .into_response()
 }
 
-async fn consent_screen(
+pub(crate) async fn consent_screen(
     busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
     axum::extract::Query(query): axum::extract::Query<ConsentQuery>,
 ) -> Response {
@@ -432,7 +300,7 @@ pub(super) fn session_cookies(identity: &crate::config::AsIdentity, id: &str) ->
     ]
 }
 
-async fn consent_submit(
+pub(crate) async fn consent_submit(
     busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
     headers: axum::http::HeaderMap,
     axum::extract::Form(form): axum::extract::Form<ConsentForm>,
@@ -625,14 +493,7 @@ fn form_decoded(s: &str) -> String {
     }
     match String::from_utf8(out) {
         Ok(text) => text,
-        Err(invalid) => {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a percent-escape decoded to bytes that are not UTF-8"
-            )]
-            let lossy = String::from_utf8_lossy(invalid.as_bytes()).into_owned();
-            lossy
-        }
+        Err(invalid) => super::cold::lossy_form_component(invalid.as_bytes()),
     }
 }
 
@@ -717,7 +578,7 @@ fn consent_page(return_to: &str, pending: &Pending) -> String {
 }
 
 /// Text made safe for HTML as it is written into the page.
-struct Escaped<'a>(&'a str);
+pub(super) struct Escaped<'a>(pub(super) &'a str);
 
 impl std::fmt::Display for Escaped<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
