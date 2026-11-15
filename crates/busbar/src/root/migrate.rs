@@ -116,6 +116,7 @@ pub(crate) fn run_in(
 /// Step 1 over the boot's strict parse, with this process's environment and no `--ignore-overlay`:
 /// `None` for a stamped or absent config (nothing of `busbar_migrate` is entered), the plan for an
 /// unstamped one.
+#[cfg(test)]
 pub(crate) fn step1(
     config: &Path,
     migrated: bool,

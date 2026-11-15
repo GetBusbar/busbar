@@ -20,9 +20,14 @@ pub(crate) struct Retired {
     pub use_instead: &'static str,
 }
 
+// Indexes into [`RETIRED_LAUNCH_ENV`], read by `capture` (test builds only since the flag went).
+#[cfg(test)]
 pub(crate) const PROVIDERS: usize = 0;
+#[cfg(test)]
 pub(crate) const WORKERS: usize = 1;
+#[cfg(test)]
 pub(crate) const HTTP1: usize = 2;
+#[cfg(test)]
 pub(crate) const H2: usize = 3;
 
 pub(crate) const RETIRED_LAUNCH_ENV: [Retired; 4] = [

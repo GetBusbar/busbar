@@ -15,10 +15,13 @@ use busbar_contract::secure::SecureVec;
 
 use super::*;
 
+/// Rows by (namespace, key).
+type Rows = BTreeMap<([u8; 16], Vec<u8>), Vec<u8>>;
+
 /// An in-memory store: rows by (namespace, key), native records by address, audit in order.
 #[derive(Default)]
 struct Mem {
-    rows: RefCell<BTreeMap<([u8; 16], Vec<u8>), Vec<u8>>>,
+    rows: RefCell<Rows>,
     natives: RefCell<BTreeMap<String, Native>>,
     audit: RefCell<Vec<Audit>>,
     commits: Counter<usize>,

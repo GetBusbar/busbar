@@ -68,8 +68,8 @@ The thousands digit is the area.
 | [BUSBAR-3024](/docs/1.6/errors/BUSBAR-3024/) | A metadata host-list entry names no host (it matches nothing and is dropped) — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-3025](/docs/1.6/errors/BUSBAR-3025/) | A provider URL names a private or loopback host the destination guard refuses | 1.6.0 |
 | [BUSBAR-3026](/docs/1.6/errors/BUSBAR-3026/) | Declared billable classes have no configured rate | 1.6.0 |
-| [BUSBAR-3027](/docs/1.6/errors/BUSBAR-3027/) | A 1.5.5 file overlay holds settings this Store has not imported (boot refuses to start) | 1.6.0 |
-| [BUSBAR-3028](/docs/1.6/errors/BUSBAR-3028/) | A 1.5.5 overlay selector, variable or file is not read (nothing to import) | 1.6.0 |
+| [BUSBAR-3027](/docs/1.6/errors/BUSBAR-3027/) | A 1.5.5 file overlay held settings this Store had not imported — RETIRED *(retired)* | 1.6.0 |
+| [BUSBAR-3028](/docs/1.6/errors/BUSBAR-3028/) | A 1.5.5 overlay input was not read — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-3029](/docs/1.6/errors/BUSBAR-3029/) | A retired launch environment variable is set and IGNORED | 1.6.0 |
 | [BUSBAR-3030](/docs/1.6/errors/BUSBAR-3030/) | An auth plugin states the operator credential but is not first-party (ignored) | 1.6.0 |
 | [BUSBAR-3101](/docs/1.6/errors/BUSBAR-3101/) | A registration is named with a reserved word | 1.6.0 |
