@@ -306,8 +306,6 @@ fn register_protocols() {
 }
 
 fn register_planes() {
-    root::migration_table::install();
-
     root::linked::register_stores(&LINKED);
     busbar_kernel::preflight::install_linked_auth(LINKED.auths);
 
@@ -626,8 +624,6 @@ async fn run(
         busbar_kernel::appbuild::IGNORE_OVERLAY_FLAG
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
-    let overlay_migration =
-        root::overlay_migrate::command(std::env::args().skip(1)).unwrap_or_else(|error| die(error));
     let principal_transition =
         root::principal_transition::command(argv).unwrap_or_else(|error| die(error));
     if let Some(command) = principal_transition.as_ref() {
@@ -694,7 +690,7 @@ async fn run(
     // The 1.5.5 overlay selection of the authored deployment, captured while startup custody
     // is open. Startup conversion drops the selector; the serve gate below still answers for
     // the data behind it. Nothing is opened here.
-    let legacy_overlay = if principal_transition.is_none() && overlay_migration.is_none() {
+    let legacy_overlay = if principal_transition.is_none() {
         let (_, detection) = documents
             .original_deployment(&config_path)
             .unwrap_or_else(|error| die(error));
@@ -919,19 +915,6 @@ async fn run(
             busbar_kernel::governance::principal_transition::pending_guard_native(anchor_store.clone())
                 .await
                 .unwrap_or_else(|error| die(error));
-        }
-        if let Some(old_config) = overlay_migration.as_ref() {
-            root::overlay_migrate::run(
-                old_config,
-                &config_path,
-                deploy,
-                &defs,
-                &anchor_store,
-                config_locked,
-            )
-            .await
-            .unwrap_or_else(|error| die(error));
-            return None;
         }
         root::boot::bind_plugin_floor(anchor_store.clone())
             .await

@@ -8,6 +8,12 @@
 //!   operator to it. Test code (a `#[cfg(test)]` scope, a `#[test]` fn, a module file declared
 //!   under test cfg, a `tests/` tree) is not production. `crates/busbar-migrations` is skipped: it
 //!   is deleted whole at C3 (§A9 item 8), and nothing in the gateway depends on it after C1.
+//! - `migrate-retired-words` (red (k)): none of the migration table's vocabulary survives. No
+//!   `[package.metadata.busbar.*]` table carries a `former.`, `retired.` or `name_1_5_5` key (the root
+//!   migration table is gone, names resolve through each plugin's `FORMER_NAMES`), and no production
+//!   source names `RootHost`, the host the retired flag ran plugin migrations through. The files
+//!   `PENDING_BINDING` lists still hold `RootHost`: package 4 (mob/c1c2-binding) deletes them with
+//!   the `main.rs` interleave, and removes the entries.
 //! - `migrate-anchors` (red (sz1)(3c)): each anchor the `migrate-size` job sums from carries
 //!   `#[cold]` and `#[inline(never)]` in the source, so fat LTO cannot inline it away and a
 //!   rename cannot hide code: "anchor not pinned" otherwise, "anchor not found" when it is gone.
@@ -28,6 +34,19 @@ pub(crate) const FLAG: &str = "--migrate-config";
 
 /// Deleted whole at C3 (§A9 item 8); not product code after C1.
 const RETIRING: &str = "busbar-migrations";
+
+/// The host of the retired flag's plugin migrations.
+pub(crate) const ROOT_HOST: &str = "RootHost";
+
+/// Files that still name `RootHost` because `startup_upgrade/` is called from the `main.rs` boot
+/// interleave, which package 4 rebuilds around the seam. Package 4 deletes them and this list.
+const PENDING_BINDING: [&str; 2] = [
+    "crates/busbar/src/root/config_migrate.rs",
+    "crates/busbar/src/root/startup_upgrade/",
+];
+
+/// Metadata key prefixes that belonged to the root migration table.
+const RETIRED_KEYS: [&str; 3] = ["former.", "retired.", "name_1_5_5"];
 
 /// The † anchors of MIGRATE-ON-BOOT §7: (file, the fn's `impl` type or "" for a free fn, fn name).
 pub(crate) const ANCHORS: [(&str, &str, &str); 3] = [
@@ -82,9 +101,20 @@ pub(crate) fn flag_text(root: &Path) -> Result<Vec<String>, String> {
 /// The lines of production string literals and doc comments that name the flag. A file syn cannot
 /// parse is read line by line, so it is never skipped.
 pub(crate) fn flag_sites(text: &str) -> Vec<usize> {
+    word_sites(text, FLAG, false)
+}
+
+/// The lines of production code that name `RootHost`: identifiers, string literals and doc comments.
+pub(crate) fn root_host_sites(text: &str) -> Vec<usize> {
+    word_sites(text, ROOT_HOST, true)
+}
+
+fn word_sites(text: &str, word: &str, idents: bool) -> Vec<usize> {
     match syn::parse_file(text) {
         Ok(ast) => {
-            let mut scan = FlagScan {
+            let mut scan = WordScan {
+                word,
+                idents,
                 test_depth: usize::from(is_test(&ast.attrs)),
                 hits: Vec::new(),
             };
@@ -96,18 +126,20 @@ pub(crate) fn flag_sites(text: &str) -> Vec<usize> {
         Err(_) => text
             .lines()
             .enumerate()
-            .filter(|(_, line)| line.contains(FLAG))
+            .filter(|(_, line)| line.contains(word))
             .map(|(index, _)| index + 1)
             .collect(),
     }
 }
 
-struct FlagScan {
+struct WordScan<'w> {
+    word: &'w str,
+    idents: bool,
     test_depth: usize,
     hits: Vec<usize>,
 }
 
-impl FlagScan {
+impl WordScan<'_> {
     fn guarded(&mut self, attrs: &[Attribute], walk: impl FnOnce(&mut Self)) {
         let test = usize::from(is_test(attrs));
         self.test_depth += test;
@@ -116,7 +148,7 @@ impl FlagScan {
     }
 
     fn hit(&mut self, value: &str, line: usize) {
-        if self.test_depth == 0 && value.contains(FLAG) {
+        if self.test_depth == 0 && value.contains(self.word) {
             self.hits.push(line);
         }
     }
@@ -126,6 +158,9 @@ impl FlagScan {
         for token in stream {
             match token {
                 TokenTree::Group(group) => self.tokens(group.stream()),
+                TokenTree::Ident(ident) if self.idents => {
+                    self.hit(&ident.to_string(), ident.span().start().line);
+                }
                 TokenTree::Literal(literal) => {
                     let line = literal.span().start().line;
                     self.hit(&literal.to_string(), line);
@@ -136,7 +171,13 @@ impl FlagScan {
     }
 }
 
-impl<'ast> Visit<'ast> for FlagScan {
+impl<'ast> Visit<'ast> for WordScan<'_> {
+    fn visit_ident(&mut self, ident: &'ast proc_macro2::Ident) {
+        if self.idents {
+            self.hit(&ident.to_string(), ident.span().start().line);
+        }
+    }
+
     fn visit_item(&mut self, item: &'ast Item) {
         self.guarded(item_attrs(item), |scan| visit::visit_item(scan, item));
     }
@@ -164,6 +205,95 @@ impl<'ast> Visit<'ast> for FlagScan {
         self.tokens(mac.tokens.clone());
         visit::visit_macro(self, mac);
     }
+}
+
+/// The migration table's vocabulary that must not come back: metadata keys in any `Cargo.toml` and
+/// production `RootHost`. See the module comment for `PENDING_BINDING`.
+pub(crate) fn retired_words(root: &Path) -> Result<Vec<String>, String> {
+    let mut findings = Vec::new();
+    let mut manifests = vec![root.join("dist/default/Cargo.toml")];
+    for dir in sorted_entries(&root.join("crates"))? {
+        if dir.is_dir() {
+            manifests.push(dir.join("Cargo.toml"));
+        }
+    }
+    for manifest in manifests {
+        let Ok(text) = std::fs::read_to_string(&manifest) else {
+            continue;
+        };
+        for line in retired_key_sites(&text) {
+            findings.push(format!(
+                "{}:{line}: a `[package.metadata.busbar.*]` table carries the retired migration \
+                 table (`former.`, `retired.`, `name_1_5_5` keys); names resolve through each \
+                 plugin's FORMER_NAMES",
+                rel(root, &manifest)
+            ));
+        }
+    }
+    let mut files = Vec::new();
+    for dir in sorted_entries(&root.join("crates"))? {
+        let retiring = dir.file_name().is_some_and(|name| name == RETIRING);
+        if !retiring && dir.is_dir() {
+            rust_files(&dir, &mut files)?;
+        }
+    }
+    let mut hits = Vec::new();
+    let mut test_modules = Vec::new();
+    for file in files {
+        let shown = rel(root, &file);
+        if PENDING_BINDING
+            .iter()
+            .any(|prefix| shown.starts_with(prefix))
+        {
+            continue;
+        }
+        let text = std::fs::read_to_string(&file).map_err(|error| format!("{shown}: {error}"))?;
+        test_modules.extend(scan_source(&file, &text).test_modules);
+        for line in root_host_sites(&text) {
+            hits.push((file.clone(), line));
+        }
+    }
+    findings.extend(
+        hits.into_iter()
+            .filter(|(file, _)| !test_modules.iter().any(|module| module.covers(file)))
+            .map(|(file, line)| {
+                format!(
+                    "{}:{line}: production code names `{ROOT_HOST}`, the host the retired \
+                     `--migrate-config` ran plugin migrations through",
+                    rel(root, &file)
+                )
+            }),
+    );
+    Ok(findings)
+}
+
+/// The lines of a `Cargo.toml` that open or fill a retired migration table: the
+/// `[package.metadata.busbar.migration]` header, and any key in a `[package.metadata.busbar.*]`
+/// table that starts with one of `RETIRED_KEYS` (bare or quoted).
+pub(crate) fn retired_key_sites(text: &str) -> Vec<usize> {
+    let mut hits = Vec::new();
+    let mut in_busbar_table = false;
+    for (index, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_busbar_table = line.starts_with("[package.metadata.busbar.");
+            if line == "[package.metadata.busbar.migration]" {
+                hits.push(index + 1);
+            }
+            continue;
+        }
+        if !in_busbar_table || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, _)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim().trim_matches('"');
+        if RETIRED_KEYS.iter().any(|prefix| key.starts_with(prefix)) {
+            hits.push(index + 1);
+        }
+    }
+    hits
 }
 
 pub(crate) fn anchors(root: &Path) -> Result<Vec<String>, String> {

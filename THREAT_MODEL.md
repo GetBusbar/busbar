@@ -152,7 +152,7 @@ The control plane must not be reachable from the data port and must not be silen
 admin listener (`crates/busbar/src/main.rs`, `crates/busbar-kernel/src/router.rs`). Boot is refused
 when the admin listener binds anything but loopback or `localhost` without `admin_tls.client_ca`,
 unless `admin_require_mtls: false` is set explicitly; the retired `admin_insecure` key is refused and
-`--migrate-config` rewrites it (`crates/busbar-kernel/src/config/mod.rs`, `config/migrate.rs`). A hostname is treated as exposed without resolving
+the first-boot migration rewrites it (`crates/busbar-kernel/src/config/mod.rs`, `config/migrate.rs`). A hostname is treated as exposed without resolving
 it. The admin scope a request needs is derived from method and path only, never the body
 (`crates/busbar-kernel-scope/src/lib.rs`, `admin_required_scope`): `GET` and `HEAD` need read-only,
 every other method outside two named dry-run paths needs full.

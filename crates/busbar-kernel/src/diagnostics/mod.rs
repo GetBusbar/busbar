@@ -1192,11 +1192,11 @@ diagnostics! {
 
     CLI_INVALID_ARGUMENTS = 9102, Boot, Fatal, "cli-invalid-arguments", "1.6.0", false,
         "A command's arguments do not fit together",
-        "A command-line command (an overlay migration or a principal transition) was given arguments it cannot act on: a missing companion flag, a conflicting pair, or a malformed value. The text after the code names which. Nothing ran; the process exited with the usage status (2).",
+        "A command-line command (a principal transition) was given arguments it cannot act on: a missing companion flag, a conflicting pair, or a malformed value. The text after the code names which. Nothing ran; the process exited with the usage status (2).",
         "Fix the arguments the message names; `busbar --help` lists every command with its flags."
         => cli_invalid_arguments(reason) "{reason}; try 'busbar --help'",
-        example "busbar --migrate-overlay",
-        detail "--migrate-overlay requires --overlay <path>; try 'busbar --help'";
+        example "busbar --principal-transition",
+        detail "principal transition flags require explicit values; try 'busbar --help'";
 
     CLI_FLAG_REQUIRES_VALUE = 9103, Boot, Fatal, "cli-flag-requires-value", "1.6.0", false,
         "A command-line flag is missing its value",
@@ -1215,37 +1215,29 @@ diagnostics! {
         example "busbar --config /etc/busbar/config.yaml",
         detail "plane `admin` needs a transport of kind `transport` that provides the protocol `http`, and none is installed or admitted; install a transport plugin that provides `http`";
 
-    MIGRATE_PATH_MISSING = 3401, Config, Fatal, "migrate-path-missing", "1.6.0", false,
-        "--migrate-config was given no file to migrate",
-        "`busbar --migrate-config` converts one old config file and needs its path. None was given, so nothing was read or printed; the process exited with the usage status (2).",
-        "Name the file: `busbar --migrate-config old-config.yaml > config.yaml`."
-        => migrate_path_missing() "--migrate-config requires a path: busbar --migrate-config <old-config.yaml>",
-        example "busbar --migrate-config",
-        detail "--migrate-config requires a path: busbar --migrate-config <old-config.yaml>";
+    /// RETIRED in 1.6.0: nothing emits it. The number is kept so a log line from a pre-release build still resolves to an entry that says what happened.
+    MIGRATE_PATH_MISSING = 3401, Config, Fatal, "migrate-path-missing", "1.6.0", true,
+        "The retired migration command was given no file to migrate — RETIRED",
+        "RETIRED. Nothing emits this code: the retired migration command is gone in 1.6.0; the first boot of a 1.5.5 config migrates it in place and keeps a `config.yaml.1.5.5` backup beside it. The number is kept so a log line from a pre-release build still resolves to this page.",
+        "Nothing emits this code. Start busbar on the 1.5.5 config.yaml; the boot migrates it. See docs/migration-1.6.md.";
 
-    MIGRATE_SOURCE_UNREADABLE = 3402, Config, Fatal, "migrate-source-unreadable", "1.6.0", false,
-        "--migrate-config could not read the file it was given",
-        "The old config file named to `--migrate-config` could not be read: it does not exist, it is not readable by this user, or it is not UTF-8 text. The operating system's reason follows the path. Nothing was migrated.",
-        "Check the path and its permissions, then run the migration again."
-        => migrate_source_unreadable(path, error) "cannot read '{path}': {error}",
-        example "busbar --migrate-config /etc/busbar/old.yaml",
-        detail "cannot read '/etc/busbar/old.yaml': No such file or directory (os error 2)";
+    /// RETIRED in 1.6.0: nothing emits it. The number is kept so a log line from a pre-release build still resolves to an entry that says what happened.
+    MIGRATE_SOURCE_UNREADABLE = 3402, Config, Fatal, "migrate-source-unreadable", "1.6.0", true,
+        "The retired migration command could not read the file it was given — RETIRED",
+        "RETIRED. Nothing emits this code: the retired migration command is gone in 1.6.0; the first boot of a 1.5.5 config migrates it in place and keeps a `config.yaml.1.5.5` backup beside it. The number is kept so a log line from a pre-release build still resolves to this page.",
+        "Nothing emits this code. Start busbar on the 1.5.5 config.yaml; the boot migrates it. See docs/migration-1.6.md.";
 
-    MIGRATE_LAUNCH_DIRECTORY = 3403, Config, Fatal, "migrate-launch-directory", "1.6.0", false,
-        "--migrate-config could not resolve its working directory",
-        "The migration resolves relative paths (a providers file, a store path) against the directory busbar was launched from, as the old launcher did. The current directory could not be read (it was deleted or is not accessible), so nothing was migrated.",
-        "Run the migration from an existing, readable directory, ideally the one the old deployment was launched from."
-        => migrate_launch_directory(error) "cannot resolve migration launch directory: {error}",
-        example "cd /tmp/gone && rmdir /tmp/gone && busbar --migrate-config old.yaml",
-        detail "cannot resolve migration launch directory: No such file or directory (os error 2)";
+    /// RETIRED in 1.6.0: nothing emits it. The number is kept so a log line from a pre-release build still resolves to an entry that says what happened.
+    MIGRATE_LAUNCH_DIRECTORY = 3403, Config, Fatal, "migrate-launch-directory", "1.6.0", true,
+        "The retired migration command could not resolve its working directory — RETIRED",
+        "RETIRED. Nothing emits this code: the retired migration command is gone in 1.6.0; the first boot of a 1.5.5 config migrates it in place and keeps a `config.yaml.1.5.5` backup beside it. The number is kept so a log line from a pre-release build still resolves to this page.",
+        "Nothing emits this code. Start busbar on the 1.5.5 config.yaml; the boot migrates it. See docs/migration-1.6.md.";
 
-    MIGRATE_FAILED = 3404, Config, Fatal, "migrate-failed", "1.6.0", false,
-        "--migrate-config refused the file",
-        "The old config could not be converted mechanically: it is not valid YAML, it has a shape no busbar release accepted, or it carries a value the migration cannot carry forward without guessing. The reason follows the code. Nothing was printed to stdout, so no half-migrated config can be deployed by accident.",
-        "Fix the reason the message names in the OLD file (or capture the setting by hand), then run the migration again. docs/migration-1-6.md lists every key the migration rewrites."
-        => migrate_failed(reason) "--migrate-config failed: {reason}",
-        example "busbar --migrate-config not-yaml.txt",
-        detail "--migrate-config failed: config is not a YAML mapping";
+    /// RETIRED in 1.6.0: nothing emits it. The number is kept so a log line from a pre-release build still resolves to an entry that says what happened.
+    MIGRATE_FAILED = 3404, Config, Fatal, "migrate-failed", "1.6.0", true,
+        "The retired migration command refused the file — RETIRED",
+        "RETIRED. Nothing emits this code: the retired migration command is gone in 1.6.0; the first boot of a 1.5.5 config migrates it in place and keeps a `config.yaml.1.5.5` backup beside it. The number is kept so a log line from a pre-release build still resolves to this page.",
+        "Nothing emits this code. Start busbar on the 1.5.5 config.yaml; the boot migrates it. See docs/migration-1.6.md.";
 
     MIGRATE_REFRESH_TTL_MEANING_CHANGED = 3405, Config, Actionable, "migrate-refresh-ttl-meaning-changed", "1.6.0", false,
         "Migration carried refresh_ttl over to verify_ttl, whose meaning differs",
@@ -1284,7 +1276,7 @@ diagnostics! {
         "The migration captures the old launcher's BUSBAR_WORKER_THREADS into `advanced.worker_threads`. Its value was not a positive integer, which the old launcher also ignored, so nothing was captured and the configured worker count (or TOKIO_WORKER_THREADS) still applies.",
         "Set `advanced.worker_threads` in the migrated config if you meant to pin the worker count, and remove BUSBAR_WORKER_THREADS from the launcher."
         => migrate_worker_threads_ignored() "BUSBAR_WORKER_THREADS is not a positive integer; ignored as in the old launcher; configured workers and the TOKIO_WORKER_THREADS fallback are preserved",
-        example "BUSBAR_WORKER_THREADS=auto busbar --migrate-config old.yaml",
+        example "BUSBAR_WORKER_THREADS=auto busbar",
         detail "BUSBAR_WORKER_THREADS is not a positive integer; ignored as in the old launcher; configured workers and the TOKIO_WORKER_THREADS fallback are preserved";
 
     CONFIG_MODEL_INVALID = 3102, Config, Fatal, "config-model-invalid", "1.6.0", false,
@@ -1738,7 +1730,7 @@ diagnostics! {
     CONFIG_LEGACY_OVERLAY_NOT_IMPORTED = 3027, Config, Fatal, "config-legacy-overlay-not-imported", "1.6.0", false,
         "A 1.5.5 file overlay holds settings this Store has not imported (boot refuses to start)",
         "The overlay file a 1.5.5 deployment read and wrote (config.overlay.file, BUSBAR_CONFIG_OVERLAY, or busbar-overlay.json beside config.yaml) holds admin-API settings, and this Store has no import receipt for it. 1.6 serving never reads file overlays, so starting would silently drop those settings, security hooks and groups included; serving REFUSES to start instead. The message names the file and how it was selected, never its settings. In --safe-mode it is a warning and the boot continues.",
-        "Follow the remedy the message gives for this Store. Empty durable Store: import once with `busbar --config <config.yaml> --migrate-overlay <old-config.yaml>` before any admin-API config change. Ephemeral Store: configure a durable Store first, then import. Store already holds a 1.6 overlay: --migrate-overlay cannot import into it, so move the file away (keep a copy), start, and re-apply the settings you still want through the admin API. Moving the file away without a copy abandons the settings deliberately. Admin-API config writes in safe mode create a Store overlay, after which the file can no longer be imported.";
+        "Follow the remedy the message gives for this Store. The upgrade boot folds a 1.5.5 overlay into config.yaml; a config.yaml that is already migrated no longer reads it. Re-apply the settings you still want through the admin API (on a durable Store), keeping a copy of the file first. Moving the file away without a copy abandons the settings deliberately.";
 
     /// A 1.5.5 overlay selector, BUSBAR_CONFIG_OVERLAY or overlay file that loses nothing is not read.
     CONFIG_LEGACY_OVERLAY_NOT_READ = 3028, Config, Actionable, "config-legacy-overlay-not-read", "1.6.0", false,

@@ -3017,12 +3017,6 @@ pub(crate) fn install_normal_root_metadata() {
                 })
                 .collect()
         };
-        let migration = Box::leak(table("migration").into_boxed_slice());
-        assert!(
-            !migration.is_empty(),
-            "the normal root carries its migration table"
-        );
-        crate::config::declared_vocabulary::install(migration);
         let operator = table("operator-auth");
         let row = operator
             .iter()

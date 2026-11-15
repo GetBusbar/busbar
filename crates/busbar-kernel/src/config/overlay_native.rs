@@ -17,7 +17,7 @@ use crate::persistence::{
 
 const SCHEMA: &str = "busbar.config.overlay.v1";
 const HEAD: &[u8] = b"head";
-/// The receipt `import_once` writes beside HEAD when it imports a 1.5.5 file overlay.
+/// The receipt a former release wrote beside HEAD when it imported a 1.5.5 file overlay.
 const RECEIPT: &[u8] = b"migration:1.5.5:file";
 type Observed = Arc<Mutex<Option<Option<Vec<u8>>>>>;
 
@@ -416,8 +416,8 @@ impl NativeOverlay {
         }
     }
 
-    /// What a 1.5.5 file-overlay import would meet here, read in `import_once`'s own order
-    /// (RECEIPT, then HEAD), so the serve gate never promises an import it would refuse.
+    /// What a 1.5.5 file overlay would meet here, read in the order the importer used
+    /// (RECEIPT, then HEAD).
     pub(super) async fn legacy_import_state(
         &self,
     ) -> Result<super::overlay_store::LegacyImportState, String> {
@@ -431,114 +431,6 @@ impl NativeOverlay {
             return Ok(LegacyImportState::StoreOverlayPresent);
         }
         Ok(LegacyImportState::Empty)
-    }
-
-    pub(super) async fn import_once(
-        &self,
-        source_sha256: [u8; 32],
-        doc: &OverlayDoc,
-    ) -> Result<bool, String> {
-        use super::overlay_store::import::{canonicalize, check_receipt, Receipt};
-        let mut value = serde_json::to_value(doc.authoring(&crate::seal::acquire()))
-            .map_err(|error| error.to_string())?;
-        value["version"] = super::overlay::OVERLAY_VERSION.into();
-        canonicalize(&mut value);
-        let bytes = serde_json::to_vec(&value).map_err(|error| error.to_string())?;
-        let receipt = Receipt {
-            version: 1,
-            source_sha256,
-            overlay_sha256: Sha256::digest(&bytes),
-        };
-        let receipt_bytes = serde_json::to_vec(&receipt).map_err(|error| error.to_string())?;
-        let mut hash = Sha256::new();
-        hash.update(b"busbar.overlay.file-import.v1\0");
-        hash.update(&receipt_bytes);
-        let digest: [u8; 32] = hash.finalize();
-        let generation: [u8; 16] = digest[..16].try_into().expect("fixed digest width");
-        let mut operation = self.begin(false)?;
-        if let Some(candidate) = operation.candidate.as_mut() {
-            if candidate.request.op_id != generation {
-                return Err(
-                    "config overlay import cannot replace another pending candidate".into(),
-                );
-            }
-            self.submit(candidate).await?;
-            operation.candidate.take();
-        }
-        if let Some(saved) = self.get(RECEIPT).await? {
-            check_receipt(&saved, &receipt)?;
-            self.read_required()
-                .await?
-                .ok_or("overlay migration receipt has no readable destination head")?;
-            return Ok(false);
-        }
-        if self.get(HEAD).await?.is_some() {
-            return Err("overlay migration refuses an existing Store overlay without its matching migration receipt".into());
-        }
-        let head = Head {
-            version: 1,
-            generation,
-            length: bytes.len() as u64,
-            digest: receipt.overlay_sha256,
-        };
-        let head = serde_json::to_vec(&head).map_err(|error| error.to_string())?;
-        let mutations = vec![
-            Mutation::Put {
-                schema: SCHEMA.into(),
-                key: HEAD.to_vec(),
-                value: Secret::new(head.clone()),
-            },
-            Mutation::Put {
-                schema: SCHEMA.into(),
-                key: RECEIPT.to_vec(),
-                value: Secret::new(receipt_bytes),
-            },
-        ];
-        let stages = stage_chunks(&generation, &bytes);
-        operation.candidate = Some(Candidate {
-            head,
-            stages,
-            staged: 0,
-            conflicted: false,
-            cleanup: None,
-            request: Request {
-                op_id: generation,
-                predicates: vec![
-                    Predicate {
-                        schema: SCHEMA.into(),
-                        key: HEAD.to_vec(),
-                        expected: Expected::Absent,
-                    },
-                    Predicate {
-                        schema: SCHEMA.into(),
-                        key: RECEIPT.to_vec(),
-                        expected: Expected::Absent,
-                    },
-                ],
-                mutations,
-            },
-        });
-        let applied = self
-            .submit(
-                operation
-                    .candidate
-                    .as_mut()
-                    .expect("import candidate installed"),
-            )
-            .await?;
-        operation.candidate.take();
-        if applied {
-            return Ok(true);
-        }
-        let saved = self
-            .get(RECEIPT)
-            .await?
-            .ok_or("overlay changed while migration was committing; no import receipt exists")?;
-        check_receipt(&saved, &receipt)?;
-        self.read_required()
-            .await?
-            .ok_or("overlay migration receipt has no readable destination head")?;
-        Ok(false)
     }
 
     pub(super) async fn update(

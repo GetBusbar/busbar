@@ -187,15 +187,13 @@ Hook configuration and admin writes use one canonical spelling. Convert existing
 once and update clients that submit or read retired fields.
 
 - **`config.overlay` is retired.** 1.6.0 keeps admin-API config changes in the configured Store,
-  not in an overlay file, so `config:` accepts only `locked`. `busbar --migrate-config` and the
-  first 1.6.0 boot remove `overlay: false` and `overlay: { file: <path> }` and keep
-  `config.locked`. Import the old file into the Store once with
-  `busbar --config <new-config.yaml> --migrate-overlay <old-config.yaml>`
-  ([overlay import](migration-overlay-1.6.md)). Where the selector is still present and nothing
-  migrates it (`--validate`, a reload), it is refused with that instruction.
+  not in an overlay file, so `config:` accepts only `locked`. The first 1.6.0 boot of a 1.5.5
+  config removes `overlay: false` and `overlay: { file: <path> }`, keeps `config.locked`, and folds
+  the old overlay file into `config.yaml` ([overlay upgrade](migration-overlay-1.6.md)). A stamped
+  config that still carries the selector is refused by the strict parse (`unknown field`).
 - **Hook `plugin:` → `module:`.** Current configuration and `POST`/`PUT /api/v1/admin/hooks`
-  bodies require `module:`. `busbar --migrate-config` rewrites old YAML; explicit legacy overlay
-  import converts the old persisted field before committing it to the Store.
+  bodies require `module:`. The first boot rewrites old YAML and folds a 1.5.5 overlay file
+  on the same boot.
 - **Hook `at: <stage>` → `phase: [<stage>]`.** Current configuration and admin writes require the
   phase list. One-shot YAML and overlay migration preserve the selected stage and an existing
   non-empty phase list. For example, replace `at: response` with `phase: [response]`. An omitted
@@ -211,7 +209,7 @@ once and update clients that submit or read retired fields.
 - **`tools.<server>.allow_private` and `agents.<agent>.allow_private` → `advanced.allow_destinations`.**
   One setting governs every outbound connection busbar and its plugins make; the per-registration
   switch is retired and a configuration that still sets it is refused (BUSBAR-3135), naming the
-  registration. `busbar --migrate-config` removes the key and lists exactly the hosts that
+  registration. the first-boot migration removes the key and lists exactly the hosts that
   registration dials (its `url`, and a token endpoint it names), never a wildcard or a network:
 
   ```yaml
@@ -237,7 +235,7 @@ once and update clients that submit or read retired fields.
 - **`security.allow_metadata_hosts`, `security.allow_all_metadata` and
   `providers.<p>.allow_metadata_hosts` are retired.** Cloud metadata is refused for every outbound
   connection, in every egress class, and no configuration admits it; a configuration that still
-  carves an exception is refused at startup (BUSBAR-3136). `busbar --migrate-config` removes the keys
+  carves an exception is refused at startup (BUSBAR-3136). the first-boot migration removes the keys
   and names each removed entry (BUSBAR-3411). `security.blocked_metadata_hosts` stays and still
   extends the denylist. An `advanced.allow_destinations` entry that names a cloud-metadata host or
   address is refused too (BUSBAR-3134). A workload that needs cloud credentials uses
@@ -330,7 +328,7 @@ path; other omitted tiers are `0`, as in 1.5.5) and these open units, which have
 | `audio_ms` | a transcription's reported duration, in whole milliseconds |
 | `guardrail_*` (nine) | the Bedrock guardrail policy units, one unit per policy type |
 
-If you migrate by hand instead of running `--migrate-config`: delete `cache_write_utok: 0` from a
+If you migrate by hand instead of letting the first boot do it: delete `cache_write_utok: 0` from a
 1.5.5 entry. 1.6.0 removes it and logs a WARN at boot, and cache writes bill at `input_utok`. A
 config reload that adds it is refused with the reason. YAML cannot yet make cache writes free; use
 the admin API.
@@ -429,7 +427,7 @@ the 1.5.5 keys above to the 1.6 key.
 
 ## Quick checklist
 
-- [ ] Run `busbar --migrate-config config.yaml > config-1.6.yaml` and read what it printed: every
+- [ ] Back up `config.yaml`, start 1.6.0 on it once and read what the boot reported: every
       change it made, the WARNINGs (the `role_bindings."*"` entries that keep 1.5.5's access) and the
       TODOs.
 - [ ] Act on the TODOs. A provider `api_key` that does not resolve: fix the reference, or — for an
@@ -449,9 +447,8 @@ the 1.5.5 keys above to the 1.6 key.
       expect its spend to rise to what it actually used.
 - [ ] Convert retired environment overrides using the migration command with the old environment,
       then remove those variables from launchers; serving uses the resulting configuration.
-- [ ] Hooks spelled `plugin:` or `at:` in config.yaml: run `busbar --migrate-config` once
-      and explicitly import old persisted overlays before serving. Ordinary Store reads do not
-      rewrite retired fields.
+- [ ] Hooks spelled `plugin:` or `at:` in config.yaml: the first boot rewrites them, and folds
+      an old overlay file on the same boot. Ordinary Store reads do not rewrite retired fields.
 - [ ] If a dashboard or reconciliation relied on `GET /admin/usage` totals recalculating after a
       rate-card edit: they no longer do (a card prices only what follows it). Post an
       `amend-rate-history` correction for booked usage, and pass `?as_of=<history_seq>` to read money

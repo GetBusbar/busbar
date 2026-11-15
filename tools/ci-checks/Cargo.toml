@@ -4,7 +4,7 @@ version = "1.6.0"
 publish = false            # internal workspace tool; never goes to crates.io
 edition = "2021"
 rust-version = "1.97"
-description = "Core's repository checks, one CI job line each in busbar-release ci/core.yml: no-getrandom (randomness only through the crypto facade), crypto-graph (ring, sha2 and ed25519-dalek reachable in the root lock only through busbar-crypto), migrate-flag-text and migrate-anchors (MIGRATE-ON-BOOT C1)."
+description = "Core's repository checks, one CI job line each in busbar-release ci/core.yml: no-getrandom (randomness only through the crypto facade), crypto-graph (ring, sha2 and ed25519-dalek reachable in the root lock only through busbar-crypto), migrate-flag-text, migrate-retired-words and migrate-anchors (MIGRATE-ON-BOOT C1)."
 license = "Apache-2.0"
 
 [[bin]]

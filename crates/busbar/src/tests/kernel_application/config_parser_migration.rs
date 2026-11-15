@@ -34,7 +34,7 @@ fn built_ins(defs: &busbar_kernel::config::ExportDefs) -> busbar_kernel::config:
 #[test]
 fn migrate_keeps_explicit_empty_admin_chain_distinct_from_absence() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     for auth in ["null", "{}"] {
         let (_, doc) = migrate_to_value(&format!("auth: {auth}\nadmin_auth: []\n"));
         assert!(dig(&doc, &["auth", "admin_auth"])
@@ -50,7 +50,7 @@ fn migrate_keeps_explicit_empty_admin_chain_distinct_from_absence() {
 #[test]
 fn migrate_preserves_admin_values_when_auth_cannot_accept_them() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     for raw in [
         "auth: opaque\nadmin_auth: [test-idp-double]\n",
         "auth: { admin_auth: opaque }\nadmin_auth: [test-idp-double]\n",
@@ -73,7 +73,7 @@ fn migrate_preserves_admin_values_when_auth_cannot_accept_them() {
 #[test]
 fn migrate_preserves_unrecognized_pool_sections_and_destinations() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     for raw in [
         "auth: { upstream_credentials: caller }\npools: [unread]\n",
         "global_hooks: [screen]\npools: [unread]\n",
@@ -104,7 +104,7 @@ fn migrate_preserves_unrecognized_pool_sections_and_destinations() {
 #[test]
 fn migrate_preserves_unrecognized_role_entries_and_budget_groups() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     for role in ["opaque", "{ rpm_limit: 3, future_cap: 7 }"] {
         let raw = format!("auth: {{ chain: [test-idp-double] }}\ngroup_map: {{ staff: {role} }}\n");
         let original: Value = yaml::from_str(&raw).unwrap();
@@ -126,7 +126,7 @@ fn migrate_preserves_unrecognized_role_entries_and_budget_groups() {
 #[test]
 fn migrate_preserves_non_string_export_keys() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = "export:\n  7: { module: unknown-sink, settings: { keep: original } }\n";
     let original: Value = yaml::from_str(raw).unwrap();
     let (out, doc) = migrate_to_value(raw);
@@ -137,7 +137,7 @@ fn migrate_preserves_non_string_export_keys() {
 #[test]
 fn migrate_optional_null_auth_preserves_top_level_admin_chain() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let (_, doc) = migrate_to_value(
         "auth: null\nadmin_auth: [test-idp-double]\nproviders: {}\nmodels: {}\npools: {}\n",
     );
@@ -153,7 +153,7 @@ fn migrate_optional_null_auth_preserves_top_level_admin_chain() {
 #[test]
 fn migrate_optional_null_auth_preserves_governance_admin_token() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let op = busbar_kernel::config::operator_provider();
     for top_chain in [String::new(), format!("admin_auth: [{op}]\n")] {
         let raw = format!(
@@ -178,7 +178,7 @@ fn migrate_optional_null_auth_preserves_governance_admin_token() {
 #[test]
 fn migrate_identity_providers_preserves_conflicting_typed_fields() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let op = busbar_kernel::config::operator_provider();
     for (key, module, data, admin) in [
         ("max_admin_scope", "test-idp-double", "read-only", "full"),
@@ -221,7 +221,7 @@ fn migrate_identity_providers_preserves_conflicting_typed_fields() {
 #[test]
 fn migrate_identity_providers_still_deduplicates_equal_and_complementary_fields() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let op = busbar_kernel::config::operator_provider();
     for admin in [
         "max_admin_scope: full, token: { env: SHARED_TOKEN }",
@@ -252,7 +252,7 @@ fn migrate_identity_providers_still_deduplicates_equal_and_complementary_fields(
 #[test]
 fn migrate_on_exhausted_all_arms_round_trip() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = r#"
 providers: {}
 models: {}
@@ -341,7 +341,7 @@ pools:
 #[test]
 fn migrate_real_14x_top_level_auth_surfaces() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = r#"
 auth:
   chain: [tokens, test-idp-double]
@@ -437,7 +437,7 @@ pools: {}
 #[test]
 fn migrate_global_hooks_names_resolve_and_dedup() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = r#"
 providers: {}
 models: {}
@@ -486,7 +486,7 @@ global_hooks: [audit-tap]
 #[test]
 fn migrate_price_per_1k_synthesizes_rate_card() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = r#"
 governance:
   price_per_1k_tokens_cents: 5
@@ -526,7 +526,7 @@ pools: {}
 #[test]
 fn migrate_pool_policy_without_hooks_block() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = r#"
 providers: {}
 models: {}
@@ -561,7 +561,7 @@ pools:
 #[test]
 fn migrate_auth_mode_arms() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let out = migrate_config("auth:\n  mode: passthrough\nproviders: {}\nmodels: {}\npools: {}\n")
         .unwrap();
     assert!(out.yaml.contains("upstream_credentials: passthrough"));
@@ -579,7 +579,7 @@ fn migrate_auth_mode_arms() {
 #[test]
 fn migrate_group_map_without_module_flags_placeholder() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = r#"
 auth:
   group_map:
@@ -599,7 +599,7 @@ pools: {}
 #[test]
 fn migrate_group_map_survives_a_non_mapping_auth() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = r#"
 auth: null
 group_map:
@@ -629,7 +629,7 @@ pools: {}
 #[test]
 fn migrate_non_mapping_group_map_survives_a_mapping_auth() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = r#"
 auth:
   chain: [test-idp-double]
@@ -665,7 +665,7 @@ pools: {}
 #[test]
 fn migrate_dropped_scopes_map_to_full_with_warning() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = r#"
 auth:
   chain: ["test-idp-double"]
@@ -744,7 +744,7 @@ pools:
 #[test]
 fn migrate_emit_server_timing_moves_to_advanced_response_headers() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = r#"
 providers: {}
 models: {}
@@ -798,7 +798,7 @@ observability:
 #[test]
 fn migrate_hook_stage_at_values_are_renamed() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = r#"
 providers: {}
 models: {}
@@ -876,7 +876,7 @@ global_hooks:
 #[test]
 fn migrate_emit_server_timing_absent_is_a_no_op() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = "providers: {}\nmodels: {}\n";
     let (out, doc) = migrate_to_value(raw);
     assert!(
@@ -893,7 +893,7 @@ fn migrate_emit_server_timing_absent_is_a_no_op() {
 #[test]
 fn migrate_observability_export_rewrites_old_to_new() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = r#"
 observability:
   otlp_url: "https://otel.example.com/v1/traces"
@@ -1002,7 +1002,7 @@ pools: {}
 #[test]
 fn migrate_never_drops_a_malformed_auth_block() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     for (shape, raw_auth) in [
         ("null", "auth:\n"),
         ("sequence", "auth: []\n"),
@@ -1036,7 +1036,7 @@ fn migrate_never_drops_a_malformed_auth_block() {
 #[test]
 fn migrate_never_drops_a_malformed_identity_providers_block() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw =
         "auth:\n  chain: [{ test-idp-double: { settings: { issuer: https://a.example.com } } }]\n\
                identity-providers: 7\nproviders: {}\nmodels: {}\npools: {}\n";
@@ -1064,7 +1064,7 @@ fn migrate_never_drops_a_malformed_identity_providers_block() {
 #[test]
 fn migrate_records_the_deletion_of_a_malformed_retired_block() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = "observability:\nmetrics: []\nproviders: {}\nmodels: {}\npools: {}\n";
     let (out, doc) = migrate_to_value(raw);
     assert!(
@@ -1091,7 +1091,7 @@ fn migrate_records_the_deletion_of_a_malformed_retired_block() {
 #[test]
 fn migrate_identity_providers_splits_a_per_plane_settings_conflict() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = "auth:\n  \
                  chain: [{ test-idp-double: { settings: { issuer: https://data.example.com } } }]\n  \
                  admin_auth: [{ test-idp-double: { max_admin_scope: full, settings: { issuer: https://admin.example.com } } }]\n\
@@ -1180,7 +1180,7 @@ fn migrate_identity_providers_splits_a_per_plane_settings_conflict() {
 #[test]
 fn unmappable_budget_period_never_silently_becomes_the_all_time_window() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = "\
 governance:
   enabled: true
@@ -1246,7 +1246,7 @@ pools: {}
 #[test]
 fn a_yearly_budget_period_is_rescaled_never_loosened_onto_the_month_window() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = "\
 governance:
   enabled: true
@@ -1318,7 +1318,7 @@ pools: {}
 #[test]
 fn quarterly_and_biannual_budget_periods_are_rescaled_never_loosened_onto_the_month_window() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = "\
 governance:
   enabled: true
@@ -1385,7 +1385,7 @@ pools: {}
 #[test]
 fn a_wrong_shaped_key_is_never_taken_and_discarded() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = "\
 hooks: some-hook-name
 global_hooks: audit-tap
@@ -1433,7 +1433,7 @@ pools:
 #[test]
 fn a_wrong_shaped_store_block_is_never_taken_and_discarded() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = "store: acme-kv\nproviders: {}\nmodels: {}\npools: {}\n";
     let (out, doc) = migrate_to_value(raw);
     assert_eq!(
@@ -1452,7 +1452,7 @@ fn a_wrong_shaped_store_block_is_never_taken_and_discarded() {
 #[test]
 fn migrate_export_adds_the_explicit_streams_projection() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = "\
 export:
   metrics:
@@ -1530,7 +1530,7 @@ export:
 #[test]
 fn migrate_export_leaves_a_malformed_instance_alone_with_a_todo() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = "export:\n  broken: null\n  ok:\n    module: request-log-file\n    settings:\n      path: /tmp/x.jsonl\n";
     let (out, doc) = migrate_to_value(raw);
     assert!(
@@ -1549,7 +1549,7 @@ fn migrate_export_leaves_a_malformed_instance_alone_with_a_todo() {
 #[test]
 fn migrate_export_flags_an_unknown_module_rather_than_guessing() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = "export:\n  siem:\n    module: some-third-party-sink\n    settings: {}\n";
     let (out, doc) = migrate_to_value(raw);
     assert!(dig(&doc, &["export", "siem", "streams"]).is_none());
@@ -1565,7 +1565,7 @@ fn migrate_export_flags_an_unknown_module_rather_than_guessing() {
 #[test]
 fn migrate_export_flags_the_retired_audit_stream() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = "export:\n  soc2:\n    module: request-log-webhook\n    streams: [logs, audit]\n    settings:\n      url: https://siem.example.com/l\n";
     let (out, doc) = migrate_to_value(raw);
     let streams = dig(&doc, &["export", "soc2", "streams"]).unwrap();
@@ -1586,7 +1586,7 @@ fn migrate_export_flags_the_retired_audit_stream() {
 #[test]
 fn migrate_reports_a_top_level_pool_of_another_plane() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = "providers: {}\nmodels: {}\npools:\n  search:\n    members: [search-eu, search-us]\n";
     let (out, _doc) = migrate_to_value(raw);
     assert!(
@@ -1601,7 +1601,7 @@ fn migrate_reports_a_top_level_pool_of_another_plane() {
 #[test]
 fn migrate_leaves_rich_pool_members_untouched() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = "providers: {}\nmodels: {}\npools:\n  model1:\n    members:\n\
                \x20     - { model: model1-a, weight: 3 }\n\
                \x20     - { model: model1-b, weight: 1 }\n\
@@ -1647,7 +1647,7 @@ fn migrate_leaves_rich_pool_members_untouched() {
 #[test]
 fn migrate_rewrites_a_lingering_at_key_on_a_named_hook_def() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = "providers: {}\nmodels: {}\npools: {}\n\
                hooks:\n  audit:\n    kind: tap\n    module: audit-hook\n    at: response\n";
     let (out, doc) = migrate_to_value(raw);
@@ -1673,7 +1673,7 @@ fn migrate_rewrites_a_lingering_at_key_on_a_named_hook_def() {
 #[test]
 fn migrate_never_invents_a_keyless_api_key() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = "providers:\n  vendor-a: { api_key_env: VENDOR_A_KEY }\n  local: { base_url: 'http://127.0.0.1:11434' }\n";
     let (_out, doc) = migrate_to_value(raw);
     assert_eq!(
@@ -1690,7 +1690,7 @@ fn migrate_never_invents_a_keyless_api_key() {
 #[test]
 fn a_keys_chain_without_a_signing_key_gets_the_signing_key_todo() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let raw = "listen: 0.0.0.0:8080\nauth:\n  chain: [keys]\n";
     let out = migrate_config(raw).expect("migrates");
     assert!(

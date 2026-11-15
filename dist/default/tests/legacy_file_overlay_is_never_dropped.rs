@@ -14,7 +14,7 @@ mod common;
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Output, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use busbar_plugin_loader::sign::{Manifest, SigningKey};
@@ -232,12 +232,6 @@ fn boots(dir: &Path, data: u16, args: &[&str], env: &[(&str, &Path)]) -> String 
     stderr
 }
 
-fn output(dir: &Path, args: &[&str]) -> Output {
-    command(dir, args, &[])
-        .output()
-        .expect("run busbar to completion")
-}
-
 /// One HTTP/1.1 exchange; returns the status, the lower-cased header block and the body.
 fn http(
     port: u16,
@@ -433,7 +427,7 @@ fn store_overlay_present_without_receipt_refuses_with_manual_remedy() {
     for needle in [
         "busbar-overlay.json",
         "already holds a 1.6 config overlay",
-        "cannot import this file",
+        "cannot be folded into it",
         "Reconcile by hand",
         "move the file away",
     ] {
@@ -442,21 +436,6 @@ fn store_overlay_present_without_receipt_refuses_with_manual_remedy() {
     assert!(
         !stderr.contains("Import them once with"),
         "an import that cannot succeed is offered: {stderr}"
-    );
-
-    // The claim in the refusal, against the real importer.
-    let config = work.0.join("config.yaml");
-    let config = config.to_str().unwrap();
-    let import = output(&work.0, &["--config", config, "--migrate-overlay", config]);
-    let import_stderr = String::from_utf8_lossy(&import.stderr);
-    assert!(
-        !import.status.success(),
-        "the import must refuse: {import_stderr}"
-    );
-    assert!(
-        import_stderr
-            .contains("refuses an existing Store overlay without its matching migration receipt"),
-        "{import_stderr}"
     );
 
     // The stated way out works.
@@ -479,7 +458,7 @@ fn safe_mode_with_unimported_overlay_boots_and_warns_that_writes_block_import() 
     for needle in [
         "busbar-overlay.json",
         "create a Store overlay",
-        "can no longer import this file",
+        "re-apply this file's settings",
     ] {
         assert!(stderr.contains(needle), "missing {needle:?}: {stderr}");
     }

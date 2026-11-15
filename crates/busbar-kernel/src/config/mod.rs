@@ -18,8 +18,6 @@ pub mod filled;
 pub mod groups;
 
 pub mod bootstrap;
-pub mod current_format;
-pub mod declared_vocabulary;
 pub mod grammar;
 mod grammar_fields;
 

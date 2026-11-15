@@ -12,7 +12,7 @@ The overlay file a 1.5.5 deployment read and wrote (config.overlay.file, BUSBAR_
 
 ## How to fix it
 
-Follow the remedy the message gives for this Store. Empty durable Store: import once with `busbar --config <config.yaml> --migrate-overlay <old-config.yaml>` before any admin-API config change. Ephemeral Store: configure a durable Store first, then import. Store already holds a 1.6 overlay: --migrate-overlay cannot import into it, so move the file away (keep a copy), start, and re-apply the settings you still want through the admin API. Moving the file away without a copy abandons the settings deliberately. Admin-API config writes in safe mode create a Store overlay, after which the file can no longer be imported.
+Follow the remedy the message gives for this Store. The upgrade boot folds a 1.5.5 overlay into config.yaml; a config.yaml that is already migrated no longer reads it. Re-apply the settings you still want through the admin API (on a durable Store), keeping a copy of the file first. Moving the file away without a copy abandons the settings deliberately.
 
 ---
 

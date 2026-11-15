@@ -471,13 +471,6 @@ pub fn read_config_documents<'a>(
         busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(&interpolated_config)
     {
         use busbar_contract::yaml::{MappingExt as _, ValueExt as _};
-        let markers = config::current_format::detect_legacy_markers(&doc);
-        if !markers.is_empty() {
-            return Err(format!(
-                "config.yaml: {}",
-                config::current_format::legacy_config_error(&markers)
-            ));
-        }
         // Startup unfolds a literal 1.5.5 `cache_write_utok: 0` before this reader; one that still
         // arrives (a runtime edit, or an env-interpolated value) is refused rather than made free.
         // Admin-API zeros live in the overlay patch, applied below, and are not touched.

@@ -5,7 +5,6 @@
   ],
   "generated": [
     "crates/busbar/src/main.rs:300",
-    "crates/busbar/src/main.rs:302",
-    "crates/busbar/src/root/migration_table.rs:4"
+    "crates/busbar/src/main.rs:302"
   ]
 }
