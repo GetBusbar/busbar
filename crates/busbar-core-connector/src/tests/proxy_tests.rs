@@ -211,7 +211,7 @@ mod non_unicode_environment {
     }
 
     #[test]
-    fn non_unicode_all_proxy_and_no_proxy_refuse_even_with_explicit_scheme_slots() {
+    fn non_unicode_all_proxy_and_bypass_list_refuse_even_with_explicit_scheme_slots() {
         for keys in [ALL_PROXY_KEYS, NO_PROXY_KEYS] {
             assert_variable_only_refusal(
                 &[
@@ -331,7 +331,7 @@ fn resolve_config_fail_louds_on_garbage_in_any_slot() {
 }
 
 #[test]
-fn no_proxy_suffix_matching_is_conventional() {
+fn bypass_list_suffix_matching_is_conventional() {
     let config = test_config("proxy.corp", 3128, None, "example.com, internal");
     let via = |host: &str| selected(&config, true, host).is_some();
     assert!(!via("example.com"), "exact NO_PROXY entry bypasses");
@@ -352,7 +352,7 @@ fn no_proxy_suffix_matching_is_conventional() {
 }
 
 #[test]
-fn no_proxy_ip_and_cidr_matrix() {
+fn bypass_list_ip_and_cidr_matrix() {
     let m = no_proxy_matches;
     assert!(m("10.1.2.3", "10.1.2.3"));
     assert!(!m("10.1.2.3", "10.1.2.30"));
@@ -385,7 +385,7 @@ fn no_proxy_ip_and_cidr_matrix() {
 }
 
 #[test]
-fn selection_is_scheme_scoped_and_no_proxy_excludes_both() {
+fn selection_is_scheme_scoped_and_the_bypass_list_excludes_both() {
     let config = resolve_config(&env(
         Some("hs.corp:1"),
         Some("h.corp:2"),
@@ -674,7 +674,7 @@ fn a_target_the_guard_refuses_never_reaches_the_proxy() {
 
 /// RED: a host `NO_PROXY` names is dialled direct, and a carrier carried as itself (a driver's raw
 #[test]
-fn no_proxy_and_a_raw_stream_dial_direct() {
+fn bypass_list_and_a_raw_stream_dial_direct() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     worker().block_on(async {
         let (port, seen) = scripted_proxy(b"HTTP/1.1 200 OK\r\n\r\n").await;
@@ -845,7 +845,7 @@ fn configured_plain_connect_proxy_carries_an_open_web_tls_target() {
 }
 
 #[test]
-fn no_proxy_star_exempts_ip_literals_too() {
+fn bypass_list_star_exempts_ip_literals_too() {
     for host in ["10.0.0.1", "::1", "[::1]", "api.upstream.test"] {
         assert!(no_proxy_matches("*", host), "`*` exempts {host}");
         assert!(
@@ -871,7 +871,7 @@ fn request_method_env_does_not_disable_proxy() {
 }
 
 #[test]
-fn no_proxy_unparseable_host_is_not_exempt() {
+fn bypass_list_unparseable_host_is_not_exempt() {
     for host in [
         "a.com/x",
         "a.com:443",
@@ -888,7 +888,7 @@ fn no_proxy_unparseable_host_is_not_exempt() {
 }
 
 #[test]
-fn no_proxy_userinfo_host_is_not_exempt() {
+fn bypass_list_userinfo_host_is_not_exempt() {
     assert!(!no_proxy_matches("10.0.0.0/8", "x@10.0.0.1"));
     assert!(!no_proxy_matches("10.0.0.1", "x@10.0.0.1"));
     assert!(!no_proxy_matches("a.com", "u@a.com"));

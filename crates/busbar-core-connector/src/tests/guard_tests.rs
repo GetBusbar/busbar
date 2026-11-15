@@ -403,7 +403,6 @@ fn the_extra_metadata_refusals_hold_in_every_class() {
         block_private_addresses: true,
         allow: vec!["imds.corp.example".into(), "203.0.113.0/24".into()],
         blocked: vec!["imds.corp.example".into(), "203.0.113.9".into()],
-        ..Destinations::default()
     })
     .unwrap();
     for class in EVERY_CLASS {
