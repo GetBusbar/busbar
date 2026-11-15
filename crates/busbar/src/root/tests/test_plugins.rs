@@ -49,7 +49,7 @@ pub fn application_store_settings(directory: &Path) -> serde_json::Value {
 
 /// Creation provenance owned only by the provisioner of a new fixture database.
 /// May cross construction stages, but must be initialized before any serving starts.
-pub struct FreshApplicationStore {
+pub(crate) struct FreshApplicationStore {
     opened: std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>,
     evidence_sha256: String,
     store_sha256: String,
