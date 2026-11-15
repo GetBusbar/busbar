@@ -648,6 +648,7 @@ mod config_forms;
 #[cfg(feature = "openapi-schema")]
 mod contract_metadata;
 mod handlers;
+pub(crate) mod metrics;
 #[cfg(feature = "openapi-schema")]
 mod replay_metadata;
 mod settings_edit;

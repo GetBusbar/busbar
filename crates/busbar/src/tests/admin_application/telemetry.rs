@@ -342,3 +342,80 @@ async fn info_process_generation_is_available_without_metrics_and_changes_on_res
     let _ = server.await;
     println!("{MARKER}{nonce}");
 }
+
+#[tokio::test]
+async fn admin_metrics_without_export() {
+    if isolated() {
+        return;
+    }
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(60));
+    let (app, _scratch) = application().await;
+    let router = busbar_core_admin::build_router(app);
+    use tower::ServiceExt as _;
+    let get = |accept: Option<&str>, bearer: Option<&str>, path: &str| {
+        let mut request = axum::http::Request::builder().uri(path.to_owned());
+        if let Some(accept) = accept {
+            request = request.header("accept", accept);
+        }
+        if let Some(token) = bearer {
+            request = request.header("authorization", format!("Bearer {token}"));
+        }
+        request.body(axum::body::Body::empty()).unwrap()
+    };
+    for path in ["/metrics", "/metrics/hooks"] {
+        let response = router.clone().oneshot(get(None, None, path)).await.unwrap();
+        assert_eq!(response.status(), 401, "{path} is behind the admin door");
+    }
+
+    let response = router
+        .clone()
+        .oneshot(get(None, Some(TOKEN), "/metrics"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert!(response.headers()["content-type"]
+        .to_str()
+        .unwrap()
+        .starts_with("text/plain; version=0.0.4"));
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 22)
+        .await
+        .unwrap();
+    let text = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(
+        text.contains("# TYPE busbar_build_info gauge\n"),
+        "no export plugin is configured and the registry is still on:\n{text}"
+    );
+    assert!(text.contains(&format!(
+        "busbar_build_info{{version=\"{}\"}} 1\n",
+        env!("CARGO_PKG_VERSION")
+    )));
+
+    let response = router
+        .clone()
+        .oneshot(get(
+            Some("application/openmetrics-text"),
+            Some(TOKEN),
+            "/metrics",
+        ))
+        .await
+        .unwrap();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 22)
+        .await
+        .unwrap();
+    assert!(bytes.ends_with(b"# EOF\n"));
+
+    let response = router
+        .oneshot(get(Some("application/json"), Some(TOKEN), "/metrics"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 22)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(body["families"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|f| f["name"] == "busbar_build_info" && f["type"] == "gauge"));
+}
