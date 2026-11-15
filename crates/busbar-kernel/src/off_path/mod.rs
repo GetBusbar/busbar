@@ -12,3 +12,4 @@ pub(crate) mod export;
 /// configuration builds of the governance module; none runs per request.
 pub(crate) mod governance;
 pub(crate) mod hooks;
+pub(crate) mod plane_hooks;

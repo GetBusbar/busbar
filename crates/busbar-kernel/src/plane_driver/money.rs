@@ -195,10 +195,6 @@ impl SpentTicketReservation {
         Ok(Self(reservation))
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "each argument is a distinct fact the call needs; a one-use bundle type would add nothing"
-    )]
     pub fn adopt(
         self,
         money: &PlaneMoney,
@@ -1448,7 +1444,9 @@ impl MoneySeam for PlaneMoney {
                 lane.clear();
                 lane.push_str(member);
             }
-            open.provider = Some(provider.to_string());
+            let kept = open.provider.get_or_insert_with(String::new);
+            kept.clear();
+            kept.push_str(provider);
         }
     }
 
