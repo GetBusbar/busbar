@@ -307,7 +307,7 @@ pub mod export {
         ) -> impl core::future::Future<
             Output = Result<crate::host_side::answer::OwnedAnswer, crate::fail::CallError>,
         > + Send
-               + 'a {
+        + 'a {
             let _ = (&self._stub, drv, req, stream, delivery, attempt);
             async move { todo!() }
         }
@@ -330,7 +330,7 @@ pub mod export {
         ) -> impl core::future::Future<
             Output = Result<crate::host_side::answer::OwnedAnswer, crate::fail::CallError>,
         > + Send
-               + 'a {
+        + 'a {
             let _ = (&self._stub, drv, req, delivery);
             async move { todo!() }
         }
