@@ -46,8 +46,7 @@ fn a_new_descriptor_key_needs_no_kernel_grammar_change() {
         .unwrap_err()
         .to_string();
     assert!(
-        error
-            .contains("unknown field `unexpected`, expected one of `globs`, `enabled`, `spelling`"),
+        error.contains("unknown field `unexpected`, expected one of globs, enabled, spelling"),
         "{error}"
     );
     let error = read(&key, "[{enabled: true}]").unwrap_err().to_string();
@@ -55,12 +54,12 @@ fn a_new_descriptor_key_needs_no_kernel_grammar_change() {
     let error = read(&key, "[{globs: [], enabled: perhaps}]")
         .unwrap_err()
         .to_string();
-    assert!(error.contains("expected a boolean"), "{error}");
+    assert!(error.contains("invalid boolean"), "{error}");
     let error = read(&key, "[{globs: [], spelling: typo}]")
         .unwrap_err()
         .to_string();
     assert!(
-        error.contains("unknown variant `typo`, expected `first` or `second`"),
+        error.contains("unknown variant `typo`, expected one of first, second"),
         "{error}"
     );
 }
@@ -71,7 +70,7 @@ fn explicit_null_distinguishes_optional_values_from_defaulted_collections() {
     assert_eq!(read(&key, "null").unwrap(), Value::Null);
     key.nullable = Some(false);
     let error = read(&key, "null").unwrap_err().to_string();
-    assert!(error.contains("expected a sequence"), "{error}");
+    assert!(error.contains("expected sequence start"), "{error}");
     assert_eq!(read(&key, "[]").unwrap(), json!([]));
 }
 
@@ -83,7 +82,7 @@ fn required_nested_list_and_optional_scalar_keep_distinct_null_semantics() {
         json!([{"globs":[]}])
     );
     let error = read(&key, "[{globs: null}]").unwrap_err().to_string();
-    assert!(error.contains("expected a sequence"), "{error}");
+    assert!(error.contains("expected sequence start"), "{error}");
     let error = read(&key, "[{globs: [], enabled: true, enabled: false}]")
         .unwrap_err()
         .to_string();
