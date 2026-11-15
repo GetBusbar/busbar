@@ -881,26 +881,6 @@ impl<T> Page<T> {
     }
 }
 
-pub fn encode_offset_cursor(offset: usize) -> String {
-    hex::encode(format!("o:{offset}"))
-}
-
-pub fn decode_offset_cursor(cursor: &str) -> Option<usize> {
-    if cursor.is_empty() || !cursor.len().is_multiple_of(2) {
-        return None;
-    }
-    let bytes: Option<Vec<u8>> = (0..cursor.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(cursor.get(i..i + 2)?, 16).ok())
-        .collect();
-    let s = String::from_utf8(bytes?).ok()?;
-    s.strip_prefix("o:")?.parse::<usize>().ok()
-}
-
-#[cfg(test)]
-#[path = "tests/cursor_tests.rs"]
-mod cursor_tests;
-
 /// The EFFECTIVE config snapshot (`GET /api/v1/admin/config`): the running configuration as busbar
 /// resolved it, for drift detection (compare against your desired config) and one-shot inspection.
 /// Composed from the same REDACTED reads as the individual endpoints (auth chain names, pool/model/

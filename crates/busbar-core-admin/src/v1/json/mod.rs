@@ -391,19 +391,6 @@ fn respond<T: Serialize>(status: StatusCode, result: Result<T, AdminError>) -> R
     }
 }
 
-#[allow(clippy::result_large_err)]
-fn cursor_offset(q: &std::collections::HashMap<String, String>) -> Result<usize, Response> {
-    match q.get("cursor") {
-        None => Ok(0),
-        Some(c) => crate::v1::contract::decode_offset_cursor(c).ok_or_else(|| {
-            err_json_cond(
-                &AdminError::Validation("invalid pagination cursor".into()),
-                Cond::MalformedCursor,
-            )
-        }),
-    }
-}
-
 fn base_owned(kind: &str, name: &str) -> AdminError {
     AdminError::Conflict(format!(
         "{kind} `{name}` is defined in the base config file; edit config.yaml (the API cannot \
@@ -581,29 +568,6 @@ fn render_unexpected(unexpected: &str) -> String {
     VALUES_NOT_ECHOED.to_string()
 }
 
-fn page_window(
-    q: &std::collections::HashMap<String, String>,
-    default: usize,
-) -> Result<(usize, usize), Box<Response>> {
-    let limit = q
-        .get("limit")
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(default)
-        .clamp(1, crate::v1::contract::LIST_LIMIT_MAX);
-    Ok((cursor_offset(q).map_err(Box::new)?, limit))
-}
-
-fn page_cursor<T>(items: &mut Vec<T>, start: usize, limit: usize) -> Option<String> {
-    if items.len() > limit {
-        items.truncate(limit);
-        Some(crate::v1::contract::encode_offset_cursor(
-            start.saturating_add(limit),
-        ))
-    } else {
-        None
-    }
-}
-
 #[allow(clippy::result_large_err)]
 fn if_match_version(headers: &axum::http::HeaderMap) -> Result<Option<u64>, Response> {
     let Some(raw) = headers.get(axum::http::header::IF_MATCH) else {
@@ -650,7 +614,7 @@ pub use plane_input_schemas::install_plane_input_schemas;
 mod config_forms;
 #[cfg(feature = "openapi-schema")]
 mod contract_metadata;
-mod cursor;
+pub(crate) mod cursor;
 mod generation;
 mod handlers;
 #[cfg(feature = "openapi-schema")]

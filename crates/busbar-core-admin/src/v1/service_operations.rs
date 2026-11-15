@@ -350,22 +350,16 @@ impl AdminService {
             .ok_or_else(|| AdminError::not_found(format!("{} `{name}`", section.singular())))
     }
 
-    pub(crate) async fn list_groups(
-        &self,
-        start: usize,
-        limit: usize,
-    ) -> Result<Page<GroupView>, AdminError> {
-        let registry = &self.app.groups_registry;
-        let total = registry.len();
-        let items: Vec<GroupView> = registry
+    /// Every group, name-sorted; the handler cuts the keyset page.
+    pub(crate) async fn list_groups(&self) -> Result<Page<GroupView>, AdminError> {
+        let mut items: Vec<GroupView> = self
+            .app
+            .groups_registry
             .iter()
-            .skip(start)
-            .take(limit)
             .map(|(name, cfg)| GroupView::from_cfg(name, cfg))
             .collect();
-        let end = start.saturating_add(items.len());
-        let next_cursor = (end < total).then(|| crate::v1::contract::encode_offset_cursor(end));
-        Ok(Page { items, next_cursor })
+        items.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(Page::single(items))
     }
 
     pub(crate) async fn get_group(&self, name: &str) -> Result<GroupView, AdminError> {
