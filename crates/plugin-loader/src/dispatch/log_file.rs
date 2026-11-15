@@ -169,34 +169,25 @@ impl PluginLogConfig {
         rotate_mb: Option<u64>,
         keep: Option<u32>,
     ) -> Result<Self, String> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a refused plugins.logs level"
-        )]
-        let word = |key: String, w: &str| {
-            LogLevel::parse(w).ok_or_else(|| {
-                format!("{key}: '{w}' is not a level (off, error, warn, info, debug, trace)")
-            })
-        };
-        let level = level.map_or(Ok(LogLevel::Info), |w| word("plugins.logs.level".into(), w))?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: plugins.logs is read once per config apply"
-        )]
-        let levels = levels
-            .iter()
-            .map(|(k, w)| Ok((k.clone(), word(format!("plugins.logs.levels['{k}']"), w)?)))
-            .collect::<Result<_, String>>()?;
+        let level = level.map_or(Ok(LogLevel::Info), |w| {
+            LogLevel::parse(w).ok_or_else(|| crate::cold::dispatch::load::bad_log_level(w))
+        })?;
+        // plugins.logs is read once per config apply.
+        let mut parsed = BTreeMap::new();
+        for (k, w) in levels {
+            let level = LogLevel::parse(w)
+                .ok_or_else(|| crate::cold::dispatch::load::bad_instance_log_level(k, w))?;
+            parsed.insert(crate::cold::dispatch::load::text(k), level);
+        }
         if rotate_mb == Some(0) {
             return Err("plugins.logs.rotate_mb: must be at least 1".into());
         }
-        // busbar:expect(bp::into_alloc, reason = "config: plugins.logs is read once per config apply")
-        let dir_path = PathBuf::from(dir.unwrap_or(DEFAULT_DIR));
+        let dir_path = crate::cold::dispatch::load::path(dir.unwrap_or(DEFAULT_DIR));
         Ok(Self {
             dir: dir_path,
             named_dir: dir.is_some(),
             level,
-            levels,
+            levels: parsed,
             rotate_bytes: rotate_mb.map(|mb| mb.saturating_mul(1024 * 1024)),
             keep: keep.unwrap_or(DEFAULT_KEEP),
             live: Live::default(),
@@ -212,11 +203,10 @@ impl PluginLogConfig {
     }
 
     fn words(&self) -> Words {
-        // busbar:expect(bp::clone_alloc, reason = "config: the words are taken once per config apply or sink open")
         Words {
-            dir: self.dir.clone(),
+            dir: crate::cold::dispatch::load::path_copy(&self.dir),
             level: self.level,
-            levels: self.levels.clone(),
+            levels: crate::cold::dispatch::load::map_copy(&self.levels),
             rotate_bytes: self.rotate_bytes,
             keep: self.keep,
             named_dir: self.named_dir,
@@ -248,16 +238,10 @@ impl PluginLogConfig {
         let mut sinks = cell.sinks.lock().unwrap_or_else(|p| p.into_inner());
         *cell.now.words.write().unwrap_or_else(|p| p.into_inner()) = Some(Arc::clone(&words));
         cell.now.generation.fetch_add(1, Ordering::AcqRel);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a config apply re-levels every live sink once"
-        )]
-        sinks.retain(|s| {
-            s.upgrade().is_some_and(|s| {
-                s.level
-                    .store(words.level_for(&s.instance) as u8, Ordering::Release);
-                true
-            })
+        // A config apply re-levels every live sink once.
+        crate::cold::dispatch::load::relevel(&mut *sinks, |s| {
+            s.level
+                .store(words.level_for(&s.instance) as u8, Ordering::Release);
         });
     }
 
@@ -271,31 +255,19 @@ impl PluginLogConfig {
         let (admit, words) = {
             let mut sinks = cell.sinks.lock().unwrap_or_else(|p| p.into_inner());
             let words = self.current();
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "boot: a sink opens once, when its plugin instance is bound"
-            )]
             let admit = Arc::new(Admit {
-                instance: instance.to_string(),
+                instance: crate::cold::dispatch::load::text(instance),
                 level: AtomicU8::new(words.level_for(instance) as u8),
             });
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "boot: a sink opens once, when its plugin instance is bound"
-            )]
-            sinks.retain(|s| s.strong_count() > 0);
+            crate::cold::dispatch::load::prune_weak(&mut *sinks);
             sinks.push(Arc::downgrade(&admit));
             (admit, words)
         };
         let name = file_name(instance, kind);
         let path = words.dir.join(&name);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a sink opens once, when its plugin instance is bound"
-        )]
         let tag = Arc::new(Tag {
-            instance: instance.to_string(),
-            kind: format!("{kind:?}").to_ascii_lowercase(),
+            instance: crate::cold::dispatch::load::text(instance),
+            kind: crate::cold::dispatch::load::kind_tag(kind),
         });
         if words.named_dir {
             FileSlot::of(&path)
@@ -307,18 +279,9 @@ impl PluginLogConfig {
             match lanes.get(&name).and_then(Weak::upgrade) {
                 Some(lane) => lane,
                 None => {
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "error: a plugin log writer that could not start"
-                    )]
-                    let lane = Lane::start(&name, &cell.now, words, &tag).map_err(|e| {
-                        format!("plugins.logs: the log writer of {instance} could not start: {e}")
-                    })?;
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "boot: a file's writer starts once, when its first sink is bound"
-                    )]
-                    lanes.retain(|_, l| l.strong_count() > 0);
+                    let lane = Lane::start(&name, &cell.now, words, &tag)
+                        .map_err(|e| crate::cold::dispatch::load::writer_refused(instance, &e))?;
+                    crate::cold::dispatch::load::prune_weak_map(&mut *lanes);
                     lanes.insert(name, Arc::downgrade(&lane));
                     lane
                 }
@@ -337,55 +300,13 @@ impl PluginLogConfig {
 }
 
 fn file_name(instance: &str, kind: KindCode) -> String {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a log file is named once, when its sink is bound"
-    )]
-    let qualified = match crate::boot::kind_of(kind).root_key() {
-        Some(section)
-            if !instance
-                .strip_prefix(section)
-                .is_some_and(|rest| rest.starts_with('.')) =>
-        {
-            format!("{section}.{instance}")
-        }
-        _ => instance.to_string(),
-    };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a log file is named once, when its sink is bound"
-    )]
-    let stem: String = qualified
-        .bytes()
-        .map(|b| {
-            if b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-') {
-                b as char
-            } else {
-                '_'
-            }
-        })
-        .collect();
-
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a log file is named once, when its sink is bound"
-    )]
-    let file = if stem.bytes().all(|b| b == b'.') {
-        format!("{}.log", stem.replace('.', "_"))
-    } else {
-        format!("{stem}.log")
-    };
-    file
+    // A log file is named once, when its sink is bound.
+    crate::cold::dispatch::load::log_file_name(instance, kind)
 }
 
 fn refusal(path: &Path, e: &std::io::Error) -> String {
     let dir = path.parent().unwrap_or(path);
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: an unusable plugin log directory"
-    )]
-    let refusal = format!("plugins.logs.dir {}: {e}", dir.display());
-    refusal
+    crate::cold::dispatch::load::dir_refusal(dir, e)
 }
 
 /// The words of `plugins.logs` a sink and its writer follow.
@@ -617,12 +538,8 @@ impl Lane {
     ) -> std::io::Result<Arc<Self>> {
         let (queue, jobs) = sync_channel(LOG_QUEUE_LINES);
         let over = Arc::new(Over::default());
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a file's writer starts once, when its first sink is bound"
-        )]
         let writer = Writer {
-            name: name.to_string(),
+            name: crate::cold::dispatch::load::text(name),
             rendered: String::new(),
             now: Arc::clone(now),
 
@@ -695,12 +612,13 @@ impl Writer {
         }
         let tag = Arc::clone(&self.last);
         let at = self.over.at.load(Ordering::Acquire);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a tally of the lines a full log queue lost"
-        )]
-        let text = format!("busbar: {n} log lines were dropped: the log writer was behind");
-        self.line(&tag, at, LogLevel::Warn, text.as_bytes());
+        let mut text = self.over.buffer();
+        let _ = write!(
+            text,
+            "busbar: {n} log lines were dropped: the log writer was behind"
+        );
+        self.line(&tag, at, LogLevel::Warn, &text);
+        self.over.recycle(text);
     }
 
     fn follow(&mut self) {
@@ -874,12 +792,7 @@ struct RotationReport {
 
 impl RotationReport {
     fn line(&self, limit: u64) -> String {
-        #[expect(clippy::disallowed_methods, reason = "error: a failed log rotation")]
-        let line = format!(
-            "busbar: this log file could not be rotated ({}); it is tried again once it holds another {limit} bytes",
-            self.failed.join(", ")
-        );
-        line
+        crate::cold::dispatch::load::rotation_failed(&self.failed, limit)
     }
 }
 
@@ -900,11 +813,7 @@ impl FileSlot {
         if let Some(slot) = files.get(&key).and_then(Weak::upgrade) {
             return Ok(slot);
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a log file's slot opens once, at its sink's bind or a directory change"
-        )]
-        files.retain(|_, s| s.strong_count() > 0);
+        crate::cold::dispatch::load::prune_weak_map(&mut *files);
         let slot = Arc::new(Self {
             path: key.clone(),
             state: Mutex::new(FileState::default()),

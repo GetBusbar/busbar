@@ -6,3 +6,9 @@
 //! configuration refusals), never per request. It sits outside the request-path marker because it
 //! does not run per request; the request path only reads what it built. Each submodule is named for
 //! the request-path module it builds for.
+
+pub(crate) mod conns;
+pub(crate) mod datagram;
+pub(crate) mod egress;
+pub(crate) mod framing;
+pub(crate) mod lines;

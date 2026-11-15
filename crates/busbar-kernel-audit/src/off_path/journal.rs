@@ -1,0 +1,457 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! The audit journal's read-back half: a journalled body decoded into the record (or the head) it
+//! keeps, at restore or for an admin read, never per request.
+
+use busbar_contract::caps::{Abort, MeterClassId, Outcome, ReasonCode, StepName, UnitKey};
+
+use crate::journal::{JOURNAL_TAG, JOURNAL_TAG_V4, JOURNAL_TAG_V6};
+use crate::record::{
+    direction_tag, displays_as, finish_tag, step_tag, AbortTag, AuditRecord, Controls, FinishClass,
+    HookApplied, HookHead, OpClassId, OutcomeFacts, OutcomeTag, QuantitySource, ReasonTag, Subject,
+    Usage, UsageLine, What,
+};
+
+/// Read a journal body back into the record it keeps.
+pub fn from_journal_body(
+    bytes: &[u8],
+    class: &dyn Fn(&str) -> Option<MeterClassId>,
+) -> Result<Option<AuditRecord>, String> {
+    let mut r = Reader { bytes, at: 0 };
+    let Some(keyed) = journal_kind(&mut r) else {
+        return Ok(None);
+    };
+    decode(&mut r, class, keyed).map(Some)
+}
+
+/// The independently retained head fields of one journalled audit record.
+pub struct JournalHead {
+    /// The original record's published position, digest, signature, key identifier and wall clock.
+    pub head: crate::heads::SignedHead,
+    /// That record's claimed predecessor digest, for checking sequence/link continuity.
+    pub prev_hash: String,
+    /// The node that sealed the original audit record.
+    pub node: u64,
+}
+
+/// Read audit head metadata without resolving the historical plane's meter vocabulary.
+pub fn head_from_journal_body(bytes: &[u8]) -> Result<Option<JournalHead>, String> {
+    let mut r = Reader { bytes, at: 0 };
+    let Some(keyed) = journal_kind(&mut r) else {
+        return Ok(None);
+    };
+    let bad = || "an audit head prefix does not decode".to_string();
+    match r.text().as_deref().ok_or_else(bad)? {
+        crate::recipe::DIGEST_RECIPE if keyed == 5 => {}
+        crate::recipe::DIGEST_RECIPE_V6 if keyed == 6 => {}
+        crate::recipe::DIGEST_RECIPE_V4 if keyed == 4 => {}
+        crate::recipe::DIGEST_RECIPE_V2 if keyed == 4 => {
+            r.skip_text().ok_or_else(bad)?;
+        }
+        _ => return Err("an audit head names an unknown recipe".into()),
+    }
+    let seq = r.num().ok_or_else(bad)?;
+    let prev_hash = r.text().ok_or_else(bad)?;
+    let hash = r.text().ok_or_else(bad)?;
+    let signature = r.opt_text().ok_or_else(bad)?;
+    let key_id = r
+        .opt_text()
+        .ok_or_else(bad)?
+        .map(std::sync::Arc::<str>::from);
+    r.skip_text().ok_or_else(bad)?;
+    r.skip_text().ok_or_else(bad)?;
+    r.num().ok_or_else(bad)?;
+    r.num().ok_or_else(bad)?;
+    r.skip_text().ok_or_else(bad)?;
+    r.skip_opt_text().ok_or_else(bad)?;
+    r.opt_num().ok_or_else(bad)?;
+    r.skip_opt_text().ok_or_else(bad)?;
+    r.skip_opt_text().ok_or_else(bad)?;
+    let wall = r.num().ok_or_else(bad)?;
+    r.num().ok_or_else(bad)?;
+    let node = r.num().ok_or_else(bad)?;
+    Ok(Some(JournalHead {
+        head: crate::heads::SignedHead {
+            seq,
+            hash,
+            signature,
+            key_id,
+            wall,
+        },
+        prev_hash,
+        node,
+    }))
+}
+
+fn journal_kind(r: &mut Reader<'_>) -> Option<u8> {
+    match r.text().as_deref()? {
+        JOURNAL_TAG => Some(5),
+        JOURNAL_TAG_V6 => Some(6),
+        JOURNAL_TAG_V4 => Some(4),
+        _ => None,
+    }
+}
+
+fn decode(
+    r: &mut Reader<'_>,
+    class: &dyn Fn(&str) -> Option<MeterClassId>,
+    keyed: u8,
+) -> Result<AuditRecord, String> {
+    let bad = |what: &str| format!("an audit record whose {what} does not decode");
+    let mut recipe = match r.text().ok_or_else(|| bad("recipe"))?.as_str() {
+        crate::recipe::DIGEST_RECIPE if keyed == 5 => crate::recipe::Recipe::V5,
+        crate::recipe::DIGEST_RECIPE_V6 if keyed == 6 => crate::recipe::Recipe::V6,
+        crate::recipe::DIGEST_RECIPE_V4 if keyed == 4 => crate::recipe::Recipe::V4 {
+            legacy_rate_card_version: 0,
+        },
+        crate::recipe::DIGEST_RECIPE_V2 if keyed == 4 => crate::recipe::Recipe::V2 {
+            currency: r.text().ok_or_else(|| bad("currency"))?,
+            legacy_rate_card_version: 0,
+        },
+        other => {
+            let refusal = format!("an audit record sealed under an unknown recipe {other:?}");
+            return Err(refusal);
+        }
+    };
+    let seq = r.num().ok_or_else(|| bad("seq"))?;
+    let prev_hash = r.text().ok_or_else(|| bad("prev_hash"))?;
+    let hash = r.text().ok_or_else(|| bad("hash"))?;
+    let signature = r.opt_text().ok_or_else(|| bad("signature"))?;
+    let key_id = r
+        .opt_text()
+        .ok_or_else(|| bad("key_id"))?
+        .map(std::sync::Arc::<str>::from);
+    let subject = subject_of(
+        &r.text().ok_or_else(|| bad("subject"))?,
+        &r.text().ok_or_else(|| bad("subject"))?,
+    )
+    .ok_or_else(|| bad("subject"))?;
+    let what = What {
+        unit_key: UnitKey::new(r.num().ok_or_else(|| bad("unit_key"))?),
+        incarnation: r.num().ok_or_else(|| bad("incarnation"))?,
+        op_class: OpClassId::new(r.text().ok_or_else(|| bad("op_class"))?),
+        destination: r.opt_text().ok_or_else(|| bad("destination"))?,
+        parent: r.opt_num().ok_or_else(|| bad("parent"))?.map(UnitKey::new),
+        pre_hook_head: r.opt_text().ok_or_else(|| bad("pre_hook_head"))?,
+        post_hook_head: r.opt_text().ok_or_else(|| bad("post_hook_head"))?,
+    };
+    let wall = r.num().ok_or_else(|| bad("wall"))?;
+    let mono = r.num().ok_or_else(|| bad("mono"))?;
+    let node = r.num().ok_or_else(|| bad("node"))?;
+    let origin_kind =
+        origin_of(&r.text().ok_or_else(|| bad("origin"))?).ok_or_else(|| bad("origin"))?;
+    let unit_end =
+        outcome_of(&r.text().ok_or_else(|| bad("outcome"))?).ok_or_else(|| bad("outcome"))?;
+    let step = match r.opt_text().ok_or_else(|| bad("step"))? {
+        None => None,
+        Some(tag) => Some(step_of(&tag).ok_or_else(|| bad("step"))?),
+    };
+    let finish = finish_of(&r.text().ok_or_else(|| bad("finish"))?).ok_or_else(|| bad("finish"))?;
+    let outcome = OutcomeFacts {
+        unit_end,
+        step,
+        finish,
+        hook_failed: r.flag().ok_or_else(|| bad("hook_failed"))?,
+        emission_delta: r
+            .text()
+            .and_then(|t| t.parse().ok())
+            .ok_or_else(|| bad("emission_delta"))?,
+        stale_policy: r.flag().ok_or_else(|| bad("stale_policy"))?,
+    };
+    let n = r.num().ok_or_else(|| bad("lines"))?;
+    let mut lines = Vec::new();
+    for _ in 0..n {
+        let name = r.text().ok_or_else(|| bad("line class"))?;
+        let resolved = class(&name).ok_or_else(|| {
+            format!("an audit record names the class {name:?}, which no plane declares here")
+        })?;
+        lines.push(UsageLine {
+            class: resolved,
+            quantity: if matches!(recipe, crate::recipe::Recipe::V6) {
+                let raw = r.text().ok_or_else(|| bad("line quantity"))?;
+                let count =
+                    busbar_contract::count::read_count(&raw).map_err(|_| bad("line quantity"))?;
+                if count.to_decimal_string() != raw {
+                    return Err(bad("noncanonical line quantity"));
+                }
+                count
+            } else {
+                r.num().ok_or_else(|| bad("line quantity"))?.into()
+            },
+            source: read_source(r).ok_or_else(|| bad("line source"))?,
+            estimated: r.flag().ok_or_else(|| bad("line estimate"))?,
+        });
+    }
+    let tier_bp =
+        u32::try_from(r.num().ok_or_else(|| bad("tier_bp"))?).map_err(|_| bad("tier_bp"))?;
+    let fee_count =
+        u32::try_from(r.num().ok_or_else(|| bad("fee_count"))?).map_err(|_| bad("fee_count"))?;
+    let rate_card_version = match &mut recipe {
+        crate::recipe::Recipe::V5 | crate::recipe::Recipe::V6 => {
+            if r.flag().ok_or_else(|| bad("rate_card_key_present"))? {
+                Some(
+                    r.bytes()
+                        .and_then(|key| key.try_into().ok())
+                        .ok_or_else(|| bad("rate_card_version key"))?,
+                )
+            } else {
+                None
+            }
+        }
+        crate::recipe::Recipe::V2 {
+            legacy_rate_card_version,
+            ..
+        }
+        | crate::recipe::Recipe::V4 {
+            legacy_rate_card_version,
+        } => {
+            *legacy_rate_card_version = r.num().ok_or_else(|| bad("legacy_rate_card_version"))?;
+            None
+        }
+    };
+    let usage = Usage {
+        lines,
+        tier_bp,
+        fee_count,
+        rate_card_version,
+        bucket_chain_ref: r.text().ok_or_else(|| bad("bucket_chain_ref"))?,
+    };
+    let mut controls = Controls {
+        hold_ref: r.opt_text().ok_or_else(|| bad("hold_ref"))?,
+        settle_ref: r.opt_text().ok_or_else(|| bad("settle_ref"))?,
+        slice_ref: r.opt_text().ok_or_else(|| bad("slice_ref"))?,
+        lease_ref: r.opt_text().ok_or_else(|| bad("lease_ref"))?,
+        lease_epoch: r.num().ok_or_else(|| bad("lease_epoch"))?,
+        policy_epoch: r.num().ok_or_else(|| bad("policy_epoch"))?,
+        ..Controls::default()
+    };
+    for _ in 0..r.num().ok_or_else(|| bad("hooks"))? {
+        controls.hooks_applied.push(HookApplied {
+            hook: r.text().ok_or_else(|| bad("hook"))?,
+            head: r
+                .text()
+                .as_deref()
+                .and_then(HookHead::from_tag)
+                .ok_or_else(|| bad("hook head"))?,
+            failed: r.flag().ok_or_else(|| bad("hook failed"))?,
+        });
+    }
+    controls.replayed = r.flag().ok_or_else(|| bad("replayed"))?;
+    for _ in 0..r.num().ok_or_else(|| bad("children"))? {
+        controls
+            .children
+            .push(UnitKey::new(r.num().ok_or_else(|| bad("child"))?));
+    }
+    let correlation_hash = r.opt_text().ok_or_else(|| bad("correlation_hash"))?;
+    if r.at != r.bytes.len() {
+        return Err(bad("tail"));
+    }
+    Ok(AuditRecord {
+        subject,
+        what,
+        wall,
+        mono,
+        node,
+        origin_kind,
+        outcome,
+        usage,
+        controls,
+        correlation_hash,
+        seq,
+        prev_hash,
+        recipe,
+        hash,
+        signature,
+        key_id,
+    })
+}
+
+fn read_source(r: &mut Reader<'_>) -> Option<QuantitySource> {
+    use busbar_contract::ClassDirection;
+    Some(match r.num()? {
+        0 => QuantitySource::Count,
+        1 => QuantitySource::TransportUnits,
+        2 => QuantitySource::KernelElapsedMono,
+        3 => QuantitySource::KernelBytes { divisor: r.num()? },
+        4 => QuantitySource::KernelFrames { factor: r.num()? },
+        5 => {
+            let tag = r.text()?;
+            let direction = [
+                ClassDirection::Input,
+                ClassDirection::Response,
+                ClassDirection::CacheRead,
+                ClassDirection::CacheWrite,
+                ClassDirection::Kernel,
+            ]
+            .into_iter()
+            .find(|d| direction_tag(*d) == tag)?;
+            QuantitySource::Locator {
+                direction,
+                ptr: busbar_contract::caps::LocatorPtr::new(r.text()?),
+            }
+        }
+        6 => QuantitySource::PlaneCount {
+            content_fact_key: r.text()?,
+        },
+        _ => return None,
+    })
+}
+
+/// The subject a sealed body's two frozen fields name — through the ONE decoder the amendment
+pub(crate) fn subject_of(tag: &str, value: &str) -> Option<Subject> {
+    crate::amend::subject_from_fields(tag, value)
+}
+
+fn origin_of(name: &str) -> Option<&'static str> {
+    use busbar_contract::caps::OriginKind;
+    let parent = UnitKey::new(0);
+    [
+        OriginKind::Client,
+        OriginKind::Provider,
+        OriginKind::Tick,
+        OriginKind::Arrival,
+        OriginKind::Handshake,
+        OriginKind::Bootstrap,
+        OriginKind::Nested { parent },
+        OriginKind::Delivery { parent },
+    ]
+    .into_iter()
+    .map(OriginKind::as_str)
+    .find(|s| *s == name)
+}
+
+fn step_of(tag: &str) -> Option<StepName> {
+    StepName::ALL.into_iter().find(|s| step_tag(*s) == tag)
+}
+
+fn reason_of(tag: &str) -> Option<ReasonCode> {
+    ReasonCode::ALL
+        .iter()
+        .copied()
+        .find(|r| displays_as(ReasonTag(*r), tag))
+}
+
+fn finish_of(tag: &str) -> Option<FinishClass> {
+    [
+        FinishClass::Complete,
+        FinishClass::TurnComplete,
+        FinishClass::Partial,
+        FinishClass::Error,
+    ]
+    .into_iter()
+    .find(|f| finish_tag(*f) == tag)
+}
+
+/// The inverse of [`OutcomeTag`](crate::record::OutcomeTag), checked by re-rendering: an outcome is accepted only when it
+pub(crate) fn outcome_of(tag: &str) -> Option<Outcome> {
+    let outcome = if tag == "Completed" {
+        Outcome::Completed
+    } else if let Some(inner) = tag
+        .strip_prefix("TimedOut(")
+        .and_then(|t| t.strip_suffix(')'))
+    {
+        Outcome::TimedOut(step_of(inner)?)
+    } else if let Some(inner) = tag
+        .strip_prefix("Refused(")
+        .and_then(|t| t.strip_suffix(')'))
+    {
+        let (step, reason) = inner.split_once(", ")?;
+        Outcome::Refused(step_of(step)?, reason_of(reason)?)
+    } else if let Some(inner) = tag
+        .strip_prefix("Failed(")
+        .and_then(|t| t.strip_suffix(')'))
+    {
+        let (step, reason) = inner.split_once(", ")?;
+        Outcome::Failed(step_of(step)?, reason_of(reason)?)
+    } else {
+        let inner = tag.strip_prefix("Aborted(")?.strip_suffix(')')?;
+        Outcome::Aborted(abort_of(inner)?)
+    };
+    displays_as(OutcomeTag(outcome), tag).then_some(outcome)
+}
+
+fn abort_of(tag: &str) -> Option<Abort> {
+    let abort = if let Some(reason) = tag
+        .strip_prefix("Kernel { reason: ")
+        .and_then(|t| t.strip_suffix(" }"))
+    {
+        Abort::Kernel {
+            reason: reason_of(reason)?,
+        }
+    } else {
+        let by = tag
+            .strip_prefix("Superseded { by: UnitKey(")
+            .and_then(|t| t.strip_suffix(") }"))?;
+        Abort::Superseded {
+            by: UnitKey::new(by.parse().ok()?),
+        }
+    };
+    displays_as(AbortTag(abort), tag).then_some(abort)
+}
+
+struct Reader<'b> {
+    bytes: &'b [u8],
+    at: usize,
+}
+
+impl Reader<'_> {
+    fn take(&mut self, n: usize) -> Option<&[u8]> {
+        let end = self.at.checked_add(n)?;
+        let out = self.bytes.get(self.at..end)?;
+        self.at = end;
+        Some(out)
+    }
+
+    fn num(&mut self) -> Option<u64> {
+        Some(u64::from_be_bytes(self.take(8)?.try_into().ok()?))
+    }
+
+    fn flag(&mut self) -> Option<bool> {
+        match self.num()? {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        }
+    }
+
+    fn bytes(&mut self) -> Option<&[u8]> {
+        let len = u32::from_be_bytes(self.take(4)?.try_into().ok()?) as usize;
+        self.take(len)
+    }
+
+    fn text(&mut self) -> Option<String> {
+        let text = String::from_utf8(self.bytes()?.to_vec()).ok();
+        text
+    }
+
+    fn skip_text(&mut self) -> Option<()> {
+        let len = u32::from_be_bytes(self.take(4)?.try_into().ok()?) as usize;
+        std::str::from_utf8(self.take(len)?).ok()?;
+        Some(())
+    }
+
+    fn skip_opt_text(&mut self) -> Option<()> {
+        match self.num()? {
+            0 => Some(()),
+            1 => self.skip_text(),
+            _ => None,
+        }
+    }
+
+    fn opt_text(&mut self) -> Option<Option<String>> {
+        match self.num()? {
+            0 => Some(None),
+            1 => Some(Some(self.text()?)),
+            _ => None,
+        }
+    }
+
+    fn opt_num(&mut self) -> Option<Option<u64>> {
+        match self.num()? {
+            0 => Some(None),
+            1 => Some(Some(self.num()?)),
+            _ => None,
+        }
+    }
+}

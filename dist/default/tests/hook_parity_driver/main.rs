@@ -7,7 +7,7 @@ include!(concat!(env!("OUT_DIR"), "/linked_plane_doors.rs"));
 
 include!(concat!(env!("OUT_DIR"), "/driver_proofs.rs"));
 
-#[path = "../../../../crates/busbar-kernel/tests/common/mod.rs"]
+#[path = "../../../../crates/busbar-kernel/tests/common/driver.rs"]
 mod common;
 
 mod rig;

@@ -152,17 +152,17 @@ impl SealedValue {
     /// Hash this value, keeping the digest sealed.
     pub fn digest(&self, algorithm: Digest) -> Self {
         let bytes = match algorithm {
-            Digest::Md5 => digests::md5(&[self.wire()]).to_vec(),
-            Digest::Sha1 => digests::sha1(&[self.wire()]).to_vec(),
-            Digest::Sha256 => digests::sha256(&[self.wire()]).to_vec(),
+            Digest::Md5 => SecureVec::from(&digests::md5(&[self.wire()])[..]),
+            Digest::Sha1 => SecureVec::from(&digests::sha1(&[self.wire()])[..]),
+            Digest::Sha256 => SecureVec::from(&digests::sha256(&[self.wire()])[..]),
         };
-        self.transformed(SecureVec::from(bytes))
+        self.transformed(bytes)
     }
 
     /// HMAC-SHA-256 with this value as the key and a sealed message.
     pub fn hmac_sha256(&self, message: &Self) -> Self {
         let mac = crate::abi::sdk::hmac::hmac_sha256(self.wire(), message.wire());
-        self.transformed(SecureVec::from(mac.to_vec()))
+        self.transformed(SecureVec::from(&mac[..]))
             .require_secure_if(message.secure_required())
     }
 
@@ -175,7 +175,7 @@ impl SealedValue {
             ));
         }
         let value = super::pbkdf2_sha256(self.wire(), salt, iterations)?;
-        Ok(self.transformed(SecureVec::from(value.to_vec())))
+        Ok(self.transformed(SecureVec::from(&value[..])))
     }
 
     /// XOR equally sized sealed values. Only their already-public lengths affect failure.
@@ -183,14 +183,13 @@ impl SealedValue {
         if self.len() != other.len() {
             return Err(Refused("sealed XOR requires equal lengths"));
         }
-        let bytes = self
-            .wire()
-            .iter()
-            .zip(other.wire())
-            .map(|(a, b)| a ^ b)
-            .collect::<Vec<u8>>();
+        // Exact size, filled in place.
+        let mut bytes = SecureVec::zeroed(self.len());
+        for ((out, a), b) in bytes.iter_mut().zip(self.wire()).zip(other.wire()) {
+            *out = a ^ b;
+        }
         Ok(self
-            .transformed(SecureVec::from(bytes))
+            .transformed(bytes)
             .require_secure_if(other.secure_required()))
     }
 
@@ -199,13 +198,12 @@ impl SealedValue {
         if mask.is_empty() {
             return Err(Refused("sealed XOR requires a nonempty mask"));
         }
-        let bytes = self
-            .wire()
-            .iter()
-            .zip(mask.iter().cycle())
-            .map(|(a, b)| a ^ b)
-            .collect::<Vec<u8>>();
-        Ok(self.transformed(SecureVec::from(bytes)))
+        // Exact size, filled in place.
+        let mut bytes = SecureVec::zeroed(self.len());
+        for ((out, a), b) in bytes.iter_mut().zip(self.wire()).zip(mask.iter().cycle()) {
+            *out = a ^ b;
+        }
+        Ok(self.transformed(bytes))
     }
 
     /// Lowercase hexadecimal encoding, still sealed.

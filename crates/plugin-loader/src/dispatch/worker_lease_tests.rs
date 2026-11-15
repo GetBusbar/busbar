@@ -160,7 +160,7 @@ fn rig() -> (Dispatcher, Plugin<LeaseKind>, *const State) {
     let p = load_linked::<LeaseKind>(
         &LinkedRow::of(door).unwrap(),
         Bind {
-            instance: Arc::from("worker-lease"),
+            instance: "worker-lease".into(),
             max_inflight_cap: 2,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
@@ -207,6 +207,15 @@ fn until(mut yes: impl FnMut() -> bool) {
         std::thread::yield_now();
     }
 }
+/// Try `probe` every tenth of a millisecond, for at least 200 ms, until it succeeds.
+fn probe_200ms(mut probe: impl FnMut() -> bool) {
+    for _ in 0..2000 {
+        if probe() {
+            return;
+        }
+        std::thread::sleep(Duration::from_micros(100));
+    }
+}
 fn wake(p: &Plugin<LeaseKind>, ticket: Ticket) {
     super::super::ticket::Waking::of(p.inner.wake)
         .unwrap()
@@ -240,15 +249,14 @@ fn settled_unpolled_reply_releases_under_its_captured_scope_outside_both_locks()
     let unlocked = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let saw = unlocked.clone();
     *state.probe.lock().unwrap() = Some(Arc::new(move || {
-        let start = Instant::now();
-        while start.elapsed() < Duration::from_millis(200) {
+        probe_200ms(|| {
             if let (Ok(a), Ok(b)) = (slot.v.try_lock(), worker.state.try_lock()) {
                 drop((a, b));
                 saw.store(true, Ordering::SeqCst);
-                break;
+                return true;
             }
-            std::thread::yield_now();
-        }
+            false
+        });
     }));
     let unrelated = d.framing_context(p.instance().0, 99, 0).unwrap();
     super::super::framing_context::with_context(Some(unrelated), || drop(reply));
@@ -383,15 +391,14 @@ fn close_host_callback_keeps_the_submitted_framing_scope_outside_both_locks() {
     let locks_available = Arc::new(AtomicBool::new(false));
     let unlocked = locks_available.clone();
     *host.probe.lock().unwrap() = Some(Arc::new(move || {
-        let start = Instant::now();
-        while start.elapsed() < Duration::from_millis(200) {
+        probe_200ms(|| {
             if let (Ok(reply), Ok(worker)) = (slot.v.try_lock(), worker.state.try_lock()) {
                 drop((reply, worker));
                 unlocked.store(true, Ordering::SeqCst);
-                break;
+                return true;
             }
-            std::thread::yield_now();
-        }
+            false
+        });
     }));
     release.send(()).unwrap();
     let done = reply.wait(WAIT).expect("the lifecycle CLOSE finishes");
@@ -659,15 +666,14 @@ fn unread_short_or_ticket_abandon_returns_once_outside_locks() {
         let unlocked = Arc::new(AtomicBool::new(false));
         let saw = unlocked.clone();
         *state.probe.lock().unwrap() = Some(Arc::new(move || {
-            let start = Instant::now();
-            while start.elapsed() < Duration::from_millis(200) {
+            probe_200ms(|| {
                 if let (Ok(a), Ok(b)) = (slot.v.try_lock(), worker.state.try_lock()) {
                     drop((a, b));
                     saw.store(true, Ordering::Release);
-                    break;
+                    return true;
                 }
-                std::thread::yield_now();
-            }
+                false
+            });
         }));
         match end {
             "drop-client" => d.drop_client(ticket),
@@ -785,15 +791,14 @@ fn completion_waker_and_lent_destructor_can_reenter_after_worker_unlocks() {
     let saw = lent_unlocked.clone();
     let held_worker = worker.clone();
     let lent = Arc::new(LentProbe(Arc::new(move || {
-        let start = Instant::now();
-        while start.elapsed() < Duration::from_millis(200) {
+        probe_200ms(|| {
             if let Ok(g) = held_worker.state.try_lock() {
                 drop(g);
                 saw.store(true, Ordering::SeqCst);
-                break;
+                return true;
             }
-            std::thread::yield_now();
-        }
+            false
+        });
     })));
     let mut reply = d.submit_lent(
         &p,
@@ -813,15 +818,14 @@ fn completion_waker_and_lent_destructor_can_reenter_after_worker_unlocks() {
     let probe = Arc::new(WakeProbe {
         called: AtomicU64::new(0),
         probe: Arc::new(move || {
-            let start = Instant::now();
-            while start.elapsed() < Duration::from_millis(200) {
+            probe_200ms(|| {
                 if let (Ok(a), Ok(b)) = (slot.v.try_lock(), worker.state.try_lock()) {
                     drop((a, b));
                     saw.store(true, Ordering::SeqCst);
-                    break;
+                    return true;
                 }
-                std::thread::yield_now();
-            }
+                false
+            });
         }),
     });
     let waker = Waker::from(probe.clone());

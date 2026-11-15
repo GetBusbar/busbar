@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-mod common;
+mod common {
+    pub mod hold_cell;
+    pub mod principal;
+    pub mod units;
+}
 
 use std::sync::Arc;
 
@@ -14,7 +18,9 @@ use busbar_kernel::canary::Canary;
 use busbar_kernel::slice::{ConcurrencyGauge, GroupLeaseSlip, LeaseCell};
 use busbar_kernel::teller::{exit, run_unit, AccrualMeter, Ended, Evidence, Kernel, Run, UnitCtx};
 
-use common::{cell, ctx, principal, Door, TestUnits};
+use common::hold_cell::cell;
+use common::principal::principal;
+use common::units::{ctx, TestUnits};
 
 struct ParentExitsMidRoute<'k> {
     child: TestUnits,
@@ -165,7 +171,7 @@ fn child_outliving_its_parent(door_backs: Option<ReasonCode>) -> (Ended, HoldCel
         .expect("the parent's cell was fresh");
     let units = ParentExitsMidRoute {
         child: TestUnits {
-            door: Door::Accrual(Arc::clone(&parent)),
+            accrual: Some(Arc::clone(&parent)),
             spend: 400,
             evidence: Evidence {
                 reported: Some(400),
@@ -269,9 +275,9 @@ fn run_on(
     )
 }
 
-fn spending(door: Door, amount: u64) -> TestUnits {
+fn spending(accrual: Option<Arc<HoldCell>>, amount: u64) -> TestUnits {
     TestUnits {
-        door,
+        accrual,
         spend: amount,
         evidence: Evidence {
             reported: Some(amount),
@@ -288,7 +294,7 @@ fn a_child_run_after_its_parent_sealed_posts_its_own_line_and_never_the_parents(
     let parent_cell = Arc::new(cell(&kernel));
     let parent_line = match run_on(
         &kernel,
-        &spending(Door::Own, 300),
+        &spending(None, 300),
         7,
         &parent_cell,
         None,
@@ -308,7 +314,7 @@ fn a_child_run_after_its_parent_sealed_posts_its_own_line_and_never_the_parents(
     let child_cell = cell(&kernel);
     let child_line = match run_on(
         &kernel,
-        &spending(Door::Accrual(Arc::clone(&parent_cell)), 400),
+        &spending(Some(Arc::clone(&parent_cell)), 400),
         8,
         &child_cell,
         Some(&parent_cell),

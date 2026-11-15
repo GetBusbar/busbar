@@ -167,15 +167,15 @@ pub(crate) fn code_digest() -> [u8; 32] {
         )),
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../busbar-kernel/src/governance/persistence/identity.rs"
+            "/../busbar-kernel/src/off_path/governance/persistence/identity.rs"
         )),
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../busbar-kernel/src/governance/persistence/ledger.rs"
+            "/../busbar-kernel/src/off_path/governance/persistence/ledger.rs"
         )),
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../busbar-kernel/src/governance/persistence/recovery.rs"
+            "/../busbar-kernel/src/off_path/governance/persistence/recovery.rs"
         )),
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),

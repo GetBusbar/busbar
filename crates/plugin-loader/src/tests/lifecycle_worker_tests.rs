@@ -17,7 +17,7 @@ use crate::neutral_store;
 
 fn bind(d: &Dispatcher) -> Bind {
     Bind {
-        instance: Arc::from("the-instance"),
+        instance: crate::cold::dispatch::load::instance_name("the-instance"),
         max_inflight_cap: 1024,
         sink: Arc::new(NoSink),
         dispatcher: d.adopter(),

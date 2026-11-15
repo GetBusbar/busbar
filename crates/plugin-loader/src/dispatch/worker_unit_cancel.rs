@@ -15,6 +15,13 @@ thread_local! {
     /// This worker thread's unit-waiter scratch: reused by every unit retirement.
     static WAITERS: std::cell::Cell<Vec<Waiter>> =
         const { std::cell::Cell::new(Vec::new()) };
+    /// This worker thread's scratch for a cancelled unit group's in-flight jobs, taken back across
+    /// its CANCEL crossing: reused by every unit cancel.
+    static CANCEL_JOBS: std::cell::Cell<Vec<(u32, Box<dyn Job>)>> =
+        const { std::cell::Cell::new(Vec::new()) };
+    /// This worker thread's scratch for a cancelled unit group's queued loans, kept past the lock:
+    /// reused by every unit cancel.
+    static CANCEL_LOANS: std::cell::Cell<Vec<Lent>> = const { std::cell::Cell::new(Vec::new()) };
 }
 
 /// A unit's member entries, in this thread's scratch buffer, handed back when dropped.
@@ -446,10 +453,8 @@ impl Worker {
             .current
             .as_ref()
             .map_or(DeadlineClass::Stream, |c| c.meta.class);
-        // busbar:expect(bp::fresh_buffer, reason = "error: a cancelled unit group's in-flight jobs, taken back once")
-        let mut jobs = Vec::new();
-        // busbar:expect(bp::fresh_buffer, reason = "error: a cancelled unit group's queued loans, kept past the lock once")
-        let mut loans = Vec::new();
+        let mut jobs = CANCEL_JOBS.take();
+        let mut loans = CANCEL_LOANS.take();
         for &idx in members.iter() {
             let entry = &mut st.entries[idx as usize];
             entry.unit_binding.as_mut().expect("bound unit").end = Some(End::Fault);
@@ -494,14 +499,18 @@ impl Worker {
         } else {
             Vec::new()
         };
-        for (idx, job) in jobs {
+        for (idx, job) in jobs.drain(..) {
             if let Some(current) = st.entries[idx as usize].current.as_mut() {
                 current.job = Some(job);
             } else {
                 drop_after_lock(Box::new(job));
             }
         }
-        drop_after_lock(Box::new(loans));
+        CANCEL_JOBS.set(jobs);
+        for lent in loans.drain(..) {
+            drop_after_lock(Box::new(lent));
+        }
+        CANCEL_LOANS.set(loans);
         drop_after_lock(Box::new(frame));
         self.retire_unit(&mut st, &members, primary, (end, writes), false, env);
         hold_past_lock(&instance);
@@ -570,20 +579,13 @@ pub(super) fn group_orphans(
     gone: Vec<Entry>,
     wedged: &Arc<Instance>,
 ) -> (Vec<Orphan>, Vec<Entry>) {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a wedged worker's entries are sorted into orphans once, at its replacement"
-    )]
-    let mut entries: Vec<_> = gone
-        .into_iter()
-        .enumerate()
-        .map(|(idx, entry)| Some((worker.ticket(idx as u32, entry.generation), entry)))
-        .collect();
-    // busbar:expect(bp::fresh_buffer, reason = "error: a wedged worker's pending orphans, grouped once at its replacement")
-    let mut orphans = Vec::new();
-    for idx in 0..entries.len() {
+    // A wedged worker's entries are sorted into orphans once, at its replacement.
+    let mut entries = crate::cold::dispatch::runtime::orphan_slots(gone, |(idx, entry)| {
+        Some((worker.ticket(idx as u32, entry.generation), entry))
+    });
+    let orphans = crate::cold::dispatch::runtime::orphan_groups(entries.len(), |idx| {
         let Some((_, entry)) = &entries[idx] else {
-            continue;
+            return None;
         };
         let pending = entry.driver.is_none()
             && entry.current.as_ref().is_some_and(|current| {
@@ -593,7 +595,7 @@ pub(super) fn group_orphans(
                     && !current.meta.instance.faulted.load(Ordering::Acquire)
             });
         if !pending {
-            continue;
+            return None;
         }
         let key = entry
             .unit_binding
@@ -612,22 +614,15 @@ pub(super) fn group_orphans(
                 }
             }
         }
-        orphans.push(Orphan { entries: group });
-    }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a wedged worker's remaining entries, forgotten once at its replacement"
-    )]
-    let rest = entries
-        .into_iter()
-        .flatten()
-        .map(|(ticket, entry)| {
-            for id in &entry.conns {
-                drop(crate::dispatch::conn_services::forget(*id, ticket));
-            }
-            entry
-        })
-        .collect();
+        Some(Orphan { entries: group })
+    });
+    // A wedged worker's remaining entries, forgotten once at its replacement.
+    let rest = crate::cold::dispatch::runtime::orphan_rest(entries, |(ticket, entry)| {
+        for id in &entry.conns {
+            drop(crate::dispatch::conn_services::forget(*id, ticket));
+        }
+        entry
+    });
     (orphans, rest)
 }
 

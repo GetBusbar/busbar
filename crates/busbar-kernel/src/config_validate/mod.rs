@@ -69,7 +69,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
 /// `security.allow_all_metadata: true`, a provider's `allow_metadata_hosts`) is refused: cloud
 /// metadata is refused for every outbound connection and no configuration admits it.
 #[must_use]
-pub fn metadata_carve_out_retired(key: &str) -> String {
+fn metadata_carve_out_retired(key: &str) -> String {
     let code = crate::diagnostics::CONFIG_METADATA_CARVE_OUT_RETIRED.banner();
     format!(
         "{key} is retired ({code}): cloud metadata is refused for every outbound connection and no \

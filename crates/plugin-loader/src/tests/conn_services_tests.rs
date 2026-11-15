@@ -246,7 +246,7 @@ fn bind_as_kind<K: crate::dispatch::Kind>(
         v,
         None,
         Bind {
-            instance: Arc::from("the-instance"),
+            instance: "the-instance".into(),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
             dispatcher: Adopter::unwatched(),
@@ -951,7 +951,7 @@ fn a_target_from_path_resolves_only_to_a_non_empty_string_under_settings() {
         let need = ReadNeed {
             direction: 0,
             egress_class: 0,
-            transport: "byte-stream".into(),
+            transport: "byte-stream".to_owned(),
             auth: String::new(),
             target_from: path.into(),
             trust_from: String::new(),
@@ -1084,20 +1084,23 @@ impl Gate {
             return;
         }
         self.entered.store(true, AtomicOrdering::SeqCst);
-        let since = std::time::Instant::now();
-        while !self.released.load(AtomicOrdering::SeqCst)
-            && since.elapsed() < std::time::Duration::from_secs(30)
-        {
+        // At least 30 s of 1 ms naps, counted rather than clocked.
+        for _ in 0..30_000 {
+            if self.released.load(AtomicOrdering::SeqCst) {
+                break;
+            }
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
 
     fn entered_within(&self, wait: std::time::Duration) -> bool {
-        let since = std::time::Instant::now();
+        // At least `wait` of 1 ms naps, counted rather than clocked.
+        let mut naps = wait.as_millis();
         while !self.entered.load(AtomicOrdering::SeqCst) {
-            if since.elapsed() > wait {
+            if naps == 0 {
                 return false;
             }
+            naps -= 1;
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         true
@@ -1426,7 +1429,7 @@ fn bound_over_needs(
         v,
         None,
         Bind {
-            instance: Arc::from("the-instance"),
+            instance: "the-instance".into(),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
             dispatcher: adopter,
@@ -2348,13 +2351,15 @@ fn an_establish_names_its_registration_and_a_shorter_head_names_none() {
 }
 
 fn held_here() -> bool {
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    // About 2 s of 1 ms naps in all, counted rather than clocked.
+    let mut naps = 2_000u32;
     let mut id = 1;
     while let Some(w) = crate::dispatch::handle::supplier_of(InstanceId(id)) {
         loop {
             match w.conn_state.streams.try_lock() {
                 Ok(_) | Err(std::sync::TryLockError::Poisoned(_)) => break,
-                Err(std::sync::TryLockError::WouldBlock) if std::time::Instant::now() < until => {
+                Err(std::sync::TryLockError::WouldBlock) if naps > 0 => {
+                    naps -= 1;
                     std::thread::sleep(std::time::Duration::from_millis(1));
                 }
                 Err(std::sync::TryLockError::WouldBlock) => return true,
@@ -2367,7 +2372,7 @@ fn held_here() -> bool {
 
 fn streams_of(
     id: InstanceId,
-) -> std::sync::MutexGuard<'static, std::collections::HashMap<u64, super::Stream>> {
+) -> std::sync::MutexGuard<'static, foldhash::HashMap<u64, super::Stream>> {
     crate::dispatch::handle::supplier_of(id)
         .expect("a minted instance")
         .conn_state
@@ -3312,7 +3317,7 @@ fn an_auth_instances_authority_is_held_before_its_needs_are_declared() {
         v,
         None,
         Bind {
-            instance: Arc::from("the-auth-instance"),
+            instance: "the-auth-instance".into(),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
             dispatcher: Adopter::unwatched(),
@@ -3653,7 +3658,7 @@ fn bound_labelled(needs: &'static [Need], table: &Arc<Recording>, label: &str) -
         v,
         None,
         Bind {
-            instance: Arc::from(label),
+            instance: label.into(),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
             dispatcher: Adopter::unwatched(),
@@ -3957,7 +3962,7 @@ mod refresh_driver_generation {
             validate_door::<PlaneShaped>(door).unwrap(),
             None,
             Bind {
-                instance: Arc::from("driver-generation"),
+                instance: "driver-generation".into(),
                 max_inflight_cap: 8,
                 sink: Arc::new(NoSink),
                 dispatcher: d.adopter(),
