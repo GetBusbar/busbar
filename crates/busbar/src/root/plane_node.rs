@@ -2087,6 +2087,63 @@ fn a_local_billing_lane_keeps_only_a_unique_verified_route_destination() {
     assert_eq!(ran.destination(Some(a.as_str())), Some(b.as_str()));
 }
 
+/// RED (ADMIN-API-1.6 §9): a walk that failed over seals one attempt per dial, the earlier ones
+/// `failover` and the last by how the unit ended; dials beyond the slots are only counted.
+#[cfg(test)]
+#[test]
+fn attempts_recorded_on_failover() {
+    use busbar_contract::caps::{ReasonCode, StepName};
+    let a = LaneId::new("pool\u{1f}a");
+    let b = LaneId::new("pool\u{1f}b");
+
+    let mut ran = Ran::default();
+    ran.dial(Some(a));
+    ran.dial(Some(b));
+    let (attempts, total) = ran.attempts(Outcome::Completed);
+    assert_eq!(total, 2);
+    let kinds: Vec<_> = attempts
+        .iter()
+        .flatten()
+        .map(|t| (t.target.as_str(), t.outcome))
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            (a.as_str(), AttemptOutcome::Failover),
+            (b.as_str(), AttemptOutcome::Ok)
+        ]
+    );
+
+    let failed = Outcome::Failed(StepName::Arrival, ReasonCode::PlanePanic);
+    let (attempts, _) = ran.attempts(failed);
+    let last = attempts[1].as_ref().map(|t| (t.outcome, t.reason.as_str()));
+    assert_eq!(
+        last,
+        Some((AttemptOutcome::Failed, ReasonCode::PlanePanic.as_str()))
+    );
+
+    ran.cancel_latest();
+    let (attempts, _) = ran.attempts(Outcome::Completed);
+    assert_eq!(
+        attempts[1].as_ref().map(|t| t.outcome),
+        Some(AttemptOutcome::Cancelled)
+    );
+
+    let mut many = Ran::default();
+    for _ in 0..6 {
+        many.dial(Some(a));
+    }
+    let (attempts, total) = many.attempts(Outcome::Completed);
+    assert_eq!(total, 6, "dials beyond the slots are counted");
+    assert!(
+        attempts.iter().all(Option::is_some),
+        "the first four are kept"
+    );
+
+    let (none, zero) = Ran::default().attempts(Outcome::Completed);
+    assert_eq!((zero, none.iter().flatten().count()), (0, 0));
+}
+
 impl Sealing {
     #[expect(
         clippy::too_many_arguments,
