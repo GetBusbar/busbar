@@ -14,7 +14,7 @@ use tokio::net::TcpListener;
 #[path = "../src/tests/support.rs"]
 mod support;
 
-use support::{thread_count, worker, TestDoor};
+use support::{worker, TestDoor};
 
 static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
@@ -120,4 +120,25 @@ fn no_thread_per_connection() {
         );
         assert_eq!(door.threads.lock().unwrap().len(), 1, "one worker thread");
     });
+}
+
+/// The threads this process runs now.
+fn thread_count() -> usize {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_dir("/proc/self/task")
+            .map(Iterator::count)
+            .unwrap_or(0)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let out = std::process::Command::new("ps")
+            .args(["-M", "-p", &std::process::id().to_string()])
+            .output()
+            .expect("ps runs");
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .count()
+            .saturating_sub(1)
+    }
 }

@@ -772,10 +772,6 @@ fn emitted_of<'b>(bufs: &'b PieceBufs, out: &Answer) -> &'b [u8] {
 /// provider that served it, when it commits the caller's head. `strict`: an invalid lane is a
 /// plane fault (the walk); otherwise (a unit already closed, its cause set) it is logged and
 /// skipped.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one attribution reads every piece fact"
-)]
 fn attribute(
     money: &dyn MoneySeam,
     ctx: &UnitCtx,
@@ -783,9 +779,10 @@ fn attribute(
     bufs: &PieceBufs,
     leg: Leg,
     seen: Seen,
-    billed: bool,
     strict: bool,
 ) -> Result<(), ()> {
+    // Every caller's unit bills exactly when its context takes a lease.
+    let billed = takes_lease(ctx.origin, ctx.kernel_verb_only);
     let lane = bufs.arena(out.lane);
     if !lane.is_empty() && billed {
         match std::str::from_utf8(lane) {
@@ -848,7 +845,7 @@ pub(crate) fn bury_done(
             refuse_done_count(money, ctx, leg, &out, bufs, facts, billed);
         }
         None => {
-            let _ = attribute(money, ctx, &out, bufs, leg, Seen::of(facts), billed, false);
+            let _ = attribute(money, ctx, &out, bufs, leg, Seen::of(facts), false);
             facts.plane_done = true;
             facts.unread = Some(ReasonCode::ClientGone);
         }
@@ -872,11 +869,17 @@ pub(crate) struct Pumping<'u> {
 
     cancel_writes: Vec<busbar_contract::plane_calls::CancelWrite>,
 
-    wait_member: Option<String>,
+    /// The member a refused piece named to wait on (its name in a reused buffer), while `waits`.
+    wait_member: String,
+
+    waits: bool,
 
     piece_flags: u32,
 
     final_answer: bool,
+
+    /// The record writes' acknowledgements a piece awaits, reused piece to piece.
+    record_acks: Vec<tokio::sync::oneshot::Receiver<Result<(), &'static str>>>,
 
     /// The leg the piece in flight was pushed toward.
     leg: Leg,
@@ -916,10 +919,12 @@ impl<'u> Pumping<'u> {
             closing: None,
             ended: false,
             cancel_writes: Vec::new(),
-            wait_member: None,
+            wait_member: String::new(),
+            waits: false,
             piece_flags: 0,
             final_answer: false,
             leg: Leg::Nowhere,
+            record_acks: Vec::new(),
         }
     }
 
@@ -1057,7 +1062,8 @@ impl<'u> Pumping<'u> {
             return Ok(());
         }
         let refused = || End::Failed(ReasonCode::DurabilityUnavailable);
-        let mut acks = Vec::with_capacity(n);
+        let mut acks = std::mem::take(&mut self.record_acks);
+        acks.clear();
         for w in &self.bufs.records[..n] {
             if w.op == RECORD_AUDIT {
                 self.audit(w)?;
@@ -1080,13 +1086,14 @@ impl<'u> Pumping<'u> {
                 .map_err(|_| refused())?;
             acks.push(rx);
         }
-        for rx in acks {
+        for rx in acks.drain(..) {
             match guarded_run(self, rx).await {
                 Ok(Ok(Ok(()))) => {}
                 Ok(_) => return Err(refused()),
                 Err(cause) => return Err(End::Cancel(cause, None)),
             }
         }
+        self.record_acks = acks;
         Ok(())
     }
 
@@ -1101,12 +1108,14 @@ impl<'u> Pumping<'u> {
     pub(crate) fn lend_unit(&mut self, claim: u32, dialect: u32, caller_ref: &[u8], stream: u64) {
         self.bufs.claim = claim;
         self.bufs.dialect = dialect;
-        self.bufs.caller_ref = caller_ref.to_vec();
+        self.bufs.caller_ref.clear();
+        self.bufs.caller_ref.extend_from_slice(caller_ref);
         self.bufs.stream = stream;
     }
 
     pub(crate) fn lend_resolved(&mut self, entry: &[u8]) {
-        self.bufs.resolved = entry.to_vec();
+        self.bufs.resolved.clear();
+        self.bufs.resolved.extend_from_slice(entry);
     }
 
     fn billed(&self) -> bool {
@@ -1320,22 +1329,32 @@ impl AttemptSteps for () {}
 
 /// One attempt's upstream round trip, for the `Server-Timing` measurement of the request in flight
 /// (`crate::router::ServerTiming`). Inert, with no clock read, when the header is off.
-struct UpstreamRtt(Option<(Arc<std::sync::atomic::AtomicU64>, std::time::Instant)>);
+struct UpstreamRtt(Option<(Arc<std::sync::atomic::AtomicU64>, u64)>);
+
+/// The time since `started` (a node monotonic reading): the closing reading of a measured interval.
+fn since(started: u64) -> Duration {
+    Duration::from_nanos(crate::store::monotonic_ns().saturating_sub(started))
+}
 
 impl UpstreamRtt {
     fn start() -> Self {
-        Self(crate::router::upstream_rtt_slot().map(|slot| (slot, std::time::Instant::now())))
+        Self(crate::router::upstream_rtt_slot().map(|slot| (slot, crate::store::monotonic_ns())))
     }
 
     fn record(&self) {
         if let Some((slot, started)) = &self.0 {
-            crate::router::record_upstream_rtt(slot, started.elapsed());
+            crate::router::record_upstream_rtt(slot, since(*started));
         }
     }
 }
 
-impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
-    pub(crate) async fn answered_here(&self, run: &mut Pumping<'_>) -> End {
+// `S: AttemptSteps` bounds each method rather than the impl: the trait is crate-private and
+// `PlaneUnits` is public (the private_bounds lint).
+impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
+    pub(crate) async fn answered_here(&self, run: &mut Pumping<'_>) -> End
+    where
+        S: AttemptSteps,
+    {
         let body = Piece {
             from: FROM_CALLER,
             flags: PIECE_LAST,
@@ -1361,7 +1380,10 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
         &self,
         run: &mut Pumping<'_>,
         turn: Option<&session::Turn<'_>>,
-    ) -> End {
+    ) -> End
+    where
+        S: AttemptSteps,
+    {
         use tracing::Instrument as _;
         // A separate parent per pump keeps retries together, including repeated session turns
         // whose unit id is the same and whose attempt ordinal restarts at one.
@@ -1395,7 +1417,10 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
         run: &mut Pumping<'_>,
         turn: Option<&session::Turn<'_>>,
         log: Option<&crate::observability::request::AttemptLog>,
-    ) -> End {
+    ) -> End
+    where
+        S: AttemptSteps,
+    {
         let mut attempt_no = 0;
 
         let mut failed: Option<&'static str> = None;
@@ -1406,9 +1431,9 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             }
             // Read only for the attempt span's `route_wait_us`, so never below the hot-path level.
             let route_started =
-                crate::observability::hotpath_enabled().then(std::time::Instant::now);
+                crate::observability::hotpath_enabled().then(crate::store::monotonic_ns);
             let picked = turn_wait(run, turn, self.far.member(run.token, attempt_no)).await;
-            let route_wait = route_started.map(|started| started.elapsed());
+            let route_wait = route_started.map(since);
             let ((member, pool), terminal) = match picked {
                 Ok(Pick::Member { name, .. }) if turn.is_some_and(|t| !t.within(&name)) => {
                     continue 'attempt;
@@ -1699,12 +1724,18 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
         }
     }
 
-    async fn refused_piece(&self, run: &mut Pumping<'_>, reason: ReasonCode) -> Result<(), End> {
+    async fn refused_piece(&self, run: &mut Pumping<'_>, reason: ReasonCode) -> Result<(), End>
+    where
+        S: AttemptSteps,
+    {
         self.refused_piece_coded(run, reason_code(reason)).await
     }
 
-    async fn refused_piece_coded(&self, run: &mut Pumping<'_>, reason: u32) -> Result<(), End> {
-        run.wait_member = None;
+    async fn refused_piece_coded(&self, run: &mut Pumping<'_>, reason: u32) -> Result<(), End>
+    where
+        S: AttemptSteps,
+    {
+        run.waits = false;
         if self.driver.refused_piece {
             let piece = Piece {
                 from: FROM_KERNEL,
@@ -1722,18 +1753,24 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
         Ok(())
     }
 
-    fn stated_wait(&self, run: &mut Pumping<'_>) -> Result<Option<u32>, End> {
-        let Some(member) = run.wait_member.take() else {
+    fn stated_wait(&self, run: &mut Pumping<'_>) -> Result<Option<u32>, End>
+    where
+        S: AttemptSteps,
+    {
+        if !std::mem::take(&mut run.waits) {
             return Ok(None);
-        };
-        match self.far.member_wait(run.token, &member) {
+        }
+        match self.far.member_wait(run.token, &run.wait_member) {
             Some(wait) => Ok(Some(wait)),
             None => Err(End::Failed(ReasonCode::PlanePanic)),
         }
     }
 
     /// Fold a piece's units: the checkpoint, then (unless it is unpriced) the driver's held units.
-    fn fold_done_units(&self, run: &Pumping<'_>, out: &Answer) -> Checkpoint {
+    fn fold_done_units(&self, run: &Pumping<'_>, out: &Answer) -> Checkpoint
+    where
+        S: AttemptSteps,
+    {
         let bufs = &run.bufs;
         let units = &bufs.units[..(out.units_written as usize).min(bufs.units.len())];
         if units.is_empty() || !run.billed() {
@@ -1749,7 +1786,10 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
     }
 
     /// The normal path's refused done piece (`VERDICT_COUNT_REFUSED`, `EMIT_DONE`).
-    fn refused_done(&self, run: &Pumping<'_>, out: &Answer) {
+    fn refused_done(&self, run: &Pumping<'_>, out: &Answer)
+    where
+        S: AttemptSteps,
+    {
         let mut facts = run.lock().facts.clone();
         refuse_done_count(
             &*self.driver.money,
@@ -1768,7 +1808,10 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
     /// A done piece whose flight a deadline or a plane-generation stop overtook (the kernel
     /// awaited it, and it answered Ready + done): the same pre-fold refusals, attribution and
     /// fold as the walk, so its stated units bill under the cancel's cause.
-    fn cancelled_done(&self, run: &Pumping<'_>, piece: &Piece, out: &Answer) {
+    fn cancelled_done(&self, run: &Pumping<'_>, piece: &Piece, out: &Answer)
+    where
+        S: AttemptSteps,
+    {
         let seen = Seen::of(&run.lock().facts);
         match pre_fold(out, run.leg, piece.flags, seen, true) {
             Some(PreFold::Panic) => {
@@ -1783,7 +1826,6 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     &run.bufs,
                     run.leg,
                     seen,
-                    run.billed(),
                     false,
                 );
                 let checkpoint = self.fold_done_units(run, out);
@@ -1796,7 +1838,10 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
         }
     }
 
-    async fn push(&self, run: &mut Pumping<'_>, mut piece: Piece, toward: &mut Toward<'_>) -> Step {
+    async fn push(&self, run: &mut Pumping<'_>, mut piece: Piece, toward: &mut Toward<'_>) -> Step
+    where
+        S: AttemptSteps,
+    {
         let framing = piece.from == FROM_FAR_END
             && (piece.src != Src::Input || run.bufs.input.bytes.is_empty());
         loop {
@@ -1878,7 +1923,11 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     && (piece.reason == reason_code(ReasonCode::BreakerOpen)
                         || RefusalCode::of(piece.reason).is_some_and(RefusalCode::unsent));
                 match std::str::from_utf8(wait) {
-                    Ok(member) if exhausted => run.wait_member = Some(member.to_string()),
+                    Ok(member) if exhausted => {
+                        run.wait_member.clear();
+                        run.wait_member.push_str(member);
+                        run.waits = true;
+                    }
                     _ => return Step::End(End::Failed(ReasonCode::PlanePanic)),
                 }
             }
@@ -1907,7 +1956,6 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 &run.bufs,
                 run.leg,
                 seen,
-                run.billed(),
                 true,
             )
             .is_err()
@@ -1995,8 +2043,10 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                                 );
                             }
                             if out.verb.len != 0 {
-                                request.verb = bufs.arena(out.verb).to_vec();
-                                request.target = bufs.arena(out.target).to_vec();
+                                request.verb.clear();
+                                request.verb.extend_from_slice(bufs.arena(out.verb));
+                                request.target.clear();
+                                request.target.extend_from_slice(bufs.arena(out.target));
                             }
                             request.fields.extend(bufs.fields_of(out.fields_written));
                         }
@@ -2108,11 +2158,7 @@ fn route_policy_fields(
     member: &[u8],
 ) {
     if let Some(name) = policy.filter(|_| enabled && !member.is_empty()) {
-        fields.push((
-            HDR_ROUTE_POLICY.as_bytes().to_vec(),
-            name.as_bytes().to_vec(),
-        ));
-        fields.push((HDR_ROUTE_TARGET.as_bytes().to_vec(), member.to_vec()));
+        crate::cold::route_policy_fields(fields, name, member);
     }
 }
 
@@ -2121,6 +2167,5 @@ mod session;
 pub use session::{SessionCaller, SessionInput};
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/route_tests.rs"]
 mod tests;
