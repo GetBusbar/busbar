@@ -112,6 +112,12 @@ notes = "busbar's own patch: one commit, src/de/message_formatters.rs only. Unkn
 
 [[audits.serde-saphyr]]
 criteria = "safe-to-deploy"
+delta = "2.1.1@git:98c72ddb98b8c71303db9c56db24a8e3a4b11624 -> 2.1.1@git:d919ed3dbe56b017e207208516a03e00f089a769"
+importable = false
+notes = "busbar's own patch: one commit adding opt-in Options::missing_field_at_mapping_start (default false). deserialize_map records its mapping start in a scoped thread-local guard (saved on entry, restored on drop, the same pattern as the existing missing-field fallback guard) and missing_field places its error there when set. error.rs, deserializer.rs, options.rs, cfg.rs, tests.rs. No unsafe, I/O or dependency change; default behaviour unchanged. Covers only this exact revision."
+
+[[audits.serde-saphyr]]
+criteria = "safe-to-deploy"
 delta = "2.1.1@git:9e1666f3199cf41ab83394936a5093f72c7e22c1 -> 2.1.1@git:49b330217b7d8a2e7873336ce7411a0079776af8"
 importable = false
 notes = "busbar's own patch: one commit adding opt-in Options::unit_structs_refuse_mappings (default false): deserialize_unit_struct refuses a mapping start with the existing UnexpectedValueForUnit error when set. options.rs, cfg.rs, deserializer.rs (one match arm), tests.rs. No unsafe, I/O or dependency change; default behaviour unchanged. Covers only this exact revision."
