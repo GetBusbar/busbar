@@ -147,10 +147,11 @@ impl GovState {
         let mut captured = false;
         let retained_keys = {
             let mut flight = pending.flight.lock().unwrap_or_else(|p| p.into_inner());
-            let retained_keys: std::collections::HashSet<_> =
-                flight.iter().map(|write| write.key.clone()).collect();
+            let retained_keys = crate::off_path::governance::state::metering_flush_key_set(
+                flight.iter().map(|write| &write.key),
+            );
             if flight.is_empty() {
-                flight.extend(pending.drain().into_iter().filter_map(MeteringWrite::new));
+                flight.extend(pending.drain().filter_map(MeteringWrite::new));
                 captured = true;
             }
             retained_keys
@@ -169,18 +170,17 @@ impl GovState {
                 if !captured {
                     let mut flight = pending.flight.lock().unwrap_or_else(|p| p.into_inner());
                     if shutdown {
-                        flight.extend(pending.drain().into_iter().filter_map(MeteringWrite::new));
+                        flight.extend(pending.drain().filter_map(MeteringWrite::new));
                     } else {
                         // Fresh counts for a retained key keep coalescing until the
                         // next periodic batch. Other pinned groups/eras are independent
                         // cells and may join this bounded capture after replay settles.
-                        for shard in pending.shards.iter() {
-                            let mut map = shard.lock().unwrap_or_else(|p| p.into_inner());
-                            flight.extend(
-                                map.extract_if(|key, _| !retained_keys.contains(key))
-                                    .filter_map(MeteringWrite::new),
-                            );
-                        }
+                        crate::off_path::governance::state::metering_flush_take_unretained(
+                            &pending.shards[..],
+                            &retained_keys,
+                            &mut *flight,
+                            MeteringWrite::new,
+                        );
                     }
                     captured = true;
                     continue;
@@ -188,14 +188,12 @@ impl GovState {
                 return flushed;
             };
             let op = write.op.unwrap_or_else(|| {
-                let replay_before = std::time::Instant::now()
-                    + std::time::Duration::from_secs(
-                        busbar_contract::abi::store::OP_ID_RETENTION_SECS,
-                    );
+                let (replay_before, first_sent_at_ms) =
+                    crate::off_path::governance::state::metering_flush_attempt_clock();
                 let op = MeteringAttempt {
                     id: crate::door::op_id(),
                     replay_before,
-                    first_sent_at_ms: crate::store::now_ms(),
+                    first_sent_at_ms,
                 };
                 pending
                     .flight
@@ -246,7 +244,9 @@ impl GovState {
                 return flushed;
             }
 
-            let result = if std::time::Instant::now() >= op.replay_before {
+            let result = if crate::off_path::governance::state::metering_flush_expired(
+                op.replay_before,
+            ) {
                 Err(RecordStoreError(
                     "metering receipt retention expired; exact operation and counts retained"
                         .into(),
@@ -268,11 +268,9 @@ impl GovState {
                         .unwrap_or_else(|p| p.into_inner())
                         .len();
                     if shutdown {
-                        let fresh: usize = pending
-                            .shards
-                            .iter()
-                            .map(|shard| shard.lock().unwrap_or_else(|p| p.into_inner()).len())
-                            .sum();
+                        let fresh = crate::off_path::governance::state::metering_flush_fresh_cells(
+                            &pending.shards[..],
+                        );
                         diag_error!(
                             METERING_FLUSH_PARTIAL_FAILURE,
                             failed = retained + fresh,

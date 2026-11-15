@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-#![expect(
-    unsafe_code,
-    reason = "lends the outbound request's bytes to the plugin across the C ABI"
-)]
-
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -52,12 +47,9 @@ pub fn check_settings(plugin: &Plugin<Auth>, style: &str, settings: &[u8]) -> Re
         .context::<AuthFacts>()
         .is_some_and(|facts| facts.outbound_settings_check)
     {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: settings-only validation refused the style"
-        )]
-        let refused = format!("outbound style '{style}' has no settings-only validator");
-        return Err(refused);
+        return Err(crate::cold::dispatch::services::no_settings_validator(
+            style,
+        ));
     }
     let ext = extensions::encode(&[(
         busbar_contract::abi::auth::EXT_OUTBOUND_SETTINGS_CHECK,
@@ -73,13 +65,8 @@ pub fn check_settings(plugin: &Plugin<Auth>, style: &str, settings: &[u8]) -> Re
     if called.outcome == Outcome::Ready {
         return Ok(());
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the plugin refused the style's settings"
-    )]
-    let refused =
-        super::lifecycle::text(called.error).unwrap_or_else(|| format!("{:?}", called.outcome));
-    Err(refused)
+    Err(super::lifecycle::text(called.error)
+        .unwrap_or_else(|| crate::cold::dispatch::services::outcome_text(called.outcome)))
 }
 
 impl OutboundInstance {
@@ -102,15 +89,11 @@ impl OutboundInstance {
         settings: &[u8],
     ) -> Result<Self, String> {
         use busbar_contract::abi::mechanism::lifecycle::slot as lc;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: names an instance that did not validate or open"
-        )]
         let named = |what: &str, outcome: Outcome, error: Option<Vec<u8>>| {
-            format!(
-                "`{}` did not {what} for its outbound styles: {}",
+            crate::cold::dispatch::services::not_opened(
                 plugin.name(),
-                super::lifecycle::why(outcome, error)
+                what,
+                &super::lifecycle::why(outcome, error),
             )
         };
         let called = validate_call(&plugin, blob(settings, BLOB_JSON, 0));
@@ -187,9 +170,19 @@ unsafe impl Send for Lend {}
 // the shared credential buffer.
 unsafe impl Sync for Lend {}
 
+std::thread_local! {
+    /// The header views lends point the plugin at: one buffer per thread, reused (its capacity
+    /// kept) by every lend made or dropped on it.
+    static NAMED: std::cell::Cell<Vec<NamedValue>> = const { std::cell::Cell::new(Vec::new()) };
+}
+
 impl Drop for Lend {
     fn drop(&mut self) {
         self.field_buf.fill(0);
+        let mut named = std::mem::take(&mut self.named);
+        named.clear();
+        // A lend dropped while the thread's locals are torn down frees its buffer instead.
+        let _ = NAMED.try_with(move |pool| pool.set(named));
     }
 }
 
@@ -209,14 +202,12 @@ impl Lend {
     }
 
     fn over(request: FieldsRequest, bytes: usize, fields: usize) -> Self {
-        let named = request
-            .headers
-            .iter()
-            .map(|(n, v)| NamedValue {
-                name: abi_str(n),
-                value: blob(v, BLOB_OCTETS, 0),
-            })
-            .collect();
+        let mut named = NAMED.try_with(std::cell::Cell::take).unwrap_or_default();
+        named.clear();
+        named.extend(request.headers.iter().map(|(n, v)| NamedValue {
+            name: abi_str(n),
+            value: blob(v, BLOB_OCTETS, 0),
+        }));
         Lend {
             request,
             named,
@@ -378,14 +369,10 @@ impl OutboundInstance {
         &self,
         style: &str,
         credential: &[u8],
-        settings: &serde_json::Value,
+        settings: &(impl serde::Serialize + ?Sized),
     ) -> Result<u64, (Outcome, String)> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: binding an outbound style renders its settings once"
-        )]
-        let settings =
-            serde_json::to_vec(settings).map_err(|e| (Outcome::Refused, e.to_string()))?;
+        // Binding an outbound style renders its settings once.
+        let settings = crate::cold::dispatch::services::render_settings(settings)?;
         let mut frame = Frame::new(
             OpenOutboundIn {
                 head: in_head(),
@@ -407,13 +394,9 @@ impl OutboundInstance {
         if called.outcome == Outcome::Ready {
             return Ok(frame.out.handle);
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the plugin refused to bind the outbound style"
-        )]
         let why = called
             .error
-            .map(|e| String::from_utf8_lossy(&e).into_owned())
+            .map(|e| crate::cold::dispatch::services::lossy_text(&e))
             .unwrap_or_default();
         Err((called.outcome, why))
     }
@@ -426,19 +409,15 @@ impl OutboundAuth for OutboundInstance {
         credential: &[u8],
         settings: &serde_json::Value,
     ) -> Result<u64, String> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: names the outbound style binding the plugin refused"
-        )]
-        let opened =
-            self.open_outbound_raw(style, credential, settings)
-                .map_err(|(outcome, why)| {
-                    format!(
-                        "`{}` did not open the outbound style `{style}`: {outcome:?} {why}",
-                        self.plugin.name(),
-                    )
-                });
-        opened
+        self.open_outbound_raw(style, credential, settings)
+            .map_err(|(outcome, why)| {
+                crate::cold::dispatch::services::outbound_not_opened(
+                    self.plugin.name(),
+                    style,
+                    outcome,
+                    &why,
+                )
+            })
     }
 
     fn ready(&self, handle: u64) -> bool {

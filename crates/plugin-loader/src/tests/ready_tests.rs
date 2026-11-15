@@ -28,7 +28,7 @@ fn dispatcher() -> Arc<Dispatcher> {
 
 fn bind(d: &Dispatcher) -> Bind {
     Bind {
-        instance: Arc::from("the-instance"),
+        instance: crate::cold::dispatch::load::instance_name("the-instance"),
         max_inflight_cap: 16,
         sink: Arc::new(NoSink),
         dispatcher: d.adopter(),

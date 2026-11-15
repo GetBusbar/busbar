@@ -290,19 +290,17 @@ c_entry! {
             if check_spawn_in(i).is_err() {
                 return Answered::fault();
             }
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: spawning a configured child process borrows its argument and environment lists"
-            )]
+            // Spawning a configured child process reads its argument and environment lists once.
             // SAFETY: the caller's strings and lists, live for the call.
             let parsed = unsafe {
                 let program = text(i.program);
-                let args = list::<AbiStr>(i.args, i.args_len)
-                    .and_then(|a| a.iter().map(|s| text(*s)).collect::<Option<Vec<_>>>());
+                let args = list::<AbiStr>(i.args, i.args_len).and_then(|a| {
+                    crate::cold::dispatch::runtime::spawn_list(a, |s: &AbiStr| text(*s))
+                });
                 let env = list::<Field>(i.env, i.env_len).and_then(|e| {
-                    e.iter()
-                        .map(|f| Some((text(f.name)?, text(f.value)?)))
-                        .collect::<Option<Vec<_>>>()
+                    crate::cold::dispatch::runtime::spawn_list(e, |f: &Field| {
+                        Some((text(f.name)?, text(f.value)?))
+                    })
                 });
                 program.zip(args).zip(env)
             };

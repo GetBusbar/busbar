@@ -8,7 +8,7 @@ use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
 
-pub struct Owners(BTreeMap<String, Value>);
+pub(crate) struct Owners(BTreeMap<String, Value>);
 
 impl Owners {
     pub fn load(manifest: &str) -> Self {
@@ -158,7 +158,7 @@ fn source_path(package: &Value, relative: &str) -> PathBuf {
     path
 }
 
-pub fn identifier(value: &str) {
+pub(crate) fn identifier(value: &str) {
     assert!(
         !value.is_empty()
             && value.bytes().enumerate().all(|(i, b)| b == b'_'

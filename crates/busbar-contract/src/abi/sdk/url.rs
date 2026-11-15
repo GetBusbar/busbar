@@ -151,7 +151,7 @@ fn scrub_item(held: &[String], n: usize, quoted: bool, k: usize) -> &str {
     if !quoted {
         return &held[k];
     }
-    if k % 2 == 0 {
+    if k.is_multiple_of(2) {
         &held[k / 2]
     } else {
         let escaped = &held[n + k / 2];

@@ -2,19 +2,25 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use crate::host_services::Signing;
 use crate::trust::book::Ruling;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::plane::{PinMechanismDecl, TrustKeyDecl, TrustRole};
+use busbar_contract::plane_calls::InstanceDecl;
 use busbar_contract::services::{HostServices, Ran};
 
 const INSTANCE: &str = "section-admission";
+
+/// The instance's label, made once and shared.
+static LABEL: std::sync::LazyLock<Arc<str>> =
+    std::sync::LazyLock::new(|| -> Arc<str> { INSTANCE.into() });
 
 #[tokio::test]
 async fn conditional_optional_admission_keeps_guards_without_requiring_unused_storage() {
     let services = KernelServices::new();
     assert!(!services.supports_record_transactions());
     let mut declaration = InstanceDecl {
-        label: Arc::from(INSTANCE),
+        label: Arc::clone(&LABEL),
         record_kinds: vec!["sample"],
         conditional_records: true,
         conditional_record_kinds: vec![0],
@@ -38,7 +44,7 @@ const MECHANISMS: &[PinMechanismDecl] = &[PinMechanismDecl {
 
 fn declaration() -> InstanceDecl {
     InstanceDecl {
-        label: Arc::from(INSTANCE),
+        label: Arc::clone(&LABEL),
         record_kinds: vec!["sample"],
         signing: Some(("section-admission-domain", "sample-")),
         scope_kinds: vec!["peer"],
@@ -72,7 +78,7 @@ fn judge(services: &KernelServices) -> Result<(), Distrust> {
 }
 
 async fn approve(services: &KernelServices) {
-    let caller = Caller::for_test(Arc::from(INSTANCE), KindCode::Plane);
+    let caller = Caller::for_test(Arc::clone(&LABEL), KindCode::Plane);
     let Ran::Now(answer) = services.trust_sight(
         &caller,
         "peer",
@@ -137,8 +143,8 @@ async fn a_refused_admission_commit_preserves_live_approval_and_work_bounds() {
             "other",
             InstanceFacts {
                 signing: Some(Signing {
-                    domain: "held-domain".into(),
-                    kid_prefix: "held-".into(),
+                    domain: "held-domain".to_owned(),
+                    kid_prefix: "held-".to_owned(),
                 }),
                 ..InstanceFacts::default()
             },

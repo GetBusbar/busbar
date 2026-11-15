@@ -358,9 +358,7 @@ fn open_failure(outcome: Outcome, error: Option<&[u8]>, display: &str) -> String
         (_, Outcome::Fault) => &"status 3",
         _ => &"status 1",
     };
-    #[expect(clippy::disallowed_methods, reason = "error: a plugin's refused open")]
-    let failure = format!("plugin '{display}' open failed: {reason}");
-    failure
+    crate::cold::dispatch::load::open_failure(display, reason)
 }
 
 /// What one crossing answered.
@@ -411,7 +409,7 @@ impl Crossed {
     /// The host refused this call before the plugin answered it, for `why`.
     pub(crate) fn refused(why: &str) -> Self {
         Self {
-            error: Some(format!("the host refused this call: {why}").into_bytes()),
+            error: Some(crate::cold::dispatch::load::host_refused(why)),
             ..Self::bare(Outcome::Refused)
         }
     }
@@ -1243,7 +1241,8 @@ impl Instance {
 
     fn watched<R>(&self, s: u32, cross: impl FnOnce() -> R) -> R {
         let id = self.next_call.fetch_add(1, Ordering::Relaxed);
-        self.lock_calls().insert(id, (Instant::now(), s, false));
+        self.lock_calls()
+            .insert(id, (super::instant_at(super::now_ns()), s, false));
         let crossed = cross();
         self.lock_calls().remove(&id);
         crossed
@@ -1316,15 +1315,11 @@ impl Instance {
     ) -> Option<String> {
         use busbar_contract::conn::admissions::AdmissionRefused;
         let Some(admissions) = admissions else {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a refused connection admission"
-            )]
             return self
                 .wake
                 .conn
                 .get()
-                .map(|_| "connection admission authority missing".to_owned());
+                .map(|_| crate::cold::dispatch::load::admission_missing());
         };
         // SAFETY: the host owns this settings blob for the entire crossing.
         let bytes = unsafe { blob_bytes(settings) };
@@ -1335,11 +1330,7 @@ impl Instance {
         let answers = match admissions.apply(doc.as_ref(), owned.as_ref(), predecessor) {
             Ok(answers) => answers,
             Err(_) => {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: a refused connection admission"
-                )]
-                return Some("connection admission authority refused".to_owned());
+                return Some(crate::cold::dispatch::load::admission_refused());
             }
         };
         let mut trust_refused = None;
@@ -1352,13 +1343,11 @@ impl Instance {
             if let (Err(reason), Some(path), None) =
                 (result, answer.trust_refused_at, &trust_refused)
             {
-                #[expect(clippy::disallowed_methods, reason = "error: a refused CA certificate")]
-                let refusal = format!(
-                    "{path}: the host refused the CA certificate it names for need {} ({reason}); \
-                     it must be PEM that parses into a trust anchor",
-                    answer.need.0
-                );
-                trust_refused = Some(refusal);
+                trust_refused = Some(crate::cold::dispatch::load::ca_refused(
+                    &path,
+                    answer.need.0,
+                    reason,
+                ));
             }
             if answer.report {
                 self.need_refused(answer.need, result);
@@ -1447,16 +1436,12 @@ impl Instance {
             .flatten();
         let conn = match self.wake.conn.get() {
             Some((owner, table)) => {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: a refused binding generation"
-                )]
                 let owner = if initial && !self.wake.conn_forgotten.load(Ordering::Acquire) {
                     *owner
                 } else {
                     super::handle::mint(self.wake)
                         .map(super::handle::instance_id)
-                        .map_err(|error| error.to_string())?
+                        .map_err(|error| crate::cold::dispatch::load::text_of(&error))?
                 };
                 if self.kind == KindCode::Auth {
                     table.hold_authority(owner);
@@ -1477,21 +1462,16 @@ impl Instance {
             destinations: self.destinations(settings),
         });
         if let Some((owner, table)) = &generation.conn {
-            for (index, need) in self
-                .needs
-                .iter()
-                .enumerate()
-                .filter(|(_, need)| !from_settings(need))
-            {
+            // The needs are the Statement's fixed list, declared once per binding generation.
+            for (index, need) in self.needs.iter().enumerate() {
+                if from_settings(need) {
+                    continue;
+                }
                 let id = NeedId(index as u32);
                 if table.declared(*owner, id).is_none() {
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "error: a refused binding generation"
-                    )]
                     table
                         .declare(*owner, id, need, None, None)
-                        .map_err(|error| crate::observe::conn_reason(error).to_string())?;
+                        .map_err(crate::cold::dispatch::load::declare_refused)?;
                 }
             }
         }
@@ -1925,9 +1905,7 @@ impl Instance {
                 let bytes = if prior.is_empty() || reply.ends_with(prior) {
                     reply
                 } else {
-                    let mut joined = reply.to_vec();
-                    joined.extend_from_slice(prior);
-                    Arc::from(joined)
+                    crate::cold::dispatch::load::joined_reply(&reply, prior)
                 };
                 if let Some(scope) = &scope {
                     scope.hold_operation_reply(ticket, Arc::clone(&bytes));
@@ -2410,9 +2388,8 @@ impl Instance {
                         .open_stream(ticket, open)
                 });
                 if let Err(error) = opened {
-                    #[expect(clippy::disallowed_methods, reason = "error: a refused stream open")]
                     return Crossed {
-                        error: Some(error.as_bytes().to_vec()),
+                        error: Some(crate::cold::dispatch::load::text_bytes(error)),
                         ..Crossed::host(Outcome::Refused).unread(head.lease)
                     };
                 }
@@ -2607,18 +2584,33 @@ impl Instance {
         let Some(vals) = (unsafe { array(m.label_vals, m.label_vals_len) }) else {
             return self.sink.dropped(Dropped::BadArray);
         };
-        let Some(labels) = vals
-            .iter()
-            .map(|v| str_bytes(*v))
-            .collect::<Option<Vec<&[u8]>>>()
-        else {
-            return self.sink.dropped(Dropped::BadArray);
+        // The label values on the stack; a family with more labels than fit spills out of line.
+        const INLINE_LABELS: usize = 32;
+        const EMPTY: &[u8] = &[];
+        let mut inline = [EMPTY; INLINE_LABELS];
+        let spilled;
+        let labels: &[&[u8]] = if vals.len() <= INLINE_LABELS {
+            for (slot, v) in inline.iter_mut().zip(vals) {
+                let Some(bytes) = str_bytes(*v) else {
+                    return self.sink.dropped(Dropped::BadArray);
+                };
+                *slot = bytes;
+            }
+            &inline[..vals.len()]
+        } else {
+            let Some(all) =
+                crate::cold::dispatch::load::spilled_labels(vals.len(), |i| str_bytes(vals[i]))
+            else {
+                return self.sink.dropped(Dropped::BadArray);
+            };
+            spilled = all;
+            &spilled
         };
         self.sink.metric(Metric {
             family: m.family_idx,
             kind: m.kind,
             value: m.value,
-            labels: &labels,
+            labels,
         });
     }
 
@@ -2719,22 +2711,12 @@ pub(crate) unsafe fn kind_tail<T: Copy>(
 ) -> Result<T, String> {
     let p = st.kind_tail;
     if p.is_null() {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a load-time Statement refusal"
-        )]
-        return Err(format!("{who} states no kind tail"));
+        return Err(crate::cold::dispatch::load::no_kind_tail(who));
     }
     // SAFETY: a non-NULL kind tail leads with a `KindTailHead` (the caller's contract).
     let size = unsafe { (*p).size };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a load-time Statement refusal"
-    )]
     let read = busbar_contract::abi::mechanism::door::tail_read_len(size, frozen, size_of::<T>())
-        .ok_or_else(|| {
-        format!("{who} states a {size}-byte tail, smaller than its frozen {frozen}")
-    })?;
+        .ok_or_else(|| crate::cold::dispatch::load::short_kind_tail(who, size, frozen))?;
     let mut tail = std::mem::MaybeUninit::<T>::zeroed();
     // SAFETY: `read` is at most the plugin's stated size and at most `size_of::<T>()`; the rest of
     // `tail` stays zero, a valid `T` (the caller's contract).
@@ -2878,20 +2860,14 @@ impl<K: Kind> Plugin<K> {
         let stated = &v.rendering;
         let mut statement_digest = [0; 32];
         statement_digest.copy_from_slice(&busbar_contract::crypto::sha256(stated));
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: an instance is bound once, at load"
-        )]
-        let families = (0..st.families_len)
-            .map(|i| {
-                // SAFETY: `validate` checked `families` holds `families_len` entries.
-                let f = unsafe { st.families.add(i).read_unaligned() };
-                FamilyShape {
-                    kind: f.kind,
-                    labels: f.label_keys_len,
-                }
-            })
-            .collect();
+        let families = crate::cold::dispatch::load::boxed_table(st.families_len, |i| {
+            // SAFETY: `validate` checked `families` holds `families_len` entries.
+            let f = unsafe { st.families.add(i).read_unaligned() };
+            FamilyShape {
+                kind: f.kind,
+                labels: f.label_keys_len,
+            }
+        });
 
         let wake: &'static InstanceWake = Box::leak(Box::default());
 
@@ -2901,17 +2877,11 @@ impl<K: Kind> Plugin<K> {
 
         let instance = super::handle::instance_id(ctx);
         let mut declared_needs: Box<[ReadNeed]> = Box::default();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: an instance is bound once, at load"
-        )]
         let conns: *const busbar_contract::abi::host::conn::connector::ConnectorSlots =
             match (&bind.conns, st.needs_len) {
                 (ConnTable::NoNeeds, n) if n > 0 => {
                     return Err(LoadError::NoConnectionTable {
-                        plugin: str_bytes(st.name)
-                            .map(|n| String::from_utf8_lossy(n).into_owned())
-                            .unwrap_or_default(),
+                        plugin: crate::cold::dispatch::load::plugin_name(st.name),
                         needs: n,
                     });
                 }
@@ -2931,13 +2901,10 @@ impl<K: Kind> Plugin<K> {
                     wake.conn_state.declare_needs(ctx, &needs);
                     for (i, need) in needs.iter().enumerate() {
                         if !need.transport.is_empty() && !table.serves_scheme(&need.transport) {
-                            // busbar:expect(bp::clone_alloc, reason = "boot: a load-time refusal of an unserved need")
                             return Err(LoadError::UnservedScheme {
-                                plugin: str_bytes(st.name)
-                                    .map(|n| String::from_utf8_lossy(n).into_owned())
-                                    .unwrap_or_default(),
+                                plugin: crate::cold::dispatch::load::plugin_name(st.name),
                                 inbound: need.direction != DIRECTION_OUTBOUND,
-                                scheme: need.transport.clone(),
+                                scheme: crate::cold::dispatch::load::text(&need.transport),
                             });
                         }
 
@@ -2947,18 +2914,15 @@ impl<K: Kind> Plugin<K> {
                         let id = NeedId(u32::try_from(i).unwrap_or(u32::MAX));
 
                         if let Err(e) = table.declare(instance, id, need, None, None) {
-                            // busbar:expect(bp::clone_alloc, reason = "boot: a load-time refusal of a refused need")
                             return Err(LoadError::NeedRefused {
-                                plugin: str_bytes(st.name)
-                                    .map(|n| String::from_utf8_lossy(n).into_owned())
-                                    .unwrap_or_default(),
+                                plugin: crate::cold::dispatch::load::plugin_name(st.name),
                                 need: id.0,
-                                transport: need.transport.clone(),
+                                transport: crate::cold::dispatch::load::text(&need.transport),
                                 reason: crate::observe::conn_reason(e),
                             });
                         }
                     }
-                    declared_needs = needs.into_boxed_slice();
+                    declared_needs = crate::cold::dispatch::load::boxed(needs);
                     let _ = wake
                         .admissions
                         .set(authority.bind(instance, &declared_needs));
@@ -2982,25 +2946,17 @@ impl<K: Kind> Plugin<K> {
         }));
         let name = str_bytes(st.name)
             .ok_or_else(|| LoadError::BadStatement("the name is NULL or over-long".into()))?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: an instance is bound once, at load"
-        )]
-        let secret_refs: Box<[String]> = (0..st.secret_refs_len)
-            .map(|i| {
+        let secret_refs: Box<[String]> =
+            crate::cold::dispatch::load::try_boxed_table(st.secret_refs_len, |i| {
                 // SAFETY: `validate` ran `check_statement`, which refused a NULL list with a count;
                 // the list holds `secret_refs_len` `'static` strings.
                 let key = unsafe { st.secret_refs.add(i).read_unaligned() };
                 str_bytes(key)
-                    .map(|k| String::from_utf8_lossy(k).into_owned())
+                    .map(crate::cold::dispatch::load::lossy)
                     .ok_or_else(|| LoadError::BadStatement("a secret ref is malformed".into()))
-            })
-            .collect::<Result<_, _>>()?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: an instance is bound once, at load"
-        )]
-        let reference_fields = super::load::reference_fields(&st)?.into_boxed_slice();
+            })?;
+        let reference_fields =
+            crate::cold::dispatch::load::boxed(super::load::reference_fields(&st)?);
         if bind.instance.is_empty() || bind.instance.chars().any(char::is_control) {
             return Err(LoadError::BadStatement(
                 "host instance namespace is empty or contains control characters".into(),
@@ -3014,12 +2970,8 @@ impl<K: Kind> Plugin<K> {
                 "caller binding does not match the validated descriptor".into(),
             ));
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a load-time Statement refusal"
-        )]
         let classes = busbar_contract::abi::mechanism::rendering::read(stated)
-            .map_err(|e| LoadError::Rendering(format!("byte {} is not {}", e.at, e.what)))?
+            .map_err(|e| crate::cold::dispatch::load::unreadable(&e))?
             .measurement_classes;
         let measurement_binding = super::measurement::Binding {
             caller: caller.clone(),
@@ -3032,10 +2984,6 @@ impl<K: Kind> Plugin<K> {
         let _ = wake
             .credential_kinds
             .set(K::credential_kinds(context.as_deref()));
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: an instance is bound once, at load"
-        )]
         let plugin = Self {
             inner: Arc::new(Instance {
                 measurement_binding,
@@ -3048,7 +2996,7 @@ impl<K: Kind> Plugin<K> {
                 secret_refs,
                 reference_fields,
                 kind: v.kind,
-                name: String::from_utf8_lossy(name).into_owned(),
+                name: crate::cold::dispatch::load::lossy(name),
                 statement_digest,
                 slots: v.slots,
                 operations: v.operations,

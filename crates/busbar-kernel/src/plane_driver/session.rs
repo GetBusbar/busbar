@@ -82,7 +82,13 @@ pub(crate) struct Turn<'t> {
 
 impl Turn<'_> {
     pub(crate) fn within(&self, member: &str) -> bool {
-        self.sealed.iter().any(|d| d.lane().as_str() == member)
+        // The unit's own sealed destinations (a few, fixed at its verify), not accumulated state.
+        for d in self.sealed {
+            if d.lane().as_str() == member {
+                return true;
+            }
+        }
+        false
     }
 
     pub(crate) fn halted(&self) -> impl Future<Output = Halt> + Send + 'static {
@@ -222,11 +228,6 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
             }
             return Err(ReasonCode::InFlightCap);
         };
-        let (dialect, caller_ref) = {
-            let st = self.lock();
-            let dialect = st.decoded.as_ref().map_or(0, |x| x.dialect);
-            (dialect, st.caller_ref.clone())
-        };
         let none = bytes::Bytes::new();
         let mut near_run = Pumping::new(
             d,
@@ -238,8 +239,13 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
             none.clone(),
         );
         let mut far_run = Pumping::new(d, token, &self.state, ctx, far, self.deadline_ns, none);
-        for run in [&mut near_run, &mut far_run] {
-            run.lend_unit(self.arrival.claim, dialect, &caller_ref, stream);
+        {
+            // Lent under the unit's lock, straight from its state: no copy of the reference.
+            let st = self.lock();
+            let dialect = st.decoded.as_ref().map_or(0, |x| x.dialect);
+            for run in [&mut near_run, &mut far_run] {
+                run.lend_unit(self.arrival.claim, dialect, &st.caller_ref, stream);
+            }
         }
         let ended: EndCell = watch::Sender::new(None);
         let (turns, queued) = mpsc::channel(1);

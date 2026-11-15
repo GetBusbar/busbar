@@ -65,16 +65,14 @@ impl Inputs {
             (h, len, in_force)
         });
         Inputs {
-            period: period.to_string(),
+            period: crate::off_path::governance::state::money_view_period(period),
             include_fee,
             facts: Facts {
                 window_start: cell.window_start,
                 requests: cell.requests,
                 billable_requests: cell.billable_requests,
                 fee_eras: cell.fee_eras.clone(),
-                models: (cell.models.iter())
-                    .map(|m| (m.model.clone(), m.era, m.cur.clone()))
-                    .collect(),
+                models: crate::off_path::governance::state::money_view_models(cell),
             },
             card: cost.generation(),
             history,
@@ -107,7 +105,11 @@ impl MoneyView {
             *kept = (inputs, usage);
             return;
         }
-        memo.insert(bucket_id.to_string(), (inputs, usage));
+        crate::off_path::governance::state::money_view_keep_first(
+            &mut *memo,
+            bucket_id,
+            (inputs, usage),
+        );
     }
 
     pub(in crate::governance) fn priced(&self) {

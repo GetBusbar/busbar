@@ -5,7 +5,6 @@
 //! last tick, instead of every shard twice per 100 ms tick.
 
 use super::*;
-use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 
 async fn gov() -> GovState {
@@ -38,7 +37,9 @@ fn accrue(gov: &GovState, id: &str) {
     cell.accrue_raw(
         "m",
         RawRateEra::legacy(0),
-        &BTreeMap::from([("input".into(), Count::ONE)]),
+        &[("input".into(), Count::ONE)]
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>(),
     )
     .unwrap();
     cell.dirty = true;

@@ -13,7 +13,7 @@ pub(crate) mod hooks;
 pub mod host;
 mod money;
 pub(crate) use money::observation_budget_id;
-mod needs;
+pub(crate) mod needs;
 mod probe;
 pub mod registry;
 mod route;
@@ -35,8 +35,8 @@ use busbar_contract::abi::mechanism::call::{
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     class_of, reason_code, ArriveIn, ArriveOut, OutField, RefusalClass, RefusalIn, RefusalOut,
-    RefusalStatus, UnitCount, REFUSAL_ANY_DIALECT, REFUSAL_ARRIVE, REFUSAL_GATE, REFUSAL_KERNEL,
-    ROUTE_SCOPE_LOCAL, ROUTE_SESSION,
+    RefusalStatus, UnitCount, REFUSAL_ARRIVE, REFUSAL_GATE, REFUSAL_KERNEL, ROUTE_SCOPE_LOCAL,
+    ROUTE_SESSION,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{
@@ -44,7 +44,7 @@ use busbar_contract::caps::{
     Meter, OpClassId, Outcome, Pass, PrincipalId, ReasonCode, Refusal, Route, RoutePlan,
     SeatVerdict as StepAnswer, Usage, VerifiedDestination,
 };
-use busbar_contract::plane_calls::{InstanceDecl, PlaneCalls};
+use busbar_contract::plane_calls::PlaneCalls;
 use busbar_contract::services::Caller;
 use tokio::sync::{watch, Notify};
 
@@ -82,12 +82,11 @@ pub use route::{
 };
 
 use crate::auth::CallerRefKey;
-use crate::host_services::{InstanceFacts, KernelServices, Signing};
+use crate::host_services::{InstanceFacts, KernelServices};
+use crate::off_path::plane_driver::prepare_admission;
 use crate::slice::GroupLeaseSlip;
 use crate::teller::{Ended, Evidence, RouteAwait, RouteLeg, Screen, UnitCtx, UnitEnds};
 use crate::trust::book::{Distrust, TrustFacts};
-use crate::trust::section::parse_section;
-use busbar_contract::ids::RecordSchemaId;
 
 /// The capacities of the host buffers the driver hands a plane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,21 +148,8 @@ pub struct DriverConfig {
 
 pub type CallerRefs = Arc<std::sync::RwLock<Option<Arc<CallerRefKey>>>>;
 
-impl DriverConfig {
-    pub fn status(&self, dialect: u32, reason: ReasonCode) -> u32 {
-        let code = reason_code(reason);
-        let row = |d: u32| {
-            // busbar:expect(bp::state_scan, reason = "error: a refusal's status is looked up once, in the plane's small refusal table")
-            self.refusal_statuses
-                .iter()
-                .find(|r| r.dialect == d && r.reason == code)
-                .map(|r| r.status)
-        };
-        row(dialect)
-            .or_else(|| row(REFUSAL_ANY_DIALECT))
-            .unwrap_or_else(|| (self.status_of)(reason))
-    }
-}
+// `DriverConfig::status` (a refusal's status, looked up only when a unit is refused) is in
+// `crate::cold`.
 
 fn is_authentication(reason: ReasonCode) -> bool {
     class_of(reason) == RefusalClass::Unauthenticated
@@ -188,17 +174,18 @@ pub const fn class_status(class: RefusalClass) -> u32 {
 }
 
 pub struct PlaneDriver {
-    calls: Arc<dyn PlaneCalls>,
-    config: DriverConfig,
+    pub(crate) calls: Arc<dyn PlaneCalls>,
+    pub(crate) config: DriverConfig,
     money: Arc<dyn MoneySeam>,
     buried: Mutex<Vec<cancel::Buried>>,
-    cleanup_sweep: Mutex<()>,
+    /// The sweep's exclusion, holding its reused buffer of the units a sweep leaves unsettled.
+    cleanup_sweep: Mutex<Vec<cancel::Buried>>,
 
     owed: Mutex<Vec<close::Owed>>,
     reload: watch::Sender<bool>,
 
-    records: Option<(Arc<KernelServices>, Caller)>,
-    driver: Option<Ticket>,
+    pub(crate) records: Option<(Arc<KernelServices>, Caller)>,
+    pub(crate) driver: Option<Ticket>,
     services: Arc<KernelServices>,
 
     sessions: Mutex<HashMap<u64, Arc<Notify>>>,
@@ -272,106 +259,22 @@ impl std::fmt::Debug for PlaneDriver {
     }
 }
 
-enum Cause {
-    Timer,
-
-    Woke,
-}
-
-const fn earlier(a: u64, b: u64) -> u64 {
-    match (a, b) {
-        (0, b) => b,
-        (a, 0) => a,
-        (a, b) => {
-            if a < b {
-                a
-            } else {
-                b
-            }
-        }
-    }
-}
-
 /// A section's complete host admission, prepared without changing the live instance.
 #[must_use = "prepared host facts take effect only when committed"]
 pub struct PreparedSection<'a> {
-    services: &'a KernelServices,
-    label: Arc<str>,
-    facts: InstanceFacts,
-    work: crate::host_work::WorkBounds,
+    pub(crate) services: &'a KernelServices,
+    pub(crate) label: Arc<str>,
+    pub(crate) facts: InstanceFacts,
+    pub(crate) work: crate::host_work::WorkBounds,
 }
 
 impl PreparedSection<'_> {
-    /// Commit after every other fallible step of a generation refresh has succeeded.
-    pub async fn commit(self) -> Result<(), String> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a refused admission is reported once, in words, to the generation refresh"
-        )]
-        let committed = self.commit_typed().await.map_err(|e| e.to_string());
-        committed
-    }
-
     /// Preserve admission refusal identity for the composition root’s refresh observation.
     pub async fn commit_typed(self) -> Result<(), crate::host_services::AdmitRefused> {
         self.services.admit(&self.label, self.facts).await?;
         self.services.bound_work(&self.label, self.work);
         Ok(())
     }
-}
-
-fn prepare_admission<'a>(
-    d: &InstanceDecl,
-    services: &'a KernelServices,
-    section: (&str, &busbar_contract::yaml::Value),
-) -> Result<PreparedSection<'a>, String> {
-    if d.conditional_records_optional && !d.conditional_records {
-        return Err("optional record transactions require declared protocol support".into());
-    }
-    if d.conditional_records
-        && !d.conditional_records_optional
-        && !services.supports_record_transactions()
-    {
-        return Err("the configured store does not support conditional record transactions".into());
-    }
-    let trust = parse_section(section.0, section.1, &d.trust_keys)?;
-    // busbar:expect(bp::clone_alloc, reason = "config: a plane instance's admission facts are lowered once per generation")
-    // busbar:expect(bp::into_alloc, reason = "config: a plane instance's admission facts are lowered once per generation")
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a plane instance's admission facts are lowered once per generation"
-    )]
-    let facts = InstanceFacts {
-        conditional_record_kinds: d.conditional_record_kinds.clone(),
-        record_collections: d.record_collections.clone(),
-        record_kinds: d
-            .record_kinds
-            .iter()
-            .copied()
-            .map(RecordSchemaId::new)
-            .collect(),
-        signing: d.signing.map(|(domain, kid_prefix)| Signing {
-            domain: domain.into(),
-            kid_prefix: kid_prefix.into(),
-        }),
-        trust: trust.into_iter().collect(),
-        scope_kinds: d.scope_kinds.iter().map(|k| (*k).to_string()).collect(),
-        record_chains: d.record_chains.clone(),
-        record_retentions: d.record_retentions.clone(),
-        ticket_prefix: d.ticket_prefix.map(str::to_string),
-    };
-
-    let work = crate::host_work::WorkBounds::of_section(
-        section.0,
-        section.1,
-        services.default_work_bounds(),
-    )?;
-    Ok(PreparedSection {
-        services,
-        label: Arc::clone(&d.label),
-        facts,
-        work,
-    })
 }
 
 impl PlaneDriver {
@@ -390,7 +293,7 @@ impl PlaneDriver {
             config,
             money,
             buried: Mutex::new(Vec::new()),
-            cleanup_sweep: Mutex::new(()),
+            cleanup_sweep: Mutex::new(Vec::new()),
             owed: Mutex::new(Vec::new()),
             reload: watch::channel(false).0,
             records: None,
@@ -412,57 +315,6 @@ impl PlaneDriver {
         section: (&str, &busbar_contract::yaml::Value),
     ) -> Result<PreparedSection<'_>, String> {
         prepare_admission(&self.calls.declared(), &self.services, section)
-    }
-
-    pub async fn ticks(&self) {
-        let Some(driver) = self.driver else {
-            return;
-        };
-        let mut at = 0;
-        let mut cause = Cause::Timer;
-        loop {
-            // busbar:expect(bp::clock_repeat, reason = "boot: the plane's timer task, started once at boot, reads its clock once per tick")
-            let Some(next) = self.calls.tick(driver, self.calls.now_ns()).await else {
-                return;
-            };
-            at = match cause {
-                Cause::Timer => next,
-                Cause::Woke => earlier(at, next),
-            };
-            let Some(woken) = self.await_tick(at).await else {
-                return;
-            };
-            cause = woken;
-        }
-    }
-
-    async fn await_tick(&self, at: u64) -> Option<Cause> {
-        let timer = async {
-            if at == 0 {
-                std::future::pending::<()>().await;
-            }
-            let now = self.calls.now_ns();
-            if at > now {
-                tokio::time::sleep(std::time::Duration::from_nanos(at - now)).await;
-            }
-        };
-        let woke = self.calls.woke();
-        tokio::pin!(timer, woke);
-        let mut channel = true;
-        loop {
-            tokio::select! {
-                () = &mut timer => return Some(Cause::Timer),
-                alive = &mut woke, if channel => {
-                    if alive {
-                        return Some(Cause::Woke);
-                    }
-                    channel = false;
-                    if at == 0 {
-                        return None;
-                    }
-                }
-            }
-        }
     }
 
     #[must_use]
@@ -504,7 +356,7 @@ impl PlaneDriver {
         let Some(reason) = bill.unread else {
             return;
         };
-        let resource = format!("unit:{} reason:{}", ctx.key.get(), reason.as_str());
+        let resource = crate::cold::usage_unread_resource(ctx.key.get(), reason.as_str());
         let anonymous = PrincipalId::anonymous();
         self.audit.record(
             crate::diagnostics::PLANE_USAGE_UNREAD.slug,
@@ -570,41 +422,6 @@ impl PlaneDriver {
             Some((services, caller)) => services.recovery_work(caller).await,
             None => Ok(Vec::new()),
         }
-    }
-
-    /// Adopt the current signer's references for identities that predate durable bindings.
-    /// Run before listener publication, while the deployment still possesses that signer.
-    /// Existing bindings win; a newly configured signer never overwrites their references.
-    pub async fn migrate_caller_references(
-        &self,
-        gov: &crate::governance::GovState,
-    ) -> Result<(), String> {
-        let Some((services, caller)) = &self.records else {
-            return Ok(());
-        };
-        let Some(slot) = &self.config.caller_refs else {
-            return Ok(());
-        };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a migration with no caller reference key is refused once"
-        )]
-        let key = slot
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone()
-            .ok_or_else(|| "caller reference key unavailable during migration".to_string())?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the caller-reference migration walks every key once"
-        )]
-        for principal in gov.all_keys_async().await.map_err(|e| e.to_string())? {
-            services
-                .resolve_caller_reference(caller, &principal.id, key.caller_ref(&principal.id))
-                .await
-                .map_err(str::to_owned)?;
-        }
-        Ok(())
     }
 
     /// Bind a carrier session to this opened plane, so a replacement sharing the
@@ -921,6 +738,48 @@ impl<S, F, C> std::fmt::Debug for PlaneUnits<'_, S, F, C> {
     }
 }
 
+/// A caller head's fields lent to the plane for one call, on the stack up to the default head
+/// capacity ([`BufferCaps::DEFAULT`]'s `fields`).
+type LentFields = smallvec::SmallVec<[Field; 32]>;
+
+/// What a host lists to the plane for one call (a catalog's names), on the stack up to 32.
+type LentNames = smallvec::SmallVec<[AbiStr; 32]>;
+
+/// The empty frame every encode that renders no refusal answers with: one shared allocation.
+static EMPTY_FRAME: std::sync::LazyLock<Arc<[u8]>> =
+    std::sync::LazyLock::new(|| -> Arc<[u8]> { Arc::new([0u8; 0]) });
+
+/// A plane's rendered answer out of its host buffers: the reply buffer becomes the body, cut to
+/// what the plane wrote (no copy), and each head field it wrote is copied out of the arena once.
+fn rendered_of(
+    status: u32,
+    mut reply: Vec<u8>,
+    reply_written: u32,
+    out_fields: &[OutField],
+    fields_written: u32,
+    arena: &[u8],
+) -> Rendered {
+    let n = reply_written as usize;
+    if n <= reply.len() {
+        reply.truncate(n);
+    } else {
+        reply.clear();
+    }
+    let written = (fields_written as usize).min(out_fields.len());
+    let mut rendered = Rendered {
+        status,
+        fields: Vec::with_capacity(written),
+        body: reply,
+    };
+    for f in &out_fields[..written] {
+        rendered.fields.push((
+            crate::cold::rendered_span(arena, f.name),
+            crate::cold::rendered_span(arena, f.value),
+        ));
+    }
+    rendered
+}
+
 fn blob(b: &[u8]) -> Blob {
     if b.is_empty() {
         return Blob::ABSENT;
@@ -1002,14 +861,11 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
 
     fn arrive(&self, unit: u64) -> Option<Decoded> {
         let a = &self.arrival;
-        let fields: Vec<Field> = a
-            .fields
-            .iter()
-            .map(|(n, v)| Field {
-                name: AbiStr::over(n),
-                value: AbiStr::over(v),
-            })
-            .collect();
+        let mut fields: LentFields = smallvec::SmallVec::new();
+        fields.extend(a.fields.iter().map(|(n, v)| Field {
+            name: AbiStr::over(n),
+            value: AbiStr::over(v),
+        }));
         let mut units = vec![ZERO_UNIT; self.driver.config.caps.units];
         let mut input = ArriveIn {
             unit,
@@ -1052,15 +908,13 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
         }
 
         let held = outcome == AbiOutcome::Refused && pool.is_some();
+        // The units buffer becomes the estimate itself: its written prefix, no copy.
+        units.truncate(o.units_written as usize);
         (outcome == AbiOutcome::Ready || held).then(|| Decoded {
             op_class: o.op_class,
             principal_need: o.principal_need,
             dialect: o.dialect,
-            expected: units
-                .iter()
-                .take(o.units_written as usize)
-                .copied()
-                .collect(),
+            expected: units,
             pool,
             route: o.route,
             route_flags: o.route_flags,
@@ -1089,12 +943,12 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
         hook: Option<&str>,
     ) -> Rendered {
         let (unit, dialect, declined, words, refused_wait) = {
-            let st = self.lock();
+            let mut st = self.lock();
             let dialect = st.decoded.as_ref().map_or(0, |d| d.dialect);
             let declined = st.declined.filter(|_| reason == ReasonCode::DecodeFailed);
 
-            // busbar:expect(bp::clone_alloc, reason = "error: a declined arrival's own words are copied once, into its refusal")
-            let words = declined.and_then(|_| st.declined_words.clone());
+            // Lent out of the unit's state for this one render, and put back after it.
+            let words = declined.and_then(|_| st.declined_words.take());
             let refused_wait = st
                 .refused_wait
                 .filter(|(refused, _)| *refused == reason)
@@ -1159,6 +1013,9 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
         }
         let principal = self.lock().principal.clone();
         let rendered = self.driver.render_refusal(input, principal.as_ref());
+        if words.is_some() {
+            self.lock().declined_words = words;
+        }
 
         self.lock().close.closed();
         rendered
@@ -1215,25 +1072,14 @@ impl PlaneDriver {
                 ),
             }
         }
-        let span = |s: Span| {
-            let start = s.offset as usize;
-            arena
-                .get(start..start.saturating_add(s.len as usize))
-                .unwrap_or_default()
-                .to_vec()
-        };
-        Rendered {
-            status: if o.status == 0 { status } else { o.status },
-            fields: fields
-                .iter()
-                .take(o.fields_written as usize)
-                .map(|f| (span(f.name), span(f.value)))
-                .collect(),
-            body: reply
-                .get(..o.reply_written as usize)
-                .unwrap_or_default()
-                .to_vec(),
-        }
+        rendered_of(
+            if o.status == 0 { status } else { o.status },
+            reply,
+            o.reply_written,
+            &fields,
+            o.fields_written,
+            &arena,
+        )
     }
 
     #[must_use]
@@ -1291,14 +1137,13 @@ impl PlaneDriver {
         names: &[String],
     ) -> Option<Rendered> {
         use busbar_contract::abi::plane::{CatalogIn, CatalogOut};
-        let fields: Vec<Field> = head
-            .iter()
-            .map(|(n, v)| Field {
-                name: AbiStr::over(n),
-                value: AbiStr::over(v),
-            })
-            .collect();
-        let listed: Vec<AbiStr> = names.iter().map(|n| AbiStr::over(n.as_bytes())).collect();
+        let mut fields: LentFields = smallvec::SmallVec::new();
+        fields.extend(head.iter().map(|(n, v)| Field {
+            name: AbiStr::over(n),
+            value: AbiStr::over(v),
+        }));
+        let mut listed: LentNames = smallvec::SmallVec::new();
+        listed.extend(names.iter().map(|n| AbiStr::over(n.as_bytes())));
         let caps = self.config.caps;
         let (mut reply, mut out_fields, mut arena) = (
             vec![0u8; caps.reply],
@@ -1335,25 +1180,14 @@ impl PlaneDriver {
         if outcome != AbiOutcome::Ready {
             return None;
         }
-        let span = |s: Span| {
-            let start = s.offset as usize;
-            arena
-                .get(start..start.saturating_add(s.len as usize))
-                .unwrap_or_default()
-                .to_vec()
-        };
-        Some(Rendered {
-            status: o.status,
-            fields: out_fields
-                .iter()
-                .take(o.fields_written as usize)
-                .map(|f| (span(f.name), span(f.value)))
-                .collect(),
-            body: reply
-                .get(..o.reply_written as usize)
-                .unwrap_or_default()
-                .to_vec(),
-        })
+        Some(rendered_of(
+            o.status,
+            reply,
+            o.reply_written,
+            &out_fields,
+            o.fields_written,
+            &arena,
+        ))
     }
 }
 
@@ -1439,9 +1273,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
         {
             let st = self.lock();
             let dialect = st.decoded.as_ref().map_or(0, |d| d.dialect);
-            let caller_ref = st.caller_ref.clone();
-            drop(st);
-            run.lend_unit(self.arrival.claim, dialect, &caller_ref, 0);
+            run.lend_unit(self.arrival.claim, dialect, &st.caller_ref, 0);
         }
 
         let scope_local = self
@@ -1621,11 +1453,10 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
         let Some(t) = stated else {
             return Ok(facts);
         };
-        let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
         let (counterparty, item, digest) = (
-            text(&t.counterparty),
-            t.item.as_deref().map(text),
-            t.digest.as_deref().map(text),
+            String::from_utf8_lossy(&t.counterparty),
+            t.item.as_deref().map(String::from_utf8_lossy),
+            t.digest.as_deref().map(String::from_utf8_lossy),
         );
         let stated = TrustFacts {
             counterparty: &counterparty,
@@ -1737,11 +1568,11 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> UnitEnds for PlaneUnits<'_,
                     let dialect = self.lock().decoded.as_ref().map_or(0, |d| d.dialect);
                     binder.denied(dialect, u16::try_from(rendered.status).unwrap_or(u16::MAX));
                 }
-                let body = rendered.body.clone();
+                let body = crate::cold::refusal_frame(&rendered.body);
                 self.lock().rendered = Some(rendered);
                 body
             }
-            _ => Vec::new(),
+            _ => Arc::clone(&EMPTY_FRAME),
         };
         if let Some(trail) = trail {
             self.summarize(_ctx, &trail, Some(outcome));
@@ -1751,7 +1582,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> UnitEnds for PlaneUnits<'_,
             busbar_contract::caps::Frame {
                 direction: busbar_contract::Direction::Outbound,
                 stream: busbar_contract::StreamId(0),
-                bytes: busbar_contract::SlabBytes::new(Arc::from(body)),
+                bytes: busbar_contract::SlabBytes::new(body),
                 meta: busbar_contract::FrameMeta::default(),
             },
         )
@@ -1779,7 +1610,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
                 decoded.map(|d| d.dialect),
                 decoded
                     .and_then(|d| d.pool.as_deref())
-                    .map(|p| String::from_utf8_lossy(p).into_owned()),
+                    .map(crate::cold::lossy_owned),
                 st.route_policy.clone(),
                 if st.facts.status != 0 {
                     st.facts.status
