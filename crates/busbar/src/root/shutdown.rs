@@ -293,6 +293,7 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
             failures.push("admin listener did not drain by the request cut".into());
         }
     }
+    busbar_kernel::audit::events::engine_event(busbar_kernel::audit::events::node_drain());
     let _ = shutdown_tx.send(());
     drain.clock().arm(Instant::now() + drain.clock().budget());
     let gov = governance.as_ref();
