@@ -128,7 +128,7 @@ impl NodeCanaries {
     }
 }
 
-pub const USERINFO_USER: &str = "canaryuser";
+const USERINFO_USER: &str = "canaryuser";
 const ORDINARY_HEADER_MARKER: &str = "ordinary-protocol-metadata";
 
 pub fn basic_form(pass: &str) -> String {

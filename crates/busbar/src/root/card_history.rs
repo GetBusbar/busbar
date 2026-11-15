@@ -11,7 +11,7 @@ use busbar_kernel_ledger::cost::{Author, EntryKey, History};
 #[cfg(test)]
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
-pub fn digest_hex(card: &CardFields) -> String {
+pub(crate) fn digest_hex(card: &CardFields) -> String {
     hex::encode(card.digest())
 }
 pub fn rate_card_of(card: &CardFields) -> busbar_kernel_ledger::cost::RateCard {

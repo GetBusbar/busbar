@@ -461,7 +461,7 @@ fn a_dispatcher_lent_no_seal_refuses_the_reveal() {
         let plugin = load_linked::<crate::dispatch::kinds::secret::Secret>(
             &row,
             Bind {
-                instance: Arc::from("seal-witness"),
+                instance: crate::cold::secret_calls::instance_label("seal-witness"),
                 max_inflight_cap: 16,
                 sink: Arc::new(NoSink),
                 dispatcher: d.adopter(),

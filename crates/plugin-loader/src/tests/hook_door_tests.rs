@@ -34,6 +34,11 @@ mod route_metadata;
 #[path = "hook_recovery_backoff_tests.rs"]
 mod recovery_backoff;
 
+/// The time since `start`: a measurement's closing clock read, apart from its opening one.
+fn since(start: std::time::Instant) -> Duration {
+    start.elapsed()
+}
+
 fn checkpoint_instance(
     way: Way,
     mode: &str,
@@ -899,7 +904,6 @@ mod witness_boundary {
             .collect()
     }
 
-    #[allow(unsafe_code)]
     unsafe fn observe(
         way: usize,
         instance: *mut c_void,
@@ -922,7 +926,6 @@ mod witness_boundary {
         // SAFETY: the original operation belongs to this same retained witness image and state.
         unsafe { DECIDE[way].get().unwrap()(instance, input, out) }
     }
-    #[allow(unsafe_code)]
     unsafe extern "C" fn decide_linked(
         i: *mut c_void,
         n: *const c_void,
@@ -931,7 +934,6 @@ mod witness_boundary {
         // SAFETY: forwards the unchanged actual linked DECIDE call.
         unsafe { observe(0, i, n, o) }
     }
-    #[allow(unsafe_code)]
     unsafe extern "C" fn decide_dropped(
         i: *mut c_void,
         n: *const c_void,
@@ -941,7 +943,6 @@ mod witness_boundary {
         unsafe { observe(1, i, n, o) }
     }
 
-    #[allow(unsafe_code)]
     unsafe fn release(
         way: usize,
         instance: *mut c_void,
@@ -970,7 +971,6 @@ mod witness_boundary {
         // SAFETY: a non-boundary loan belongs to the original image's RELEASE and witness state.
         unsafe { RELEASE[way].get().unwrap()(instance, input, out) }
     }
-    #[allow(unsafe_code)]
     unsafe extern "C" fn release_linked(
         i: *mut c_void,
         n: *const c_void,
@@ -979,7 +979,6 @@ mod witness_boundary {
         // SAFETY: forwards RELEASE with its original frame and retained witness state.
         unsafe { release(0, i, n, o) }
     }
-    #[allow(unsafe_code)]
     unsafe extern "C" fn release_dropped(
         i: *mut c_void,
         n: *const c_void,
@@ -988,7 +987,6 @@ mod witness_boundary {
         // SAFETY: forwards RELEASE with its original frame and retained witness state.
         unsafe { release(1, i, n, o) }
     }
-    #[allow(unsafe_code)]
     unsafe extern "C" fn serve_loan(
         instance: *mut c_void,
         input: *const c_void,
@@ -1806,7 +1804,7 @@ async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the
     ));
     let start = std::time::Instant::now();
     let saturated = wedged.decide(frame(2), Duration::from_millis(150)).await;
-    let elapsed = start.elapsed();
+    let elapsed = since(start);
     blocked.release();
     tokio::time::timeout(BUDGET, async {
         while kept.try_lend().is_none() {

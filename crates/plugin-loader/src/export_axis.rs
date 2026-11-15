@@ -12,7 +12,7 @@ use busbar_contract::secure::SecureVec;
 use crate::dispatch::kinds::export::{Export, ExportFacts};
 use crate::dispatch::{Bind, ConnTable, Dispatcher, EnvelopeSink, NoSink, Plugin, PluginLogConfig};
 use crate::export_door::{self, ExportInstance};
-use crate::registry::{open_loadable, LoadablePlugin, RowRefusal};
+use crate::registry::{open_loadable, LoadablePlugin};
 use crate::PluginRegistry;
 
 const SECTION: &str = busbar_contract::plugin::Kind::Export.root();
@@ -102,9 +102,8 @@ impl<'r> ExportRows<'r> {
                     }
                 }
             };
-            // busbar:expect(bp::into_alloc, reason = "boot: a loaded export instance keeps its label")
             Ok(Bind {
-                instance: Arc::from(label),
+                instance: crate::cold::export_axis::instance(label),
                 max_inflight_cap: opening.unwrap_or(DEFAULT_INFLIGHT),
                 sink,
                 dispatcher: self.dispatcher.adopter(),
@@ -116,16 +115,8 @@ impl<'r> ExportRows<'r> {
                 },
             })
         };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: names the export plugin that did not load"
-        )]
-        let refused = |e: RowRefusal| match e {
-            RowRefusal::Stated(e) | RowRefusal::Bind(e) => e,
-            RowRefusal::NoDoor => format!("export plugin '{name}': {NO_DOOR}"),
-            RowRefusal::Load(e) => format!("export plugin '{name}': {e}"),
-        };
-        open_loadable::<Export>(row, name, bind).map_err(refused)
+        open_loadable::<Export>(row, name, bind)
+            .map_err(|e| crate::cold::export_axis::load_refused(name, e))
     }
 
     #[must_use]
@@ -136,16 +127,18 @@ impl<'r> ExportRows<'r> {
         settings: &busbar_contract::plugin_settings::ResolvedSettings,
     ) -> Option<Probed> {
         let row = self.row(module)?;
-        match self.load(row, &label(instance), None) {
+        match self.load(row, &crate::cold::export_axis::label(instance), None) {
             Ok(p) => {
                 let streams = p.context::<ExportFacts>().map(|f| f.streams.clone());
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "config: an export probe's settings did not render"
-                )]
                 let text = match settings.encode() {
                     Ok(text) => text,
-                    Err(error) => return Some((streams, vec![error.to_string()], None)),
+                    Err(error) => {
+                        return Some((
+                            streams,
+                            crate::cold::export_axis::settings_unrendered(&error),
+                            None,
+                        ))
+                    }
                 };
                 let Some(seal) = self.dispatcher.seal() else {
                     return Some((
@@ -176,19 +169,7 @@ impl<'r> ExportRows<'r> {
 
     #[must_use]
     pub fn linked_modules(&self) -> Vec<String> {
-        // busbar:expect(bp::clone_alloc, reason = "config: lists the linked export modules config may name")
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: lists the linked export modules config may name"
-        )]
-        let modules = self
-            .registry
-            .linked()
-            .iter()
-            .filter(|p| p.manifest.kind == SECTION)
-            .map(|p| p.manifest.alias.clone())
-            .collect();
-        modules
+        crate::cold::export_axis::linked_modules(self.registry)
     }
 
     #[must_use]
@@ -196,7 +177,7 @@ impl<'r> ExportRows<'r> {
         let Some(row) = self.row(module) else {
             return false;
         };
-        self.load(row, &label(module), None)
+        self.load(row, &crate::cold::export_axis::label(module), None)
             .is_ok_and(|p| p.context::<ExportFacts>().is_some_and(|f| f.one_instance))
     }
 
@@ -205,10 +186,12 @@ impl<'r> ExportRows<'r> {
         let Some(row) = self.row(module) else {
             return Vec::new();
         };
-        // busbar:expect(bp::clone_alloc, reason = "config: an export module's routes, read when config names it")
-        self.load(row, &label(module), None)
+        self.load(row, &crate::cold::export_axis::label(module), None)
             .ok()
-            .and_then(|p| p.context::<ExportFacts>().map(|f| f.routes.clone()))
+            .and_then(|p| {
+                p.context::<ExportFacts>()
+                    .map(crate::cold::export_axis::routes)
+            })
             .unwrap_or_default()
     }
 
@@ -217,10 +200,12 @@ impl<'r> ExportRows<'r> {
         let Some(row) = self.row(module) else {
             return Vec::new();
         };
-        // busbar:expect(bp::clone_alloc, reason = "config: an export module's public routes, read when config names it")
-        self.load(row, &label(module), None)
+        self.load(row, &crate::cold::export_axis::label(module), None)
             .ok()
-            .and_then(|p| p.context::<ExportFacts>().map(|f| f.public_routes.clone()))
+            .and_then(|p| {
+                p.context::<ExportFacts>()
+                    .map(crate::cold::export_axis::public_routes)
+            })
             .unwrap_or_default()
     }
 
@@ -229,12 +214,11 @@ impl<'r> ExportRows<'r> {
         let Some(row) = self.row(module) else {
             return Vec::new();
         };
-        self.load(row, &label(module), None)
+        self.load(row, &crate::cold::export_axis::label(module), None)
             .ok()
             .and_then(|p| {
-                // busbar:expect(bp::clone_alloc, reason = "config: an export module's persistent routes, read when config names it")
                 p.context::<ExportFacts>()
-                    .map(|f| f.persistent_routes.clone())
+                    .map(crate::cold::export_axis::persistent_routes)
             })
             .unwrap_or_default()
     }
@@ -253,49 +237,34 @@ impl<'r> ExportRows<'r> {
         };
         let mut listed: Vec<(String, SecureVec)> = Vec::with_capacity(instances.len());
         for (name, settings) in instances {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: an export check's instance settings did not render"
-            )]
             let bytes = match settings.encode() {
                 Ok(bytes) => bytes,
-                Err(error) => return Some(vec![error.to_string()]),
+                Err(error) => return Some(crate::cold::export_axis::settings_unrendered(&error)),
             };
             listed.push((name.clone(), SecureVec::from(bytes.expose(seal).as_slice())));
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: an export check with no instances checks the empty settings"
-        )]
-        let none = [(module.to_string(), SecureVec::from(&b"{}"[..]))];
+        let none = crate::cold::export_axis::empty_candidate(module);
         let candidates = if listed.is_empty() {
             &none[..]
         } else {
             &listed[..]
         };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: names the export module a check could not run"
-        )]
-        let unchecked = |why: String| Some(vec![format!("export `module: {module}`: {why}")]);
+        let unchecked = |why: String| Some(crate::cold::export_axis::check_refused(module, &why));
         let mut unopened = None;
         for (named, settings) in candidates {
-            let p = match self.load(row, &label(named), None) {
+            let p = match self.load(row, &crate::cold::export_axis::label(named), None) {
                 Ok(p) => p,
                 Err(why) => return unchecked(why),
             };
             if export_door::validate(&p, settings).is_err() {
                 continue;
             }
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: names the export module whose check failed"
-            )]
             match ExportInstance::open(p, self.dispatcher.clone(), settings) {
                 Ok(opened) => {
                     return Some(
-                        export_door::check(opened.plugin(), phase, &listed)
-                            .unwrap_or_else(|e| vec![format!("export `module: {module}`: {e}")]),
+                        export_door::check(opened.plugin(), phase, &listed).unwrap_or_else(|e| {
+                            crate::cold::export_axis::check_refused(module, &e)
+                        }),
                     );
                 }
                 Err(why) => unopened = Some(why),
@@ -310,19 +279,12 @@ impl<'r> ExportRows<'r> {
         label: &str,
         settings: &PreparedExport,
     ) -> Result<Arc<dyn ExportCalls>, String> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: names a configured export module that did not load"
-        )]
-        let row =
-            self.row(module)
-                .ok_or_else(|| match self.registry.unresolved_reason(module) {
-                    Some(s) => format!(
-                        "export plugin '{module}' is present ({}) but was not loaded: {}",
-                        s.file, s.reason
-                    ),
-                    None => format!("no `kind: export` plugin answers to '{module}'"),
-                })?;
+        let row = self.row(module).ok_or_else(|| {
+            crate::cold::export_axis::module_unloaded(
+                module,
+                self.registry.unresolved_reason(module),
+            )
+        })?;
         let text = settings
             .settings()
             .encode()
@@ -368,15 +330,6 @@ impl<'r> ExportRows<'r> {
             .resolve(module)
             .is_some_and(LoadablePlugin::first_party)
     }
-}
-
-fn label(instance: &str) -> String {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: an export instance's label, named when config loads it"
-    )]
-    let label = format!("{SECTION}.{instance}");
-    label
 }
 
 #[cfg(test)]

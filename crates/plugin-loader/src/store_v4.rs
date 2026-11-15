@@ -8,9 +8,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use busbar_contract::abi::mechanism::call::{
-    Blob, DeadlineClass, OutHead, Outcome, BLOB_OCTETS, BLOB_SECRET,
-};
+use busbar_contract::abi::mechanism::call::{Blob, DeadlineClass, OutHead, Outcome, BLOB_OCTETS};
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, ReadyIn};
 use busbar_contract::abi::sdk::store::v4::{
     self as sdk, metadata,
@@ -20,7 +18,6 @@ use busbar_contract::abi::sdk::wipe::WipedBytes;
 use busbar_contract::abi::store::{v4 as wire, HostBuf};
 use busbar_contract::persistence::{self as owned, Failure, PersistenceBackend};
 use busbar_contract::secure::SecureVec;
-use zeroize::Zeroize;
 
 use crate::dispatch::kinds::store_v4::StoreV4;
 use crate::dispatch::lifecycle::{self, AnswerLease};
@@ -71,9 +68,8 @@ impl owned::axis::PersistenceAxis for DoorPersistenceAxis {
                     eprintln!("store prepare '{label}': log sink unavailable: {e}");
                     owned::lifecycle::Error::Unavailable
                 })?;
-            // busbar:expect(bp::into_alloc, reason = "boot: a loaded store instance keeps its label")
             let bind = crate::dispatch::Bind {
-                instance: Arc::from(label),
+                instance: crate::cold::store_v4::instance(label),
                 max_inflight_cap: u32::MAX,
                 sink: Arc::new(sink),
                 dispatcher: self.dispatcher.adopter(),
@@ -103,19 +99,15 @@ impl owned::axis::PersistenceAxis for DoorPersistenceAxis {
             let sink = self
                 .logs
                 .sink(label, KindCode::Store, Arc::new(crate::dispatch::NoSink))?;
-            // busbar:expect(bp::into_alloc, reason = "boot: a loaded store instance keeps its label")
             let bind = crate::dispatch::Bind {
-                instance: Arc::from(label),
+                instance: crate::cold::store_v4::instance(label),
                 max_inflight_cap: u32::MAX,
                 sink: Arc::new(sink),
                 dispatcher: self.dispatcher.adopter(),
                 conns: self.conns.clone(),
             };
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "boot: names why the store plugin did not load"
-            )]
-            let plugin = open_store(door, bind).map_err(|error| error.to_string())?;
+            let plugin = open_store(door, bind)
+                .map_err(|error| crate::cold::store_v4::load_refused(&error))?;
             let backend =
                 LoadedPersistence::open(plugin, self.dispatcher.clone(), settings, self.limits)
                     .await?;
@@ -152,19 +144,10 @@ pub struct LoadedPersistence {
     next_worker: AtomicU32,
 }
 
-struct OpenFailure {
-    code: owned::lifecycle::Error,
-    message: String,
-}
-
-impl OpenFailure {
-    fn new(code: owned::lifecycle::Error, message: impl Into<String>) -> Self {
-        // busbar:expect(bp::into_alloc, reason = "error: a store open failed and says why")
-        Self {
-            code,
-            message: message.into(),
-        }
-    }
+/// A store open that failed, and why. Built only in the cold module (`OpenFailure::new`).
+pub(crate) struct OpenFailure {
+    pub(crate) code: owned::lifecycle::Error,
+    pub(crate) message: String,
 }
 
 impl LoadedPersistence {
@@ -242,21 +225,15 @@ impl LoadedPersistence {
                 Outcome::Fault => (owned::lifecycle::Error::Corrupt, "fault"),
                 _ => (owned::lifecycle::Error::Unknown, "unknown"),
             };
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: the store plugin refused to open"
-            )]
-            let refused = format!("primitive store open failed: plugin answered {name}");
-            return Err(OpenFailure::new(code, refused));
+            return Err(OpenFailure::new(
+                code,
+                crate::cold::store_v4::open_refused(name),
+            ));
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the store plugin's open answer had no frame"
-        )]
         let info = done
             .frame
             .as_ref()
-            .ok_or_else(|| "primitive store open has no frame".to_string())
+            .ok_or_else(crate::cold::store_v4::open_frameless)
             .and_then(|frame| instance_metadata(frame.out.head.extensions));
         drop(lease);
         drop(recycle);
@@ -856,11 +833,7 @@ fn octets(bytes: &[u8]) -> Blob {
     }
 }
 fn instance_metadata(blob: Blob) -> Result<owned::BackendInfo, String> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the store returned invalid or missing instance metadata"
-    )]
-    let invalid = || "primitive store returned invalid or missing instance metadata".to_string();
+    let invalid = crate::cold::store_v4::metadata_invalid;
     if blob.fmt != BLOB_OCTETS
         || blob.flags != 0
         || blob.ptr.is_null()
@@ -927,46 +900,7 @@ unsafe impl Send for OpenLent {}
 unsafe impl Sync for OpenLent {}
 impl OpenLent {
     fn new(refs: &[String], settings: &[u8]) -> Self {
-        let mut settings = SecureVec::from(settings);
-        #[expect(
-            clippy::disallowed_methods,
-            clippy::disallowed_types,
-            reason = "boot: a store open lends its secret fields out of its settings once"
-        )]
-        let secrets: Vec<SecureVec> = if refs.is_empty() {
-            Vec::new()
-        } else if let Ok(mut block) = serde_json::from_slice::<serde_json::Value>(&settings) {
-            let as_bytes = |value: Option<serde_json::Value>| match value {
-                Some(serde_json::Value::String(value)) => SecureVec::from(value.into_bytes()),
-                _ => SecureVec::new(),
-            };
-            let values = busbar_contract::secret_fields::lend(
-                &mut block,
-                refs,
-                false,
-                |_, value| Ok::<_, std::convert::Infallible>(as_bytes(value)),
-                |_, value| Ok(as_bytes(Some(value))),
-            )
-            .unwrap_or_else(|error| match error {});
-            settings.zeroize();
-            let _ = serde_json::to_writer(&mut settings, &block);
-            values
-        } else {
-            Vec::new()
-        };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a store open lends its secrets once"
-        )]
-        let blobs = secrets
-            .iter()
-            .map(|bytes| Blob {
-                ptr: bytes.as_ptr(),
-                len: bytes.len(),
-                fmt: BLOB_OCTETS,
-                flags: BLOB_SECRET,
-            })
-            .collect();
+        let (settings, secrets, blobs) = crate::cold::store_v4::lend_secrets(refs, settings);
         Self {
             _session: None,
             settings,

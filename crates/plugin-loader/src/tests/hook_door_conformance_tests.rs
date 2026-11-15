@@ -33,7 +33,6 @@ fn decide(p: &Plugin<Hook>, messages: u64) -> String {
     )
 }
 
-#[allow(unsafe_code)]
 fn status(p: &Plugin<Hook>) -> String {
     use busbar_contract::abi::mechanism::call::{Outcome, BLOB_JSON};
     let mut s: Frame<InHead, StatusOut> = Frame::new(input(), output());

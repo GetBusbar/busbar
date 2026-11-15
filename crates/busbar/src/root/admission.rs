@@ -11,9 +11,9 @@ use crate::root::loader::sign::{
     evaluate, validate_structure, Manifest, TrustPolicy, Verdict, HOST_IDENTITY,
 };
 
-pub static ADMISSION: RootAdmission = RootAdmission;
+pub(crate) static ADMISSION: RootAdmission = RootAdmission;
 
-pub static DURABLE: RootDurable = RootDurable;
+pub(crate) static DURABLE: RootDurable = RootDurable;
 
 fn configuration_declaration(
     m: &Manifest,
@@ -469,16 +469,19 @@ pub fn plugin_logs(cfg: &PluginsCfg) -> Result<(), String> {
     .map(|_| ())
 }
 
-pub fn hook_answers(rows: &dyn busbar_contract::plugin_rows::PluginRows, module: &str) -> bool {
+pub(crate) fn hook_answers(
+    rows: &dyn busbar_contract::plugin_rows::PluginRows,
+    module: &str,
+) -> bool {
     crate::root::loader::rows::registry_of(rows)
         .is_some_and(|registry| crate::root::loader::hook_door::dropped_answers(registry, module))
 }
 
-pub fn auth_chain_module(door: busbar_contract::abi::mechanism::door::DoorFn) -> bool {
+pub(crate) fn auth_chain_module(door: busbar_contract::abi::mechanism::door::DoorFn) -> bool {
     crate::root::loader::dispatch::kinds::auth::declares_chain_module(door)
 }
 
-pub fn dispatch_latched() -> bool {
+pub(crate) fn dispatch_latched() -> bool {
     crate::root::loader::dispatch::handle::latched()
 }
 

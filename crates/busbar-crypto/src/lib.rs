@@ -141,7 +141,7 @@ pub mod alg {
     /// SHA-1 outside HMAC.
     pub const SHA1: &str = "SHA1";
     /// HMAC-SHA1 (webhook signatures).
-    pub const HMAC_SHA1: &str = "HMAC_SHA1";
+    const HMAC_SHA1: &str = "HMAC_SHA1";
     /// RSA-OAEP with SHA-1 (MySQL RSA password exchange).
     pub const RSA_OAEP_SHA1: &str = "RSA_OAEP_SHA1";
     /// DTLS-SRTP (WebRTC).
@@ -149,13 +149,13 @@ pub mod alg {
     /// HMAC keys shorter than 112 bits.
     pub const HMAC_KEY_SHORT: &str = "HMAC_KEY_SHORT";
     /// RSA keys longer than 4096 bits.
-    pub const RSA_OVER_4096: &str = "RSA_OVER_4096";
+    const RSA_OVER_4096: &str = "RSA_OVER_4096";
     /// TLS ChaCha20-Poly1305 suites.
-    pub const TLS_CHACHA20: &str = "TLS_CHACHA20";
+    const TLS_CHACHA20: &str = "TLS_CHACHA20";
     /// Plain X25519 key exchange in TLS.
-    pub const TLS_X25519: &str = "TLS_X25519";
+    const TLS_X25519: &str = "TLS_X25519";
     /// TLS 1.2 without the extended master secret.
-    pub const TLS12_NO_EMS: &str = "TLS12_NO_EMS";
+    const TLS12_NO_EMS: &str = "TLS12_NO_EMS";
     /// Every name, for `--validate` and tests.
     pub const ALL: &[&str] = &[
         MD5,
