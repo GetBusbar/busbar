@@ -605,24 +605,31 @@ pub(crate) fn validate_config_command() -> i32 {
 const LIST_PLUGINS_HEADER: &str = "FILE                               NAME                     ALIAS        KIND   VERSION   SIGNATURE                STATUS";
 
 /// The plugins block and store reference `--list-plugins` inventories against.
+///
+/// A config file that exists but cannot be read, parsed or env-substituted is refused (BUSBAR-3016):
+/// inventorying the default plugins dir would describe a directory the deployment does not use. The
+/// default block applies only when there is no config file at the resolved path (a bare inventory).
 fn list_plugins_config(
     config_path: &std::path::Path,
     providers: Option<&std::path::Path>,
 ) -> Result<(config::PluginsCfg, Option<String>), String> {
+    if !config_path.exists() {
+        eprintln!(
+            "[info] no config file at {}; inventorying the default plugins block",
+            config_path.display()
+        );
+        return Ok((config::PluginsCfg::default(), None));
+    }
     match load_config_from_disk(config_path, providers, false, config::EnvSubst::Lenient) {
         Ok(l) => {
             let store = l.deploy.store.as_ref().map(|g| g.module.clone());
             Ok((l.deploy.plugins, store))
         }
-        Err(e) => {
-            eprintln!(
-                "[warn] {}",
-                diagnostics::CLI_LIST_PLUGINS_CONFIG_UNREADABLE.coded(format_args!(
-                    "config not readable ({e}); using the default plugins block"
-                ))
-            );
-            Ok((config::PluginsCfg::default(), None))
-        }
+        Err(e) => Err(diagnostics::CLI_LIST_PLUGINS_CONFIG_UNREADABLE.coded(format_args!(
+            "config {} exists but is not readable ({e}); refusing to inventory the default plugins block",
+            config_path.display()
+        ))
+        .to_string()),
     }
 }
 
