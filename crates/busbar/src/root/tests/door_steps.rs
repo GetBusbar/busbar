@@ -161,10 +161,10 @@ async fn routing_recipe_preserves_configured_float_prices_before_ranking() {
         let archive = crate::root::test_plugins::signed(&release, manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual store");
         crate::root::linked::register_stores(&crate::LINKED);
-        busbar_kernel::preflight::install_linked_auth(
-            crate::LINKED.auths,
-            crate::root::auth_bindings::operator_words(),
-        );
+        busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
+        busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(
+            None,
+        ));
         let settings = crate::root::test_plugins::application_store_settings(&directory);
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             serde_json::json!({
@@ -296,9 +296,9 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
             std::fs::write(directory.join("store.tar.gz"), archive)
                 .expect("stage the actual store");
             crate::root::linked::register_stores(&crate::LINKED);
-            busbar_kernel::preflight::install_linked_auth(
-                crate::LINKED.auths,
-                crate::root::auth_bindings::operator_words(),
+            busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
+            busbar_kernel::preflight::install_operator(
+                crate::root::auth_bindings::operator_binding(None),
             );
             let settings = crate::root::test_plugins::application_store_settings(&directory);
             let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -415,10 +415,10 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
         let archive = crate::root::test_plugins::signed(&release, manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual store");
         crate::root::linked::register_stores(&crate::LINKED);
-        busbar_kernel::preflight::install_linked_auth(
-            crate::LINKED.auths,
-            crate::root::auth_bindings::operator_words(),
-        );
+        busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
+        busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(
+            None,
+        ));
         let settings = crate::root::test_plugins::application_store_settings(&directory);
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             serde_json::json!({
@@ -998,10 +998,10 @@ async fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() 
         let archive = crate::root::test_plugins::signed(&release, manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual store");
         crate::root::linked::register_stores(&crate::LINKED);
-        busbar_kernel::preflight::install_linked_auth(
-            crate::LINKED.auths,
-            crate::root::auth_bindings::operator_words(),
-        );
+        busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
+        busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(
+            None,
+        ));
         let settings = crate::root::test_plugins::application_store_settings(&directory);
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             serde_json::json!({
@@ -1178,10 +1178,10 @@ async fn money_book(
         let archive = crate::root::test_plugins::signed(&release, manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual store");
         crate::root::linked::register_stores(&crate::LINKED);
-        busbar_kernel::preflight::install_linked_auth(
-            crate::LINKED.auths,
-            crate::root::auth_bindings::operator_words(),
-        );
+        busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
+        busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(
+            None,
+        ));
         let settings = crate::root::test_plugins::application_store_settings(&directory);
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             serde_json::json!({
@@ -4676,9 +4676,9 @@ async fn the_configured_error_body_cap_reaches_both_egress_constructors() {
             std::fs::write(directory.join("store.tar.gz"), archive)
                 .expect("stage the actual store");
             crate::root::linked::register_stores(&crate::LINKED);
-            busbar_kernel::preflight::install_linked_auth(
-                crate::LINKED.auths,
-                crate::root::auth_bindings::operator_words(),
+            busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
+            busbar_kernel::preflight::install_operator(
+                crate::root::auth_bindings::operator_binding(None),
             );
             let settings = crate::root::test_plugins::application_store_settings(&directory);
             let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -4907,10 +4907,10 @@ async fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_
         let archive = crate::root::test_plugins::signed(&release, manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual store");
         crate::root::linked::register_stores(&crate::LINKED);
-        busbar_kernel::preflight::install_linked_auth(
-            crate::LINKED.auths,
-            crate::root::auth_bindings::operator_words(),
-        );
+        busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
+        busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(
+            None,
+        ));
         let settings = crate::root::test_plugins::application_store_settings(&directory);
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             serde_json::json!({
@@ -5316,10 +5316,10 @@ async fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() 
         let archive = crate::root::test_plugins::signed(&release, manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual store");
         crate::root::linked::register_stores(&crate::LINKED);
-        busbar_kernel::preflight::install_linked_auth(
-            crate::LINKED.auths,
-            crate::root::auth_bindings::operator_words(),
-        );
+        busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
+        busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(
+            None,
+        ));
         let settings = crate::root::test_plugins::application_store_settings(&directory);
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             serde_json::json!({
@@ -5465,10 +5465,10 @@ async fn asking_whether_a_name_is_configured_allocates_nothing() {
         let archive = crate::root::test_plugins::signed(&release, manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual store");
         crate::root::linked::register_stores(&crate::LINKED);
-        busbar_kernel::preflight::install_linked_auth(
-            crate::LINKED.auths,
-            crate::root::auth_bindings::operator_words(),
-        );
+        busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
+        busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(
+            None,
+        ));
         let settings = crate::root::test_plugins::application_store_settings(&directory);
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             serde_json::json!({

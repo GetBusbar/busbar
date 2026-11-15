@@ -6,9 +6,7 @@
 use std::sync::Arc;
 
 use busbar_contract::auth::{AuthVerdict, Principal};
-use busbar_contract::auth_calls::{
-    AuthCalls, Replay, Strip, Verified, VerifyAnswer, VerifyRequest,
-};
+use busbar_contract::auth_calls::{AuthCalls, Replay, Strip, Verified, VerifyAnswer};
 
 use crate::off_path::operator::config_text;
 
@@ -27,20 +25,44 @@ pub struct OperatorWords {
     pub provider: &'static str,
     /// The fixed principal id the operator credential identifies the operator as.
     pub principal_id: &'static str,
+    /// The operator row's canonical plugin name: `module:` may name it as well as `provider`.
+    pub canonical: &'static str,
+    /// Whether the operator row is first-party (linked, or signed by a busbar release key).
+    pub first_party: bool,
 }
 
-/// The auth rows this build LINKS (the composition root's, or a test binary's) and the operator
-/// credential's words, with the rows' names listed once at install so a reader borrows them.
-pub(crate) static LINKED: std::sync::OnceLock<(&[LinkedAuth], OperatorWords, Vec<&'static str>)> =
+/// The auth rows this build LINKS (the composition root's, or a test binary's), with the rows'
+/// names listed once at install so a reader borrows them. Linking a row never makes it the
+/// operator: the operator is judged from the admitted rows' claims ([`install_operator`]).
+pub(crate) static LINKED: std::sync::OnceLock<(&[LinkedAuth], Vec<&'static str>)> =
     std::sync::OnceLock::new();
 
+/// What process start bound: the judged operator credential, or `Deferred` to the startup upgrade.
+pub(crate) static OPERATOR: std::sync::OnceLock<OperatorBinding> = std::sync::OnceLock::new();
+
+/// A `Deferred` start's judgement, bound once by the startup upgrade (`bind_deferred`).
+pub(crate) static DEFERRED: std::sync::OnceLock<Judged> = std::sync::OnceLock::new();
+
+/// Nothing bound: no operator.
+static NO_OPERATOR: Judged = Judged {
+    words: Ok(None),
+    inert: Vec::new(),
+};
+
 // Installed once, when the build starts: off the request path.
-pub use crate::off_path::operator::install_linked;
+pub use crate::off_path::operator::{
+    bind_deferred, choose, compare, deferred_refusal, inert_operator, install_linked,
+    install_operator, misplaced_definition_token, misplaced_token, no_default_admin_chain,
+    no_mint_path, operator_admission_path, operator_changed, operator_file_policy,
+    operator_install_remedy, operator_token, operator_token_entry, third_party_operator,
+    two_operators, unreadable_statement, Judged, OperatorBinding,
+};
 
 #[cfg(any(test, feature = "test-support"))]
 static TEST_WORDS: std::sync::OnceLock<OperatorWords> = std::sync::OnceLock::new();
 
-/// Supply operator metadata without linking any auth row. The first metadata hand-in stands;
+/// Supply operator metadata without admitting any auth row. The first metadata hand-in stands; an
+/// operator judged from admitted rows takes precedence.
 #[cfg(any(test, feature = "test-support"))]
 pub fn install_test_words(words: OperatorWords) {
     let _ = TEST_WORDS.set(words);
@@ -51,20 +73,47 @@ pub fn linked() -> &'static [LinkedAuth] {
     LINKED.get().map(|l| l.0).unwrap_or_default()
 }
 
-/// The operator credential's provider key, as configuration spells it: the root's word once handed
+/// The operator credential bound for this process: the judgement of the rows the start scan
+/// admitted, or the startup upgrade's (`Err` until a `Deferred` start binds it). Nothing bound is
+/// no operator.
+pub fn judged() -> Result<&'static Judged, String> {
+    match OPERATOR.get() {
+        None => Ok(&NO_OPERATOR),
+        Some(OperatorBinding::Bound(judged)) => Ok(judged),
+        Some(OperatorBinding::Deferred) => DEFERRED.get().ok_or_else(deferred_refusal),
+    }
+}
+
+/// The bound operator claim, if one first-party row is the operator.
+fn bound() -> Option<&'static busbar_contract::auth_calls::OperatorClaim> {
+    let judged = match OPERATOR.get()? {
+        OperatorBinding::Bound(judged) => judged,
+        OperatorBinding::Deferred => DEFERRED.get()?,
+    };
+    judged.words.as_ref().ok()?.as_ref()
+}
+
+/// The operator credential's provider key, as configuration spells it: the admitted operator row's
+/// key, or `""` when no row is the operator.
 pub fn provider() -> &'static str {
     words().provider
 }
 
-/// The fixed principal id the operator credential identifies the operator as.
+/// The principal id the operator row states it identifies the operator as.
 pub fn principal_id() -> &'static str {
     words().principal_id
 }
 
-/// The operator credential's words: a linked root's hand-in takes precedence over explicit test
+/// The operator credential's words: the bound operator row's, else explicit test metadata, else
+/// none.
 pub fn words() -> OperatorWords {
-    if let Some((_, words, _)) = LINKED.get() {
-        return *words;
+    if let Some(claim) = bound() {
+        return OperatorWords {
+            provider: &claim.provider,
+            principal_id: &claim.principal,
+            canonical: &claim.canonical,
+            first_party: claim.first_party,
+        };
     }
     #[cfg(any(test, feature = "test-support"))]
     if let Some(words) = TEST_WORDS.get() {
@@ -75,74 +124,19 @@ pub fn words() -> OperatorWords {
 
 /// The names of this build's linked auth rows, in registration order.
 pub fn linked_names() -> &'static [&'static str] {
-    LINKED.get().map_or(&[], |l| l.2.as_slice())
+    LINKED.get().map_or(&[], |l| l.1.as_slice())
 }
 
-/// Whether a linked auth row answers the operator credential's provider `op`.
+/// Whether the bound operator row answers `op`: by its key or its canonical name. The empty word is
+/// never answered.
 pub fn answered(op: &str) -> bool {
-    linked()
-        .iter()
-        .any(|&(key, canonical, _)| key == op || canonical == op)
+    !op.is_empty() && bound().is_some_and(|c| op == c.provider || op == c.canonical)
 }
 
-/// Whether `module` names the plugin of the linked auth row keyed `op` by its identity, not its
+/// Whether `module` names the operator keyed `op`: the key itself, or the bound operator row's
+/// canonical plugin name.
 pub fn names(op: &str, module: &str) -> bool {
-    module == op
-        || linked()
-            .iter()
-            .any(|&(key, canonical, _)| key == op && canonical == module)
-}
-
-/// THE OPERATOR CREDENTIAL'S REFUSALS, v1.5.5's text byte for byte with the provider read off the
-pub fn unanswered_token(op: &str) -> String {
-    config_text(format_args!(
-        "an {op} token is configured but this binary was built WITHOUT the `auth-{op}` feature — \
-         the admin API would be silently disabled. Rebuild with default features or wire an \
-         external admin auth module."
-    ))
-}
-
-/// A `token:` on the chain entry backed by `module`, which is not the operator credential's.
-pub fn misplaced_token(op: &str, module: &str) -> String {
-    config_text(format_args!(
-        "auth chain entry '{module}' sets `token:`, which belongs to the built-in `{op}` module \
-         only; move it, e.g.:\n\n    admin_auth:\n      - {op}: {{ token: {{ env: \
-         BUSBAR_ADMIN_TOKEN }} }}\n"
-    ))
-}
-
-/// A `token:` on the `identity-providers.<name>` definition backed by `module`.
-pub fn misplaced_definition_token(op: &str, name: &str, module: &str) -> String {
-    config_text(format_args!(
-        "identity-providers.{name}: `token:` is the built-in `{op}` operator credential and is \
-         meaningless on `module: {module}`"
-    ))
-}
-
-/// `keys` in the data-plane chain with no admin credential able to mint a key.
-pub fn no_mint_path(op: &str) -> String {
-    config_text(format_args!(
-        "auth.chain names the built-in `keys` verifier but no admin credential can mint one — the \
-         data plane would reject every request. Configure auth.admin_auth (an `{op}` entry with a \
-         `token:`, or an admin module granting `mint`/`full`), or remove `keys` from auth.chain."
-    ))
-}
-
-/// The configured operator token did not resolve (`e`).
-pub fn unresolved_token(op: &str, e: &str) -> String {
-    config_text(format_args!(
-        "auth.admin_auth {op} token did not resolve: {e}"
-    ))
-}
-
-/// The configured operator token resolved to a blank value.
-pub fn blank_token(op: &str) -> String {
-    config_text(format_args!(
-        "auth.admin_auth {op} `token:` resolved to an EMPTY/whitespace-only value. Refusing to start: \
-         the digest would be taken over the blank string, so an empty credential would \
-         authenticate as the operator. Check the referenced env var / file actually holds the \
-         token, or remove the `token:` to disable the admin API deliberately."
-    ))
+    module == op || bound().is_some_and(|c| op == c.provider && module == c.canonical)
 }
 
 /// The 1.4.x `governance.admin_token` held a literal value: the migration's TODO.
@@ -235,50 +229,14 @@ impl Judgement {
 
 /// The operator credential, as the auth axis answered it.
 pub enum OperatorCredential {
-    /// No auth row answers the operator credential's provider.
+    /// No admitted auth row answers the operator credential's provider.
     Unanswered,
-    /// A row answers it and no operator token is configured: nothing to judge, so it passes (and a
+    /// A row answers it and no operator-backed entry carries settings: nothing to judge, so a
+    /// backed provider passes to the next chain position (and identifies no one).
     Unset,
-    /// The opened instance, over the configured token's digest, on the auth kind's memory ABI.
-    Module(Arc<dyn AuthCalls>),
-}
-
-impl OperatorCredential {
-    /// The operator credential over the token digest `digest`: `answered` says whether a row answers
-    pub fn open(
-        answered: bool,
-        digest: Option<String>,
-        open: impl FnOnce(String) -> Result<Arc<dyn AuthCalls>, String>,
-    ) -> Result<Self, String> {
-        match (answered, digest) {
-            (true, Some(digest)) => open(digest).map(Self::Module),
-            (true, None) => Ok(Self::Unset),
-            (false, _) => Ok(Self::Unanswered),
-        }
-    }
-
-    /// Judge `request` — the request's field lines at `Head`, handed through as presented: the
-    pub async fn judge(&self, request: VerifyRequest) -> Option<Judgement> {
-        let module = match self {
-            Self::Unanswered => return None,
-            Self::Unset => return Some(Judgement::of(AuthVerdict::Pass)),
-            Self::Module(module) => module,
-        };
-        Some(Judgement::answered(module.verify(request).await))
-    }
-
-    /// The SYNCHRONOUS PROBE of the same judgement: one ticketless, watchdog-bounded crossing on
-    pub fn probe(&self, request: &VerifyRequest) -> Option<Judgement> {
-        let module = match self {
-            Self::Unanswered => return None,
-            Self::Unset => return Some(Judgement::of(AuthVerdict::Pass)),
-            Self::Module(module) => module,
-        };
-        Some(module.verify_now(request).map_or_else(
-            || Judgement::without_verdict(Vec::new()),
-            Judgement::answered,
-        ))
-    }
+    /// One instance per backed provider that carries settings, each opened with its own settings
+    /// exactly as every auth instance is; a backed provider with none is unset.
+    Opened(foldhash::HashMap<String, Arc<dyn AuthCalls>>),
 }
 
 /// The operator credential on an admin chain: the credential the auth axis answered, and the
@@ -326,6 +284,21 @@ impl Operator {
     /// Whether the admin-chain provider `name` is the operator credential.
     pub fn is(&self, name: &str) -> bool {
         self.names.contains(name)
+    }
+
+    /// The opened operator instance the backed provider `name` is judged by, if it has one.
+    pub fn instance(&self, name: &str) -> Option<&Arc<dyn AuthCalls>> {
+        match &self.cred {
+            OperatorCredential::Opened(opened) if self.is(name) => opened.get(name),
+            _ => None,
+        }
+    }
+
+    /// Whether the backed provider `name` is the operator credential with no settings: unset.
+    pub fn unset(&self, name: &str) -> bool {
+        self.is(name)
+            && !matches!(self.cred, OperatorCredential::Unanswered)
+            && self.instance(name).is_none()
     }
 
     /// Whether a principal `id` that the admin-chain provider `name` identified is the operator: the

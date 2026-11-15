@@ -159,7 +159,7 @@ enum TokenRefs {
 }
 
 fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::config::SecretRef)> {
-    let boot_token = cfg.auth.as_ref().and_then(|auth| auth.admin_token_ref());
+    let boot_token = cfg.auth.as_ref().and_then(|auth| auth.operator_token_ref());
     walk_secret_refs_with_boot_token(cfg, tokens, boot_token)
 }
 
@@ -177,6 +177,8 @@ fn walk_secret_refs_with_boot_token<'a>(
         providers,
         identity_providers,
         credentials,
+        operator_overlay_names: _,
+        operator_file_defs: _,
 
         listen: _,
         listen_explicit: _,

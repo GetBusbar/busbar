@@ -1788,8 +1788,7 @@ pub(crate) async fn put_auth(
                 || in_process.is_some_and(|answers| answers(name));
             if !known {
                 return Err(AdminError::Validation(format!(
-                    "admin_auth names unknown module '{name}'; the built-in admin module is \
-                     `{operator}` (external admin modules are registered at compile time)"
+                    "admin_auth names '{name}', which no admitted `kind: auth` plugin answers to"
                 )));
             }
         }
@@ -1983,11 +1982,7 @@ pub(crate) async fn rebuild_app_from_disk(
     )
     .await?;
 
-    if let Some(doc) = loaded.overlay_doc.as_ref() {
-        busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
-    }
-    let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
-        .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
+    let mut cfg = loaded.disk_candidate()?;
 
     let base_hook_names: std::collections::HashSet<String> = cfg.hooks.keys().cloned().collect();
     let base_group_names: std::collections::HashSet<String> = cfg.groups.keys().cloned().collect();
@@ -2220,6 +2215,19 @@ pub(crate) async fn apply_config(
                 )
             }
         };
+    if let Some(refusal) = config_body_refusal(
+        &req_deploy,
+        &handle.load().operator_file_defs,
+        "config.apply",
+    ) {
+        audit::AUDIT.record_by(
+            "config.apply",
+            "config:body",
+            audit::OUTCOME_REJECTED,
+            &actor,
+        );
+        return err_json_cond(&refusal, Cond::OperatorFilePolicy);
+    }
     let req_providers = req.providers;
     let out = config_transaction(&handle, move |txn| {
         let current = txn.app();
@@ -2251,6 +2259,8 @@ pub(crate) async fn apply_config(
             let next = Box::pin(async {
                 let mut cfg = busbar_kernel::config::resolve(&deploy, &providers)
                     .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
+                // The body is held to the running generation's disk reference (§3.6.1).
+                cfg.operator_file_defs = Some(Arc::clone(&snapshot.operator_file_defs));
                 let base_hook_names: std::collections::HashSet<String> =
                     cfg.hooks.keys().cloned().collect();
                 let base_group_names: std::collections::HashSet<String> =
@@ -4887,6 +4897,14 @@ pub(crate) async fn validate_config(
                 )))
             }
         };
+    // A dry run never says yes to what apply refuses: the same pre-check, status and text.
+    if let Some(refusal) = config_body_refusal(
+        &deploy,
+        &handle.load().operator_file_defs,
+        "config.validate",
+    ) {
+        return err_json_cond(&refusal, Cond::OperatorFilePolicy);
+    }
     respond(
         StatusCode::OK,
         service(&handle)
@@ -4895,9 +4913,37 @@ pub(crate) async fn validate_config(
     )
 }
 
+/// What `POST /config/apply` and `POST /config/validate` append to the operator file-policy
+/// refusal of a body: the two answer the same status, condition and text.
+pub(crate) const CONFIG_BODY_REMEDY: &str = " (config/apply takes the operator credential from \
+    config.yaml; edit the file and POST /config/reload)";
+
+/// THE BODY PRE-CHECK (OPERATOR-FROM-ADMITTED-AUTH §3.6.1): a config body read as the base file
+/// may not introduce, change or remove a definition backed by the operator credential. It is held
+/// to the running generation's disk reference, before any transaction or build, and the refusal
+/// raises the `auth.operator.refused / file_policy` row naming `door`. Apply and validate share it.
+pub(crate) fn config_body_refusal(
+    deploy: &busbar_kernel::config::DeployCfg,
+    reference: &busbar_kernel::config::OperatorFileDefs,
+    door: &str,
+) -> Option<AdminError> {
+    use busbar_kernel::config::operator_file;
+    let name = operator_file::operator_file_difference(&deploy.identity_providers, reference)?;
+    busbar_kernel::audit::auditlog::record_operator(
+        busbar_kernel::audit::auditlog::OperatorAudit::RefusedFilePolicy,
+        name,
+        door,
+    );
+    Some(AdminError::Conflict(
+        operator_file::refusal_text(name) + CONFIG_BODY_REMEDY,
+    ))
+}
+
 const EMPTY_CHAIN_REFUSED_LIVE: bool = true;
 
-fn empty_chain_refusal(operator: impl std::fmt::Display) -> AdminError {
+/// With no operator word bound the remedy names no example module, never an empty one
+/// (OPERATOR-FROM-ADMITTED-AUTH §3.9).
+fn empty_chain_refusal(operator: &str) -> AdminError {
     diag_warn!(
         ADMIN_AUTH_CHAIN_EMPTY,
         "PUT /api/v1/admin/admin-auth REFUSED an EMPTY admin_auth chain: the open \
@@ -4907,8 +4953,12 @@ fn empty_chain_refusal(operator: impl std::fmt::Display) -> AdminError {
     AdminError::Validation(format!(
         "an empty admin_auth chain is the open (anonymous, full-authority) dev posture and \
          cannot be applied through the live admin API — set `admin_auth: []` in config.yaml \
-         and restart to opt in. Otherwise name at least one admin module (e.g. \
-         `{operator}`)"
+         and restart to opt in. Otherwise name at least one admin module{}",
+        if operator.is_empty() {
+            String::new()
+        } else {
+            format!(" (e.g. `{operator}`)")
+        }
     ))
 }
 

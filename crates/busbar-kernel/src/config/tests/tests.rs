@@ -79,6 +79,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         listen_explicit: false,
         authored_routing: None,
         document_source_fingerprints: None,
+        operator_overlay_names: Vec::new(),
         grammar: crate::config::GrammarField::bound(crate::config::Grammar::empty()),
 
         endpoint: Default::default(),
@@ -2220,7 +2221,7 @@ fn test_resolve_projects_admin_auth_names() {
     assert_eq!(cfg.admin_auth, [crate::config::operator_provider(), "ad"]);
 
     assert_eq!(
-        cfg.auth.as_ref().and_then(|a| a.admin_token_ref()),
+        cfg.auth.as_ref().and_then(|a| a.operator_token_ref()),
         Some(&crate::config::secret::descriptor_reference(
             "BUSBAR_ADMIN_TOKEN"
         ))
@@ -3033,12 +3034,25 @@ pub(crate) fn install_normal_root_metadata() {
             .find(|(key, _)| *key == row)
             .expect("normal root operator provider name")
             .1;
-        busbar_kernel_identity::operator::install_linked(
-            &[],
-            busbar_kernel_identity::operator::OperatorWords {
-                provider,
-                ..busbar_kernel_identity::operator::words()
-            },
+        // The normal root's operator row, as process start judges it from the admitted rows
+        // (OPERATOR-FROM-ADMITTED-AUTH §3.3): its key answers, and its principal stays the
+        // metadata's (none).
+        busbar_kernel_identity::operator::install_operator(
+            busbar_kernel_identity::operator::OperatorBinding::Bound(
+                busbar_kernel_identity::operator::Judged {
+                    words: Ok(Some(busbar_contract::auth_calls::OperatorClaim {
+                        provider: provider.to_owned(),
+                        canonical: provider.to_owned(),
+                        principal: busbar_kernel_identity::operator::words()
+                            .principal_id
+                            .to_owned(),
+                        first_party: true,
+                        version: String::new(),
+                        signer: String::new(),
+                    })),
+                    inert: Vec::new(),
+                },
+            ),
         );
     });
 }

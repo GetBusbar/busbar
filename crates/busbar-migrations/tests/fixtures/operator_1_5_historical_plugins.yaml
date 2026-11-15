@@ -1,0 +1,14 @@
+# A 1.5 configuration with a historical `plugins:` block (an old pin) and the 1.5 operator
+# definition that carries `token:`.
+listen: "0.0.0.0:8080"
+identity-providers:
+  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+auth:
+  chain: [keys]
+  admin_auth: [admin-tokens]
+store:
+  module: stub
+plugins:
+  enabled: true
+  fetch:
+    - { github: Acme/busbar-stub@v1.0.0, sha256: aaaa }

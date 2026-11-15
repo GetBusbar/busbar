@@ -88,6 +88,8 @@ pub(crate) fn make_root_cfg(
         limits: config::LimitsResolved::default(),
         export: Default::default(),
         identity_providers: Default::default(),
+        operator_overlay_names: Default::default(),
+        operator_file_defs: None,
         export_defs: Default::default(),
     }
 }

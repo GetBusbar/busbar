@@ -308,7 +308,10 @@ fn a_linked_row_the_configuration_does_not_name_is_never_bound() {
     };
     assert_eq!(rows.default_inbound_style().map(|c| c.len()), Ok(3));
     assert!(rows.credential_readers().is_empty());
-    assert_eq!(rows.operator(), None);
+    assert_eq!(
+        rows.operator_claims(),
+        busbar_contract::auth_calls::OperatorClaims::default()
+    );
     assert_eq!(rows.carriers("plain").len(), 3);
     assert_eq!(bound(), Vec::<String>::new(), "a fact read binds no row");
     rows.open(
@@ -412,7 +415,10 @@ fn dropping(alias: &str, door: busbar_contract::abi::mechanism::door::DoorFn) ->
 fn red_a_dropped_rows_tail_facts_are_read_from_its_signed_manifest_with_no_dlopen() {
     let rows = dropping("manifest-operator", operator_row::door);
     assert_eq!(
-        rows.operator(),
+        rows.operator_claims()
+            .claims
+            .first()
+            .map(|c| (c.provider.clone(), c.principal.clone())),
         Some((
             "manifest-operator".to_string(),
             OPERATOR_PRINCIPAL.to_string()
@@ -555,4 +561,85 @@ fn a_door_built_by_the_verify_macro_passes_load_validation() {
     let validated =
         crate::dispatch::load::validate_door::<crate::dispatch::kinds::auth::Auth>(plain::door());
     assert!(validated.is_ok(), "{:?}", validated.err());
+}
+
+const SECOND_PRINCIPAL: &str = "second-operator";
+
+const SECOND_TAIL: &busbar_contract::abi::auth::AuthTail =
+    &busbar_contract::abi::sdk::auth_door::with_operator(
+        busbar_contract::abi::sdk::auth_door::verify_tail(
+            busbar_contract::abi::auth::FACT_OPERATOR,
+            busbar_contract::abi::auth::AuthPoints::HEAD,
+        ),
+        SECOND_PRINCIPAL,
+    );
+
+mod second_operator_row {
+    busbar_contract::auth_verify_door!(
+        super::Fixture,
+        super::stating("second-operator-row", super::SECOND_TAIL, super::MARKS)
+    );
+}
+
+mod duplicated_operator_row {
+    busbar_contract::auth_verify_door!(
+        super::Fixture,
+        super::stating("busbar-auth-duplicated", super::OPERATOR_TAIL, super::MARKS)
+    );
+}
+
+/// OPERATOR-FROM-ADMITTED-AUTH R1: every row stating the operator fact is a claim of its own,
+/// never the first match, so two first-party claimants can be refused by name.
+#[test]
+fn two_rows_stating_the_operator_are_two_claims() {
+    let rows = linking(&[
+        ("plain", plain::door),
+        ("operator-row", operator_row::door),
+        ("second-operator-row", second_operator_row::door),
+    ]);
+    let claims = super::operator_claims(rows.registry.linked().iter());
+    assert!(claims.unreadable.is_empty(), "{claims:?}");
+    let seen: Vec<(&str, &str, bool)> = claims
+        .claims
+        .iter()
+        .map(|c| (c.provider.as_str(), c.principal.as_str(), c.first_party))
+        .collect();
+    assert_eq!(
+        seen,
+        vec![
+            ("operator-row", OPERATOR_PRINCIPAL, true),
+            ("second-operator-row", SECOND_PRINCIPAL, true),
+        ],
+        "both linked rows claim, each first-party with its own principal"
+    );
+}
+
+/// OPERATOR-FROM-ADMITTED-AUTH R1: one plugin under two keys (a linked row and a dropped-in copy
+/// of the same canonical plugin) is one claim, and the linked row is the one kept.
+#[test]
+fn two_aliases_of_one_plugin_are_one_claim() {
+    let linked = PluginRegistry::empty()
+        .link(vec![crate::LinkedPlugin::auth_door_named(
+            "busbar-auth-duplicated",
+            "duplicated-linked",
+            duplicated_operator_row::door,
+        )])
+        .expect("the linked door admits");
+    let dropped = dropping("duplicated", duplicated_operator_row::door);
+    let claims = super::operator_claims(
+        linked
+            .linked()
+            .iter()
+            .chain(dropped.registry.loadable().iter()),
+    );
+    let seen: Vec<(&str, &str)> = claims
+        .claims
+        .iter()
+        .map(|c| (c.provider.as_str(), c.canonical.as_str()))
+        .collect();
+    assert_eq!(
+        seen,
+        vec![("duplicated-linked", "busbar-auth-duplicated")],
+        "one canonical plugin is one claim, the linked row kept"
+    );
 }
