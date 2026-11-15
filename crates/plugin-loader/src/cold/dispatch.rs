@@ -3,6 +3,7 @@
 
 //! The cold code of `crate::dispatch`, one submodule per group of dispatch modules.
 
+pub(crate) mod kinds;
 pub(crate) mod load;
 pub(crate) mod runtime;
 pub(crate) mod services;
