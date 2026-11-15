@@ -293,6 +293,19 @@ impl Host {
         })
     }
 
+    /// As [`Host::open`], with `secrets` lent to OPEN (SDK-SAFE-TEST-HOST §12.1, Gaps 5). RED
+    /// STAGE: lends nothing yet.
+    pub fn open_lent<K: Openable>(
+        &self,
+        img: Image<K>,
+        name: &str,
+        settings: &[u8],
+        secrets: &[&[u8]],
+    ) -> Result<Opened<K>, Refused> {
+        let _ = secrets;
+        self.open(img, name, settings)
+    }
+
     /// A store image opened as the loader's typed [`LoadedPersistence`](crate::store_v4::LoadedPersistence).
     pub async fn store(
         &self,
