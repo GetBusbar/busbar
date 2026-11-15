@@ -1208,25 +1208,12 @@ impl Worker {
     ) -> (Arc<Self>, Receiver<Msg>) {
         let (tx, rx) = channel();
 
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a worker's table is built once, at dispatcher start or watchdog replacement"
-        )]
-        let mut free: Vec<u32> = counts
-            .iter()
-            .zip(0u32..)
-            .filter_map(|(c, idx)| c.map(|_| idx))
-            .collect();
-        free.reverse();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a worker's table is built once, at dispatcher start or watchdog replacement"
-        )]
+        // Built once, at dispatcher start or watchdog replacement.
+        let free = crate::cold::dispatch::runtime::worker_free_slots(&counts);
         let state = WorkerState {
-            entries: counts
-                .into_iter()
-                .zip(0u32..)
-                .map(|(count, idx)| match count {
+            entries: crate::cold::dispatch::runtime::worker_table(
+                counts,
+                |(count, idx)| match count {
                     Some(count) => Entry {
                         count,
                         generation: super::handle::ticket_generation(key, index, idx, count),
@@ -1236,8 +1223,8 @@ impl Worker {
                         count: u32::MAX,
                         ..Entry::default()
                     },
-                })
-                .collect(),
+                },
+            ),
             free,
             ..WorkerState::default()
         };
@@ -2350,11 +2337,7 @@ impl Drop for ActingFor {
 }
 
 pub(crate) fn spawn_worker(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a dispatch worker thread is named once, when it starts"
-    )]
-    let name = format!("busbar-dispatch-{}", w.index);
+    let name = crate::cold::dispatch::runtime::worker_thread_name(w.index);
     let me = (Arc::as_ptr(&env) as usize, w.index);
     std::thread::Builder::new()
         .name(name)
@@ -2461,13 +2444,8 @@ impl Dispatcher {
         &self,
         authority: Arc<dyn super::measurement::Authority>,
     ) -> Result<(), Arc<dyn super::measurement::Authority>> {
-        let adopted = self.pool.adopted.lock().unwrap_or_else(|e| e.into_inner());
-        // busbar:expect(bp::state_scan, reason = "boot: the measurement authority is installed once, at boot")
-        if adopted
-            .iter()
-            .filter_map(Weak::upgrade)
-            .any(|instance| authority.admit(&instance.measurement_binding).is_err())
-        {
+        // Installed once, at boot.
+        if crate::cold::dispatch::runtime::authority_refuses(&self.pool.adopted, &*authority) {
             return Err(authority);
         }
         self.pool.env.measurements.set(authority)
@@ -2476,21 +2454,8 @@ impl Dispatcher {
     /// Snapshot the immutable declarations of currently bound instances, including plugins
     /// declaring no classes. Used by the host to reject unknown configured namespaces.
     pub fn measurement_bindings(&self) -> Vec<super::measurement::Binding> {
-        // busbar:expect(bp::state_scan, reason = "config: the bound declarations are listed once per config check")
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the bound declarations are listed once per config check"
-        )]
-        let bindings = self
-            .pool
-            .adopted
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .filter_map(Weak::upgrade)
-            .map(|instance| instance.measurement_binding.clone())
-            .collect();
-        bindings
+        // Listed once per config check.
+        crate::cold::dispatch::runtime::measurement_bindings(&self.pool.adopted)
     }
 
     pub fn new(
@@ -2628,21 +2593,8 @@ impl Dispatcher {
             latch: std::sync::OnceLock::new(),
             seal: std::sync::OnceLock::new(),
         });
-        // busbar:expect(bp::fresh_buffer, reason = "boot: a dispatcher's workers start once, when it is built")
-        let mut started = Vec::new();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a dispatcher's workers start once, when it is built"
-        )]
-        let slots = (0..n)
-            .map(|i| {
-                let (w, rx) = Worker::new(i, Vec::new(), ticket_key);
-                started.push((w.clone(), rx));
-                WorkerSlot {
-                    current: RwLock::new(w),
-                }
-            })
-            .collect();
+        // A dispatcher's workers start once, when it is built.
+        let (slots, started) = crate::cold::dispatch::runtime::start_workers(n, ticket_key);
         let pool = Arc::new(Pool {
             slots,
             env: env.clone(),
@@ -3124,16 +3076,15 @@ impl Dispatcher {
 
     #[cfg(test)]
     pub fn drain<K: Kind>(&self, plugin: &Plugin<K>, timeout: Duration) -> bool {
-        let until = std::time::Instant::now() + timeout;
-        loop {
+        // One look per millisecond slept, so the looks span at least `timeout`.
+        let looks = timeout.as_millis().max(1);
+        for _ in 0..looks {
             if plugin.inner.drainable.load(Ordering::Acquire) == 0 {
                 return true;
             }
-            if std::time::Instant::now() >= until {
-                return false;
-            }
             std::thread::sleep(Duration::from_millis(1));
         }
+        plugin.inner.drainable.load(Ordering::Acquire) == 0
     }
 }
 
@@ -3147,6 +3098,5 @@ impl Drop for Dispatcher {
 }
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "worker_lease_tests.rs"]
 mod lease_tests;

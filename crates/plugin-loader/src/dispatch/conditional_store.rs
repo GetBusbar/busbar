@@ -441,20 +441,24 @@ impl ServiceStore {
     }
 
     pub(crate) fn wake_settlement_ready(&self, caller: usize) {
-        // busbar:expect(bp::state_scan, reason = "error: runs only when a conditional exchange is cancelled, to wake its owed settlement")
-        let owner = self.shards.iter().find_map(|shard| {
-            shard
+        // Runs only when a conditional exchange is cancelled, to wake its owed settlement: each
+        // fixed shard's tickets are searched out of line.
+        let mut owner = None;
+        for shard in &self.shards {
+            owner = shard
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .values()
-                .find_map(|h| {
-                    h.conditionals.iter().find_map(|((id, _), k)| {
+                .find_value(|_, h| {
+                    h.conditionals.find_value(|(id, _), k| {
                         (*id == caller && k.cancelled && !k.finished && k.receipt.is_some())
                             .then_some(k.owner)
                             .flatten()
                     })
-                })
-        });
+                });
+            if owner.is_some() {
+                break;
+            }
+        }
         if let Some(owner) = owner {
             super::super::conditional::wake_driver(owner);
         }
@@ -534,26 +538,16 @@ impl ServiceStore {
 
     pub(crate) fn conditional_teardown(&self, caller: usize) {
         for shard in &self.shards {
-            let removed = {
-                let mut map = shard.lock().unwrap_or_else(|e| e.into_inner());
-                // Taken out under the lock, dropped after it.
-                // busbar:expect(bp::fresh_buffer, reason = "boot: an instance's close or revocation tears down its conditional exchanges once")
-                let mut removed = Vec::new();
-                for h in map.values_mut() {
+            // An instance's close or revocation tears down its conditional exchanges once: taken
+            // out under the lock, out of line, dropped after it.
+            let removed = shard.lock().unwrap_or_else(|e| e.into_inner()).teardown(
+                |h, removed| {
                     h.conditional_units.remove(&caller);
-                    removed.extend(
-                        h.conditionals
-                            .extract_if(|(owner, _), _| *owner == caller)
-                            .map(|(_, kept)| kept),
-                    );
-                }
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "boot: an instance's close or revocation tears down its conditional exchanges once"
-                )]
-                let owners: Vec<_> = map.extract_if(|_, h| h.empty()).map(|(_, h)| h).collect();
-                (removed, owners)
-            };
+                    h.conditionals
+                        .drain_into(|(owner, _), _| *owner == caller, removed);
+                },
+                |_, h| h.empty(),
+            );
             drop(removed);
         }
     }

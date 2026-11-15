@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, InHead, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
+    AbiStr, Blob, InHead, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
     slot as life, OpenIn, OpenOut, ReleaseIn, ValidateIn,
@@ -81,28 +81,14 @@ pub(crate) fn copy_blob(b: Blob) -> Vec<u8> {
 pub(crate) fn lossy(error: Vec<u8>) -> String {
     match String::from_utf8(error) {
         Ok(text) => text,
-        Err(e) => {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a plugin's error text was not UTF-8"
-            )]
-            let text = String::from_utf8_lossy(e.as_bytes()).into_owned();
-            text
-        }
+        Err(e) => crate::cold::dispatch::runtime::lossy_text(e.as_bytes()),
     }
 }
 
 pub(crate) fn why(outcome: Outcome, error: Option<Vec<u8>>) -> String {
     match error {
         Some(e) => lossy(e),
-        None => {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: names the outcome of a failed plugin call"
-            )]
-            let named = format!("{outcome:?}");
-            named
-        }
+        None => crate::cold::dispatch::runtime::outcome_name(outcome),
     }
 }
 
@@ -201,12 +187,10 @@ unsafe impl Sync for OpenLent {}
 
 impl OpenLent {
     pub(crate) fn new(settings: &[u8], secrets: Vec<SecureVec>) -> Self {
-        let mut blobs = Vec::with_capacity(secrets.len());
-        blobs.extend(secrets.iter().map(|s| blob(s, BLOB_OCTETS, BLOB_SECRET)));
         Self {
             settings: SecureVec::from(settings),
+            blobs: crate::cold::dispatch::runtime::secret_blobs(&secrets),
             _secrets: secrets,
-            blobs,
         }
     }
 
