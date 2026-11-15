@@ -1637,6 +1637,15 @@ impl StageView<'_> {
         }
     }
 
+    /// The pool the plane named, read alone: the turns are not projected, so an invalid turn's
+    /// lossy copy is made once, by the view the hooks read, not again here.
+    fn pool(&self) -> Cow<'_, str> {
+        match self {
+            Self::Projected(projected) => projected.at.pool(&projected.arena),
+            Self::Fallback(view) => Cow::Borrowed(&*view.pool),
+        }
+    }
+
     /// Take a re-projection's answer as current; the superseded arena comes back wiped, when
     /// there was one.
     fn accept(&mut self, arena: ProjectArena, at: ProjectAt) -> Option<ProjectArena> {
@@ -1998,7 +2007,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         };
         let mut spare: Option<ProjectArena> = None;
         let pool: Cow<'_, str> = if walk_pool.is_empty() {
-            Cow::Owned(cur.view().pool.to_string())
+            Cow::Owned(cur.pool().into_owned())
         } else {
             Cow::Borrowed(&walk_pool)
         };

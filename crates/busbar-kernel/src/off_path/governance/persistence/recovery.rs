@@ -1194,15 +1194,34 @@ impl StoreRecovery {
         if !selected {
             // A definitive no-effect may coincide with another exact selector.
             // Its complete current ancestry remains the only acceptable proof.
-            if self.verify_written_checkpoint(event).await.is_err() {
-                self.state
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .pending
-                    .remove(&event.operation_id);
-                return Err(RecoveryError::Conflict(
-                    "another recovery candidate won selection".into(),
-                ));
+            // Only a genuine selection conflict discards the pending work; a
+            // transient refusal keeps it and the next attempt re-proves (PERFPASS-F2 T2c).
+            match self.verify_written_checkpoint(event).await {
+                Ok(()) => {}
+                Err(RecoveryError::Conflict(_)) => {
+                    self.state
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .pending
+                        .remove(&event.operation_id);
+                    return Err(RecoveryError::Conflict(
+                        "another recovery candidate won selection".into(),
+                    ));
+                }
+                Err(error) => {
+                    if let Some(saved) = self
+                        .state
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .pending
+                        .get_mut(&event.operation_id)
+                    {
+                        // The definite no-effect resolved that attempt: the next
+                        // one proves against the live head again.
+                        saved.selection_proof = None;
+                    }
+                    return Err(error);
+                }
             }
         } else {
             self.verify_written_checkpoint(event).await?;

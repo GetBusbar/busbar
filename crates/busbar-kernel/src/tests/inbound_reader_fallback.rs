@@ -503,7 +503,11 @@ async fn a_faulted_signed_reader_pass_cannot_release_the_head_chain() {
     );
 }
 
-#[tokio::test]
+/// Paused tokio time: the pending head is cut by the walk's tokio timer, which auto-advances once
+/// the runtime idles, while the host's synchronous wall-clock checks (`deadline_passed`) see a
+/// deadline far ahead. A 50 ms wall-clock deadline let a loaded CI host pass it before the
+/// HEAD_BODY call, which then answered at once (pipelines 7834, 7867, 7953, 8029, 8051).
+#[tokio::test(start_paused = true)]
 async fn a_pending_fallback_head_obeys_the_original_operation_deadline_and_cannot_admit() {
     let seen = Arc::default();
     let reader = probe("reader", AuthPoints::HEAD_BODY, Verified::Pass, &seen);
@@ -516,7 +520,7 @@ async fn a_pending_fallback_head_obeys_the_original_operation_deadline_and_canno
         &seen,
     );
     let k = mixed(reader, &[head, body]);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     let waiting = k
         .inbound
         .auth_call(
@@ -558,9 +562,12 @@ async fn a_pending_fallback_head_obeys_the_original_operation_deadline_and_canno
     );
     assert!(
         immediate.is_none(),
-        "the real host retains the pending verifier"
+        "the real host retains the pending verifier: answered {immediate:?}, saw {:?}, deadline \
+         passed: {}",
+        seen.lock().unwrap(),
+        std::time::Instant::now() >= deadline
     );
-    let answer = tokio::time::timeout(std::time::Duration::from_secs(1), received)
+    let answer = tokio::time::timeout(std::time::Duration::from_secs(60), received)
         .await
         .unwrap()
         .unwrap()
