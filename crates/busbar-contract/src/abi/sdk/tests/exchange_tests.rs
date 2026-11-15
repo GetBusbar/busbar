@@ -1501,6 +1501,8 @@ fn framed_and_raw_exchange_debug_hide_sending_and_pending_reply_buffers() {
     assert_eq!(body.as_slice(), DEBUG_REQUEST_CANARIES[4].as_bytes());
     debug_hides(&framed.sending, &DEBUG_REQUEST_CANARIES);
     let read = b"A21-PENDING-READ-18cf";
+    // The read buffer is allocated at the first read (ReadBuf::lend), as the host read does.
+    framed.buf.lend();
     framed.buf[..read.len()].copy_from_slice(read);
     apply(
         &mut framed,
