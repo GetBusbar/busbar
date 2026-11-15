@@ -267,6 +267,10 @@ pub mod store_v4;
 #[deny(unsafe_code)]
 pub mod tarball;
 
+/// The safe test host (SDK-SAFE-TEST-HOST): tests load and drive plugins with no `unsafe`.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_host;
+
 // busbar:request-path
 #[cfg_attr(
     not(test),

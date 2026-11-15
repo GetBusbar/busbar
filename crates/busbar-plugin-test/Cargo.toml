@@ -1,0 +1,31 @@
+[package]
+name = "busbar-plugin-test"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The plugin test facade (SDK-SAFE-TEST-HOST): load and drive any plugin from test code with no unsafe. A plugin repository's one test dev-dependency; never in a release build."
+license = "Apache-2.0"
+
+# The host's own fixtures: one store and one transport, SDK-authored; each test pulls in its
+# linked twin with #[path].
+[[example]]
+name = "store_fixture"
+path = "tests/fixtures/store_fixture.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "transport_fixture"
+path = "tests/fixtures/transport_fixture.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+busbar-contract = { path = "../busbar-contract", features = ["test-support", "abi-scan"] }
+busbar-plugin-loader = { path = "../plugin-loader", features = ["test-support"] }
+
+[dev-dependencies]
+busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
+tokio = { workspace = true, features = ["rt"] }
+
+[lints]
+workspace = true
