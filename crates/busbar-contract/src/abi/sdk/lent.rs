@@ -1325,6 +1325,7 @@ macro_rules! lent_field_list {
             crate::abi::transport::BeginIn {
                 sub head: crate::abi::mechanism::call::InHead;
                 val side: u32;
+                val scheme: u8;
                 str target;
                 sub sink: crate::abi::transport::FramerSink;
                 val fields_len: usize;
