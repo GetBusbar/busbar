@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use super::{anchor_finding, anchors, flag_sites, flag_text};
+use super::{
+    anchor_finding, anchors, flag_sites, flag_text, retired_key_sites, retired_words,
+    root_host_sites,
+};
 use crate::repo_root;
 
 /// Red (mc1)(3), the real tree: no production text names `--migrate-config`.
@@ -62,4 +65,36 @@ fn an_anchor_without_cold_or_inline_never_is_not_pinned() {
     assert!(finding.contains("anchor not found"), "{finding}");
     let other_type = "impl Other {\n    #[cold]\n    #[inline(never)]\n    fn decode() {}\n}\n";
     assert!(anchor_finding("f.rs", other_type, "Manifest", "decode").is_some());
+}
+
+/// Red (k), the real tree: no retired migration-table key in a `[package.metadata.busbar.*]` table,
+/// and no production `RootHost` outside the files package 4 deletes with `startup_upgrade/`.
+#[test]
+fn no_retired_migration_vocabulary_survives_in_the_real_tree() {
+    let findings = retired_words(&repo_root()).expect("the tree scans");
+    assert!(findings.is_empty(), "{}", findings.join("\n"));
+}
+
+/// Red (k), planted: a `former.x`, `retired.x` and `name_1_5_5.x` key and the migration table's own
+/// header are found; the same keys outside a `package.metadata.busbar.*` table are not.
+#[test]
+fn a_planted_former_key_is_found_in_a_busbar_metadata_table() {
+    let toml = "[package.metadata.busbar.migration]\n\"former.x\" = \"y\"\n\
+                [package.metadata.busbar.linked]\nstore-memory = \"a\"\n\
+                [package.metadata.busbar.other]\n\"name_1_5_5.a\" = \"b\"\n\
+                \"retired.store.redis\" = \"valkey\"\n\
+                [dependencies]\n\"former.z\" = \"1\"\n";
+    assert_eq!(retired_key_sites(toml), vec![1, 2, 6, 7]);
+    assert!(
+        retired_key_sites("[package.metadata.busbar.linked]\nstore-memory = \"a\"\n").is_empty()
+    );
+}
+
+/// Red (k), planted: `RootHost` in a type, a path and a macro is found; test code is not.
+#[test]
+fn a_planted_root_host_is_found_and_test_code_is_not() {
+    let source = "pub struct RootHost;\nfn f(_: &RootHost) {}\nfn g() { let _ = format!(\"{}\", RootHost::new()); }\n\
+                  #[cfg(test)]\nmod t { fn h(_: RootHost) {} }\n";
+    assert_eq!(root_host_sites(source), vec![1, 2, 3]);
+    assert!(root_host_sites("fn fine() {}\n").is_empty());
 }
