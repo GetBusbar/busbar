@@ -354,7 +354,7 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
         let pending = busbar_kernel::config::overlay::unparseable_named_map_entries_async(
             handle.load().overlay_path.as_deref(),
             section,
-            &busbar_kernel::config::grammar::admitted(),
+            &crate::root::boot::axis_test_grammar(),
         )
         .await
         .unwrap();

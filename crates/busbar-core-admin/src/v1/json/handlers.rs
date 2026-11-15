@@ -342,11 +342,15 @@ pub(crate) async fn reload_plugins(
             }
             // The failure text can be a plugin's own words (an instance open it refused): it
             // rides in `details`, never in the message (ADMIN-API-1.6 section 1.3).
-            let (next, gov_rotate, limits) = Box::pin(rebuild_app_from_disk(&snapshot))
-                .await
-                .map_err(|text| {
-                    AdminError::plugin_text(Cond::PluginRejected, Some(text), None, None)
-                })?;
+            let (next, gov_rotate, limits) =
+                Box::pin(rebuild_app_from_disk(&snapshot, "plugins.reload"))
+                    .await
+                    .map_err(|error| match error {
+                        AdminError::Validation(text) => {
+                            AdminError::plugin_text(Cond::PluginRejected, Some(text), None, None)
+                        }
+                        other => other,
+                    })?;
             let installed = Arc::new(next);
 
             let projected = AdminService::new(installed.clone()).reload_store_plugins();
@@ -506,7 +510,7 @@ pub(crate) async fn rollback_plugin(
                 )));
             }
             let pin_publication = UnpublishedPluginPin(Some(overlay_path.clone()));
-            let (next, gov_rotate, limits) = match Box::pin(rebuild_app_from_disk(&snapshot)).await {
+            let (next, gov_rotate, limits) = match Box::pin(rebuild_app_from_disk(&snapshot, "plugin.rollback")).await {
                 Ok(triple) => triple,
                 Err(e) => {
 
@@ -523,7 +527,7 @@ pub(crate) async fn rollback_plugin(
                     ).await {
                         diag_error!(
                             PLUGIN_ROLLBACK_REVERT_FAILED,
-                            plugin = %audit_resource, rebuild_error = %e, revert_error = %revert_err,
+                            plugin = %audit_resource, rebuild_error = %e.message(), revert_error = %revert_err,
                             "plugin rollback rebuild failed AND reverting the persisted version pin \
                              failed; the running engine still serves the prior plugin, but the Store now \
                              carries the rolled-forward pin — fix the overlay before restarting"
@@ -532,7 +536,7 @@ pub(crate) async fn rollback_plugin(
                     }
 
                     pin_publication.release();
-                    return Err(AdminError::Validation(e));
+                    return Err(e);
                 }
             };
             let installed = Arc::new(next);
@@ -1290,15 +1294,13 @@ pub(crate) async fn reset_overlay_section(
                         .into(),
                 ));
             };
-            let loaded_base = busbar_kernel::load_config_from_disk_with_store(
+            let loaded_base = crate::v1::service::read_disk_generation(
+                &snapshot,
                 &config_path,
-                snapshot.providers_override.as_deref(),
-                false,
-                busbar_kernel::config::EnvSubst::Strict,
-                &*snapshot.root_rules,
-                snapshot.overlay_path.clone(),
-            ).await
-            .map_err(AdminError::Validation)?;
+                crate::v1::service::overlay_anchor(&snapshot),
+                "config.clear_section",
+            )
+            .await?;
 
 
 
@@ -1935,63 +1937,46 @@ fn credential_flush_response(
 #[inline(never)]
 pub(crate) async fn rebuild_app_from_disk(
     current: &Arc<busbar_kernel::state::App>,
+    operation: &'static str,
 ) -> Result<
     (
         busbar_kernel::state::App,
         Option<busbar_kernel::GovCredentialRotation>,
         busbar_kernel::InstalledLimits,
     ),
-    String,
+    AdminError,
 > {
     let (Some(config_path), Some(_)) =
         (current.config_path.clone(), current.providers_path.clone())
     else {
-        return Err(
+        return Err(AdminError::Validation(
             "this busbar was started without config files (ephemeral mode); reload has no \
                     disk truth to read"
                 .into(),
-        );
+        ));
     };
 
+    // The Store this read reopens: the serving generation's, else the one governance opened. A
+    // locked config.yaml reopens none, so a missing Store refuses only an unlocked one.
     let overlay = match current.overlay_path.clone() {
-        Some(store) => Some(store),
-        None => {
-            let base = busbar_kernel::load_config_from_disk_judged(
-                &config_path,
-                current.providers_override.as_deref(),
-                false,
-                busbar_kernel::config::EnvSubst::Strict,
-                &*current.root_rules,
-            )?;
-            if base.config_locked {
-                None
-            } else {
-                let calls = current
-                    .governance
-                    .as_ref()
-                    .map(|gov| gov.core_store_handle())
-                    .transpose()
-                    .map_err(|error| error.to_string())?
-                    .ok_or_else(|| {
-                        "running config has no opened Store for config persistence".to_string()
-                    })?;
-                Some(busbar_kernel::config::overlay::OverlayStore::from_core(
-                    calls,
-                )?)
-            }
-        }
+        Some(store) => Ok(store),
+        None => current
+            .governance
+            .as_ref()
+            .map(|gov| gov.core_store_handle())
+            .transpose()
+            .map_err(|error| error.to_string())
+            .and_then(|calls| {
+                calls.ok_or_else(|| {
+                    "running config has no opened Store for config persistence".to_string()
+                })
+            })
+            .and_then(busbar_kernel::config::overlay::OverlayStore::from_core),
     };
-    let mut loaded = busbar_kernel::load_config_from_disk_with_store(
-        &config_path,
-        current.providers_override.as_deref(),
-        false,
-        busbar_kernel::config::EnvSubst::Strict,
-        &*current.root_rules,
-        overlay,
-    )
-    .await?;
+    let mut loaded =
+        crate::v1::service::read_disk_generation(current, &config_path, overlay, operation).await?;
 
-    let mut cfg = loaded.disk_candidate()?;
+    let mut cfg = loaded.disk_candidate().map_err(AdminError::Validation)?;
 
     let base_hook_names: std::collections::HashSet<String> = cfg.hooks.keys().cloned().collect();
     let base_group_names: std::collections::HashSet<String> = cfg.groups.keys().cloned().collect();
@@ -2010,6 +1995,7 @@ pub(crate) async fn rebuild_app_from_disk(
         &current.root_rules,
     ))
     .await
+    .map_err(AdminError::Validation)
     .map(|(mut app, rotate, limits)| {
         busbar_kernel::config::readback::ConfiguredView::capture_documents(
             &mut app,
@@ -2030,9 +2016,8 @@ pub(crate) async fn reload_config(
     let out = busbar_kernel::config::transaction::config_reload_transaction(&handle, |txn| {
         let snapshot = txn.app().clone();
         Ok(txn.store_write_async(async move {
-            let (next, gov_rotate, limits) = Box::pin(rebuild_app_from_disk(&snapshot))
-                .await
-                .map_err(AdminError::Validation)?;
+            let (next, gov_rotate, limits) =
+                Box::pin(rebuild_app_from_disk(&snapshot, "config.reload")).await?;
 
             let installed = Arc::new(next);
 
@@ -2154,13 +2139,12 @@ pub(crate) async fn restart(
 /// The `POST /api/v1/admin/config/apply` body: a full proposed config (validate's exact shape).
 /// Optimistic concurrency rides `If-Match`.
 ///
-/// `config` is carried as a raw [`serde_json::Value`] and parsed by the SAME pre-pass boot runs
-/// (`busbar_kernel::config::deploy_from_deserializer`), exactly as [`ValidateConfigReq`] is: the
-/// plane sections (each linked plane's declared section key) are lifted before the frozen
-/// `deny_unknown_fields` `DeployCfg` parses the remainder. Apply accepts
-/// the same config shape as boot,
-/// including plane sections, and passes them
-/// to each plane's refresh without restarting.
+/// `config` is carried raw and read by the SAME pre-pass boot runs
+/// (`busbar_kernel::config::deploy_from_deserializer`), under the grammar the body's OWN
+/// `plugins:` block admits (SECRET-SHORTHAND-BOOT §3.12), after the authority pre-check: the plane
+/// sections (each linked plane's declared section key) are lifted before the frozen
+/// `deny_unknown_fields` `DeployCfg` parses the remainder. Apply accepts the same config shape as
+/// boot, including plane sections, and passes them to each plane's refresh without restarting.
 #[derive(serde::Deserialize)]
 pub(crate) struct ApplyConfigReq {
     /// The deploy config (operator-owned `config.yaml` shape), pre-lift.
@@ -2169,9 +2153,72 @@ pub(crate) struct ApplyConfigReq {
     /// on dangling references.
     #[serde(
         default,
-        deserialize_with = "busbar_kernel::config::providers::catalog_admitted"
+        deserialize_with = "busbar_kernel::config::providers::catalog_canonical"
     )]
     providers: std::collections::HashMap<String, busbar_kernel::config::ProviderDef>,
+}
+
+/// The boot pre-pass an admin verb reads its body with (`deploy_from_deserializer`): the verb names
+/// it, and the body is typed by it once the body's own grammar exists.
+pub(crate) type BodyParser = fn(
+    serde_json::Value,
+    &busbar_kernel::config::Grammar,
+) -> Result<busbar_kernel::config::DeployCfg, serde_json::Error>;
+
+/// An admin body's deployment typed under `grammar` (its own phase 1) by the verb's boot pre-pass.
+/// A refused word carries the grammar's report, trimmed for an admin response.
+pub(crate) fn typed_body(
+    config: serde_json::Value,
+    grammar: &busbar_kernel::config::Grammar,
+    parse: BodyParser,
+) -> Result<busbar_kernel::config::DeployCfg, AdminError> {
+    parse(config, grammar).map_err(|e| {
+        AdminError::Validation(grammar.with_report(format!(
+            "malformed config body: {}",
+            describe_body_error(&e)
+        )))
+    })
+}
+
+/// An apply's body read under its own phase 1 (SECRET-SHORTHAND-BOOT §3.12), inside the
+/// transaction: the authority pre-check over the body's security fields (with the Store's pins),
+/// before any fetch or scan; then phase 1 over the body's `plugins:` block (its fetch outside the
+/// scan gate, its scan inside); then the typed parse under that grammar; then the operator file
+/// policy. `Ok(Err(_))` is the operator-file-policy refusal.
+async fn read_apply_body(
+    snapshot: &busbar_kernel::state::App,
+    config: serde_json::Value,
+    parse: BodyParser,
+    overlay: Option<&busbar_kernel::config::overlay::OverlayDoc>,
+) -> Result<Result<busbar_kernel::config::DeployCfg, AdminError>, AdminError> {
+    let candidate = busbar_kernel::config::security_policy::Candidate::of_json(
+        &config,
+        &crate::v1::service::running_grammar(snapshot),
+        overlay,
+    )
+    .map_err(AdminError::Validation)?;
+    busbar_kernel::config::security_policy::precheck(snapshot, &candidate)?;
+    let grammar = crate::v1::service::read_grammar(
+        candidate.plugins,
+        candidate.blocked_metadata_hosts,
+        busbar_kernel::config::grammar::Fetch::Reload,
+        "config.apply",
+    )
+    .await?;
+    let deploy = typed_body(config, &grammar, parse)?;
+    if let Some(refusal) =
+        config_body_refusal(&deploy, &snapshot.operator_file_defs, "config.apply")
+    {
+        return Ok(Err(refusal));
+    }
+    Ok(Ok(deploy))
+}
+
+/// What one apply transaction ends with: the published generation, or the operator-file-policy
+/// refusal of its body (answered with its own condition, nothing built).
+enum Applied {
+    Installed(Arc<busbar_kernel::state::App>),
+    FilePolicy(AdminError),
 }
 
 pub(crate) async fn apply_config(
@@ -2206,38 +2253,9 @@ pub(crate) async fn apply_config(
         );
     }
 
-    // The body is read under what the serving generation admitted, as its providers are
-    // (SECRET-SHORTHAND-BOOT MR-B3 reads it under its own phase 1 after the authority pre-check).
-    let grammar = busbar_kernel::config::grammar::admitted();
-    let req_deploy: busbar_kernel::config::DeployCfg =
-        match busbar_kernel::config::deploy_from_deserializer(req.config, &grammar) {
-            Ok(d) => d,
-            Err(e) => {
-                return reject(
-                    "config.apply",
-                    "config:body",
-                    &actor,
-                    &AdminError::Validation(format!(
-                        "malformed config body: {}",
-                        describe_body_error(&e)
-                    )),
-                )
-            }
-        };
-    if let Some(refusal) = config_body_refusal(
-        &req_deploy,
-        &handle.load().operator_file_defs,
-        "config.apply",
-    ) {
-        audit::AUDIT.record_by(
-            "config.apply",
-            "config:body",
-            audit::OUTCOME_REJECTED,
-            &actor,
-        );
-        return err_json_cond(&refusal, Cond::OperatorFilePolicy);
-    }
-    let req_providers = req.providers;
+    let ApplyConfigReq { config, providers } = req;
+    let parse: BodyParser =
+        |config, grammar| busbar_kernel::config::deploy_from_deserializer(config, grammar);
     let out = config_transaction(&handle, move |txn| {
         let current = txn.app();
         if let Some(e) = stale_if_match(expected, current.config_version) {
@@ -2259,7 +2277,11 @@ pub(crate) async fn apply_config(
                     .map_err(AdminError::Validation)?,
                 None => None,
             };
-            let (mut deploy, providers) = (req_deploy, req_providers);
+            let mut deploy =
+                match read_apply_body(&snapshot, config, parse, overlay_doc.as_ref()).await? {
+                    Ok(deploy) => deploy,
+                    Err(refusal) => return Ok(Outcome::Value(Applied::FilePolicy(refusal))),
+                };
             if let Some(doc) = overlay_doc.as_ref() {
                 busbar_kernel::config::overlay::apply_root_to_deploy(&mut deploy, doc)
                     .map_err(AdminError::Validation)?;
@@ -2313,14 +2335,14 @@ pub(crate) async fn apply_config(
                     if let Some(rotate) = gov_rotate {
                         rotate.await;
                     }
-                    Ok(Outcome::Value(installed))
+                    Ok(Outcome::Value(Applied::Installed(installed)))
                 },
             ))
         }))
     })
     .await;
     match out {
-        Ok(installed) => {
+        Ok(Applied::Installed(installed)) => {
             audit::AUDIT.record_by(
                 "config.apply",
                 "config:body",
@@ -2345,6 +2367,15 @@ pub(crate) async fn apply_config(
                 ));
             }
             with_config_etag(ok_json(StatusCode::OK, &body), installed.config_version)
+        }
+        Ok(Applied::FilePolicy(refusal)) => {
+            audit::AUDIT.record_by(
+                "config.apply",
+                "config:body",
+                audit::OUTCOME_REJECTED,
+                &actor,
+            );
+            err_json_cond(&refusal, Cond::OperatorFilePolicy)
         }
         Err(e) => reject("config.apply", "config:body", &actor, &e),
     }
@@ -2671,16 +2702,14 @@ pub(crate) async fn put_config_settings(
             );
             let merged_for_build = merged.clone();
 
+            let mut loaded = crate::v1::service::read_disk_generation(
+                &snapshot,
+                &config_path,
+                crate::v1::service::overlay_anchor(&snapshot),
+                "config.settings",
+            )
+            .await?;
             let next = Box::pin(async {
-                let mut loaded = busbar_kernel::load_config_from_disk_with_store(
-                    &config_path,
-                    snapshot.providers_override.as_deref(),
-                    false,
-                    busbar_kernel::config::EnvSubst::Strict,
-                    &*snapshot.root_rules,
-                    snapshot.overlay_path.clone(),
-                )
-                .await?;
                 merged_for_build.apply_to_deploy(&mut loaded.deploy);
 
                 if let Some(doc) = loaded.overlay_doc.as_ref() {
@@ -3195,7 +3224,11 @@ pub(crate) async fn hook_status(
     let as_of = busbar_kernel::store::now();
     let body = match reported {
         Some(r) => {
-            let drift_keys = busbar_kernel::hooks::settings_drift_keys(hook, r.settings.as_ref());
+            let drift_keys = busbar_kernel::hooks::settings_drift_keys(
+                hook,
+                r.settings.as_ref(),
+                &crate::v1::service::running_grammar(&current).sugars,
+            );
             let settings_drift = !drift_keys.is_empty();
             let version_drift = r.settings_version.is_some_and(|v| v != desired_version);
             let metrics = r
@@ -4865,13 +4898,15 @@ fn openapi_reachable_schemas(doc: &serde_json::Value) -> std::collections::BTree
 /// The `POST /api/v1/admin/config/validate` request body: a full proposed config — the `config.yaml`
 /// deploy block + the `providers.yaml` definitions — mirroring the two files busbar loads at boot.
 ///
-/// `config` is carried as a raw [`serde_json::Value`], NOT a plain-derived `DeployCfg`: the 1.6.0
-/// pre-pass (`busbar_kernel::config::deploy_from_deserializer`) has to run on it first (see
-/// `validate_config` below) to lift the 1.6.0-additive top-level keys (the planes' own sections,
-/// `oauth_as`, plus `auth.policy`) out BEFORE the frozen `deny_unknown_fields` `DeployCfg`
-/// parses the remainder — deriving `Deserialize` straight onto `DeployCfg` here would refuse any
-/// of those keys as unknown, even though the exact same document loads clean from disk at boot
-/// (DECISIONS #52: admin API and the config file are ONE schema).
+/// The config is carried raw, NOT as a plain-derived `DeployCfg`: the 1.6.0 pre-pass
+/// (`busbar_kernel::config::deploy_from_deserializer`) has to run on the config first to lift the
+/// 1.6.0-additive top-level keys (the planes' own sections, `oauth_as`, plus `auth.policy`) out
+/// BEFORE the frozen `deny_unknown_fields` `DeployCfg` parses the remainder — deriving
+/// `Deserialize` straight onto `DeployCfg` here would refuse any of those keys as unknown, even
+/// though the exact same document loads clean from disk at boot (DECISIONS #52: admin API and the
+/// config file are ONE schema). The config is read under the grammar the body's own `plugins:`
+/// block admits (SECRET-SHORTHAND-BOOT §3.12), inside the validate unit; the catalog holds no
+/// secret reference position and reads the same under every grammar.
 #[derive(serde::Deserialize)]
 pub(crate) struct ValidateConfigReq {
     /// The deploy config (operator-owned `config.yaml` shape), pre-lift.
@@ -4881,7 +4916,7 @@ pub(crate) struct ValidateConfigReq {
     /// dangling references as errors).
     #[serde(
         default,
-        deserialize_with = "busbar_kernel::config::providers::catalog_admitted"
+        deserialize_with = "busbar_kernel::config::providers::catalog_canonical"
     )]
     providers: std::collections::HashMap<String, busbar_kernel::config::ProviderDef>,
 }
@@ -4896,31 +4931,17 @@ pub(crate) async fn validate_config(
         return err_json(&AdminError::Validation(refusal));
     }
 
-    let grammar = busbar_kernel::config::grammar::admitted();
-    let deploy: busbar_kernel::config::DeployCfg =
-        match busbar_kernel::config::deploy_from_deserializer(req.config, &grammar) {
-            Ok(d) => d,
-            Err(e) => {
-                return err_json(&AdminError::Validation(format!(
-                    "malformed config body: {}",
-                    describe_body_error(&e)
-                )))
-            }
-        };
-    // A dry run never says yes to what apply refuses: the same pre-check, status and text.
-    if let Some(refusal) = config_body_refusal(
-        &deploy,
-        &handle.load().operator_file_defs,
-        "config.validate",
-    ) {
-        return err_json_cond(&refusal, Cond::OperatorFilePolicy);
+    let parse: BodyParser =
+        |config, grammar| busbar_kernel::config::deploy_from_deserializer(config, grammar);
+    match service(&handle)
+        .validate_config(req.config, req.providers, parse)
+        .await
+    {
+        Ok(Ok(view)) => ok_json(StatusCode::OK, &view),
+        // A dry run never says yes to what apply refuses: the same pre-check, status and text.
+        Ok(Err(refusal)) => err_json_cond(&refusal, Cond::OperatorFilePolicy),
+        Err(error) => err_json(&error),
     }
-    respond(
-        StatusCode::OK,
-        service(&handle)
-            .validate_config(deploy, req.providers)
-            .await,
-    )
 }
 
 /// What `POST /config/apply` and `POST /config/validate` append to the operator file-policy

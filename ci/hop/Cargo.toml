@@ -1,0 +1,20 @@
+[package]
+name = "busbar-ci-hop"
+version = "1.6.0"
+publish = false            # internal workspace tool; never goes to crates.io
+edition = "2024"
+rust-version = "1.97"
+description = "ci/hop (ABI-MIN3-INTERFACE §15 rule 10, I10): every plugin entry runs inline under entry::guard on the thread that makes it; no thread hop around one. One CI job line in busbar-release ci/core.yml."
+license = "Apache-2.0"
+
+[[bin]]
+name = "busbar-ci-hop"
+path = "src/main.rs"
+bench = false
+
+[dependencies]
+proc-macro2 = { workspace = true }
+syn = { workspace = true }
+
+[lints]
+workspace = true

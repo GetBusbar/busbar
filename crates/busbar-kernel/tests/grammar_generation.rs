@@ -123,3 +123,62 @@ fn persisted_identity_provider_with_a_removed_word_refuses_reload() {
     );
     let _ = std::fs::remove_dir_all(config.parent().expect("scratch dir"));
 }
+
+/// G10 (§3.8, hooks and root settings): the Store overlay's hook settings and root `store`
+/// settings are read with the generation they join, so a word they write joins that read's used
+/// set: the grammar pin compares it at admission (BUSBAR-3170), and a module whose declaration
+/// changed between the read and admission refuses the generation instead of silently re-reading
+/// the bag under another grammar.
+#[test]
+fn overlay_hook_and_root_settings_words_join_the_reads_used_set() {
+    publish();
+    let config = scratch("overlay-bags", "");
+    let plugins = config.parent().expect("scratch dir").join("plugins");
+    std::fs::write(plugins.join(FILE), b"declares the word").expect("fixture file");
+    let mut text = std::fs::read_to_string(&config).expect("config");
+    text.push_str(&format!("plugins:\n  enabled: true\n  dir: {plugins:?}\n"));
+    std::fs::write(&config, text).expect("config");
+    let mut loaded = busbar_kernel::load_config_from_disk(&config, None, false, EnvSubst::Lenient)
+        .expect("the document reads under its own block");
+    let mut doc = busbar_kernel::config::overlay::OverlayDoc::default();
+    doc.hooks.insert(
+        "fixture-gate".to_owned(),
+        serde_json::from_value(serde_json::json!({
+            "kind": "gate",
+            "module": "fixture-hook",
+            "timeout_ms": 5,
+            "on_error": "weighted",
+            "settings": { "endpoint": { WORD: "hook-slot" } },
+        }))
+        .expect("a stored hook reads"),
+    );
+    doc.root = Some(
+        serde_json::from_value(serde_json::json!({
+            "store": { "module": "fixture-store", "settings": { "dsn": { WORD: "store-slot" } } },
+        }))
+        .expect("stored root settings read"),
+    );
+    assert!(
+        !loaded
+            .deploy
+            .grammar
+            .used()
+            .expect("the read is bound")
+            .words
+            .contains(WORD),
+        "config.yaml itself writes no word"
+    );
+    busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, &doc)
+        .expect("the overlay applies under the read's grammar");
+    assert!(
+        loaded
+            .deploy
+            .grammar
+            .used()
+            .expect("the read is bound")
+            .words
+            .contains(WORD),
+        "the stored hook and root settings bags join the read's used words"
+    );
+    let _ = std::fs::remove_dir_all(config.parent().expect("scratch dir"));
+}

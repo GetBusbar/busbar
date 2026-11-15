@@ -21,9 +21,7 @@ use crate::v1::contract::{
     UsageBreakdown, UsageView, UsageWindow,
 };
 use busbar_kernel::config::named_map::NamedMapSection;
-use busbar_kernel::config::{
-    DeployCfg, HookCfg, HookKind, HookStage, PromptAccess, ProviderDef, UserAccess,
-};
+use busbar_kernel::config::{HookCfg, HookKind, HookStage, PromptAccess, UserAccess};
 
 pub(crate) fn settings_keys(settings: &busbar_contract::plugin_settings::Settings) -> Vec<String> {
     let mut keys = settings.key_names();
@@ -399,6 +397,155 @@ static CATALOG_SCAN_GATE: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 const CATALOG_SCAN_GATE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The shared plugin scan gate, within its bound. A prior scan that is not returning (a stale or
+/// hung `plugins.dir` mount) answers this caller with a retryable `Unavailable`, before anything
+/// changed, rather than hanging it too.
+pub(crate) async fn scan_gate(
+    operation: &'static str,
+) -> Result<tokio::sync::MutexGuard<'static, ()>, AdminError> {
+    match tokio::time::timeout(CATALOG_SCAN_GATE_WAIT, CATALOG_SCAN_GATE.lock()).await {
+        Ok(guard) => Ok(guard),
+        Err(_elapsed) => {
+            diag_warn!(
+                PLUGIN_CATALOG_SCAN_GATE_TIMEOUT,
+                operation,
+                wait = ?CATALOG_SCAN_GATE_WAIT,
+                "plugin scan gate could not be acquired within the wait bound; a prior scan is \
+                 not returning (e.g. a stale/hung plugins_dir mount). Answering with a retryable \
+                 error rather than hanging this request too."
+            );
+            Err(AdminError::Unavailable(
+                "the plugin directory scan is taking too long; try again shortly".to_string(),
+            ))
+        }
+    }
+}
+
+/// The grammar the serving generation was read under: what a candidate's security fields are
+/// read under for the authority pre-check (SECRET-SHORTHAND-BOOT §3.12). A generation decoded
+/// without one (a fixture) admits no word, so a candidate that uses one counts as changed.
+pub(crate) fn running_grammar(app: &App) -> busbar_kernel::config::Grammar {
+    app.grammar.get().cloned().unwrap_or_else(|_| {
+        busbar_kernel::config::Grammar::new(
+            busbar_contract::secret_ref::Sugars::default(),
+            std::collections::BTreeMap::new(),
+            Vec::new(),
+        )
+    })
+}
+
+/// PHASE 1 FOR AN ADMIN READ (SECRET-SHORTHAND-BOOT §3.12, §3.14): with `Fetch::Reload`,
+/// `plugins.fetch` is downloaded first, OUTSIDE the scan gate, so a download never holds
+/// `GET /plugins` or validate behind it; then `plugins.dir` is scanned and judged INSIDE the gate,
+/// on a blocking worker. The caller ran the authority pre-check before calling this. The grammar
+/// is trimmed for an admin response: a refusal names the item and its cause, never a file.
+pub(crate) async fn read_grammar(
+    plugins: busbar_kernel::config::PluginsCfg,
+    blocked_metadata_hosts: Vec<String>,
+    fetch: busbar_kernel::config::grammar::Fetch,
+    operation: &'static str,
+) -> Result<busbar_kernel::config::Grammar, AdminError> {
+    let joined = |join_err: tokio::task::JoinError| {
+        diag_error!(
+            ADMIN_STORE_TASK_JOIN_FAILED,
+            operation,
+            error = %join_err,
+            "admin blocking task failed"
+        );
+        AdminError::Internal
+    };
+    if fetch == busbar_kernel::config::grammar::Fetch::Reload {
+        let fetched = plugins.clone();
+        tokio::task::spawn_blocking(move || {
+            busbar_kernel::appbuild::fetch_for_read(&fetched, &blocked_metadata_hosts)
+        })
+        .await
+        .map_err(joined)?
+        .map_err(AdminError::Validation)?;
+    }
+    let gate = scan_gate(operation).await?;
+    tokio::task::spawn_blocking(move || {
+        let _gate = gate;
+        phase_one(&plugins, fetch, operation)
+    })
+    .await
+    .map_err(joined)?
+}
+
+/// Phase 1 over `plugins` (its own directory, the version pins already applied), trimmed for an
+/// admin response. A refused scan is logged in full for the operator and answered with its class.
+pub(crate) fn phase_one(
+    plugins: &busbar_kernel::config::PluginsCfg,
+    fetch: busbar_kernel::config::grammar::Fetch,
+    operation: &'static str,
+) -> Result<busbar_kernel::config::Grammar, AdminError> {
+    let pins = std::collections::BTreeMap::new();
+    busbar_kernel::config::grammar::grammar_for(&busbar_kernel::config::grammar::PhaseOneIn {
+        plugins,
+        dir: Path::new(&plugins.dir),
+        pins: &pins,
+        fetch,
+    })
+    .map(busbar_kernel::config::Grammar::trimmed)
+    .map_err(|refusal| {
+        tracing::warn!(operation, refusal = %refusal, "the plugins: block's modules cannot be judged");
+        AdminError::Validation(format!(
+            "plugins: the modules this configuration's plugins: block admits cannot be judged; \
+             {}",
+            busbar_kernel::config::grammar::ADMIN_REPORT
+        ))
+    })
+}
+
+/// The serving generation's Store overlay, or why a reload-class read of an unlocked `config.yaml`
+/// has none to reopen.
+pub(crate) fn overlay_anchor(
+    app: &App,
+) -> Result<Arc<busbar_kernel::config::overlay::OverlayStore>, String> {
+    app.overlay_path.clone().ok_or_else(|| {
+        "running config has no Store overlay anchor; restart to bootstrap it".to_string()
+    })
+}
+
+/// A RELOAD-CLASS READ OF THE DISK DOCUMENTS (SECRET-SHORTHAND-BOOT §3.11-3.12): `config.yaml` with
+/// the Store's durable patches and plugin pins; the authority pre-check over its security fields,
+/// before any fetch or scan; then its own phase 1 (`Fetch::Reload`); then the documents typed under
+/// that grammar. `overlay` is the Store to reopen, or why there is none.
+pub(crate) async fn read_disk_generation(
+    current: &App,
+    config_path: &Path,
+    overlay: Result<Arc<busbar_kernel::config::overlay::OverlayStore>, String>,
+    operation: &'static str,
+) -> Result<busbar_kernel::appbuild::LoadedConfig, AdminError> {
+    let env = busbar_kernel::config::EnvSubst::Strict;
+    let read = busbar_kernel::appbuild::read_disk_candidate(
+        config_path,
+        current.providers_override.as_deref(),
+        env,
+        &*current.root_rules,
+        overlay,
+        &running_grammar(current),
+    )
+    .await
+    .map_err(AdminError::Validation)?;
+    busbar_kernel::config::security_policy::precheck(current, &read.candidate)?;
+    let grammar = read_grammar(
+        read.candidate.plugins.clone(),
+        read.candidate.blocked_metadata_hosts.clone(),
+        busbar_kernel::config::grammar::Fetch::Reload,
+        operation,
+    )
+    .await?;
+    read.typed(
+        config_path,
+        current.providers_override.as_deref(),
+        env,
+        &*current.root_rules,
+        &grammar,
+    )
+    .map_err(AdminError::Validation)
+}
 
 /// A file changed this recently may still change within the same timestamp tick, so its stat cannot
 /// vouch for its bytes yet (git's "racy clean" rule); such a file is hashed by content.

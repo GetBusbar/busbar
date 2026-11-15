@@ -1441,7 +1441,7 @@ fn settings_drift_reports_only_key_names_and_never_resolves_a_secret() {
     .unwrap()
     .clone();
     assert!(
-        crate::hooks::settings_drift_keys(
+        drift_keys_unbound(
             &hook,
             Some(&busbar_contract::plugin_settings::Settings::from(
                 in_sync.clone()
@@ -1461,7 +1461,7 @@ fn settings_drift_reports_only_key_names_and_never_resolves_a_secret() {
     .as_object()
     .unwrap()
     .clone();
-    let keys = crate::hooks::settings_drift_keys(
+    let keys = drift_keys_unbound(
         &hook,
         Some(&busbar_contract::plugin_settings::Settings::from(
             drifted.clone(),
@@ -1486,7 +1486,7 @@ fn settings_drift_reports_only_key_names_and_never_resolves_a_secret() {
     .unwrap()
     .clone();
     assert_eq!(
-        crate::hooks::settings_drift_keys(
+        drift_keys_unbound(
             &hook,
             Some(&busbar_contract::plugin_settings::Settings::from(
                 literal_drift.clone()
@@ -1496,7 +1496,7 @@ fn settings_drift_reports_only_key_names_and_never_resolves_a_secret() {
         "`{{ literal: … }}` is ordinary data, compared against its INNER value"
     );
 
-    assert!(crate::hooks::settings_drift_keys(&hook, None).is_empty());
+    assert!(drift_keys_unbound(&hook, None).is_empty());
 }
 
 #[test]
@@ -1528,7 +1528,7 @@ fn settings_drift_never_compares_a_secret_ref_field() {
     ] {
         let observed = echoed.as_object().unwrap().clone();
         assert!(
-            crate::hooks::settings_drift_keys(
+            drift_keys_unbound(
                 &hook,
                 Some(&busbar_contract::plugin_settings::Settings::from(
                     observed.clone()
@@ -1549,7 +1549,7 @@ fn settings_drift_never_compares_a_secret_ref_field() {
     .unwrap()
     .clone();
     assert_eq!(
-        crate::hooks::settings_drift_keys(
+        drift_keys_unbound(
             &hook,
             Some(&busbar_contract::plugin_settings::Settings::from(
                 observed.clone()
@@ -1706,4 +1706,13 @@ fn plugin_strategy_bind_refusal_reaches_the_preflight_error() {
     )
     .expect_err("a strategy that did not bind is refused");
     assert!(error.contains("pl-src-1 bind refused"), "{error}");
+}
+
+/// [`crate::hooks::settings_drift_keys`] for a hook defined by a generation whose grammar declares
+/// no shorthand: these definitions write canonical references only.
+fn drift_keys_unbound(
+    hook: &HookCfg,
+    reported: Option<&busbar_contract::plugin_settings::Settings>,
+) -> Vec<String> {
+    crate::hooks::settings_drift_keys(hook, reported, &Default::default())
 }

@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The records codec: RecHead, generic tags, record Pods, the reader and the writers (IF §3, §3.1, §3.2). W0-ABI stub: frozen signatures, `todo!()` bodies; A1 fills it.
-
-use core::marker::PhantomData;
+//! The records codec: RecHead, generic tags, record Pods, the reader and the writers (IF §3, §3.1, §3.2).
 
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
+use zeroize::Zeroize;
 
 use crate::host::Host;
 use crate::types::RawOut;
@@ -14,10 +13,14 @@ use crate::types::RawOut;
 /// §1). Blanket-implemented, so no type implements it by hand. Reads are `T::read_from_prefix` (a copy: no
 /// alignment assumption about the body); writes are `v.as_bytes()`. `IntoBytes`'s derive refuses a struct with
 /// padding at compile time (I7).
+///
+/// W1-A1: written out per record Pod below instead of the blanket impl the IF names. The kernel's A3 check
+/// (R-CHECKS) fails a trait with exactly one production impl, and a blanket impl is one; the impls add no bound
+/// (each is the supertraits, which the derives give), so the reads and writes are the IF's. `kind!` writes the
+/// impl for each `pods {}` struct it declares.
 pub trait Pod: FromBytes + IntoBytes + Immutable + KnownLayout + Copy {}
-// W0-ABI: the blanket `impl<T: FromBytes + IntoBytes + Immutable + KnownLayout + Copy> Pod for T {}` lands with
-// W1-A1 (A3 one-impl rule: a blanket impl counts as one impl).
 
+mechanism! {
 #[repr(C)]
 #[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct RecHead {
@@ -320,26 +323,60 @@ pub mod commit {
     pub const APPLIED: u32 = 1;
     pub const CONFLICT: u32 = 2;
 }
+}
+
+impl Pod for RecHead {}
+impl Pod for EndpointRec {}
+impl Pod for FailRec {}
+impl Pod for TokenRec {}
+impl Pod for FactRec {}
+impl Pod for FactTextRec {}
+impl Pod for PairRec {}
+impl Pod for InstanceRec {}
+impl Pod for U32Rec {}
+impl Pod for U64Rec {}
+impl Pod for MaskRec {}
+impl Pod for CeilingRec {}
+impl Pod for MetricDecl {}
+impl Pod for MetricObs {}
+impl Pod for RecPredRec {}
+impl Pod for RecPutRec {}
+impl Pod for RecDelRec {}
+impl Pod for CoreCfgRec {}
+impl Pod for crate::need::NeedRec {}
+impl Pod for crate::need::NeedResRec {}
+impl Pod for crate::need::DirFacts {}
+impl Pod for crate::versions::EngineVersion {}
 
 // Round 31 (IF §7.2, §7.6): `abi::settled` is two plain functions a plugin's `Open::settled` calls to write
-// its canonical settings (CONFIG) and the core config fragments its older settings held (CORE_CFG).
-// W0-ABI: the IF names them `config(w, bag: &[u8])` and `core_cfg(w, section, name, value_json: &[u8])`
-// without spelling `w`; the stub types it as the `&mut Out<'_>` that `Open::settled` receives.
+// its canonical settings (CONFIG) and the core config fragments its older settings held (CORE_CFG). The IF
+// names them `config(w, bag: &[u8])` and `core_cfg(w, section, name, value_json: &[u8])` without spelling `w`;
+// it is the `&mut Out<'_>` that `Open::settled` receives.
 pub mod settled {
-    use super::{Full, Out};
+    use zerocopy::IntoBytes;
 
+    use super::{CoreCfgRec, Full, Out, put_parts, tag};
+
+    /// One CONFIG record: the instance's settings bag in its canonical shape (UTF-8 JSON).
     pub fn config(w: &mut Out<'_>, bag: &[u8]) -> Result<(), Full> {
-        let _ = (w, bag);
-        todo!()
+        put_parts(w, tag::CONFIG, &[bag])
     }
+    /// One CORE_CFG record: `section` (`core_cfg::*`), the name and the value in that section's grammar.
     pub fn core_cfg(
         w: &mut Out<'_>,
         section: u32,
         name: &str,
         value_json: &[u8],
     ) -> Result<(), Full> {
-        let _ = (w, section, name, value_json);
-        todo!()
+        let head = CoreCfgRec {
+            section,
+            name_len: u32::try_from(name.len()).map_err(|_| Full)?,
+        };
+        put_parts(
+            w,
+            tag::CORE_CFG,
+            &[head.as_bytes(), name.as_bytes(), value_json],
+        )
     }
 }
 
@@ -352,19 +389,82 @@ pub enum RecErr {
     Unknown(u16),
 }
 
+/// Every record starts on a multiple of this, relative to the buffer it is read from.
+const ALIGN: usize = 8;
+/// The record head: tag, reserved, body length.
+const HEAD: usize = size_of::<RecHead>();
+/// The bytes a record's padding comes from.
+const ZEROS: [u8; ALIGN] = [0; ALIGN];
+/// The Reply cap (§3.2).
+const REPLY_CAP: usize = 16 << 20;
+/// The smallest block a growing Reply allocates (§3.2).
+const REPLY_MIN: usize = 256;
+
+/// The bytes one record takes: head, `len` body bytes, zero padding to the next multiple of 8.
+const fn record_size(len: usize) -> Option<usize> {
+    match HEAD.checked_add(len) {
+        Some(n) => match n.checked_add(ALIGN - 1) {
+            Some(n) => Some(n & !(ALIGN - 1)),
+            None => None,
+        },
+        None => None,
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Records<'a> {
-    // W0-ABI: private fields (bytes, offset) land with W1-A1.
-    _stub: PhantomData<&'a [u8]>,
+    bytes: &'a [u8],
+    at: usize,
+    fused: bool,
 }
 impl<'a> Records<'a> {
     pub const fn new(bytes: &'a [u8]) -> Self {
-        let _ = bytes;
-        todo!()
+        Records {
+            bytes,
+            at: 0,
+            fused: false,
+        }
     }
     /// Bounds-checked iteration. After the first Err the iterator is fused.
+    ///
+    /// Framing only: `_r` must be 0 (else Reserved); the head, the body and its zero padding must lie inside the
+    /// bytes (else Truncated; non-zero padding is Reserved). The tag is handed through as written: whether it is
+    /// known for that kind and position is the decoder's question (FAULT UnknownTag, §3).
     pub fn next_rec(&mut self) -> Option<Result<Rec<'a>, RecErr>> {
-        todo!()
+        if self.fused || self.at >= self.bytes.len() {
+            return None;
+        }
+        match Self::split(&self.bytes[self.at..]) {
+            Ok((rec, used)) => {
+                self.at += used;
+                Some(Ok(rec))
+            }
+            Err(e) => {
+                self.fused = true;
+                Some(Err(e))
+            }
+        }
+    }
+    /// The first record of `rest` and the bytes it takes, padding included.
+    fn split(rest: &'a [u8]) -> Result<(Rec<'a>, usize), RecErr> {
+        let (head, _) = RecHead::read_from_prefix(rest).map_err(|_| RecErr::Truncated)?;
+        if head._r != 0 {
+            return Err(RecErr::Reserved);
+        }
+        let len = usize::try_from(head.len).map_err(|_| RecErr::Truncated)?;
+        let size = record_size(len).ok_or(RecErr::Truncated)?;
+        let record = rest.get(..size).ok_or(RecErr::Truncated)?;
+        let (body, padding) = record[HEAD..].split_at(len);
+        if padding.iter().any(|&byte| byte != 0) {
+            return Err(RecErr::Reserved);
+        }
+        Ok((
+            Rec {
+                tag: head.tag,
+                body,
+            },
+            size,
+        ))
     }
 }
 impl<'a> Iterator for Records<'a> {
@@ -382,22 +482,29 @@ pub struct Rec<'a> {
 impl<'a> Rec<'a> {
     /// Body must be exactly size_of::<T>(). Copies (try_pod_read_unaligned), so alignment never matters.
     pub fn pod<T: Pod>(&self) -> Result<T, RecErr> {
-        todo!()
+        T::read_from_bytes(self.body).map_err(|_| RecErr::Size)
     }
     /// Body is T followed by a tail.
     pub fn pod_tail<T: Pod>(&self) -> Result<(T, &'a [u8]), RecErr> {
-        todo!()
+        T::read_from_prefix(self.body).map_err(|_| RecErr::Size)
     }
     pub fn text(&self) -> Result<&'a str, RecErr> {
-        todo!()
+        core::str::from_utf8(self.body).map_err(|_| RecErr::Utf8)
     }
     /// Pair shape.
     pub fn pair(&self) -> Result<(&'a str, &'a [u8]), RecErr> {
-        todo!()
+        let (head, tail) = self.pod_tail::<PairRec>()?;
+        if head._r != 0 {
+            return Err(RecErr::Reserved);
+        }
+        let name_len = usize::try_from(head.name_len).map_err(|_| RecErr::Size)?;
+        let (name, value) = tail.split_at_checked(name_len).ok_or(RecErr::Size)?;
+        let name = core::str::from_utf8(name).map_err(|_| RecErr::Utf8)?;
+        Ok((name, value))
     }
     /// The body read as nested records.
     pub fn nested(&self) -> Records<'a> {
-        todo!()
+        Records::new(self.body)
     }
 }
 
@@ -419,6 +526,8 @@ pub trait Writer {
     fn put_fact(&mut self, key: u32, value: u64) -> Result<(), Full>;
     fn put_fact_text(&mut self, key: u32, value: &str) -> Result<(), Full>;
     /// One METRIC observation (generic, §3): `labels` are values for the declared label keys, in order.
+    /// W1-A1: each label value is one nested PAIR with an empty name (the key is the declared one at that
+    /// position).
     fn put_metric(&mut self, id: u32, op: u32, value: f64, labels: &[&str]) -> Result<(), Full>;
     /// Writes a record whose body is nested records. The head's len is back-patched.
     fn put_nested(
@@ -427,51 +536,165 @@ pub trait Writer {
         f: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
     ) -> Result<(), Full>;
 }
+
+/// The byte sink under every `Writer`: `Out` (the host buffer), `Reply` (an owned block) and the host's pooled
+/// buffer. A record is written as `room` for all of it, then `append`s; a write that fails leaves nothing
+/// (`truncate` zeroes what a half-written record left, I11).
+pub(crate) trait RawWrite {
+    /// Bytes written so far.
+    fn written(&self) -> usize;
+    /// Room for `need` more bytes after `written`, or Full with nothing changed.
+    fn room(&mut self, need: usize) -> Result<(), Full>;
+    /// Appends `bytes` inside the room the last `room` made.
+    fn append(&mut self, bytes: &[u8]);
+    /// Overwrites already written bytes at `at`.
+    fn patch(&mut self, at: usize, bytes: &[u8]);
+    /// Zeroes `[len, written)` and makes `len` the end.
+    fn truncate(&mut self, len: usize);
+}
+
+/// One whole record from `parts` (the body, back to back), or Full with nothing written.
+pub(crate) fn put_parts<W: RawWrite + ?Sized>(
+    w: &mut W,
+    tag: u16,
+    parts: &[&[u8]],
+) -> Result<(), Full> {
+    let len = parts
+        .iter()
+        .try_fold(0usize, |len, part| len.checked_add(part.len()))
+        .ok_or(Full)?;
+    let head = RecHead {
+        tag,
+        _r: 0,
+        len: u32::try_from(len).map_err(|_| Full)?,
+    };
+    let size = record_size(len).ok_or(Full)?;
+    w.room(size)?;
+    w.append(head.as_bytes());
+    for part in parts {
+        w.append(part);
+    }
+    w.append(&ZEROS[..size - HEAD - len]);
+    Ok(())
+}
+
+/// Starts a record whose body is `fixed` and then whatever the caller appends; `close_record` back-patches the
+/// length. Returns the record's start.
+fn open_record<W: RawWrite + ?Sized>(w: &mut W, tag: u16, fixed: &[u8]) -> Result<usize, Full> {
+    let start = w.written();
+    w.room(HEAD.checked_add(fixed.len()).ok_or(Full)?)?;
+    w.append(RecHead { tag, _r: 0, len: 0 }.as_bytes());
+    w.append(fixed);
+    Ok(start)
+}
+
+/// Pads the record opened at `start` and writes its length into its head.
+fn close_record<W: RawWrite + ?Sized>(w: &mut W, start: usize) -> Result<(), Full> {
+    let len = w.written() - start - HEAD;
+    let len32 = u32::try_from(len).map_err(|_| Full)?;
+    let padding = record_size(len).ok_or(Full)? - HEAD - len;
+    w.room(padding)?;
+    w.append(&ZEROS[..padding]);
+    w.patch(
+        start + core::mem::offset_of!(RecHead, len),
+        len32.as_bytes(),
+    );
+    Ok(())
+}
+
+fn put_nested_in(
+    w: &mut dyn RawWrite,
+    tag: u16,
+    f: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
+) -> Result<(), Full> {
+    let start = open_record(w, tag, &[])?;
+    let filled = f(&mut Nested { w: &mut *w });
+    let done = filled.and_then(|()| close_record(w, start));
+    if done.is_err() {
+        w.truncate(start);
+    }
+    done
+}
+
+fn put_pair_in<W: RawWrite + ?Sized>(
+    w: &mut W,
+    tag: u16,
+    name: &str,
+    value: &[u8],
+) -> Result<(), Full> {
+    let head = PairRec {
+        name_len: u32::try_from(name.len()).map_err(|_| Full)?,
+        _r: 0,
+    };
+    put_parts(w, tag, &[head.as_bytes(), name.as_bytes(), value])
+}
+
+fn put_fact_in<W: RawWrite + ?Sized>(w: &mut W, key: u32, value: u64) -> Result<(), Full> {
+    put_parts(w, tag::FACT, &[FactRec { key, _r: 0, value }.as_bytes()])
+}
+
+fn put_fact_text_in<W: RawWrite + ?Sized>(w: &mut W, key: u32, value: &str) -> Result<(), Full> {
+    put_parts(
+        w,
+        tag::FACT_TEXT,
+        &[FactTextRec { key, _r: 0 }.as_bytes(), value.as_bytes()],
+    )
+}
+
+fn put_metric_in<W: RawWrite + ?Sized>(
+    w: &mut W,
+    id: u32,
+    op: u32,
+    value: f64,
+    labels: &[&str],
+) -> Result<(), Full> {
+    let obs = MetricObs { id, op, value };
+    let start = open_record(w, tag::METRIC, obs.as_bytes())?;
+    let filled = labels
+        .iter()
+        .try_for_each(|label| put_pair_in(w, tag::PAIR, "", label.as_bytes()));
+    let done = filled.and_then(|()| close_record(w, start));
+    if done.is_err() {
+        w.truncate(start);
+    }
+    done
+}
+
 /// A writer into the enclosing record's body. Implements Writer.
 pub struct Nested<'w> {
-    // W0-ABI: private fields (&'w mut dyn RawWrite, start offset) land with W1-A1.
-    _stub: PhantomData<&'w ()>,
+    w: &'w mut dyn RawWrite,
 }
 impl Writer for Nested<'_> {
     fn put(&mut self, tag: u16, body: &[u8]) -> Result<(), Full> {
-        let _ = (tag, body);
-        todo!()
+        put_parts(self.w, tag, &[body])
     }
     fn put_pod<T: Pod>(&mut self, tag: u16, v: &T) -> Result<(), Full> {
-        let _ = (tag, v);
-        todo!()
+        put_parts(self.w, tag, &[v.as_bytes()])
     }
     fn put_pod_tail<T: Pod>(&mut self, tag: u16, v: &T, tail: &[u8]) -> Result<(), Full> {
-        let _ = (tag, v, tail);
-        todo!()
+        put_parts(self.w, tag, &[v.as_bytes(), tail])
     }
     fn put_text(&mut self, tag: u16, s: &str) -> Result<(), Full> {
-        let _ = (tag, s);
-        todo!()
+        put_parts(self.w, tag, &[s.as_bytes()])
     }
     fn put_pair(&mut self, tag: u16, name: &str, value: &[u8]) -> Result<(), Full> {
-        let _ = (tag, name, value);
-        todo!()
+        put_pair_in(self.w, tag, name, value)
     }
     fn put_fact(&mut self, key: u32, value: u64) -> Result<(), Full> {
-        let _ = (key, value);
-        todo!()
+        put_fact_in(self.w, key, value)
     }
     fn put_fact_text(&mut self, key: u32, value: &str) -> Result<(), Full> {
-        let _ = (key, value);
-        todo!()
+        put_fact_text_in(self.w, key, value)
     }
     fn put_metric(&mut self, id: u32, op: u32, value: f64, labels: &[&str]) -> Result<(), Full> {
-        let _ = (id, op, value, labels);
-        todo!()
+        put_metric_in(self.w, id, op, value, labels)
     }
     fn put_nested(
         &mut self,
         tag: u16,
         f: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
     ) -> Result<(), Full> {
-        let _ = (tag, f);
-        todo!()
+        put_nested_in(&mut *self.w, tag, f)
     }
 }
 
@@ -480,46 +703,62 @@ pub struct Out<'a> {
     raw: &'a mut RawOut,
     host: &'a Host,
 }
+// W1-A1: the IF's Out writes straight into the host buffer (`raw.ptr`) and grows it through `Host::grow`, a raw
+// `unsafe extern "C"` field. Both are `unsafe`; the owner's "no unsafe" ruling holds them (and the constructor the
+// shims need) until UNSAFE-MIN decides the boundary. The `Writer` impl below is the real one, over this stub
+// sink, so only the four sink operations change when the boundary lands.
+impl RawWrite for Out<'_> {
+    fn written(&self) -> usize {
+        self.raw.len
+    }
+    fn room(&mut self, need: usize) -> Result<(), Full> {
+        let _ = (need, self.host);
+        todo!("UNSAFE-MIN: Out grows the host buffer through Host::grow")
+    }
+    fn append(&mut self, bytes: &[u8]) {
+        let _ = bytes;
+        todo!("UNSAFE-MIN: Out writes the host buffer in place")
+    }
+    fn patch(&mut self, at: usize, bytes: &[u8]) {
+        let _ = (at, bytes);
+        todo!("UNSAFE-MIN: Out writes the host buffer in place")
+    }
+    fn truncate(&mut self, len: usize) {
+        let _ = len;
+        todo!("UNSAFE-MIN: Out zeroes the host buffer in place")
+    }
+}
 impl Writer for Out<'_> {
     fn put(&mut self, tag: u16, body: &[u8]) -> Result<(), Full> {
-        let _ = (tag, body, &self.raw, self.host);
-        todo!()
+        put_parts(self, tag, &[body])
     }
     fn put_pod<T: Pod>(&mut self, tag: u16, v: &T) -> Result<(), Full> {
-        let _ = (tag, v);
-        todo!()
+        put_parts(self, tag, &[v.as_bytes()])
     }
     fn put_pod_tail<T: Pod>(&mut self, tag: u16, v: &T, tail: &[u8]) -> Result<(), Full> {
-        let _ = (tag, v, tail);
-        todo!()
+        put_parts(self, tag, &[v.as_bytes(), tail])
     }
     fn put_text(&mut self, tag: u16, s: &str) -> Result<(), Full> {
-        let _ = (tag, s);
-        todo!()
+        put_parts(self, tag, &[s.as_bytes()])
     }
     fn put_pair(&mut self, tag: u16, name: &str, value: &[u8]) -> Result<(), Full> {
-        let _ = (tag, name, value);
-        todo!()
+        put_pair_in(self, tag, name, value)
     }
     fn put_fact(&mut self, key: u32, value: u64) -> Result<(), Full> {
-        let _ = (key, value);
-        todo!()
+        put_fact_in(self, key, value)
     }
     fn put_fact_text(&mut self, key: u32, value: &str) -> Result<(), Full> {
-        let _ = (key, value);
-        todo!()
+        put_fact_text_in(self, key, value)
     }
     fn put_metric(&mut self, id: u32, op: u32, value: f64, labels: &[&str]) -> Result<(), Full> {
-        let _ = (id, op, value, labels);
-        todo!()
+        put_metric_in(self, id, op, value, labels)
     }
     fn put_nested(
         &mut self,
         tag: u16,
         f: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
     ) -> Result<(), Full> {
-        let _ = (tag, f);
-        todo!()
+        put_nested_in(self, tag, f)
     }
 }
 
@@ -537,7 +776,7 @@ impl Reply {
     }
     pub fn with_capacity(n: usize) -> Self {
         Reply {
-            buf: Vec::with_capacity(n),
+            buf: Vec::with_capacity(n.min(REPLY_CAP)),
         }
     }
     pub fn as_bytes(&self) -> &[u8] {
@@ -552,46 +791,84 @@ impl Default for Reply {
         Self::new()
     }
 }
+impl RawWrite for Reply {
+    fn written(&self) -> usize {
+        self.buf.len()
+    }
+    fn room(&mut self, need: usize) -> Result<(), Full> {
+        let want = self.buf.len().checked_add(need).ok_or(Full)?;
+        if want > REPLY_CAP {
+            return Err(Full);
+        }
+        let cap = self.buf.capacity();
+        if want <= cap {
+            return Ok(());
+        }
+        // A fresh block, the bytes copied over, the old block wiped whole (`Zeroize` on a Vec wipes its
+        // capacity, volatile) before it is freed: never `reserve`, which could move the bytes and leave a copy.
+        let mut grown = Vec::with_capacity(
+            cap.saturating_mul(2)
+                .min(REPLY_CAP)
+                .max(want)
+                .max(REPLY_MIN),
+        );
+        grown.extend_from_slice(&self.buf);
+        let mut old = core::mem::replace(&mut self.buf, grown);
+        old.zeroize();
+        Ok(())
+    }
+    fn append(&mut self, bytes: &[u8]) {
+        assert!(
+            self.buf.capacity() - self.buf.len() >= bytes.len(),
+            "a record write past the room it made"
+        );
+        self.buf.extend_from_slice(bytes);
+    }
+    fn patch(&mut self, at: usize, bytes: &[u8]) {
+        self.buf[at..at + bytes.len()].copy_from_slice(bytes);
+    }
+    fn truncate(&mut self, len: usize) {
+        if let Some(tail) = self.buf.get_mut(len..) {
+            tail.fill(0);
+        }
+        self.buf.truncate(len);
+    }
+}
 impl Writer for Reply {
     fn put(&mut self, tag: u16, body: &[u8]) -> Result<(), Full> {
-        let _ = (tag, body);
-        todo!()
+        put_parts(self, tag, &[body])
     }
     fn put_pod<T: Pod>(&mut self, tag: u16, v: &T) -> Result<(), Full> {
-        let _ = (tag, v);
-        todo!()
+        put_parts(self, tag, &[v.as_bytes()])
     }
     fn put_pod_tail<T: Pod>(&mut self, tag: u16, v: &T, tail: &[u8]) -> Result<(), Full> {
-        let _ = (tag, v, tail);
-        todo!()
+        put_parts(self, tag, &[v.as_bytes(), tail])
     }
     fn put_text(&mut self, tag: u16, s: &str) -> Result<(), Full> {
-        let _ = (tag, s);
-        todo!()
+        put_parts(self, tag, &[s.as_bytes()])
     }
     fn put_pair(&mut self, tag: u16, name: &str, value: &[u8]) -> Result<(), Full> {
-        let _ = (tag, name, value);
-        todo!()
+        put_pair_in(self, tag, name, value)
     }
     fn put_fact(&mut self, key: u32, value: u64) -> Result<(), Full> {
-        let _ = (key, value);
-        todo!()
+        put_fact_in(self, key, value)
     }
     fn put_fact_text(&mut self, key: u32, value: &str) -> Result<(), Full> {
-        let _ = (key, value);
-        todo!()
+        put_fact_text_in(self, key, value)
     }
     fn put_metric(&mut self, id: u32, op: u32, value: f64, labels: &[&str]) -> Result<(), Full> {
-        let _ = (id, op, value, labels);
-        todo!()
+        put_metric_in(self, id, op, value, labels)
     }
     fn put_nested(
         &mut self,
         tag: u16,
         f: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
     ) -> Result<(), Full> {
-        let _ = (tag, f);
-        todo!()
+        put_nested_in(self, tag, f)
     }
 }
-// W0-ABI: `impl Drop for Reply` (zeroize) lands with W1-A1; a todo!() drop would panic.
+impl Drop for Reply {
+    fn drop(&mut self) {
+        self.buf.zeroize();
+    }
+}

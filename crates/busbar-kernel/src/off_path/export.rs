@@ -519,11 +519,14 @@ pub(crate) fn sink_settings(
     module: &str,
     settings: &busbar_contract::plugin_settings::Settings,
 ) -> Result<ResolvedSettings, String> {
+    // Export sinks are process-lifetime and hold no generation of their own: their settings read
+    // the shorthand admission last published (SECRET-SHORTHAND-BOOT OQ3).
     sink_settings_with_resolver(
         axis,
         module,
         settings,
-        &crate::config::secret::SecretResolver::builtins_only(),
+        &crate::config::secret::SecretResolver::builtins_only()
+            .with_sources(crate::config::secret::admitted_sugars()),
     )
 }
 
@@ -537,11 +540,9 @@ pub(crate) fn sink_settings_with_resolver(
     let reference = axis.reference_fields(module);
     let declared = [secret.as_slice(), reference.as_slice()].concat();
     let tree = settings.prepare();
-    if declared.is_empty()
-        || settings
-            .undeclared_reference(&declared, &crate::config::secret::admitted_sugars())?
-            .is_some()
-    {
+    let none = busbar_contract::secret_ref::Sugars::default();
+    let sources = resolver.sources().unwrap_or(&none);
+    if declared.is_empty() || settings.undeclared_reference(&declared, sources)?.is_some() {
         return Ok(tree);
     }
     crate::config::secret::resolve_export_settings(

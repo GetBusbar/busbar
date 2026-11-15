@@ -20,6 +20,10 @@ fn is_blank(bytes: &[u8]) -> bool {
 #[derive(Clone)]
 pub struct SecretResolver {
     plugin: Option<std::sync::Arc<ScopedPluginResolve>>,
+    /// The secret shorthand of the generation this resolver serves (SECRET-SHORTHAND-BOOT §3.4):
+    /// what settings, fills and references written in that generation are read under. Empty for a
+    /// resolver bound to no generation (canonical references only).
+    sources: std::sync::Arc<busbar_contract::secret_ref::Sugars>,
 }
 
 pub(crate) type PluginResolveFn = Box<
@@ -48,7 +52,23 @@ fn refusal(error_kind: u32, text: String) -> SecretRefused {
 
 impl SecretResolver {
     pub fn builtins_only() -> Self {
-        Self { plugin: None }
+        Self {
+            plugin: None,
+            sources: std::sync::Arc::default(),
+        }
+    }
+
+    /// This resolver, serving the generation whose grammar declares `sources`.
+    #[must_use]
+    pub fn with_sources(mut self, sources: busbar_contract::secret_ref::Sugars) -> Self {
+        self.sources = std::sync::Arc::new(sources);
+        self
+    }
+
+    /// The secret shorthand of the generation this resolver serves.
+    #[must_use]
+    pub fn sugars(&self) -> &busbar_contract::secret_ref::Sugars {
+        &self.sources
     }
 
     pub fn with_plugin(plugin: PluginResolveFn) -> Self {
@@ -62,12 +82,14 @@ impl SecretResolver {
                     })
                 },
             )),
+            sources: std::sync::Arc::default(),
         }
     }
 
     pub(crate) fn with_scoped_plugin(plugin: ScopedPluginResolveFn) -> Self {
         Self {
             plugin: Some(std::sync::Arc::from(plugin)),
+            sources: std::sync::Arc::default(),
         }
     }
 
@@ -206,12 +228,14 @@ pub(crate) fn resolve_settings(
     resolver: &dyn busbar_contract::secret::SecretResolve,
     scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<ResolvedSettings, String> {
+    // The shorthand of the generation the resolver serves (SECRET-SHORTHAND-BOOT §3.4).
+    let none = busbar_contract::secret_ref::Sugars::default();
     settings.resolve(
         &busbar_contract::plugin_settings::Resolution {
             owner: plugin,
             secrets: declared,
             references: reference,
-            sources: &admitted_sugars(),
+            sources: resolver.sources().unwrap_or(&none),
         },
         resolver,
         scope,
@@ -226,12 +250,13 @@ pub(crate) fn resolve_export_settings(
     resolver: &dyn busbar_contract::secret::SecretResolve,
     scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<ResolvedSettings, String> {
+    let none = busbar_contract::secret_ref::Sugars::default();
     busbar_contract::export_calls::ExportOpening::new(settings.clone()).resolve(
         &busbar_contract::plugin_settings::Resolution {
             owner: plugin,
             secrets: declared,
             references: reference,
-            sources: &admitted_sugars(),
+            sources: resolver.sources().unwrap_or(&none),
         },
         resolver,
         scope,
@@ -250,6 +275,10 @@ pub(crate) fn wipe_strings(v: &mut serde_json::Value) {
 }
 
 impl busbar_contract::secret::SecretResolve for SecretResolver {
+    fn sources(&self) -> Option<&busbar_contract::secret_ref::Sugars> {
+        Some(&self.sources)
+    }
+
     fn resolve(&self, secret: &SecretRef) -> Result<Held, String> {
         SecretResolver::resolve(self, secret)
     }
@@ -298,16 +327,18 @@ pub fn live_axis() -> Option<&'static dyn busbar_contract::secret::SecretAxis> {
     axis()
 }
 
-pub(crate) fn is_linked_secret(module: &str) -> bool {
-    axis().is_some_and(|a| a.linked(module))
-}
-
-/// The shorthand the LIVE secret axis declares: the set the last admission published. Only for a
-/// reader past admission (request-path opens, readback of the serving generation, settings a
-/// build resolves after `admit_secrets`), never to parse a document: a read parses under its own
-/// grammar ([`super::grammar::grammar_for`]), whatever the axis holds.
+/// The shorthand the LIVE secret axis declares: the set the last admission published. Only for the
+/// process-lifetime plane and export machinery past admission that holds no generation of its own
+/// (plane-bound fills, door section references, export sinks): the grammar pin makes the axis
+/// equal the generation's grammar on every word the generation uses, except during a build
+/// (SECRET-SHORTHAND-BOOT §3.11, OQ3: no per-generation axis). Every other reader takes the grammar
+/// of its read or generation explicitly; the architecture check lists the files allowed here.
 pub(crate) fn admitted_sugars() -> busbar_contract::secret_ref::Sugars {
     axis().map(|a| a.sugars()).unwrap_or_default()
+}
+
+pub(crate) fn is_linked_secret(module: &str) -> bool {
+    axis().is_some_and(|a| a.linked(module))
 }
 
 /// THE ONE TEXT-AND-BYTES RULE for a credential the host re-resolves on a lease: resolve with the

@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Errors: the plugin-side `Fail`, its codes and fact keys, and the host-side `CallError` (IF §4.1, §4.2). W0-ABI stub: frozen signatures, `todo!()` bodies; A1 fills it.
+//! Errors: the plugin-side `Fail`, its codes and fact keys, and the host-side `CallError` (IF §4.1, §4.2).
 
 use std::borrow::Cow;
 
 use crate::host::CryptoErr;
+use crate::need::need::NeedErr;
 use crate::records::{Full, RecErr};
 use crate::types::Status;
 
@@ -36,21 +37,27 @@ pub struct Fail {
     error: u16,
 }
 impl Fail {
+    /// The one constructor every other one goes through (IF §1, the fail.rs row).
+    const fn of(status: Status, code: u32, text: Cow<'static, str>) -> Self {
+        Fail {
+            status,
+            code,
+            text,
+            facts: [None; 2],
+            error: 0,
+        }
+    }
     pub const fn refused(code: u32) -> Self {
-        let _ = code;
-        todo!()
+        Self::of(Status::REFUSED, code, Cow::Borrowed(""))
     }
     pub fn refused_because(code: u32, text: impl Into<Cow<'static, str>>) -> Self {
-        let _ = (code, text);
-        todo!()
+        Self::of(Status::REFUSED, code, text.into())
     }
     pub const fn failed(code: u32) -> Self {
-        let _ = code;
-        todo!()
+        Self::of(Status::FAILED, code, Cow::Borrowed(""))
     }
     pub fn failed_because(code: u32, text: impl Into<Cow<'static, str>>) -> Self {
-        let _ = (code, text);
-        todo!()
+        Self::of(Status::FAILED, code, text.into())
     }
     /// REFUSED R_UNSUPPORTED: a method this plugin does not implement (the kind trait's default body).
     pub const fn unsupported() -> Self {
@@ -59,9 +66,13 @@ impl Fail {
     /// Round 21. Sets one fact (`key` in `FAIL_FACT_KEYS`; setting it again replaces the value). A key outside
     /// `FAIL_FACT_KEYS`, or a REFUSED Fail, ignores the call: REFUSED is a verdict and carries no facts.
     /// `Fail::failed_because(F_UNAVAILABLE, text).with_fact(fact::FACT_RETRY_AFTER_S, 30)`.
-    pub fn with_fact(self, key: u32, value: u64) -> Self {
-        let _ = (self, key, value);
-        todo!()
+    pub fn with_fact(mut self, key: u32, value: u64) -> Self {
+        if self.status == Status::FAILED
+            && let Some(slot) = FAIL_FACT_KEYS.iter().position(|&known| known == key)
+        {
+            self.facts[slot] = Some(value);
+        }
+        self
     }
     /// The set facts, in `FAIL_FACT_KEYS` order (what the shim writes).
     pub fn facts(&self) -> impl Iterator<Item = (u32, u64)> + '_ {
@@ -72,9 +83,9 @@ impl Fail {
     }
     /// Round 34. The plugin's declared error number (0 clears), on REFUSED or FAILED. Display only.
     /// `Fail::failed_because(F_UPSTREAM, text).with_error(7071)`.
-    pub fn with_error(self, number: u16) -> Self {
-        let _ = (self, number);
-        todo!()
+    pub fn with_error(mut self, number: u16) -> Self {
+        self.error = number;
+        self
     }
     /// Round 34. The number `with_error` set, 0 = none (what the shim writes as ERROR).
     pub fn error(&self) -> u16 {
@@ -102,11 +113,42 @@ impl From<RecErr> for Fail {
         Fail::refused(refused::R_INVALID)
     }
 }
-impl From<crate::need::need::NeedErr> for Fail {
-    /* see §6.3 mapping */
-    fn from(e: crate::need::need::NeedErr) -> Self {
-        let _ = e;
-        todo!()
+/// The §6.3 mapping. The texts are fixed strings.
+impl From<NeedErr> for Fail {
+    fn from(e: NeedErr) -> Self {
+        let (status, code, text) = match e {
+            NeedErr::Denied => (Status::REFUSED, refused::R_DENIED, "core refused the step"),
+            NeedErr::Absent => (
+                Status::REFUSED,
+                refused::R_NOT_FOUND,
+                "the step found nothing",
+            ),
+            NeedErr::Taken => (
+                Status::REFUSED,
+                refused::R_CONFLICT,
+                "the step lost to another holder",
+            ),
+            NeedErr::Unavailable => (
+                Status::FAILED,
+                failed::F_UNAVAILABLE,
+                "the destination is unavailable",
+            ),
+            NeedErr::Closed => (
+                Status::FAILED,
+                failed::F_UNAVAILABLE,
+                "the connection is closed",
+            ),
+            NeedErr::Tls => (
+                Status::FAILED,
+                failed::F_UNAVAILABLE,
+                "the TLS handshake failed",
+            ),
+            NeedErr::Timeout => (Status::FAILED, failed::F_TIMEOUT, "the step timed out"),
+            NeedErr::Limit => (Status::FAILED, failed::F_LIMIT, "the step passed a limit"),
+            NeedErr::Skipped => (Status::FAILED, failed::F_INTERNAL, "the step was skipped"),
+            NeedErr::Invalid => (Status::FAILED, failed::F_INTERNAL, "the step was malformed"),
+        };
+        Self::of(status, code, Cow::Borrowed(text))
     }
 }
 /// Round 23: Rng (status RNG: the DRBG failed or the backend's self-test failed, §5.2) is a backend failure,
