@@ -19,6 +19,7 @@ type Open<K> = fn(&K, &[u8; 12], &[u8], &mut [u8], &[u8; 16]) -> R<()>;
 type SealRandomNonce<K> = fn(&K, &[u8], &mut [u8]) -> R<([u8; 12], [u8; 16])>;
 type RsaVerify = fn(b::rsa::Scheme, &[u8], &[u8], &[u8]) -> R<()>;
 type RsaVerifyComponents = fn(b::rsa::Scheme, &[u8], &[u8], &[u8], &[u8]) -> R<()>;
+type AesCtr = fn(&[u8], &[u8; 16], &[u8], &mut [u8]) -> R<()>;
 
 const fn const_str_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
@@ -52,7 +53,9 @@ const fn name_ok(n: &str) -> bool {
 }
 
 const _: () = {
-    assert!(b::API == 1, "busbar-crypto-backend API mismatch");
+    assert!(b::API == 2, "busbar-crypto-backend API mismatch");
+    // Required, no default (IF §5.2 round 13): a backend that never states it does not build.
+    let _: bool = b::EXTERNAL_PLUGINS;
     assert!(
         name_ok(b::NAME),
         "busbar-crypto-backend NAME must be 1..=8 of [a-z0-9-]"
@@ -77,6 +80,7 @@ const _: () = {
     let _: fn(&mut b::link::Hasher, &[u8]) = b::link::Hasher::update;
     let _: fn(b::link::Hasher) -> [u8; 32] = b::link::Hasher::finish;
     let _: fn(&[u8], &[u8]) -> R<[u8; 32]> = b::hmac_sha256;
+    let _: fn(&[u8], &[u8]) -> R<[u8; 48]> = b::hmac_sha384;
     let _: fn(&[u8], &[u8]) -> R<[u8; 64]> = b::hmac_sha512;
     let _: Verify = b::hmac_sha256_verify;
     let _: fn(&[u8]) -> R<b::HmacSha256Key> = b::HmacSha256Key::new;
@@ -97,13 +101,16 @@ const _: () = {
     let _: Open<b::Aes128Gcm> = b::Aes128Gcm::open_in_place;
     let _: SealRandomNonce<b::Aes128Gcm> = b::Aes128Gcm::seal_random_nonce;
     let _: fn(&[u8; 16], &[u8; 16]) -> R<[u8; 16]> = b::aes_block_encrypt;
+    let _: AesCtr = b::aes_ctr::apply;
     let _: fn() -> R<b::ed25519::SigningKey> = b::ed25519::SigningKey::generate;
     let _: fn(&[u8; 32]) -> R<b::ed25519::SigningKey> = b::ed25519::SigningKey::from_seed;
+    let _: fn(&[u8]) -> R<b::ed25519::SigningKey> = b::ed25519::SigningKey::from_pkcs8;
     let _: fn(&b::ed25519::SigningKey) -> &[u8; 32] = b::ed25519::SigningKey::seed;
     let _: fn(&b::ed25519::SigningKey, &[u8]) -> [u8; 64] = b::ed25519::SigningKey::sign;
     let _: fn(&b::ed25519::SigningKey) -> b::ed25519::VerifyingKey =
         b::ed25519::SigningKey::verifying_key;
     let _: fn(&[u8; 32]) -> R<b::ed25519::VerifyingKey> = b::ed25519::VerifyingKey::from_bytes;
+    let _: fn(&[u8]) -> R<b::ed25519::VerifyingKey> = b::ed25519::VerifyingKey::from_spki;
     let _: fn(&b::ed25519::VerifyingKey) -> [u8; 32] = b::ed25519::VerifyingKey::to_bytes;
     let _: fn(&b::ed25519::VerifyingKey) -> bool = b::ed25519::VerifyingKey::is_weak;
     let _: fn(&b::ed25519::VerifyingKey, &[u8], &[u8; 64]) -> R<()> =
@@ -115,7 +122,11 @@ const _: () = {
     let _: fn(&b::ecdsa_p256::KeyPair) -> [u8; 65] = b::ecdsa_p256::KeyPair::public_key;
     let _: Verify = b::ecdsa_p256::verify_fixed;
     let _: Verify = b::ecdsa_p256::verify_asn1;
+    let _: Verify = b::ecdsa_p256::verify_fixed_spki;
+    let _: Verify = b::ecdsa_p384::verify_fixed;
+    let _: Verify = b::ecdsa_p384::verify_fixed_spki;
     let _: RsaVerify = b::rsa::verify;
+    let _: RsaVerify = b::rsa::verify_spki;
     let _: RsaVerifyComponents = b::rsa::verify_components;
     let _: Verify = b::rsa::verify_pkcs1_sha256;
     let _: Verify = b::rsa::verify_pss_sha256;

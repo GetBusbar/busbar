@@ -1,11 +1,37 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Signatures over AWS-LC: Ed25519 (RFC 8032), ECDSA P-256 (FIPS 186-5) and RSA (RFC 8017).
+//! Signatures over AWS-LC: Ed25519 (RFC 8032), ECDSA P-256 and P-384 (FIPS 186-5) and RSA
+//! (RFC 8017).
+
+use aws_lc_rs::encoding::AsDer as _;
+use aws_lc_rs::signature::{ParsedPublicKey, VerificationAlgorithm};
+
+use crate::Error;
+
+/// The public key in the DER `SubjectPublicKeyInfo` `spki`, parsed by AWS-LC for `alg`. AWS-LC
+/// also takes a bare key (a SEC 1 point, a raw Ed25519 key, a PKCS#1 `RSAPublicKey`), so the key is
+/// accepted only when AWS-LC's own SPKI encoding of it is `spki` byte for byte: `Err(Invalid)` for
+/// a bare key, another curve or algorithm, trailing bytes or a non-canonical encoding.
+fn spki_key(
+    alg: &'static dyn VerificationAlgorithm,
+    spki: &[u8],
+    what: &'static str,
+) -> Result<ParsedPublicKey, Error> {
+    let key = ParsedPublicKey::new(alg, spki).map_err(|_| Error::Invalid(what))?;
+    let der = key.as_der().map_err(|_| Error::Invalid(what))?;
+    let canonical: &[u8] = (*der).as_ref();
+    if canonical == spki {
+        Ok(key)
+    } else {
+        Err(Error::Invalid(what))
+    }
+}
 
 /// Ed25519 with `verify_strict` semantics: small-order keys and small-order `R` are refused and `S`
 /// must be canonical (AWS-LC checks `S < L`; the small-order table is `weak.rs`).
 pub mod ed25519 {
+    use aws_lc_rs::encoding::AsBigEndian as _;
     use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair as _, UnparsedPublicKey, ED25519};
     use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -47,6 +73,25 @@ pub mod ed25519 {
             Ok(Self { pair, seed: *seed })
         }
 
+        /// The key in the PKCS#8 (RFC 8410, v1 or v2) DER `pkcs8`.
+        pub fn from_pkcs8(pkcs8: &[u8]) -> Result<Self, Error> {
+            const WHAT: Error = Error::Invalid("Ed25519 PKCS#8 key");
+            let pair = Ed25519KeyPair::from_pkcs8(pkcs8).map_err(|_| WHAT)?;
+            let bin = pair
+                .seed()
+                .and_then(|s| s.as_be_bytes())
+                .map_err(|_| WHAT)?;
+            let bytes: &[u8] = (*bin).as_ref();
+            let mut seed = [0_u8; 32];
+            if bytes.len() != seed.len() {
+                return Err(WHAT);
+            }
+            seed.copy_from_slice(bytes);
+            let key = Self { pair, seed };
+            seed.zeroize();
+            Ok(key)
+        }
+
         /// The 32-byte seed, borrowed: no copy leaves the key (it is wiped when the key drops).
         #[must_use]
         pub fn seed(&self) -> &[u8; 32] {
@@ -85,6 +130,20 @@ pub mod ed25519 {
                     "Ed25519 public key is not a canonical curve point",
                 ))
             }
+        }
+
+        /// The key in the DER `SubjectPublicKeyInfo` `spki` (RFC 8410): `Err(Invalid)` for
+        /// anything else, the bare 32-byte key included.
+        pub fn from_spki(spki: &[u8]) -> Result<Self, Error> {
+            const WHAT: &str = "Ed25519 SubjectPublicKeyInfo";
+            super::spki_key(&ED25519, spki, WHAT)?;
+            // RFC 8410 §4: the one DER encoding is a 12-byte header and the 32-byte key, which
+            // `spki_key` has just matched byte for byte against AWS-LC's own encoding.
+            let raw: [u8; 32] = spki
+                .get(12..)
+                .and_then(|k| k.try_into().ok())
+                .ok_or(Error::Invalid(WHAT))?;
+            Self::from_bytes(&raw)
         }
 
         /// The encoded key.
@@ -197,6 +256,37 @@ pub mod ecdsa_p256 {
             .verify(msg, sig)
             .map_err(|_| Error::Mismatch)
     }
+
+    /// Verify a fixed `r || s` signature under the P-256 DER `SubjectPublicKeyInfo` `spki`:
+    /// `Err(Invalid)` for a key that is not one (a bare point, another curve).
+    pub fn verify_fixed_spki(spki: &[u8], msg: &[u8], sig: &[u8]) -> Result<(), Error> {
+        super::spki_key(&ECDSA_P256_SHA256_FIXED, spki, "P-256 SubjectPublicKeyInfo")?
+            .verify_sig(msg, sig)
+            .map_err(|_| Error::Mismatch)
+    }
+}
+
+/// ECDSA over P-384 with SHA-384 (FIPS 186-5), verification only: SEC 1 uncompressed public keys
+/// (97 bytes) or a DER `SubjectPublicKeyInfo`; signatures fixed `r || s` (96 bytes).
+pub mod ecdsa_p384 {
+    use aws_lc_rs::signature::{UnparsedPublicKey, ECDSA_P384_SHA384_FIXED};
+
+    use crate::Error;
+
+    /// Verify a fixed `r || s` signature under the SEC 1 public key `pk`.
+    pub fn verify_fixed(pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<(), Error> {
+        UnparsedPublicKey::new(&ECDSA_P384_SHA384_FIXED, pk)
+            .verify(msg, sig)
+            .map_err(|_| Error::Mismatch)
+    }
+
+    /// Verify a fixed `r || s` signature under the P-384 DER `SubjectPublicKeyInfo` `spki`:
+    /// `Err(Invalid)` for a key that is not one (a bare point, another curve).
+    pub fn verify_fixed_spki(spki: &[u8], msg: &[u8], sig: &[u8]) -> Result<(), Error> {
+        super::spki_key(&ECDSA_P384_SHA384_FIXED, spki, "P-384 SubjectPublicKeyInfo")?
+            .verify_sig(msg, sig)
+            .map_err(|_| Error::Mismatch)
+    }
 }
 
 /// RSA signatures (RFC 8017): PKCS#1 v1.5 and PSS verification for 2048..=8192-bit keys, and
@@ -241,6 +331,14 @@ pub mod rsa {
     pub fn verify(scheme: Scheme, pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<(), Error> {
         UnparsedPublicKey::new(params(scheme), pk)
             .verify(msg, sig)
+            .map_err(|_| Error::Mismatch)
+    }
+
+    /// Verify `sig` over `msg` under the RSA DER `SubjectPublicKeyInfo` `spki`: `Err(Invalid)` for
+    /// a key that is not one (a PKCS#1 `RSAPublicKey` included).
+    pub fn verify_spki(scheme: Scheme, spki: &[u8], msg: &[u8], sig: &[u8]) -> Result<(), Error> {
+        super::spki_key(params(scheme), spki, "RSA SubjectPublicKeyInfo")?
+            .verify_sig(msg, sig)
             .map_err(|_| Error::Mismatch)
     }
 

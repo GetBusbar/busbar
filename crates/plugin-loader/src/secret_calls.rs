@@ -784,6 +784,27 @@ impl SecretRows {
         Ok(self)
     }
 
+    /// [`Self::link`], the row also answering to `former`: a word that is another linked secret's
+    /// name or word is a claim conflict, and nothing is linked.
+    pub fn link_with_former(
+        &mut self,
+        door: DoorFn,
+        former: &[String],
+    ) -> Result<&mut Self, String> {
+        self.link(door)?;
+        if former.is_empty() {
+            return Ok(self);
+        }
+        if let Some(row) = self.linked.pop() {
+            self.linked.push(row.answering(former));
+        }
+        if let Err(e) = crate::boot::one_owner(&self.linked) {
+            self.linked.pop();
+            return Err(e);
+        }
+        Ok(self)
+    }
+
     pub fn with_former_names(
         &mut self,
         former_of: impl Fn(&str) -> Vec<String>,

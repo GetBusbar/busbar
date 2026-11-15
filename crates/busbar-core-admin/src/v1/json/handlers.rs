@@ -340,9 +340,13 @@ pub(crate) async fn reload_plugins(
                 let view = AdminService::new(snapshot).reload_store_plugins()?;
                 return Ok(Outcome::Value((None, Ok(view))));
             }
+            // The failure text can be a plugin's own words (an instance open it refused): it
+            // rides in `details`, never in the message (ADMIN-API-1.6 section 1.3).
             let (next, gov_rotate, limits) = Box::pin(rebuild_app_from_disk(&snapshot))
                 .await
-                .map_err(AdminError::Validation)?;
+                .map_err(|text| {
+                    AdminError::plugin_text(Cond::PluginRejected, Some(text), None, None)
+                })?;
             let installed = Arc::new(next);
 
             let projected = AdminService::new(installed.clone()).reload_store_plugins();
@@ -2844,9 +2848,12 @@ pub(crate) async fn patch_hook_settings(
     };
     if current.base_hook_names.contains(&name) {
         audit::AUDIT.record_by("hook.settings", &resource, audit::OUTCOME_REJECTED, &actor);
-        return err_json(&AdminError::Conflict(format!(
-            "hook `{name}` is defined in the base config file; edit config.yaml"
-        )));
+        return err_json_cond(
+            &AdminError::Conflict(format!(
+                "hook `{name}` is defined in the base config file; edit config.yaml"
+            )),
+            Cond::BaseDefined,
+        );
     }
     if let Some(e) = stale_if_match(expected, current.config_version) {
         audit::AUDIT.record_by("hook.settings", &resource, audit::OUTCOME_REJECTED, &actor);
@@ -2865,9 +2872,12 @@ pub(crate) async fn patch_hook_settings(
         busbar_kernel::hooks::push_configure(&updated, &name, settings_version, &hook_env).await
     {
         audit::AUDIT.record_by("hook.settings", &resource, audit::OUTCOME_REJECTED, &actor);
-        return err_json(&AdminError::Validation(format!(
-            "hook did not acknowledge the settings push: {e}"
-        )));
+        return err_json(&AdminError::plugin_text(
+            Cond::HookNoAck,
+            Some(e.to_string()),
+            None,
+            None,
+        ));
     }
 
     let txn_name = name.clone();
@@ -4551,9 +4561,16 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                                      "invalid_request", "version_conflict", "conflict",
                                      "rate_limited", "internal", "unpriced_class",
                                      "unavailable"]},
-                        "message": {"type": "string"}
+                        "reason": {"type": ["string", "null"],
+                            "description": "A member of `components.x-busbar-reasons`; null only for `internal`."},
+                        "message": {"type": "string",
+                            "description": "Core-written English; never parsed, never plugin text."},
+                        "request_id": {"type": "string", "description": "Equals the `X-Request-Id` header."},
+                        "retryable": {"type": "boolean"},
+                        "details": {"type": "object",
+                            "description": "Typed per reason (`x-busbar-reasons.<reason>.details_schema`); never a secret."}
                     },
-                    "required": ["code", "message"]
+                    "required": ["code", "reason", "message", "request_id", "retryable", "details"]
                 }
             },
             "required": ["code", "error"]
@@ -4628,6 +4645,8 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             }
         },
         "components": {
+            "x-busbar-reasons": reasons_component(),
+            "x-busbar-plugin-refusals": busbar_kernel::admin::reasons::PLUGIN_REFUSALS,
             "securitySchemes": {
                 "adminToken": {"type": "apiKey", "in": "header", "name": OPENAPI_ADMIN_TOKEN_HEADER},
                 "bearerAuth": {"type": "http", "scheme": "bearer",
@@ -4637,6 +4656,33 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         },
         "paths": paths
     })
+}
+
+/// `components.x-busbar-reasons`: every reason of the closed table with the code and status it
+/// rides on, whether it is retryable, and the schema of its `details` (ADMIN-API-1.6 section 1.2).
+#[cfg(feature = "openapi-schema")]
+fn reasons_component() -> serde_json::Value {
+    use busbar_kernel::admin::reasons::{retryable, REASONS};
+    let mut table = serde_json::Map::new();
+    for row in REASONS {
+        let schema: serde_json::Value =
+            serde_json::from_str(row.details_schema).unwrap_or_else(|_| json!({"type": "object"}));
+        let mut entry = json!({
+            "code": row.code,
+            "http": row.http,
+            "retryable": retryable(row.code, Some(row.reason)),
+            "details_schema": schema,
+        });
+        if !row.also.is_empty() {
+            entry["also"] = row
+                .also
+                .iter()
+                .map(|(code, http)| json!({"code": code, "http": http}))
+                .collect();
+        }
+        table.insert(row.reason.to_string(), entry);
+    }
+    serde_json::Value::Object(table)
 }
 
 #[cfg(feature = "openapi-schema")]

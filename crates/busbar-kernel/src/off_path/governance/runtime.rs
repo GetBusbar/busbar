@@ -68,17 +68,21 @@ pub(crate) fn recovery_any_unsettled<'a>(
     entries.any(crate::governance::recovery::RecoveryEntry::unsettled)
 }
 
+/// `recovery`: `(staged, selected)` custody counts at a non-retired exit (SHUTDOWN-HANG §5).
+pub(crate) fn recovery_custody_counts<'a>(
+    entries: impl Iterator<Item = &'a crate::governance::recovery::RecoveryEntry>,
+) -> (usize, usize) {
+    entries.fold((0, 0), |(staged, selected), entry| {
+        let (s, x) = entry.custody();
+        (staged + usize::from(s), selected + usize::from(x))
+    })
+}
+
 /// `recovery`: every selected recovery event (boot attach, recovery resume, operator list).
 pub(crate) fn recovery_selected_events<'a>(
     entries: impl Iterator<Item = &'a crate::governance::recovery::RecoveryEntry>,
 ) -> Vec<RecoveryEvent> {
     entries.filter_map(|entry| entry.selected.clone()).collect()
-}
-
-/// `recovery`: whether an operation's retained first-send clock has outlived op-id retention
-/// (recovery replay decisions).
-pub(crate) fn recovery_retention_lapsed(sent: std::time::Instant) -> bool {
-    sent.elapsed().as_secs() >= busbar_contract::abi::store::OP_ID_RETENTION_SECS
 }
 
 /// `raw_recovery`: a recovery custody payload, encoded once per durable custody event.
@@ -405,12 +409,6 @@ pub(crate) fn exact_debt_flight_address(bucket: &str, window: u64) -> (String, u
     (bucket.to_owned(), window)
 }
 
-/// `exact_debt`: the monotonic clock a flush chunk's receipt retention starts from, once per
-/// chunk (the flusher).
-pub(crate) fn exact_debt_chunk_clock() -> std::time::Instant {
-    std::time::Instant::now()
-}
-
 /// `exact_debt`: every in-flight flush flight (the flusher's resume pass).
 pub(crate) fn exact_debt_flights<'a>(
     flights: impl Iterator<Item = &'a std::sync::Arc<BudgetFlushFlight>>,
@@ -495,11 +493,32 @@ pub(crate) fn unit_checkpoint_validate(snapshot: &UnitCheckpoint) -> RecordStore
     Ok(())
 }
 
-/// `unit_checkpoint/book`: every pending checkpoint id (the flusher's pass and shutdown).
-pub(crate) fn unit_checkpoint_book_ids<'a>(
-    ids: impl Iterator<Item = &'a [u8; 16]>,
+/// `unit_checkpoint/book`: the flush pass's ids, every `first` entry before every `then` entry,
+/// each group in map order (SHUTDOWN-HANG F3.3: terminal before moved running entries).
+pub(crate) fn unit_checkpoint_book_flush_order<'a, T: 'a>(
+    entries: impl Iterator<Item = (&'a [u8; 16], &'a T)>,
+    first: impl Fn(&T) -> bool,
+    then: impl Fn(&T) -> bool,
 ) -> Vec<[u8; 16]> {
-    ids.copied().collect()
+    let mut firsts = Vec::new();
+    let mut thens = Vec::new();
+    for (id, entry) in entries {
+        if first(entry) {
+            firsts.push(*id);
+        } else if then(entry) {
+            thens.push(*id);
+        }
+    }
+    firsts.extend(thens);
+    firsts
+}
+
+/// `unit_checkpoint/book`: one value per pending checkpoint (a non-retired exit's evidence).
+pub(crate) fn unit_checkpoint_book_map<'a, T: 'a, U>(
+    entries: impl Iterator<Item = (&'a [u8; 16], &'a T)>,
+    f: impl FnMut((&'a [u8; 16], &'a T)) -> U,
+) -> Vec<U> {
+    entries.map(f).collect()
 }
 
 /// `unit_checkpoint/book`: whether every pending checkpoint satisfies `f` (boot only).

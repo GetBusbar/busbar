@@ -1,5 +1,5 @@
 ---
-title: "BUSBAR-3016: --list-plugins fell back to the default plugins block (config unreadable)"
+title: "BUSBAR-3016: --list-plugins refused a config that exists but is not readable"
 description: "What Busbar error BUSBAR-3016 means, why it happens, and how to fix it."
 slug: docs/1.6/errors/BUSBAR-3016
 ---
@@ -8,11 +8,11 @@ slug: docs/1.6/errors/BUSBAR-3016
 
 ## What it means
 
-`busbar --list-plugins` could not read/parse config.yaml, so it inventoried the plugins directory using the DEFAULT `plugins:` block (default dir and trust policy) rather than the deployment's configured one. The inventory shown may not reflect the directory, trust policy, or store selection the running gateway would actually use.
+`busbar --list-plugins` found a config file at the resolved path that could not be read, parsed or env-substituted, so it refuses (exit 1) rather than inventory the DEFAULT `plugins:` block (default dir and trust policy), which would describe a directory other than the one the deployment configures. The default block is used only when no config file exists at that path (a bare inventory).
 
 ## How to fix it
 
-This is informational and best-effort pre-deployment. To inventory against the real config, fix config.yaml so it parses (run `busbar --validate` to see the error) and re-run `--list-plugins`.
+Fix config.yaml so it parses (run `busbar --validate` to see the error) and re-run `--list-plugins`, or point `--config` at the right file.
 
 ---
 

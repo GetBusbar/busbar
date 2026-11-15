@@ -18,7 +18,7 @@ fn unknown_store_name_is_a_clear_boot_error() {
             missing: format!("no plugin matching store.module: '{store_ref}'"),
             must_be: "a store plugin",
             label: "",
-            remedy: "set store.module: memory",
+            remedy: "install a signed plugin of kind store and select it with store.module set to its name",
         },
         &[available],
     );
@@ -26,5 +26,18 @@ fn unknown_store_name_is_a_clear_boot_error() {
     assert!(
         err.contains("acme-store-x"),
         "lists what is available: {err}"
+    );
+}
+
+/// BUSBAR-6009 guidance must be true for a drop-in deployment: the published binary links no memory
+/// store, so no store refusal may tell the operator to select one.
+#[test]
+fn store_guidance_does_not_claim_a_linked_memory_store() {
+    let disabled = super::store_needs_plugins_error("dynamo", "plugins");
+    assert!(!disabled.contains("memory"), "{disabled}");
+    assert!(
+        !super::STORE_REMEDY.contains("memory"),
+        "{}",
+        super::STORE_REMEDY
     );
 }

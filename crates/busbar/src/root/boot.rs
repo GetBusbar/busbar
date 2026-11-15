@@ -351,12 +351,15 @@ pub(crate) fn registry_rows(
 
 #[must_use]
 pub(crate) fn linked_row(row: &LinkedRow) -> LinkedPlugin {
+    let former = crate::LINKED.former;
     match *row {
         LinkedRow::Store((key, ephemeral, door, canonical)) => {
             LinkedPlugin::store_named(canonical, key, door, ephemeral)
+                .with_former_names(super::linked::words_of(former, "store", key))
         }
         LinkedRow::Auth((key, canonical, door)) => {
             LinkedPlugin::auth_door_named(canonical, key, door)
+                .with_former_names(super::linked::words_of(former, "auth", key))
         }
     }
 }
@@ -1253,6 +1256,18 @@ pub(crate) fn discover_planes(
         Some(registry) => registry.open_planes(linked.plane_doors),
         None => crate::root::loader::PluginRegistry::empty().open_planes(linked.plane_doors),
     };
+    let set = set.and_then(|mut set| {
+        let mut named = false;
+        for door in set.doors.iter_mut().take(linked.plane_doors.len()) {
+            let words = super::linked::words_of(linked.former, "plane", &door.name);
+            named |= !words.is_empty();
+            *door = door.clone().answering(words);
+        }
+        if named {
+            crate::root::loader::boot::one_owner(&set.doors)?;
+        }
+        Ok(set)
+    });
     let set = set.unwrap_or_else(|refusal| {
         eprintln!("busbar: {refusal}");
         crate::root::exit::exit(2);
@@ -1667,9 +1682,16 @@ impl BookPreparation {
         }
         // Recovery may wait for foreign writers' leases. Renew our actual writer
         // before any journal, keyset, price or recovery await can outlast its lease.
+        // The refresh runs until the drain retires the writer, not until the first
+        // shutdown signal: a drain may outlast the lease TTL (SHUTDOWN-HANG F4 "Lease").
+        // A preparation that fails still aborts the task on its way out.
         if let (Some(watch), Some(lease)) = (&self.lease_watch, self.node_lease.clone()) {
             self.node_lease_task = Some(tokio::spawn(super::measurements::maintenance(
-                crate::refresh_node_lease(lease, watch.stop.clone(), watch.failure.clone()),
+                crate::refresh_node_lease(
+                    lease,
+                    super::shutdown::retire_rx(),
+                    watch.failure.clone(),
+                ),
             )));
         }
         let node = self.taken.as_ref().expect("retained node result").id;

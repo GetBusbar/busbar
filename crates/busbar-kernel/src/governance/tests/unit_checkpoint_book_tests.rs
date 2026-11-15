@@ -538,3 +538,64 @@ async fn stage_finish_visits_flat() {
         stage_finish_visits(100_000).await
     );
 }
+
+/// SHUTDOWN-HANG 8.13: the gate's terminal backlog is exactly the book's `ended` entries; a
+/// running entry never changes it; the cap refuses new governed admission (never a running or
+/// terminal unit), and a closed gate refuses with `Draining` and never counts again.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_terminal_mirror_feeds_the_admission_gate() {
+    let (gov, _sink) = gov(vec![
+        recovered(1, "group:Z@total"),
+        recovered(2, "group:Z@total"),
+    ])
+    .await;
+    assert_eq!(
+        gov.admissions().terminal(),
+        2,
+        "recovered entries are inserted ended"
+    );
+    gov.check_unit_checkpoint_book();
+    stage_live(&gov, 1_000, 3);
+    assert_eq!(
+        gov.admissions().terminal(),
+        2,
+        "a running entry is not backlog"
+    );
+    gov.stage_unit_checkpoint(unit(1_000, 1_000, &[("group:C@total", 0)], &[]));
+    assert_eq!(
+        gov.admissions().terminal(),
+        2,
+        "a moved revision is not backlog"
+    );
+    assert!(gov.finish_unit_checkpoint(unit(1_001, 1_001, &[("group:C@total", 0)], &[])));
+    assert_eq!(gov.admissions().terminal(), 3);
+    assert!(gov.finish_unit_checkpoint(unit(1_001, 1_001, &[("group:C@total", 0)], &[])));
+    assert_eq!(
+        gov.admissions().terminal(),
+        3,
+        "an already-ended unit is not counted twice"
+    );
+    gov.check_unit_checkpoint_book();
+
+    let cost = cost(&["A"]);
+    let a = key("A");
+    let held = gov
+        .try_admit(&cost, &a, "", AT)
+        .expect("below the cap admits");
+    assert_eq!(gov.admissions().live(), 1);
+    drop(held);
+    assert_eq!(gov.admissions().live(), 0, "the count falls with the grant");
+    gov.admissions().set_cap(3);
+    match gov.try_admit(&cost, &a, "", AT) {
+        Err(LimitBlocked::CustodyFull { backlog, cap }) => assert_eq!((backlog, cap), (3, 3)),
+        other => panic!("expected CustodyFull, got {other:?}"),
+    }
+    assert_eq!(gov.admissions().live(), 0, "a refusal leaks no count");
+    gov.admissions().set_cap(1_000);
+    gov.admissions().close();
+    assert!(matches!(
+        gov.try_admit(&cost, &a, "", AT),
+        Err(LimitBlocked::Draining)
+    ));
+    assert_eq!(gov.admissions().live(), 0);
+}

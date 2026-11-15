@@ -275,10 +275,6 @@ impl JournalRecord {
                 },
             });
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: decode materialises an owned record for replay and recovery readers"
-        )]
         let body = bytes[JOURNAL_HEADER_BYTES..].to_vec();
         Ok(JournalRecord {
             class,
@@ -480,7 +476,7 @@ pub fn verify(records: &[JournalRecord]) -> Result<(), JournalBreak> {
 }
 
 /// [`verify`], crossing the holes recovery set aside — those named by a quarantine `ChainBreak` in
-pub fn verify_bridged(records: &[JournalRecord], known: &[Bridge]) -> Result<(), JournalBreak> {
+fn verify_bridged(records: &[JournalRecord], known: &[Bridge]) -> Result<(), JournalBreak> {
     let bridged = !known.is_empty() || records.iter().any(|r| r.class == RecordClass::ChainBreak);
     let (bridges, anchors) = if bridged {
         bridges_of(records, known)
@@ -544,10 +540,6 @@ pub fn verify_bridged(records: &[JournalRecord], known: &[Bridge]) -> Result<(),
 /// The holes a run may cross — `known`, then every quarantine `ChainBreak` in `records` — and the
 /// records they are anchored on. Only a chain that already carries a break gets here.
 fn bridges_of(records: &[JournalRecord], known: &[Bridge]) -> (Vec<Bridge>, HashSet<(u64, u64)>) {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: only a chain carrying a quarantine or overflow break has bridges to cross"
-    )]
     let mut bridges: Vec<Bridge> = known.to_vec();
     bridges.extend(
         records
@@ -555,10 +547,6 @@ fn bridges_of(records: &[JournalRecord], known: &[Bridge]) -> (Vec<Bridge>, Hash
             .filter(|r| r.class == RecordClass::ChainBreak)
             .filter_map(|r| QuarantineNote::read(&r.body).and_then(|note| note.bridge)),
     );
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: only a chain carrying a quarantine or overflow break has anchors"
-    )]
     let anchors: HashSet<(u64, u64)> = bridges.iter().map(|b| b.before).collect();
     (bridges, anchors)
 }
@@ -587,10 +575,6 @@ impl Bridge {
 
 /// Decode a run of log records into journal records, in order.
 pub fn decode_run(records: &[Record]) -> Result<Vec<JournalRecord>, JournalBreak> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a run is decoded whole when a chain is replayed or recovered"
-    )]
     let decoded = records
         .iter()
         .enumerate()

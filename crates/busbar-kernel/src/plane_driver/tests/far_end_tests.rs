@@ -711,7 +711,7 @@ fn rig(
         clock: Arc::new(Wall),
         journal: Arc::clone(&journal) as Arc<dyn Journal>,
         telemetry: Arc::new(Quiet),
-        pools: HashMap::from([(POOL.to_string(), pool)]),
+        pools: [(POOL.to_string(), pool)].into_iter().collect(),
         routes,
         stream_ceiling_secs: 600,
         stated_ceiling_secs: 0,

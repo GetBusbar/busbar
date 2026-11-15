@@ -253,13 +253,30 @@ impl StoreRecovery {
             let (epoch, writer) = proof.owner_identity().ok_or_else(|| {
                 unavailable("current recovery journal has no native owner identity")
             })?;
+            // An adopter that closes a writer which never retired records it (SHUTDOWN-HANG §5).
+            let seen = crate::persistence::boot_identity::UndrainedWriter {
+                node: Some(node),
+                other_nodes: Vec::new(),
+                epoch,
+                writer,
+                host: None,
+                observed_by: crate::persistence::boot_identity::ObservedBy::Adopter,
+            };
             match self
                 .retirements
-                .retire(&self.store, epoch, writer)
+                .retire_after(&self.store, epoch, writer, 0, Some(seen))
                 .await
                 .map_err(unavailable)?
             {
                 WriterRetirement::Retired(mut guards) => {
+                    if self.retirements.take_closed_open(epoch, writer) {
+                        tracing::info!(
+                            node,
+                            writer = %hex::encode(writer),
+                            epoch,
+                            "recovery adoption closed a writer that never retired; its shutdown.drain_incomplete record is offered"
+                        );
+                    }
                     // Re-read after closure: a live writer may have appended or
                     // transferred custody while its lease was still running.
                     let mut closed = History::new(&self.store);

@@ -1017,7 +1017,7 @@ fn no_dead_code_escape_outside_the_listed_test_only_sites() {
 /// `busbar-kernel` preflight, as `prepare_config_store` returns it.
 const STORE_MODULE_SQLITE_REFUSAL: &str = "store.module: 'sqlite' requires the plugin subsystem, \
      but plugins.enabled is false (the default). Set plugins.enabled: true and place the signed \
-     'sqlite' store plugin tarball in the plugins directory ('plugins'), or set store.module: memory.";
+     'sqlite' store plugin tarball in the plugins directory ('plugins'). The published binary links no store of its own: store.module selects a plugin of kind store by name.";
 
 #[test]
 fn store_boot_refusal_passes_the_store_module_refusal_through() {

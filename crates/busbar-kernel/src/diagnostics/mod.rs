@@ -1068,11 +1068,11 @@ diagnostics! {
         "`busbar --validate` ran the exact load → resolve → semantic-validate → strict-secret pipeline boot runs and the config did NOT pass at one of those phases, so it exits non-zero. Because `--validate` mirrors boot, this same config would fail to boot the gateway. The specific phase and offending entries are printed alongside this code.",
         "Fix the reported errors in config.yaml / providers.yaml (a parse/structure error, a cross-reference the resolver rejected, a semantic-validation failure, or an unset required secret) and re-run `--validate` until it reports `ok`.";
 
-    /// `--list-plugins` could not read config, so it inventoried using the default plugins block.
+    /// `--list-plugins` refused: the config file exists but could not be read, parsed or env-substituted (no inventory against the default plugins block).
     CLI_LIST_PLUGINS_CONFIG_UNREADABLE = 3016, Config, Actionable, "cli-list-plugins-config-unreadable", "1.6.0", false,
-        "--list-plugins fell back to the default plugins block (config unreadable)",
-        "`busbar --list-plugins` could not read/parse config.yaml, so it inventoried the plugins directory using the DEFAULT `plugins:` block (default dir and trust policy) rather than the deployment's configured one. The inventory shown may not reflect the directory, trust policy, or store selection the running gateway would actually use.",
-        "This is informational and best-effort pre-deployment. To inventory against the real config, fix config.yaml so it parses (run `busbar --validate` to see the error) and re-run `--list-plugins`.";
+        "--list-plugins refused a config that exists but is not readable",
+        "`busbar --list-plugins` found a config file at the resolved path that could not be read, parsed or env-substituted, so it refuses (exit 1) rather than inventory the DEFAULT `plugins:` block (default dir and trust policy), which would describe a directory other than the one the deployment configures. The default block is used only when no config file exists at that path (a bare inventory).",
+        "Fix config.yaml so it parses (run `busbar --validate` to see the error) and re-run `--list-plugins`, or point `--config` at the right file.";
 
     /// GET /config/settings read the overlay while unreadable/corrupt and reported NO root overrides.
     CONFIG_SETTINGS_OVERLAY_UNREADABLE = 3017, Config, Actionable, "config-settings-overlay-unreadable", "1.6.0", false,
@@ -1114,7 +1114,7 @@ diagnostics! {
     CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED = 6009, Plugins, Actionable, "cli-validate-plugin-preflight-failed", "1.6.0", false,
         "--validate plugin pre-flight failed (structure, trust, conflict, or store resolution)",
         "`busbar --validate` ran the same plugin pre-flight boot runs — consistency, trust-policy resolution, the three-phase scan of every tarball (structural → trust → conflict), and store resolution — and it FAILED. Because this is the boot pipeline (manifest-only, no dlopen), the same plugin set would fail the plugin half of boot.",
-        "Fix the reported plugin problem: a malformed manifest, a signature/trust-policy rejection, an ABI-floor or version-floor violation, a name/alias conflict, or an unresolvable `store.module`. Re-run `--validate` until it reports `ok`.";
+        "Fix the reported plugin problem: a malformed manifest, a signature/trust-policy rejection, an ABI-floor or version-floor violation, a name/alias conflict, or a `store.module` that names no installed store plugin (the published binary links no store: install a plugin of kind `store` and select it by its name). Re-run `--validate` until it reports `ok`.";
 
     /// `--list-plugins` could not build a trust policy from `plugins.trust` — the config is invalid.
     CLI_LIST_PLUGINS_TRUST_INVALID = 6010, Plugins, Actionable, "cli-list-plugins-trust-invalid", "1.6.0", false,
@@ -1826,6 +1826,48 @@ diagnostics! {
         "Waiting on another writer's first start of this dataset (no listener bound yet)",
         "Another process owns this dataset's first start and has not published it, and its progress rows (birth record, writer row, R0 progress row) changed within the stall window, so this process waits instead of retiring it. It binds no listener while it waits. The line names the owner's writer id, how long ago its progress last changed and when this process takes over if nothing changes. A restart resets the wait.",
         "Let it wait: it is admitted once the owner publishes, or takes over once the owner stops making progress for the window. Do not stop or restart it before the named takeover time; give the supervisor a startup budget of at least 200 + 105 x P seconds (P = conditional-records planes), see docs/operations.md First start with several replicas.";
+
+    /// The shutdown drain ended without retiring the writer (deadline, undrained custody, or a refused retirement).
+    SHUTDOWN_DRAIN_INCOMPLETE = 9019, Boot, Actionable, "shutdown-drain-incomplete", "1.6.0", false,
+        "Shutdown drain incomplete (the writer was not retired; exit 75 or 70)",
+        "The process stopped serving but did not retire its store writer: the drain budget ran out or a second signal arrived (cause=deadline), requests, governed units or persistence were still unsettled at their cut (cause=undrained), or the store refused the retirement (cause=retire_refused). Nothing in flight was cancelled. The exit status is 75 when every completed request's spend is in durable custody (running streams were cut) and 70 when some completed spend is not; each unsettled item is printed on stderr. The writer stays open until its lease lapses and the next start closes it.",
+        "Read the cause and the stderr lists. For cause=deadline on a slow store, raise the drain budget or fix the store's latency. A 70 exit lists the unpersisted spend as evidence: correct it through the audited admin correction path once the store is back.";
+
+    /// Some completed spend was not in durable custody at a non-retired exit.
+    SHUTDOWN_SPEND_UNPERSISTED = 9020, Boot, Actionable, "shutdown-spend-unpersisted", "1.6.0", false,
+        "Completed spend not in durable custody at exit (exit 70)",
+        "At a shutdown that could not retire the writer, at least one finished request's spend (a terminal unit checkpoint, a budget cell, a metering count or a correction) was not persisted, or its write was still unconfirmed. Each item is printed on stderr with its identity and amounts, as evidence; busbar never imports it on the next start, because an import can double-spend.",
+        "Restore the store, then reconcile the listed items through the audited admin correction path. Find why the drain could not persist them (store outage or latency at shutdown).";
+
+    /// Governed admission is refused while the gateway drains or the settlement backlog is at its cap.
+    GOVERNED_ADMISSION_PAUSED = 8030, Governance, Actionable, "governed-admission-paused", "1.6.0", false,
+        "Governed admission paused (draining, or finished requests await settlement)",
+        "New governed requests are refused with a 503: either the gateway is shutting down (cause=drain, reason drain, retry on another instance) or the number of finished governed requests whose spend still awaits settlement in the store reached its cap (cause=custody_full, reason durability_unavailable, Retry-After 1). Running requests and streams are never refused, and every refusal is audited on its unit. Logged once per episode; an Info line follows when the backlog falls below 90% of the cap.",
+        "For custody_full, check the store's latency and throughput: settlement is slower than governed arrival. For drain, route traffic to another instance until this one restarts.";
+
+    /// A writer that never retired was closed, but its shutdown.drain_incomplete record could not be queued.
+    SHUTDOWN_DRAIN_INCOMPLETE_UNRECORDED = 9021, Boot, Actionable, "shutdown-drain-incomplete-unrecorded", "1.6.0", false,
+        "A closed writer's shutdown.drain_incomplete record could not be queued (retried)",
+        "This process closed the store writer of a previous process that never retired (a successor on the same host, a recovery adopter, or the start-up expired-lease pass), but the admin audit queue refused its shutdown.drain_incomplete record: the queue was full or no entropy was available. The record is kept, named here with the writer's epoch, id, node and host, retried every second until it is queued and confirmed, and printed at exit if it is still refused. No later process records this writer.",
+        "Check the admin audit store's health: the queue is full because its appends do not complete. The record is retried on its own; if this process exits first, its stderr carries the writer's identity as the only evidence.";
+
+    /// A writer lease or host assignment row did not decode; the expired-writer pass never closes it.
+    EXPIRED_WRITER_ROW_INVALID = 9022, Boot, Actionable, "expired-writer-row-invalid", "1.6.0", false,
+        "A writer lease or host assignment row does not decode (never closed)",
+        "The start-up pass that closes writers whose lease expired at least one lease TTL ago found a writer lease or host assignment row it cannot decode. It never closes or deletes such a row; it reports it once per start with the row's key.",
+        "Inspect the named key in the store's node schema. A row written by another tool or a damaged store needs operator repair; busbar leaves it in place.";
+
+    /// The expired-writer pass could not close a writer, or delete a closed writer's lease row.
+    EXPIRED_WRITER_CLOSE_FAILED = 9023, Boot, Actionable, "expired-writer-close-failed", "1.6.0", false,
+        "An expired writer was not closed (the next start retries)",
+        "The start-up pass that closes writers whose lease expired at least one lease TTL ago could not close the named writer, could not delete a closed writer's lease row, or could not scan the node schema, usually because the store did not answer. The writer stays open and the next start of any gateway on this store retries.",
+        "Check the store's health. Nothing is lost: the writer is closed, and its shutdown.drain_incomplete record written, by a later start.";
+
+    /// More expired writers remain than one start closes.
+    EXPIRED_WRITERS_REMAINING = 9024, Boot, Actionable, "expired-writers-remaining", "1.6.0", false,
+        "More expired writers remain than one start closes (the next start continues)",
+        "The start-up pass closes at most 256 expired writers per start, so its cost stays bounded. More remained; the next start of any gateway on this store continues with them.",
+        "None if starts continue. Many expired writers point at many processes that did not retire: check why shutdowns are not completing.";
 
     /// A retired 1.5.x launch environment variable is set; 1.6 ignores it.
     RETIRED_ENV_VAR_IGNORED = 3029, Config, Actionable, "retired-env-var-ignored", "1.6.0", false,

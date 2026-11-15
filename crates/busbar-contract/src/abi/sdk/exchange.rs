@@ -790,7 +790,7 @@ impl Exchange {
     /// same request.
     pub fn prepared(
         prepared: &PreparedRequest,
-        sealed: Vec<crate::abi::sdk::cred::Seal>,
+        sealed: &[crate::abi::sdk::cred::Seal],
         body: Vec<u8>,
     ) -> Result<Self, ConnFailure> {
         let body = SecureVec::from(body);
@@ -799,7 +799,7 @@ impl Exchange {
                 super::cold::cred::sealed_count_refused(prepared.sealed.len(), sealed.len()),
             ));
         }
-        for ((_, name), seal) in prepared.sealed.iter().zip(&sealed) {
+        for ((_, name), seal) in prepared.sealed.iter().zip(sealed) {
             if seal.wire().iter().any(|b| matches!(b, b'\r' | b'\n' | 0)) {
                 return Err(ConnFailure::Refused(
                     super::cold::cred::sealed_value_refused(name),
@@ -812,7 +812,7 @@ impl Exchange {
         let sealed_bytes: usize = prepared
             .sealed
             .iter()
-            .zip(&sealed)
+            .zip(sealed)
             .map(|((_, name), seal)| {
                 name.len() + fields::SEPARATOR.len() + seal.wire().len() + fields::LINE_END.len()
             })
@@ -830,7 +830,7 @@ impl Exchange {
             for ((_, name), seal) in prepared
                 .sealed
                 .iter()
-                .zip(&sealed)
+                .zip(sealed)
                 .filter(|((s_at, _), _)| (*s_at).min(plain) == at)
             {
                 head.extend_from_slice(name);
