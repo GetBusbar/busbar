@@ -24,93 +24,7 @@ impl HighWaterMarks {
         let Some(dir) = data_dir else {
             return (HighWaterMarks::default(), None);
         };
-        let path = dir.join(HIGH_WATER_FILE);
-        let bytes = match std::fs::read(&path) {
-            Ok(b) => b,
-
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return (
-                    HighWaterMarks {
-                        path: Some(path),
-                        marks: BTreeMap::new(),
-                    },
-                    None,
-                );
-            }
-            Err(e) => {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "boot: the anti-downgrade floor could not be read"
-                )]
-                let note = format!(
-                    "could not read the first-party anti-downgrade floor at {}: {e}. Booting \
-                     with NO first-party floor — an old signed first-party artifact would not \
-                     be refused until the floor is re-established by a successful load.",
-                    path.display()
-                );
-                return (
-                    HighWaterMarks {
-                        path: Some(path),
-                        marks: BTreeMap::new(),
-                    },
-                    Some(note),
-                );
-            }
-        };
-        let parsed: BTreeMap<String, String> = match serde_json::from_slice(&bytes) {
-            Ok(m) => m,
-            Err(e) => {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "boot: the anti-downgrade floor is not readable JSON"
-                )]
-                let note = format!(
-                    "the first-party anti-downgrade floor at {} is not readable JSON ({e}). \
-                     Booting with NO first-party floor — an old signed first-party artifact \
-                     would not be refused until the floor is re-established by a successful \
-                     load.",
-                    path.display()
-                );
-                return (
-                    HighWaterMarks {
-                        path: Some(path),
-                        marks: BTreeMap::new(),
-                    },
-                    Some(note),
-                );
-            }
-        };
-        // busbar:expect(bp::fresh_buffer, reason = "boot: names the unusable floor entries the load drops")
-        let mut dropped = Vec::new();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the floor is read once, when the plugin registry loads"
-        )]
-        let marks: BTreeMap<String, String> = parsed
-            .into_iter()
-            .filter(|(name, version)| {
-                let ok = valid_name(name) && valid_semver(version);
-                if !ok {
-                    dropped.push(name.clone());
-                }
-                ok
-            })
-            .collect();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: names the unusable floor entries the load dropped"
-        )]
-        let note = (!dropped.is_empty()).then(|| {
-            format!(
-                "the first-party anti-downgrade floor at {} carried {} unusable entr{} ({}), which \
-                 were DROPPED: a floor that cannot be parsed cannot be compared against, and \
-                 keeping it would refuse a good plugin forever.",
-                path.display(),
-                dropped.len(),
-                if dropped.len() == 1 { "y" } else { "ies" },
-                dropped.join(", ")
-            )
-        });
+        let (path, marks, note) = crate::cold::highwater::load(dir);
         (
             HighWaterMarks {
                 path: Some(path),
@@ -122,8 +36,7 @@ impl HighWaterMarks {
 
     #[must_use]
     pub fn marks(&self) -> BTreeMap<String, String> {
-        // busbar:expect(bp::clone_alloc, reason = "boot: the load policy takes its own copy of the floor once")
-        self.marks.clone()
+        crate::cold::highwater::copy(&self.marks)
     }
 
     pub fn raise(&mut self, name: &str, version: &str) -> bool {
@@ -133,11 +46,8 @@ impl HighWaterMarks {
         match self.marks.get(name) {
             Some(current) if version_at_least(current, version) => false,
             _ => {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "boot: a first-party plugin load raises its floor"
-                )]
-                self.marks.insert(name.to_string(), version.to_string());
+                let (name, version) = crate::cold::highwater::entry(name, version);
+                self.marks.insert(name, version);
                 true
             }
         }
@@ -163,13 +73,7 @@ impl HighWaterMarks {
         let Some(path) = self.path.as_deref() else {
             return Ok(());
         };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the floor is persisted after a registry load raises it"
-        )]
-        let mut body = serde_json::to_vec_pretty(&self.marks)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        body.push(b'\n');
+        let body = crate::cold::highwater::body(&self.marks)?;
         crate::durable::write_with(
             path,
             &body,

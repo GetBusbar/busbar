@@ -136,14 +136,12 @@ impl<B: From<String>> Piece<B> {
     /// `stream` failed, for `why`.
     #[must_use]
     pub fn failure(stream: u64, why: &str) -> Self {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a failed stream's reason, owned once per failure"
-        )]
-        let why = why.to_owned();
         Self {
             failed: true,
-            ..Self::data(stream, B::from(why))
+            ..Self::data(
+                stream,
+                B::from(crate::abi::sdk::cold::wire::owned_text(why)),
+            )
         }
     }
 }

@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-pub fn line_carrier(
+pub(crate) fn line_carrier(
     transports: &[crate::root::linked::LinkedTransport],
 ) -> Result<Option<&'static str>, String> {
     let mut lines = transports.iter().flat_map(|t| (t.lines)());
@@ -24,7 +24,7 @@ pub fn line_carrier(
 }
 
 #[must_use]
-pub fn env_credential(plane: &str, carrier: &str) -> String {
+pub(crate) fn env_credential(plane: &str, carrier: &str) -> String {
     format!(
         "BUSBAR_{}_{}_CREDENTIAL",
         plane.to_ascii_uppercase(),

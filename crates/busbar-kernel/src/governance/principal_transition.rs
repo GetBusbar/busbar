@@ -322,7 +322,6 @@ pub fn store_fingerprint<T: Serialize>(store: &T) -> Result<String, String> {
 }
 
 fn previous_receipt(head: &Head, bytes: &[u8]) -> PreviousReceipt {
-    // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     PreviousReceipt {
         head_sha256: hex::encode(Sha256::digest(bytes)),
         requirements: head.requirements.clone(),
@@ -440,7 +439,6 @@ pub fn role_bindings_after(spec: &Specification) -> Result<crate::config::RoleBi
     let mut sources = BTreeSet::new();
     let mut destinations = BTreeSet::new();
     for disposition in &spec.role_dispositions {
-        // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
         let source = (disposition.provider.clone(), disposition.old_role.clone());
         if disposition.old_role.is_empty()
             || disposition.old_role.chars().any(char::is_control)
@@ -602,7 +600,6 @@ pub fn addresses(
     )]
     let sources: BTreeSet<_> = cells.keys().map(|(s, w)| (s.clone(), *w)).collect();
     let mut destinations = BTreeSet::new();
-    // busbar:expect(bp::fresh_buffer, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     let mut result = Vec::new();
     for ((source, window), (destination, period)) in cells {
         if sources.contains(&(destination.clone(), window))
@@ -635,7 +632,6 @@ fn target_key(plan: &Plan, key: &VirtualKey) -> Result<VirtualKey, String> {
             after.group = Some(group(&b.new_principal));
         }
         if bound {
-            // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
             after.idp_subject = Some(b.new_principal.clone());
         }
     }
@@ -645,7 +641,6 @@ fn target_key(plan: &Plan, key: &VirtualKey) -> Result<VirtualKey, String> {
 fn holds(plan: &Plan) -> BTreeSet<String> {
     let prior = plan.previous.as_ref().map(|p| &p.holds);
     let mut held = prior.cloned().unwrap_or_default();
-    // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     held.extend(
         plan.specification
             .bindings
@@ -672,7 +667,6 @@ fn holds(plan: &Plan) -> BTreeSet<String> {
 }
 
 fn held_principals(plan: &Plan) -> BTreeMap<String, String> {
-    // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     let mut active = plan
         .previous
         .as_ref()
@@ -682,7 +676,6 @@ fn held_principals(plan: &Plan) -> BTreeMap<String, String> {
     for binding in &plan.specification.bindings {
         active.remove(&binding.old_principal);
         if held.contains(&binding.new_principal) {
-            // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
             active.insert(binding.new_principal.clone(), binding.provider.clone());
         }
     }
@@ -697,7 +690,6 @@ fn binding_covers_key(binding: &Binding, key: &VirtualKey) -> bool {
 }
 
 fn carried_denials(plan: &Plan) -> BTreeSet<String> {
-    // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     #[expect(
         clippy::disallowed_methods,
         reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
@@ -803,7 +795,6 @@ pub async fn prepare(
         .await
         .map_err(|e| error_text(&e))?;
     denylist_before.sort();
-    // busbar:expect(bp::fresh_buffer, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     let mut carry = Vec::new();
     for (source, destination, window, period) in
         addresses(&specification, &groups, specification.cutover)?
@@ -871,7 +862,6 @@ pub fn validate_plan(plan: &Plan) -> Result<(), String> {
         .carry
         .iter()
         .map(|c| {
-            // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
             (
                 c.source.clone(),
                 c.destination.clone(),
@@ -1131,14 +1121,12 @@ pub fn validate_plan(plan: &Plan) -> Result<(), String> {
         target_key(plan, k)?;
     }
     after_overlay(plan)?;
-    // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     let mut groups = plan.groups_before.clone();
     for binding in &plan.specification.bindings {
         if let Some(original) = plan.groups_before.get(&group(&binding.old_principal)) {
             groups.insert(group(&binding.new_principal), original.clone());
         }
     }
-    // busbar:expect(bp::fresh_buffer, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     let mut errors = Vec::new();
     crate::config::groups::validate_groups(&groups, &|_| true, &mut errors);
     if !errors.is_empty() {
@@ -1183,7 +1171,6 @@ fn read_body(rows: &dyn RecordRows, prefix: &[u8], length: usize) -> Result<Vec<
     if length == 0 || length > MAX_PLAN_BYTES {
         return Err("invalid principal journal length".into());
     }
-    // busbar:expect(bp::fresh_buffer, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     let mut body = Vec::with_capacity(length);
     for index in 0..length.div_ceil(busbar_contract::MAX_RECORD_BYTES) {
         let chunk = rows
@@ -1237,9 +1224,7 @@ fn read_generation(rows: &dyn RecordRows, bytes: &[u8], depth: usize) -> Result<
             return Err("principal predecessor is not complete".into());
         }
         head.depth = prior.depth + 1;
-        // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
         head.retired_keys = prior.retired_keys.clone();
-        // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
         head.historical_groups = prior.historical_groups.clone();
         Some(previous_receipt(&prior, bytes.as_slice()))
     } else {
@@ -1438,7 +1423,6 @@ pub async fn guard_startup_native(
         .initialization_witness()
         .await
         .map_err(|_| "native principal initialization ownership refused")?;
-    // busbar:expect(bp::into_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     #[expect(clippy::disallowed_methods, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")]
     let receipt = FreshNamespace {
         version: 1,
@@ -1915,7 +1899,6 @@ pub async fn apply(
         return verify(plan, core.clone(), overlay, now).await;
     }
     let mut extra = if resuming {
-        // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
         previous
             .as_ref()
             .map_or_else(Vec::new, |(head, _)| head.extra_carry.clone())
@@ -1994,7 +1977,6 @@ pub async fn apply(
             length: body.len(),
         })
     };
-    // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     let head = Head {
         version: 1,
         plan_sha256: plan_sha256.clone(),
@@ -2075,7 +2057,6 @@ pub async fn apply(
                     value: pending.clone(),
                 });
                 // A compact consumed marker plus bounded immutable attestation chunks.
-                // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
                 mutations.push(Mutation::Put {
                     schema: SCHEMA.as_str().into(),
                     key: epoch_key.clone(),
@@ -2143,7 +2124,6 @@ pub async fn apply(
     {
         crate::config::overlay::write_async(overlay,&after).await.map_err(|_|"overlay write uncertain; fence retained; settle backend and obtain a new quiescence attestation")?;
     }
-    // busbar:expect(bp::clock_repeat, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     #[expect(
         clippy::disallowed_methods,
         reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
@@ -2262,7 +2242,6 @@ pub fn requirements(
     cfg: &crate::config::RootCfg,
     registry: &dyn busbar_contract::plugin_rows::PluginRows,
 ) -> Result<Vec<Requirement>, String> {
-    // busbar:expect(bp::fresh_buffer, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     let mut requirements = Vec::new();
     for (provider, definition) in &cfg.identity_providers {
         let Some(row) = registry.resolve(&definition.module) else {
@@ -2509,7 +2488,6 @@ pub async fn reauthorize(
         key: HEAD.to_vec(),
         value: serde_json::to_vec(&head).map_err(|e| error_text(&e))?,
     });
-    // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     #[expect(
         clippy::disallowed_methods,
         reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
@@ -2636,7 +2614,6 @@ pub async fn initialize_ephemeral_with_record_bootstrap(
     let mut epoch = [0u8; 16];
     busbar_contract::crypto::fill(&mut epoch)
         .map_err(|_| "fresh record bootstrap entropy unavailable")?;
-    // busbar:expect(bp::into_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     Ok(crate::host_record_bootstrap::ColdRecordReceipt {
         version: 1,
         epoch: hex::encode(epoch),
@@ -2663,7 +2640,6 @@ fn fresh_mutations(receipt: &FreshNamespace) -> Result<(String, Vec<Mutation>), 
     )]
     let body = serde_json::to_vec(receipt).map_err(|e| error_text(&e))?;
     let mut mutations = chunks(&body_prefix(&receipt_sha256), &body)?;
-    // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     let head = Head {
         version: 1,
         plan_sha256: receipt_sha256.clone(),
@@ -2715,7 +2691,6 @@ async fn initialize_namespace(
     {
         return Err("explicit new namespace creation/witness receipt required".into());
     }
-    // busbar:expect(bp::fresh_buffer, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     let mut predicates = Vec::new();
     if let Some(witness) = &receipt.witness {
         let key = hex::decode(&witness.key_hex).map_err(|_| "invalid namespace witness key")?;

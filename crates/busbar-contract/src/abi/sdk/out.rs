@@ -199,7 +199,9 @@ pub(crate) struct Report {
     metrics: Vec<MetricEntry>,
     diags: Vec<Diag>,
     texts: Vec<Box<str>>,
-    owned: Vec<Box<str>>,
+    owned: Vec<String>,
+    /// Emptied blocks of earlier crossings' owned texts, reused by the next copies.
+    spare: Vec<String>,
 }
 
 // SAFETY: a `Report` owns everything its entries point to (`label_vals` is always NULL; a `Diag`'s
@@ -216,7 +218,10 @@ impl Report {
         self.metrics.clear();
         self.diags.clear();
         self.texts.clear();
-        self.owned.clear();
+        for mut text in self.owned.drain(..) {
+            text.clear();
+            self.spare.push(text);
+        }
     }
 }
 
@@ -437,7 +442,7 @@ impl Out<'_, crate::abi::plane::ArriveOut> {
             let name = kept
                 .routes
                 .name(entry)
-                .unwrap_or_else(|| self.owned_text(entry.to_string()));
+                .unwrap_or_else(|| self.owned_str(entry));
             self.put(|o| &o.pool, name);
         }
     }
@@ -477,7 +482,7 @@ impl Out<'_, crate::abi::plane::ArriveOut> {
             return;
         }
         if self.kept.is_some() {
-            let key = self.owned_text(key.to_string());
+            let key = self.owned_str(key);
             self.put(|o| &o.affinity, key);
         }
     }
@@ -488,14 +493,14 @@ impl Out<'_, crate::abi::plane::ArriveOut> {
             return;
         }
         if self.kept.is_some() {
-            let c = self.owned_text(counterparty.to_string());
+            let c = self.owned_str(counterparty);
             self.put(|o| &o.trust_counterparty, c);
             if let Some(item) = item.filter(|s| !s.is_empty()) {
-                let i = self.owned_text(item.to_string());
+                let i = self.owned_str(item);
                 self.put(|o| &o.trust_item, i);
             }
             if let Some(digest) = digest.filter(|s| !s.is_empty()) {
-                let d = self.owned_text(digest.to_string());
+                let d = self.owned_str(digest);
                 self.put(|o| &o.trust_digest, d);
             }
         }
@@ -939,7 +944,6 @@ impl<'a, T: AbiOut> Out<'a, T> {
     fn owned_text(&mut self, text: String) -> AbiStr {
         if self.kept.is_some() {
             let mut report = self.report().expect("an instance has reply storage");
-            let text: Box<str> = text.into();
             let named = AbiStr {
                 ptr: text.as_ptr(),
                 len: text.len(),
@@ -948,6 +952,30 @@ impl<'a, T: AbiOut> Out<'a, T> {
             self.hand_back(report);
             return named;
         }
+        self.lent_text(&text)
+    }
+
+    /// [`Out::owned_text`] for a borrowed `text`: the instance keeps a copy in a block one of its
+    /// earlier crossings left (allocated only while the instance has none to spare).
+    fn owned_str(&mut self, text: &str) -> AbiStr {
+        if self.kept.is_some() {
+            let mut report = self.report().expect("an instance has reply storage");
+            let mut kept = report.spare.pop().unwrap_or_default();
+            kept.push_str(text);
+            let named = AbiStr {
+                ptr: kept.as_ptr(),
+                len: kept.len(),
+            };
+            report.owned.push(kept);
+            self.hand_back(report);
+            return named;
+        }
+        self.lent_text(text)
+    }
+
+    /// `text` copied into the host's lent reason buffer (cut at a character boundary to fit), or
+    /// [`NO_REASON_BUFFER`] when the host lent none.
+    fn lent_text(&mut self, text: &str) -> AbiStr {
         let Some(r) = self.reason else {
             return AbiStr {
                 ptr: NO_REASON_BUFFER.as_ptr(),

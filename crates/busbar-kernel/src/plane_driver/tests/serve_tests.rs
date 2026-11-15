@@ -11,7 +11,7 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Field, Outcome as AbiOutcome
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, ProjectIn, ProjectOut, RecordWrite, RefusalIn,
-    RefusalOut, ServeIn, ServeOut, AUDIT_APPLIED, RECORD_AUDIT,
+    RefusalOut, ServeIn, ServeOut, AUDIT_APPLIED, RECORD_AUDIT, ROUTE_PUBLIC,
 };
 use busbar_contract::plane_calls::{
     Answered, Grow, InstanceDecl, Lent, PieceInFlight, PlaneCalls, ServeInFlight,

@@ -159,7 +159,6 @@ impl GovState {
             return Ok(None);
         }
         let (chunk_plain, chunk_dated) = SegmentedUsage::of(&plain, &dated)?.chunk();
-        // busbar:expect(bp::into_alloc, reason = "boot: a recovery custody record owns its bucket name, built once per durable custody child")
         let custody = UsageCustody {
             bucket: bucket.into(),
             window,
@@ -760,7 +759,6 @@ impl GovState {
 
         capacity.merge(&allocated);
         let selection_changed = epoch != self.recovery_selection_epoch();
-        // busbar:expect(bp::fresh_buffer, reason = "boot: recovery custody capture lists the owners it must re-stage, once per capture")
         let mut owners = Vec::new();
 
         for event in observations {
@@ -919,7 +917,6 @@ impl GovState {
         parent: &RecoveryEvent,
         verify_current: bool,
     ) -> RecordStoreResult<bool> {
-        // busbar:expect(bp::into_alloc, reason = "boot: a recovery tree walk queues its root once per walk")
         let mut queue = std::collections::VecDeque::from([parent.clone()]);
         let mut seen = std::collections::BTreeSet::new();
         while let Some(event) = queue.pop_front() {
@@ -964,7 +961,6 @@ impl GovState {
         &self,
         parent: &RecoveryEvent,
     ) -> RecordStoreResult<()> {
-        // busbar:expect(bp::into_alloc, reason = "boot: a recovery tree walk queues its root once per walk")
         let mut queue = std::collections::VecDeque::from([(parent.clone(), true)]);
         let mut seen = std::collections::BTreeSet::new();
         while let Some((snapshot, owned)) = queue.pop_front() {
@@ -1265,7 +1261,6 @@ impl GovState {
                 .map_err(|error| crate::governance::rendered_error(RecoveryError::Invalid, error));
             normalized
         };
-        // busbar:expect(bp::fresh_buffer, reason = "config: an operator's foreign verdict stages its one or two transitions")
         let mut transitions = Vec::new();
         let unknown = if event.state == RecoveryState::Intent {
             let payload = Self::quarantined_raw_payload(event, true).map_err(|error| {

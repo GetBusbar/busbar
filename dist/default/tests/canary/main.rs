@@ -13,7 +13,7 @@ mod recorder;
 
 use canary::{Canary, Sink};
 
-pub const KINDS: &[&str] = &[
+const KINDS: &[&str] = &[
     "provider-key-env-ref",
     "provider-key-file-ref",
     "plugin-setting-interp",
