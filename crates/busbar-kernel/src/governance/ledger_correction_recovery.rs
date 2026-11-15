@@ -1069,7 +1069,6 @@ impl Custody {
             intent: self.intent,
             targets,
             sent_at: self.sent_at,
-            started: ledger_off_path::ledger_correction_started(),
             running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             receipt: Arc::new(std::sync::Mutex::new(self.decision.map(Into::into))),
             settled: Arc::new(std::sync::Mutex::new(None)),

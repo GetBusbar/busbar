@@ -460,8 +460,11 @@ async fn repeated_unknowns_retain_one_snapshot_and_coalesce_fresh_pending_separa
     assert_eq!(requests(&gov).await, 9);
 }
 
+/// STORE-TRANSACTIONS §8 item 19: an operation first sent a day and a second ago is resent with
+/// its exact id and body while its slot is held, and the store replays Applied: no retention
+/// give-up, the body applies once, and the counts that arrived meanwhile follow.
 #[tokio::test]
-async fn expired_unknown_metering_is_not_replayed_by_periodic_or_final_flush() {
+async fn a_day_old_unknown_metering_resends_its_operation_and_applies_once() {
     let store = Arc::new(UncertainStore::new([Reply::Lost, Reply::Unknown]).await);
     let gov = GovState::new_with_core(store.core.clone(), None, None)
         .await
@@ -478,34 +481,20 @@ async fn expired_unknown_metering_is_not_replayed_by_periodic_or_final_flush() {
         .unwrap()
         .front_mut()
         .unwrap()
-        .expire_attempt();
+        .backdate_first_send(std::time::Duration::from_secs(24 * 60 * 60 + 1));
     accrue_raw(&gov, 5, era);
 
-    for final_flush in [false, true, false] {
-        assert_eq!(
-            if final_flush {
-                gov.flush_metering_final().await
-            } else {
-                gov.flush_metering().await
-            },
-            0
-        );
-        assert_eq!(
-            store.calls.lock().unwrap().len(),
-            2,
-            "expired ids never cross the Store"
-        );
-        assert_eq!(
-            requests(&gov).await,
-            1,
-            "the possibly committed body is never applied twice"
-        );
-        let (cells, counts) = gov.pending_metering_totals();
-        assert_eq!(
-            (cells, counts.requests, counts.tokens_input.whole_for_test()),
-            (2, 2, 8)
-        );
-    }
+    gov.flush_metering().await;
+    gov.flush_metering().await;
+    let calls = store.calls.lock().unwrap().clone();
+    assert_eq!(calls[2], first, "the resend keeps the exact id and body");
+    assert_eq!(
+        calls.iter().filter(|call| call.0 == first.0).count(),
+        3,
+        "exactly one resend"
+    );
+    assert_eq!(requests(&gov).await, 2, "the first body applies once");
+    assert_eq!(gov.pending_metering_totals().1.requests, 0);
     assert_eq!(
         first.1[0].pricing_version,
         era.entry_id.unwrap().metering_version()

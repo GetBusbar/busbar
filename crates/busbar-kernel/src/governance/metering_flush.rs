@@ -5,7 +5,7 @@ use busbar_contract::records::OpId;
 /// One raw count operation. Its identity and body remain together until acknowledgement.
 #[derive(Clone)]
 pub(super) struct MeteringWrite {
-    /// The receipt's retention starts at the first attempt, never at a later retry.
+    /// Minted at the first attempt and kept by every retry, so a resend replays at the store.
     op: Option<MeteringAttempt>,
     delta: MeteringDelta,
     remainder: MeterCounts,
@@ -15,17 +15,15 @@ pub(super) struct MeteringWrite {
 #[derive(Clone, Copy)]
 struct MeteringAttempt {
     id: OpId,
-    replay_before: std::time::Instant,
     first_sent_at_ms: u64,
 }
 
 impl MeteringWrite {
+    /// Move the first send `by` into the past.
     #[cfg(test)]
-    pub(super) fn expire_attempt(&mut self) {
-        self.op
-            .as_mut()
-            .expect("the operation was attempted")
-            .replay_before = std::time::Instant::now();
+    pub(super) fn backdate_first_send(&mut self, by: std::time::Duration) {
+        let op = self.op.as_mut().expect("the operation was attempted");
+        op.first_sent_at_ms -= u64::try_from(by.as_millis()).expect("a short interval");
     }
 
     fn new((key, counts): (MeterKey, MeterCounts)) -> Option<Self> {
@@ -188,11 +186,10 @@ impl GovState {
                 return flushed;
             };
             let op = write.op.unwrap_or_else(|| {
-                let (replay_before, first_sent_at_ms) =
+                let first_sent_at_ms =
                     crate::off_path::governance::state::metering_flush_attempt_clock();
                 let op = MeteringAttempt {
                     id: crate::door::op_id(),
-                    replay_before,
                     first_sent_at_ms,
                 };
                 pending
@@ -244,18 +241,10 @@ impl GovState {
                 return flushed;
             }
 
-            let result = if crate::off_path::governance::state::metering_flush_expired(
-                op.replay_before,
-            ) {
-                Err(RecordStoreError(
-                    "metering receipt retention expired; exact operation and counts retained"
-                        .into(),
-                ))
-            } else {
-                core.ledger()
-                    .add_metering_batch_deduped(op.id, std::slice::from_ref(&write.delta))
-                    .await
-            };
+            let result = core
+                .ledger()
+                .add_metering_batch_deduped(op.id, std::slice::from_ref(&write.delta))
+                .await;
             match result {
                 Ok(()) => {
                     finish_front(pending);
@@ -289,7 +278,7 @@ impl GovState {
                             key = %write.delta.key_id,
                             error = %error,
                             "metering flush: {retained} cell(s) retained with their operation id \
-                             and body; replay is allowed only within receipt retention"
+                             and body for an exact resend"
                         );
                     }
                     return flushed;

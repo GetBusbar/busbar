@@ -407,10 +407,7 @@ async fn restart_cannot_turn_recent_wall_time_into_receipt_age_authority() {
     first.attach_recovery_sink(sink.clone()).await.unwrap();
     first.resume_raw_recovery().await.unwrap();
     let intent = raw_intent(&first, 7).await;
-    assert_eq!(
-        first.recovery_retention_expired(intent.operation_id),
-        Some(false)
-    );
+    assert!(first.recovery_sent_here(intent.operation_id));
     drop(first);
     let restarted = GovState::new_with_core(store.clone(), None, None)
         .await
@@ -421,10 +418,7 @@ async fn restart_cannot_turn_recent_wall_time_into_receipt_age_authority() {
         restarted.recovery_event(intent.operation_id).unwrap().state,
         RecoveryState::LandedUnknown
     );
-    assert_eq!(
-        restarted.recovery_retention_expired(intent.operation_id),
-        None
-    );
+    assert!(!restarted.recovery_sent_here(intent.operation_id));
     let raw: serde_json::Value = serde_json::from_slice(
         &restarted
             .recovery_event(intent.operation_id)

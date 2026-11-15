@@ -391,7 +391,6 @@ impl WriteBehind {
         rows: &dyn RecordRows,
         chains: &crate::host_chains::ChainBook,
     ) {
-        let now = std::time::Instant::now();
         loop {
             let mut unresolved = Vec::new();
             let batch = {
@@ -414,7 +413,7 @@ impl WriteBehind {
                         continue;
                     }
                     QueuedWrite::Conditional(w) => {
-                        if let Some(write) = w.attempt(rows, chains, now) {
+                        if let Some(write) = w.attempt(rows, chains) {
                             unresolved.push(QueuedWrite::Conditional(write));
                         }
                         continue;
