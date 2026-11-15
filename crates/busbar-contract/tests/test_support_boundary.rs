@@ -116,6 +116,57 @@ fn an_armed_here_scope_counts_this_thread_s_allocations_exactly() {
 }
 
 #[test]
+fn an_armed_here_scope_does_not_count_a_second_thread_s_allocations() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    // The worker starts before any scope and is driven through atomics only, so the arming
+    // thread allocates nothing itself while it waits.
+    static GO: AtomicBool = AtomicBool::new(false);
+    static DONE: AtomicUsize = AtomicUsize::new(0);
+    let worker = std::thread::spawn(|| {
+        for _ in 0..2 {
+            while !GO.load(Ordering::SeqCst) {
+                std::thread::yield_now();
+            }
+            drop(std::hint::black_box(vec![0u8; 4096]));
+            GO.store(false, Ordering::SeqCst);
+            DONE.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+    let round = |here: bool| {
+        let want = DONE.load(Ordering::SeqCst) + 1;
+        let run = || {
+            GO.store(true, Ordering::SeqCst);
+            while DONE.load(Ordering::SeqCst) < want {
+                std::thread::yield_now();
+            }
+        };
+        if here {
+            A.armed_here(b"", run)
+        } else {
+            A.armed(b"", run)
+        }
+    };
+    let here = round(true);
+    assert_eq!(
+        (
+            here.allocs,
+            here.alloc_bytes,
+            here.largest_alloc,
+            here.count,
+            here.bytes
+        ),
+        (0, 0, 0, 0, 0),
+        "a second thread's allocation and free are not this thread's: {here:?}"
+    );
+    let all = round(false);
+    assert!(
+        all.allocs >= 1 && all.largest_alloc >= 4096,
+        "the same work is seen by an all-threads scope: {all:?}"
+    );
+    worker.join().expect("worker");
+}
+
+#[test]
 fn a_watched_realloc_is_a_new_block_and_the_old_one_freed() {
     let here = A.armed_here(b"", || {
         let mut v = Vec::<u8>::with_capacity(8);
