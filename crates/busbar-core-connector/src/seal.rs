@@ -20,10 +20,10 @@ pub const SEAL_BROKEN: &str = "the framer did not render a sealed value verbatim
 const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
 /// One sealed value: the filler the framer was handed and the real bytes it stands for.
-struct Seal {
-    stream: u64,
-    filler: Vec<u8>,
-    value: SecureVec,
+pub(crate) struct Seal {
+    pub(crate) stream: u64,
+    pub(crate) filler: Vec<u8>,
+    pub(crate) value: SecureVec,
 }
 
 /// THE SEALS A CONNECTION HOLDS: those not yet spliced into its wire, the connection's reused list
@@ -32,41 +32,13 @@ struct Seal {
 #[derive(Default)]
 pub(crate) struct Seals(Vec<Seal>, Vec<Option<usize>>, HashMap<u64, usize>);
 
-/// One seal on `stream` is no longer pending: its count drops, and a stream with none left is
-/// forgotten.
-fn released(counts: &mut HashMap<u64, usize>, stream: u64) {
-    if let std::collections::hash_map::Entry::Occupied(mut held) = counts.entry(stream) {
-        *held.get_mut() -= 1;
-        if *held.get() == 0 {
-            held.remove();
-        }
-    }
-}
-
 impl std::fmt::Debug for Seals {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Seals({} pending)", self.0.len())
     }
 }
 
-/// The names the opener's [`busbar_contract::conn::SEALED_FIELDS_FIELD`] states, taken out of
-pub(crate) fn take_sealed_names(fields: &mut Vec<(String, Vec<u8>)>) -> Vec<String> {
-    let mut names = Vec::new();
-    fields.retain(|(n, v)| {
-        if busbar_contract::conn::is_sealed_fields_field(n.as_bytes()) {
-            names.extend(
-                String::from_utf8_lossy(v)
-                    .split(',')
-                    .map(|s| s.trim().to_ascii_lowercase())
-                    .filter(|s| !s.is_empty()),
-            );
-            false
-        } else {
-            true
-        }
-    });
-    names
-}
+pub(crate) use crate::off_path::seal::take_sealed_names;
 
 fn filler(len: usize) -> Option<Vec<u8>> {
     let mut bytes = vec![0_u8; len];
@@ -96,15 +68,7 @@ impl Seals {
         let Some((fields, _)) = opening.as_mut() else {
             return Ok(false);
         };
-        let mut pairs = Vec::new();
-        fields.retain_mut(|(name, value)| {
-            if busbar_contract::conn::is_sealed_query_field(name.as_bytes()) {
-                pairs.push(SecureVec::from(std::mem::take(value)));
-                false
-            } else {
-                true
-            }
-        });
+        let pairs = crate::off_path::seal::take_query_pairs(fields);
         if pairs.is_empty() {
             return Ok(false);
         }
@@ -228,18 +192,12 @@ impl Seals {
     }
 
     pub(crate) fn streams(&self) -> Vec<u64> {
-        let mut streams = Vec::new();
-        for seal in &self.0 {
-            if !streams.contains(&seal.stream) {
-                streams.push(seal.stream);
-            }
-        }
-        streams
+        crate::off_path::seal::pending_streams(&self.0)
     }
 
     pub(crate) fn clear_on(&mut self, stream: u64) {
         self.2.remove(&stream);
-        self.0.retain(|seal| seal.stream != stream);
+        crate::off_path::seal::drop_stream(&mut self.0, stream);
     }
 
     /// SPLICE every pending seal whose filler `wire` holds: the real bytes over the filler, in
@@ -259,16 +217,7 @@ impl Seals {
                 (None, _) => positions.push(None),
             }
         }
-        let mut at = positions.iter();
-        let counts = &mut self.2;
-        self.0.retain(|s| match at.next().copied().flatten() {
-            Some(i) => {
-                wire[i..i + s.filler.len()].copy_from_slice(&s.value);
-                released(counts, s.stream);
-                false
-            }
-            None => true,
-        });
+        crate::off_path::seal::splice_found(&mut self.0, &positions, wire, &mut self.2);
         self.1 = positions;
         Ok(())
     }

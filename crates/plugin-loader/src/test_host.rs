@@ -75,6 +75,8 @@ pub enum Refused {
     Load(LoadError),
     /// The plugin refused to open (its error text).
     Open(String),
+    /// The plugin opened but its READY failed (the host's refusal text).
+    Ready(String),
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +88,7 @@ enum Source {
         stated: Result<Vec<u8>, LoadError>,
     },
     Raw(RawDoorFn),
+    RawStated(RawDoorFn, Result<Vec<u8>, LoadError>),
 }
 
 /// A linked door or a staged cdylib, plus the Statement it must state.
@@ -147,6 +150,13 @@ impl<K: Kind> Image<K> {
         Self::of(Source::Raw(m.door_fn()))
     }
 
+    /// A boundary-forged door stating what `twin` states, so a mutant whose Statement differs is
+    /// refused `StatementMismatch`, as a restated plugin is.
+    #[must_use]
+    pub fn mutant_as(m: Mutant, twin: DoorFn) -> Self {
+        Self::of(Source::RawStated(m.door_fn(), rendering_of(twin)))
+    }
+
     fn load(&self, bind: Bind) -> Result<Plugin<K>, LoadError> {
         match &self.source {
             Source::Linked(door) => load_linked::<K>(&LinkedRow::of_kind::<K>(*door)?, bind),
@@ -161,6 +171,13 @@ impl<K: Kind> Image<K> {
                 bind,
             ),
             Source::Raw(door) => load_linked::<K>(&LinkedRow::of_raw(*door)?, bind),
+            Source::RawStated(door, stated) => load_linked::<K>(
+                &LinkedRow {
+                    statement: stated.clone()?,
+                    door: *door,
+                },
+                bind,
+            ),
         }
     }
 }
@@ -269,7 +286,7 @@ impl Host {
         K::open(&plugin, settings).map_err(Refused::Open)?;
         plugin
             .ready(&self.dispatcher, crate::dispatch::ready::READY_DEADLINE)
-            .map_err(Refused::Open)?;
+            .map_err(Refused::Ready)?;
         Ok(Opened {
             plugin: Some(plugin),
             flight: Rc::new(Cell::new(0)),

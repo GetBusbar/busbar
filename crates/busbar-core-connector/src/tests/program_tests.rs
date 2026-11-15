@@ -706,7 +706,7 @@ fn a_leases_bound_runs_past_its_head_to_the_programs_answer() {
         declare(&c, &[("mute", sh("cat >/dev/null", &[]))]).unwrap();
         let before = std::time::Instant::now();
         let id = open_bounded(&c, "mute");
-        let after = std::time::Instant::now();
+        let after = before + crate::support::since(before);
 
         let at = due(&c, id).expect("the open is bounded");
         assert!(
@@ -765,7 +765,7 @@ async fn drain(c: &Connector, id: ConnId, bound: Duration) -> usize {
     let mut buf = vec![0_u8; 64 * 1024];
     let mut read = 0;
     let started = std::time::Instant::now();
-    while started.elapsed() < bound {
+    while crate::support::since(started) < bound {
         match c.read(OWNER, id, 7, &mut buf) {
             Ok(p) if p.kind == PieceKind::Body => read += p.len,
             Ok(_) => {}

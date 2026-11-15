@@ -59,6 +59,13 @@ fn authority_body(value: &[u8]) -> Result<Option<&[u8]>, StorageError> {
     }
 }
 
+/// A retired cell's body: `-` and a fresh nonce, in the nonce's own allocation.
+fn tombstone() -> Result<Vec<u8>, StorageError> {
+    let mut body = nonce()?.into_bytes();
+    body.insert(0, b'-');
+    Ok(body)
+}
+
 fn digest(value: &str) -> String {
     hex::encode(busbar_contract::crypto::sha256(value.as_bytes()))
 }
@@ -71,8 +78,13 @@ fn nonce() -> Result<String, StorageError> {
     Ok(hex::encode(bytes))
 }
 
+/// The node clock's one wall reading, as a [`SystemTime`].
+pub(crate) fn now_time() -> SystemTime {
+    UNIX_EPOCH + Duration::from_nanos(busbar_kernel::store::now_ns())
+}
+
 fn now_secs() -> u64 {
-    secs_of(SystemTime::now())
+    busbar_kernel::store::now_ns() / 1_000_000_000
 }
 
 fn secs_of(t: SystemTime) -> u64 {
@@ -553,7 +565,7 @@ impl Shared {
                 continue;
             }
             let value = if now.saturating_sub(cell.at) > RETIRE_AFTER_SECS {
-                format!("-{}", nonce()?).into_bytes()
+                tombstone()?
             } else {
                 cell.v = cell.v.checked_add(1).ok_or_else(|| {
                     StorageError::new("oauth_as store: user-code index version exhausted")
@@ -926,7 +938,7 @@ impl Shared {
 
             let epoch = if v == 0 { nonce()? } else { epoch };
             let body = if retire {
-                format!("-{}", nonce()?).into_bytes()
+                tombstone()?
             } else {
                 let cell = CellOut {
                     v: next,
@@ -1288,7 +1300,7 @@ impl Shared {
         &self,
         request_uri: &str,
     ) -> Result<Option<PushedAuthorizationRequest>, StorageError> {
-        let now = SystemTime::now();
+        let now = now_time();
         self.lookup("par", request_uri, |mut b| {
             b.pushed.remove(request_uri).filter(|p| p.expires_at > now)
         })
@@ -2188,12 +2200,8 @@ impl Shared {
                         if held {
                             return Ok(());
                         }
-                        let mut request = Self::candidate(
-                            &atomic_schema(&name),
-                            &row.key,
-                            raw,
-                            format!("-{}", nonce()?).into_bytes(),
-                        );
+                        let mut request =
+                            Self::candidate(&atomic_schema(&name), &row.key, raw, tombstone()?);
                         Arc::make_mut(&mut request).predicates.push(Predicate {
                             schema: atomic_schema("bucket"),
                             key: bucket_id.into_bytes(),
@@ -2313,7 +2321,7 @@ impl Shared {
                 return Ok(());
             }
             let value = if retired {
-                format!("-{}", nonce()?).into_bytes()
+                tombstone()?
             } else {
                 cell.v = cell.v.checked_add(1).ok_or_else(|| {
                     StorageError::new("oauth_as store: subject index version exhausted")
