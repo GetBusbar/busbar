@@ -121,14 +121,14 @@ fn read_entry(
 /// The key 1.5.5 and the 1.6 betas wrote a registration's private reach under (`tools.<server>`,
 /// `agents.<agent>`): refused BY NAME in every plane registration, whatever its plane declares, so
 /// the coded refusal (BUSBAR-3135) survives the planes dropping the retired trust role.
-pub const RETIRED_PRIVATE_REACH_KEY: &str = "allow_private";
+const RETIRED_PRIVATE_REACH_KEY: &str = "allow_private";
 
 /// THE RETIRED PER-REGISTRATION PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`). Every outbound
 /// connection is governed by one policy, `advanced.block_private_addresses` with
 /// `advanced.allow_destinations`; a registration that still writes the key a plane declares for it is
 /// refused, whatever its value, naming the registration and the one setting that replaced it.
 #[must_use]
-pub fn private_reach_retired(at: &str, key: &str) -> String {
+fn private_reach_retired(at: &str, key: &str) -> String {
     let code = crate::diagnostics::CONFIG_PRIVATE_REACH_RETIRED.banner();
     format!(
         "{at}: `{key}:` is retired ({code}). One setting governs every outbound connection: list \
@@ -139,7 +139,7 @@ pub fn private_reach_retired(at: &str, key: &str) -> String {
 }
 
 /// Whether a registration holds a private reach: never, since the key is retired
-/// ([`private_reach_retired`]); a registration writing it is refused before it is served. The one
+/// (`private_reach_retired`); a registration writing it is refused before it is served. The one
 /// policy, `advanced.allow_destinations`, decides every private destination.
 #[must_use]
 pub fn private_reach(_entry: &busbar_contract::yaml::Value, _keys: &[TrustKeyDecl]) -> bool {

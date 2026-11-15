@@ -5,7 +5,7 @@
 //! protected records. This mapping is never writable through a plugin record namespace.
 
 use super::*;
-use crate::persistence::scoped::{Expected, Mutation, Outcome, Predicate, Request, ScopedStore};
+use crate::persistence::scoped::{Outcome, Request, ScopedStore};
 use busbar_contract::Secret;
 
 pub(super) const CALLERS: &str = "kernel-caller-bindings";
@@ -221,52 +221,28 @@ impl KernelServices {
             scan.cursor = page.next;
             scan.pending.extend(page.rows);
         }
-        // busbar:expect(bp::fresh_buffer, reason = "boot: resumes units a previous process left in flight; the recovery scheduler polls it, no request does")
-        let mut ready = Vec::new();
         // A bounded batch retains the unconsumed part of this page, so slow polls cannot
         // starve the later records by repeatedly restarting from the first work item.
-        while ready.len() < RECOVERY_BATCH {
-            let Some((reference, bytes)) = scan.pending.pop_front() else {
-                break;
-            };
-            let Ok(reference) = crate::host_work::Reference::try_from(reference.as_slice()) else {
-                continue;
-            };
-            let Some(work) = Work::read(
-                caller.namespace(),
+        let instance = caller.namespace();
+        let active = &self.recovery.active;
+        Ok(crate::off_path::host_services::recovery_batch(
+            instance,
+            &mut scan.pending,
+            RECOVERY_BATCH,
+            |reference| {
+                active
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert((Arc::clone(instance), reference))
+            },
+            |reference, binding, target| RecoveryWork {
+                instance: Arc::clone(instance),
                 reference,
-                bytes.expose(&crate::seal::lend()),
-            ) else {
-                continue;
-            };
-            if !work.live {
-                continue;
-            }
-            let Some(binding) = work.recovery else {
-                continue;
-            };
-            let Some(target) = busbar_contract::abi::sdk::recovery::poll_target(&work.record)
-                .ok()
-                .flatten()
-            else {
-                continue;
-            };
-            let mut active = self
-                .recovery
-                .active
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            if active.insert((caller.namespace().clone(), reference)) {
-                ready.push(RecoveryWork {
-                    instance: caller.namespace().clone(),
-                    reference,
-                    binding,
-                    target: target.into(),
-                    active: self.recovery.active.clone(),
-                });
-            }
-        }
-        Ok(ready)
+                binding,
+                target,
+                active: Arc::clone(active),
+            },
+        ))
     }
 
     /// The opened instance's caller-binding store handle, bound once per instance.
@@ -283,12 +259,8 @@ impl KernelServices {
         if let Some(rows) = callers.get(caller.namespace()) {
             return Ok(Arc::clone(rows));
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: binds an opened instance's caller-binding schema once, at its first session"
-        )]
         let rows =
-            ScopedStore::host_private(store.clone(), caller.namespace(), [CALLERS.to_string()])
+            crate::cold::host::services_caller_rows(Arc::clone(store), caller.namespace(), CALLERS)
                 .map_err(|_| "caller binding unavailable")?;
         let rows = Arc::new(rows);
         callers.insert(caller.namespace().clone(), Arc::clone(&rows));
@@ -335,23 +307,9 @@ impl KernelServices {
                     request
                 }
                 None => {
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "config: the one-time durable binding row of a principal seen for the first time; the store request owns its bytes"
-                    )]
-                    let first = Request {
-                        op_id,
-                        predicates: vec![Predicate {
-                            schema: CALLERS.into(),
-                            key: principal.as_bytes().to_vec(),
-                            expected: Expected::Absent,
-                        }],
-                        mutations: vec![Mutation::Put {
-                            schema: CALLERS.into(),
-                            key: principal.as_bytes().to_vec(),
-                            value: Secret::new(proposed.as_bytes().to_vec()),
-                        }],
-                    };
+                    let first = crate::cold::host::services_caller_binding(
+                        op_id, CALLERS, principal, &proposed,
+                    );
                     binding.insert(first)
                 }
             };

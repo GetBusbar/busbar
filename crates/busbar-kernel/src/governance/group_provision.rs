@@ -11,27 +11,7 @@ pub const MAX_GROUP_NAME_LEN: usize = 256;
 
 /// A refused group change: the error path renders its message once, here.
 fn refusal(kind: fn(String) -> TxnError, args: fmt::Arguments<'_>) -> TxnError {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a refused group change renders its message once"
-    )]
-    let message = fmt::format(args);
-    kind(message)
-}
-
-/// Validation messages, written `; `-separated.
-struct Joined<'a>(&'a [String]);
-
-impl fmt::Display for Joined<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (i, message) in self.0.iter().enumerate() {
-            if i > 0 {
-                f.write_str("; ")?;
-            }
-            f.write_str(message)?;
-        }
-        Ok(())
-    }
+    crate::cold::governance::runtime::group_provision_refusal(kind, args)
 }
 
 /// An existing group's parent as a refusal names it: `` `name` ``, or `<root>`.
@@ -58,40 +38,7 @@ pub fn build_with_group(
     name: &str,
     cfg: crate::config::GroupCfg,
 ) -> Result<App, TxnError> {
-    if name.trim().is_empty() {
-        return Err(TxnError::Validation("group name must not be empty".into()));
-    }
-    if name.len() > MAX_GROUP_NAME_LEN {
-        return Err(refusal(
-            TxnError::Validation,
-            format_args!(
-                "group name is {} chars; must be <= {MAX_GROUP_NAME_LEN}",
-                name.len()
-            ),
-        ));
-    }
-
-    // busbar:expect(bp::clone_alloc, reason = "config: a group change builds the next registry from the current one")
-    let mut groups = current.groups_registry.clone();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the new group's name becomes its registry key"
-    )]
-    groups.insert(name.to_string(), cfg);
-    // busbar:expect(bp::fresh_buffer, reason = "config: validation messages are gathered once per group change")
-    let mut errors = Vec::new();
-    crate::config::groups::validate_groups(&groups, &|p| pool_known(current, p), &mut errors);
-    if !errors.is_empty() {
-        return Err(refusal(
-            TxnError::Validation,
-            format_args!("invalid group `{name}`: {}", Joined(&errors)),
-        ));
-    }
-    let mut next = current.clone();
-    next.config_version = current.config_version.wrapping_add(1);
-    next.cost = std::sync::Arc::new(next.cost.with_groups(&groups));
-    next.groups_registry = groups;
-    Ok(next)
+    crate::off_path::governance::runtime::group_provision_build(current, name, cfg)
 }
 
 pub fn plan_mint_group(
@@ -178,11 +125,7 @@ pub fn plan_mint_group(
     match build_with_group(current, group, leaf) {
         Ok(next) => Ok(Some(Arc::new(next))),
         Err(e) => {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a refused provision is audited once"
-            )]
-            let resource = format!("group:{group}");
+            let resource = crate::cold::governance::runtime::group_provision_resource(group);
             crate::audit_ring::AUDIT.record_by(
                 "group.provision",
                 &resource,
@@ -208,25 +151,13 @@ pub async fn persist_provisioned_group_async(
     )
     .await;
     persisted.map_err(|error| {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: an unconfirmed group persist is audited once"
-        )]
-        let resource = format!("group:{group}");
+        let resource = crate::cold::governance::runtime::group_provision_resource(&group);
         crate::audit_ring::AUDIT.record_by(
             "group.provision",
             &resource,
             crate::audit_ring::OUTCOME_REJECTED,
             &actor,
         );
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: an unconfirmed group persist renders its message once"
-        )]
-        let message = format!(
-            "group persistence to the Store overlay was not confirmed: {error}; the running group \
-             tree is unaffected"
-        );
-        message
+        crate::cold::governance::runtime::group_provision_persist_refusal(&error)
     })
 }

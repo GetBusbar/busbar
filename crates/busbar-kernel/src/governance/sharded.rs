@@ -9,7 +9,7 @@
 //! a shard mask and walks only the flagged shards ([`Sharded::take_flags`],
 //! [`Sharded::write_masked`]); walking never sets a flag. A periodic full walk is the backstop.
 
-use std::collections::HashMap;
+use foldhash::HashMap;
 #[cfg(test)]
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -41,7 +41,7 @@ pub(super) struct MapShard<V> {
 impl<V> Default for MapShard<V> {
     fn default() -> Self {
         Self {
-            map: RwLock::new(HashMap::new()),
+            map: RwLock::new(HashMap::default()),
             maybe_dirty: AtomicBool::new(false),
             sweep_ticker: AtomicU32::new(0),
         }
@@ -69,7 +69,7 @@ impl<V> MapShard<V> {
 }
 
 pub(super) struct Sharded<V> {
-    shards: Box<[MapShard<V>]>,
+    shards: Box<[MapShard<V>; GOV_SHARDS]>,
     /// When the flush last walked every shard (the backstop).
     last_full_walk: Mutex<Option<Instant>>,
     #[cfg(test)]
@@ -80,10 +80,8 @@ pub(super) struct Sharded<V> {
 
 impl<V> Sharded<V> {
     pub(super) fn new() -> Self {
-        let mut shards = Vec::with_capacity(GOV_SHARDS);
-        shards.resize_with(GOV_SHARDS, MapShard::default);
         Self {
-            shards: shards.into_boxed_slice(),
+            shards: Box::new(std::array::from_fn(|_| MapShard::default())),
             last_full_walk: Mutex::new(None),
             #[cfg(test)]
             flush_shard_locks: AtomicU64::new(0),
@@ -126,16 +124,9 @@ impl<V> Sharded<V> {
 
     /// Swap every shard's flag to clean and answer the shards that were flagged, as a mask.
     pub(super) fn take_flags(&self) -> u64 {
-        self.shards
-            .iter()
-            .enumerate()
-            .fold(0u64, |mask, (index, shard)| {
-                if shard.maybe_dirty.swap(false, Ordering::AcqRel) {
-                    mask | (1u64 << index)
-                } else {
-                    mask
-                }
-            })
+        crate::off_path::governance::state::sharded_take_flags(
+            self.shards.iter().map(|shard| &shard.maybe_dirty),
+        )
     }
 
     /// The masked shards, mutably, for the flush walk. Never sets a flag: the flush puts a flag
@@ -144,15 +135,19 @@ impl<V> Sharded<V> {
         &self,
         mask: u64,
     ) -> impl Iterator<Item = (usize, RwLockWriteGuard<'_, HashMap<String, V>>)> {
-        self.shards
-            .iter()
-            .enumerate()
-            .filter(move |(index, _)| mask & (1u64 << index) != 0)
-            .map(|(index, shard)| {
-                #[cfg(test)]
-                self.flush_shard_locks.fetch_add(1, Ordering::Relaxed);
-                (index, shard.map.write().unwrap_or_else(|p| p.into_inner()))
-            })
+        // Visit only the set bits, lowest first: the walk costs the masked shards, not all of them.
+        let mut rest = mask & (u64::MAX >> (64 - GOV_SHARDS));
+        std::iter::from_fn(move || {
+            if rest == 0 {
+                return None;
+            }
+            let index = rest.trailing_zeros() as usize;
+            rest &= rest - 1;
+            #[cfg(test)]
+            self.flush_shard_locks.fetch_add(1, Ordering::Relaxed);
+            let shard = &self.shards[index];
+            Some((index, shard.map.write().unwrap_or_else(|p| p.into_inner())))
+        })
     }
 
     /// Mark a shard the flush left dirty, so the next tick walks it again.

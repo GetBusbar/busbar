@@ -86,7 +86,22 @@ pub fn classify_mutation(rel: &str) -> MutationClass {
     }
 }
 
-type Window = (u64, u32, u32);
+/// One (principal, class) budget in the current window: (admitted, denied).
+type Budget = (u32, u32);
+
+/// The number of [`MutationClass`] variants: one budget map per class.
+const CLASS_COUNT: usize = 4;
+
+impl MutationClass {
+    fn slot(self) -> usize {
+        match self {
+            MutationClass::Config => 0,
+            MutationClass::Crud => 1,
+            MutationClass::PluginInspect => 2,
+            MutationClass::Forbidden => 3,
+        }
+    }
+}
 
 /// The outcome of one rate check. `Denied` distinguishes the FIRST denial in a window from the
 /// rest, because the caller writes a durable audit record on denial: a client that keeps hammering
@@ -110,7 +125,9 @@ struct LimiterState {
 
     behind_since: Option<u64>,
 
-    windows: HashMap<(String, MutationClass), Window>,
+    /// Per class (indexed by [`MutationClass::slot`]), the budgets of the window `latest_window`
+    /// names: every entry belongs to that window, so a window change empties the maps.
+    windows: [HashMap<String, Budget>; CLASS_COUNT],
 }
 
 pub struct MutationLimiter {
@@ -123,7 +140,7 @@ impl MutationLimiter {
             state: std::sync::Mutex::new(LimiterState {
                 latest_window: 0,
                 behind_since: None,
-                windows: HashMap::default(),
+                windows: Default::default(),
             }),
         }
     }
@@ -131,16 +148,15 @@ impl MutationLimiter {
     pub fn check(&self, principal: &str, class: MutationClass, now: u64) -> RateCheck {
         let arrived_in = now - (now % MUTATION_RATE_WINDOW_SECS);
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        // Every entry belongs to the window `latest_window` named when this call began.
+        let entries_window = state.latest_window;
         if arrived_in.saturating_add(MUTATION_RATE_WINDOW_SECS) < state.latest_window {
             let since = state.behind_since.map_or(now, |since| since.min(now));
             if now - since >= MUTATION_RATE_WINDOW_SECS {
+                // A clock rewind re-bases the limiter to an earlier window; every entry is from the
+                // later one, so the window change below drops them all.
                 state.latest_window = arrived_in;
                 state.behind_since = None;
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "config: the limiter guards admin config mutations; a clock rewind re-bases it"
-                )]
-                state.windows.retain(|_, (w, _, _)| *w <= arrived_in);
             } else {
                 state.behind_since = Some(since);
             }
@@ -150,29 +166,35 @@ impl MutationLimiter {
 
         let window = arrived_in.max(state.latest_window);
         state.latest_window = window;
-        let map = &mut state.windows;
-
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the limiter guards admin config mutations, never the request path"
-        )]
-        map.retain(|_, (w, _, _)| *w >= window);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the limiter guards admin config mutations, never the request path"
-        )]
-        let entry = map
-            .entry((principal.to_string(), class))
-            .or_insert((window, 0, 0));
-        if entry.1 >= class.limit() {
-            entry.2 += 1;
-            return RateCheck::Denied {
-                first_in_window: entry.2 == 1,
-            };
+        if window != entries_window {
+            // Every entry is from another window: the budgets restart.
+            state.windows.iter_mut().for_each(|budgets| budgets.clear());
         }
-        entry.1 += 1;
-        RateCheck::Admitted
+        let map = &mut state.windows[class.slot()];
+
+        let limit = class.limit();
+        match map.get_mut(principal) {
+            Some(entry) => charge(entry, limit),
+            // First sight of this principal in this window: key it once.
+            None => charge(
+                map.entry(crate::cold::host::ratelimit_principal_key(principal))
+                    .or_insert((0, 0)),
+                limit,
+            ),
+        }
     }
+}
+
+/// Charge one request against a window budget of `limit`.
+fn charge(entry: &mut Budget, limit: u32) -> RateCheck {
+    if entry.0 >= limit {
+        entry.1 += 1;
+        return RateCheck::Denied {
+            first_in_window: entry.1 == 1,
+        };
+    }
+    entry.0 += 1;
+    RateCheck::Admitted
 }
 
 impl Default for MutationLimiter {

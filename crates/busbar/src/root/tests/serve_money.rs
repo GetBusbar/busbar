@@ -1165,7 +1165,7 @@ fn session_custody_routes(g: &mut Governed, pools_plane: bool) -> Arc<super::Dat
         );
     }
     let mut lines = Vec::new();
-    let mut of_line = std::collections::HashMap::new();
+    let mut of_line = foldhash::HashMap::default();
     for (plane, served) in served.planes.iter().enumerate() {
         for (claim, snapshot) in served.snapshot.claims.iter().enumerate() {
             let claim = u32::try_from(claim).expect("fixture claim");
@@ -1727,7 +1727,7 @@ async fn reserved_source(g: &Governed, group: &str) -> ReservedSource {
         admission: None,
         on_exhaustion: None,
     };
-    let groups = BTreeMap::from([(
+    let groups = [(
         group.to_owned(),
         GroupCfg {
             enabled: true,
@@ -1737,7 +1737,9 @@ async fn reserved_source(g: &Governed, group: &str) -> ReservedSource {
             ],
             ..Default::default()
         },
-    )]);
+    )]
+    .into_iter()
+    .collect::<BTreeMap<_, _>>();
     let cost = Arc::new(CostModel::resolve_parts(None, 0, &groups));
     let now = busbar_kernel::store::now();
     let (key, _) = g

@@ -241,7 +241,9 @@ fn accrue_exact_dated(gov: &GovState, key: &VirtualKey, count: Count, now: u64) 
     cell.accrue_raw(
         MODEL,
         RawRateEra::legacy(HISTORICAL_ERA),
-        &BTreeMap::from([("input".into(), count)]),
+        &[("input".into(), count)]
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>(),
     )
     .unwrap();
     cell.dirty = true;
@@ -704,7 +706,9 @@ async fn in_flight_flush_preserves_roll_refund_and_independent_window_correction
             let epoch = |seconds| {
                 u64::try_from(std::time::Duration::from_secs(seconds).as_millis()).unwrap()
             };
-            let delta = BTreeMap::from([(busbar_contract::records::UNIT_INPUT.into(), 1)]);
+            let delta = [(busbar_contract::records::UNIT_INPUT.into(), 1)]
+                .into_iter()
+                .collect::<std::collections::BTreeMap<_, _>>();
             assert!(
                 mutator
                     .adjust_usage_async(

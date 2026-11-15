@@ -7,7 +7,7 @@ const PLANE_PREFIX: &str = "busbar-plane-";
 
 const TWIN_SUFFIX: &str = "-plugin";
 
-pub fn pinned_rows(root: &Path) -> Vec<(String, String)> {
+fn pinned_rows(root: &Path) -> Vec<(String, String)> {
     let manifest = std::fs::read_to_string(root.join("Cargo.toml")).expect("the root Cargo.toml");
     let mut rows: Vec<(String, String)> = Vec::new();
     let mut inside = false;
@@ -43,7 +43,7 @@ pub fn pinned_rows(root: &Path) -> Vec<(String, String)> {
     rows
 }
 
-pub fn pinned_dirs(root: &Path) -> Vec<(String, PathBuf)> {
+fn pinned_dirs(root: &Path) -> Vec<(String, PathBuf)> {
     let rows = pinned_rows(root);
     if rows.is_empty() {
         return Vec::new();

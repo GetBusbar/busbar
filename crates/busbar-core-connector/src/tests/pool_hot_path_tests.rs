@@ -53,44 +53,25 @@ fn pool_release_allocates_nothing() {
     });
 }
 
-/// A hasher that records what is written to it.
-#[derive(Default)]
-struct Recording {
-    writes: usize,
-    bytes: usize,
-}
-
-impl std::hash::Hasher for Recording {
-    fn finish(&self) -> u64 {
-        0
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        self.writes += 1;
-        self.bytes += bytes.len();
-    }
-}
-
 /// T9b: a key's fields are hashed once, when it is built; every lookup after that (two in a lend,
-/// one in a release) hashes only the one `u64`.
+/// one in a release) hashes only the one `u64`: under one fixed hasher the key hashes exactly as
+/// its `hash` alone does, so nothing but that `u64` is written.
 #[test]
 fn pool_key_hashed_once() {
+    use std::hash::BuildHasher as _;
     worker().block_on(async {
         let (far, _, _) = keeping_far_end().await;
         let c = pooled_messages(Duration::from_secs(60));
         let (_, key, _) = one_idle_line(&c, &far).await;
-        let mut lookup = Recording::default();
-        std::hash::Hash::hash(&key, &mut lookup);
+        let fixed = foldhash::fast::FixedState::with_seed(0);
         assert_eq!(
-            (lookup.writes, lookup.bytes),
-            (1, 8),
+            fixed.hash_one(&key),
+            fixed.hash_one(key.hash),
             "a pool lookup hashes the key's one u64, never its fields again"
         );
-        let mut again = Recording::default();
-        std::hash::Hash::hash(&key.clone(), &mut again);
         assert_eq!(
-            (again.writes, again.bytes),
-            (1, 8),
+            fixed.hash_one(key.clone()),
+            fixed.hash_one(key.hash),
             "a copy of the key carries its hash"
         );
     });

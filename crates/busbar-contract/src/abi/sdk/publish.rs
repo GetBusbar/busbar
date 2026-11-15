@@ -97,7 +97,6 @@ impl Backing {
         if bytes.is_empty() {
             return std::ptr::null();
         }
-        // busbar:expect(bp::into_alloc, reason = "config: a plane snapshot description, copied once per published generation")
         let held: Box<[u8]> = bytes.into();
         let p = held.as_ptr();
         self.bytes.push(held);
@@ -144,10 +143,6 @@ impl Backing {
         if len == 0 {
             return (std::ptr::null(), 0);
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a plane snapshot description, copied once per published generation"
-        )]
         let items: Box<[AbiStr]> = names.map(|n| self.str(n)).collect();
         let p = items.as_ptr();
         self.lists.push(Box::new(List { _items: items }));
@@ -159,10 +154,6 @@ impl Backing {
         if specs.is_empty() {
             return (std::ptr::null(), 0);
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a plane snapshot description, copied once per published generation"
-        )]
         let items: Box<[T]> = specs.iter().map(|s| T::lower(s, 0, self)).collect();
         let p = items.as_ptr();
         self.lists.push(Box::new(List { _items: items }));
@@ -208,30 +199,21 @@ impl ClaimSpec {
     /// A claim of `verb` on `target` over `carrier`.
     #[must_use]
     pub fn new(verb: &str, target: &str, carrier: &str, flags: u32) -> Self {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a plane snapshot description, copied once per published generation"
-        )]
-        let claim = Self {
+        Self {
             verb: verb.to_string(),
             target: target.to_string(),
             carrier: carrier.to_string(),
             flags,
             refusal_dialect: 0,
             arrival_span: String::new(),
-        };
-        claim
+        }
     }
 
     /// The claim, its arrivals opening the span `name` ([`PlaneSnapshot::arrival_spans`]).
     #[must_use]
     pub fn with_arrival_span(mut self, name: &str) -> Self {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a plane snapshot description, copied once per published generation"
-        )]
-        let name = name.to_string();
-        self.arrival_span = name;
+        self.arrival_span.clear();
+        self.arrival_span.push_str(name);
         self
     }
 }
@@ -267,28 +249,19 @@ impl AdminRouteSpec {
     /// A route of `verb` on `target`, never audited.
     #[must_use]
     pub fn new(verb: &str, target: &str, flags: u32) -> Self {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a plane snapshot description, copied once per published generation"
-        )]
-        let route = Self {
+        Self {
             verb: verb.to_string(),
             target: target.to_string(),
             flags,
             audit_verb: String::new(),
-        };
-        route
+        }
     }
 
     /// The route, audited under `word`.
     #[must_use]
     pub fn audited(mut self, word: &str) -> Self {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a plane snapshot description, copied once per published generation"
-        )]
-        let word = word.to_string();
-        self.audit_verb = word;
+        self.audit_verb.clear();
+        self.audit_verb.push_str(word);
         self
     }
 }
@@ -569,7 +542,7 @@ impl<K: Ord, V> Drop for Recount<'_, K, V> {
 /// The whole of a sharded map, as [`Keyed::with_all`] hands it out, every shard held; on drop (a
 struct AllShards<'a, K: Ord, V> {
     keyed: &'a Keyed<K, V>,
-    held: Vec<std::sync::MutexGuard<'a, BTreeMap<K, V>>>,
+    held: [std::sync::MutexGuard<'a, BTreeMap<K, V>>; KEYED_SHARDS],
     all: BTreeMap<K, V>,
 }
 
@@ -604,13 +577,8 @@ impl<K: Ord, V> Keyed<K, V> {
     where
         K: std::hash::Hash,
     {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a sharded table's shards, made once as its instance opens"
-        )]
-        let shards = (0..KEYED_SHARDS)
-            .map(|_| Mutex::new(BTreeMap::new()))
-            .collect();
+        let shards: Box<[Mutex<BTreeMap<K, V>>; KEYED_SHARDS]> =
+            Box::new(std::array::from_fn(|_| Mutex::new(BTreeMap::new())));
         Self {
             shards,
             shard_of: keyed_shard::<K>,
@@ -697,7 +665,7 @@ impl<K: Ord, V> Keyed<K, V> {
         }
         let mut whole = AllShards {
             keyed: self,
-            held: self.shards.iter().map(keyed_lock).collect(),
+            held: std::array::from_fn(|at| keyed_lock(&self.shards[at])),
             all: BTreeMap::new(),
         };
         for map in &mut whole.held {

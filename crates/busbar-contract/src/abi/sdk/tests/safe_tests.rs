@@ -221,7 +221,7 @@ mod plugin {
 
 fn table() -> &'static SecretOps {
     // SAFETY: the macro's `'static` door and table.
-    unsafe { &*plugin::door().ops.cast::<SecretOps>() }
+    unsafe { &*(plugin::MACRO_DOOR.door_fn())().ops.cast::<SecretOps>() }
 }
 
 fn in_head<T>(op: u32) -> InHead {

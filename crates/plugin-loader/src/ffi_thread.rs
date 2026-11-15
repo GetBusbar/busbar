@@ -185,12 +185,7 @@ fn acquire(pool: &'static Mutex<Pool>) -> Lease {
         }
     }
     let (tx, rx) = sync_channel::<Job>(0);
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: names the new FFI worker thread the pool grows by"
-    )]
-    std::thread::Builder::new()
-        .name("busbar-plugin-ffi".to_string())
+    crate::cold::ffi_thread::worker_builder()
         .spawn(move || worker(&rx))
         .expect("spawn a plugin FFI worker thread");
     let mut p = pool.lock().unwrap_or_else(|p| p.into_inner());

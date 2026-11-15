@@ -155,7 +155,7 @@ fn one_entry_card(
     model: &str,
     input_utok: f64,
 ) -> std::collections::BTreeMap<String, crate::config::RateEntryCfg> {
-    std::collections::BTreeMap::from([(
+    [(
         model.to_string(),
         crate::config::RateEntryCfg {
             input_utok,
@@ -164,7 +164,9 @@ fn one_entry_card(
             cache_write_utok: Some(0.0),
             ..Default::default()
         },
-    )])
+    )]
+    .into_iter()
+    .collect::<std::collections::BTreeMap<_, _>>()
 }
 
 fn budget_group_cfg(cap: i64, period: &str, parent: Option<&str>) -> crate::config::GroupCfg {
@@ -1547,25 +1549,26 @@ async fn test_rate_headroom_reports_fraction_remaining() {
     let no_groups = crate::cost::CostModel::flat(0);
     assert_eq!(gov.rate_headroom(&no_groups, &unl, None, now), None);
 
-    let zero_cfg: std::collections::BTreeMap<String, crate::config::GroupCfg> =
-        std::collections::BTreeMap::from([(
-            "z".to_string(),
-            crate::config::GroupCfg {
-                parent: None,
-                enabled: true,
-                limits: vec![LimitCfg {
-                    metric: LimitMetric::Requests,
-                    amount: 0,
-                    per: Some(LimitWindow::Minute),
-                    scope: None,
-                    on_exhaust: None,
-                    downgrade_to: None,
-                    admission: None,
-                    on_exhaustion: None,
-                }],
-                ..Default::default()
-            },
-        )]);
+    let zero_cfg: std::collections::BTreeMap<String, crate::config::GroupCfg> = [(
+        "z".to_string(),
+        crate::config::GroupCfg {
+            parent: None,
+            enabled: true,
+            limits: vec![LimitCfg {
+                metric: LimitMetric::Requests,
+                amount: 0,
+                per: Some(LimitWindow::Minute),
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+                admission: None,
+                on_exhaustion: None,
+            }],
+            ..Default::default()
+        },
+    )]
+    .into_iter()
+    .collect::<std::collections::BTreeMap<_, _>>();
     let zero = crate::cost::CostModel::resolve_parts(None, 0, &zero_cfg);
     let mut kz = sample_key("kz", "hz");
     kz.group = Some("z".to_string());
@@ -1575,37 +1578,38 @@ async fn test_rate_headroom_reports_fraction_remaining() {
         "requests=0 is fully closed -> 0.0 headroom, not a divide-by-zero panic"
     );
 
-    let cfg: std::collections::BTreeMap<String, crate::config::GroupCfg> =
-        std::collections::BTreeMap::from([(
-            "g".to_string(),
-            crate::config::GroupCfg {
-                parent: None,
-                enabled: true,
-                limits: vec![
-                    LimitCfg {
-                        metric: LimitMetric::Requests,
-                        amount: 4,
-                        per: Some(LimitWindow::Minute),
-                        scope: None,
-                        on_exhaust: None,
-                        downgrade_to: None,
-                        admission: None,
-                        on_exhaustion: None,
-                    },
-                    LimitCfg {
-                        metric: LimitMetric::Tokens,
-                        amount: 100_000,
-                        per: Some(LimitWindow::Minute),
-                        scope: None,
-                        on_exhaust: None,
-                        downgrade_to: None,
-                        admission: None,
-                        on_exhaustion: None,
-                    },
-                ],
-                ..Default::default()
-            },
-        )]);
+    let cfg: std::collections::BTreeMap<String, crate::config::GroupCfg> = [(
+        "g".to_string(),
+        crate::config::GroupCfg {
+            parent: None,
+            enabled: true,
+            limits: vec![
+                LimitCfg {
+                    metric: LimitMetric::Requests,
+                    amount: 4,
+                    per: Some(LimitWindow::Minute),
+                    scope: None,
+                    on_exhaust: None,
+                    downgrade_to: None,
+                    admission: None,
+                    on_exhaustion: None,
+                },
+                LimitCfg {
+                    metric: LimitMetric::Tokens,
+                    amount: 100_000,
+                    per: Some(LimitWindow::Minute),
+                    scope: None,
+                    on_exhaust: None,
+                    downgrade_to: None,
+                    admission: None,
+                    on_exhaustion: None,
+                },
+            ],
+            ..Default::default()
+        },
+    )]
+    .into_iter()
+    .collect::<std::collections::BTreeMap<_, _>>();
     let cost = crate::cost::CostModel::resolve_parts(None, 0, &cfg);
     let mut k = sample_key("k1", "h1");
     k.group = Some("g".to_string());
@@ -1902,10 +1906,9 @@ async fn test_negative_fee_and_rate_clamp_to_zero() {
 
     let cost = {
         let groups: std::collections::BTreeMap<String, crate::config::GroupCfg> =
-            std::collections::BTreeMap::from([(
-                "team".to_string(),
-                budget_group_cfg(100, "total", None),
-            )]);
+            [("team".to_string(), budget_group_cfg(100, "total", None))]
+                .into_iter()
+                .collect::<std::collections::BTreeMap<_, _>>();
         crate::cost::CostModel::resolve_parts(None, -50, &groups)
     };
 
@@ -3339,10 +3342,9 @@ async fn test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps() 
     let cost = crate::cost::CostModel::resolve_parts(
         None,
         1,
-        &std::collections::BTreeMap::from([(
-            "acme".to_string(),
-            budget_group_cfg(5000, "total", None),
-        )]),
+        &[("acme".to_string(), budget_group_cfg(5000, "total", None))]
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>(),
     );
     assert!(gov.try_admit(&cost, &survivor, "", now).is_ok());
 
@@ -4432,11 +4434,12 @@ async fn test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap() {
     let max_window = 31 * SECS_PER_DAY;
     let survivor = sample_key("survivor3", "hs3");
 
-    let groups: std::collections::BTreeMap<String, crate::config::GroupCfg> =
-        std::collections::BTreeMap::from([
-            ("capped".to_string(), budget_group_cfg(5000, "total", None)),
-            ("uncapped".to_string(), crate::config::GroupCfg::default()),
-        ]);
+    let groups: std::collections::BTreeMap<String, crate::config::GroupCfg> = [
+        ("capped".to_string(), budget_group_cfg(5000, "total", None)),
+        ("uncapped".to_string(), crate::config::GroupCfg::default()),
+    ]
+    .into_iter()
+    .collect::<std::collections::BTreeMap<_, _>>();
     let cost = crate::cost::CostModel::resolve_parts(None, 1, &groups);
 
     let idle = || BudgetCell {
@@ -4647,18 +4650,19 @@ async fn test_sweep_exemption_survives_a_group_name_containing_the_id_delimiters
     let max_window = 31 * SECS_PER_DAY;
     let survivor = sample_key("survivor-delim", "hs-delim");
 
-    let groups: std::collections::BTreeMap<String, crate::config::GroupCfg> =
-        std::collections::BTreeMap::from([
-            (
-                "user:alice@corp.com".to_string(),
-                budget_group_cfg(50000, "total", None),
-            ),
-            (
-                "team#eng".to_string(),
-                budget_group_cfg(50000, "total", None),
-            ),
-            ("user:alice".to_string(), crate::config::GroupCfg::default()),
-        ]);
+    let groups: std::collections::BTreeMap<String, crate::config::GroupCfg> = [
+        (
+            "user:alice@corp.com".to_string(),
+            budget_group_cfg(50000, "total", None),
+        ),
+        (
+            "team#eng".to_string(),
+            budget_group_cfg(50000, "total", None),
+        ),
+        ("user:alice".to_string(), crate::config::GroupCfg::default()),
+    ]
+    .into_iter()
+    .collect::<std::collections::BTreeMap<_, _>>();
     let cost = crate::cost::CostModel::resolve_parts(None, 1, &groups);
 
     let idle = || BudgetCell {
@@ -5697,7 +5701,9 @@ async fn a_planes_session_fee_charges_one_per_session() {
     use busbar_kernel_ledger::cost::{plane_fee_lane, PER_SESSION};
     let (_store, gov, k) = team_gov().await;
     let cost = plane_fee_cost(1_000);
-    let one = std::collections::BTreeMap::from([(PER_SESSION.to_string(), 1)]);
+    let one = [(PER_SESSION.to_string(), 1)]
+        .into_iter()
+        .collect::<std::collections::BTreeMap<_, _>>();
     for _ in 0..2 {
         gov.record_usage(&cost, &k, "", &plane_fee_lane("sp"), &one, AT);
     }
@@ -5775,7 +5781,9 @@ async fn the_fee_refund_primitive_returns_one_session_fee_unit() {
     use busbar_kernel_ledger::cost::{plane_fee_lane, PER_SESSION};
     let (_store, gov, k) = team_gov().await;
     let cost = plane_fee_cost(1_000);
-    let one = std::collections::BTreeMap::from([(PER_SESSION.to_string(), 1)]);
+    let one = [(PER_SESSION.to_string(), 1)]
+        .into_iter()
+        .collect::<std::collections::BTreeMap<_, _>>();
     for _ in 0..2 {
         gov.record_usage(&cost, &k, "", &plane_fee_lane("sp"), &one, AT);
     }
@@ -5950,10 +5958,9 @@ async fn budget_caps_include_each_planes_fees() {
     let free = plane_pool("np", "agent");
     assert!(gov.try_admit(&cost, &k, &free, AT).is_ok(), "8 + 0 fits");
 
-    let one = std::collections::BTreeMap::from([(
-        busbar_kernel_ledger::cost::PER_SESSION.to_string(),
-        1,
-    )]);
+    let one = [(busbar_kernel_ledger::cost::PER_SESSION.to_string(), 1)]
+        .into_iter()
+        .collect::<std::collections::BTreeMap<_, _>>();
     let lane = busbar_kernel_ledger::cost::plane_fee_lane("sp");
     gov.record_usage(&cost, &k, "", &lane, &one, AT);
     assert_eq!(spend(&gov, &cost).await, 48);

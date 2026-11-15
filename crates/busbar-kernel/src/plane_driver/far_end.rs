@@ -783,6 +783,13 @@ fn shed_pick(shed: &Shed) -> Pick {
     }
 }
 
+/// `us` as an `f64`: exact below 2^53, as `us as f64` is, without a lossy cast.
+fn micros_f64(us: u64) -> f64 {
+    let high = u32::try_from(us >> 32).unwrap_or(u32::MAX);
+    let low = u32::try_from(us & 0xFFFF_FFFF).unwrap_or(u32::MAX);
+    f64::from(high) * 4_294_967_296.0 + f64::from(low)
+}
+
 fn class_code(class: Option<WireStatusClass>) -> u32 {
     u32::from(match class {
         Some(WireStatusClass::Success) | None => STATUS_SUCCESS,
@@ -877,17 +884,18 @@ fn fail_over() -> FarPiece {
 /// once per (provider, cause) change, never per request (a refusal repeats on every request until
 /// the configuration changes). The upstream is named by its scheme and host only.
 fn warn_credential_refused(provider: &str, base_url: &str, err: ConnError) {
-    static LAST: std::sync::OnceLock<Mutex<HashMap<String, ConnError>>> =
+    static LAST: std::sync::OnceLock<Mutex<foldhash::HashMap<String, ConnError>>> =
         std::sync::OnceLock::new();
     {
         let mut last = LAST
             .get_or_init(Mutex::default)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if last.get(provider) == Some(&err) {
-            return;
+        match last.get_mut(provider) {
+            Some(seen) if *seen == err => return,
+            Some(seen) => *seen = err,
+            None => crate::cold::far_end_first_refusal(&mut last, provider, err),
         }
-        last.insert(provider.to_owned(), err);
     }
     if err == ConnError::AuthRefused {
         let (scheme, rest) = base_url.split_once("://").unwrap_or(("", base_url));
@@ -1078,13 +1086,9 @@ impl EgressFarEnd<'_> {
             degraded,
             attempt,
         } = taken;
-        self.claim_member(pool, member, Some(permit), probe, degraded, attempt, call)
+        self.claim_member(pool, member, Some(permit), probe, degraded, (attempt, call))
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "each argument is a distinct fact the call needs; a one-use bundle type would add nothing"
-    )]
     fn claim_member(
         &self,
         pool: String,
@@ -1092,8 +1096,7 @@ impl EgressFarEnd<'_> {
         permit: Option<Permit>,
         probe: Option<u64>,
         degraded: bool,
-        attempt: u32,
-        call: CallId,
+        (attempt, call): (u32, CallId),
     ) -> Pick {
         let record = Dispatched {
             leg: self.route.leg,
@@ -1180,7 +1183,7 @@ impl EgressFarEnd<'_> {
             }
         };
         if let Some(member) = probe {
-            return self.claim_member(String::new(), member, None, None, false, 1, token.call());
+            return self.claim_member(String::new(), member, None, None, false, (1, token.call()));
         }
         let wait = match walking
             .walk
@@ -2150,12 +2153,10 @@ impl EgressFarEnd<'_> {
                 return fail_over();
             }
             let head_us = e.clock.now_micros().saturating_sub(anchor_us);
-            #[expect(
-                clippy::cast_precision_loss,
-                reason = "a latency in microseconds is far below f64's exact-integer range"
-            )]
-            e.telemetry
-                .upstream_latency(target.1, head_us as f64 / 1000.0);
+            e.telemetry.upstream_latency(
+                target.1,
+                micros_f64(u64::try_from(head_us).unwrap_or(u64::MAX)) / 1000.0,
+            );
             if !self.owns_attempt(target.0, target.1) {
                 return fail_over();
             }
