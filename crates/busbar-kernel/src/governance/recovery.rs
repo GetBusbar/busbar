@@ -152,28 +152,7 @@ impl RecoverySelection {
 fn summarize_recovery_chains(
     events: Vec<RecoveryEvent>,
 ) -> Result<Vec<RecoverySelection>, RecoveryError> {
-    let mut selections = std::collections::BTreeMap::<[u8; 16], RecoverySelection>::new();
-    for event in events {
-        if let Some(selection) = selections.get_mut(&event.operation_id) {
-            event.follows(Some(&selection.selected))?;
-            selection.selected = event;
-        } else {
-            event.follows(None)?;
-            selections.insert(
-                event.operation_id,
-                RecoverySelection {
-                    initial: event.clone(),
-                    selected: event,
-                },
-            );
-        }
-    }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a chain replay summarizes the whole recovery Store, at attach and recovery checks"
-    )]
-    let summaries = selections.into_values().collect();
-    Ok(summaries)
+    crate::off_path::governance::runtime::recovery_summarize_chains(events)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -357,9 +336,9 @@ pub(super) struct RecoveryBook {
 }
 
 #[derive(Default)]
-struct RecoveryEntry {
+pub(crate) struct RecoveryEntry {
     initial: Option<RecoveryEvent>,
-    selected: Option<RecoveryEvent>,
+    pub(crate) selected: Option<RecoveryEvent>,
     ever_quarantined: bool,
     pending: Option<RecoveryEvent>,
     runner: std::sync::Arc<super::BudgetFlushRunner>,
@@ -375,6 +354,25 @@ struct RecoveryAdoption {
     resolution: RecoveryResolution,
     transitions: Vec<RecoveryEvent>,
     imported: bool,
+}
+
+impl RecoveryEntry {
+    /// Whether this operation still holds custody work: a pending candidate, an unimported
+    /// adoption, an unsettled selection or a running driver.
+    pub(crate) fn unsettled(&self) -> bool {
+        self.pending.is_some()
+            || self
+                .adoption
+                .as_ref()
+                .is_some_and(|adoption| !adoption.imported)
+            || self
+                .selected
+                .as_ref()
+                .is_some_and(|event| event.state != RecoveryState::Settled)
+            || self.runner.is_running()
+            || self.resolution_runner.is_running()
+            || self.driver.is_running()
+    }
 }
 
 impl RecoveryBook {
@@ -479,7 +477,7 @@ impl RecoveryBook {
         };
         event.follows(entry.selected.as_ref())?;
         if event.revision == 0 && event.first_sent_at_ms.is_some() && entry.sent_clock.is_none() {
-            entry.sent_clock = Some(std::time::Instant::now());
+            entry.sent_clock = Some(crate::cold::governance::runtime::recovery_first_send_clock());
         }
         if let Some(pending) = &entry.pending {
             if pending != &event {
@@ -559,7 +557,7 @@ impl RecoveryBook {
 }
 
 impl RecoveryItem {
-    fn from_event(event: &RecoveryEvent) -> Self {
+    pub(crate) fn from_event(event: &RecoveryEvent) -> Self {
         Self {
             owner_node: None,
             operation_id: event.operation_id,
@@ -853,63 +851,24 @@ impl RecoveryAdmin<'_> {
                 "recovery Store is not attached".into(),
             ));
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the operator's recovery list is built per admin request (control plane)"
-        )]
-        let mut items: std::collections::BTreeMap<_, _> = self
-            .governance
-            .selected_recovery_events()
-            .into_iter()
-            .filter(|event| event.state != RecoveryState::Settled)
-            .map(|event| (event.operation_id, RecoveryItem::from_event(&event)))
-            .collect();
-        for inspection in self.governance.inspect_foreign_recovery().await? {
-            if inspection.event.state == RecoveryState::Settled {
-                continue;
-            }
-            let mut item = RecoveryItem::from_event(&inspection.event);
-            item.owner_node = Some(inspection.owner_node);
-            item.can_resolve = false;
-            items.insert(item.operation_id, item);
-        }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the operator's recovery list page is built per admin request (control plane)"
-        )]
-        let page = items
-            .into_iter()
-            .filter(|(id, _)| after.is_none_or(|after| *id > after))
-            .take(limit)
-            .map(|(_, item)| item)
-            .collect();
-        Ok(page)
+        let local = self.governance.selected_recovery_events();
+        let foreign = self.governance.inspect_foreign_recovery().await?;
+        Ok(crate::off_path::governance::runtime::recovery_list_page(
+            local, foreign, after, limit,
+        ))
     }
 }
 
 impl super::GovState {
     pub(super) fn has_unsettled_recovery(&self) -> bool {
         self.recovery_book.attaching.is_running()
-            || self
-                .recovery_book
-                .entries
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .values()
-                .any(|entry| {
-                    entry.pending.is_some()
-                        || entry
-                            .adoption
-                            .as_ref()
-                            .is_some_and(|adoption| !adoption.imported)
-                        || entry
-                            .selected
-                            .as_ref()
-                            .is_some_and(|event| event.state != RecoveryState::Settled)
-                        || entry.runner.is_running()
-                        || entry.resolution_runner.is_running()
-                        || entry.driver.is_running()
-                })
+            || crate::off_path::governance::runtime::recovery_any_unsettled(
+                self.recovery_book
+                    .entries
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .values(),
+            )
     }
     /// A terminal unit can outlive an ACK when its named checkpoint deletion was interrupted.
     /// Reload that exact receipt even when ordinary settled-root pruning dropped its RAM cache.
@@ -1024,19 +983,13 @@ impl super::GovState {
     }
 
     pub(super) fn selected_recovery_events(&self) -> Vec<RecoveryEvent> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: every selected event is restored at attach or listed for the operator"
-        )]
-        let events = self
-            .recovery_book
-            .entries
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values()
-            .filter_map(|entry| entry.selected.clone())
-            .collect();
-        events
+        crate::off_path::governance::runtime::recovery_selected_events(
+            self.recovery_book
+                .entries
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .values(),
+        )
     }
 
     /// Only a retained same-process monotonic clock authorizes receipt replay.
@@ -1047,9 +1000,7 @@ impl super::GovState {
             .unwrap_or_else(|p| p.into_inner())
             .get(&operation_id)
             .and_then(|entry| entry.sent_clock)
-            .map(|sent| {
-                sent.elapsed().as_secs() >= busbar_contract::abi::store::OP_ID_RETENTION_SECS
-            })
+            .map(crate::off_path::governance::runtime::recovery_retention_lapsed)
     }
 
     pub(super) async fn confirm_pending_recovery(
@@ -1391,9 +1342,9 @@ impl super::GovState {
 /// Identity and actual native-clock birth fixed by the core migration adopter.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct MigratedChildContext {
-    pub(super) seed: [u8; 32],
-    pub(super) created_at_ms: u64,
+pub(crate) struct MigratedChildContext {
+    pub(crate) seed: [u8; 32],
+    pub(crate) created_at_ms: u64,
 }
 impl MigratedChildContext {
     pub(super) fn identify(
@@ -1430,12 +1381,12 @@ impl MigratedChildContext {
 /// child origin is derived AFTER selection, avoiding a circular event hash.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct RecoveryChild {
-    pub(super) operation_id: [u8; 16],
-    pub(super) kind: RecoveryKind,
-    pub(super) body_fingerprint: [u8; 32],
+pub(crate) struct RecoveryChild {
+    pub(crate) operation_id: [u8; 16],
+    pub(crate) kind: RecoveryKind,
+    pub(crate) body_fingerprint: [u8; 32],
     pub(super) first_sent_at_ms: Option<u64>,
-    pub(super) payload: Vec<u8>,
+    pub(crate) payload: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

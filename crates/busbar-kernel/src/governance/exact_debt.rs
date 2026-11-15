@@ -6,12 +6,12 @@ use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ExactModelDelta {
+pub(crate) struct ExactModelDelta {
     #[serde(default)]
-    pub(super) scale: u32,
-    pub(super) model: String,
+    pub(crate) scale: u32,
+    pub(crate) model: String,
     #[serde(with = "decimal_units")]
-    pub(super) usage_units: BTreeMap<String, i128>,
+    pub(crate) usage_units: BTreeMap<String, i128>,
 }
 impl<'de> serde::Deserialize<'de> for ExactModelDelta {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -25,34 +25,25 @@ impl<'de> serde::Deserialize<'de> for ExactModelDelta {
             usage_units: BTreeMap<String, i128>,
         }
         let row = Stored::deserialize(deserializer)?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a stored raw debt row is decoded once, when its custody is restored"
-        )]
-        let built = Ok(Self {
+        Ok(Self {
             model: row.model,
             scale: COUNT_SCALE,
-            usage_units: row
-                .usage_units
-                .into_iter()
-                .map(|(k, n)| {
-                    Count::from_stored(n, row.scale)
-                        .map(|n| (k, n.micros()))
-                        .map_err(serde::de::Error::custom)
-                })
-                .collect::<Result<_, _>>()?,
-        });
-        built
+            usage_units: crate::off_path::governance::runtime::exact_debt_stored_units(
+                row.usage_units,
+                row.scale,
+            )
+            .map_err(serde::de::Error::custom)?,
+        })
     }
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ExactUsageDelta {
+pub(crate) struct ExactUsageDelta {
     #[serde(with = "decimal_count")]
-    pub(super) requests: i128,
+    pub(crate) requests: i128,
     #[serde(with = "decimal_count")]
-    pub(super) billable_requests: i128,
-    pub(super) models: Vec<ExactModelDelta>,
+    pub(crate) billable_requests: i128,
+    pub(crate) models: Vec<ExactModelDelta>,
 }
 impl ExactUsageDelta {
     pub(super) fn subtract(&mut self, chunk: &UsageDelta) {
@@ -76,16 +67,14 @@ impl ExactUsageDelta {
     pub(super) fn is_zero(&self) -> bool {
         self.requests == 0
             && self.billable_requests == 0
-            && self
-                .models
-                .iter()
-                .all(|model| model.usage_units.values().all(|count| *count == 0))
+            && crate::off_path::governance::runtime::exact_debt_models_zero(&self.models)
     }
     pub(super) fn unit(&mut self, model: &str, unit: &str, change: i128) {
         if change == 0 {
             return;
         }
-        let position = self.models.iter().position(|row| row.model == model);
+        let position =
+            crate::off_path::governance::runtime::exact_debt_model_index(&self.models, model);
         let row = match position {
             Some(position) => &mut self.models[position],
             None => {
@@ -103,8 +92,13 @@ impl ExactUsageDelta {
             .expect("raw debt exceeds Count range");
     }
     fn subtract_unit(&mut self, model: &str, unit: &str, count: i128) -> Option<()> {
-        if let Some(row) = self.models.iter_mut().find(|row| row.model == model) {
-            let slot = row.usage_units.entry(unit.into()).or_default();
+        if let Some(position) =
+            crate::off_path::governance::runtime::exact_debt_model_index(&self.models, model)
+        {
+            let slot = self.models[position]
+                .usage_units
+                .entry(unit.into())
+                .or_default();
             *slot = slot.checked_sub(count)?;
         } else {
             self.unit(model, unit, count.checked_neg()?);
@@ -137,54 +131,10 @@ impl ExactUsageDelta {
     }
 
     pub(super) fn try_from_signed(delta: &UsageDelta) -> Result<Self, CountError> {
-        Ok(Self {
-            requests: i128::from(delta.requests),
-            billable_requests: i128::from(delta.billable_requests),
-            models: delta
-                .models
-                .iter()
-                .map(|model| {
-                    Ok(ExactModelDelta {
-                        model: model.model.clone(),
-                        scale: COUNT_SCALE,
-                        usage_units: model
-                            .usage_units
-                            .iter()
-                            .map(|(unit, count)| {
-                                Count::from_stored(*count, model.scale)
-                                    .map(|n| (unit.clone(), n.micros()))
-                            })
-                            .collect::<Result<_, _>>()?,
-                    })
-                })
-                .collect::<Result<_, CountError>>()?,
-        })
+        crate::off_path::governance::runtime::exact_debt_from_signed(delta)
     }
     pub(super) fn signed(&self) -> Option<UsageDelta> {
-        Some(UsageDelta {
-            requests: i64::try_from(self.requests).ok()?,
-            billable_requests: i64::try_from(self.billable_requests).ok()?,
-            models: self
-                .models
-                .iter()
-                .map(|model| {
-                    Some(busbar_contract::records::ModelTokensDelta {
-                        model: model.model.clone(),
-                        scale: COUNT_SCALE,
-                        usage_units: model
-                            .usage_units
-                            .iter()
-                            .filter(|(_, count)| **count != 0)
-                            .map(|(unit, count)| {
-                                Count::from_stored(*count, model.scale)
-                                    .ok()
-                                    .map(|count| (unit.clone(), count.micros()))
-                            })
-                            .collect::<Option<_>>()?,
-                    })
-                })
-                .collect::<Option<_>>()?,
-        })
+        crate::off_path::governance::runtime::exact_debt_signed(self)
     }
     pub(super) fn of(cell: &BudgetCell, dated: bool) -> Self {
         let mut debt = Self::default();
@@ -289,20 +239,9 @@ mod decimal_units {
     pub fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<BTreeMap<String, i128>, D::Error> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: stored raw debt is decoded once, when its custody is restored"
-        )]
-        let units = BTreeMap::<String, String>::deserialize(deserializer)?
-            .into_iter()
-            .map(|(unit, count)| {
-                count
-                    .parse()
-                    .map(|count| (unit, count))
-                    .map_err(serde::de::Error::custom)
-            })
-            .collect();
-        units
+        crate::off_path::governance::runtime::exact_debt_parse_units(
+            BTreeMap::<String, String>::deserialize(deserializer)?,
+        )
     }
 }
 
@@ -434,19 +373,23 @@ impl SegmentedUsage {
             UsageSegment::Unit { model, unit, era } => {
                 plain.unit(model, unit, count);
                 if let Some(era) = era {
-                    dated.unit(&format!("{era}{ERA_MODEL_SEP}{model}"), unit, count);
+                    dated.unit(
+                        &crate::off_path::governance::runtime::exact_debt_era_model(
+                            era,
+                            ERA_MODEL_SEP,
+                            model,
+                        ),
+                        unit,
+                        count,
+                    );
                 }
             }
         }
     }
     pub(super) fn positive(&self) -> Self {
-        Self(
-            self.0
-                .iter()
-                .filter(|(_, count)| **count > 0)
-                .map(|(segment, count)| (segment.clone(), *count))
-                .collect(),
-        )
+        Self(crate::off_path::governance::runtime::exact_debt_positive(
+            &self.0,
+        ))
     }
     pub(super) fn merge(&mut self, other: &Self) {
         for (segment, count) in &other.0 {
@@ -488,7 +431,7 @@ impl SegmentedUsage {
         taken
     }
     pub(super) fn is_zero(&self) -> bool {
-        self.0.values().all(|count| *count == 0)
+        crate::off_path::governance::runtime::exact_debt_all_zero(&self.0)
     }
 
     pub(super) fn chunk(&self) -> (UsageDelta, UsageDelta) {
@@ -545,9 +488,9 @@ struct FlightDebt {
     finished: bool,
 }
 
-pub(super) struct BudgetFlushFlight {
-    bucket: String,
-    window: u64,
+pub(crate) struct BudgetFlushFlight {
+    pub(crate) bucket: String,
+    pub(crate) window: u64,
     debt: std::sync::Mutex<FlightDebt>,
     runner: BudgetFlushRunner,
     durable: Option<super::raw_recovery::DurableUsageFlight>,
@@ -640,7 +583,7 @@ impl GovState {
             .insert(bucket.into());
         BudgetDeleteGuard {
             state: self,
-            bucket: bucket.into(),
+            bucket: crate::off_path::governance::runtime::exact_debt_bucket(bucket),
         }
     }
 
@@ -657,158 +600,165 @@ impl GovState {
         cell: &mut BudgetCell,
         settled: &super::raw_recovery::ForeignSettledSnapshot,
     ) -> Vec<Arc<BudgetFlushFlight>> {
-        let mut captured = Vec::new();
         if self.budget_bucket_deleting(bucket) {
-            return captured;
+            return Vec::new();
         }
-        let mut windows = std::collections::BTreeSet::from([cell.window_start]);
-        windows.extend(cell.rolled.iter().map(|(window, _)| *window));
-        windows.extend(cell.rolled_eras.iter().map(|(window, _)| *window));
-        for window in windows {
-            let correcting = cell
-                .correction
-                .as_ref()
-                .is_some_and(|branch| branch.window == window);
-            if cell.flushing_windows.contains_key(&window)
-                || (correcting && !self.recovery_enabled())
-            {
-                continue;
-            }
-            let original = correcting.then(|| cell.clone());
-            let correction_debt = if correcting {
-                match Self::take_correction_positives(cell, window) {
-                    Ok(Some(debt)) => Some(debt),
-                    Ok(None) => continue,
-                    Err(e) => {
-                        tracing::warn!(
-                            bucket = bucket,
-                            window = window,
-                            error = ?e,
-                            "take_correction_positives failed; \
-                             skipping bucket this flush cycle"
-                        );
-                        continue;
-                    }
-                }
-            } else {
-                None
-            };
-            let mut plain = ExactUsageDelta::default();
-            let mut dated = ExactUsageDelta::default();
-
-            if let Some((correction_plain, correction_dated)) = correction_debt {
-                plain = correction_plain;
-                dated = correction_dated;
-            } else {
-                for (_, debt) in cell.rolled.iter().filter(|(at, _)| *at == window) {
-                    plain.merge(debt);
-                }
-                for (_, debt) in cell.rolled_eras.iter().filter(|(at, _)| *at == window) {
-                    dated.merge(debt);
-                }
-                if cell.window_start == window {
-                    let current = ExactUsageDelta::of(cell, false);
-                    let current_dated = ExactUsageDelta::of(cell, true);
-
-                    plain.merge(&current);
-                    dated.merge(&current_dated);
-                }
-            }
-
-            if plain.is_zero() && dated.is_zero() {
-                if let Some(original) = original {
-                    *cell = original;
-                }
-                continue;
-            }
-            let durable = if self.recovery_enabled() {
-                let prepared = if correcting {
-                    Self::usage_recovery_child(bucket, window, plain.clone(), dated.clone())
-                        .and_then(|child| {
-                            let Some(child) = child else {
-                                return Ok(super::raw_recovery::DurableUsageFlight {
-                                    child: None,
-                                    prerequisite: None,
-                                    deferred_plain: ExactUsageDelta::default(),
-                                    deferred_dated: ExactUsageDelta::default(),
-                                });
-                            };
-                            let parent =
-                                self.stage_correction_handoff(bucket, cell, window, child.clone())?;
-                            Ok(super::raw_recovery::DurableUsageFlight {
-                                child: Some(child),
-                                prerequisite: Some(parent),
-                                deferred_plain: ExactUsageDelta::default(),
-                                deferred_dated: ExactUsageDelta::default(),
-                            })
-                        })
-                } else {
-                    self.capture_usage_recovery(
-                        bucket,
-                        window,
-                        plain.clone(),
-                        dated.clone(),
-                        settled,
-                    )
-                };
-                match prepared {
-                    Ok(flight) => Some(flight),
-                    Err(_) => {
-                        if let Some(original) = original {
-                            *cell = original;
-                        }
-                        continue;
-                    }
-                }
-            } else {
-                None
-            };
-            let (deferred_plain, deferred_dated) = durable
-                .as_ref()
-                .map(|flight| (flight.deferred_plain.clone(), flight.deferred_dated.clone()))
-                .unwrap_or_default();
-            let flight = Arc::new(BudgetFlushFlight {
-                bucket: bucket.into(),
-                window,
-                debt: std::sync::Mutex::new(FlightDebt {
-                    plain,
-                    dated,
-                    chunk: None,
-                    finished: false,
-                }),
-                runner: BudgetFlushRunner::default(),
-                durable,
-            });
-            self.budget_flushes
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .insert((bucket.into(), window), flight.clone());
-            captured.push(flight);
-            cell.mutate(|cell| {
-                if !correcting {
-                    cell.rolled.retain(|(at, _)| *at != window);
-                    cell.rolled_eras.retain(|(at, _)| *at != window);
-                    if cell.window_start == window {
-                        cell.flushed_requests = cell.requests;
-                        cell.flushed_billable_requests = cell.billable_requests;
-                        cell.flushed_fee_eras.clone_from(&cell.fee_eras);
-                        for model in &mut cell.models {
-                            model.flushed.clone_from(&model.cur);
-                            model.flushed_era.clone_from(&model.cur);
-                        }
-                    }
-                    park_window(&mut cell.rolled, window, deferred_plain.clone());
-                    park_window(&mut cell.rolled_eras, window, deferred_dated.clone());
-                }
-                cell.flushing += 1;
-                *cell.flushing_windows.entry(window).or_default() += 1;
-                cell.dirty = true;
-            });
-        }
-        captured
+        let windows = crate::off_path::governance::runtime::exact_debt_flush_windows(
+            cell.window_start,
+            cell.rolled.iter().map(|(window, _)| *window),
+            cell.rolled_eras.iter().map(|(window, _)| *window),
+        );
+        crate::off_path::governance::runtime::exact_debt_capture_windows(windows, |window| {
+            self.capture_budget_flush(bucket, cell, settled, window)
+        })
     }
 
-    async fn drive_budget_flush_flight(
+    /// One window's flush flight, captured from the cell (the flusher, one call per window).
+    fn capture_budget_flush(
+        &self,
+        bucket: &str,
+        cell: &mut BudgetCell,
+        settled: &super::raw_recovery::ForeignSettledSnapshot,
+        window: u64,
+    ) -> Option<Arc<BudgetFlushFlight>> {
+        let correcting = cell
+            .correction
+            .as_ref()
+            .is_some_and(|branch| branch.window == window);
+        if cell.flushing_windows.contains_key(&window) || (correcting && !self.recovery_enabled()) {
+            return None;
+        }
+        let original = correcting.then(|| cell.clone());
+        let correction_debt = if correcting {
+            match Self::take_correction_positives(cell, window) {
+                Ok(Some(debt)) => Some(debt),
+                Ok(None) => return None,
+                Err(e) => {
+                    tracing::warn!(
+                        bucket = bucket,
+                        window = window,
+                        error = ?e,
+                        "take_correction_positives failed; \
+                         skipping bucket this flush cycle"
+                    );
+                    return None;
+                }
+            }
+        } else {
+            None
+        };
+        let mut plain = ExactUsageDelta::default();
+        let mut dated = ExactUsageDelta::default();
+
+        if let Some((correction_plain, correction_dated)) = correction_debt {
+            plain = correction_plain;
+            dated = correction_dated;
+        } else {
+            for (_, debt) in cell.rolled.iter().filter(|(at, _)| *at == window) {
+                plain.merge(debt);
+            }
+            for (_, debt) in cell.rolled_eras.iter().filter(|(at, _)| *at == window) {
+                dated.merge(debt);
+            }
+            if cell.window_start == window {
+                let current = ExactUsageDelta::of(cell, false);
+                let current_dated = ExactUsageDelta::of(cell, true);
+
+                plain.merge(&current);
+                dated.merge(&current_dated);
+            }
+        }
+
+        if plain.is_zero() && dated.is_zero() {
+            if let Some(original) = original {
+                *cell = original;
+            }
+            return None;
+        }
+        let durable = if self.recovery_enabled() {
+            let prepared = if correcting {
+                Self::usage_recovery_child(bucket, window, plain.clone(), dated.clone()).and_then(
+                    |child| {
+                        let Some(child) = child else {
+                            return Ok(super::raw_recovery::DurableUsageFlight {
+                                child: None,
+                                prerequisite: None,
+                                deferred_plain: ExactUsageDelta::default(),
+                                deferred_dated: ExactUsageDelta::default(),
+                            });
+                        };
+                        let parent =
+                            self.stage_correction_handoff(bucket, cell, window, child.clone())?;
+                        Ok(super::raw_recovery::DurableUsageFlight {
+                            child: Some(child),
+                            prerequisite: Some(parent),
+                            deferred_plain: ExactUsageDelta::default(),
+                            deferred_dated: ExactUsageDelta::default(),
+                        })
+                    },
+                )
+            } else {
+                self.capture_usage_recovery(bucket, window, plain.clone(), dated.clone(), settled)
+            };
+            match prepared {
+                Ok(flight) => Some(flight),
+                Err(_) => {
+                    if let Some(original) = original {
+                        *cell = original;
+                    }
+                    return None;
+                }
+            }
+        } else {
+            None
+        };
+        let (deferred_plain, deferred_dated) = durable
+            .as_ref()
+            .map(|flight| (flight.deferred_plain.clone(), flight.deferred_dated.clone()))
+            .unwrap_or_default();
+        let flight = Arc::new(BudgetFlushFlight {
+            bucket: crate::off_path::governance::runtime::exact_debt_bucket(bucket),
+            window,
+            debt: std::sync::Mutex::new(FlightDebt {
+                plain,
+                dated,
+                chunk: None,
+                finished: false,
+            }),
+            runner: BudgetFlushRunner::default(),
+            durable,
+        });
+        self.budget_flushes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert((bucket.into(), window), flight.clone());
+        cell.mutate(|cell| {
+            if !correcting {
+                crate::off_path::governance::runtime::exact_debt_unpark(&mut cell.rolled, window);
+                crate::off_path::governance::runtime::exact_debt_unpark(
+                    &mut cell.rolled_eras,
+                    window,
+                );
+                if cell.window_start == window {
+                    cell.flushed_requests = cell.requests;
+                    cell.flushed_billable_requests = cell.billable_requests;
+                    cell.flushed_fee_eras.clone_from(&cell.fee_eras);
+                    for model in &mut cell.models {
+                        model.flushed.clone_from(&model.cur);
+                        model.flushed_era.clone_from(&model.cur);
+                    }
+                }
+                park_window(&mut cell.rolled, window, deferred_plain.clone());
+                park_window(&mut cell.rolled_eras, window, deferred_dated.clone());
+            }
+            cell.flushing += 1;
+            *cell.flushing_windows.entry(window).or_default() += 1;
+            cell.dirty = true;
+        });
+        Some(flight)
+    }
+
+    pub(crate) async fn drive_budget_flush_flight(
         &self,
         flight: &Arc<BudgetFlushFlight>,
         final_flush: bool,
@@ -872,7 +822,10 @@ impl GovState {
                         .budget_flushes
                         .lock()
                         .unwrap_or_else(|p| p.into_inner());
-                    let address = (flight.bucket.clone(), flight.window);
+                    let address = crate::off_path::governance::runtime::exact_debt_flight_address(
+                        &flight.bucket,
+                        flight.window,
+                    );
                     if flights
                         .get(&address)
                         .is_some_and(|held| Arc::ptr_eq(held, flight))
@@ -899,7 +852,7 @@ impl GovState {
                         op: crate::door::op_id(),
                         plain,
                         dated,
-                        started: std::time::Instant::now(),
+                        started: crate::off_path::governance::runtime::exact_debt_chunk_clock(),
                     });
                 }
                 debt.chunk
@@ -907,9 +860,7 @@ impl GovState {
                     .expect("immutable chunk retained")
                     .clone()
             };
-            if chunk.started.elapsed().as_secs()
-                >= busbar_contract::abi::store::OP_ID_RETENTION_SECS
-            {
+            if crate::off_path::governance::runtime::recovery_retention_lapsed(chunk.started) {
                 return (confirmed,Some(RecordStoreError("raw usage chunk receipt retention expired; exact debt and identity retained".into())));
             }
             // At most the plain and the dated row: held inline, and the dated bucket is named only
@@ -940,13 +891,12 @@ impl GovState {
     }
 
     pub(super) async fn resume_budget_flushes(&self, final_flush: bool) -> (usize, Vec<String>) {
-        let flights: Vec<_> = self
-            .budget_flushes
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values()
-            .cloned()
-            .collect();
+        let flights = crate::off_path::governance::runtime::exact_debt_flights(
+            self.budget_flushes
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .values(),
+        );
         self.resume_budget_flush_list(flights, final_flush).await
     }
 
@@ -955,37 +905,21 @@ impl GovState {
         flights: Vec<Arc<BudgetFlushFlight>>,
         final_flush: bool,
     ) -> (usize, Vec<String>) {
-        let mut confirmed = 0;
-        let mut errors = Vec::new();
-        for flight in flights {
-            let (done, error) = self.drive_budget_flush_flight(&flight, final_flush).await;
-            confirmed += done;
-            if let Some(error) = error {
-                errors.push(rendered_error(
-                    std::convert::identity,
-                    format_args!("{}@{}: {error}", flight.bucket, flight.window),
-                ));
-            }
-        }
-        (confirmed, errors)
+        crate::off_path::governance::runtime::exact_debt_resume_flights(self, flights, final_flush)
+            .await
     }
 
     pub(super) async fn settle_budget_flush_for_delete_async(
         &self,
         bucket: &str,
     ) -> RecordStoreResult<()> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a deleted bucket's in-flight flushes are settled once, at key or group deletion"
-        )]
-        let flights: Vec<_> = self
-            .budget_flushes
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .iter()
-            .filter(|((id, _), _)| id == bucket)
-            .map(|(_, flight)| flight.clone())
-            .collect();
+        let flights = crate::off_path::governance::runtime::exact_debt_bucket_flights(
+            &self
+                .budget_flushes
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()),
+            bucket,
+        );
         for flight in flights {
             if let (_, Some(error)) = self.drive_budget_flush_flight(&flight, false).await {
                 return Err(error);
