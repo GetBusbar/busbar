@@ -3,19 +3,90 @@
 
 //! Secret request encoders and describe decoders (IF §8.8). W1-A6.
 
-use busbar_plugin_abi::records::{Full, RecErr, Records, Writer};
+use std::sync::Arc;
+
+use busbar_plugin_abi::records::{Full, RecErr, Records, Writer, tag};
+use busbar_plugin_abi::secret;
 
 use crate::ports::secret::SugarDecl;
 
+/// At most this many D_SUGAR items per plugin (IF §8.2).
+const SUGARS_MAX: usize = 4;
+/// A shorthand word is `[a-z][a-z0-9_-]{0,31}` (IF §8.2).
+const WORD_MAX: usize = 32;
+/// The SugarRec ahead of a D_SUGAR item's four TEXT records: `role: u32, flags: u32`.
+const SUGAR_REC: usize = 8;
+
+/// The `resolve` request: the reference's `settings` object, verbatim, as the one CONFIG record (IF §8.2).
 pub fn encode_reference(w: &mut impl Writer, settings_json: &[u8]) -> Result<(), Full> {
-    let _ = (w, settings_json);
-    todo!()
+    w.put(tag::CONFIG, settings_json)
 }
 
 /// Round 6: every D_SUGAR item of one describe answer (validated: word grammar, four TEXT, known role).
+///
+/// Every other describe item is skipped. The declaring plugin's identity is not in the describe bytes, so each
+/// `SugarDecl` carries an empty one; the registry (`Registry::add`) tags it with the verified stamp name.
+/// Errors: more than four items, a short or odd body, an unknown role or a bad word or a wrong TEXT count is
+/// `Size`; an unknown flag bit is `Reserved`; a non-TEXT record in the tail is `Unknown(tag)`; bad UTF-8 is `Utf8`.
 pub fn decode_sugars(describe: Records<'_>) -> Result<Vec<SugarDecl>, RecErr> {
-    let _ = describe;
-    todo!()
+    let mut out = Vec::new();
+    for rec in describe {
+        let rec = rec?;
+        if rec.tag != secret::tag::D_SUGAR {
+            continue;
+        }
+        if out.len() == SUGARS_MAX {
+            return Err(RecErr::Size);
+        }
+        out.push(decode_one(rec.body)?);
+    }
+    Ok(out)
+}
+
+fn decode_one(body: &[u8]) -> Result<SugarDecl, RecErr> {
+    let (head, tail) = body.split_at_checked(SUGAR_REC).ok_or(RecErr::Size)?;
+    let role = u32::from_ne_bytes([head[0], head[1], head[2], head[3]]);
+    let flags = u32::from_ne_bytes([head[4], head[5], head[6], head[7]]);
+    if role > secret::SUGAR_ROLE_PATH {
+        return Err(RecErr::Size);
+    }
+    if flags & !secret::SUGAR_ALIAS != 0 {
+        return Err(RecErr::Reserved);
+    }
+    let mut texts = [""; 4];
+    let mut n = 0;
+    for rec in Records::new(tail) {
+        let rec = rec?;
+        if rec.tag != tag::TEXT {
+            return Err(RecErr::Unknown(rec.tag));
+        }
+        *texts.get_mut(n).ok_or(RecErr::Size)? = rec.text()?;
+        n += 1;
+    }
+    if n != texts.len() {
+        return Err(RecErr::Size);
+    }
+    let [word, key, shown, names] = texts;
+    if !word_ok(word) {
+        return Err(RecErr::Size);
+    }
+    Ok(SugarDecl {
+        identity: Arc::from(""),
+        role,
+        alias: flags & secret::SUGAR_ALIAS != 0,
+        word: word.into(),
+        key: key.into(),
+        shown: shown.into(),
+        names: names.into(),
+    })
+}
+
+fn word_ok(word: &str) -> bool {
+    let b = word.as_bytes();
+    b.len() <= WORD_MAX
+        && b.first().is_some_and(u8::is_ascii_lowercase)
+        && b.iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'_' | b'-'))
 }
 
 #[cfg(test)]

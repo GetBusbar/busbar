@@ -89,14 +89,26 @@ pub mod secret {
         shown: &str,
         names: &str,
     ) {
-        let _ = (d, role, flags, word, key, shown, names);
-        todo!()
+        // A body that cannot be built (a text past the 16 MiB record cap) declares nothing; core's
+        // `decode_sugars` bounds every real word, key and text far below that.
+        if let Some(body) = sugar_body(role, flags, [word, key, shown, names]) {
+            d.item(tag::D_SUGAR, &body);
+        }
     }
 
     /// The D_SUGAR item body: the SugarRec, then exactly four TEXT records (word, key, shown, names).
     fn sugar_body(role: u32, flags: u32, texts: [&str; 4]) -> Option<Vec<u8>> {
-        let _ = (role, flags, texts);
-        todo!()
+        use crate::records::{Reply, Writer};
+        use zerocopy::IntoBytes;
+
+        let mut tail = Reply::new();
+        for text in texts {
+            tail.put_text(crate::records::tag::TEXT, text).ok()?;
+        }
+        let mut body = Vec::with_capacity(size_of::<SugarRec>() + tail.len());
+        body.extend_from_slice(SugarRec { role, flags }.as_bytes());
+        body.extend_from_slice(tail.as_bytes());
+        Some(body)
     }
 
     #[cfg(test)]
