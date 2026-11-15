@@ -264,8 +264,11 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
             document["pools"] = json!({"hooks":["cell"]});
         }
     }
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("actual decisions deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("actual decisions deployment parses");
     let definitions = std::collections::HashMap::from([(
         "typesafe".to_owned(),
         serde_json::from_value(json!({

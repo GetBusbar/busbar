@@ -247,8 +247,11 @@ async fn admin_corpus_reconciles_with_the_served_router() {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
         document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
-        let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-            .expect("the actual admin deployment parses");
+        let deploy = busbar_kernel::config::deploy_from_deserializer(
+            document,
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("the actual admin deployment parses");
         let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the actual admin deployment resolves");
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
@@ -617,8 +620,11 @@ async fn served_openapi_lists_only_the_configured_planes() {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
         document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
-        let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-            .expect("the actual admin deployment parses");
+        let deploy = busbar_kernel::config::deploy_from_deserializer(
+            document,
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("the actual admin deployment parses");
         let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the actual admin deployment resolves");
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
@@ -783,8 +789,11 @@ async fn named_map_section_routes_answer_wrong_method_unknown_name_and_bad_body(
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
         document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
-        let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-            .expect("the actual admin deployment parses");
+        let deploy = busbar_kernel::config::deploy_from_deserializer(
+            document,
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("the actual admin deployment parses");
         let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the actual admin deployment resolves");
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())

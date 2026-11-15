@@ -1652,6 +1652,7 @@ fn llm_baseline() -> busbar_kernel::config::RootCfg {
          pools:\n  oracle-fo:\n    members:\n      - {model: m-openai-chat, weight: 3}\n      \
          - {model: m-anthropic, weight: 1}\n  oracle-fb:\n    members: [{model: m-anthropic}]\n    \
          on_exhausted: {fallback_pool: oracle-fo}\n",
+        &crate::root::boot::axis_test_grammar(),
     )
     .expect("deployment");
     busbar_kernel::config::resolve(&deploy, &defs).expect("resolved configuration")
@@ -5071,6 +5072,7 @@ fn a_models_protocol_override_is_handed_to_the_plane() {
     let deploy = busbar_kernel::config::deploy_from_yaml_str(
         "store: {module: memory}\nproviders:\n  p:\n    api_key: { env: BUSBAR_TEST_KEY }\n\
          models:\n  over:\n    provider: p\n    protocol: dialect-b\n  plain:\n    provider: p\n",
+        &crate::root::boot::axis_test_grammar(),
     )
     .expect("parses");
     let cfg = busbar_kernel::config::resolve(&deploy, &defs).expect("resolves");

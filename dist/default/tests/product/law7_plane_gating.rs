@@ -138,12 +138,15 @@ async fn boot_hooks_run(sections: &[&'static str]) -> (usize, usize) {
         settings.is_object(),
         "the actual store settings are an object"
     );
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {}, "models": {},
-        "auth": {"chain": [], "admin_auth": []},
-        "store": {"module": module, "settings": settings},
-        "advanced": {"allow_destinations": ["127.0.0.1"]}
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {}, "models": {},
+            "auth": {"chain": [], "admin_auth": []},
+            "store": {"module": module, "settings": settings},
+            "advanced": {"allow_destinations": ["127.0.0.1"]}
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the actual deployment parses");
     let mut config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual deployment resolves");
@@ -307,12 +310,15 @@ async fn only_a_configured_plane_builds_its_slot() {
             settings.is_object(),
             "the actual store settings are an object"
         );
-        let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-            "providers": {}, "models": {},
-            "auth": {"chain": [], "admin_auth": []},
-            "store": {"module": module, "settings": settings},
-            "advanced": {"allow_destinations": ["127.0.0.1"]}
-        }))
+        let deploy = busbar_kernel::config::deploy_from_deserializer(
+            serde_json::json!({
+                "providers": {}, "models": {},
+                "auth": {"chain": [], "admin_auth": []},
+                "store": {"module": module, "settings": settings},
+                "advanced": {"allow_destinations": ["127.0.0.1"]}
+            }),
+            &crate::root::boot::axis_test_grammar(),
+        )
         .expect("the actual deployment parses");
         let mut config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the actual deployment resolves");
@@ -382,7 +388,11 @@ async fn resolve_reads_the_configured_plane_sections_off_the_config() {
         let yaml = format!(
             "providers:\n  acme: {{ api_key: none }}\nmodels:\n  m: {{ provider: acme }}\n{extra}"
         );
-        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parse");
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(
+            &yaml,
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("parse");
         let mut defs = std::collections::HashMap::new();
         defs.insert(
             "acme".to_string(),

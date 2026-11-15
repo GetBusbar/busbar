@@ -13,12 +13,15 @@ fn refusal_for(section: &str, hook: &str) -> String {
     let yaml = format!(
         "providers: {{}}\nmodels: {{}}\n{section}:\n  x:\n    url: \"https://vendor.example/x\"\n    pin: {{ mechanism: unpinned }}\n    hooks: [\"{hook}\"]\n"
     );
-    let errors: Vec<String> = match busbar_kernel::config::deploy_from_yaml_str(&yaml) {
-        Err(e) => vec![e.to_string()],
-        Ok(deploy) => busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
-            .err()
-            .unwrap_or_default(),
-    };
+    let errors: Vec<String> =
+        match busbar_kernel::config::deploy_from_yaml_str(&yaml, &live_grammar()) {
+            Err(e) => vec![e.to_string()],
+            Ok(deploy) => {
+                busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
+                    .err()
+                    .unwrap_or_default()
+            }
+        };
     errors
         .into_iter()
         .find(|e| e.contains(hook))
@@ -54,4 +57,15 @@ fn every_section_the_grammar_declares_is_refused_on_both_planes() {
             "the refusal must NAME the section reached onto, got: {on_agents}"
         );
     }
+}
+
+/// The words the live secret axis declares: the grammar these fixtures read a document under.
+fn live_grammar() -> busbar_kernel::config::Grammar {
+    busbar_kernel::config::Grammar::new(
+        busbar_kernel::config::secret::live_axis()
+            .map(busbar_contract::secret::SecretAxis::sugars)
+            .unwrap_or_default(),
+        Default::default(),
+        Vec::new(),
+    )
 }

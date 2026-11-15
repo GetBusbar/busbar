@@ -13,7 +13,8 @@ fn register_planes() {
 fn deploy_yaml(sections: &str) -> DeployCfg {
     register_planes();
     let text = format!("providers: {{}}\nmodels: {{}}\n{sections}");
-    deploy_from_yaml_str(&text).unwrap_or_else(|e| panic!("the test config parses: {e}\n{text}"))
+    deploy_from_yaml_str(&text, &live_grammar())
+        .unwrap_or_else(|e| panic!("the test config parses: {e}\n{text}"))
 }
 
 #[test]
@@ -31,10 +32,13 @@ tools:
     pin: { mechanism: unpinned }
     tools_allow: { anything: { publish_as: foo_bar } }
 "#;
-    let refused = deploy_from_yaml_str(&format!("providers: {{}}\nmodels: {{}}\n{colliding}"))
-        .map(|deploy| resolve(&deploy, &HashMap::new()).map(|_| ()))
-        .map_or_else(|e| Some(e.to_string()), |r| r.err().map(|e| e.join("\n")))
-        .expect("a config whose published names are not unique is refused");
+    let refused = deploy_from_yaml_str(
+        &format!("providers: {{}}\nmodels: {{}}\n{colliding}"),
+        &live_grammar(),
+    )
+    .map(|deploy| resolve(&deploy, &HashMap::new()).map(|_| ()))
+    .map_or_else(|e| Some(e.to_string()), |r| r.err().map(|e| e.join("\n")))
+    .expect("a config whose published names are not unique is refused");
     assert!(refused.contains("published as `foo_bar`"), "{refused}");
 
     let deploy = deploy_yaml(
@@ -251,4 +255,15 @@ tools:
             "a sound block is not refused: {errors:?}"
         );
     }
+}
+
+/// The words the live secret axis declares: the grammar these fixtures read a document under.
+fn live_grammar() -> busbar_kernel::config::Grammar {
+    busbar_kernel::config::Grammar::new(
+        busbar_kernel::config::secret::live_axis()
+            .map(busbar_contract::secret::SecretAxis::sugars)
+            .unwrap_or_default(),
+        Default::default(),
+        Vec::new(),
+    )
 }
