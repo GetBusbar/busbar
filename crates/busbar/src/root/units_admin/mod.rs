@@ -2166,5 +2166,9 @@ mod tests;
 mod admin_unit_records;
 
 #[cfg(test)]
+#[path = "tests/records.rs"]
+mod records_tests;
+
+#[cfg(test)]
 #[path = "tests/ledger_recovery_actual.rs"]
 mod ledger_recovery_actual;
