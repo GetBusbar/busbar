@@ -129,7 +129,7 @@ impl<'de> Visitor<'de> for Read<'_> {
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
         let Read::Section { section, noun } = self else {
-            let read = yaml::untyped(de::value::MapAccessDeserializer::new(map))?;
+            let read = yaml::untyped_map(map)?;
             return self.done(read);
         };
 
@@ -152,7 +152,7 @@ impl<'de> Visitor<'de> for Read<'_> {
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
-        let read = yaml::untyped(de::value::SeqAccessDeserializer::new(seq))?;
+        let read = yaml::untyped_seq(seq)?;
         self.done(read)
     }
 
