@@ -468,7 +468,7 @@ impl LimitsResolved {
     /// clamped: a value that does not parse, or is out of range, is a refusal that names the key,
     /// what was written and the range. Validation runs this, so boot refuses before serving.
     pub fn drain_settings(&self) -> Result<DrainSettings, Vec<String>> {
-        let mut refusals = Vec::new();
+        let mut refusals: Vec<String> = Vec::new();
         let drain_timeout = match self.drain_timeout.as_deref() {
             None => Some(crate::governance::drain::DEFAULT_DRAIN_TIMEOUT),
             Some(written) => match crate::config::parse::parse_duration_secs(written) {
