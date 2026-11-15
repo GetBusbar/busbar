@@ -266,7 +266,7 @@ impl AmendChain {
         let mut amendment = Amendment {
             seq: self.next_seq,
             body,
-            prev_hash: self.tail_hash.clone(),
+            prev_hash: std::mem::take(&mut self.tail_hash),
             hash: String::new(),
         };
         amendment.hash = AmendChain::digest_of(&amendment);
