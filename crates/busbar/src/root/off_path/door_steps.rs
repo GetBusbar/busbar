@@ -20,7 +20,8 @@ use busbar_contract::MeterClassId;
 use busbar_kernel::state::App;
 
 use crate::root::door_steps::{
-    plane_lane, presenting, DoorFacts, DoorPools, EndpointStripped, MainLogSink, POOL_BREAKER_KEY,
+    offline_root_rules, plane_lane, presenting, DoorFacts, DoorPools, EndpointStripped,
+    MainLogSink, POOL_BREAKER_KEY,
 };
 
 impl DoorPools {
@@ -761,16 +762,6 @@ impl busbar_kernel::appbuild::RootRules for Rules {
             guard.destinations_applied(destinations);
         }
     }
-}
-
-/// The composition root's rules that read only the resolved config: no I/O, no loaded plugin
-/// state. Boot/apply (`Rules::check`) and `--validate` both run exactly this, so they agree.
-pub(crate) fn offline_root_rules(cfg: &busbar_kernel::config::RootCfg) -> Result<(), Vec<String>> {
-    kernel_sections(cfg).map_err(|e| vec![e])?;
-    if let Some(url) = cfg.public_url.as_deref() {
-        busbar_core_admin::config::validate_public_url(url, &cfg.blocked_metadata_hosts)?;
-    }
-    Ok(())
 }
 
 /// Project the kernel-owned configuration without passing JSON's arbitrary-precision
