@@ -240,7 +240,7 @@ pub fn compose(
         member.passthrough = passthrough;
         Ok(member)
     };
-    let mut built: std::collections::HashMap<String, Pool> = std::collections::HashMap::new();
+    let mut built: foldhash::HashMap<String, Pool> = foldhash::HashMap::default();
     for (name, pool) in &plan.pools {
         let members = pool
             .members
