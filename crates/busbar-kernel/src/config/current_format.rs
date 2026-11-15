@@ -22,6 +22,22 @@ pub fn detect_legacy_markers(doc: &Value) -> Vec<String> {
             markers.push(format!("`{key}:` is not a current config field"));
         }
     }
+    // A valid 1.5.5 selector (`overlay: false | { file: <path> }`): serde alone would answer
+    // "expected `locked`" and leave the operator without the way out.
+    if root
+        .get_key("config")
+        .and_then(Value::as_mapping)
+        .is_some_and(|config| config.contains_key("overlay"))
+    {
+        markers.push(
+            "`config.overlay` is retired in 1.6.0: admin-API config changes persist in the \
+             configured Store, not in an overlay file. Run `busbar --migrate-config \
+             <config.yaml>`, which removes it and keeps `config.locked`, then import the 1.5.5 \
+             overlay file into the Store once with `busbar --config <new-config.yaml> \
+             --migrate-overlay <config.yaml>` (docs/migration-overlay-1.6.md)"
+                .into(),
+        );
+    }
     if let Some(auth) = root.get_key("auth").and_then(Value::as_mapping) {
         for key in ["mode", "client_tokens", "upstream_credentials", "methods"] {
             if auth.contains_key(key) {
