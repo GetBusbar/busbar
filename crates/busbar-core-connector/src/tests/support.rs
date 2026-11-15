@@ -370,7 +370,10 @@ impl TestDoor {
             || knobs.authority_needed.is_some()
             || knobs.messages.is_some()
             || knobs.head_lines.is_some()
-            || knobs.states_length;
+            || knobs.states_length
+            // Only a framer takes `emit` and `ingest`: a door whose emit or ingest fails is one.
+            || knobs.fail_emit.is_some()
+            || knobs.fail_ingest.is_some();
         Self {
             facts: DoorFacts {
                 dials: true,
