@@ -82,6 +82,7 @@ pub(crate) fn plane_claims(planes: &[LinkedClaims]) -> Vec<PlaneClaim> {
 #[derive(Clone)]
 pub(crate) struct DroppedDoor {
     /// Its registry key: its own claim.
+    #[cfg(test)]
     pub key: &'static str,
     /// Every scheme it claims, its own first (each is registered under its own key).
     pub claims: Vec<&'static str>,
