@@ -5,7 +5,7 @@
 //! A5 fills it.
 
 use busbar_plugin_abi::host_side::answer::Answer;
-use busbar_plugin_abi::records::{Full, RecErr, Writer};
+use busbar_plugin_abi::records::{Full, RecErr, Records, Writer};
 
 pub fn encode_read(
     w: &mut impl Writer,
@@ -74,3 +74,56 @@ pub fn decode_info(a: &Answer<'_>) -> Result<busbar_contract::persistence::Backe
     let _ = a;
     todo!()
 }
+
+/// W1-A5. The owner of the kernel's `Secret<Vec<u8>>` values hands the loader no seal through the frozen
+/// signatures, so the one that reads a candidate's bytes onto the wire is installed once, by core, before any
+/// store commit (an owner question in the W1-A5 handoff). Until then `encode_candidate` writes nothing and
+/// answers `Full`.
+pub fn install_seal(seal: Box<dyn busbar_contract::plugin::KernelSeal + Send + Sync>) -> bool {
+    let _ = seal;
+    todo!()
+}
+
+/// A `scan` answer: the page, or SCAN_STALE (the continued scan's generation changed).
+pub enum ScanOutcome {
+    Page(busbar_contract::persistence::Page),
+    Stale,
+}
+
+/// `decode_page` without the frozen signature's gaps: the rows' namespace is the request's, and SCAN_STALE is
+/// an outcome, not a malformed answer.
+pub fn decode_scan(a: &Answer<'_>, namespace: [u8; 16]) -> Result<ScanOutcome, RecErr> {
+    scan_outcome(a.records(), namespace)
+}
+
+fn read_values(
+    recs: Records<'_>,
+    n: usize,
+) -> Result<busbar_contract::persistence::ReadResult, RecErr> {
+    let _ = (recs, n);
+    todo!()
+}
+
+fn scan_outcome(recs: Records<'_>, namespace: [u8; 16]) -> Result<ScanOutcome, RecErr> {
+    let _ = (recs, namespace);
+    todo!()
+}
+
+fn decision(recs: Records<'_>) -> Result<busbar_contract::persistence::Decision, RecErr> {
+    let _ = recs;
+    todo!()
+}
+
+fn clock(recs: Records<'_>) -> Result<busbar_contract::persistence::ClockObservation, RecErr> {
+    let _ = recs;
+    todo!()
+}
+
+fn info(recs: Records<'_>) -> Result<busbar_contract::persistence::BackendInfo, RecErr> {
+    let _ = recs;
+    todo!()
+}
+
+#[cfg(test)]
+#[path = "store_tests.rs"]
+mod tests;

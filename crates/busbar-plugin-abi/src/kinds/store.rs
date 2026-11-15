@@ -301,6 +301,24 @@ pub mod store {
         pub durability: u32,
     }
 
+    // W1-A5: `kind!` (W1-A4) emits these `Pod` impls for every `pods {}` struct; the stub swap deletes them.
+    impl crate::records::Pod for TimeGuard {}
+    impl crate::records::Pod for AttemptId {}
+    impl crate::records::Pod for ReadHead {}
+    impl crate::records::Pod for AddressRec {}
+    impl crate::records::Pod for ScanHead {}
+    impl crate::records::Pod for CandHead {}
+    impl crate::records::Pod for PredicateRec {}
+    impl crate::records::Pod for MutationRec {}
+    impl crate::records::Pod for ReadDone {}
+    impl crate::records::Pod for ValueRec {}
+    impl crate::records::Pod for ScanDone {}
+    impl crate::records::Pod for RowRec {}
+    impl crate::records::Pod for Committed {}
+    impl crate::records::Pod for ClockRec {}
+    impl crate::records::Pod for CellRec {}
+    impl crate::records::Pod for InfoRec {}
+
     pub mod tag {
         /// read request: one READ_HEAD then ADDRESS*.
         pub const READ_HEAD: u16 = 0x0100;
@@ -494,3 +512,198 @@ pub mod store {
         }
     }
 }
+
+/// Plugin-side typed helpers every store shares (STORE-TRANSACTIONS Decision 299 §2.4 "SDK plumbing", r39 "MIN-3
+/// home"; W1-A5). They sit outside the `kind!` block, so they are not FP-hashed: `Verdict`, `SlotRow` with its
+/// packed codec and replay mapping, `holds`, `prelude_order`, the commit decode with its G2 `match` and the
+/// `CommitHead` carrier, and the receipt-era refusal. A store depends on busbar-plugin-abi only, so nothing here
+/// names busbar-contract: the replay mapping yields the wire `Committed` record, not a `Decision`.
+pub mod plumbing {
+    use super::store::{AttemptId, CandHead, Committed, TimeGuard};
+    use crate::records::{RecErr, Records};
+
+    /// `physical_version` of a receipt-era dataset; M4 refuses it at `open`.
+    pub const RECEIPT_ERA_VERSION: u32 = 1;
+    /// The one explanation every store gives for a receipt-era dataset.
+    pub const RECEIPT_ERA_REFUSAL: &str =
+        "pre-release receipt-era dataset; recreate it or re-run the 1.5.5 migration";
+
+    /// A recorded evaluation, stored as the wire `COMMIT_*` code.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Verdict {
+        /// `COMMIT_APPLIED`.
+        Applied = 1,
+        /// `COMMIT_CONDITION_CONFLICT`.
+        Conflict = 2,
+        /// `COMMIT_TIME_GUARD_FAILED`.
+        TimeGuard = 3,
+    }
+
+    /// A stored slot row that cannot be decoded.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Corrupt;
+
+    impl Verdict {
+        /// The stored byte.
+        pub fn to_u8(self) -> u8 {
+            todo!()
+        }
+        /// The wire `COMMIT_*` code.
+        pub fn code(self) -> u32 {
+            todo!()
+        }
+        /// Decode a stored byte; anything else is a corrupt row.
+        pub fn from_u8(code: u8) -> Result<Self, Corrupt> {
+            let _ = code;
+            todo!()
+        }
+    }
+
+    /// One (writer, slot) row: the last evaluated sequence, its fingerprint, verdict and serialization time.
+    /// A missing row is `seq == 0`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct SlotRow {
+        /// Last evaluated lease sequence.
+        pub seq: u64,
+        /// Candidate fingerprint of that evaluation.
+        pub fp: [u8; 32],
+        /// Its verdict.
+        pub verdict: Verdict,
+        /// Its serialization time, in Unix seconds.
+        pub observed: u64,
+    }
+
+    /// Length of [`SlotRow::encode_packed`].
+    pub const PACKED_LEN: usize = 4 + 8 + 32 + 1 + 8;
+
+    /// What M1 step 2 does with an incoming `(seq, fp)` against the slot's row.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Judgement {
+        /// No row, or an earlier sequence: evaluate and write the row.
+        Fresh,
+        /// Equal sequence and fingerprint: answer the recorded verdict, write nothing.
+        Replay,
+        /// Equal sequence, different fingerprint: `COMMIT_OPID_CONFLICT`, write nothing.
+        OpIdConflict,
+        /// The row holds a later sequence: `COMMIT_STALE`, write nothing.
+        Stale,
+    }
+
+    impl SlotRow {
+        /// The recorded answer an equal-sequence replay returns, at its original time.
+        pub fn replay(&self, authority: [u8; 16]) -> Committed {
+            let _ = authority;
+            todo!()
+        }
+        /// Packed value for key-value stores: `'BVS1' | seq LE8 | fp32 | verdict u8 | observed LE8`.
+        pub fn encode_packed(&self) -> [u8; PACKED_LEN] {
+            todo!()
+        }
+        /// Decode [`Self::encode_packed`]; any other length, magic or verdict is `Corrupt`.
+        pub fn decode_packed(bytes: &[u8]) -> Result<Self, Corrupt> {
+            let _ = bytes;
+            todo!()
+        }
+    }
+
+    /// M1 step 2 over the slot's current row (`None` = no row).
+    pub fn judge(row: Option<&SlotRow>, seq: u64, fp: &[u8; 32]) -> Judgement {
+        let _ = (row, seq, fp);
+        todo!()
+    }
+
+    /// One condition against the pre-mutation state: `PREDICATE_ABSENT` needs no live value, `PREDICATE_EXACT`
+    /// needs exactly `expected`; any other tag never holds (the decode already FAULTed it).
+    pub fn holds(tag: u32, expected: &[u8], current: Option<&[u8]>) -> bool {
+        let _ = (tag, expected, current);
+        todo!()
+    }
+
+    /// How an address takes part in M1 step 0.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Use {
+        /// A `read` address: locks its namespace shared.
+        Read,
+        /// A FENCE or PREDICATE: shared; on `GENERATION_NS` it locks the namespace its 16-byte key names (G2).
+        Condition,
+        /// A MUTATION: locks its namespace exclusive.
+        Mutation,
+    }
+
+    /// Step 0's lock set and acquisition order (N12): each namespace once, in byte order, exclusive when any
+    /// item mutates it. Input is `(namespace, key, use)`.
+    pub fn prelude_order<'a>(
+        items: impl IntoIterator<Item = (&'a [u8; 16], &'a [u8], Use)>,
+    ) -> Vec<([u8; 16], bool)> {
+        let _ = items;
+        todo!()
+    }
+
+    /// One decoded FENCE or PREDICATE: `expected` is empty for `PREDICATE_ABSENT`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Cond<'a> {
+        pub namespace: [u8; 16],
+        pub tag: u32,
+        pub key: &'a [u8],
+        pub expected: &'a [u8],
+    }
+
+    /// One decoded MUTATION. `value` is empty for a Delete or DeleteRange (whose `key` is the prefix and
+    /// `exact_length` the matched key length).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Mut<'a> {
+        pub namespace: [u8; 16],
+        pub tag: u32,
+        pub key: &'a [u8],
+        pub value: &'a [u8],
+        pub exact_length: u64,
+    }
+
+    /// The commit's dedupe key after N1 validation.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum CommitSlot {
+        /// `slot < MAX_SLOTS`, `seq >= 1`.
+        Slotted { slot: u32, seq: u64 },
+        /// `SLOT_SELF_FENCED` with `seq == 0`.
+        SelfFenced,
+    }
+
+    /// The carrier for decoded fences (one, in the SDK): the validated head and the FENCE records.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct CommitHead<'a> {
+        pub id: AttemptId,
+        pub codec: u32,
+        pub guard: TimeGuard,
+        pub slot: CommitSlot,
+        pub fences: Vec<Cond<'a>>,
+    }
+
+    /// A decoded commit candidate, borrowed from the request.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Commit<'a> {
+        pub head: CommitHead<'a>,
+        pub predicates: Vec<Cond<'a>>,
+        pub mutations: Vec<Mut<'a>>,
+        pub result: &'a [u8],
+    }
+
+    /// Why a commit request is not run.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum CommitErr {
+        /// A malformed buffer or a G2 violation: the caller FAULTs before the store runs.
+        Fault(RecErr),
+        /// N1: a slot and sequence that are neither slotted nor self-fenced: REFUSED.
+        Refused,
+    }
+
+    /// Decode a commit request: `CAND_HEAD, FENCE*, PREDICATE*, MUTATION*, RESULT`, with N1 on the head and
+    /// G2 (N13) on every record. `METRIC` records are skipped.
+    pub fn decode_commit(req: Records<'_>) -> Result<Commit<'_>, CommitErr> {
+        let _ = (req, core::marker::PhantomData::<CandHead>);
+        todo!()
+    }
+}
+
+#[cfg(test)]
+#[path = "store_plumbing_tests.rs"]
+mod plumbing_tests;
