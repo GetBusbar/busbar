@@ -82,13 +82,16 @@ async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_
     std::fs::write(&token_path, "tok-v1").unwrap();
     std::fs::write(&signing_path, hex::encode([7u8; 32])).unwrap();
     let operator = busbar_kernel::config::operator_provider();
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {}, "models": {},
-        "identity-providers": {(operator): {"module": operator, "token": {"file": token_path}}},
-        "auth": {"chain": [], "admin_auth": [operator], "signing_key": {"file": signing_path}},
-        "store": {"module": store, "settings": settings},
-        "advanced": {"allow_destinations": ["127.0.0.1"]}
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {}, "models": {},
+            "identity-providers": {(operator): {"module": operator, "token": {"file": token_path}}},
+            "auth": {"chain": [], "admin_auth": [operator], "signing_key": {"file": signing_path}},
+            "store": {"module": store, "settings": settings},
+            "advanced": {"allow_destinations": ["127.0.0.1"]}
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .unwrap();
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())

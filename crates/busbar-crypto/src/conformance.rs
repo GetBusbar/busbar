@@ -74,25 +74,19 @@ pub fn hash() {
     assert_eq!(s.finish(), sha256(b"abc"));
     assert_eq!(sha256_parts(&[b"a", b"", b"bc"]), sha256(b"abc"));
 
+    // The link hash is SHA-256 on every backend: the empty-input vector is SHA-256's.
     let empty = link::Hasher::new().finish();
-    match link::RECIPE {
-        // BLAKE3 of the empty input.
-        "busbar.audit.digest.v7" => assert_eq!(
-            empty,
-            a::<32>("af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262")
-        ),
-        // SHA-256 of the empty input.
-        "busbar.audit.digest.v7-sha256" => assert_eq!(
-            empty,
-            a::<32>("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
-        ),
-        other => panic!("unknown link recipe {other}"),
-    }
-    // Every backend recomputes its own recipe and the SHA-256 one; an unknown recipe is refused.
-    assert!(link::verifier(link::RECIPE).is_ok());
-    let mut v = link::verifier("busbar.audit.digest.v7-sha256").unwrap();
+    assert_eq!(
+        empty,
+        a::<32>("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+    );
+    assert_eq!(empty, sha256(b""));
+    // A backend recomputes its own recipe; the retired BLAKE3 and `-sha256` recipes are refused.
+    let mut v = link::verifier(link::RECIPE).unwrap();
     v.update(b"abc");
     assert_eq!(v.finish(), sha256(b"abc"));
+    assert!(link::verifier("busbar.audit.digest.v7-sha256").is_err());
+    assert!(link::verifier("busbar.audit.digest.v7").is_err());
     assert!(link::verifier("busbar.audit.digest.v0").is_err());
 
     assert!(ct_eq(b"abc", b"abc") && !ct_eq(b"abc", b"abd") && !ct_eq(b"abc", b"ab"));

@@ -114,7 +114,11 @@ fn normalize(
             .and_then(Value::as_str)
             .is_some_and(|module| !module.trim().is_empty())
         && migrate::detect_legacy_markers(&before).is_empty()
-        && busbar_kernel::config::deploy_from_yaml_str(detection).is_ok()
+        && host.source_declarations().is_ok_and(|sugars| {
+            let grammar =
+                busbar_kernel::config::Grammar::new(sugars, Default::default(), Vec::new());
+            busbar_kernel::config::deploy_from_yaml_str(detection, &grammar).is_ok()
+        })
     {
         return normalize_recognized_settings(raw, host);
     }
@@ -161,6 +165,7 @@ fn normalize_recognized_settings(
     let root = doc
         .as_mapping_mut()
         .ok_or("authored settings document is not a mapping")?;
+    host.bind_grammar(root.get_key("plugins"));
     let (mut changes, mut todos, mut failures, mut notices) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     // The fast path never reaches `migrate_bootstrap`, so it unfolds a root 1.5.5
