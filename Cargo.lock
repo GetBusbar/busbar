@@ -338,6 +338,7 @@ name = "busbar-contract"
 version = "1.6.0"
 dependencies = [
  "async-trait",
+ "axum-core",
  "base64 0.22.1",
  "busbar-crypto",
  "bytes",
@@ -360,6 +361,7 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "smallvec",
+ "sonic-rs",
  "sseer",
  "subtle",
  "syn 2.0.117",
