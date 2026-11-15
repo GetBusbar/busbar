@@ -2688,7 +2688,7 @@ fn auth_refusals_describe_the_current_schema_and_source_location() {
             message,
             format!(
                 "auth.bogus_key: unknown field `bogus_key`, expected one of signing_key, chain, \
-                 admin_auth, role_bindings, key_ttl, policy at line {line} column 3"
+                 admin_auth, role_bindings, key_ttl, policy, login_limits at line {line} column 3"
             )
         );
         assert_eq!(error.location().unwrap().line(), line);

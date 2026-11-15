@@ -21,15 +21,15 @@ fn the_unknown_field_list_grows_1_5_5s() {
     let got = refusal("{ requests: 1, per: day, bogus: 1 }");
     assert!(
         got.contains(
-            "unknown field `bogus`, expected one of `requests`, `tokens`, `budget`, \
-             `concurrent`, `per`, `pool`, `on_exhaust`, `downgrade_to`"
+            "unknown field `bogus`, expected one of requests, tokens, budget, \
+             concurrent, per, pool, on_exhaust, downgrade_to"
         ),
         "BOOT-P29 refusal does not keep 1.5.5's list as its prefix: {got}"
     );
     assert!(
         got.contains(
-            "`downgrade_to`, `tokens_input`, `tokens_output`, `tokens_cache_read`, \
-             `tokens_cache_write`, `admission`, `on_exhaustion`"
+            "downgrade_to, tokens_input, tokens_output, tokens_cache_read, \
+             tokens_cache_write, admission, on_exhaustion"
         ),
         "BOOT-P29 refusal does not append the 1.6.0 keys after 1.5.5's: {got}"
     );
@@ -146,11 +146,13 @@ fn limit_tables_agree() {
         }
     }
     let got = refusal("{ requests: 1, per: day, bogus: 1 }");
+    let listed: Vec<&str> = got
+        .split_once("expected one of ")
+        .and_then(|(_, rest)| rest.split(" at line ").next())
+        .map(|list| list.split(", ").collect())
+        .unwrap_or_default();
     for key in LIMIT_KEYS {
-        assert!(
-            got.contains(&format!("`{key}`")),
-            "BOOT-P29 omits `{key}`: {got}"
-        );
+        assert!(listed.contains(key), "BOOT-P29 omits `{key}`: {got}");
     }
 }
 
