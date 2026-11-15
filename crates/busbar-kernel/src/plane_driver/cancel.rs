@@ -181,14 +181,15 @@ impl PlaneDriver {
     }
 
     pub(crate) fn sweep_with_context(&self, cx: &mut std::task::Context<'_>) -> bool {
-        let _sweep = match self.cleanup_sweep.try_lock() {
+        // The sweep's guard holds its reused buffer of the units still unsettled.
+        let mut unsettled = match self.cleanup_sweep.try_lock() {
             Ok(guard) => guard,
             Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
             Err(std::sync::TryLockError::WouldBlock) => return false,
         };
-        let buried = std::mem::take(&mut *self.lock_buried());
-        let mut unsettled = Vec::new();
-        for mut unit in buried {
+        unsettled.clear();
+        let mut buried = std::mem::take(&mut *self.lock_buried());
+        for mut unit in buried.drain(..) {
             let key = unit.ctx.key.get();
             let mut bill_ready = false;
             let cancelled = match unit.flight.take() {
@@ -291,7 +292,15 @@ impl PlaneDriver {
             }
             self.calls.recycle(unit.ticket);
         }
-        self.lock_buried().extend(unsettled);
+        {
+            // Units buried during the sweep first, then the still-unsettled ones, as before; the
+            // drained list keeps its capacity and becomes the live one.
+            let mut live = self.lock_buried();
+            buried.append(&mut live);
+            buried.append(&mut unsettled);
+            std::mem::swap(&mut *live, &mut buried);
+        }
+        drop(unsettled);
 
         self.close_owed(cx);
         self.buried() == 0 && self.owed_closes() == 0

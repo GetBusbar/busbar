@@ -44,22 +44,26 @@ fn card_cost(budget_cents: Option<u64>) -> Arc<CostModel> {
             }]
         })
         .unwrap_or_default();
-    let groups = BTreeMap::from([(
+    let groups = [(
         "g".to_string(),
         GroupCfg {
             enabled: true,
             limits,
             ..Default::default()
         },
-    )]);
-    let card = BTreeMap::from([(
+    )]
+    .into_iter()
+    .collect::<BTreeMap<_, _>>();
+    let card = [(
         "m".to_string(),
         crate::config::RateEntryCfg {
             input_utok: 1.0,
             output_utok: 1.0,
             ..Default::default()
         },
-    )]);
+    )]
+    .into_iter()
+    .collect::<BTreeMap<_, _>>();
     Arc::new(CostModel::resolve_parts(Some(&card), 0, &groups))
 }
 
@@ -77,7 +81,7 @@ fn unit(cost: &Arc<CostModel>) -> UnitMoney {
         cost: Arc::clone(cost),
         pool: String::new(),
         lane: "m".into(),
-        classes: Arc::from(vec!["input".to_string(), "output".to_string()]),
+        classes: Arc::new(["input".to_string(), "output".to_string()]),
         arrived: NOW,
         mode: ExhaustionMode::CutStream,
         fee: FeeRefund::CallerStatus,

@@ -43,7 +43,7 @@ fn rig() -> Rig {
         admission: None,
         on_exhaustion: None,
     };
-    let groups = BTreeMap::from([
+    let groups = [
         (
             "g".into(),
             GroupCfg {
@@ -59,25 +59,35 @@ fn rig() -> Rig {
                 ..Default::default()
             },
         ),
-    ]);
+    ]
+    .into_iter()
+    .collect::<BTreeMap<_, _>>();
     let rate = || crate::config::RateEntryCfg {
         input_utok: 1.0,
-        units: BTreeMap::from([("bytes".into(), UnitRate::from_whole_micros(2).unwrap())]),
+        units: [("bytes".into(), UnitRate::from_whole_micros(2).unwrap())]
+            .into_iter()
+            .collect::<BTreeMap<_, _>>(),
         ..Default::default()
     };
-    let card = BTreeMap::from([
+    let card = [
         ("m".into(), rate()),
         ("tp\u{1f}m".into(), rate()),
         ("tp\u{1f}fallback".into(), rate()),
-    ]);
+    ]
+    .into_iter()
+    .collect::<BTreeMap<_, _>>();
     let cost = Arc::new(
-        CostModel::resolve_parts(Some(&card), 2, &groups).with_plane_fees(&BTreeMap::from([(
-            "tp".into(),
-            PlaneFees {
-                per_request: 2,
-                per_session: 0,
-            },
-        )])),
+        CostModel::resolve_parts(Some(&card), 2, &groups).with_plane_fees(
+            &[(
+                "tp".into(),
+                PlaneFees {
+                    per_request: 2,
+                    per_session: 0,
+                },
+            )]
+            .into_iter()
+            .collect::<BTreeMap<_, _>>(),
+        ),
     );
     let store = ready(crate::real_store::core());
     let gov = Arc::new(ready(GovState::new_with_core(store.clone(), None, None)).unwrap());
@@ -98,7 +108,9 @@ fn rig() -> Rig {
 }
 
 fn units(input: u64, bytes: u64) -> BTreeMap<String, u64> {
-    BTreeMap::from([("input".into(), input), ("bytes".into(), bytes)])
+    [("input".into(), input), ("bytes".into(), bytes)]
+        .into_iter()
+        .collect::<BTreeMap<_, _>>()
 }
 
 fn counts(r: &Rig, bucket: &str, lane: &str) -> BTreeMap<String, u64> {
@@ -274,10 +286,14 @@ fn scoped_headroom(session: bool, pool: &str, lane: &str, other: &str) {
             cost: r.cost.clone(),
             pool: pool.into(),
             lane: lane.into(),
-            classes: Arc::from(vec!["input".into(), "bytes".into(), "per_request".into()]),
+            classes: Arc::new([
+                "input".to_string(),
+                "bytes".to_string(),
+                "per_request".to_string(),
+            ]),
             arrived: NOW,
             mode: ExhaustionMode::CutStream,
-            fee: FeeRefund::PlaneFeeUnits(Arc::from(vec![2])),
+            fee: FeeRefund::PlaneFeeUnits(Arc::new([2])),
             charge: grant.charge().clone(),
         },
     );
