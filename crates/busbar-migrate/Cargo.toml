@@ -11,9 +11,15 @@ license = "Apache-2.0"
 path = "src/lib.rs"
 
 # Separation (MIGRATE-ON-BOOT §7): YAML only through busbar_contract::yaml, digests only through
-# busbar_contract::crypto; no plugin-loader, no store driver, no postcard, no sha2.
+# busbar_contract::crypto; no plugin-loader, no store driver, no postcard, no sha2. The kernel is
+# the config grammar vocabulary the kept passes read (interpolation, the hostless-entry and
+# zero-cache-write rules, the rate encoding), never the strict parse (the gateway's `check`).
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
+busbar-kernel = { path = "../busbar-kernel", default-features = false }
+busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
+serde = { workspace = true }
+zeroize = { workspace = true }
 
 [lints]
 workspace = true

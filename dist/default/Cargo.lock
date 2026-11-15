@@ -862,6 +862,10 @@ name = "busbar-migrate"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-kernel",
+ "busbar-kernel-ledger",
+ "serde",
+ "zeroize",
 ]
 
 [[package]]

@@ -57,3 +57,47 @@ impl Drop for Scratch {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
+
+impl Scratch {
+    /// Write `config.yaml` with `text`, and the `providers.yaml` beside it that 1.5.5 required (an
+    /// empty catalog) unless one is there; return config.yaml's path.
+    pub(crate) fn deployment(&self, text: &str) -> PathBuf {
+        let catalog = self.dir.join("providers.yaml");
+        if !catalog.exists() {
+            std::fs::write(&catalog, "{}\n").expect("write providers.yaml");
+        }
+        self.config(text)
+    }
+
+    /// Write `name` in the directory with `text` and return its path.
+    pub(crate) fn file(&self, name: &str, text: &str) -> PathBuf {
+        let path = self.dir.join(name);
+        std::fs::write(&path, text).expect("write a scratch file");
+        path
+    }
+}
+
+/// The catalog keys the tests' 1.6.0 reads.
+pub(crate) const CATALOG_KEYS: [&str; 6] = [
+    "protocol", "base_url", "auth", "api_key", "models", "headers",
+];
+
+/// An environment with nothing set.
+pub(crate) fn no_env(_: &str) -> Option<String> {
+    None
+}
+
+/// The boot's facts in a test: no open unit, [`CATALOG_KEYS`], nothing set in the environment.
+pub(crate) fn facts() -> crate::Facts {
+    crate::Facts {
+        open_units: Vec::new(),
+        catalog_keys: CATALOG_KEYS.iter().map(|key| (*key).to_owned()).collect(),
+        env: no_env,
+        cwd: std::env::temp_dir(),
+    }
+}
+
+/// A strict parse that accepts every document.
+pub(crate) fn accept(_: &str, _: Option<&str>) -> Result<(), String> {
+    Ok(())
+}

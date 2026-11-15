@@ -3070,3 +3070,21 @@ fn a_stamped_config_passes_the_strict_parse() {
     let unstamped = "listen: 0.0.0.0:8080\nproviders: {}\nmodels: {}\n";
     assert!(crate::config::deploy_from_yaml_str(unstamped, &grammar).is_ok());
 }
+
+/// MIGRATE-ON-BOOT r41 §9 C1 (u)(2): the schema order the one-time upgrade places an added
+/// top-level key by is the document's own field order.
+#[test]
+fn document_keys_are_the_schema_order_of_config_yaml() {
+    let keys = crate::config::document_keys();
+    let at = |key: &str| {
+        keys.iter()
+            .position(|k| *k == key)
+            .unwrap_or_else(|| panic!("`{key}` is a top-level key: {keys:?}"))
+    };
+    assert_eq!(keys.first(), Some(&"config_version"), "{keys:?}");
+    assert!(at("listen") < at("providers_file"));
+    assert!(at("providers_file") < at("models"));
+    assert!(at("rate_card") < at("store"));
+    assert!(at("store") < at("advanced"));
+    assert!(at("identity-providers") < at("providers"));
+}

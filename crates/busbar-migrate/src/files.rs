@@ -132,9 +132,20 @@ pub(crate) fn backup_absent_or_equal(backup: &Path, source: &[u8]) -> Result<(),
 /// 5b: write `bytes` to `<config>.busbar-new.<pid>` (`O_EXCL`), with config.yaml's permission bits
 /// (set by `fchmod`, not left to the umask) and, where this process may, its owner; fsynced.
 pub(crate) fn create_like(config: &Path, bytes: &[u8]) -> Result<PathBuf, Refusal> {
-    let source = fs::metadata(config).map_err(|error| io_refusal(config, "cannot stat", &error))?;
+    create_like_at(config, config, bytes)
+}
+
+/// 5a2 and 5b: write `bytes` to `<target>.busbar-new.<pid>` (`O_EXCL`) with `model`'s permission
+/// bits (set by `fchmod`, not left to the umask) and, where this process may, its owner; fsynced.
+/// The caller renames it over `target`.
+pub(crate) fn create_like_at(
+    model: &Path,
+    target: &Path,
+    bytes: &[u8],
+) -> Result<PathBuf, Refusal> {
+    let source = fs::metadata(model).map_err(|error| io_refusal(model, "cannot stat", &error))?;
     let mode = source.permissions().mode() & 0o7777;
-    let fresh = sibling(config, &format!(".busbar-new.{}", std::process::id()));
+    let fresh = sibling(target, &format!(".busbar-new.{}", std::process::id()));
     let _ = fs::remove_file(&fresh);
     let written = (|| -> Result<(), Refusal> {
         let mut file = OpenOptions::new()
@@ -155,9 +166,10 @@ pub(crate) fn create_like(config: &Path, bytes: &[u8]) -> Result<PathBuf, Refusa
             & 0o7777;
         if set != mode {
             return Err(Refusal::Config(format!(
-                "{} did not take config.yaml's mode {mode:o} (it has {set:o}); the upgrade keeps \
+                "{} did not take the mode {mode:o} of {} (it has {set:o}); the upgrade keeps \
                  the source's mode. Nothing was renamed",
-                fresh.display()
+                fresh.display(),
+                model.display()
             )));
         }
         file.write_all(bytes)
