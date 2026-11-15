@@ -7,72 +7,140 @@
 //! [`run`] is step 1, from `main` after logging and before the runtime: it reads config.yaml's one
 //! field. A stamped config (`config_version: 1`) boots with nothing else read. A newer one is
 //! refused NEWER; an unstamped one in the image this seam re-executed is refused VERIFY, so the
-//! upgrade never loops. Any other unstamped config is planned in memory (nothing written) and the
-//! plan is held for [`finish`], step 5: once every instance has opened, just before the first
-//! listener serves, the plan is written in place and the process re-executes itself, with the same
-//! argv and `BUSBAR_MIGRATED=1`, onto the stamped file.
+//! upgrade never loops. Any other unstamped config is planned in memory (nothing written), its
+//! listeners are probed (1f), and the plan is held.
+//!
+//! Step 2 binds the plan (§3 step 2): while it is held, the boot reads the planned document in
+//! place of config.yaml ([`held`], through the composition root's `RootRules::held_document`), so
+//! every instance opens on exactly what step 5 writes, never on the 1.5.5 bytes still on disk.
+//!
+//! [`finish`] is step 5: once every instance has opened, before anything serves, the plan is
+//! written in place; then the seam hands an armed first start over (its store still open), closes
+//! every instance the boot opened (an instance's descriptors, a plugin's included, must not reach
+//! the new image), and re-executes itself with the same argv and `BUSBAR_MIGRATED=1` onto the
+//! stamped file.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use busbar_contract::secure::SecureString;
 use busbar_contract::upgrade::{config_version, CONFIG_FORMAT, MIGRATED_ENV};
 use busbar_migrate::{Inputs, Plan, Refusal, Written};
 
-/// The plan step 1 made for an unstamped config, written by [`finish`].
+/// The plan step 1 made for an unstamped config: held for the boot's reads, written by [`finish`].
 static PENDING: OnceLock<Plan> = OnceLock::new();
 
+/// The boot's strict parse of a planned document: its resolved listener addresses (`listen`,
+/// `admin_listen`) when it accepts the document, else its refusal text.
+pub(crate) type Parse<'a> = &'a dyn Fn(&str) -> Result<Vec<String>, String>;
+
 /// Step 1. `Ok` when the boot may go on: stamped, absent (the config reader reports that in its own
-/// words), or planned and held for [`finish`].
+/// words), or planned and held for the boot's reads and [`finish`].
 ///
 /// # Errors
-/// The migration's refusal text (NEWER, VERIFY, CONFIG, UNSUPPORTED), nothing written.
+/// The migration's refusal text (NEWER, VERIFY, CONFIG, UNSUPPORTED, LIVE_WRITER), nothing written.
 #[cold]
 #[inline(never)]
 pub(crate) fn run(config: &Path, providers_flag: bool) -> Result<(), String> {
-    if !config.exists() {
+    let migrated = std::env::var_os(MIGRATED_ENV).is_some();
+    let Some(plan) = step1(config, migrated, providers_flag, &parse_planned)? else {
         return Ok(());
+    };
+    for line in plan.report() {
+        tracing::info!(target: "busbar::migrate", "{line}");
+    }
+    tracing::info!(
+        target: "busbar::migrate",
+        "{} predates 1.6.0: upgraded in memory, and this boot runs the upgraded document; it is \
+         rewritten in place once every instance has opened (the original is kept as {})",
+        config.display(),
+        busbar_migrate::backup_path(config).display()
+    );
+    let _ = PENDING.set(plan);
+    Ok(())
+}
+
+/// Step 1 over the boot's strict parse: `None` for a stamped or absent config (nothing of
+/// `busbar_migrate` is entered), the plan for an unstamped one. After the plan, the listener probe
+/// (§A3 1f) runs on the planned document's resolved `listen` and `admin_listen` (after the
+/// overlay fold, so an overlay override counts), still before any plugin loads or any write.
+pub(crate) fn step1(
+    config: &Path,
+    migrated: bool,
+    providers_flag: bool,
+    parse: Parse<'_>,
+) -> Result<Option<Plan>, String> {
+    if !config.exists() {
+        return Ok(None);
     }
     let version =
         config_version(&read_bounded(config)?).map_err(|text| format!("CONFIG: {text}"))?;
-    let migrated = std::env::var_os(MIGRATED_ENV).is_some();
     match admit(version, migrated, providers_flag).map_err(text_of)? {
-        Stamp::Current => Ok(()),
+        Stamp::Current => Ok(None),
         Stamp::Older(_) => {
+            let listeners = RefCell::new(Vec::new());
+            let check = |text: &str| -> Result<(), String> {
+                *listeners.borrow_mut() = parse(text)?;
+                Ok(())
+            };
             let plan = busbar_migrate::plan(&Inputs {
                 path: config,
-                check: &strict_parse,
+                check: &check,
             })
             .map_err(text_of)?;
-            for line in plan.report() {
-                tracing::info!(target: "busbar::migrate", "{line}");
-            }
-            tracing::info!(
-                target: "busbar::migrate",
-                "{} predates 1.6.0: upgraded in memory; it is rewritten in place once every \
-                 instance has opened (the original is kept as {})",
-                config.display(),
-                busbar_migrate::backup_path(config).display()
-            );
-            let _ = PENDING.set(plan);
-            Ok(())
+            let listeners = listeners.into_inner();
+            let addresses: Vec<&str> = listeners.iter().map(String::as_str).collect();
+            busbar_migrate::probe_listeners(&addresses).map_err(text_of)?;
+            Ok(Some(plan))
         }
     }
 }
 
-/// Step 5. With no pending plan (a stamped boot) this returns at once. Otherwise the plan is
-/// written in place and the process re-executes itself onto the stamped file; it returns only
-/// with the refusal.
+/// Step 2's binding (§3 step 2): the text the boot reads in place of the file at `path` while a
+/// plan is held. `None` on a stamped boot and for every file the plan does not hold.
+pub(crate) fn held(path: &Path) -> Option<SecureString> {
+    held_in(PENDING.get(), path)
+}
+
+pub(crate) fn held_in(plan: Option<&Plan>, path: &Path) -> Option<SecureString> {
+    plan.and_then(|plan| plan.held(path))
+        .map(SecureString::from)
+}
+
+/// Step 5. With no pending plan (a stamped boot) `owned` comes straight back. Otherwise the plan
+/// is written in place (off the boot's runtime thread: the directory lock may wait), `close`
+/// consumes `owned` (every instance the boot opened), and the process re-executes itself onto the
+/// stamped file; this returns only with the refusal or the re-exec's failure.
 ///
 /// # Errors
 /// The write's refusal (LIVE_WRITER, CONFIG), or the re-exec's failure; config.yaml is then either
 /// unchanged or stamped, never half written.
 #[cold]
 #[inline(never)]
-pub(crate) fn finish() -> Result<(), String> {
+pub(crate) async fn finish<T>(owned: T, close: impl FnOnce(T)) -> Result<T, String> {
     let Some(plan) = PENDING.get() else {
-        return Ok(());
+        return Ok(owned);
     };
-    match busbar_migrate::write(plan, &strict_parse).map_err(text_of)? {
+    let written = tokio::task::spawn_blocking(move || {
+        busbar_migrate::write(plan, &|text: &str| parse_planned(text).map(drop))
+    })
+    .await
+    .map_err(|error| format!("the config.yaml upgrade did not finish its write: {error}"))?
+    .map_err(text_of)?;
+    Err(restart(written, owned, close, reexec))
+}
+
+/// After step 5 wrote (or found a peer's stamp, (q)): hand an armed first start over while its
+/// store is still open, close every instance the boot opened, then re-execute (once). Returns only
+/// the re-exec's failure.
+pub(crate) fn restart<T>(
+    written: Written,
+    owned: T,
+    close: impl FnOnce(T),
+    exec: impl FnOnce() -> String,
+) -> String {
+    match written {
         Written::Stamped => {
             tracing::info!(target: "busbar::migrate", "config.yaml upgraded and stamped")
         }
@@ -81,14 +149,19 @@ pub(crate) fn finish() -> Result<(), String> {
             "config.yaml was upgraded by another busbar while this one waited"
         ),
     }
-    Err(reexec())
+    let _ = close;
+    drop(owned);
+    exec()
 }
 
-/// The boot's own strict parse of a planned document, under the start grammar.
-fn strict_parse(text: &str) -> Result<(), String> {
+/// The boot's own strict parse of a planned document (CHECK, §A3 1): interpolated with
+/// `interpolate_env_with(Strict)` exactly as the boot's read interpolates it (an unset variable
+/// refuses, as 1.5.5 would not have booted), then typed under the start grammar. The interpolated
+/// text is dropped (wiped) at once.
+fn parse_planned(text: &str) -> Result<Vec<String>, String> {
     let grammar = crate::root::boot::start_grammar()?;
     busbar_kernel::config::deploy_from_yaml_str(text, grammar)
-        .map(drop)
+        .map(|_| Vec::new())
         .map_err(|error| format!("config.yaml: {error}"))
 }
 

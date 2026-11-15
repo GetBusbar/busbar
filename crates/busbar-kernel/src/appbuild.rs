@@ -999,6 +999,19 @@ pub enum ConfigDocument {
 pub trait RootRules: Send + Sync {
     fn check(&self, cfg: &config::RootCfg) -> Result<(), String>;
 
+    /// The document this read runs in place of the file at `path`, held in memory by the
+    /// composition root (MIGRATE-ON-BOOT r42 §3 step 2): an unstamped boot runs the *planned*
+    /// document, which step 5 writes only once every instance has opened. `Some` replaces the read
+    /// of the file (it is not opened); the held text is then normalized, interpolated and typed
+    /// exactly as the file's bytes would be. `None`, every other read, reads the file.
+    fn held_document(
+        &self,
+        _kind: ConfigDocument,
+        _path: &std::path::Path,
+    ) -> Option<busbar_contract::secure::SecureString> {
+        None
+    }
+
     /// Normalize authored bytes before environment expansion. Returning `None` preserves
     /// the exact original document. Converted material remains in wiping custody and must
     /// preserve authored secret references; this hook never publishes a configuration.

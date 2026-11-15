@@ -1145,6 +1145,11 @@ impl RootRules for BootstrapRules {
     fn check(&self, _: &config::RootCfg) -> Result<(), String> {
         Ok(())
     }
+    /// An unstamped boot runs the planned document, not the 1.5.5 bytes on disk (MIGRATE-ON-BOOT
+    /// r42 §3 step 2).
+    fn held_document(&self, _kind: ConfigDocument, path: &Path) -> Option<SecureString> {
+        crate::root::migrate::held(path)
+    }
     fn normalize_document(
         &self,
         kind: ConfigDocument,

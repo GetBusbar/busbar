@@ -80,6 +80,8 @@ serde_json = { workspace = true }
 tracing-subscriber = { workspace = true }
 busbar-core-admin = { path = "../busbar-core-admin", default-features = false, features = ["test-support"] }
 busbar-contract = { path = "../busbar-contract", features = ["tls", "stage-probe", "test-seal"] }
+# The seam's tests count busbar_migrate's entries (MIGRATE-ON-BOOT §9 C1 (sz2)).
+busbar-migrate = { path = "../busbar-migrate", features = ["counted"] }
 proc-macro2 = { workspace = true }
 syn = { workspace = true }
 # External fixtures used by this source when the distribution runs its unit tests.

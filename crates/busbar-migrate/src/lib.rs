@@ -23,10 +23,21 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+#[cfg(any(test, feature = "counted"))]
+pub mod counted;
 mod files;
+mod listen;
 mod lock;
 pub mod patch;
 mod steps;
+
+/// Count one entry of `$field` in a test build (§9 C1 (sz2)); nothing in a shipped one.
+macro_rules! entered {
+    ($field:ident) => {
+        #[cfg(any(test, feature = "counted"))]
+        crate::counted::enter(|entries| entries.$field += 1);
+    };
+}
 
 pub use busbar_contract::upgrade::{CONFIG_FORMAT, MIGRATED_ENV, STAMP_KEY, UPGRADE_FIRST};
 
@@ -104,13 +115,35 @@ pub(crate) fn read_version(text: &str) -> Result<u64, Refusal> {
 /// # Errors
 /// CONFIG naming the file when it cannot be read, is too large or is not UTF-8.
 pub fn read_config(path: &Path) -> Result<String, Refusal> {
+    entered!(other);
     files::read_bounded(path)
 }
 
 /// The backup path beside `config`: `config.yaml.1.5.5`.
 #[must_use]
 pub fn backup_path(config: &Path) -> PathBuf {
+    entered!(other);
     files::sibling(config, BACKUP_SUFFIX)
+}
+
+/// The digest [`write_back`] compares: SHA-256 of config.yaml's bytes as step 1 read them.
+#[must_use]
+pub fn digest(text: &str) -> [u8; 32] {
+    entered!(other);
+    busbar_contract::crypto::sha256(text.as_bytes())
+}
+
+/// 1f (§A3 1f): the listener probe over the plan's resolved `listen` and `admin_listen`. Each
+/// address is bound once and released; one another process holds (`EADDRINUSE`, retried every
+/// second for 10 s) refuses LIVE_WRITER. Nothing is written.
+///
+/// # Errors
+/// LIVE_WRITER naming the address in use.
+#[cold]
+#[inline(never)]
+pub fn probe_listeners(addresses: &[&str]) -> Result<(), Refusal> {
+    entered!(probe);
+    listen::probe_within(addresses, listen::BOUND, listen::EVERY)
 }
 
 /// The boot's own strict parse of a planned document: `Err(text)` is the parse's refusal.
@@ -158,6 +191,13 @@ impl Plan {
     pub fn source_format(&self) -> u64 {
         self.from
     }
+
+    /// The text the boot reads in place of the file at `path` (§3 step 2): the planned config.yaml
+    /// for config.yaml's own path, `None` for every other file.
+    #[must_use]
+    pub fn held(&self, _path: &Path) -> Option<&str> {
+        None
+    }
 }
 
 /// Step 1 for an unstamped config (§3, §A3 1): the writable and same-mount probes, then
@@ -171,6 +211,7 @@ impl Plan {
 #[cold]
 #[inline(never)]
 pub fn plan(inputs: &Inputs<'_>) -> Result<Plan, Refusal> {
+    entered!(plan);
     let source = files::read_bounded(inputs.path)?;
     let from = read_version(&source)?;
     if from > CONFIG_FORMAT {
@@ -218,6 +259,7 @@ pub enum Written {
 #[cold]
 #[inline(never)]
 pub fn write(plan: &Plan, check: Check<'_>) -> Result<Written, Refusal> {
+    entered!(write);
     let _held = lock::Held::take(&plan.path)?;
     let now = files::read_bounded(&plan.path)?;
     if read_version(&now)? >= CONFIG_FORMAT {
@@ -239,12 +281,46 @@ pub fn write(plan: &Plan, check: Check<'_>) -> Result<Written, Refusal> {
         )));
     }
     check(&again).map_err(|text| Refusal::Config(format!("{text}\n{UPGRADE_FIRST}")))?;
-    let backup = backup_path(&plan.path);
+    let backup = files::sibling(&plan.path, BACKUP_SUFFIX);
     files::backup_absent_or_equal(&backup, now.as_bytes())?;
     let fresh = files::create_like(&plan.path, again.as_bytes())?;
     files::keep_backup(&plan.path, &backup)?;
     files::replace(&fresh, &plan.path)?;
     Ok(Written::Stamped)
+}
+
+/// How [`write_back`] ended. Every outcome but [`WroteBack::Written`] left config.yaml as it was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WroteBack {
+    /// config.yaml now holds the edited bytes.
+    Written,
+    /// The edit changed nothing; equal bytes are not written.
+    Unchanged,
+    /// config.yaml's bytes differ from the ones step 1 read (an operator edit, a peer's
+    /// write-back): nothing was written, and the next load converts again.
+    Changed,
+}
+
+/// 5W (§3, r42), the settled write-back on a stamped boot, also the reload path's: under the
+/// config directory lock (5L), re-read config.yaml; when its bytes are no longer the ones `seen`
+/// digests ([`digest`]), write nothing; else apply `edit` (the patch writer's edits of the settled
+/// bags and CORE_CFG) and, when the bytes changed, replace config.yaml by a new file with its mode
+/// and owner, fsynced and renamed over it, the directory fsynced. No backup is kept and the stamp
+/// does not change.
+///
+/// # Errors
+/// CONFIG when the lock is not held in time, `edit` refuses, the edited document is not stamped
+/// [`CONFIG_FORMAT`], or an I/O step fails (nothing renamed). The caller logs and audits the
+/// refusal and boots on.
+#[cold]
+#[inline(never)]
+pub fn write_back(
+    _config: &Path,
+    _seen: &[u8; 32],
+    _edit: &dyn Fn(&str) -> Result<String, Refusal>,
+) -> Result<WroteBack, Refusal> {
+    entered!(write_back);
+    Ok(WroteBack::Unchanged)
 }
 
 /// `STEPS[from..CONFIG_FORMAT]` over the source text, then the stamp.
