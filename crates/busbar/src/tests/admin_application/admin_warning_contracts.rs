@@ -81,8 +81,11 @@ async fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
     document["providers"] = serde_json::json!({"test-provider":{"api_key":{"file":upstream_key}}});
     document["models"] = serde_json::json!({"m":{"provider":"test-provider"}});
     document["pools"] = serde_json::json!({"smart":{"members":[{"model":"m"}]}});
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &definitions)
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -198,8 +201,11 @@ async fn test_get_config_settings_warns_when_overlay_is_unreadable() {
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())

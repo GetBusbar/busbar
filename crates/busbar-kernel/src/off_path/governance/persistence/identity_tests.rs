@@ -791,3 +791,63 @@ async fn identity_settlement_skips_active_and_foreign_attempts_and_keeps_cancell
         "foreign uncertainty still blocks snapshot publication"
     );
 }
+
+#[tokio::test]
+async fn revocations_carry_the_reason_and_the_time() {
+    let (_, store) = setup().await;
+    store.identity().put_key(&key()).await.unwrap();
+    assert!(store
+        .identity()
+        .list_revocations()
+        .await
+        .unwrap()
+        .is_empty());
+    store
+        .identity()
+        .add_denylist("owner", "leaked in a ticket")
+        .await
+        .unwrap();
+    let rows = store.identity().list_revocations().await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].subject, "owner");
+    assert_eq!(rows[0].reason, "leaked in a ticket");
+    assert!(rows[0].at > 0, "the revocation is dated by the store clock");
+}
+
+#[tokio::test]
+async fn a_rotation_is_stored_state_on_the_key_row() {
+    use crate::governance::{signing::TokenSigner, GovState, NewKeySpec};
+    let (_, store) = setup().await;
+    let core = Arc::new(store);
+    let gov = GovState::new_with_core(
+        core.clone(),
+        None,
+        Some(TokenSigner::from_secret_bytes(&[7; 32], "test")),
+    )
+    .await
+    .unwrap();
+    let (minted, _) = gov
+        .mint_signed_async(NewKeySpec::default(), u64::MAX, 1234)
+        .await
+        .unwrap();
+    assert_eq!((minted.rotation_count, minted.rotated_at), (0, None));
+    for expected in 1..=2u64 {
+        gov.rotate_key_outcome_async(&minted.id, u64::MAX)
+            .await
+            .unwrap()
+            .unwrap();
+        let row = core.identity().get_key(&minted.id).await.unwrap().unwrap();
+        assert_eq!(row.rotation_count, expected);
+        assert!(row.rotated_at.is_some());
+    }
+}
+
+#[test]
+fn an_imported_key_row_says_where_it_came_from() {
+    let rows = migration_key(&key()).unwrap();
+    let (_, stored) = rows.first().unwrap();
+    assert_eq!(
+        key_decode(stored).unwrap().migrated_from.as_deref(),
+        Some("1.5.5")
+    );
+}

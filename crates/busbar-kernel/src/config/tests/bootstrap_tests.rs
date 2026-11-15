@@ -36,8 +36,11 @@ fn store_bootstrap_does_not_refuse_overlay_owned_identity_definitions() {
 }
 #[test]
 fn complete_resolution_sees_recovered_named_definitions_and_hook_controls() {
-    let mut deploy: DeployCfg = busbar_contract::yaml::from_str(
+    // The overlay's named definitions are read under the deployment read's grammar, so the
+    // document is read through the grammar-carrying reader (an ambient decode is Unbound).
+    let mut deploy = crate::config::deploy_from_yaml_str(
         "auth: { chain: [overlay-corp], admin_auth: [overlay-admin] }\nstore: { module: memory }\n",
+        &crate::config::Grammar::empty(),
     )
     .unwrap();
     let doc: super::super::overlay::OverlayDoc = serde_json::from_value(serde_json::json!({

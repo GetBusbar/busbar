@@ -167,8 +167,11 @@ async fn compose(
     directory: &std::path::Path,
     module: &str,
 ) -> (busbar_kernel::state::App, crate::root::durability::NodeBook) {
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())

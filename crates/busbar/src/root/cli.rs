@@ -332,25 +332,30 @@ fn ordinary_cli_flags() -> Option<i32> {
             let config_path = resolve_config_path(argv.config.as_deref());
             if let Ok(raw) = std::fs::read_to_string(&config_path) {
                 match config::interpolate_env(&raw) {
-                    Ok(interpolated) => match config::deploy_from_yaml_str(&interpolated) {
-                        Ok(deploy) => {
-                            if let Some(sec) = deploy.security {
-                                entries.extend(sec.blocked_metadata_hosts);
+                    Ok(interpolated) => {
+                        match crate::root::boot::start_grammar().and_then(|grammar| {
+                            config::deploy_from_yaml_str(&interpolated, grammar)
+                                .map_err(|e| e.to_string())
+                        }) {
+                            Ok(deploy) => {
+                                if let Some(sec) = deploy.security {
+                                    entries.extend(sec.blocked_metadata_hosts);
+                                }
                             }
-                        }
-                        Err(_) => {
-                            eprintln!(
-                                "warning: {}",
-                                diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.coded(
-                                    format_args!(
+                            Err(_) => {
+                                eprintln!(
+                                    "warning: {}",
+                                    diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.coded(
+                                        format_args!(
                                     "config at {config_path} did not parse; printing the built-in \
                                      metadata denylist only (security.blocked_metadata_hosts \
                                      skipped). Run busbar normally to see the parse error"
                                 )
-                                )
-                            );
+                                    )
+                                );
+                            }
                         }
-                    },
+                    }
                     Err(_) => {
                         eprintln!(
                             "warning: {}",
@@ -476,7 +481,7 @@ pub(crate) fn validate_judged(
         ignore_overlay,
         config::EnvSubst::Lenient,
     )
-    .map_err(|e| ValidateRefusal::Load(crate::root::boot::with_skip_lines(e)))?;
+    .map_err(ValidateRefusal::Load)?;
     let unset_env_vars = loaded.unset_env_vars.clone();
 
     if let Some(doc) = loaded.overlay_doc.as_ref() {
@@ -495,6 +500,9 @@ pub(crate) fn validate_judged(
             .map(|_| ())
             .map_err(|errors| errors.join("\n  - "))
     };
+    // The dropped-in secret modules start judged, checked through a read-scoped view: none of them
+    // is admitted onto the live axis (SECRET-SHORTHAND-BOOT §3.6, B4).
+    let view = crate::root::boot::start_secret_view();
     let registry = config_validate::check(
         &cfg,
         config_validate::Check {
@@ -503,6 +511,7 @@ pub(crate) fn validate_judged(
             root: &destination_guard,
             fetch: None,
             resolve_builtins: true,
+            secret_axis: Some(&view),
         },
     )
     .map_err(ValidateRefusal::Check)?;
@@ -630,7 +639,29 @@ fn list_plugins_config(
         );
         return Ok((config::PluginsCfg::default(), None));
     }
-    match load_config_from_disk(config_path, providers, false, config::EnvSubst::Lenient) {
+    // Report mode: the inventory never refuses for the grammar. A read whose phase 1 refuses (an
+    // invalid archive, a conflict) is typed under the empty grammar, and the refusal is printed as
+    // an inventory line ([`list_plugins_command`] prints the start refusal).
+    let loaded = busbar_kernel::appbuild::read_config_documents(
+        config_path,
+        providers,
+        false,
+        config::EnvSubst::Lenient,
+        &busbar_kernel::appbuild::AcceptAll,
+        busbar_kernel::appbuild::DocumentPatchLoad {
+            patch: None,
+            providers_patch: None,
+            admission: None,
+        },
+    )
+    .and_then(|raw| {
+        let grammar = raw.own_grammar().unwrap_or_else(|refusal| {
+            println!("grammar: {refusal}");
+            config::Grammar::empty()
+        });
+        raw.typed(&grammar)
+    });
+    match loaded {
         Ok(l) => {
             let store = l.deploy.store.as_ref().map(|g| g.module.clone());
             Ok((l.deploy.plugins, store))

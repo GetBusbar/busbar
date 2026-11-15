@@ -20,6 +20,7 @@ pub mod groups;
 pub mod bootstrap;
 pub mod current_format;
 pub mod declared_vocabulary;
+pub mod grammar;
 mod grammar_fields;
 
 mod authored_routing;
@@ -39,9 +40,8 @@ pub mod settings_public;
 pub(crate) mod security_policy;
 pub mod transaction;
 
-pub use prepass::{
-    deploy_from_deserializer, deploy_from_yaml_str, deploy_from_yaml_value, deploy_with_sources,
-};
+pub use grammar::{Grammar, GrammarField, GrammarRefusal};
+pub use prepass::{deploy_from_deserializer, deploy_from_yaml_str, deploy_from_yaml_value};
 
 pub use credentials::{AtRestCfg, CredentialsCfg};
 pub use groups::GroupCfg;
@@ -504,9 +504,17 @@ pub struct RootCfg {
     /// `is_present()`). A linked plane whose section is absent hydrates, starts, builds and serves
     /// nothing; see `state::App::plane_configured`.
     pub plane_sections: std::collections::BTreeSet<&'static str>,
+    /// The grammar the deployment document was read under, copied by [`resolve`]: what every
+    /// check of this configuration reads its secret shorthand by. Never persisted.
+    pub grammar: grammar::GrammarField,
 }
 
 impl RootCfg {
+    /// The grammar this configuration was read under; refused if it was decoded without one.
+    pub fn grammar(&self) -> Result<&grammar::Grammar, grammar::GrammarRefusal> {
+        self.grammar.get()
+    }
+
     pub fn endpoint_resource(
         &self,
         section: &str,
@@ -855,8 +863,9 @@ pub struct PlaneFeesCfg {
 
 /// Deployment configuration - operator-owned config.yaml structure.
 ///
-/// The derived reader is the inherent `DeployCfg::deserialize` (the document body); every reader
-/// through the `Deserialize` trait reads it under the admitted source declarations (`prepass`).
+/// The derived reader is the inherent `DeployCfg::deserialize` (the document body). A configuration
+/// reader reads it under its read's grammar ([`deploy_from_deserializer`]); the `Deserialize` trait
+/// reads canonical references only and leaves [`DeployCfg::grammar`] unbound (`prepass`).
 #[derive(Deserialize)]
 #[serde(remote = "Self", deny_unknown_fields)]
 pub struct DeployCfg {
@@ -869,6 +878,10 @@ pub struct DeployCfg {
     /// Exact consumed operator-source binding for indexed admin writes; never wire config.
     #[serde(skip)]
     pub document_source_fingerprints: Option<document_patch::SourceFingerprints>,
+    /// The grammar this document was read under ([`deploy_from_deserializer`]); `Unbound` when it was decoded
+    /// some other way, which refuses wherever the grammar is needed. Never on the wire.
+    #[serde(skip)]
+    pub grammar: grammar::GrammarField,
     #[serde(default = "default_listen")]
     pub listen: String,
     /// busbar's PUBLIC base URL (top-level `public_url:`) — see [`RootCfg::public_url`]. Absent by
@@ -2080,6 +2093,7 @@ pub fn resolve(
             identity_providers: deploy.identity_providers.clone(),
             export_defs: deploy.export.clone(),
             plane_sections,
+            grammar: deploy.grammar.clone(),
         })
     } else {
         Err(errors)

@@ -296,6 +296,11 @@ pub struct RootHost {
     startup: Option<std::sync::Arc<crate::root::startup_upgrade::documents::Documents>>,
     templates: busbar_migrations::config::templates::ResolvedTemplates,
     runtime_only: std::cell::Cell<bool>,
+    /// The migrated document's `plugins:` block after the structural steps, once bound
+    /// ([`MigrateHost::bind_grammar`]); unbound, the block this host was built over.
+    bound_plugins: std::cell::RefCell<Option<Option<busbar_contract::yaml::Value>>>,
+    /// The grammar computed from that block, until the block is bound again.
+    grammar: std::cell::RefCell<Option<Result<busbar_contract::secret_ref::Sugars, String>>>,
 }
 
 /// Why a migration validation probe stopped: a declared reference this process cannot resolve.
@@ -452,6 +457,8 @@ impl RootHost {
             startup: None,
             templates: Default::default(),
             runtime_only: std::cell::Cell::new(false),
+            bound_plugins: std::cell::RefCell::new(None),
+            grammar: std::cell::RefCell::new(None),
         }
     }
 
@@ -485,6 +492,35 @@ impl RootHost {
 
     pub(super) fn runtime_only(&self) -> bool {
         self.runtime_only.get()
+    }
+
+    /// The migration's grammar: phase 1 over the bound block (interpolated, then read as the
+    /// current `plugins:` shape), else over the block this host was built over. A bound block
+    /// that still does not read refuses, naming it; no smaller grammar stands in.
+    fn migration_grammar(&self) -> Result<busbar_contract::secret_ref::Sugars, String> {
+        let plugins = match self.bound_plugins.borrow().as_ref() {
+            None => self.plugins.clone().unwrap_or_default(),
+            Some(None) => PluginsCfg::default(),
+            Some(Some(block)) => {
+                let text = busbar_contract::yaml::to_string(block)
+                    .map_err(|_| "plugins: the migrated block could not be encoded".to_owned())?;
+                let text = busbar_kernel::config::interpolate_env_with(
+                    &text,
+                    busbar_kernel::config::EnvSubst::Lenient,
+                    &mut Vec::new(),
+                )
+                .map_err(|e| format!("plugins: {e}"))?;
+                busbar_contract::yaml::from_str::<PluginsCfg>(&text).map_err(|e| {
+                    format!(
+                        "plugins: the block does not read as the current shape after the \
+                         structural migration, so its modules' secret shorthand cannot be read: {e}"
+                    )
+                })?
+            }
+        };
+        crate::root::boot::phase_one(&busbar_kernel::config::grammar::PhaseOneIn::of(&plugins))
+            .map(|grammar| grammar.sugars)
+            .map_err(String::from)
     }
 
     fn migrate_settings(
@@ -777,10 +813,21 @@ impl RootHost {
 }
 
 impl MigrateHost for RootHost {
+    /// Phase 1 over the migrated document's own `plugins:` block (SECRET-SHORTHAND-BOOT §3.13,
+    /// F4): a dropped-in module that block admits declares words here exactly as the boot reader
+    /// will read them, whatever the live axis holds. Computed once per bound block.
     fn source_declarations(&self) -> Result<busbar_contract::secret_ref::Sugars, String> {
-        Ok(busbar_contract::secret::SecretAxis::sugars(
-            crate::root::linked::secret_rows(),
-        ))
+        if let Some(grammar) = self.grammar.borrow().as_ref() {
+            return grammar.clone();
+        }
+        let grammar = self.migration_grammar();
+        *self.grammar.borrow_mut() = Some(grammar.clone());
+        grammar
+    }
+
+    fn bind_grammar(&self, plugins: Option<&busbar_contract::yaml::Value>) {
+        *self.bound_plugins.borrow_mut() = Some(plugins.cloned());
+        *self.grammar.borrow_mut() = None;
     }
 
     fn admit_config_profile(

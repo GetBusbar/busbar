@@ -230,18 +230,22 @@ impl Resolver {
                 return Err("retained deployment selects an unloaded plane".into());
             }
         }
-        let mut deploy = match doc
+        // The retained document is read under its own grammar: phase 1 over its effective `plugins:`
+        // block (SECRET-SHORTHAND-BOOT §3.5), never the live secret axis.
+        let effective = match doc
             .and_then(|doc| doc.document_patch.as_ref())
             .filter(|_| !self.ignore_overlay)
         {
             Some(patch) => patch
                 .compacted_against_yaml(&input)?
-                .parse_deploy_yaml_checked(&input, |keys| {
+                .patched_text(&input, |keys| {
                     rules.unloaded_plane_refusal(keys).map_or(Ok(()), Err)
                 })?,
-            None => config::deploy_from_yaml_str(&input)
-                .map_err(|_| "retained deployment parsing refused")?,
+            None => busbar_contract::secure::SecureString::from(&*input),
         };
+        let grammar = crate::root::boot::grammar_of_text(&effective)?;
+        let mut deploy = config::deploy_from_yaml_str(&effective, &grammar)
+            .map_err(|_| "retained deployment parsing refused")?;
         let selected = config::providers::CatalogLocation::select(
             &self.config_path,
             self.providers_override.as_deref(),
@@ -286,8 +290,8 @@ impl Resolver {
         {
             Some(patch) => patch
                 .compacted_against_yaml(&providers)?
-                .parse_catalog_yaml(&providers)?,
-            None => config::providers::catalog_from_str(&providers)
+                .parse_catalog_yaml(&providers, &grammar)?,
+            None => config::providers::catalog_from_str(&providers, &grammar)
                 .map_err(|_| "retained provider parsing refused")?,
         };
         if let Some(doc) = doc.filter(|_| !self.ignore_overlay) {

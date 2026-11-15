@@ -1098,30 +1098,273 @@ pub fn stages(
     })
 }
 
-pub(crate) fn dropped_from_config(
+/// Process start, stage 1 (SECRET-SHORTHAND-BOOT §3.6): the configured `plugins:` block, and
+/// `plugins.dir` scanned and judged by the same function phase 1 uses for every read. Pure: it sets
+/// no global, fetches nothing, admits nothing and reads no plane list.
+pub(crate) struct StartScan {
+    /// The configured block, when it is present and enabled.
+    plugins: Option<PluginsCfg>,
+    /// The scan of `plugins.dir` and its judgement (`None`: nothing to scan).
+    scanned: Result<Option<Judged>, String>,
+}
+
+/// One scan of `plugins.dir` and the secret modules it admits, judged with the linked rows.
+pub(crate) struct Judged {
+    registry: PluginRegistry,
+    secrets: Vec<Candidate>,
+    sugars: busbar_contract::secret_ref::Sugars,
+}
+
+/// Stage 1: read and judge, nothing installed.
+pub(crate) fn start_scan() -> StartScan {
+    let plugins = configured_block();
+    let scanned = match &plugins {
+        Some(p) => judge(Vec::new(), p).map(Some),
+        None => Ok(None),
+    };
+    StartScan { plugins, scanned }
+}
+
+/// Stage 2: the start installation, every duty the start scan had except one: it admits no
+/// dropped-in secret module onto the live axis (a read takes its grammar from phase 1; bootstrap
+/// admission puts the set on the axis).
+pub(crate) fn install_start(
+    scan: StartScan,
     linked: &Linked,
 ) -> Option<&'static crate::root::loader::PluginRegistry> {
+    let StartScan { plugins, scanned } = scan;
+    if let Some(plugins) = &plugins {
+        let l = &plugins.logs;
+        if let Ok(logs) = crate::root::loader::dispatch::PluginLogConfig::from_words(
+            l.dir.as_deref(),
+            l.level.as_deref(),
+            &l.levels,
+            l.rotate_mb,
+            l.keep,
+        ) {
+            let _ = LOGS.set(logs);
+        }
+        plugins.warn_invalid_floors();
+    }
     let rows = linked_exports(linked.export_doors).unwrap_or_else(|refusal| {
         eprintln!("busbar: {refusal}");
         crate::root::exit::exit(2);
     });
-    let scanned = scan_configured().unwrap_or_else(|refusal| {
+    let judged = scanned.unwrap_or_else(|refusal| {
         let _ = START_REFUSAL.set(refusal);
         None
     });
-    if let Some(registry) = &scanned {
-        let _ = START_SKIPS.set(skip_lines(registry.skipped()));
-    }
-    if scanned.is_none() && rows.is_empty() {
+    let (registry, secrets, sugars) = match judged {
+        Some(Judged {
+            registry,
+            secrets,
+            sugars,
+        }) => {
+            let _ = START_SKIPS.set(skip_lines(registry.skipped()));
+            if let Some(plugins) = plugins {
+                remember_native_images(&registry, &plugins);
+                let _ = BASE_BOOTSTRAP_PLUGINS.set(plugins);
+            }
+            (Some(registry), secrets, Some(sugars))
+        }
+        None => (None, Vec::new(), None),
+    };
+    let grammar = match (START_REFUSAL.get(), sugars) {
+        (Some(refusal), _) => Err(busbar_kernel::config::GrammarRefusal(refusal.clone())),
+        (None, Some(sugars)) => Ok(busbar_kernel::config::Grammar::new(
+            sugars,
+            registry.as_ref().map(owners_of).unwrap_or_default(),
+            START_SKIPS.get().cloned().unwrap_or_default(),
+        )),
+        (None, None) => linked_grammar().map_err(busbar_kernel::config::GrammarRefusal),
+    };
+    let _ = START_JUDGED.set(StartJudged { secrets, grammar });
+    if registry.is_none() && rows.is_empty() {
         return None;
     }
-    let registry = scanned.unwrap_or_else(crate::root::loader::PluginRegistry::empty);
+    let registry = registry.unwrap_or_else(crate::root::loader::PluginRegistry::empty);
     let registry = registry.link(rows).unwrap_or_else(|refusal| {
         eprintln!("busbar: {refusal}");
         crate::root::exit::exit(2);
     });
 
     Some(REGISTRY.get_or_init(|| registry))
+}
+
+/// Stage 3, after `install_planes`: publish the start grammar ([`start_grammar`]). Every CLI reader
+/// and the boot reader run after it.
+pub(crate) fn bind_start_grammar() {
+    if let Some(judged) = START_JUDGED.get() {
+        let _ = START.set(judged.grammar.clone());
+    }
+}
+
+/// What start judged: the secret modules its scan found (for `--validate`'s read-scoped view) and
+/// the grammar stage 3 publishes.
+struct StartJudged {
+    secrets: Vec<Candidate>,
+    grammar: Result<busbar_kernel::config::Grammar, busbar_kernel::config::GrammarRefusal>,
+}
+
+static START_JUDGED: std::sync::OnceLock<StartJudged> = std::sync::OnceLock::new();
+
+static START: std::sync::OnceLock<
+    Result<busbar_kernel::config::Grammar, busbar_kernel::config::GrammarRefusal>,
+> = std::sync::OnceLock::new();
+
+/// The start grammar: the words the configured `plugins:` block admits, as process start judged
+/// them, or why start judged nothing (the reader prints it with its own code).
+pub(crate) fn start_grammar() -> Result<&'static busbar_kernel::config::Grammar, String> {
+    match START.get() {
+        Some(Ok(grammar)) => Ok(grammar),
+        Some(Err(refusal)) => Err(start_refusal().unwrap_or_else(|| refusal.0.clone())),
+        None => Err("the start grammar is not bound yet (process start stage 3)".to_owned()),
+    }
+}
+
+/// `--validate`'s read-scoped secret axis: the linked rows plus the secret modules start judged,
+/// none of them admitted. Each module's checker runs as it did when start admitted them; the live
+/// axis is untouched, and the view's checkers are dropped with it.
+pub(crate) fn start_secret_view() -> crate::root::loader::secret_calls::SecretView<'static> {
+    super::linked::secret_rows().view(
+        START_JUDGED
+            .get()
+            .map(|judged| judged.secrets.clone())
+            .unwrap_or_default(),
+    )
+}
+
+/// Phase 1 for one read ([`busbar_kernel::config::grammar::grammar_for`], installed as
+/// `RootInstall.grammar`): the registry build's own scan and judgement of the read's directory
+/// under the read's policy (its `plugins:` block with the read's pins), with the same linked rows
+/// the build links. Pure: no dlopen, no high-water write, no axis mutation, no fetch.
+pub(crate) fn phase_one(
+    input: &busbar_kernel::config::grammar::PhaseOneIn<'_>,
+) -> Result<busbar_kernel::config::Grammar, busbar_kernel::config::GrammarRefusal> {
+    let refused = busbar_kernel::config::GrammarRefusal;
+    let mut pinned = input.plugins.clone();
+    pinned.dir = input.dir.to_string_lossy().into_owned();
+    for (name, version) in input.pins {
+        pinned.min_versions.insert(name.clone(), version.clone());
+        pinned
+            .first_party_floors
+            .insert(name.clone(), version.clone());
+    }
+    let mut linked: Vec<_> = busbar_kernel::preflight::linked_rows()
+        .iter()
+        .map(linked_row)
+        .collect();
+    linked.extend(linked_exports(crate::LINKED.export_doors).map_err(refused)?);
+    let judged = judge(linked, &pinned).map_err(refused)?;
+    let report = skip_lines(judged.registry.skipped());
+    Ok(busbar_kernel::config::Grammar::new(
+        judged.sugars,
+        owners_of(&judged.registry),
+        report,
+    ))
+}
+
+/// Phase 1 over the `plugins:` block of an interpolated deployment `text` (a retained or migrated
+/// document read outside the loader): an absent block admits the linked rows alone; a block that
+/// does not read as the current shape refuses.
+pub(crate) fn grammar_of_text(text: &str) -> Result<busbar_kernel::config::Grammar, String> {
+    use busbar_contract::yaml::ValueExt;
+    let doc = busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(text)
+        .map_err(|_| "the deployment document does not read as YAML".to_owned())?;
+    let plugins = match doc.get("plugins") {
+        None => PluginsCfg::default(),
+        Some(block) => busbar_contract::yaml::from_value::<PluginsCfg>(block.clone())
+            .map_err(|e| format!("plugins: {e}"))?,
+    };
+    phase_one(&busbar_kernel::config::grammar::PhaseOneIn::of(&plugins)).map_err(String::from)
+}
+
+/// The scan of `plugins`' directory under its trust policy, with `linked`, and the secret modules
+/// it admits judged together with the linked secret rows: one owner per word, name and alias.
+fn judge(linked: Vec<LinkedPlugin>, plugins: &PluginsCfg) -> Result<Judged, String> {
+    let registry = scanned_registry(linked, plugins)?;
+    let secrets = discovered(&registry, |kind| kind == "secret")?;
+    let sugars = super::linked::secret_rows().grammar_of(secrets.clone())?;
+    Ok(Judged {
+        registry,
+        secrets,
+        sugars,
+    })
+}
+
+/// The registry build's scan, alone: no data dir (the high-water marks are neither read nor
+/// written), no native-image record, no admission.
+fn scanned_registry(
+    linked: Vec<LinkedPlugin>,
+    plugins: &PluginsCfg,
+) -> Result<PluginRegistry, String> {
+    let scan = Scan {
+        policy: trust_policy(plugins, env!("CARGO_PKG_VERSION"))
+            .map_err(|e| format!("plugins.trust is invalid: {e}"))?,
+        data_dir: None,
+        dir: plugins
+            .enabled
+            .then_some(std::path::Path::new(&plugins.dir)),
+    };
+    super::loader::boot::registry(
+        Build {
+            linked,
+            scan: Some(scan),
+        },
+        &mut |_| {},
+    )
+}
+
+/// Test fixtures that read a document outside any read path: the words the live secret axis
+/// declares (the linked rows, plus whatever a test admitted), passed explicitly.
+#[cfg(test)]
+pub(crate) fn axis_test_grammar() -> busbar_kernel::config::Grammar {
+    busbar_kernel::config::Grammar::new(
+        busbar_contract::secret::SecretAxis::sugars(super::linked::secret_rows()),
+        std::collections::BTreeMap::new(),
+        Vec::new(),
+    )
+}
+
+/// The grammar of a read that loads no plugin: the linked secret rows' words alone.
+fn linked_grammar() -> Result<busbar_kernel::config::Grammar, String> {
+    let sugars = super::linked::secret_rows().grammar_of(std::iter::empty())?;
+    Ok(busbar_kernel::config::Grammar::new(
+        sugars,
+        std::collections::BTreeMap::new(),
+        Vec::new(),
+    ))
+}
+
+/// Every admitted module of `registry` by name: its version, where it comes from and its trust.
+fn owners_of(
+    registry: &PluginRegistry,
+) -> std::collections::BTreeMap<String, busbar_kernel::config::grammar::Owner> {
+    registry
+        .loadable()
+        .iter()
+        .map(|row| {
+            let trust = match &row.verdict {
+                super::loader::sign::Verdict::Trusted {
+                    first_party: true, ..
+                } => "first-party",
+                super::loader::sign::Verdict::Trusted { .. } => "third-party",
+                super::loader::sign::Verdict::Allowed { .. } => "allowed by opt-in",
+            };
+            (
+                row.manifest.name.clone(),
+                busbar_kernel::config::grammar::Owner {
+                    version: row.manifest.version.clone(),
+                    origin: if row.linked() {
+                        "linked".to_owned()
+                    } else {
+                        row.file.clone()
+                    },
+                    trust: trust.to_owned(),
+                },
+            )
+        })
+        .collect()
 }
 
 pub(crate) static REGISTRY: std::sync::OnceLock<crate::root::loader::PluginRegistry> =
@@ -1207,57 +1450,30 @@ pub(crate) fn plugins_block_is_historical() -> bool {
     HISTORICAL_PLUGINS.load(std::sync::atomic::Ordering::Acquire)
 }
 
-/// Process start's scan of the configured `plugins.dir`. `Ok(None)`: no `plugins:` block, or
-/// `enabled: false`. Deferred to the reader, which reports them itself (`Ok(None)`): an unreadable
-/// file, an interpolation or YAML error, and a `plugins:` block that does not read as the current
-/// shape (a historical block is the startup upgrade's). Everything else refuses (`Err`): an
-/// invalid trust policy, an invalid archive, a conflict, a secret word two modules declare.
-fn scan_configured() -> Result<Option<crate::root::loader::PluginRegistry>, String> {
+/// The configured `plugins:` block process start judges. `None`: no block, or `enabled: false`.
+/// Deferred to the reader, which reports them itself (`None`): an unreadable file, an
+/// interpolation or YAML error, and a `plugins:` block that does not read as the current shape (a
+/// historical block is the startup upgrade's). Only `plugins:` is read here; the scan's own
+/// refusals (an invalid trust policy, an invalid archive, a conflict) come from [`judge`].
+fn configured_block() -> Option<PluginsCfg> {
+    use busbar_contract::yaml::ValueExt;
     let path = crate::root::cli::resolve_config_path(crate::root::cli::argv().config.as_deref());
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return Ok(None);
-    };
-    let Ok(text) = busbar_kernel::config::interpolate_env_with(
+    let raw = std::fs::read_to_string(path).ok()?;
+    let text = busbar_kernel::config::interpolate_env_with(
         &raw,
         busbar_kernel::config::EnvSubst::Lenient,
         &mut Vec::new(),
-    ) else {
-        return Ok(None);
-    };
-    use busbar_contract::yaml::ValueExt;
-    let Ok(doc) = busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(&text) else {
-        return Ok(None);
-    };
-    let Some(block) = doc.get("plugins") else {
-        return Ok(None);
-    };
+    )
+    .ok()?;
+    let doc = busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(&text).ok()?;
+    let block = doc.get("plugins")?;
     let Ok(plugins) =
         busbar_contract::yaml::from_value::<busbar_kernel::config::PluginsCfg>(block.clone())
     else {
         HISTORICAL_PLUGINS.store(true, std::sync::atomic::Ordering::Release);
-        return Ok(None);
+        return None;
     };
-    if !plugins.enabled {
-        return Ok(None);
-    }
-    let l = &plugins.logs;
-    let words = (l.dir.as_deref(), l.level.as_deref(), &l.levels);
-    if let Ok(logs) = crate::root::loader::dispatch::PluginLogConfig::from_words(
-        words.0,
-        words.1,
-        words.2,
-        l.rotate_mb,
-        l.keep,
-    ) {
-        let _ = LOGS.set(logs);
-    }
-    plugins.warn_invalid_floors();
-    let data_dir = busbar_kernel::preflight::fleet_data_dir();
-    let registry =
-        crate::root::boot::registry(Vec::new(), Some(&plugins), data_dir.as_deref(), &mut |_| {})?;
-    admit_dropped_secrets(&registry)?;
-    let _ = BASE_BOOTSTRAP_PLUGINS.set(plugins);
-    Ok(Some(registry))
+    plugins.enabled.then_some(plugins)
 }
 
 pub(crate) fn discover_planes(
@@ -1707,6 +1923,12 @@ impl BookPreparation {
             )));
         }
         let node = self.taken.as_ref().expect("retained node result").id;
+        let deployment_id = self.identity.keep_deployment_id().await?;
+        busbar_kernel::persistence::boot_identity::publish_live(
+            self.identity.clone(),
+            node,
+            deployment_id,
+        );
         self.phase = BookPhase::OpenJournal;
         self.journal = Some(
             RuntimeJournal::open(

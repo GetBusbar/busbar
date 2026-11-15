@@ -108,10 +108,13 @@ async fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published
         .first()
         .expect("the distribution links its actual Store")
         .0;
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
-        "store": {"module": module},
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+            "store": {"module": module},
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the configured plane's application deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the application deployment resolves");

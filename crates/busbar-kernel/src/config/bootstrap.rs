@@ -33,6 +33,8 @@ pub fn resolve_store_bootstrap_with_security(
     bootstrap.health.clone_from(&deploy.health);
     bootstrap.routing.clone_from(&deploy.routing);
     bootstrap.credentials.clone_from(&deploy.credentials);
+    // The projection is read under the grammar of the document it projects.
+    bootstrap.grammar = deploy.grammar.clone();
     bootstrap.auth = deploy.auth.clone().map(|mut auth| {
         // Signed-key/at-rest material remains available to bootstrap, but auth chains, grants,
         // hooks and plane definitions are resolved only after their overlay definitions exist.

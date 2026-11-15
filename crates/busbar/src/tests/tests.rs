@@ -503,12 +503,15 @@ async fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_director
         .find(|store| store.1)
         .expect("the distribution links its real ephemeral product store")
         .0;
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {},
-        "models": {},
-        "store": { "module": store_module },
-        "auth": { "chain": [], "admin_auth": [] },
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {},
+            "models": {},
+            "store": { "module": store_module },
+            "auth": { "chain": [], "admin_auth": [] },
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
@@ -800,12 +803,15 @@ async fn one_seal_after_two_reloads() {
         .find(|store| store.1)
         .expect("the distribution links its real ephemeral product store")
         .0;
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {},
-        "models": {},
-        "store": { "module": store_module },
-        "auth": { "chain": [], "admin_auth": [] },
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {},
+            "models": {},
+            "store": { "module": store_module },
+            "auth": { "chain": [], "admin_auth": [] },
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
