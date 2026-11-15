@@ -17,6 +17,8 @@
 //! Usage: `busbar-ci-checks [check...]`; with no argument every check runs. Each finding prints as
 //! one line; any finding or error fails the run.
 
+#![forbid(unsafe_code)]
+
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode};
 
