@@ -237,7 +237,7 @@ async fn callback(
         ));
     }
     if let Err(response) = claim_once(app, &cookie).await {
-        return response;
+        return *response;
     }
     let redirect_uri = format!("{}/auth/token", app.public_url.as_deref().unwrap_or(""));
 
@@ -384,7 +384,7 @@ async fn credential_submit(
         ));
     }
     if let Err(response) = claim_once(app, &cookie).await {
-        return response;
+        return *response;
     }
 
     let verdict = credential_attempt(
@@ -457,13 +457,14 @@ fn session_expired() -> Response {
 }
 
 /// Spend the login's state: a cookie completes at most once, fleet-wide.
-async fn claim_once(app: &App, cookie: &LoginCookie) -> Result<(), Response> {
+async fn claim_once(app: &App, cookie: &LoginCookie) -> Result<(), Box<Response>> {
     let expires_at = cookie.iat.saturating_add(u64::from(LOGIN_COOKIE_MAX_AGE));
     match claim_login_state(app, &cookie.state, expires_at).await {
         StateClaim::Fresh => Ok(()),
         StateClaim::Replayed => Err(clear_and(session_expired())),
         StateClaim::Unavailable => Err(clear_and(provider_unreachable(None))),
     }
+    .map_err(Box::new)
 }
 
 fn credential_outcome(method: &str, outcome: LoginOutcome) -> Result<Principal, Box<Response>> {

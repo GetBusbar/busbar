@@ -7,6 +7,8 @@
 //! request-path marker because it does not run per request; the request path only reads what it
 //! built. Each submodule is named for the request-path module it builds for.
 
+pub(crate) mod export;
 /// `governance`: boot recovery, persistence replay, operator-issued control-plane operations and
 /// configuration builds of the governance module; none runs per request.
 pub(crate) mod governance;
+pub(crate) mod hooks;

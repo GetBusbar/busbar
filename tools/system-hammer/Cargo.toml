@@ -12,6 +12,14 @@ description = "Dev load tool: drives a real busbar binary (real plugins, every p
 # workspace. Run it from this directory: `cargo run -p busbar-system-hammer --release -- ...`.
 [workspace]
 
+# The fleet bad-pattern rules (root clippy.toml) are request-path rules: inert unless a module tree
+# carries the request-path marker, as the root workspace sets them. This dev tool has no request
+# path; it is its own workspace, so it states the same table the root [workspace.lints.clippy] does.
+[lints.clippy]
+disallowed_macros = "allow"
+disallowed_methods = "allow"
+disallowed_types = "allow"
+
 [[bin]]
 name = "busbar-system-hammer"
 path = "src/main.rs"

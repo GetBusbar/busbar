@@ -23,7 +23,7 @@ async fn echo() -> String {
     tokio::spawn(async move {
         while let Ok((mut s, _)) = l.accept().await {
             tokio::spawn(async move {
-                let mut buf = [0_u8; 4096];
+                let mut buf = vec![0_u8; 4096];
                 while let Ok(n) = s.read(&mut buf).await {
                     if n == 0 || s.write_all(&buf[..n]).await.is_err() {
                         break;

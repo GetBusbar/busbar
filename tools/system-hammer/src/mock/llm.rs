@@ -539,7 +539,7 @@ pub fn memfind(hay: &[u8], needle: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sonic_rs::{JsonValueTrait as _, Value};
+    use sonic_rs::Value;
 
     #[test]
     fn memfind_matches_driver_semantics() {

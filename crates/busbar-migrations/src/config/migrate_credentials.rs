@@ -43,7 +43,7 @@ pub(super) fn migrate(
         else {
             return Ok::<_, String>(None);
         };
-        yaml::to_value(&reference.authoring(&busbar_kernel::seal::acquire()))
+        yaml::to_value(reference.authoring(&busbar_kernel::seal::acquire()))
             .map(Some)
             .map_err(|_| "cannot author migrated reference".into())
     })();
