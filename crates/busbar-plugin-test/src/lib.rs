@@ -7,6 +7,13 @@
 #![forbid(unsafe_code)]
 
 pub mod services;
+/// Host targets (SDK-SAFE-TEST-HOST §10): a plugin repository's conformance subject, behind the
+/// facade features `target` (shared code, `std::net`) and `target-http` (the hyper carrier). Its
+/// files live in `src/host_target/`: a directory named `target` is skipped as build output by the
+/// repository's `.gitignore`, R131's source walk and BP14's name corpus.
+#[cfg(feature = "target")]
+#[path = "host_target/mod.rs"]
+pub mod target;
 
 pub use busbar_contract::abi::sdk::test_support::cpu;
 pub use busbar_contract::abi::sdk::test_support::loans::{Buf, List, Loans};
