@@ -41,7 +41,7 @@ impl GovState {
             budget_period,
             include_request_fee,
             &cell,
-            observed,
+            &observed,
         )
     }
 
@@ -53,11 +53,11 @@ impl GovState {
         budget_period: &str,
         include_request_fee: bool,
         cell: &BudgetCell,
-        observed: crate::persistence::observations::BudgetTotal,
+        observed: &crate::persistence::observations::BudgetTotal,
     ) -> RecordStoreResult<DerivedUsage> {
         if observed.spent_nanos != 0 || !observed.units.is_empty() {
             return self
-                .price_observed_cell(cost, include_request_fee, cell, &observed)?
+                .price_observed_cell(cost, include_request_fee, cell, observed)?
                 .map_err(|error| money_refusal(bucket_id, &error));
         }
         let inputs = money_view::Inputs::of(cost, budget_period, include_request_fee, cell);
@@ -105,7 +105,7 @@ impl GovState {
             observed,
             |id, period, cell, observed| {
                 let models = model_lanes(&cell, &observed)?;
-                let usage = self.viewed_usage(cost, id, period, true, &cell, observed)?;
+                let usage = self.viewed_usage(cost, id, period, true, &cell, &observed)?;
                 Ok(KeyScrape { usage, models })
             },
         )

@@ -306,10 +306,9 @@ impl PendingGuard<'_> {
                 .entries
                 .get(id)
                 .is_some_and(|entry| !entry.recovered)
+                && found.replace(*id).is_some()
             {
-                if found.replace(*id).is_some() {
-                    several = true;
-                }
+                several = true;
             }
         }
         match found {

@@ -385,14 +385,6 @@ impl GovState {
         Ok(None)
     }
 
-    /// Validate original correction request/custody without restoring or sending it.
-    pub(crate) fn legacy_correction_fingerprint(
-        event: &RecoveryEvent,
-    ) -> RecordStoreResult<[u8; 32]> {
-        let custody = recovery::Custody::decode(&event.payload)?;
-        custody.validate_event(event)?;
-        Ok(event.body_fingerprint)
-    }
     pub(crate) fn canonical_correction_receipt_digest(
         event: &RecoveryEvent,
     ) -> RecordStoreResult<[u8; 32]> {
