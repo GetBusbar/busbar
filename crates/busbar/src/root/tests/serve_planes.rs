@@ -32,6 +32,10 @@ pub(super) fn post() -> Arc<NodeEndPost> {
 
 pub(crate) use crate::root::PUBLISHING;
 
+fn deadline_passed(until: tokio::time::Instant) -> bool {
+    tokio::time::Instant::now() >= until
+}
+
 fn dropped_path() -> std::path::PathBuf {
     let name = "plane_driver_test_plane";
     let exe = std::env::current_exe().expect("the test binary's path");
@@ -61,7 +65,7 @@ pub(super) fn bound(instance: &str, dispatcher: &Arc<Dispatcher>) -> crate::root
             &path,
             &stated,
             Bind {
-                instance: Arc::from(instance),
+                instance: <Arc<str>>::from(instance),
                 max_inflight_cap: 64,
                 sink: Arc::new(NoSink),
                 dispatcher: dispatcher.adopter(),
@@ -557,7 +561,7 @@ pub(crate) async fn chained_records(
                 break;
             }
         }
-        if rows.len() >= want || tokio::time::Instant::now() >= until {
+        if rows.len() >= want || deadline_passed(until) {
             break rows;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;

@@ -16,7 +16,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::ticket::Ticket;
@@ -51,75 +51,123 @@ pub(crate) async fn ticks_on<K: Kind>(
         return;
     };
     let _recycled = Recycled { dispatcher, driver };
-    let mut at = 0;
-    let mut failures = 0_u32;
-    let mut reported: Option<Instant> = None;
+    let mut schedule = Schedule {
+        failures: 0,
+        reported: None,
+    };
+    let mut wait = Wait::Until(0);
     loop {
-        let now = super::now_ns();
-        if at > now {
-            tokio::time::sleep(Duration::from_nanos(at - now)).await;
+        pause(wait).await;
+        match turn(plugin, dispatcher, driver, backoff, failed, &mut schedule).await {
+            Some(next) => wait = next,
+            None => return,
         }
+    }
+}
 
-        let done = dispatcher.tick_copy(plugin, driver, super::now_ns()).await;
-        match (done.outcome, done.frame.map(|f| f.out.next_tick_ns)) {
-            (Outcome::Ready | Outcome::Pending, next) => {
-                if failures > 0 {
-                    tracing::info!(
-                        instance = plugin.name(),
-                        kind = ?K::CODE,
-                        failures,
-                        "a plugin instance's tick succeeded again; its schedule continues"
-                    );
-                }
-                failures = 0;
-                reported = None;
-                match next {
-                    Some(0) => return,
-                    Some(next) => at = next,
-                    None => {
-                        failed.store(true, Ordering::Release);
-                        tracing::warn!(
-                            instance = plugin.name(),
-                            kind = ?K::CODE,
-                            "a plugin instance's tick answered no frame: its tick schedule has stopped"
-                        );
-                        return;
-                    }
-                }
+/// When the next tick is due: at the plugin's own `next_tick_ns`, or a backoff after a failure.
+#[derive(Clone, Copy)]
+enum Wait {
+    Until(u64),
+    For(Duration),
+}
+
+/// A tick schedule's failure state, carried from turn to turn.
+struct Schedule {
+    failures: u32,
+    /// The dispatch clock reading of the last failure report.
+    reported: Option<u64>,
+}
+
+/// Wait until the next tick is due.
+async fn pause(wait: Wait) {
+    match wait {
+        Wait::Until(at) => {
+            let now = super::now_ns();
+            if at > now {
+                tokio::time::sleep(Duration::from_nanos(at - now)).await;
             }
-            (outcome, _) => {
-                let ended = !plugin.inner.is_open() || plugin.inner.faulted.load(Ordering::Acquire);
-                failures = failures.saturating_add(1);
-                let wait = backoff.delay(failures, busbar_contract::retry::unit());
-                let due = reported.is_none_or(|at| at.elapsed() >= REPORT_EVERY);
-                if ended {
+        }
+        Wait::For(delay) => {
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+}
+
+/// One tick, judged against the one clock reading taken at its start: when the next is due, or
+/// `None` when the schedule ends.
+async fn turn<K: Kind>(
+    plugin: &Plugin<K>,
+    dispatcher: &Dispatcher,
+    driver: Ticket,
+    backoff: Backoff,
+    failed: &AtomicBool,
+    schedule: &mut Schedule,
+) -> Option<Wait> {
+    let now = super::now_ns();
+    let done = dispatcher.tick_copy(plugin, driver, now).await;
+    match (done.outcome, done.frame.map(|f| f.out.next_tick_ns)) {
+        (Outcome::Ready | Outcome::Pending, next) => {
+            if schedule.failures > 0 {
+                tracing::info!(
+                    instance = plugin.name(),
+                    kind = ?K::CODE,
+                    failures = schedule.failures,
+                    "a plugin instance's tick succeeded again; its schedule continues"
+                );
+            }
+            schedule.failures = 0;
+            schedule.reported = None;
+            match next {
+                Some(0) => None,
+                Some(next) => Some(Wait::Until(next)),
+                None => {
                     failed.store(true, Ordering::Release);
-                    tracing::error!(
-                        diag = %PLUGIN_TICK_FAILED.banner(),
-                        instance = plugin.name(),
-                        kind = ?K::CODE,
-                        ?outcome,
-                        failures,
-                        "a plugin instance's tick failed and the instance is closed or faulted: \
-                         its tick schedule ends with it"
-                    );
-                    return;
-                }
-                if due {
-                    reported = Some(Instant::now());
                     tracing::warn!(
-                        diag = %PLUGIN_TICK_FAILED.banner(),
                         instance = plugin.name(),
                         kind = ?K::CODE,
-                        ?outcome,
-                        failures,
-                        retry_in_ms = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
-                        "a plugin instance's tick failed: it is retried with backoff"
+                        "a plugin instance's tick answered no frame: its tick schedule has stopped"
                     );
+                    None
                 }
-                at = super::now_ns()
-                    .saturating_add(u64::try_from(wait.as_nanos()).unwrap_or(u64::MAX));
             }
+        }
+        (outcome, _) => {
+            let ended = !plugin.inner.is_open() || plugin.inner.faulted.load(Ordering::Acquire);
+            schedule.failures = schedule.failures.saturating_add(1);
+            let failures = schedule.failures;
+            let wait = backoff.delay(failures, busbar_contract::retry::unit());
+            let due = schedule
+                .reported
+                .is_none_or(|at| Duration::from_nanos(now.saturating_sub(at)) >= REPORT_EVERY);
+            if ended {
+                failed.store(true, Ordering::Release);
+                tracing::error!(
+                    diag = %PLUGIN_TICK_FAILED.banner(),
+                    instance = plugin.name(),
+                    kind = ?K::CODE,
+                    ?outcome,
+                    failures,
+                    "a plugin instance's tick failed and the instance is closed or faulted: \
+                     its tick schedule ends with it"
+                );
+                return None;
+            }
+            if due {
+                schedule.reported = Some(now);
+                tracing::warn!(
+                    diag = %PLUGIN_TICK_FAILED.banner(),
+                    instance = plugin.name(),
+                    kind = ?K::CODE,
+                    ?outcome,
+                    failures,
+                    retry_in_ms = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
+                    "a plugin instance's tick failed: it is retried with backoff"
+                );
+            }
+            Some(Wait::For(wait))
         }
     }
 }

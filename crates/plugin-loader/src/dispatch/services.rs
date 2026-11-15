@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::collections::HashMap;
+use foldhash::HashMap;
 use std::mem::size_of;
 use std::os::raw::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -33,6 +33,7 @@ use super::auth_handle::{
     RefusalBytes, RefuseAsk,
 };
 use super::ticket::{decode, InstanceWake, Waking};
+use crate::cold::dispatch::services::Sweep as _;
 use busbar_contract::abi::auth::FieldSpan;
 use busbar_contract::abi::host::service::ItemSpan;
 use busbar_contract::abi::mechanism::call::Span;
@@ -169,6 +170,12 @@ impl Issue {
     }
 }
 
+/// One ticket's bound hook children, by the caller's incarnation.
+type Children = HashMap<
+    busbar_contract::services::Incarnation,
+    Arc<dyn busbar_contract::services::HookChildInvocation>,
+>;
+
 /// The results of one dispatcher's services, by ticket then issue order, each ticket's under the
 /// epoch of the op that issued them. A new op's handles count from 0 again, so a handle alone does
 /// not name its op: a [`Completer`] carries its op's epoch, and a completion whose epoch is not the
@@ -181,17 +188,44 @@ pub struct ServiceStore {
     shards: [Mutex<HashMap<Ticket, Held>>; SHARDS],
     /// The last epoch minted.
     epochs: AtomicU64,
-    children: Mutex<
-        HashMap<
-            (Ticket, busbar_contract::services::Incarnation),
-            Arc<dyn busbar_contract::services::HookChildInvocation>,
-        >,
-    >,
+    /// Each ticket's bound hook children, by the caller's incarnation: unbound by ticket.
+    children: Mutex<HashMap<Ticket, Children>>,
     /// The driver tickets' held exchanges, by handle (`super::held`).
     pub(crate) held: super::held::Held,
 }
 
 const SHARDS: usize = 16;
+
+std::thread_local! {
+    /// What a forget takes out under the shard lock (the conditional exchanges it retires and the
+    /// drivers it wakes after): one pair of buffers per thread, reused by every forget on it.
+    static FORGOTTEN: std::cell::Cell<(Vec<conditional_store::Kept>, Vec<&'static InstanceWake>)> =
+        const { std::cell::Cell::new((Vec::new(), Vec::new())) };
+}
+
+/// This thread's forget buffers, lent for one forget: dropping it (after the shard lock is
+/// released) drops what is left and hands the emptied buffers back.
+struct Forgotten {
+    removed: Vec<conditional_store::Kept>,
+    wakes: Vec<&'static InstanceWake>,
+}
+
+impl Forgotten {
+    fn lend() -> Self {
+        let (removed, wakes) = FORGOTTEN.take();
+        Forgotten { removed, wakes }
+    }
+}
+
+impl Drop for Forgotten {
+    fn drop(&mut self) {
+        let mut removed = std::mem::take(&mut self.removed);
+        let mut wakes = std::mem::take(&mut self.wakes);
+        removed.clear();
+        wakes.clear();
+        FORGOTTEN.set((removed, wakes));
+    }
+}
 
 impl ServiceStore {
     pub(crate) fn bind_child(
@@ -203,13 +237,17 @@ impl ServiceStore {
         self.children
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert((ticket, caller.incarnation().clone()), child);
+            .entry(ticket)
+            .or_default()
+            .insert(caller.incarnation().clone(), child);
     }
     pub(crate) fn unbind_child(&self, ticket: Ticket) {
-        self.children
+        let unbound = self
+            .children
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .retain(|(t, _), _| *t != ticket);
+            .remove(&ticket);
+        drop(unbound);
     }
     fn child(
         &self,
@@ -219,7 +257,8 @@ impl ServiceStore {
         self.children
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .get(&(ticket, caller.incarnation().clone()))
+            .get(&ticket)
+            .and_then(|bound| bound.get(caller.incarnation()))
             .cloned()
     }
 
@@ -274,39 +313,37 @@ impl ServiceStore {
             let inspections = std::mem::take(&mut h.inspections);
             h.conditional_units.clear();
             h.retirement.clear();
-            let mut removed = Vec::new();
-            let mut wakes = Vec::new();
+            let mut forgotten = Forgotten::lend();
             for (key, mut kept) in std::mem::take(&mut h.conditionals) {
                 if kept.retire() {
                     if let Some(owner) = kept.completed_owner() {
-                        wakes.push(owner);
+                        forgotten.wakes.push(owner);
                     }
                     h.conditionals.insert(key, kept);
                 } else {
-                    removed.push(kept);
+                    forgotten.removed.push(kept);
                 }
             }
 
             h.epoch = self.epochs.fetch_add(1, Ordering::Relaxed) + 1;
             let empty_owner = if h.empty() { map.remove(&ticket) } else { None };
-            (entries, inspections, removed, wakes, empty_owner)
+            (entries, inspections, forgotten, empty_owner)
         };
         let count = retired.0.len();
-        let (entries, inspections, removed, wakes, empty_owner) = retired;
-        drop((entries, inspections, removed, empty_owner));
-        for owner in wakes {
+        let (entries, inspections, mut forgotten, empty_owner) = retired;
+        drop((entries, inspections, empty_owner));
+        forgotten.removed.clear();
+        for owner in forgotten.wakes.drain(..) {
             super::conditional::wake_driver(owner);
         }
         count
     }
 
     pub(crate) fn forget_worker(&self, worker: u32) {
-        let tickets: Vec<_> = self
+        // A faulted worker's tickets are forgotten once, when the watchdog replaces it.
+        let tickets = self
             .shard(worker)
-            .keys()
-            .filter(|t| decode(t.slot).0 == worker)
-            .copied()
-            .collect();
+            .keys_where(|t| decode(t.slot).0 == worker);
         for ticket in tickets {
             self.forget(ticket);
         }
@@ -319,11 +356,11 @@ impl ServiceStore {
             .entry(ticket)
             .or_insert_with(|| Held {
                 epoch,
-                entries: HashMap::new(),
-                inspections: HashMap::new(),
-                conditionals: HashMap::new(),
-                conditional_units: HashMap::new(),
-                retirement: HashMap::new(),
+                entries: HashMap::default(),
+                inspections: HashMap::default(),
+                conditionals: HashMap::default(),
+                conditional_units: HashMap::default(),
+                retirement: HashMap::default(),
             })
             .entries
             .insert(
@@ -630,11 +667,11 @@ fn serve_kept(
         let mut map = store.lock(h.ticket);
         let held = map.entry(h.ticket).or_insert_with(|| Held {
             epoch: store.epochs.fetch_add(1, Ordering::Relaxed) + 1,
-            entries: HashMap::new(),
-            inspections: HashMap::new(),
-            conditionals: HashMap::new(),
-            conditional_units: HashMap::new(),
-            retirement: HashMap::new(),
+            entries: HashMap::default(),
+            inspections: HashMap::default(),
+            conditionals: HashMap::default(),
+            conditional_units: HashMap::default(),
+            retirement: HashMap::default(),
         });
         let epoch = held.epoch;
         match held.entries.entry(issue) {

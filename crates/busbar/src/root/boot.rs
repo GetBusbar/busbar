@@ -1451,7 +1451,7 @@ fn journal_history_budget() -> busbar_kernel::persistence::journal::BufferBudget
     }
 }
 
-pub type NodeLeaseTask = tokio::task::JoinHandle<Result<(), String>>;
+pub(crate) type NodeLeaseTask = tokio::task::JoinHandle<Result<(), String>>;
 pub(crate) type WatchedBook = (super::durability::NodeBook, Option<NodeLeaseTask>);
 
 /// Construction retains the actual owners before every asynchronous crossing.

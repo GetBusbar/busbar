@@ -9,17 +9,10 @@ pub fn apply_mint_ttl_ceiling(
     match ceiling_secs {
         None => Ok(requested_ttl_secs),
         Some(max) if requested_ttl_secs <= max => Ok(requested_ttl_secs),
-        Some(max) if explicit => {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: the over-ceiling refusal message is built only when the mint is refused"
-            )]
-            let msg = format!(
-                "requested key lifetime ({requested_ttl_secs}s) exceeds the policy ceiling \
-                 auth.policy.max_ttl ({max}s); request a shorter expires_in/expires_at"
-            );
-            Err(msg)
-        }
+        Some(max) if explicit => Err(crate::cold::governance::runtime::mint_policy_ttl_refusal(
+            requested_ttl_secs,
+            max,
+        )),
 
         Some(max) => Ok(max),
     }
@@ -166,48 +159,7 @@ fn pick_modes(c: &RoleCeiling) -> Option<&Vec<String>> {
 
 impl MintPolicy {
     pub fn from_auth(auth: Option<&crate::config::AuthCfg>) -> Self {
-        let Some(policy) = auth.map(|a| &a.policy) else {
-            return Self::default();
-        };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the mint policy is resolved once at boot from config"
-        )]
-        let modes_to_wire = |m: &Option<Vec<crate::config::BindingMode>>| {
-            m.as_ref()
-                .map(|list| list.iter().map(|b| b.as_str().to_string()).collect())
-        };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the mint policy is resolved once at boot from config"
-        )]
-        let ceilings = policy
-            .mint_ceilings
-            .iter()
-            .map(|(role, c)| {
-                (
-                    role.clone(),
-                    RoleCeiling {
-                        max_ttl_secs: c
-                            .max_ttl
-                            .as_deref()
-                            .and_then(|s| crate::config::parse::parse_duration_secs(s).ok()),
-                        allowed_pools: c.allowed_pools.clone(),
-                        binding_modes: modes_to_wire(&c.binding_modes),
-                    },
-                )
-            })
-            .collect();
-        MintPolicy {
-            self_mint: policy.self_mint,
-            block_max_ttl_secs: policy
-                .max_ttl
-                .as_deref()
-                .and_then(|s| crate::config::parse::parse_duration_secs(s).ok()),
-            block_binding_modes: modes_to_wire(&policy.binding_modes),
-            ceilings,
-            max_outstanding_tickets_per_key: policy.max_outstanding_tickets_per_key,
-        }
+        crate::off_path::governance::runtime::mint_policy_from_auth(auth)
     }
 
     /// The ceilings of the roles the caller holds, read in place (a role without a ceiling adds none).
@@ -248,16 +200,11 @@ impl MintPolicy {
         if capped(pick_pools) {
             match req.requested_pools {
                 None => {
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "error: the refusal message is built only when the mint is refused"
-                    )]
-                    let msg = format!(
-                        "the mint requests ALL pools but the caller's role ceiling \
-                         (auth.policy.mint_ceilings) allows only [{}]; name an explicit subset",
-                        union(pick_pools)
+                    return Err(
+                        crate::cold::governance::runtime::mint_policy_all_pools_refusal(&union(
+                            pick_pools,
+                        )),
                     );
-                    return Err(msg);
                 }
                 Some(requested) => {
                     if let Some(bad) = requested
@@ -265,59 +212,37 @@ impl MintPolicy {
                         .filter(|s| s.kind == "pool")
                         .find(|s| !held_allows(pick_pools, &s.value))
                     {
-                        #[expect(
-                            clippy::disallowed_methods,
-                            reason = "error: the refusal message is built only when the mint is refused"
-                        )]
-                        let msg = format!(
-                            "pool '{}' is outside the caller's role mint ceiling \
-                             (auth.policy.mint_ceilings allows [{}])",
-                            bad.value,
-                            union(pick_pools)
-                        );
-                        return Err(msg);
+                        return Err(crate::cold::governance::runtime::mint_policy_pool_refusal(
+                            &bad.value,
+                            &union(pick_pools),
+                        ));
                     }
                 }
             }
 
             if req.grants_other_kinds {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: the refusal message is built only when the mint is refused"
-                )]
-                let msg = format!(
-                    "the mint grants scopes of a kind other than pools, but the caller's role \
-                     ceiling (auth.policy.mint_ceilings) allows only the pools [{}]",
-                    union(pick_pools)
+                return Err(
+                    crate::cold::governance::runtime::mint_policy_other_kinds_refusal(&union(
+                        pick_pools,
+                    )),
                 );
-                return Err(msg);
             }
         }
 
         if let Some(mode) = req.requested_mode {
             if let Some(block) = self.block_binding_modes.as_deref() {
                 if !block.iter().any(|m| m == mode) {
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "error: the refusal message is built only when the mint is refused"
-                    )]
-                    let msg = format!(
-                        "binding mode '{mode}' is not permitted by policy (allowed: [{}])",
-                        Listed(block)
-                    );
-                    return Err(msg);
+                    return Err(crate::cold::governance::runtime::mint_policy_mode_refusal(
+                        mode,
+                        &Listed(block),
+                    ));
                 }
             }
             if capped(pick_modes) && !held_allows(pick_modes, mode) {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: the refusal message is built only when the mint is refused"
-                )]
-                let msg = format!(
-                    "binding mode '{mode}' is not permitted by policy (allowed: [{}])",
-                    union(pick_modes)
-                );
-                return Err(msg);
+                return Err(crate::cold::governance::runtime::mint_policy_mode_refusal(
+                    mode,
+                    &union(pick_modes),
+                ));
             }
         }
 

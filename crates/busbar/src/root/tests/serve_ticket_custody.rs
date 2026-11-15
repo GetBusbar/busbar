@@ -7,6 +7,11 @@
 use super::*;
 use crate::root::durability::tests::NativeFixture;
 
+/// The store clock in whole seconds, one reading per call.
+fn store_secs() -> u64 {
+    busbar_kernel::store::now()
+}
+
 /// An ungrouped key's cost: no limit stands between its admissions.
 fn unlimited() -> Arc<CostModel> {
     Arc::new(CostModel::resolve_parts(None, 0, &BTreeMap::new()))
@@ -109,7 +114,7 @@ async fn a_saturated_key_is_refused_before_its_ticket_record_is_written() {
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::clone(&g.app)));
     let press = crate::root::serve::LiveTickets(Arc::downgrade(&handle));
     let caller = busbar_contract::services::Caller::for_test(
-        Arc::from(g.served.planes[0].instance.as_str()),
+        <Arc<str>>::from(g.served.planes[0].instance.as_str()),
         busbar_contract::abi::mechanism::KindCode::Plane,
     );
     let mut held = Vec::new();
@@ -248,9 +253,7 @@ async fn every_custody_release_keeps_the_key_and_unit_indexes_in_step() {
     swept.money.settle_end(swept.unit, 200);
     swept.owner.custody.terminal(swept.unit, true);
     tokio::time::sleep(std::time::Duration::from_secs(
-        expiry
-            .saturating_sub(busbar_kernel::store::now())
-            .saturating_add(1),
+        expiry.saturating_sub(store_secs()).saturating_add(1),
     ))
     .await;
     swept.owner.custody.sweep().await;
@@ -262,7 +265,7 @@ async fn every_custody_release_keeps_the_key_and_unit_indexes_in_step() {
 
     let early = reserved_source(&g, "ticket-index-early").await;
     let late = reserved_source(&g, "ticket-index-late").await;
-    let at = busbar_kernel::store::now();
+    let at = store_secs();
     let mint = |source: &ReservedSource, ttl: u64| {
         let custody = Arc::clone(&source.owner.custody);
         let owned = Arc::clone(&source.owner.source);

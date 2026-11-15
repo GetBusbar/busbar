@@ -48,3 +48,119 @@ pub(crate) fn at_rest_refused_kid(seen: &mut std::collections::BTreeSet<String>,
 pub(crate) fn at_rest_kid_resource(kid: &str) -> String {
     format!("kid:{kid}")
 }
+
+/// `recovery`: the monotonic clock an operation's first recovery send is stamped with, read once
+/// per operation (revision 0).
+#[cold]
+pub(crate) fn recovery_first_send_clock() -> std::time::Instant {
+    std::time::Instant::now()
+}
+
+/// `unit_checkpoint`: a running-unit checkpoint refusal, rendered once on the error path.
+#[cold]
+pub(crate) fn unit_checkpoint_refusal(message: &str) -> busbar_contract::records::RecordStoreError {
+    busbar_contract::records::RecordStoreError(message.to_owned())
+}
+
+/// `unit_checkpoint_store`: a failed checkpoint operation, rendered once on the error path.
+#[cold]
+pub(crate) fn unit_checkpoint_store_error(
+    e: &dyn std::fmt::Debug,
+) -> busbar_contract::records::RecordStoreError {
+    busbar_contract::records::RecordStoreError(format!("unit checkpoint: {e:?}"))
+}
+
+/// `identity_runtime`: a credential mint refused because the CSPRNG failed.
+#[cold]
+pub(crate) fn identity_runtime_csprng_refusal(
+    e: &dyn std::fmt::Display,
+) -> busbar_contract::records::RecordStoreError {
+    busbar_contract::records::RecordStoreError(format!("CSPRNG unavailable: {e}"))
+}
+
+/// `mint_policy`: an explicit mint lifetime over the policy ceiling, refused.
+#[cold]
+pub(crate) fn mint_policy_ttl_refusal(requested_ttl_secs: u64, max: u64) -> String {
+    format!(
+        "requested key lifetime ({requested_ttl_secs}s) exceeds the policy ceiling \
+         auth.policy.max_ttl ({max}s); request a shorter expires_in/expires_at"
+    )
+}
+
+/// `mint_policy`: a mint of ALL pools under a pool-capped role ceiling, refused.
+#[cold]
+pub(crate) fn mint_policy_all_pools_refusal(allowed: &dyn std::fmt::Display) -> String {
+    format!(
+        "the mint requests ALL pools but the caller's role ceiling \
+         (auth.policy.mint_ceilings) allows only [{allowed}]; name an explicit subset"
+    )
+}
+
+/// `mint_policy`: a mint naming a pool outside the role ceiling, refused.
+#[cold]
+pub(crate) fn mint_policy_pool_refusal(pool: &str, allowed: &dyn std::fmt::Display) -> String {
+    format!(
+        "pool '{pool}' is outside the caller's role mint ceiling \
+         (auth.policy.mint_ceilings allows [{allowed}])"
+    )
+}
+
+/// `mint_policy`: a mint granting non-pool scopes under a pool-capped role ceiling, refused.
+#[cold]
+pub(crate) fn mint_policy_other_kinds_refusal(allowed: &dyn std::fmt::Display) -> String {
+    format!(
+        "the mint grants scopes of a kind other than pools, but the caller's role \
+         ceiling (auth.policy.mint_ceilings) allows only the pools [{allowed}]"
+    )
+}
+
+/// `mint_policy`: a mint binding mode the policy does not permit, refused.
+#[cold]
+pub(crate) fn mint_policy_mode_refusal(mode: &str, allowed: &dyn std::fmt::Display) -> String {
+    format!("binding mode '{mode}' is not permitted by policy (allowed: [{allowed}])")
+}
+
+/// `group_provision`: a refused group change, its message rendered once.
+#[cold]
+pub(crate) fn group_provision_refusal(
+    kind: fn(String) -> crate::config::transaction::TxnError,
+    args: std::fmt::Arguments<'_>,
+) -> crate::config::transaction::TxnError {
+    kind(std::fmt::format(args))
+}
+
+/// `group_provision`: the audit resource naming a group whose provision was refused.
+#[cold]
+pub(crate) fn group_provision_resource(group: &str) -> String {
+    format!("group:{group}")
+}
+
+/// `group_provision`: an unconfirmed group persist, its refusal rendered once.
+#[cold]
+pub(crate) fn group_provision_persist_refusal(error: &dyn std::fmt::Display) -> String {
+    format!(
+        "group persistence to the Store overlay was not confirmed: {error}; the running group \
+         tree is unaffected"
+    )
+}
+
+/// `self_serve`: the audit resource of a self-serve mint refused because the key is on hold.
+#[cold]
+pub(crate) fn self_serve_held_resource(
+    key_id: Option<&str>,
+    user_sub: &str,
+    reason: &str,
+) -> String {
+    match key_id {
+        Some(id) => format!("key:{id}#{reason}"),
+        None => format!("subject:{user_sub}#{reason}"),
+    }
+}
+
+/// `native_runtime`: a failed observation read, rendered once on the error path.
+#[cold]
+pub(crate) fn native_runtime_store_error(
+    error: &dyn std::fmt::Display,
+) -> busbar_contract::records::RecordStoreError {
+    busbar_contract::records::RecordStoreError(error.to_string())
+}

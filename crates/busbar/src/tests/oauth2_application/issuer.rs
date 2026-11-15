@@ -126,7 +126,7 @@ pub fn settings(audience: &str) -> serde_json::Map<String, serde_json::Value> {
     .clone()
 }
 
-pub fn exchanges_for(code: &str) -> usize {
+pub(super) fn exchanges_for(code: &str) -> usize {
     idp()
         .exchanges
         .lock()

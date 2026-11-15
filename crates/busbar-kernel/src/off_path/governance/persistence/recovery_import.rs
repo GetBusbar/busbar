@@ -35,11 +35,7 @@ pub(super) fn guards_digest(guards: &[Predicate]) -> [u8; 32] {
     digest.finalize()
 }
 pub(super) fn copy_guards(guards: &[Predicate]) -> Arc<[Predicate]> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: legacy recovery import runs only during startup upgrade adoption"
-    )]
-    let out = guards
+    guards
         .iter()
         .map(|guard| Predicate {
             address: guard.address.clone(),
@@ -48,20 +44,14 @@ pub(super) fn copy_guards(guards: &[Predicate]) -> Arc<[Predicate]> {
                 ExpectedValue::Exact(value) => ExpectedValue::Exact(value.clone()),
             },
         })
-        .collect();
-    out
+        .collect()
 }
 
 fn imported_address(operation: &[u8; 16]) -> Address {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: legacy recovery import runs only during startup upgrade adoption"
-    )]
-    let out = Address {
+    Address {
         namespace: IMPORTED.0,
         key: operation.to_vec(),
-    };
-    out
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -209,10 +199,6 @@ impl StoreRecovery {
     }
 
     pub(super) async fn adopt_pending(&self) -> Result<(), RecoveryError> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: legacy recovery import runs only during startup upgrade adoption"
-        )]
         let retained = self
             .state
             .lock()

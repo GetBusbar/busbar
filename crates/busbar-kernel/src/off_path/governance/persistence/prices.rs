@@ -112,10 +112,6 @@ struct EntryJson<C> {
 impl StoredEntry {
     #[must_use]
     pub fn value(&self) -> Vec<u8> {
-        #[expect(
-            clippy::disallowed_types,
-            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
-        )]
         let card: serde_json::Value =
             serde_json::from_slice(&self.card.to_bytes()).unwrap_or(serde_json::Value::Null);
         let json = EntryJson {
@@ -131,40 +127,18 @@ impl StoredEntry {
             card,
             correction: self.correction.as_deref().map(hex::encode),
         };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
-        )]
-        let out = serde_json::to_vec(&json).unwrap_or_default();
-        out
+        serde_json::to_vec(&json).unwrap_or_default()
     }
 
     pub fn from_value(key: EntryKey, value: &[u8]) -> std::result::Result<Self, String> {
-        #[expect(
-            clippy::disallowed_methods,
-            clippy::disallowed_types,
-            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
-        )]
         let json: EntryJson<serde_json::Value> = serde_json::from_slice(value)
             .map_err(|e| format!("card entry {key}: not an entry: {e}"))?;
         if json.v != 1 {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
-            )]
             return Err(format!("card entry {key}: version {} is not known", json.v));
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
-        )]
         let card = CardFields::from_bytes(
             &serde_json::to_vec(&json.card).map_err(|e| format!("card entry {key}: {e}"))?,
         )?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
-        )]
         let base = match json.base {
             Some(hex) => Some(
                 EntryKey::parse_hex(&hex)
@@ -172,10 +146,6 @@ impl StoredEntry {
             ),
             None => None,
         };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
-        )]
         let correction = match json.correction {
             Some(h) => Some(
                 hex::decode(&h)
@@ -425,14 +395,9 @@ fn at(tag: u8, key: Option<EntryKey>) -> Address {
     }
 }
 fn encode<T: Serialize>(v: &T) -> Result<Secret<Vec<u8>>> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
-    )]
-    let out = serde_json::to_vec(v)
+    serde_json::to_vec(v)
         .map(Secret::new)
-        .map_err(|_| Error::Invalid);
-    out
+        .map_err(|_| Error::Invalid)
 }
 fn decode<T: serde::de::DeserializeOwned>(v: &Secret<Vec<u8>>) -> Result<T> {
     serde_json::from_slice(v.expose(&crate::seal::lend())).map_err(|_| Error::Corrupt)
@@ -541,10 +506,6 @@ impl Prices<'_> {
         changes: Vec<(Address, Secret<Vec<u8>>)>,
         publication: Option<StoredIntent>,
     ) -> Result<PricePlan> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
-        )]
         let candidate = PreparedCandidate::new(Candidate {
             id: self.store.next_id()?,
             codec: CANDIDATE_VERSION,
@@ -618,23 +579,14 @@ impl Prices<'_> {
             (at(b'S', Some(entry.key)), status_bytes),
         ];
         if !own && head.is_none_or(|head| entry.key > head) {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
-            )]
             changes.push((at(b'H', None), Secret::new(entry.key.as_bytes().to_vec())));
         }
         let publication = (!own).then(|| intent(entry, &status));
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
-        )]
-        let out = self.plan(
+        self.plan(
             addresses.into_iter().zip(values).collect(),
             changes,
             publication,
-        );
-        out
+        )
     }
 
     /// Persist authorization and the immutable cutover before final publication.
@@ -685,23 +637,14 @@ impl Prices<'_> {
         validated(key, bytes, &status_bytes).map_err(|_| Error::Invalid)?;
         let mut changes = vec![(at(b'S', Some(key)), status_bytes)];
         if to == Phase::Active && head.is_none_or(|head| key > head) {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
-            )]
             changes.push((at(b'H', None), Secret::new(key.as_bytes().to_vec())));
         }
         let publication = (to == Phase::Active).then(|| intent(entry, &status));
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
-        )]
-        let out = self.plan(
+        self.plan(
             addresses.into_iter().zip(values).collect(),
             changes,
             publication,
-        );
-        out
+        )
     }
 
     /// Persist a future-only void, retaining its audit fields and target identity.
@@ -730,16 +673,11 @@ impl Prices<'_> {
         if values[2].is_some() {
             return Err(Error::Conflict);
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
-        )]
-        let out = self.plan(
+        self.plan(
             addresses.into_iter().zip(values).collect(),
             vec![(void_at, encode(&record)?)],
             None,
-        );
-        out
+        )
     }
 
     pub async fn submit(&self, plan: &mut PricePlan) -> Result<Outcome> {
@@ -785,10 +723,6 @@ impl Prices<'_> {
     pub async fn snapshot(&self) -> Result<Snapshot> {
         let found = self.store.scan(PRICES, vec![], None).await?;
         let guard = scan_guard(PRICES, found.generation);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
-        )]
         let mut rows: BTreeMap<_, _> = found.rows.into_iter().collect();
         let head = head_value(rows.remove(&at(b'H', None)).as_ref())?;
         let mut snapshot = Snapshot {
@@ -796,10 +730,6 @@ impl Prices<'_> {
             generation: Some(found.generation),
             ..Snapshot::default()
         };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
-        )]
         let entry_addresses: Vec<_> = rows
             .keys()
             .filter(|a| a.key.first() == Some(&b'E'))

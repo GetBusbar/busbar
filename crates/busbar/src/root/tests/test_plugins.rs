@@ -62,7 +62,7 @@ impl FreshApplicationStore {
 
     /// Commit only the public witness of this provisioner's genuine exclusive Store creation.
     /// This does not initialize an authentication format or grant any runtime quota.
-    pub async fn commit_creation_witness(
+    pub(crate) async fn commit_creation_witness(
         &self,
     ) -> Result<busbar_kernel::host_record_bootstrap::StoreWitness, String> {
         use busbar_kernel::persistence::scoped::{Outcome, ScopedStore};
@@ -93,7 +93,7 @@ impl FreshApplicationStore {
         })
     }
 
-    pub async fn initialize_principal_format(
+    pub(crate) async fn initialize_principal_format(
         self,
         cfg: &busbar_kernel::config::RootCfg,
         plugins: &busbar_kernel::config::PluginsCfg,
@@ -148,7 +148,7 @@ impl FreshApplicationStore {
 
 /// Exclusively create the actual database before its first Store open.
 /// A retained App or an already existing database cannot supply this provenance.
-pub async fn provision_fresh_application_store(
+pub(crate) async fn provision_fresh_application_store(
     cfg: &busbar_kernel::config::RootCfg,
     plugins: &busbar_kernel::config::PluginsCfg,
     directory: &Path,
@@ -156,7 +156,7 @@ pub async fn provision_fresh_application_store(
     provision_fresh_application_store_with_backend(cfg, plugins, directory, |backend| backend).await
 }
 
-pub async fn provision_fresh_application_store_with_backend(
+pub(crate) async fn provision_fresh_application_store_with_backend(
     cfg: &busbar_kernel::config::RootCfg,
     plugins: &busbar_kernel::config::PluginsCfg,
     directory: &Path,
@@ -270,7 +270,7 @@ pub fn trusted_config(directory: &Path) -> busbar_kernel::config::PluginsCfg {
     trusted_config_with_key(directory, &key(0x5a))
 }
 
-pub fn trusted_config_with_key(
+pub(crate) fn trusted_config_with_key(
     directory: &Path,
     signing_key: &SigningKey,
 ) -> busbar_kernel::config::PluginsCfg {
@@ -338,7 +338,7 @@ pub fn pack(kind: &str, name: &str, lib: &[u8], publisher: &str) -> Vec<u8> {
     seal(manifest(kind, name, publisher), lib)
 }
 
-pub fn pack_stated(kind: &str, name: &str, lib: &[u8], publisher: &str) -> Vec<u8> {
+pub(crate) fn pack_stated(kind: &str, name: &str, lib: &[u8], publisher: &str) -> Vec<u8> {
     let mut m = manifest(kind, name, publisher);
     state(&mut m, lib);
     seal(m, lib)
@@ -400,7 +400,7 @@ pub fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
-pub fn boot_with(dir: &Path, policy: &TrustPolicy) -> PluginRegistry {
+pub(crate) fn boot_with(dir: &Path, policy: &TrustPolicy) -> PluginRegistry {
     scan_and_validate(dir, policy).expect("the plugins directory scans")
 }
 
@@ -409,7 +409,7 @@ fn profile_dir() -> Option<PathBuf> {
     Some(exe.parent()?.parent()?.to_path_buf())
 }
 
-pub fn cdylib_path(snake: &str) -> Option<PathBuf> {
+pub(crate) fn cdylib_path(snake: &str) -> Option<PathBuf> {
     let profile = profile_dir()?;
     let exact = plugin_library_filename(snake);
     let (stem, ext) = exact.rsplit_once('.')?;
