@@ -6,7 +6,6 @@
 use crate::secure::{SecureString, SecureVec};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
-use zeroize::Zeroize;
 
 /// What a cut part reads as.
 const CUT: &str = "***";
@@ -20,7 +19,6 @@ pub fn percent_decode(s: &[u8]) -> Vec<u8> {
         b'A'..=b'F' => Some(c - b'A' + 10),
         _ => None,
     };
-    // busbar:expect(bp::fresh_buffer, reason = "config: a configured URL, read once as its instance opens")
     let mut out = Vec::with_capacity(s.len());
     let mut i = 0;
     while let Some(&c) = s.get(i) {
@@ -76,38 +74,26 @@ pub fn basic_authorization(
         return None;
     }
 
-    // One exact allocation (`concat`): the wiping buffer never grows (LINT-RULES LR-117).
-    let user_pass = SecureVec::from(
-        [
-            &username[..],
-            b":",
-            password.as_ref().map_or(&[][..], |p| &p[..]),
-        ]
-        .concat(),
-    );
+    // One exact allocation, made in custody: the wiping buffer never grows (LINT-RULES LR-117).
+    let pass = password.as_ref().map_or(&[][..], |p| &p[..]);
+    let mut user_pass =
+        SecureVec::with_capacity(username.len() + 1 + pass.len()).unwrap_or_default();
+    user_pass.extend_from_slice(&username);
+    user_pass.extend_from_slice(b":");
+    user_pass.extend_from_slice(pass);
     #[cfg(test)]
     tests::watch_scratch(&user_pass);
     let encoded = SecureString::from(STANDARD.encode(&*user_pass));
     #[cfg(test)]
     tests::watch_scratch(encoded.as_bytes());
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a configured URL, read once as its instance opens"
-    )]
-    let authorization = format!("Basic {}", encoded.as_str());
-    Some(authorization)
+    Some(format!("Basic {}", encoded.as_str()))
 }
 
 /// `url` with its credential-bearing prefix through the LAST `@` replaced by `with` (`with`
 #[must_use]
 pub fn cut_userinfo(url: &str, with: &str) -> String {
     let Some(at) = url.rfind('@') else {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a configured URL, read once as its instance opens"
-        )]
-        let whole = url.to_string();
-        return whole;
+        return url.to_string();
     };
 
     if let Some((scheme, _)) = url[..at].split_once("://") {
@@ -119,19 +105,10 @@ pub fn cut_userinfo(url: &str, with: &str) -> String {
                 .bytes()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'-' | b'.'))
         {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: a configured URL, read once as its instance opens"
-            )]
             return format!("{scheme}://{with}{}", &url[at + 1..]);
         }
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a configured URL, read once as its instance opens"
-    )]
-    let cut = format!("{with}{}", &url[at + 1..]);
-    cut
+    format!("{with}{}", &url[at + 1..])
 }
 
 /// Returns a refusal for an ambiguous credential-bearing URL, without exposing its credential.
@@ -140,98 +117,109 @@ pub fn ambiguous_url(url: &str, from_path: &str) -> Option<String> {
     if !from_path.contains('@') {
         return None;
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a configured URL, read once as its instance opens"
-    )]
-    let refusal = format!(
-        "settings: url `{}` is ambiguous: it has an `@` after its host, so what comes before that \
-         `@` would be read as the host and path, not as a credential. Percent-encode a `/`, `?` or \
-         `#` inside the credential (`%2F`, `%3F`, `%23`), or write an `@` meant for the path as \
-         `%40`",
-        cut_userinfo(url, "***@")
-    );
-    Some(refusal)
+    Some(super::cold::wire::ambiguous_url(url))
 }
 
 /// `parts` followed by each of them percent-decoded (lossily read as text), in the same order: the
 #[must_use]
 pub fn and_decoded(mut parts: Vec<String>) -> Vec<String> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a configured URL, read once as its instance opens"
-    )]
-    let decoded: Vec<String> = parts
-        .iter()
-        .map(|p| {
-            let decoded = SecureVec::from(percent_decode(p.as_bytes()));
-            String::from_utf8_lossy(&decoded).into_owned()
-        })
-        .collect();
-    parts.extend(decoded);
+    let given = parts.len();
+    parts.reserve(given);
+    for at in 0..given {
+        let decoded = SecureVec::from(percent_decode(parts[at].as_bytes()));
+        let text = String::from_utf8_lossy(&decoded).into_owned();
+        parts.push(text);
+    }
     parts
+}
+
+/// Strings that wipe their whole allocations when the list drops; its own block holds only
+/// pointers and lengths.
+struct Wiped(Vec<String>);
+
+impl Drop for Wiped {
+    fn drop(&mut self) {
+        for part in &mut self.0 {
+            crate::secure::wipe_string(part);
+        }
+    }
+}
+
+/// Item `k` of the replacement order: the parts (`n` of them, held first), each followed, when
+/// `quoted`, by its escaped form without the quotes (held after the parts, quotes included).
+fn scrub_item(held: &[String], n: usize, quoted: bool, k: usize) -> &str {
+    if !quoted {
+        return &held[k];
+    }
+    if k % 2 == 0 {
+        &held[k / 2]
+    } else {
+        let escaped = &held[n + k / 2];
+        &escaped[1..escaped.len() - 1]
+    }
 }
 
 /// `text` (a host's failure words, say, which may quote a URL or a setting) with each of `parts`
 #[must_use]
 pub fn scrub(text: &str, parts: Vec<String>, quoted: bool) -> String {
-    // Each part wipes itself; the list's own block holds only pointers and lengths.
-    let mut held = Vec::with_capacity(parts.len());
-    for part in parts {
-        held.push(SecureString::from(part));
-    }
-    let mut parts = held;
+    // Each part wipes itself when `held` drops.
+    let mut held = Wiped(parts);
+    let n = held.0.len();
     #[cfg(test)]
-    for part in &parts {
+    for part in &held.0 {
         tests::watch_scratch(part.as_bytes());
     }
     if quoted {
-        // Exact capacity, so it never reallocates; the strings' own blocks never move, and each
-        // escaped form is built in custody (LINT-RULES LR-117).
-        let mut expanded = Vec::with_capacity(parts.len() * 2);
-        for part in parts.iter_mut() {
-            let escaped = SecureString::from_args(format_args!("{:?}", part.as_str()));
+        // Exact room, so the list never reallocates; each escaped form is built in custody and
+        // moved in whole (LINT-RULES LR-117).
+        held.0.reserve_exact(n);
+        for at in 0..n {
+            let escaped = SecureString::from_args(format_args!("{:?}", held.0[at].as_str()));
             #[cfg(test)]
             tests::watch_scratch(escaped.as_bytes());
-            expanded.push(std::mem::take(part));
-            let inner = SecureString::from(&escaped[1..escaped.len() - 1]);
-            expanded.push(inner);
+            held.0.push(escaped.into_string());
         }
-        parts = expanded;
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a failure text, scrubbed once on its way to a diagnostic"
-    )]
-    parts.retain(|p| !p.is_empty());
-    // Stable: equal-length parts keep their order, so the replacements run as they always did.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a failure text, scrubbed once on its way to a diagnostic"
-    )]
-    parts.sort_by_key(|p| std::cmp::Reverse(p.len()));
-    parts.dedup_by(|removed, kept| {
-        if removed == kept {
-            removed.zeroize();
-            true
-        } else {
-            false
-        }
-    });
+    let count = if quoted { 2 * n } else { n };
     let mut out = SecureString::from(text);
     #[cfg(test)]
     tests::watch_scratch(out.as_bytes());
-    for p in &parts {
-        if out.contains(p.as_str()) {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a failure text, scrubbed once on its way to a diagnostic"
-            )]
-            let cut = out.replace(p.as_str(), CUT);
-            out = SecureString::from(cut);
-            #[cfg(test)]
-            tests::watch_scratch(out.as_bytes());
+    // Longest first; equal lengths keep their order, so the replacements run as they always did.
+    // Empty parts cut nothing, and a part equal to the one cut just before it is cut once.
+    let mut below = usize::MAX;
+    loop {
+        let mut len = 0;
+        for k in 0..count {
+            let l = scrub_item(&held.0, n, quoted, k).len();
+            if l < below && l > len {
+                len = l;
+            }
         }
+        if len == 0 {
+            break;
+        }
+        let mut last: Option<&str> = None;
+        for k in 0..count {
+            let p = scrub_item(&held.0, n, quoted, k);
+            if p.len() != len || last == Some(p) {
+                continue;
+            }
+            last = Some(p);
+            if out.contains(p) {
+                let mut cut = SecureString::with_capacity(out.len());
+                let mut from = 0;
+                for (at, _) in out.match_indices(p) {
+                    cut.push_str(&out[from..at]);
+                    cut.push_str(CUT);
+                    from = at + p.len();
+                }
+                cut.push_str(&out[from..]);
+                out = cut;
+                #[cfg(test)]
+                tests::watch_scratch(out.as_bytes());
+            }
+        }
+        below = len;
     }
     out.into_string()
 }

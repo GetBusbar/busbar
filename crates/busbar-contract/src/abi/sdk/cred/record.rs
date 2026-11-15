@@ -8,7 +8,6 @@ use std::cell::Cell;
 use serde::de::Visitor;
 use serde::ser::Error as _;
 use serde::{Deserializer, Serialize, Serializer};
-use zeroize::Zeroize;
 
 use super::Cred;
 
@@ -72,14 +71,12 @@ impl Visitor<'_> for Captured {
     }
 
     fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Cred, E> {
-        Ok(Cred::captured(crate::secure::SecureVec::from(
-            v.as_bytes().to_vec(),
-        )))
+        Ok(Cred::captured(crate::secure::SecureVec::from(v.as_bytes())))
     }
 
     fn visit_string<E: serde::de::Error>(self, mut v: String) -> Result<Cred, E> {
-        let cred = Cred::captured(crate::secure::SecureVec::from(v.as_bytes().to_vec()));
-        v.zeroize();
+        let cred = Cred::captured(crate::secure::SecureVec::from(v.as_bytes()));
+        crate::secure::wipe_string(&mut v);
         Ok(cred)
     }
 }

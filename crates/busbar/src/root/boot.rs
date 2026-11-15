@@ -1263,7 +1263,7 @@ pub(crate) static DOOR_CANDIDATES: std::sync::OnceLock<Vec<crate::root::loader::
 
 static DOOR_PLANES: std::sync::OnceLock<Vec<(String, DoorPlane)>> = std::sync::OnceLock::new();
 
-pub type DoorPlane = std::sync::Arc<
+pub(crate) type DoorPlane = std::sync::Arc<
     crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::plane::Plane>,
 >;
 
@@ -1452,7 +1452,7 @@ fn journal_history_budget() -> busbar_kernel::persistence::journal::BufferBudget
 }
 
 pub type NodeLeaseTask = tokio::task::JoinHandle<Result<(), String>>;
-pub type WatchedBook = (super::durability::NodeBook, Option<NodeLeaseTask>);
+pub(crate) type WatchedBook = (super::durability::NodeBook, Option<NodeLeaseTask>);
 
 /// Construction retains the actual owners before every asynchronous crossing.
 /// A pending native original suspends this same preparation; it never restarts

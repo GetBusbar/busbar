@@ -52,10 +52,6 @@ pub fn build_client_config(trust: &EgressTrust) -> Result<rustls::ClientConfig, 
         .map(Arc::unwrap_or_clone)
         .map_err(refused),
         Some(identity) => {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: refusal text for an unusable client key at config"
-            )]
             let key = rustls_pki_types::PrivateKeyDer::try_from(
                 identity
                     .private_key
@@ -63,10 +59,6 @@ pub fn build_client_config(trust: &EgressTrust) -> Result<rustls::ClientConfig, 
                     .clone(),
             )
             .map_err(|e| BadClientIdentity(format!("private key: {e}")))?;
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: rustls owns the identity chain, built once per client config"
-            )]
             let chain: Vec<rustls_pki_types::CertificateDer<'static>> = identity
                 .cert_chain
                 .iter()
@@ -93,10 +85,6 @@ pub fn operator_ca_config(pem: &[u8]) -> Result<rustls::ClientConfig, String> {
         extra_anchors: operator_ca_anchors(pem)?,
         ..EgressTrust::default()
     };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: refusal text for an unusable operator CA at config"
-    )]
     let config = build_client_config(&trust).map_err(|e| e.to_string())?;
     Ok(config)
 }
@@ -104,10 +92,6 @@ pub fn operator_ca_config(pem: &[u8]) -> Result<rustls::ClientConfig, String> {
 /// Parse and validate the public certificate roots in an operator PEM bundle.
 pub fn operator_ca_anchors(pem: &[u8]) -> Result<Vec<Vec<u8>>, String> {
     use rustls::pki_types::pem::PemObject as _;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the operator CA bundle is parsed once at config"
-    )]
     let certs = rustls_pki_types::CertificateDer::pem_slice_iter(pem)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("the operator CA does not parse: {e}"))?;
@@ -116,18 +100,10 @@ pub fn operator_ca_anchors(pem: &[u8]) -> Result<Vec<Vec<u8>>, String> {
     }
     let mut anchors = rustls::RootCertStore::empty();
     for cert in &certs {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: refusal text for an unusable operator CA at config"
-        )]
         anchors
             .add(cert.clone())
             .map_err(|e| format!("the operator CA is not a usable trust anchor: {e}"))?;
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the parsed anchors are handed back owned, once at config"
-    )]
     let owned = certs.into_iter().map(|c| c.to_vec()).collect();
     Ok(owned)
 }
@@ -367,10 +343,6 @@ pub fn seal(
                     "the connector secures no connection to present it on".into(),
                 ))
             })?;
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: refusal text for an unusable member key at declaration"
-            )]
             let key = rustls_pki_types::PrivateKeyDer::try_from(
                 identity
                     .private_key
@@ -378,20 +350,12 @@ pub fn seal(
                     .clone(),
             )
             .map_err(|e| BadAnchors::Identity(BadClientIdentity(format!("private key: {e}"))))?;
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: rustls owns the member's identity chain, sealed once at declaration"
-            )]
             let chain: Vec<rustls_pki_types::CertificateDer<'static>> = identity
                 .cert_chain
                 .iter()
                 .cloned()
                 .map(rustls_pki_types::CertificateDer::from)
                 .collect();
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: refusal text for an unusable member chain at declaration"
-            )]
             let certified =
                 rustls::sign::CertifiedKey::from_der(chain, key, base.crypto_provider()).map_err(
                     |e| BadAnchors::Identity(BadClientIdentity(format!("certificate chain: {e}"))),
@@ -546,14 +510,45 @@ pub enum DigestAlg {
 }
 
 impl DigestAlg {
-    /// The digest of `data` under this hash.
+    /// The digest of `data` under this hash, held inline (no allocation per connection).
     #[must_use]
-    pub fn digest(self, data: &[u8]) -> Vec<u8> {
-        match self {
-            Self::Sha256 => busbar_contract::crypto::sha256(data).to_vec(),
-            Self::Sha384 => busbar_contract::crypto::sha384(data).to_vec(),
-            Self::Sha512 => busbar_contract::crypto::sha512(data).to_vec(),
-        }
+    pub(crate) fn digest(self, data: &[u8]) -> EndPointDigest {
+        let mut bytes = [0u8; 64];
+        let len = match self {
+            Self::Sha256 => {
+                bytes[..32].copy_from_slice(&busbar_contract::crypto::sha256(data));
+                32
+            }
+            Self::Sha384 => {
+                bytes[..48].copy_from_slice(&busbar_contract::crypto::sha384(data));
+                48
+            }
+            Self::Sha512 => {
+                bytes = busbar_contract::crypto::sha512(data);
+                64
+            }
+        };
+        EndPointDigest { bytes, len }
+    }
+}
+
+/// A `tls-server-end-point` digest: the hash's bytes (at most SHA-512's 64), held inline.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct EndPointDigest {
+    bytes: [u8; 64],
+    len: usize,
+}
+
+impl AsRef<[u8]> for EndPointDigest {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
+
+impl std::ops::Deref for EndPointDigest {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.bytes[..self.len]
     }
 }
 

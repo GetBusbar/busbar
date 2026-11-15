@@ -4,7 +4,7 @@
 //! Non-serving Store projection; historical source lists remain intact for final validation.
 use busbar_kernel::config::{DeployCfg, RootCfg};
 
-pub fn bootstrap(deploy: &DeployCfg) -> Result<RootCfg, Vec<String>> {
+pub(crate) fn bootstrap(deploy: &DeployCfg) -> Result<RootCfg, Vec<String>> {
     let mut projected = deploy.security.clone();
     if let Some(security) = projected.as_mut() {
         security.blocked_metadata_hosts = busbar_migrations::config::bootstrap_metadata_projection(

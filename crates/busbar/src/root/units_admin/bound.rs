@@ -12,22 +12,22 @@ use busbar_kernel::trust::book::{KeyRow, Ruling};
 
 use super::{AdminAnswer, AmendmentJournal, AuditView, LedgerView};
 
-pub type PlaneLookup = Arc<dyn Fn(&str) -> Option<PlaneDeclaration> + Send + Sync>;
+pub(crate) type PlaneLookup = Arc<dyn Fn(&str) -> Option<PlaneDeclaration> + Send + Sync>;
 
 #[must_use]
-pub fn no_planes() -> PlaneLookup {
+pub(crate) fn no_planes() -> PlaneLookup {
     Arc::new(|_| None)
 }
 
 #[derive(Debug)]
-pub enum PlaneWriteFailure {
+pub(crate) enum PlaneWriteFailure {
     /// Native refusal or conflict proves this submission did not publish.
     Unapplied,
     /// The exact native attempt remains held; never replan it from the record.
     Unknown(Option<[u8; 16]>),
 }
 
-pub type PlaneRecordSink = Arc<
+pub(crate) type PlaneRecordSink = Arc<
     dyn for<'a> Fn(
             &'a PlaneDeclaration,
             &'a PlaneRecord,
@@ -113,16 +113,16 @@ fn refused_effect(status: u16, code: &str, message: &str) -> EffectAnswer {
     EffectAnswer::unapplied(refused(status, code, message))
 }
 
-pub type TrustDesk = Arc<dyn Fn() -> Option<Arc<KernelServices>> + Send + Sync>;
+pub(crate) type TrustDesk = Arc<dyn Fn() -> Option<Arc<KernelServices>> + Send + Sync>;
 
 #[must_use]
-pub fn no_trust() -> TrustDesk {
+pub(crate) fn no_trust() -> TrustDesk {
     Arc::new(|| None)
 }
 
-pub const COMMIT_UPGRADE_RECORD_TAG: &str = "busbar/commit-upgrade/v1";
+pub(crate) const COMMIT_UPGRADE_RECORD_TAG: &str = "busbar/commit-upgrade/v1";
 
-pub const RUNNING_RELEASE: &str = env!("CARGO_PKG_VERSION");
+pub(crate) const RUNNING_RELEASE: &str = env!("CARGO_PKG_VERSION");
 
 fn refused(status: u16, code: &str, message: &str) -> AdminAnswer {
     AdminAnswer {
@@ -559,7 +559,7 @@ pub(crate) async fn trust_decide_effect(
 }
 
 #[must_use]
-pub fn live_planes(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneLookup {
+pub(crate) fn live_planes(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneLookup {
     Arc::new(move |key: &str| {
         let snapshot = app.load();
         busbar_kernel::plane_driver::registry::plane_decls()
@@ -570,7 +570,7 @@ pub fn live_planes(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneLookup {
 }
 
 #[must_use]
-pub fn live_admin_door(app: Arc<busbar_kernel::state::AppHandle>) -> super::AdminDoorFn {
+pub(crate) fn live_admin_door(app: Arc<busbar_kernel::state::AppHandle>) -> super::AdminDoorFn {
     Arc::new(move |request: &super::AdminRequest| {
         let headers: axum::http::HeaderMap = (request.headers.iter())
             .filter_map(|(name, value)| Some((name.parse().ok()?, value.parse().ok()?)))
@@ -581,7 +581,9 @@ pub fn live_admin_door(app: Arc<busbar_kernel::state::AppHandle>) -> super::Admi
 }
 
 #[must_use]
-pub fn live_records(core: Arc<busbar_kernel::persistence::facade::CoreStore>) -> PlaneRecordSink {
+pub(crate) fn live_records(
+    core: Arc<busbar_kernel::persistence::facade::CoreStore>,
+) -> PlaneRecordSink {
     Arc::new(move |decl, record| {
         let core = Arc::clone(&core);
         Box::pin(async move {
@@ -625,14 +627,14 @@ pub fn live_records(core: Arc<busbar_kernel::persistence::facade::CoreStore>) ->
 /// SHA-256 of the body the first call carried and the answer it produced. Unresolved receipts
 /// have separate custody: the ordinary answer TTL cannot release an effect still owed or unknown.
 #[derive(Default)]
-pub struct ReplayCache {
+pub(crate) struct ReplayCache {
     answers: busbar_core_admin::idempotency::IdempotencyCache<ReplayValue>,
     retained: Mutex<HashMap<(String, String), HeldReplay>>,
 }
 
 impl ReplayCache {
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
@@ -739,10 +741,10 @@ impl HeldReplay {
     }
 }
 
-pub type ReplayStore =
+pub(crate) type ReplayStore =
     Arc<dyn Fn() -> Option<Arc<busbar_kernel::persistence::scoped::ScopedStore>> + Send + Sync>;
 
-pub fn live_replay_store(
+pub(crate) fn live_replay_store(
     core: Arc<busbar_kernel::persistence::facade::CoreStore>,
 ) -> Result<ReplayStore, busbar_kernel::persistence::scoped::Error> {
     let store = Arc::new(busbar_core_admin::idempotency::durable::scoped_store(core)?);

@@ -465,11 +465,11 @@ fn a_spawned_child_runs_before_the_host_drive_returns() {
     };
     for pending_parent in [false, true] {
         let io = HostIo::new(0);
-        let mut spawn = Some(io.exec());
+        let mut spawn = Some(HostIo::exec(&io));
         let mut stream = Some(io.stream());
         let polls = Arc::new(AtomicUsize::new(0));
         let parent_polls = Arc::clone(&polls);
-        io.exec().execute(std::future::poll_fn(move |_| {
+        HostIo::exec(&io).execute(std::future::poll_fn(move |_| {
             parent_polls.fetch_add(1, Ordering::Relaxed);
             if let Some(spawn) = spawn.take() {
                 let mut stream = stream.take().expect("one child owns the stream");
@@ -511,7 +511,7 @@ fn a_pending_task_without_a_child_is_polled_once_per_host_drive() {
     let io = HostIo::new(0);
     let polls = Arc::new(AtomicUsize::new(0));
     let task_polls = Arc::clone(&polls);
-    io.exec().execute(std::future::poll_fn(move |_| {
+    HostIo::exec(&io).execute(std::future::poll_fn(move |_| {
         task_polls.fetch_add(1, Ordering::Relaxed);
         Poll::<()>::Pending
     }));
@@ -799,5 +799,33 @@ fn pipe_drop_wipes() {
         seen(1),
         Some(true),
         "the dropped pipe's write block kept the wire"
+    );
+}
+
+/// A body grown through `extend_wiped` releases its old block only wiped, and the shared view
+/// `held_bytes` makes keeps its wiping owner until the last view drops, then frees it wiped.
+#[test]
+fn shared_body_owner_wipes_growth_and_only_releases_the_last_view() {
+    let mut body = Vec::with_capacity(1);
+    hyper_io::extend_wiped(&mut body, b"a");
+    watch(0, body.as_ptr(), 0, body.len());
+    hyper_io::extend_wiped(&mut body, b" private body");
+    assert_eq!(
+        seen(0),
+        Some(true),
+        "the body grew and released its old block unwiped"
+    );
+    watch(1, body.as_ptr(), 0, body.len());
+    // Adopted without a copy: the wiping owner keeps the watched allocation.
+    let bytes = hyper_io::held_bytes(busbar_contract::secure::SecureVec::from(body));
+    let view = bytes.slice(2..);
+    drop(bytes);
+    assert_eq!(seen(1), None, "the owner lives while a view does");
+    assert_eq!(&view[..], b"private body");
+    drop(view);
+    assert_eq!(
+        seen(1),
+        Some(true),
+        "the last view's drop freed the body unwiped"
     );
 }
