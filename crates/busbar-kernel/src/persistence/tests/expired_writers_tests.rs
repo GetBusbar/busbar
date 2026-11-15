@@ -606,9 +606,9 @@ fn stop_flag() -> (
     tokio::sync::watch::channel(false)
 }
 
-/// 8.14: a live writer renewing every 3 s while F5 runs 100 times elsewhere is never closed. The
-/// scan already excludes a lease that has not been expired for one TTL, so it never reaches the
-/// closer (`skipped_live` counts only a renewal that races the close: see the renewal test).
+/// 8.14: a live writer renewing every 3 s while F5 runs 100 times elsewhere is never closed, and
+/// every pass counts it in `skipped_live` (#258 3): the scan sees its lease, which has not been
+/// expired for one TTL, so it never reaches the closer but is still reported.
 #[tokio::test]
 async fn a_live_writer_renewing_every_3_s_is_never_closed() {
     let store = Store::new();
@@ -620,8 +620,8 @@ async fn a_live_writer_renewing_every_3_s_is_never_closed() {
     for _ in 0..100 {
         let pass = fence.run(stop.clone()).await;
         assert_eq!(
-            (pass.closed, pass.invalid, pass.remaining),
-            (0, 0, 0),
+            (pass.closed, pass.skipped_live, pass.invalid, pass.remaining),
+            (0, 1, 0, 0),
             "{pass:?}"
         );
         let now = store.now.fetch_add(3, Ordering::SeqCst) + 3;
@@ -655,7 +655,8 @@ async fn a_lease_expired_8_s_is_live_and_one_expired_9_s_is_closed() {
     ));
     let (_stop_tx, stop) = stop_flag();
     let first = fence.run(stop.clone()).await;
-    assert_eq!((first.closed, first.skipped_live), (1, 0), "{first:?}");
+    // 8.14: the 8 s writer is seen live and counted; the 30 s writer is closed.
+    assert_eq!((first.closed, first.skipped_live), (1, 1), "{first:?}");
     assert_eq!(store.control(at_8s), Some(OPEN));
     assert_eq!(store.fence_applies(at_8s), 0);
     assert!(store.lease(at_8s).is_some());
