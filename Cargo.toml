@@ -20,6 +20,8 @@ members = [
     "crates/busbar-kernel-audit",
     "crates/plugin-loader",
     "crates/busbar-plugin-test",
+    # Core's repository checks (no-getrandom, crypto-graph), one CI job line each.
+    "tools/ci-checks",
 ]
 
 # Each version is written once here; members inherit with `workspace = true` and may add features.

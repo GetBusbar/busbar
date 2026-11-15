@@ -339,6 +339,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-ci-checks"
+version = "1.6.0"
+dependencies = [
+ "proc-macro2",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "busbar-contract"
 version = "1.6.0"
 dependencies = [
