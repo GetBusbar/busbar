@@ -43,13 +43,12 @@ pub struct Identity {
 }
 
 impl Identity {
-    /// Whether the opened Store described by `info` realizes this core target identity.
+    /// Whether the opened Store described by `info` realizes this core target identity: core's
+    /// format on that very dataset. `info.physical_version` is the adapter's own physical format,
+    /// independent of core's: the Store refuses a physical format it cannot serve at open, and the
+    /// target's digests bind the one observed, so core neither selects nor compares it here.
     pub fn realized_by(&self, info: &busbar_contract::persistence::BackendInfo) -> bool {
-        self.dataset == info.dataset.0
-            && self.format.physical == info.physical_version
-            && self.format.owner == CORE_FORMAT_OWNER
-            && self.format.logical == CORE_FORMAT.logical
-            && self.format.codec == CORE_FORMAT.codec
+        self.dataset == info.dataset.0 && self.format == CORE_FORMAT
     }
 }
 

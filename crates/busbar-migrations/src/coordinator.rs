@@ -346,8 +346,7 @@ impl Coordinator {
         if manifest.edges.len() != 1 {
             return Err(Error::UnsupportedPath);
         }
-        if backend.info().dataset.0 != manifest.target.dataset
-            || backend.info().physical_version != manifest.target.format.physical
+        if !manifest.target.realized_by(&backend.info())
             || authority.writer == [0; 16]
             || authority.writer_epoch == 0
             || authority.execution_epoch == 0

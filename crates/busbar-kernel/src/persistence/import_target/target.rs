@@ -19,7 +19,8 @@ pub struct TargetIdentity {
 }
 impl TargetIdentity {
     pub fn current(info: BackendInfo) -> Result<Self, Error> {
-        if info.dataset.0 == [0; 16] || info.physical_version != 1 {
+        // `physical` is core's format; the Store's own `physical_version` is the adapter's.
+        if info.dataset.0 == [0; 16] {
             return Err(Error::Identity);
         }
         Ok(Self {
