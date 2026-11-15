@@ -2161,7 +2161,7 @@ fingerprints in force (never certificate bodies).
 ### `providers_file`
 
 Top-level pointer to the provider catalog. Relative paths resolve against the config.yaml directory;
-absent ⇒ `providers.yaml` next to config.yaml; if that default file does not exist the catalog is empty (logged at info, naming the path), which suits an admin-only deployment that configures no provider. A file named by `providers_file:` or `--providers` must exist, or boot is refused. The `--providers <path>` CLI flag (1.6.0) overrides this
+absent ⇒ `providers.yaml` next to config.yaml; if that default file does not exist the catalog is empty (logged at info, naming the path), which suits an admin-only deployment that configures no provider. Boot never creates that file; a first 1.6.0 boot's configuration upgrade records the absence, and a providers.yaml that appears while that upgrade is still in progress is refused as a changed document. A file named by `providers_file:` or `--providers` must exist, or boot is refused. The `--providers <path>` CLI flag (1.6.0) overrides this
 key. The two-file model is unchanged. This just names the catalog that config.yaml's `providers:` map
 references.
 

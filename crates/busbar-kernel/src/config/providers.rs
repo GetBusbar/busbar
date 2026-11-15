@@ -974,6 +974,88 @@ impl std::fmt::Debug for ResolvedProvider {
     }
 }
 
+/// The catalog text an absent default providers file reads as: the empty catalog.
+pub const ABSENT_CATALOG: &str = "{}\n";
+
+/// Where a deployment's provider catalog lives, and whether the operator named that file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogLocation {
+    pub path: std::path::PathBuf,
+    /// `--providers` (or its env) or `providers_file:` named the file, so it must exist.
+    pub named: bool,
+}
+
+/// What the catalog location holds. The loader and startup custody both take it from
+/// [`CatalogLocation::read`], so an absent default file means one thing everywhere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CatalogSource {
+    /// The file's authored text, normalized, migrated and published like any operator document.
+    Authored(String),
+    /// No file at the unnamed default location beside config.yaml: an empty catalog that is
+    /// unchanged by definition. It has nothing to normalize or publish, and is never created.
+    AbsentDefault,
+}
+
+impl CatalogSource {
+    /// The catalog text the readers parse.
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Authored(text) => text,
+            Self::AbsentDefault => ABSENT_CATALOG,
+        }
+    }
+}
+
+impl CatalogLocation {
+    /// The override, else `providers_file:` (relative to config.yaml's directory), else the
+    /// unnamed default `providers.yaml` beside config.yaml.
+    pub fn select(
+        config_path: &std::path::Path,
+        providers_override: Option<&std::path::Path>,
+        providers_file: Option<&str>,
+    ) -> Self {
+        let config_dir = config_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        match (providers_override, providers_file) {
+            (Some(path), _) => Self {
+                path: path.to_path_buf(),
+                named: true,
+            },
+            // An absolute `providers_file` replaces the directory in `join`.
+            (None, Some(file)) => Self {
+                path: config_dir.join(file),
+                named: true,
+            },
+            (None, None) => Self {
+                path: config_dir.join("providers.yaml"),
+                named: false,
+            },
+        }
+    }
+
+    /// Read the catalog. Only a NotFound at the unnamed default location is
+    /// [`CatalogSource::AbsentDefault`]; a named file that is missing, or any other read failure,
+    /// is refused naming the file.
+    pub fn read(&self) -> Result<CatalogSource, String> {
+        match std::fs::read_to_string(&self.path) {
+            Ok(text) => Ok(CatalogSource::Authored(text)),
+            Err(e) if !self.named && e.kind() == std::io::ErrorKind::NotFound => {
+                Ok(CatalogSource::AbsentDefault)
+            }
+            Err(e) => Err(format!(
+                "cannot read providers file '{}': {e} (set `providers_file:` in config.yaml, or --providers; \
+                 an empty providers.yaml or `{{}}` is enough for a deployment that configures no provider)",
+                self.path.display()
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/providers_tests.rs"]
 mod declared_auth_style_tests;
+
+#[cfg(test)]
+#[path = "tests/catalog_source_tests.rs"]
+mod catalog_source_tests;
