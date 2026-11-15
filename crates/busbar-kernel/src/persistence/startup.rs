@@ -162,6 +162,69 @@ fn takeover_unconfirmed(t: &Takeover, writer: [u8; 16], outcome: Outcome<'_>) {
     );
 }
 
+/// The record format this kernel's encoders write: the manifest's (MIGRATE-ON-BOOT §6a's
+/// `RECORD_FORMAT`; `busbar_migrate::records::RECORD_FORMAT` names the same number).
+pub const RECORD_FORMAT: u32 = FORMAT;
+
+/// What a manifest says of its records' format (MIGRATE-ON-BOOT §6a): admission classifies, it
+/// does not just refuse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    /// [`RECORD_FORMAT`], no step under way: admitted as before, with no extra read.
+    Current,
+    /// An older format that a step converts.
+    Older(u32),
+    /// The step `from` → `to` is under way: resume it.
+    Migrating {
+        /// The format the rows were at.
+        from: u32,
+        /// The format the step converts them to.
+        to: u32,
+    },
+    /// A newer busbar wrote or began migrating these records.
+    Newer,
+    /// Not a format this busbar reads, or older with no step: upgrade through the release that
+    /// last read the store first.
+    Unsupported,
+    /// The manifest's copies of its format disagree, or its reserved bytes are not zero.
+    Corrupt,
+}
+
+/// Classify a manifest: bytes 8, 12, 16 and 20 are its format (four copies), 72..76 the format a
+/// step under way converts to (`migrating_to`, 0 = none), 76..80 reserved zero. `has_step(f)`
+/// is whether the record-format chain has a step from `f`.
+#[must_use]
+pub fn classify(bytes: &[u8], has_step: impl Fn(u32) -> bool) -> Format {
+    if bytes.len() != 80 {
+        return Format::Corrupt;
+    }
+    if &bytes[..8] != b"BSCFMT1\0" {
+        return Format::Unsupported;
+    }
+    let word = |at: usize| {
+        let mut four = [0u8; 4];
+        four.copy_from_slice(&bytes[at..at + 4]);
+        u32::from_le_bytes(four)
+    };
+    let format = word(8);
+    if [12, 16, 20].into_iter().any(|at| word(at) != format)
+        || bytes[76..].iter().any(|byte| *byte != 0)
+    {
+        return Format::Corrupt;
+    }
+    let tail = word(72);
+    if format > RECORD_FORMAT || tail > RECORD_FORMAT {
+        return Format::Newer;
+    }
+    match tail {
+        0 if format == RECORD_FORMAT => Format::Current,
+        0 if has_step(format) => Format::Older(format),
+        to if to == format + 1 && has_step(format) => Format::Migrating { from: format, to },
+        0 => Format::Unsupported,
+        _ => Format::Corrupt,
+    }
+}
+
 /// A core format, not a product release or the backend's physical schema.
 /// The initial crossing admits exactly one reader/writer format, no guessed range.
 #[derive(Clone, Copy)]
@@ -188,15 +251,7 @@ impl Manifest {
     #[cold]
     #[inline(never)]
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        if bytes.len() != 80 || &bytes[..8] != b"BSCFMT1\0" {
-            return Err(Error::UnsupportedFormat);
-        }
-        for at in [8, 12, 16, 20] {
-            if bytes[at..at + 4] != FORMAT.to_le_bytes() {
-                return Err(Error::UnsupportedFormat);
-            }
-        }
-        if bytes[72..].iter().any(|byte| *byte != 0) {
+        if classify(bytes, |_| false) != Format::Current {
             return Err(Error::UnsupportedFormat);
         }
         let value = Self {
