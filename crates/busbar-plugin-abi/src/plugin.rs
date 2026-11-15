@@ -41,7 +41,7 @@ pub struct Plugin {
     //   value last (round 11, §6.4 step 9). inst is never used again.
     //   OK, or FAULT if a Drop panicked.
     // close: unsafe extern "C" fn(inst: *const c_void) -> Status,
-    _stub: (),
+    _stub: core::marker::PhantomData<()>,
     /// Round 9: **every other word an operator's `module:` may use for this plugin**, comma-separated, each
     /// `[a-z0-9-]{1,64}`, at most 8; EMPTY for none. Two sources, one list, no distinction on the wire: the
     /// names this plugin answered to in earlier releases, and its own short aliases. **Round 11, the rule for

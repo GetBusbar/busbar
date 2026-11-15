@@ -15,20 +15,23 @@ use super::DeployCfg;
 
 /// Every MIN-3 key of one config load, carried on [`RootCfg::min3`](super::RootCfg::min3). Empty (the default)
 /// until W1-K7 parses the keys.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Min3Config {
     /// `upstreams.<name>`, by configured upstream name (IF §12.1, §12.18).
     pub upstreams: BTreeMap<Box<str>, UpstreamCfg>,
     /// `routes.<id>`, by route id (IF §12.11 "Route credential header").
     pub routes: BTreeMap<Box<str>, RouteCfg>,
     /// `<kind>.<name>.limits`, by (kind section, configured instance name) (IF §12.22).
-    pub limits: BTreeMap<(Box<str>, Box<str>), InstanceLimitsCfg>,
+    pub limits: InstanceLimitsMap,
     /// `auth.<name>.provisioning`, by configured auth instance name (IF §12.29).
     pub provisioning: BTreeMap<Box<str>, ProvisioningCfg>,
 }
 
+/// Per-instance `limits`, by (kind section, configured instance name).
+pub type InstanceLimitsMap = BTreeMap<(Box<str>, Box<str>), InstanceLimitsCfg>;
+
 /// The MIN-3 keys of one `upstreams.<name>` entry (the rest of the entry is W1-K1's `UpstreamDef`).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct UpstreamCfg {
     /// `upstreams.<name>.auth`: the operator form or one core-vocabulary form (IF §12.18 upstream bindings).
     pub auth: Option<UpstreamAuthCfg>,
@@ -37,14 +40,15 @@ pub struct UpstreamCfg {
 }
 
 /// `upstreams.<name>.auth` as written, with its optional `cache_max_s`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct UpstreamAuthCfg {
     pub form: UpstreamAuthForm,
     pub cache_max_s: Option<u32>,
 }
 
 /// The forms of `upstreams.<name>.auth` (IF §12.18): an auth instance name, or exactly one core-vocabulary form.
-#[derive(Clone, Debug, PartialEq, Eq)]
+// No `Debug`: the form carries URLs (credential typecheck `printable-url`).
+#[derive(Clone, PartialEq, Eq)]
 pub enum UpstreamAuthForm {
     /// `auth: <auth instance name>`.
     Instance(Box<str>),
@@ -136,9 +140,7 @@ pub fn parse_routes(deploy: &DeployCfg) -> Result<BTreeMap<Box<str>, RouteCfg>, 
 }
 
 /// Parses and strips every instance's `limits` (consumers W1-K8D, W1-C1A). W0-ABI stub: none.
-pub fn parse_limits(
-    deploy: &DeployCfg,
-) -> Result<BTreeMap<(Box<str>, Box<str>), InstanceLimitsCfg>, Vec<String>> {
+pub fn parse_limits(deploy: &DeployCfg) -> Result<InstanceLimitsMap, Vec<String>> {
     let _ = deploy;
     Ok(BTreeMap::new())
 }

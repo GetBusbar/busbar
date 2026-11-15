@@ -39,7 +39,7 @@ impl MemIo {
     }
     /// Spawn a task on this conn (the connection driver itself, stream handlers).
     pub fn spawn(&mut self, fut: impl Future<Output = ()> + Send + 'static) {
-        let _ = fut;
+        drop(fut);
         todo!()
     }
     /// Poll only woken tasks, at most `budget` polls (256 by default), with now = mono_ns.
