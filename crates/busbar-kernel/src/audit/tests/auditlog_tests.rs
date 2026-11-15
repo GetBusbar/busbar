@@ -88,11 +88,11 @@ async fn native_emit(
     (entry.seq, entry.prev_hash, entry.hash)
 }
 
-struct NativeHarness {
+pub(super) struct NativeHarness {
     native: Arc<NativeAudit>,
-    log: PlaneAuditLog,
+    pub(super) log: PlaneAuditLog,
 }
-async fn native_over(store: Arc<CoreStore>) -> NativeHarness {
+pub(super) async fn native_over(store: Arc<CoreStore>) -> NativeHarness {
     let kind = fresh_test_kind_id();
     stream_registry::register(
         kind,
@@ -109,12 +109,12 @@ async fn native_over(store: Arc<CoreStore>) -> NativeHarness {
     }
 }
 impl NativeHarness {
-    async fn restore(&self) -> RecordStoreResult<AuditRestored> {
+    pub(super) async fn restore(&self) -> RecordStoreResult<AuditRestored> {
         let result = restore_native(&self.log, &self.native).await;
         self.native.ready.store(result.is_ok(), Ordering::Release);
         result
     }
-    async fn emit(&self, scope: &str, suffix: Vec<u8>) -> (u64, String, String) {
+    pub(super) async fn emit(&self, scope: &str, suffix: Vec<u8>) -> (u64, String, String) {
         if !self.native.ready.load(Ordering::Acquire) {
             self.restore().await.expect("native restore before append");
         }
