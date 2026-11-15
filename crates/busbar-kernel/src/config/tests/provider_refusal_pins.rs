@@ -37,7 +37,7 @@ fn a_deployment_protocol_of_the_wrong_type_is_refused_as_1_5_5_did() {
     assert_refused_at(
         &deployment_refusal("protocol"),
         "providers.p.protocol",
-        "invalid type",
+        "expected string scalar",
         4,
         15,
     );
@@ -48,7 +48,7 @@ fn a_deployment_error_map_of_the_wrong_type_is_refused_as_1_5_5_did() {
     assert_refused_at(
         &deployment_refusal("error_map"),
         "providers.p.error_map",
-        "invalid type",
+        "expected mapping start",
         4,
         16,
     );
@@ -59,7 +59,7 @@ fn a_deployment_path_of_the_wrong_type_is_refused_as_1_5_5_did() {
     assert_refused_at(
         &deployment_refusal("path"),
         "providers.p.path",
-        "invalid type",
+        "expected string scalar",
         4,
         11,
     );
@@ -70,7 +70,7 @@ fn a_deployment_path_base_of_the_wrong_type_is_refused_as_1_5_5_did() {
     assert_refused_at(
         &deployment_refusal("path_base"),
         "providers.p.path_base",
-        "invalid type",
+        "expected string scalar",
         4,
         16,
     );

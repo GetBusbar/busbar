@@ -97,20 +97,11 @@ impl<'de> Visitor<'de> for Word<'_> {
     fn visit_enum<A: EnumAccess<'de>>(self, data: A) -> Result<Value, A::Error> {
         let (word, variant) = data.variant::<String>()?;
         if !self.0.contains(&word) {
-            let expected = match self.0 {
-                [only] => format!("expected `{only}`"),
-                [first, second] => format!("expected `{first}` or `{second}`"),
-                words => format!(
-                    "expected one of {}",
-                    words
-                        .iter()
-                        .map(|s| format!("`{s}`"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            };
+            // The YAML reader's own refusal of a derived enum's unknown variant, word for word,
+            // so a descriptor-driven key refuses as the derived grammar it replaced did.
             return Err(serde::de::Error::custom(format!(
-                "unknown variant `{word}`, {expected}"
+                "unknown variant `{word}`, expected one of {}",
+                self.0.join(", ")
             )));
         }
         variant.unit_variant()?;
@@ -144,12 +135,13 @@ impl<'de> DeserializeSeed<'de> for FieldName<'_> {
             }
             fn visit_str<E: serde::de::Error>(self, name: &str) -> Result<String, E> {
                 if self.0.deny_unknown && !self.0.keys.iter().any(|key| key.name == name) {
+                    // The YAML reader's own refusal of a derived struct's unknown field.
                     return Err(E::custom(format!(
                         "unknown field `{name}`, expected one of {}",
                         self.0
                             .keys
                             .iter()
-                            .map(|key| format!("`{}`", key.name))
+                            .map(|key| key.name.as_str())
                             .collect::<Vec<_>>()
                             .join(", ")
                     )));
