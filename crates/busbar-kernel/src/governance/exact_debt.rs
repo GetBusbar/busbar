@@ -890,6 +890,30 @@ impl GovState {
         }
     }
 
+    /// Move every in-flight chunk's first send `by` into the past.
+    #[cfg(test)]
+    pub(super) fn age_exact_debt_chunks(&self, by: std::time::Duration) {
+        for flight in self
+            .budget_flushes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+        {
+            if let Some(chunk) = flight
+                .debt
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .chunk
+                .as_mut()
+            {
+                chunk.started = chunk
+                    .started
+                    .checked_sub(by)
+                    .expect("a representable instant");
+            }
+        }
+    }
+
     pub(super) async fn resume_budget_flushes(&self, final_flush: bool) -> (usize, Vec<String>) {
         let flights = crate::off_path::governance::runtime::exact_debt_flights(
             self.budget_flushes

@@ -537,38 +537,34 @@ fn changed_body_operation_identity_is_distinct_from_condition_conflict() {
     );
 }
 
+/// STORE-TRANSACTIONS §8 item 19: an ambiguous write first sent a day and a second ago is resent
+/// with its exact operation while its slot is held, and the store replays Applied. No
+/// Indeterminate give-up.
 #[test]
-fn replay_horizon_reports_indeterminate_without_new_dispatch_or_loss_of_custody() {
+fn a_day_old_ambiguous_write_resends_its_operation_and_settles_applied() {
     let rows = AtomicRows::default();
+    rows.0.lock().unwrap().lose_reply = true;
     let answers = Arc::new(Mutex::new(Vec::new()));
     let mut write = queued(request(Expected::Absent, b"state"), Arc::clone(&answers));
     write.prepared = true;
-    write.submitted = Some(
-        clock_read()
-            - std::time::Duration::from_secs(busbar_contract::abi::store::OP_ID_RETENTION_SECS),
-    );
     let identity = write.request.clone();
+    let book = crate::host_chains::ChainBook::default();
+    let first = clock_read();
     let retained = write
-        .attempt(
-            &rows,
-            &crate::host_chains::ChainBook::default(),
-            clock_read(),
-        )
-        .expect("expired ambiguous operation remains owned");
-    assert_eq!(retained.request, identity);
+        .attempt(&rows, &book, first)
+        .expect("a lost answer keeps custody");
+    assert!(answers.lock().unwrap().is_empty());
+    let later = first + std::time::Duration::from_secs(24 * 60 * 60 + 1);
+    assert!(retained.attempt(&rows, &book, later).is_none());
+    let calls = rows.0.lock().unwrap().calls.clone();
     assert_eq!(
-        answers.lock().unwrap()[0].decision,
-        Err(ConditionalFailure::Indeterminate)
+        calls,
+        vec![identity.clone(), identity],
+        "one resend, same operation"
     );
-    assert!(rows.0.lock().unwrap().calls.is_empty());
-    assert!(retained
-        .attempt(
-            &rows,
-            &crate::host_chains::ChainBook::default(),
-            clock_read()
-        )
-        .is_some());
-    assert_eq!(answers.lock().unwrap().len(), 1);
+    let answers = answers.lock().unwrap();
+    assert_eq!(answers.len(), 1);
+    assert_eq!(answers[0].decision, Ok(Decision::Applied));
 }
 
 fn clock_read() -> std::time::Instant {

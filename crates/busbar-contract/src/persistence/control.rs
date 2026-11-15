@@ -1,20 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Generic execution-fence records, shared by the host and Store adapters.
-//!
-//! These records carry no domain policy. The adapter reads them at its atomic
-//! serialization point, after the slot row. Core prepares changes through
-//! ordinary conditional commits. The slot row precedes all fences.
-//! Adapters must reject deletion, range deletion, malformed replacements and
-//! backwards transitions in this namespace; an absent control record is never an
-//! implicit grant. Dataset initialization requires a separately proven empty
-//! logical dataset (records and slot rows), not merely an absent key in an
-//! existing dataset. Physical backend identity metadata grants no execution authority.
+//! Core-owned records. Core fences every commit with [`fences`] and judges every control
+//! mutation in [`admit`]; a store runs M1 and never decodes, judges or proves anything here.
+
+use std::ops::RangeInclusive;
 
 use super::{
-    DatasetId, ExpectedValue, Failure, Mutation, NamespaceId, PreparedCandidate, CANDIDATE_VERSION,
+    Address, Candidate, DatasetId, ExpectedValue, Failure, Mutation, NamespaceId, Predicate,
+    PreparedCandidate, CANDIDATE_VERSION,
 };
+use crate::redacted::Secret;
 
 /// Reserved metadata namespace, inaccessible to plugin host-record callers.
 pub const NAMESPACE: NamespaceId = NamespaceId(*b"busbar.fence.v1\0");
@@ -32,6 +28,26 @@ pub const GENERATION_NAMESPACE: NamespaceId = NamespaceId(*b"busbar.scan.v1\0\0"
 /// with its own driver before admission, so it holds no receipt; core consumes it after Register.
 pub const IMPORT_NAMESPACE: NamespaceId = NamespaceId(*b"busbar.import.r0");
 
+/// Per-writer slot records (G1), key `writer16 ‖ slot u32 BE`. A store keeps them in its own home,
+/// never among the records, so a read or scan here sees nothing. Core never Puts, Deletes or
+/// predicates them: the only mutation is the `DeleteRange{writer16, 20}` that [`writer_put`] adds
+/// when a writer closes, the store's per-writer delete.
+pub const SLOT_NS: NamespaceId = NamespaceId(*b"busbar.slot.v1\0\0");
+
+/// Most execution epochs one writer holds live at once. A roll admits `e + 1` only from a
+/// one-epoch window, so [`Writer::encode`] refuses a wider one and a transition moves at most two
+/// epoch rows each way.
+pub const MAX_LIVE_EPOCHS: u64 = 2;
+
+/// The value of a live epoch row ([`Key::Epoch`]).
+pub const EPOCH_VALUE: &[u8] = b"BSE1";
+
+/// Slot keys are `writer16 ‖ slot u32 BE`.
+const SLOT_KEY_LENGTH: u64 = 20;
+
+/// The live epochs of a closed or absent writer row.
+const NONE_LIVE: RangeInclusive<u64> = 1..=0;
+
 /// Whether a record in `namespace` makes a dataset non-empty for Initialize's emptiness proof.
 /// Every namespace counts except the reserved import set R = {[`IMPORT_NAMESPACE`]}; receipts
 /// always count.
@@ -47,19 +63,31 @@ pub enum Key {
     Dataset,
     /// One registered writer's execution epochs.
     Writer([u8; 16]),
+    /// One live execution epoch of a writer, `'e' ‖ writer ‖ epoch u64 BE`: present iff
+    /// `retired_through < epoch <= admitted_through` for that writer.
+    Epoch([u8; 16], u64),
 }
 
 impl Key {
-    /// Parse exactly one known control key, rejecting zero writer identities.
+    /// Parse exactly one known control key, rejecting zero writer identities and epoch zero.
     pub fn decode(key: &[u8]) -> Option<Self> {
         if key == DATASET_KEY {
             return Some(Self::Dataset);
         }
-        if key.len() != 17 || key[0] != b'w' {
+        let (&tag, rest) = key.split_first()?;
+        let (writer, epoch) = rest.split_at_checked(16)?;
+        let writer: [u8; 16] = writer.try_into().ok()?;
+        if writer == [0; 16] {
             return None;
         }
-        let writer: [u8; 16] = key[1..].try_into().ok()?;
-        (writer != [0; 16]).then_some(Self::Writer(writer))
+        match tag {
+            b'w' if epoch.is_empty() => Some(Self::Writer(writer)),
+            b'e' => {
+                let epoch = u64::from_be_bytes(epoch.try_into().ok()?);
+                (epoch != 0).then_some(Self::Epoch(writer, epoch))
+            }
+            _ => None,
+        }
     }
 }
 
@@ -102,6 +130,10 @@ pub fn replacement(
             };
             permitted.then_some(()).ok_or(Failure::Refused)
         }
+        // An epoch row is created once, while its epoch is live, and only ever deleted after.
+        Key::Epoch(..) => (previous.is_none() && next == EPOCH_VALUE)
+            .then_some(())
+            .ok_or(Failure::Refused),
     }
 }
 
@@ -110,9 +142,7 @@ pub fn replacement(
 /// Exactly the dataset root and initial writer occupy the control namespace;
 /// additional records cannot use either reserved adapter namespace.
 ///
-/// The adapter must additionally prove, under the same native atomic guard, that
-/// the canonical dataset has no records, slot rows or previous authority. Legacy
-/// or partially initialized data is never fresh.
+/// Core fences it with `Absent(root)`; no store check.
 #[must_use]
 pub fn initialization<O>(prepared: &PreparedCandidate<O>, dataset: DatasetId) -> bool {
     // The prepared candidate is already validated (LINT-RULES R26); this reads its shape only.
@@ -203,6 +233,255 @@ pub fn writer_key(writer: [u8; 16]) -> [u8; 17] {
     key
 }
 
+/// Epoch-row key ([`Key::Epoch`]): `'e' ‖ writer ‖ epoch u64 BE`.
+#[must_use]
+pub fn epoch_key(writer: [u8; 16], epoch: u64) -> [u8; 25] {
+    let mut key = [0; 25];
+    key[0] = b'e';
+    key[1..17].copy_from_slice(&writer);
+    key[17..].copy_from_slice(&epoch.to_be_bytes());
+    key
+}
+
+/// The address of `writer`'s epoch row for `epoch`.
+#[must_use]
+pub fn epoch_row(writer: [u8; 16], epoch: u64) -> Address {
+    Address {
+        namespace: NAMESPACE.0,
+        key: epoch_key(writer, epoch).to_vec(),
+    }
+}
+
+/// The live epochs of an optional writer row; an absent row has none.
+#[must_use]
+pub fn live(writer: Option<Writer>) -> RangeInclusive<u64> {
+    writer.map_or(NONE_LIVE, Writer::live)
+}
+
+fn root_address() -> Address {
+    Address {
+        namespace: NAMESPACE.0,
+        key: DATASET_KEY.to_vec(),
+    }
+}
+
+/// The FENCE conditions of `prepared` (N9): `Absent(root)` for an Initialize, else the exact
+/// root at the candidate's writer epoch and the stamping writer's epoch row at its execution
+/// epoch. Only the store encode calls it, right after [`admit`]; equal candidates carry equal
+/// fences, so they never enter the candidate fingerprint.
+#[must_use]
+pub fn fences<O>(prepared: &PreparedCandidate<O>) -> Vec<Predicate> {
+    if prepared.candidate().codec == CANDIDATE_VERSION {
+        return Vec::new();
+    }
+    let id = prepared.candidate().id;
+    if initialization(prepared, id.dataset) {
+        return vec![Predicate {
+            address: root_address(),
+            expected: ExpectedValue::Absent,
+        }];
+    }
+    let root = Dataset {
+        id: id.dataset,
+        writer_epoch: id.writer_epoch,
+    };
+    vec![
+        Predicate {
+            address: root_address(),
+            expected: ExpectedValue::Exact(Secret::new(root.bytes().to_vec())),
+        },
+        Predicate {
+            address: epoch_row(id.writer, id.execution_epoch),
+            expected: ExpectedValue::Exact(Secret::new(EPOCH_VALUE.to_vec())),
+        },
+    ]
+}
+
+/// The mutations of one writer-row transition: Put `writer`'s row, Put the epoch rows in
+/// `live(next) ∖ live(old)` and Delete those in `live(old) ∖ live(next)`. When `next` is closed
+/// (`live(next)` empty, i.e. `retired_through == admitted_through`) add
+/// `DeleteRange{SLOT_NS, writer, 20}`, whatever `old` is: a repeat deletes nothing. The caller
+/// guards the writer row (`Absent` or `Exact(old)`) and [`admit`] judges the transition. `None`
+/// for a zero writer or a row that does not encode.
+#[must_use]
+pub fn writer_put(writer: [u8; 16], old: Option<Writer>, next: Writer) -> Option<Vec<Mutation>> {
+    if writer != [0; 16] {
+        return None;
+    }
+    if writer == [0; 16] {
+        return None;
+    }
+    if let Some(old) = old {
+        old.encode()?;
+    }
+    let row = next.encode()?;
+    let mut mutations = vec![Mutation::Put {
+        address: Address {
+            namespace: NAMESPACE.0,
+            key: writer_key(writer).to_vec(),
+        },
+        value: Secret::new(row.to_vec()),
+    }];
+    transition(writer, old, next, |effect| {
+        mutations.push(effect.mutation())
+    });
+    Some(mutations)
+}
+
+/// One epoch-row or slot effect of a writer transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Effect {
+    /// Put the epoch row: the epoch became live.
+    Admit([u8; 16], u64),
+    /// Delete the epoch row: the epoch retired.
+    Retire([u8; 16], u64),
+    /// Delete the closed writer's slot records.
+    Close([u8; 16]),
+}
+
+impl Effect {
+    fn mutation(self) -> Mutation {
+        match self {
+            Self::Admit(writer, epoch) => Mutation::Put {
+                address: epoch_row(writer, epoch),
+                value: Secret::new(EPOCH_VALUE.to_vec()),
+            },
+            Self::Retire(writer, epoch) => Mutation::Delete(epoch_row(writer, epoch)),
+            Self::Close(writer) => Mutation::DeleteRange {
+                namespace: SLOT_NS,
+                prefix: writer.to_vec(),
+                exact_key_length: SLOT_KEY_LENGTH,
+            },
+        }
+    }
+}
+
+/// Emit the effects of `writer` moving from `old` to `next`: admitted epochs, then retired ones,
+/// then the closure. Each live window holds at most [`MAX_LIVE_EPOCHS`] epochs.
+fn transition(writer: [u8; 16], old: Option<Writer>, next: Writer, mut emit: impl FnMut(Effect)) {
+    let (before, after) = (live(old), next.live());
+    for epoch in after.clone() {
+        if !before.contains(&epoch) {
+            emit(Effect::Admit(writer, epoch));
+        }
+    }
+    for epoch in before {
+        if !after.contains(&epoch) {
+            emit(Effect::Retire(writer, epoch));
+        }
+    }
+    if after.is_empty() {
+        emit(Effect::Close(writer));
+    }
+}
+
+/// Judge every control and slot mutation of `prepared` before its first byte reaches a store.
+/// The store adapter's `commit`, the one path every store commit takes, runs it.
+///
+/// (i) An Initialize passes [`initialization`]. (ii) Otherwise every control-namespace mutation
+/// is a Put of a known key or a Delete of an epoch row; a root or writer row is only Put, guarded
+/// `Absent` or `Exact(old)` on its own address, and passes [`replacement`] (a writer row within
+/// [`MAX_LIVE_EPOCHS`]). (iii) The epoch-row and [`SLOT_NS`] mutations are exactly those
+/// [`writer_put`] derives from the writer Puts, no predicate names [`SLOT_NS`], and
+/// [`GENERATION_NAMESPACE`] is never mutated. (iv) A Put of the stamping writer's own row still
+/// admits the candidate's execution epoch, so no transition closes the writer that stamps it.
+/// Every refusal is [`Failure::Refused`].
+pub fn admit<O>(prepared: &PreparedCandidate<O>) -> Result<(), Failure> {
+    let candidate = prepared.candidate();
+    if candidate.codec == CANDIDATE_VERSION {
+        return Ok(());
+    }
+    if candidate
+        .predicates
+        .iter()
+        .any(|predicate| predicate.address.namespace == SLOT_NS.0)
+    {
+        return Err(Failure::Refused);
+    }
+    if initialization(prepared, candidate.id.dataset) {
+        // `initialization` judges the whole shape: every record is an Absent-guarded Put, so a
+        // slot record among its opaque ones would need the SLOT_NS predicate refused above.
+        return Ok(());
+    }
+    let mut claimed = Vec::new();
+    let mut derived = Vec::new();
+    for mutation in &candidate.mutations {
+        match mutation {
+            Mutation::DeleteRange {
+                namespace,
+                prefix,
+                exact_key_length,
+            } => {
+                if *namespace == SLOT_NS && *exact_key_length == SLOT_KEY_LENGTH {
+                    let writer: [u8; 16] =
+                        prefix.as_slice().try_into().map_err(|_| Failure::Refused)?;
+                    claimed.push(Effect::Close(writer));
+                } else if [NAMESPACE, SLOT_NS, GENERATION_NAMESPACE].contains(namespace) {
+                    return Err(Failure::Refused);
+                }
+            }
+            Mutation::Put { address, .. } | Mutation::Delete(address)
+                if address.namespace == SLOT_NS.0
+                    || address.namespace == GENERATION_NAMESPACE.0 =>
+            {
+                return Err(Failure::Refused);
+            }
+            Mutation::Delete(address) if address.namespace == NAMESPACE.0 => {
+                match Key::decode(&address.key) {
+                    Some(Key::Epoch(writer, epoch)) => claimed.push(Effect::Retire(writer, epoch)),
+                    _ => return Err(Failure::Refused),
+                }
+            }
+            Mutation::Put { address, value } if address.namespace == NAMESPACE.0 => {
+                match Key::decode(&address.key).ok_or(Failure::Refused)? {
+                    Key::Epoch(writer, epoch) if value.0 == EPOCH_VALUE => {
+                        claimed.push(Effect::Admit(writer, epoch));
+                    }
+                    Key::Epoch(..) => return Err(Failure::Refused),
+                    key => judge(candidate, key, address, &value.0, &mut derived)?,
+                }
+            }
+            Mutation::Put { .. } | Mutation::Delete(_) => {}
+        }
+    }
+    claimed.sort();
+    derived.sort();
+    (claimed == derived).then_some(()).ok_or(Failure::Refused)
+}
+
+/// `admit` (ii) and (iv) for one root or writer row Put, adding a writer's derived effects.
+fn judge<O>(
+    candidate: &Candidate<O>,
+    key: Key,
+    address: &Address,
+    value: &[u8],
+    derived: &mut Vec<Effect>,
+) -> Result<(), Failure> {
+    let previous = match candidate
+        .predicates
+        .iter()
+        .find(|predicate| predicate.address == *address)
+        .map(|predicate| &predicate.expected)
+    {
+        Some(ExpectedValue::Absent) => None,
+        Some(ExpectedValue::Exact(old)) => Some(old.0.as_slice()),
+        None => return Err(Failure::Refused),
+    };
+    replacement(key, candidate.id.dataset, previous, value).map_err(|_| Failure::Refused)?;
+    if let Key::Writer(writer) = key {
+        let next = Writer::decode(value).ok_or(Failure::Refused)?;
+        let old = match previous {
+            Some(old) => Some(Writer::decode(old).ok_or(Failure::Refused)?),
+            None => None,
+        };
+        if writer == candidate.id.writer && !next.admits(candidate.id.execution_epoch) {
+            return Err(Failure::Refused);
+        }
+        transition(writer, old, next, |effect| derived.push(effect));
+    }
+    Ok(())
+}
+
 /// Dataset-wide writer generation, independent of the application's semver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Dataset {
@@ -215,14 +494,16 @@ pub struct Dataset {
 impl Dataset {
     /// Fixed versioned representation; rejects unregistered identities.
     pub fn encode(self) -> Option<[u8; 32]> {
-        if self.id.0 == [0; 16] || self.writer_epoch == 0 {
-            return None;
-        }
+        (self.id.0 != [0; 16] && self.writer_epoch != 0).then(|| self.bytes())
+    }
+
+    /// The representation, unchecked: a validated candidate's identity always encodes.
+    fn bytes(self) -> [u8; 32] {
         let mut bytes = [0; 32];
         bytes[..4].copy_from_slice(b"BSD1");
         bytes[8..24].copy_from_slice(&self.id.0);
         bytes[24..].copy_from_slice(&self.writer_epoch.to_le_bytes());
-        Some(bytes)
+        bytes
     }
 
     /// Unknown versions, nonzero reserved bytes and trailing input are errors.
@@ -269,7 +550,18 @@ impl Writer {
             && epoch <= self.admitted_through
     }
 
-    /// Fixed versioned representation, independent of backend physical format.
+    /// The epochs with a live epoch row, `retired_through + 1 ..= admitted_through`: empty
+    /// exactly when the writer is closed (`retired_through == admitted_through`).
+    #[must_use]
+    pub fn live(self) -> RangeInclusive<u64> {
+        match self.retired_through.checked_add(1) {
+            Some(first) => first..=self.admitted_through.saturating_add(1),
+            None => NONE_LIVE,
+        }
+    }
+
+    /// Fixed versioned representation, independent of backend physical format. A window of more
+    /// than [`MAX_LIVE_EPOCHS`] live epochs has none.
     pub fn encode(self) -> Option<[u8; 24]> {
         if self.admitted_through == 0 || self.retired_through > self.admitted_through {
             return None;
@@ -305,8 +597,11 @@ impl Writer {
 }
 
 #[cfg(test)]
+#[path = "tests/control_d299_tests.rs"]
+mod d299_tests;
+
+#[cfg(test)]
 mod tests {
-    use super::super::Candidate;
     use super::*;
 
     /// `initialization` over a candidate the way a store sees it: prepared (validated once)
@@ -315,7 +610,7 @@ mod tests {
         PreparedCandidate::new(candidate).is_ok_and(|prepared| initialization(&prepared, dataset))
     }
 
-    fn initial() -> Candidate {
+    pub(super) fn initial() -> Candidate {
         use super::super::{Address, AttemptId, Predicate};
         use crate::Secret;
         let dataset = DatasetId([1; 16]);
