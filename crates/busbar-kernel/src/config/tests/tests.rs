@@ -2683,12 +2683,13 @@ fn auth_refusals_describe_the_current_schema_and_source_location() {
     ] {
         let error = refusal(auth);
         let message = error.to_string();
-        // The current schema, `policy` included, is advertised in the YAML reader's spelling.
+        // The current schema, `policy` and the sign-in limiter's `login_limits` block included, is
+        // advertised in the YAML reader's spelling.
         assert_eq!(
             message,
             format!(
                 "auth.bogus_key: unknown field `bogus_key`, expected one of signing_key, chain, \
-                 admin_auth, role_bindings, key_ttl, policy at line {line} column 3"
+                 admin_auth, role_bindings, key_ttl, policy, login_limits at line {line} column 3"
             )
         );
         assert_eq!(error.location().unwrap().line(), line);
