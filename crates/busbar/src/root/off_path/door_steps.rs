@@ -688,6 +688,13 @@ impl busbar_kernel::appbuild::RootRules for Rules {
     ) -> Result<Option<busbar_contract::secure::SecureString>, String> {
         self.documents.normalize(kind, path, raw)
     }
+    fn absent_document(
+        &self,
+        kind: busbar_kernel::appbuild::ConfigDocument,
+        path: &std::path::Path,
+    ) -> Result<(), String> {
+        self.documents.absent(kind, path)
+    }
     fn claim_ticket_admission(
         &self,
         identity: &busbar_kernel::host_services::VerifiedTicketIdentity,
