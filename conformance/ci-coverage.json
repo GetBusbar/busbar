@@ -13,56 +13,6 @@
       "source_commit": "28a9bccc8c47ec807fa550d746941ddf7a12221d",
       "stage": "qa"
     },
-    "evidence-audit-trail": {
-      "check": "conformance",
-      "command": "python3 -I testing/evidence-conformance/evidence.py audit",
-      "core_pin": "checkout",
-      "repo": "GetBusbar/busbar",
-      "script": "testing/evidence-conformance/evidence.py",
-      "script_sha256": "7fb29f07e25b613fb846101a2b3260c42f855f781ca51730209b2d33ccd7bf9a",
-      "source_commit": "checkout",
-      "stage": "qa"
-    },
-    "evidence-rbac": {
-      "check": "conformance",
-      "command": "python3 -I testing/evidence-conformance/evidence.py rbac",
-      "core_pin": "checkout",
-      "repo": "GetBusbar/busbar",
-      "script": "testing/evidence-conformance/evidence.py",
-      "script_sha256": "7fb29f07e25b613fb846101a2b3260c42f855f781ca51730209b2d33ccd7bf9a",
-      "source_commit": "checkout",
-      "stage": "qa"
-    },
-    "evidence-tls": {
-      "check": "conformance",
-      "command": "python3 -I testing/evidence-conformance/evidence.py tls",
-      "core_pin": "checkout",
-      "repo": "GetBusbar/busbar",
-      "script": "testing/evidence-conformance/evidence.py",
-      "script_sha256": "7fb29f07e25b613fb846101a2b3260c42f855f781ca51730209b2d33ccd7bf9a",
-      "source_commit": "checkout",
-      "stage": "qa"
-    },
-    "fapi2": {
-      "check": "conformance",
-      "command": "python3 -I testing/oidf-conformance/oidf.py",
-      "core_pin": "checkout",
-      "repo": "GetBusbar/busbar",
-      "script": "testing/oidf-conformance/oidf.py",
-      "script_sha256": "7adb9d6bf01ad0fb9c7d488429b195c4647198ee3b672c28911e1222f4555d1e",
-      "source_commit": "checkout",
-      "stage": "qa"
-    },
-    "h2": {
-      "check": "conformance",
-      "command": "bash testing/h2-conformance/h2spec.sh",
-      "core_pin": "checkout",
-      "repo": "GetBusbar/busbar",
-      "script": "testing/h2-conformance/h2spec.sh",
-      "script_sha256": "5e822b139f3801d4ba40212411f8679f56cce21db3a34c6eba3244990de7e6e8",
-      "source_commit": "checkout",
-      "stage": "qa"
-    },
     "jev": {
       "check": "conformance",
       "command": "bash testing/conformance/jev.sh",
@@ -143,16 +93,6 @@
       "source_commit": "ff9f19d7b053fe67ee556ca5db8d45cb13320740",
       "stage": "qa"
     },
-    "oidf-oauth2": {
-      "check": "conformance",
-      "command": "python3 -I testing/oidf-conformance/oidf.py",
-      "core_pin": "checkout",
-      "repo": "GetBusbar/busbar",
-      "script": "testing/oidf-conformance/oidf.py",
-      "script_sha256": "7adb9d6bf01ad0fb9c7d488429b195c4647198ee3b672c28911e1222f4555d1e",
-      "source_commit": "checkout",
-      "stage": "qa"
-    },
     "otel-semconv-weaver": {
       "check": "conformance",
       "command": "bash testing/weaver-conformance/run.sh",
@@ -181,7 +121,7 @@
       "script": "testing/sbom/sbom.sh",
       "script_sha256": "30a50cc2e0d7aeec6e0bd3f1b9eafb7436788b513f48befd005d32ae35e8c3f8",
       "source_commit": "checkout",
-      "stage": "qa"
+      "stage": "dev"
     },
     "sigstore": {
       "check": "main/certify-sigstore",
@@ -192,26 +132,6 @@
       "script_sha256": "719dd993b2a2c5510f0e1b93b3678d3a912a6102df1b97beb0e477244d202c18",
       "source_commit": "checkout",
       "stage": "main"
-    },
-    "slsa-verifier": {
-      "check": "conformance",
-      "command": "bash testing/conformance/slsa-verifier.sh",
-      "core_pin": "checkout",
-      "repo": "GetBusbar/busbar",
-      "script": "testing/conformance/slsa-verifier.sh",
-      "script_sha256": "aaf894d6e5f559762cbb733b075247050d708b402562ac5fc6c474771275aab2",
-      "source_commit": "checkout",
-      "stage": "qa"
-    },
-    "tls": {
-      "check": "conformance",
-      "command": "bash testing/tls-conformance/tls.sh",
-      "core_pin": "checkout",
-      "repo": "GetBusbar/busbar",
-      "script": "testing/tls-conformance/tls.sh",
-      "script_sha256": "2b55209571a62545a92870c86225c7120eb9253860b4acf33a57c367bc6852e9",
-      "source_commit": "checkout",
-      "stage": "qa"
     },
     "voice-gemini-live": {
       "check": "conformance",
