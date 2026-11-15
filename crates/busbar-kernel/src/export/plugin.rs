@@ -4,9 +4,9 @@
 use super::projection::{Projection, Rendered};
 use crate::limits::admission::AdmissionGate;
 use crate::plugin_routes::PluginHttpDispatch;
-use busbar_contract::abi::export::ExportStream;
 use busbar_contract::abi::mechanism::endpoint::*;
 use busbar_contract::export_calls::{Delivered, ExportAxis, ExportCalls, ServeRequest};
+use busbar_contract::export_stream::ExportStream;
 use std::sync::{Arc, OnceLock};
 
 // The export sinks' config admission, boot (open, start), reload refresh and route table run off

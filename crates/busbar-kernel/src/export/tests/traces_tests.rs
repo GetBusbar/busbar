@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::abi::export::{ExportField, ExportStream};
+use busbar_contract::abi::export::ExportField;
+use busbar_contract::export_stream::ExportStream;
 use serde_json::Value;
 use tracing_subscriber::layer::SubscriberExt as _;
 

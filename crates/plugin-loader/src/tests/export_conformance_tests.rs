@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use busbar_contract::abi::export::{ExportStream, Ops, CHECK_PHASE_INSTANCES, CHECK_PHASE_LIMITS};
+use busbar_contract::abi::export::{Ops, CHECK_PHASE_INSTANCES, CHECK_PHASE_LIMITS};
 use busbar_contract::abi::host::conn::connector::EGRESS_OPEN_WEB;
 use busbar_contract::abi::mechanism::call::{DIAG_LOG, DIAG_LOG_DROPPED};
 use busbar_contract::abi::mechanism::door::{Door, DoorFn, DoorParts};
@@ -18,6 +18,7 @@ use busbar_contract::conn::{
     PieceKind,
 };
 use busbar_contract::export_calls::{Delivered, ExportCalls};
+use busbar_contract::export_stream::ExportStream;
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::ConnFacts;
 

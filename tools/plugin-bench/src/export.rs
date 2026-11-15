@@ -29,7 +29,8 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::export::{slot, DeliverIn, ExportStream};
+use busbar_contract::abi::export::{slot, DeliverIn};
+use busbar_contract::export_stream::ExportStream;
 use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome, BLOB_JSONL};
 use busbar_contract::conn::admissions::AdmissionAuthority;
 use busbar_contract::export_calls::ExportCalls;

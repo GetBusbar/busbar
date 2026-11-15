@@ -745,7 +745,7 @@ pub fn has_unsettled_audit() -> bool {
 }
 
 fn deliver_audit_event(entry: &AuditEntry) {
-    use busbar_contract::abi::export::ExportStream;
+    use busbar_contract::export_stream::ExportStream;
 
     crate::export::plugin::deliver(ExportStream::Events, &entry.action, |projection| {
         project_audit_event(projection, entry)
@@ -756,7 +756,8 @@ fn project_audit_event(
     projection: crate::export::projection::Projection,
     entry: &AuditEntry,
 ) -> crate::export::projection::Rendered {
-    use busbar_contract::abi::export::{ExportField as F, ExportStream};
+    use busbar_contract::abi::export::ExportField as F;
+    use busbar_contract::export_stream::ExportStream;
 
     let mut record =
         crate::export::projection::ProjectedRecord::new(projection, ExportStream::Events);

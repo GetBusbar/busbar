@@ -35,7 +35,8 @@
 //! 3. a `fields:` list that omits a **pinned** field, or names a field this release does not
 //!    produce.
 
-use busbar_contract::abi::export::{ExportField, ExportStream};
+use busbar_contract::abi::export::ExportField;
+use busbar_contract::export_stream::ExportStream;
 
 pub(crate) const PRODUCED_STREAMS: &[ExportStream] = &[
     ExportStream::Metrics,

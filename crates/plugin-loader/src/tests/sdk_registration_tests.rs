@@ -118,11 +118,11 @@ fn sdk_registration_foreign_hook_requires_serve_only_for_declared_routes() {
 fn sdk_registration_foreign_export_requires_handlers_for_its_declared_streams() {
     for streams in [
         &[][..],
-        &[export::ExportStream::Metrics as u8][..],
-        &[export::ExportStream::Logs as u8][..],
+        &[busbar_contract::export_stream::ExportStream::Metrics as u8][..],
+        &[busbar_contract::export_stream::ExportStream::Logs as u8][..],
         &[
-            export::ExportStream::Metrics as u8,
-            export::ExportStream::Logs as u8,
+            busbar_contract::export_stream::ExportStream::Metrics as u8,
+            busbar_contract::export_stream::ExportStream::Logs as u8,
         ][..],
     ] {
         for (deliver, scrape) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -147,12 +147,17 @@ fn sdk_registration_foreign_export_requires_handlers_for_its_declared_streams() 
             // validation inspects pointer presence and never invokes the callbacks.
             let foreign = unsafe { door::door(statement, ops, None) };
             let result = validate_door::<Export>(&foreign);
-            if streams.contains(&(export::ExportStream::Logs as u8)) && !deliver {
+            if streams.contains(&(busbar_contract::export_stream::ExportStream::Logs as u8))
+                && !deliver
+            {
                 assert!(matches!(
                     result,
                     Err(LoadError::NullSlot(export::slot::DELIVER))
                 ));
-            } else if streams.contains(&(export::ExportStream::Metrics as u8)) && !scrape {
+            } else if streams
+                .contains(&(busbar_contract::export_stream::ExportStream::Metrics as u8))
+                && !scrape
+            {
                 assert!(matches!(
                     result,
                     Err(LoadError::NullSlot(export::slot::SCRAPE))

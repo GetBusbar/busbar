@@ -20,7 +20,7 @@
 //! are one cohesive unit — they all rewrite the same section, in sequence.
 
 use super::migrate::{one_line, swap_remove_key, take, take_mapping, Taken};
-use busbar_contract::abi::export::ExportStream;
+use busbar_contract::export_stream::ExportStream;
 use busbar_contract::plugin::Kind;
 use busbar_contract::yaml::prelude::*;
 

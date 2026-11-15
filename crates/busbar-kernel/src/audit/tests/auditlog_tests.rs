@@ -1563,7 +1563,8 @@ fn an_enqueued_event_cannot_pass_an_older_failed_drain() {
 #[test]
 fn accepted_event_projection_preserves_pinned_identity_and_bounds_disclosure() {
     use crate::export::projection::Projection;
-    use busbar_contract::abi::export::{ExportField as F, ExportStream as S};
+    use busbar_contract::abi::export::ExportField as F;
+    use busbar_contract::export_stream::ExportStream as S;
     let entry = AuditEntry {
         seq: 7,
         ts: 1_700_000_000,

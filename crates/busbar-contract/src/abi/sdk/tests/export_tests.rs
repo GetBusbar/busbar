@@ -8,9 +8,7 @@ use std::mem::{size_of, size_of_val};
 use serde::Deserialize;
 
 use super::*;
-use crate::abi::export::{
-    CheckInstance, CheckOut, DeliverIn, ExportStream, Ops, CHECK_PHASE_LIMITS,
-};
+use crate::abi::export::{CheckInstance, CheckOut, DeliverIn, Ops, CHECK_PHASE_LIMITS};
 use crate::abi::mechanism::call::{Blob, OutHead, BLOB_JSON};
 use crate::abi::mechanism::door::{Statement, REWRITE_ALIAS};
 use crate::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut};
@@ -20,6 +18,7 @@ use crate::abi::sdk::life::{
 };
 use crate::abi::sdk::test_support::zeroed;
 use crate::abi::sdk::Safe;
+use crate::export_stream::ExportStream;
 
 const STREAMS: &[u8] = &[ExportStream::Logs as u8];
 const TAIL: Tail = tail(STREAMS, &[]);
