@@ -1055,3 +1055,7 @@ async fn retire_storage(
 #[cfg(test)]
 #[path = "tests/shutdown.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/shutdown_drain.rs"]
+mod drain_tests;
