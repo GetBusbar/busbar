@@ -352,7 +352,7 @@ pub(crate) fn linked_source(
         let c = ident(krate);
         out.push_str(&format!(
             "crate::root::linked::LinkedDoorExport {{ name: {c}::NAME, alias: {c}::ALIAS, \
-             declares: {c}::DECLARES, door: {door} }}, "
+             declares: {c}::DECLARES, door: {door}, former_names: &[] }}, "
         ));
     }
     out.push_str("]);\n");

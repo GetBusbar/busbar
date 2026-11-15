@@ -765,7 +765,7 @@ pub fn carried_at(claim: &str, target: &str) -> Result<framer::Located, Failure>
     if authority.is_empty() || authority.contains('/') {
         return Err(Failure::Refused("the target is not host:port".into()));
     }
-    let authority = authority.to_owned();
+    let authority = crate::off_path::compose::owned(authority);
     Ok(framer::Located {
         authority,
         name: None,
@@ -1024,14 +1024,16 @@ impl Planned {
         let carried = Carried::dial(
             Arc::clone(&via.door),
             Arc::clone(&via.io),
-            &Dest::Authority(addr.to_string()),
+            &Dest::Authority(crate::off_path::compose::display_text(&addr)),
         )
         .map_err(dial_failure)
         .map_err(|f| (dialled, f))?;
         // When TLS is active the SNI may come from located.name or, if that is None,
         // from the authority host (see the `host` fallback above).  Record whichever
         // name was actually offered so ConnFacts.sni is accurate.
-        let offered_name = tls.as_ref().map(|_| offered_host(&located).to_owned());
+        let offered_name = tls
+            .as_ref()
+            .map(|_| crate::off_path::compose::owned(offered_host(&located)));
         let mut conn = Connection::open_dialled(
             door,
             carried,
@@ -1093,7 +1095,7 @@ impl Connection {
         let carried = Carried::dial(
             Arc::clone(&via.door),
             Arc::clone(&via.io),
-            &Dest::Authority(format!("{}{path}", crate::socket::UNIX_TARGET)),
+            &Dest::Authority(crate::off_path::compose::unix_authority(path)),
         )
         .map_err(dial_failure)?;
         Self::open_dialled(
@@ -1132,7 +1134,8 @@ impl Connection {
                 .facts()
                 .claims
                 .first()
-                .map(|c| (*c).to_owned()),
+                .copied()
+                .map(crate::off_path::compose::owned),
             ..Established::default()
         };
         let pinned = dial.anchors.take().filter(|a| a.key_pin.is_some());
@@ -1222,7 +1225,8 @@ impl Connection {
                 .facts()
                 .claims
                 .first()
-                .map(|c| (*c).to_owned()),
+                .copied()
+                .map(crate::off_path::compose::owned),
         };
         let mut conn = Self {
             framer_error: None,
@@ -1346,7 +1350,8 @@ impl Connection {
                 .facts()
                 .claims
                 .first()
-                .map(|c| (*c).to_owned()),
+                .copied()
+                .map(crate::off_path::compose::owned),
             ..Established::default()
         };
         let mut conn = Self {
@@ -1391,7 +1396,7 @@ impl Connection {
             clear_window: None,
             fallback: None,
             alpn_offer: Vec::new(),
-            offer: accept.alpn.clone(),
+            offer: crate::off_path::compose::offer_of(&accept.alpn),
             agreed: 0,
             full: foldhash::HashSet::default(),
             seals: crate::seal::Seals::default(),
@@ -1755,7 +1760,7 @@ impl Connection {
             };
             self.tls = Some(rustls::Connection::Client(client));
             self.upgraded = true;
-            let offered = Some(name.to_owned());
+            let offered = Some(crate::off_path::compose::owned(name));
             self.established.offered_name = offered;
             self.established.scheme = Established::scheme_of(true);
             self.open_deadline = framer::now().checked_add(timeout);
@@ -2052,7 +2057,7 @@ impl Connection {
         let redialled = Carried::dial(
             Arc::clone(&f.door),
             Arc::clone(&f.io),
-            &Dest::Authority(next.to_string()),
+            &Dest::Authority(crate::off_path::compose::display_text(&next)),
         );
         Some(
             redialled
@@ -2467,7 +2472,7 @@ impl Connection {
                     "a carrier carried as itself carries no query target".into(),
                 ));
             }
-            names.push(REQUEST_TARGET_FIELD.to_owned());
+            names.push(crate::off_path::compose::owned(REQUEST_TARGET_FIELD));
         }
         let sensitive =
             SensitiveFields::new(names.clone()).map_err(|error| Failure::Refused(error.into()))?;
@@ -2560,14 +2565,14 @@ impl Connection {
                 let agreed = self
                     .tls
                     .as_ref()
-                    .and_then(|t| t.alpn_protocol().map(<[u8]>::to_vec));
+                    .and_then(crate::off_path::compose::agreed_alpn);
                 self.established.agreed_protocol = agreed;
                 agreed_was_offered(
                     &self.alpn_offer,
                     self.established.agreed_protocol.as_deref(),
                 )?;
                 if let Some(rustls::Connection::Server(s)) = self.tls.as_ref() {
-                    let asked = s.server_name().map(str::to_owned);
+                    let asked = s.server_name().map(crate::off_path::compose::owned);
                     self.established.offered_name = asked;
                 }
                 self.hold_to_anchors()?;

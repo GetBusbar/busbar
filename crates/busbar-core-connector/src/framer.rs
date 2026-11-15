@@ -1606,6 +1606,12 @@ fn locate_as(
 /// How many lent fields a head holds on the stack before it spills to the heap.
 pub(crate) const FIELDS_INLINE: usize = 16;
 
+/// How many guest lines a `begin` lends from the stack before they spill to the heap.
+const LINES_INLINE: usize = 8;
+
+/// How many field predicates one lent guest line holds on the stack before they spill to the heap.
+const LINE_PREDICATES_INLINE: usize = 4;
+
 thread_local! {
     /// The buffer a stream's final status is laid out in, reused across finishes on this thread.
     static FINAL_BYTES: std::cell::Cell<Vec<u8>> = const { std::cell::Cell::new(Vec::new()) };
@@ -2031,15 +2037,17 @@ impl Framing {
                     Some(g) if *side != SIDE_DIAL => g.lines(),
                     _ => &[],
                 };
-                let predicates: Vec<Vec<FieldPredicate>> = lent
-                    .iter()
-                    .map(|l| l.fields.iter().map(predicate_of).collect())
-                    .collect();
-                let entries: Vec<LineEntry> = lent
-                    .iter()
-                    .zip(&predicates)
-                    .map(|(l, p)| entry_of(l, p))
-                    .collect();
+                let mut predicates: smallvec::SmallVec<
+                    [smallvec::SmallVec<[FieldPredicate; LINE_PREDICATES_INLINE]>; LINES_INLINE],
+                > = smallvec::SmallVec::new();
+                for l in lent {
+                    let mut line_predicates = smallvec::SmallVec::new();
+                    line_predicates.extend(l.fields.iter().map(predicate_of));
+                    predicates.push(line_predicates);
+                }
+                let mut entries: smallvec::SmallVec<[LineEntry; LINES_INLINE]> =
+                    smallvec::SmallVec::new();
+                entries.extend(lent.iter().zip(&predicates).map(|(l, p)| entry_of(l, p)));
                 let mut i: BeginIn = blank_in();
                 i.side = *side;
                 i.scheme = established.scheme;

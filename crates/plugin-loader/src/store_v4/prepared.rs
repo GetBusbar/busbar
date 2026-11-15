@@ -708,7 +708,7 @@ async fn invoke(
     let until = deadline();
     for attempt in 0..2 {
         let done = dispatcher
-            .submit_lent(
+            .submit_watched(
                 &io.session.plugin,
                 ticket,
                 wire::slot::BOOTSTRAP,
@@ -716,6 +716,7 @@ async fn invoke(
                 DeadlineClass::Call,
                 until,
                 io.clone() as Lent,
+                super::DEADLINE,
             )
             .await;
         let lease = AnswerLease::new(&io.session.plugin, done.lease);

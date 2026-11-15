@@ -190,3 +190,34 @@ pub(crate) fn needs_of<V>(
 pub(crate) fn forget_owned<K: Eq + Hash, V>(map: &mut HashMap<K, V>, owned: impl Fn(&K) -> bool) {
     map.retain(|k, _| !owned(k));
 }
+
+/// An owned copy of `text`, kept by a dialled connection's own record (its target, authority,
+/// member or located place), once, as the connection is dialled.
+pub(crate) fn owned(text: &str) -> String {
+    text.to_owned()
+}
+
+/// An owned copy of an optional name, as [`owned`].
+pub(crate) fn owned_name(name: Option<&str>) -> Option<String> {
+    name.map(str::to_owned)
+}
+
+/// `text` lower-cased, the key a dialled connection is pooled and anchored under.
+pub(crate) fn lowered(text: &str) -> String {
+    text.to_ascii_lowercase()
+}
+
+/// An owned copy of `items`, kept by a dialled connection's own record (its head words, its
+/// protocol offer, the head defaults), once, as the connection is dialled.
+pub(crate) fn copied<T: Clone>(items: &[T]) -> Vec<T> {
+    items.to_vec()
+}
+
+/// The head an opener lent, copied into the dial's own owned fields once, as the connection is
+/// dialled.
+pub(crate) fn copied_fields(fields: &[(&str, &[u8])]) -> Vec<(String, Vec<u8>)> {
+    fields
+        .iter()
+        .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
+        .collect()
+}

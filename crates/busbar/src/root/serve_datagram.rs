@@ -899,7 +899,7 @@ impl Description {
     }
 }
 
-pub(super) struct Joining {
+pub(crate) struct Joining {
     door: Arc<ClaimDoor>,
     framing: DatagramFraming,
     leg: Arc<CallerLeg>,

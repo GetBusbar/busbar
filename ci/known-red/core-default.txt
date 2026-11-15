@@ -50,7 +50,6 @@ busbar-default::bin/busbar root::serve::plane_mcp_door::door_boundary::connect_a
 busbar-default::bin/busbar root::serve::plane_mcp_door::door_boundary::connect_fetches_with_the_members_binding_and_never_for_a_passthrough_member	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::plane_mcp_door::spent_ledger::a_node_refuses_its_own_replay_with_no_durable_store_configured	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::plane_mcp_door::spent_ledger::two_nodes_sharing_no_store_each_redeem_once_which_is_the_documented_ram_posture	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar root::serve::serve_datagram::raw_udp_ingress_tests::raw_output_credit_readiness_drops_before_acceptance_and_resumes_without_replay	CDT-KNOWN-RED	flaky
 busbar-default::bin/busbar root::units_admin::ledger_recovery_actual::actual_store_compatibility_replay_preserves_the_resolved_verdict	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::units_admin::ledger_recovery_actual::an_actual_retained_usage_operation_is_listed_and_resolved_through_the_admin_route	CDT-KNOWN-RED	stable
 busbar-default::cli_validate validate_accepts_a_reference_at_a_planes_declared_wildcard_path	CDT-KNOWN-RED	stable
@@ -69,7 +68,6 @@ busbar-default::config_validate_cross_plane the_tools_section_enumerates_every_s
 busbar-default::decisions_served a_booted_busbar_serves_post_v1_systemone	CDT-KNOWN-RED	stable
 busbar-default::export_otlp_delivers_spans the_request_paths_spans_reach_the_collector_as_1_5_5_named_them	CDT-KNOWN-RED	stable
 busbar-default::export_scrape_is_first_party a_third_party_metrics_sink_never_serves_metrics	CDT-KNOWN-RED	stable
-busbar-default::mcp_stdio_serve a_bound_session_serves_and_eof_with_a_live_subscription_exits_promptly	CDT-KNOWN-RED	flaky
 busbar-default::mcp_stdio_serve a_broken_stdout_ends_the_line_session_without_waiting_for_stdin_eof	CDT-KNOWN-RED	stable
 busbar-default::mcp_stdio_serve a_budgeted_stdio_session_serves_within_budget_and_refuses_over_it	CDT-KNOWN-RED	stable
 busbar-default::mcp_stdio_serve a_governed_deployment_refuses_a_wrong_audience_credential	CDT-KNOWN-RED	stable

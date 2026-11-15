@@ -87,6 +87,62 @@ fn a_linked_export_declares_stating_needs_boots() {
     );
 }
 
+#[cfg(linked_axis_export_doors)]
+#[test]
+fn a_linked_doors_former_name_resolves_its_module() {
+    let d = crate::LINKED.export_doors.first().expect("an export door");
+    let row = crate::root::linked::LinkedDoorExport {
+        name: "x-current",
+        alias: "x-current",
+        former_names: &["x-old"],
+        ..*d
+    };
+    let registry = PluginRegistry::empty()
+        .link(linked_exports(&[row]).expect("the row reads"))
+        .expect("the row links");
+    let answered = registry.resolve("x-old").map(|p| p.manifest.name.clone());
+    assert_eq!(answered.as_deref(), Some("x-current"));
+}
+
+#[test]
+fn a_doors_words_are_its_former_names_then_its_alias_rewrites() {
+    use busbar_contract::abi::mechanism::door::{REWRITE_ALIAS, REWRITE_SUGAR};
+    let rewrites = vec![
+        (REWRITE_SUGAR, "tok".to_string(), "token".to_string()),
+        (REWRITE_ALIAS, "x-alias".to_string(), String::new()),
+    ];
+    assert_eq!(
+        crate::root::linked::door_words(&["x-old"], &rewrites),
+        ["x-old", "x-alias"]
+    );
+    assert!(crate::root::linked::door_words(&[], &[]).is_empty());
+}
+
+#[cfg(linked_axis_export_doors)]
+#[test]
+fn a_former_name_another_linked_door_answers_to_is_a_claim_conflict() {
+    let d = crate::LINKED.export_doors.first().expect("an export door");
+    let one = crate::root::linked::LinkedDoorExport {
+        name: "x-first",
+        alias: "x-first",
+        former_names: &["x-alias"],
+        ..*d
+    };
+    let two = crate::root::linked::LinkedDoorExport {
+        name: "x-alias",
+        alias: "x-alias",
+        former_names: &[],
+        ..*d
+    };
+    let refused = PluginRegistry::empty()
+        .link(linked_exports(&[one, two]).expect("the rows read"))
+        .expect_err("two doors answering to one word");
+    assert!(
+        refused.contains("claim conflict") && refused.contains("x-alias"),
+        "{refused}"
+    );
+}
+
 #[test]
 fn a_host_series_and_its_derived_histogram_series_are_the_hosts() {
     assert!(host_series("busbar_request_duration_seconds_count"));

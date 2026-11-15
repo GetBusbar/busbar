@@ -531,16 +531,6 @@ pub fn neutral_frame_door_bytes() -> Option<Vec<u8>> {
         .and_then(|p| std::fs::read(p).ok())
 }
 
-/// The in-tree HTTP-calling hook double (`plugin-loader/tests/fixtures/http_hook_door.rs`): the hook
-/// kind's outbound shape, which the workspace test build compiles beside this binary.
-pub fn http_hook_library() -> PathBuf {
-    let file = plugin_library_filename("http_hook_door");
-    libraries()
-        .into_iter()
-        .find(|p| p.file_name().is_some_and(|n| n == file.as_str()))
-        .unwrap_or_else(|| missing("http_hook_door", BUILD_LOADER_EXAMPLES))
-}
-
 pub fn metrics_sink_cdylib() -> Option<Vec<u8>> {
     static ONE: std::sync::OnceLock<Dispatcher> = std::sync::OnceLock::new();
     let d = ONE.get_or_init(|| {

@@ -859,7 +859,7 @@ pub const unsafe fn check<T: KindOps>(st: &Statement, ops: &T) {
                 while i < t.streams_len {
                     let stream = *t.streams.add(i);
                     assert!(
-                        stream <= crate::abi::export::ExportStream::Completions as u8,
+                        stream <= crate::abi::export::ExportStream::Content as u8,
                         "export stream code is invalid"
                     );
                     if stream == crate::abi::export::ExportStream::Metrics as u8 {

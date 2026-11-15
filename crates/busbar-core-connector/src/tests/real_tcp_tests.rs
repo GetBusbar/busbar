@@ -67,13 +67,11 @@ fn dispatcher() -> &'static Arc<Dispatcher> {
 fn actual_transport(name: &str, row: &LinkedRow) -> Entry {
     static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
     let dispatcher = dispatcher();
+    let instance = format!("{name}-{}", NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed)).into();
     let plugin = load_linked::<Transport>(
         row,
         Bind {
-            instance: Arc::from(format!(
-                "{name}-{}",
-                NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed)
-            )),
+            instance,
             max_inflight_cap: 1024,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
