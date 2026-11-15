@@ -508,6 +508,15 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
         ),
     ),
     (
+        "Doc",
+        SecretBearing::NotInResolvedConfig(
+            "the `#[cfg(test)]` witness document inside `busbar_contract::secret_ref::context`'s \
+             `a_recording_read_records_reference_and_bag_words` (SECRET-SHORTHAND-BOOT MR-B2), \
+             proving a recording read records the words it uses; a test fixture, never part of \
+             `RootCfg`.",
+        ),
+    ),
+    (
         "Entry",
         SecretBearing::NotInResolvedConfig(
             "the `#[cfg(test)]` neutral source fixture's table row in \
