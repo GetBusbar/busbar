@@ -1291,3 +1291,178 @@ fn a_full_histogram_buffer_parks_for_the_maintenance_thread_and_overflow_is_coun
         );
     }
 }
+
+fn lane_hist_labels(model: &str) -> Vec<Vec<(&'static str, String)>> {
+    registry()
+        .hists
+        .descs
+        .read()
+        .unwrap()
+        .iter()
+        .filter(|d| {
+            d.name == crate::snapshot::LANE_REQUEST_DURATION_SECONDS
+                && d.labels.iter().any(|(k, v)| *k == "model" && v == model)
+        })
+        .map(|d| d.labels.clone())
+        .collect()
+}
+
+fn lane_slots(
+    pool: &'static str,
+    lanes: &[(usize, &'static str, &'static str)],
+    cap: usize,
+) -> AppSlots {
+    let mut slots = AppSlots::default();
+    let mut per_lane = HashMap::default();
+    for (idx, _, _) in lanes {
+        per_lane.insert(
+            *idx,
+            LaneFamily {
+                attempts: CounterSlot::INVALID,
+                failures: [CounterSlot::INVALID; DISPOSITIONS.len()],
+                trips: CounterSlot::INVALID,
+            },
+        );
+    }
+    slots.lane.insert(Box::from(pool), per_lane);
+    let find = |idx: usize| lanes.iter().find(|l| l.0 == idx);
+    slots.attach_lane_durations(
+        |idx| find(idx).map(|l| l.1),
+        |idx| find(idx).map(|l| l.2),
+        cap,
+    );
+    slots
+}
+
+#[test]
+fn lane_histogram_labels() {
+    let slots = lane_slots(
+        "lh-pool",
+        &[(0, "lh-inst\u{1f}lh-model", "lh-target")],
+        1024,
+    );
+    assert!(slots.lane_duration[0].is_valid());
+    let held = lane_hist_labels("lh-model");
+    assert_eq!(
+        held,
+        vec![vec![
+            ("pool", "lh-pool".to_string()),
+            ("target", "lh-target".to_string()),
+            ("model", "lh-model".to_string()),
+            ("instance", "lh-inst".to_string()),
+        ]]
+    );
+}
+
+#[test]
+fn lane_labels_attached_at_render() {
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
+    let slots = lane_slots(
+        "lr-pool",
+        &[(0, "lr-inst\u{1f}lr-model", "lr-target")],
+        1024,
+    );
+    let labels = [("pool", "lr-pool"), ("instance", "lr-inst")];
+    let count = format!("{}_count", crate::snapshot::LANE_REQUEST_DURATION_SECONDS);
+    let before = metric_sum(&count, &labels);
+    // The record path is the slot alone: a lane id, no label.
+    slots.lane_duration[0].record_inner(0.25, true);
+    slots.lane_duration[0].record_inner(0.5, true);
+    assert_eq!((metric_sum(&count, &labels) - before).round() as u64, 2);
+}
+
+#[test]
+fn lane_series_bounded() {
+    let dropped = lane_series_dropped();
+    let slots = lane_slots(
+        "lb-pool",
+        &[
+            (0, "lb-inst\u{1f}lb-a", "lb-ta"),
+            (1, "lb-inst\u{1f}lb-b", "lb-tb"),
+            (2, "lb-inst\u{1f}lb-c", "lb-tc"),
+        ],
+        1,
+    );
+    assert_eq!(lane_hist_labels("lb-a").len(), 1);
+    assert!(
+        lane_hist_labels("lb-b").is_empty(),
+        "past the bound: no own series"
+    );
+    assert!(lane_hist_labels("lb-c").is_empty());
+    assert_eq!(lane_series_dropped() - dropped, 2, "the fold is counted");
+    assert_eq!(
+        slots.lane_duration[1], slots.lane_duration[2],
+        "both fold to one series"
+    );
+    assert!(lane_hist_labels("other")
+        .iter()
+        .any(|labels| labels.iter().any(|(k, v)| *k == "target" && v == "other")));
+}
+
+#[test]
+fn refusal_counter_per_reason() {
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
+    let stalled = [("reason", "stalled"), ("instance", "ref-inst")];
+    let late = [("reason", "deadline_exceeded"), ("instance", "ref-inst")];
+    let (s0, d0) = (
+        metric_sum(crate::snapshot::UNIT_REFUSALS_TOTAL, &stalled),
+        metric_sum(crate::snapshot::UNIT_REFUSALS_TOTAL, &late),
+    );
+    unit_refusal_on("ref-inst", "stalled");
+    unit_refusal_on("ref-inst", "stalled");
+    unit_refusal_on("ref-inst", "deadline_exceeded");
+    assert_eq!(
+        (metric_sum(crate::snapshot::UNIT_REFUSALS_TOTAL, &stalled) - s0).round() as u64,
+        2
+    );
+    assert_eq!(
+        (metric_sum(crate::snapshot::UNIT_REFUSALS_TOTAL, &late) - d0).round() as u64,
+        1
+    );
+}
+
+#[test]
+fn telemetry_without_export() {
+    use std::time::Duration;
+    // On by default: no export instance still means a registry.
+    let defaults = crate::config::TelemetryCfg::default();
+    assert!(defaults.enabled);
+    assert_eq!(defaults.retention_seconds, 300);
+    assert_eq!(defaults.max_lane_series, 1024);
+    assert_eq!(
+        crate::snapshot::retention_for(true, 300, None),
+        Some(Duration::from_secs(300))
+    );
+    // An export recorder only raises the retention.
+    assert_eq!(
+        crate::snapshot::retention_for(true, 300, Some(Duration::from_secs(900))),
+        Some(Duration::from_secs(900))
+    );
+    assert_eq!(
+        crate::snapshot::retention_for(true, 300, Some(Duration::from_secs(60))),
+        Some(Duration::from_secs(300))
+    );
+}
+
+#[test]
+fn telemetry_explicit_off_503_reason() {
+    use std::time::Duration;
+    let off: crate::config::TelemetryCfg =
+        busbar_contract::yaml::from_str("enabled: false\n").expect("parses");
+    assert!(!off.enabled);
+    assert_eq!(
+        off.retention_seconds, 300,
+        "other fields keep their defaults"
+    );
+    assert_eq!(crate::snapshot::retention_for(false, 300, None), None);
+    assert_eq!(
+        crate::snapshot::retention_for(false, 300, Some(Duration::from_secs(60))),
+        Some(Duration::from_secs(60)),
+        "an export recorder is its own ask"
+    );
+    assert_eq!(
+        crate::export::scrape::TELEMETRY_DISABLED,
+        "telemetry_disabled"
+    );
+    assert!(busbar_contract::yaml::from_str::<crate::config::TelemetryCfg>("bogus: 1\n").is_err());
+}
