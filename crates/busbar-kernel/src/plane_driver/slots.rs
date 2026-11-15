@@ -42,11 +42,7 @@ pub fn runtime_slot_key(plane_key: &str) -> &'static str {
     if let Some(k) = interned.get(plane_key) {
         return k;
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a plane's runtime slot key is composed and leaked once per plane key, then interned"
-    )]
-    let leaked: &'static str = format!("{plane_key}:runtime").leak();
+    let leaked = crate::cold::runtime_slot_key_first(plane_key);
     interned.insert(&leaked[..plane_key.len()], leaked);
     leaked
 }

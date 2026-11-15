@@ -728,8 +728,8 @@ pub(crate) unsafe fn answer(
                 result: Err(ConditionalFailure::Refused(reason)),
             };
             let bytes = wire::encode_observed(&observation, &result).map_err(|_| ())?;
-            // busbar:expect(bp::into_alloc, reason = "error: the provider refused the observation; its refusal receipt is kept")
-            let receipt = Arc::from(bytes);
+            // The provider refused the observation; its refusal receipt is kept.
+            let receipt = crate::cold::dispatch::runtime::refusal_receipt(bytes);
             if served
                 .store
                 .observation_complete(caller(wake), unit, &observation, &result, receipt)
@@ -771,8 +771,8 @@ pub(crate) unsafe fn answer(
             decision: Err(ConditionalFailure::Refused(reason)),
         };
         let bytes = wire::encode_result(&request, &result).map_err(|_| ())?;
-        // busbar:expect(bp::into_alloc, reason = "error: the provider refused the commit; its refusal receipt is kept")
-        let receipt = Arc::from(bytes);
+        // The provider refused the commit; its refusal receipt is kept.
+        let receipt = crate::cold::dispatch::runtime::refusal_receipt(bytes);
         if served
             .store
             .conditional_complete(caller(wake), unit, &request, &result, receipt)
@@ -784,6 +784,5 @@ pub(crate) unsafe fn answer(
 }
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "conditional_tests.rs"]
 mod tests;

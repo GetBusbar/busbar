@@ -34,23 +34,10 @@ impl ProxyHop {
     /// The endpoint `host:port`, presenting `auth` (the whole `Proxy-Authorization` value) when set.
     #[must_use]
     pub fn new(host: String, port: u16, auth: Option<String>) -> Self {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the hop is parsed once from the proxy environment; its endpoint is spelled once"
-        )]
-        let endpoint = if host.contains(':') && !host.starts_with('[') {
-            format!("[{host}]:{port}")
-        } else {
-            format!("{host}:{port}")
-        };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the hop is parsed once from the proxy environment; its CONNECT tail is spelled once"
-        )]
-        let connect_tail = match &auth {
-            Some(auth) => format!("Proxy-Authorization: {auth}\r\n\r\n"),
-            None => "\r\n".to_owned(),
-        };
+        // The hop is parsed once from the proxy environment: its spellings are made once with it,
+        // off the request path.
+        let (endpoint, connect_tail) =
+            crate::off_path::egress::proxy::hop_spellings(&host, port, auth.as_deref());
         Self {
             host,
             port,
@@ -70,12 +57,6 @@ impl ProxyHop {
     #[must_use]
     pub fn port(&self) -> u16 {
         self.port
-    }
-
-    /// The `Proxy-Authorization` value, where the proxy's userinfo set one.
-    #[must_use]
-    pub fn proxy_authorization(&self) -> Option<&str> {
-        self.auth.as_deref()
     }
 
     /// The proxy's own `host:port`, as a dial reaches it (a v6 host bracketed).

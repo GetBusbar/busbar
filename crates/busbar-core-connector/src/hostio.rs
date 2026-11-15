@@ -98,10 +98,10 @@ enum Kind {
     Program(Box<Pipes>),
 }
 
-struct Entry {
+pub(crate) struct Entry {
     /// The whole handle: its slot and the slot's generation when it was made.
-    id: u64,
-    owner: u64,
+    pub(crate) id: u64,
+    pub(crate) owner: u64,
     kind: Kind,
 }
 
@@ -112,7 +112,7 @@ const SEGMENTS: usize = 26;
 /// The slots the table can make.
 const SLOTS: u64 = (FIRST as u64) * ((1 << SEGMENTS) - 1);
 /// A handle's generation, above its slot.
-const GENERATION: u64 = 1 << 32;
+pub(crate) const GENERATION: u64 = 1 << 32;
 
 /// THE HANDLE TABLE: a slot per live handle, read by every `io.*` call WITHOUT A LOCK (one atomic
 struct Table {
@@ -122,13 +122,13 @@ struct Table {
 
 /// The table's writers' side.
 #[derive(Default)]
-struct Free {
+pub(crate) struct Free {
     /// The next handle of each released slot (its next generation).
-    released: Vec<u64>,
+    pub(crate) released: Vec<u64>,
     /// Slots ever made.
     made: u64,
     /// Handles held.
-    live: usize,
+    pub(crate) live: usize,
 }
 
 impl Default for Table {
@@ -175,14 +175,7 @@ impl Table {
         self.segments
             .get(seg)
             .ok_or_else(IoRefusal::unknown)?
-            .get_or_init(|| {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "boot: each table segment is allocated once in the process's life, the first time the table grows into it"
-                )]
-                let segment = (0..FIRST << seg).map(|_| ArcSwapOption::empty()).collect();
-                segment
-            })[at]
+            .get_or_init(|| crate::off_path::lines::handle_segment(FIRST << seg))[at]
             .store(Some(Arc::new(Entry { id, owner, kind })));
         free.live += 1;
         Ok(id)
@@ -204,27 +197,7 @@ impl Table {
     /// Release every handle `owner` holds, as [`Table::release`] releases one: each names nothing
     fn reap(&self, owner: u64) -> Vec<Arc<Entry>> {
         let mut free = self.free.lock().unwrap_or_else(PoisonError::into_inner);
-        // busbar:expect(bp::fresh_buffer, reason = "config: an owner's handles are reaped only when the owner (a plugin instance) is unloaded")
-        let mut gone = Vec::new();
-        // busbar:expect(bp::state_scan, reason = "config: an owner's handles are reaped only when the owner (a plugin instance) is unloaded")
-        for slot in self
-            .segments
-            .iter()
-            .filter_map(OnceLock::get)
-            .flat_map(|s| s.iter())
-        {
-            if !slot.load_full().is_some_and(|e| e.owner == owner) {
-                continue;
-            }
-            if let Some(e) = slot.swap(None) {
-                if let Some(next) = e.id.checked_add(GENERATION) {
-                    free.released.push(next);
-                }
-                free.live -= 1;
-                gone.push(e);
-            }
-        }
-        gone
+        crate::off_path::lines::reap_handles(&self.segments, &mut free, owner)
     }
 }
 
@@ -244,12 +217,7 @@ impl std::fmt::Debug for HostIo {
 }
 
 fn failed(e: &io::Error) -> IoRefusal {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a failed or refused I/O op is answered with its sentence"
-    )]
-    let sentence = e.to_string();
-    IoRefusal::Failed(sentence)
+    IoRefusal::Failed(crate::cold::lines::io_error_text(e))
 }
 
 /// What a non-blocking attempt answered: progress, nothing yet (wait), or the error.
@@ -428,17 +396,13 @@ impl HostIo {
     fn connect(addr: &str) -> Result<Sock, OpenFailure> {
         #[cfg(unix)]
         if let Some(path) = socket::unix_path(addr) {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a failed or refused I/O op is answered with its sentence"
-            )]
             return socket::connect_unix(path)
                 .map(Sock::Unix)
                 .map_err(|e| match e.kind() {
                     io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => {
-                        OpenFailure::Refused(format!("no socket listens at `{path}`: {e}"))
+                        OpenFailure::Refused(crate::cold::lines::no_socket_listens(path, &e))
                     }
-                    _ => OpenFailure::Failed(e.to_string()),
+                    _ => OpenFailure::Failed(crate::cold::lines::io_error_text(&e)),
                 });
         }
         #[cfg(windows)]
@@ -447,23 +411,12 @@ impl HostIo {
                 "Unix-domain targets are unavailable on Windows".into(),
             ));
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a failed or refused I/O op is answered with its sentence"
-        )]
-        let at: SocketAddr = addr.parse().map_err(|_| {
-            OpenFailure::Refused(format!(
-                "`{addr}` is not an address the connector dials without resolving a name"
-            ))
-        })?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a failed or refused I/O op is answered with its sentence"
-        )]
-        let connected = socket::connect(at)
+        let at: SocketAddr = addr
+            .parse()
+            .map_err(|_| OpenFailure::Refused(crate::cold::lines::not_dialable(addr)))?;
+        socket::connect(at)
             .map(Sock::Tcp)
-            .map_err(|e| OpenFailure::Failed(e.to_string()));
-        connected
+            .map_err(|e| OpenFailure::Failed(crate::cold::lines::io_error_text(&e)))
     }
 }
 
@@ -552,12 +505,12 @@ impl IoHost for HostIo {
                 return Err(IoRefusal::Failed(text));
             }
         };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a failed or refused I/O op is answered with its sentence"
-        )]
         let sock = reactor::register(sock).map_err(|e| {
-            self.record(ticket, None, Some(OpenFailure::Failed(e.to_string())));
+            self.record(
+                ticket,
+                None,
+                Some(OpenFailure::Failed(crate::cold::lines::io_error_text(&e))),
+            );
             failed(&e)
         })?;
         let id = self.handles.make(
@@ -591,12 +544,7 @@ impl IoHost for HostIo {
         let sock = reactor::register(l).map_err(|e| failed_bind("register", &e))?;
         let id = self.handles.make(owner, Kind::Listener(sock))?;
         self.record(ticket, Some(id), None);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a listener is bound at boot or at a config commit; its address is spelled once"
-        )]
-        let local = local.to_string();
-        Ok((id, local))
+        Ok((id, crate::off_path::lines::bound_address(&local)))
     }
 
     fn accept(
@@ -820,13 +768,9 @@ impl IoHost for HostIo {
         }
 
         let held = held.now();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a failed or refused I/O op is answered with its sentence"
-        )]
         let resolved = held
             .env()
-            .map_err(|why| IoRefusal::Refused(why.to_owned()))?;
+            .map_err(|why| IoRefusal::Refused(crate::cold::lines::refusal_text(why)))?;
 
         let (child_reads, stdin, stdout, child_writes) = pipe_ends().map_err(|e| failed(&e))?;
 

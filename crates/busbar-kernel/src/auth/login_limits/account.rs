@@ -11,6 +11,8 @@
 //! cleared). The records hold only an expiry, never a name, and the shared claim maintenance sweeps
 //! them. Any store failure is the caller's to fail closed on.
 
+use std::fmt::Write as _;
+
 use crate::persistence::claims::{Claims, Outcome};
 use crate::persistence::facade::CoreStore;
 
@@ -24,8 +26,7 @@ pub(crate) const KIND: &str = "account-v1";
 /// A held slot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SlotTicket {
-    fingerprint: String,
-    slot: u32,
+    token: Token,
 }
 
 /// The store could not answer; the caller fails closed.
@@ -41,8 +42,49 @@ pub(crate) enum Reserved {
     Full,
 }
 
-fn token(fingerprint: &str, slot: u32) -> String {
-    format!("{fingerprint}/{slot}")
+/// The most bytes a slot token spells: an account fingerprint is 32 hex characters, so the room is
+/// generous; a longer one is refused as the store failing (fail closed), never truncated.
+const TOKEN_ROOM: usize = 128;
+
+/// A slot's claim token, `<fingerprint>/<slot>`, spelled on the stack.
+#[derive(Clone, PartialEq, Eq)]
+struct Token {
+    buf: [u8; TOKEN_ROOM],
+    len: usize,
+}
+
+impl Token {
+    fn new(fingerprint: &str, slot: u32) -> Result<Self, StoreUnavailable> {
+        let mut token = Self {
+            buf: [0; TOKEN_ROOM],
+            len: 0,
+        };
+        write!(token, "{fingerprint}/{slot}").map_err(|_| StoreUnavailable)?;
+        Ok(token)
+    }
+
+    fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.buf[..self.len]).unwrap_or_default()
+    }
+}
+
+impl std::fmt::Write for Token {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        let end = self
+            .len
+            .checked_add(s.len())
+            .filter(|end| *end <= TOKEN_ROOM)
+            .ok_or(std::fmt::Error)?;
+        self.buf[self.len..end].copy_from_slice(s.as_bytes());
+        self.len = end;
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// Register the slots' namespace with the shared claim maintenance (idempotent).
@@ -63,16 +105,9 @@ pub(crate) async fn reserve(
     let mut attempt = [0u8; 16];
     busbar_contract::crypto::fill(&mut attempt).map_err(|_| StoreUnavailable)?;
     for slot in 0..limit.max {
-        match claims
-            .redeem_as(&token(fingerprint, slot), expires_at, &attempt)
-            .await
-        {
-            Ok(Outcome::Claimed) => {
-                return Ok(Reserved::Held(SlotTicket {
-                    fingerprint: fingerprint.to_string(),
-                    slot,
-                }))
-            }
+        let token = Token::new(fingerprint, slot)?;
+        match claims.redeem_as(token.as_str(), expires_at, &attempt).await {
+            Ok(Outcome::Claimed) => return Ok(Reserved::Held(SlotTicket { token })),
             Ok(Outcome::AlreadyClaimed) => continue,
             Ok(_) | Err(_) => return Err(StoreUnavailable),
         }
@@ -83,7 +118,7 @@ pub(crate) async fn reserve(
 /// Give one attempt's slot back: the plugin never judged it.
 pub(crate) async fn refund(store: &CoreStore, ticket: &SlotTicket) -> Result<(), StoreUnavailable> {
     Claims::authorized(store, OWNER, KIND)
-        .release(&token(&ticket.fingerprint, ticket.slot))
+        .release(ticket.token.as_str())
         .await
         .map(|_| ())
         .map_err(|_| StoreUnavailable)
@@ -98,7 +133,11 @@ pub(crate) async fn clear(
     let claims = Claims::authorized(store, OWNER, KIND);
     let mut result = Ok(());
     for slot in 0..limit.max {
-        if claims.release(&token(fingerprint, slot)).await.is_err() {
+        let Ok(token) = Token::new(fingerprint, slot) else {
+            result = Err(StoreUnavailable);
+            continue;
+        };
+        if claims.release(token.as_str()).await.is_err() {
             result = Err(StoreUnavailable);
         }
     }

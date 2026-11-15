@@ -62,10 +62,6 @@ pub(crate) struct Keys {
 
 impl Keys {
     pub(crate) fn new(local: &IceCredentials, remote: &IceCredentials) -> Self {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: an association's ICE names are built once, when the association starts"
-        )]
         let (local_ufrag_prefix, probe_username) = (
             format!("{}:", local.ufrag).into_bytes(),
             format!("{}:{}", remote.ufrag, local.ufrag).into_bytes(),

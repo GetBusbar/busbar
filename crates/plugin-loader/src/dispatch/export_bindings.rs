@@ -249,18 +249,11 @@ impl Bindings {
 
     pub(crate) fn worker_pins(&self, worker: u32) -> Vec<(Ticket, Arc<Generation>)> {
         let state = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a wedged worker's replacement forgets the export pins its tickets held"
-        )]
-        let pins = state
-            .tickets
-            .iter()
-            .chain(state.staged.iter())
-            .filter(|(ticket, _)| super::ticket::decode(ticket.slot).0 == worker)
-            .map(|(ticket, binding)| (*ticket, binding.clone()))
-            .collect();
-        pins
+        // A wedged worker's replacement forgets the export pins its tickets held.
+        crate::cold::dispatch::runtime::worker_pins(
+            state.tickets.iter().chain(state.staged.iter()),
+            worker,
+        )
     }
 }
 

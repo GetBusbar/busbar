@@ -10,7 +10,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
-use zeroize::Zeroize as _;
 
 use busbar_contract::abi::host::conn::connector::{
     CAUSE_CONNECT, CAUSE_DEADLINE, CAUSE_EXCHANGE, CAUSE_FRAMER, CAUSE_SECURITY,
@@ -18,6 +17,7 @@ use busbar_contract::abi::host::conn::connector::{
 use busbar_contract::abi::transport::sensitive_fields::{SensitiveFields, REQUEST_TARGET_FIELD};
 use busbar_contract::abi::transport::{CLOSE_NORMAL, FAULT_NONE, SIDE_ACCEPT, SIDE_DIAL};
 use busbar_contract::conn::{Bytes, ConnCause};
+use busbar_contract::secure::SecureString;
 
 use crate::carrier::{Carried, Dest, DialFailure};
 use crate::endpoint;
@@ -104,11 +104,28 @@ pub struct Dial {
 /// A message's head words, method and target; empty = none.
 pub type HeadWords = (Vec<u8>, Vec<u8>);
 
+/// Wipe the opening's fields and the head's target: each is adopted, without a copy, by the secure
+/// type that wipes it as it is dropped.
 fn wipe_opening(opening: &mut Option<Opening>, words: &mut HeadWords) {
     if let Some((fields, _)) = opening.as_mut() {
-        fields.zeroize();
+        for (name, value) in fields.drain(..) {
+            drop(SecureString::from(name));
+            drop(SecureVec::from(value));
+        }
     }
-    words.1.zeroize();
+    drop(SecureVec::from(std::mem::take(&mut words.1)));
+}
+
+/// An opening's fields, held while they are encoded: each value is adopted, without a copy, by the
+/// secure buffer that wipes it as the fields are dropped, on every exit.
+struct WipedValues(Vec<(String, Vec<u8>)>);
+
+impl Drop for WipedValues {
+    fn drop(&mut self) {
+        for (_, value) in self.0.drain(..) {
+            drop(SecureVec::from(value));
+        }
+    }
 }
 
 impl Drop for Dial {
@@ -236,7 +253,8 @@ pub struct Connection {
     /// honours it only for that same failure, so a later fault is never misread as local.
     emit_fault: Option<(String, Failure)>,
     /// The far end's key the handshake is held to (the dial's sealed anchors), in its canonical
-    key_pin: Option<String>,
+    /// spelling: the anchors are kept (shared, not copied) only when they pin a key.
+    pinned: Option<Arc<crate::tls::client::Sealed>>,
     /// Raised when the handshake presented busbar's client identity.
     presented: Arc<std::sync::atomic::AtomicBool>,
     /// Connection security's own error, when it is what failed the connection.
@@ -285,12 +303,11 @@ pub struct Connection {
 
 /// The largest cleartext write a carrier that must upgrade may make before it does
 /// ([`Connection::hold_clear_window`]): every negotiation request busbar's carriers make fits.
-pub const CLEAR_WINDOW_BYTES: usize = 64;
+const CLEAR_WINDOW_BYTES: usize = 64;
 
 /// The refusal of a cleartext write past the negotiation window on a connection that must be
 /// secured before it carries anything else.
-pub const CLEAR_WINDOW_REFUSED: &str =
-    "BUSBAR-3141: plaintext is not admitted to this destination: \
+const CLEAR_WINDOW_REFUSED: &str = "BUSBAR-3141: plaintext is not admitted to this destination: \
      it is neither loopback nor an exact advanced.tls.destinations entry with plaintext: true, so \
      the connection must be secured before it carries application bytes";
 
@@ -302,37 +319,89 @@ struct Early {
     text: bool,
     body_len: Option<u64>,
     sensitive: SensitiveFields,
+    /// The hold on its stream it was made under ([`HeldOn::epoch`]): a write whose stream failed
+    /// after it was held no longer matches its stream's hold, and is let go.
+    epoch: u64,
+}
+
+/// One stream's held writes: whether its newest carries no bytes, the bytes they carry, and the
+/// hold they were made under.
+#[derive(Clone, Copy)]
+struct HeldOn {
+    newest_empty: bool,
+    bytes: usize,
+    epoch: u64,
 }
 
 /// The writes held back, in order, with what is asked of them (does a stream have one held, is a
 /// stream's newest one empty, how many bytes they hold) kept up to date as they are held and let go.
+/// A failed stream's writes are let go by key: its hold is removed, and its writes, no longer
+/// matching a hold, are passed over when the writes are taken (those at the tail go at once).
 #[derive(Default)]
 struct EarlyWrites {
     writes: Vec<Early>,
-    /// Each stream with a write held: how many, and whether its newest one carries no bytes.
-    streams: foldhash::HashMap<u64, (usize, bool)>,
+    /// Each stream with a write held.
+    streams: foldhash::HashMap<u64, HeldOn>,
     /// The bytes the held writes carry.
     bytes: usize,
+    /// The holds made so far: each new hold on a stream is the next.
+    epochs: u64,
+}
+
+/// The writes held back, taken out in order: those whose stream failed after they were held are
+/// passed over (and wiped as they go).
+struct TakenWrites {
+    writes: std::vec::IntoIter<Early>,
+    streams: foldhash::HashMap<u64, HeldOn>,
+}
+
+impl Iterator for TakenWrites {
+    type Item = Early;
+
+    fn next(&mut self) -> Option<Early> {
+        loop {
+            let e = self.writes.next()?;
+            if live(&self.streams, &e) {
+                return Some(e);
+            }
+        }
+    }
+}
+
+/// Whether `e` still matches its stream's hold in `streams` (its stream did not fail after it).
+fn live(streams: &foldhash::HashMap<u64, HeldOn>, e: &Early) -> bool {
+    streams.get(&e.stream).is_some_and(|h| h.epoch == e.epoch)
 }
 
 impl EarlyWrites {
-    fn push(&mut self, e: Early) {
-        let held = self.streams.entry(e.stream).or_insert((0, false));
-        held.0 += 1;
-        held.1 = e.bytes.is_empty();
+    fn push(&mut self, mut e: Early) {
+        let epochs = &mut self.epochs;
+        let held = self.streams.entry(e.stream).or_insert_with(|| {
+            *epochs += 1;
+            HeldOn {
+                newest_empty: false,
+                bytes: 0,
+                epoch: *epochs,
+            }
+        });
+        held.newest_empty = e.bytes.is_empty();
+        held.bytes += e.bytes.len();
+        e.epoch = held.epoch;
         self.bytes += e.bytes.len();
         self.writes.push(e);
     }
 
     /// Every held write, in order; none is held after.
-    fn take(&mut self) -> Vec<Early> {
-        self.streams.clear();
+    fn take(&mut self) -> TakenWrites {
         self.bytes = 0;
-        std::mem::take(&mut self.writes)
+        TakenWrites {
+            writes: std::mem::take(&mut self.writes).into_iter(),
+            streams: std::mem::take(&mut self.streams),
+        }
     }
 
     /// Hold `writes` after those held now, in order.
-    fn extend(&mut self, writes: Vec<Early>) {
+    fn extend(&mut self, writes: TakenWrites) {
         for e in writes {
             self.push(e);
         }
@@ -347,31 +416,25 @@ impl EarlyWrites {
     }
 
     /// Whether the newest held write (on `stream`; on any stream when `None`) carries no bytes.
+    /// The newest write is always a live one: a failed stream's writes at the tail go at once.
     fn newest_empty(&self, stream: Option<u64>) -> bool {
         match stream {
             None => self.writes.last().is_some_and(|e| e.bytes.is_empty()),
-            Some(s) => self.streams.get(&s).is_some_and(|(_, empty)| *empty),
+            Some(s) => self.streams.get(&s).is_some_and(|h| h.newest_empty),
         }
     }
 
-    /// `stream` failed: its held writes go.
+    /// `stream` failed: its held writes go. Its hold is removed by key; the writes it held at the
+    /// tail are let go now, each popped once, and the rest are passed over when the writes are
+    /// taken.
     fn drop_stream(&mut self, stream: u64) {
-        if self.streams.remove(&stream).is_none() {
+        let Some(held) = self.streams.remove(&stream) else {
             return;
+        };
+        self.bytes -= held.bytes;
+        while self.writes.last().is_some_and(|e| !live(&self.streams, e)) {
+            self.writes.pop();
         }
-        let mut gone = 0;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a failed stream's held writes are let go, once, as it fails"
-        )]
-        self.writes.retain(|e| {
-            let keep = e.stream != stream;
-            if !keep {
-                gone += e.bytes.len();
-            }
-            keep
-        });
-        self.bytes -= gone;
     }
 }
 
@@ -384,6 +447,7 @@ impl Early {
             text,
             body_len: None,
             sensitive: SensitiveFields::default(),
+            epoch: 0,
         }
     }
 }
@@ -502,22 +566,12 @@ where
 }
 
 fn failed(e: impl std::fmt::Display) -> Failure {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a failed connection keeps its failure's text"
-    )]
-    let text = e.to_string();
-    Failure::Failed(text)
+    Failure::Failed(crate::cold::framing::display(&e))
 }
 
 /// A refusal, keeping its reason's text.
 fn refused(e: impl std::fmt::Display) -> Failure {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a refused connection keeps its refusal's text"
-    )]
-    let text = e.to_string();
-    Failure::Refused(text)
+    Failure::Refused(crate::cold::framing::display(&e))
 }
 
 /// THE DRIVE'S CLOCK: `now`, read the first time the drive compares or arms a deadline and kept
@@ -529,7 +583,7 @@ fn clock(now: &mut Option<Instant>) -> Instant {
         busbar_contract::work_count::tally(busbar_contract::work_count::Work::ClockRead);
         #[cfg(test)]
         clock_reads::read();
-        Instant::now()
+        framer::now()
     })
 }
 
@@ -616,27 +670,29 @@ pub(crate) mod clock_reads {
 }
 
 /// `protocols`, most preferred first, in the handshake's ProtocolNameList encoding (one length
-fn protocol_name_list(protocols: &[Vec<u8>]) -> Vec<u8> {
-    // busbar:expect(bp::fresh_buffer, reason = "boot: a connection's protocol offer is encoded once, at its handshake setup")
-    let mut list = Vec::new();
+/// byte each), written after what `list` holds: the connection's own stored offer.
+fn write_protocol_names(protocols: &[Vec<u8>], list: &mut Vec<u8>) {
     for id in protocols {
         if let Ok(n @ 1..=u8::MAX) = u8::try_from(id.len()) {
             list.push(n);
             list.extend_from_slice(id);
         }
     }
+}
+
+/// [`write_protocol_names`] into a list of its own (tests only).
+#[cfg(test)]
+fn protocol_name_list(protocols: &[Vec<u8>]) -> Vec<u8> {
+    let mut list = Vec::new();
+    write_protocol_names(protocols, &mut list);
     list
 }
 
 /// THE AGREED PROTOCOL IS ONE THE HANDSHAKE OFFERED (`check_agreed`, before the framer is handed
 fn agreed_was_offered(offer: &[u8], agreed: Option<&[u8]>) -> Result<(), Failure> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a refused agreement's text names the rule and field"
-    )]
     busbar_contract::abi::transport::check::check_agreed(offer, agreed.unwrap_or_default())
         .map_err(|f| {
-            Failure::Refused(format!(
+            crate::cold::framing::refused(format_args!(
                 "connection security: the protocol agreed breaks {:?} at {}",
                 f.rule, f.field
             ))
@@ -657,12 +713,8 @@ impl Connection {
         endpoint::check(&dial.target).map_err(refused)?;
         let planned = Planned::locate(door, via.clone(), dial)?;
         endpoint::check(planned.authority()).map_err(refused)?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the refusal names the authority it will not dial"
-        )]
         let addr = crate::socket::address_of(planned.authority()).ok_or_else(|| {
-            Failure::Refused(format!(
+            crate::cold::framing::refused(format_args!(
                 "`{}` is not an address the connector dials without resolving a name",
                 planned.authority()
             ))
@@ -713,10 +765,6 @@ pub fn carried_at(claim: &str, target: &str) -> Result<framer::Located, Failure>
     if authority.is_empty() || authority.contains('/') {
         return Err(Failure::Refused("the target is not host:port".into()));
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a dial over a carrier carried as itself locates its authority once, at its setup"
-    )]
     let authority = authority.to_owned();
     Ok(framer::Located {
         authority,
@@ -910,11 +958,13 @@ impl Planned {
         let Self {
             door,
             via,
-            dial,
-            located,
+            mut dial,
+            mut located,
         } = self;
         let presented = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let mut alpn_offer = Vec::new();
+        // The client config the handshake is set up with: its protocol offer is the one the
+        // connection keeps, encoded, to hold the agreed protocol to.
+        let mut offered: Option<Arc<rustls::ClientConfig>> = None;
         let tls = if located.secure {
             let base = dial
                 .anchors
@@ -930,16 +980,15 @@ impl Planned {
             let mut config = (*base).clone();
 
             // rustls owns the protocol offer of the client config each connection's handshake is
-            // set up with: one copy per connection.
+            // set up with: the dial's own list (or the entry's) is moved into it, not copied. A
+            // secured dial reads neither again (a single located protocol is the agreed one only
+            // in the clear).
             let protocols = if located.offer.is_empty() {
-                // busbar:expect(bp::clone_alloc, reason = "boot: rustls owns the protocol offer of the config a connection's handshake is set up with")
-                dial.alpn.clone()
+                std::mem::take(&mut dial.alpn)
             } else {
-                // busbar:expect(bp::clone_alloc, reason = "boot: rustls owns the protocol offer of the config a connection's handshake is set up with")
-                located.offer.clone()
+                std::mem::take(&mut located.offer)
             };
             config.alpn_protocols = protocols;
-            alpn_offer = protocol_name_list(&config.alpn_protocols);
 
             if dial.anchors.as_ref().is_some_and(|a| a.key_pin.is_some()) {
                 config.resumption = rustls::client::Resumption::disabled();
@@ -952,28 +1001,26 @@ impl Planned {
                 ));
             }
             let host = offered_host(&located);
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "boot: rustls holds the offered server name owned, once per connection's handshake; an unusable name keeps its refusal text"
-            )]
             let name = rustls::pki_types::ServerName::try_from(
                 host.trim_start_matches('[').trim_end_matches(']'),
             )
             .map(|name| name.to_owned())
-            .map_err(|e| Failure::Refused(format!("the name offered is not a server name: {e}")))
+            .map_err(|e| {
+                crate::cold::framing::refused(format_args!(
+                    "the name offered is not a server name: {e}"
+                ))
+            })
             .map_err(target)?;
+            let config = Arc::new(config);
+            offered = Some(Arc::clone(&config));
             Some(rustls::Connection::Client(unbounded(
-                rustls::ClientConnection::new(Arc::new(config), name)
+                rustls::ClientConnection::new(config, name)
                     .map_err(failed)
                     .map_err(target)?,
             )))
         } else {
             None
         };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the carrier is handed the address to dial owned, once per connection"
-        )]
         let carried = Carried::dial(
             Arc::clone(&via.door),
             Arc::clone(&via.io),
@@ -984,10 +1031,6 @@ impl Planned {
         // When TLS is active the SNI may come from located.name or, if that is None,
         // from the authority host (see the `host` fallback above).  Record whichever
         // name was actually offered so ConnFacts.sni is accurate.
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the connection's facts keep the name its handshake offered, once per connection"
-        )]
         let offered_name = tls.as_ref().map(|_| offered_host(&located).to_owned());
         let mut conn = Connection::open_dialled(
             door,
@@ -998,7 +1041,9 @@ impl Planned {
             &located.offer,
         )
         .map_err(|f| (dialled, f))?;
-        conn.alpn_offer = alpn_offer;
+        if let Some(config) = &offered {
+            write_protocol_names(&config.alpn_protocols, &mut conn.alpn_offer);
+        }
         conn.tunnel = connect.map(|request| Tunnel {
             request,
             asked: false,
@@ -1045,10 +1090,6 @@ impl Connection {
         dial: Dial,
         path: &str,
     ) -> Result<Self, Failure> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the carrier is handed the socket path to dial owned, once per connection"
-        )]
         let carried = Carried::dial(
             Arc::clone(&via.door),
             Arc::clone(&via.io),
@@ -1081,10 +1122,6 @@ impl Connection {
             [one] if tls.is_none() => Some(one.clone()),
             _ => None,
         };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a connection's facts keep the claim it resolved to, once per connection"
-        )]
         let established = Established {
             offered_name,
             agreed_protocol: prior,
@@ -1098,8 +1135,7 @@ impl Connection {
                 .map(|c| (*c).to_owned()),
             ..Established::default()
         };
-        // busbar:expect(bp::clone_alloc, reason = "boot: a dialled connection keeps the key pin it is held to, once per connection")
-        let key_pin = dial.anchors.as_ref().and_then(|a| a.key_pin.clone());
+        let pinned = dial.anchors.take().filter(|a| a.key_pin.is_some());
         Ok(Self {
             door,
             carried,
@@ -1132,7 +1168,7 @@ impl Connection {
             upgraded: false,
             framer_error: None,
             emit_fault: None,
-            key_pin,
+            pinned,
             presented,
             security_error: None,
             cause: None,
@@ -1175,10 +1211,6 @@ impl Connection {
             &Dest::Program(program.clone(), env.clone(), supervision_key),
         )
         .map_err(dial_failure)?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a spawned connection's facts keep the claim it resolved to, once per connection"
-        )]
         let established = Established {
             scheme: Established::scheme_of(false),
             client_identity: false,
@@ -1209,7 +1241,7 @@ impl Connection {
             seals: crate::seal::Seals::default(),
             opening_sensitive: SensitiveFields::default(),
             security_error: None,
-            key_pin: None,
+            pinned: None,
             presented: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             door: None,
             carried,
@@ -1294,11 +1326,6 @@ impl Connection {
         accept: &Accept,
         slot: Option<Slot>,
     ) -> Result<Self, Failure> {
-        let alpn_offer = if accept.tls.is_some() {
-            protocol_name_list(&accept.alpn)
-        } else {
-            Vec::new()
-        };
         let tls = match &accept.tls {
             None => None,
             Some(base) => {
@@ -1309,10 +1336,6 @@ impl Connection {
                 )))
             }
         };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: an accepted connection's facts keep the claim it resolved to, once per connection"
-        )]
         let established = Established {
             offered_name: None,
             agreed_protocol: None,
@@ -1326,7 +1349,6 @@ impl Connection {
                 .map(|c| (*c).to_owned()),
             ..Established::default()
         };
-        // busbar:expect(bp::clone_alloc, reason = "boot: an accepted connection keeps its listener's protocol offer, once per connection (`Accept` is built by listen.rs)")
         let mut conn = Self {
             door,
             carried,
@@ -1358,7 +1380,7 @@ impl Connection {
             upgraded: false,
             framer_error: None,
             emit_fault: None,
-            key_pin: None,
+            pinned: None,
             presented: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             security_error: None,
             cause: None,
@@ -1368,13 +1390,16 @@ impl Connection {
             failed_at_proxy: false,
             clear_window: None,
             fallback: None,
-            alpn_offer,
+            alpn_offer: Vec::new(),
             offer: accept.alpn.clone(),
             agreed: 0,
             full: foldhash::HashSet::default(),
             seals: crate::seal::Seals::default(),
             opening_sensitive: SensitiveFields::default(),
         };
+        if accept.tls.is_some() {
+            write_protocol_names(&accept.alpn, &mut conn.alpn_offer);
+        }
         if conn.tls.is_none() {
             conn.begin()?;
         }
@@ -1545,15 +1570,12 @@ impl Connection {
         let Some((fields, body)) = opening else {
             return Ok(None);
         };
-        let fields: Vec<(String, SecureVec)> = fields
-            .into_iter()
-            .map(|(name, value)| (name, SecureVec::from(value)))
-            .collect();
-        if fields.is_empty() && body.is_empty() && method.is_empty() && target.is_empty() {
+        let fields = WipedValues(fields);
+        if fields.0.is_empty() && body.is_empty() && method.is_empty() && target.is_empty() {
             return Ok(None);
         }
         let Some(door) = self.door.as_ref() else {
-            if !fields.is_empty() {
+            if !fields.0.is_empty() {
                 return Err(Failure::Refused(
                     "a carrier carried as itself carries no fields".into(),
                 ));
@@ -1562,7 +1584,7 @@ impl Connection {
         };
         let mut lent: smallvec::SmallVec<[(&str, &[u8]); framer::FIELDS_INLINE]> =
             smallvec::SmallVec::new();
-        lent.extend(fields.iter().map(|(n, v)| (n.as_str(), v.as_slice())));
+        lent.extend(fields.0.iter().map(|(n, v)| (n.as_str(), v.as_slice())));
         let encoded =
             framer::encode_head(door.as_ref(), &method, &target, &lent, &body).map_err(refused)?;
         Ok(Some(Message::Encoded(SecureVec::from(encoded))))
@@ -1715,15 +1737,15 @@ impl Connection {
             let mut config = (**config).clone();
             config.alpn_protocols.clear();
             self.alpn_offer.clear();
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "boot: rustls holds the offered server name owned, once per connection's upgrade; an unusable name keeps its refusal text"
-            )]
             let server = rustls::pki_types::ServerName::try_from(
                 name.trim_start_matches('[').trim_end_matches(']'),
             )
             .map(|name| name.to_owned())
-            .map_err(|e| Failure::Refused(format!("the name offered is not a server name: {e}")));
+            .map_err(|e| {
+                crate::cold::framing::refused(format_args!(
+                    "the name offered is not a server name: {e}"
+                ))
+            });
             let client = match server
                 .and_then(|n| rustls::ClientConnection::new(Arc::new(config), n).map_err(failed))
                 .map(unbounded)
@@ -1733,10 +1755,6 @@ impl Connection {
             };
             self.tls = Some(rustls::Connection::Client(client));
             self.upgraded = true;
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "boot: the connection's facts keep the name its upgrade offered, once per connection"
-            )]
             let offered = Some(name.to_owned());
             self.established.offered_name = offered;
             self.established.scheme = Established::scheme_of(true);
@@ -1813,7 +1831,9 @@ impl Connection {
             .take()
             .and_then(|(text, sent)| (sent == f).then_some(text));
         let outbound = emitted.is_some();
-        let framer = emitted.or(self.framer_error.take());
+        // The framer's own error is let go either way; the outbound emit's, when held, wins.
+        let framer_error = self.framer_error.take();
+        let framer = emitted.or(framer_error);
         let stage = match (&f, &self.phase) {
             (Failure::Timeout, _) => CAUSE_DEADLINE,
             (_, Phase::Open) if framer.is_some() => CAUSE_FRAMER,
@@ -1951,7 +1971,7 @@ impl Connection {
 
     /// HOLD THIS CARRIER TO THE PLAINTEXT RULE: until connection security is set
     /// ([`Connection::upgrade_secure`]), it takes one cleartext write of at most
-    /// [`CLEAR_WINDOW_BYTES`] (the protocol's request to negotiate security) and refuses any other.
+    /// `CLEAR_WINDOW_BYTES` (the protocol's request to negotiate security) and refuses any other.
     pub fn hold_clear_window(&mut self) {
         if self.tls.is_none() {
             self.clear_window = Some(1);
@@ -2029,10 +2049,6 @@ impl Connection {
     fn redial_next(&mut self) -> Option<Result<(), Failure>> {
         let f = self.fallback.as_mut()?;
         let next = f.next.pop_front()?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a refused connect redials the next address, handed to the carrier owned"
-        )]
         let redialled = Carried::dial(
             Arc::clone(&f.door),
             Arc::clone(&f.io),
@@ -2242,12 +2258,7 @@ impl Connection {
             }
             Err(e) => {
                 if self.door.is_none() && self.tls.is_none() {
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "error: a carrier's read failure keeps its text"
-                    )]
-                    let text = e.to_string();
-                    self.framer_error = Some(text);
+                    self.framer_error = Some(crate::cold::framing::display(&e));
                 }
                 Err(failed(e))
             }
@@ -2494,8 +2505,8 @@ impl Connection {
             .and_then(|leaf| crate::tls::client::peer_key_pin(leaf.as_ref()));
         self.established.client_identity = self.presented.load(std::sync::atomic::Ordering::SeqCst);
 
-        match &self.key_pin {
-            Some(pin) if self.established.peer_key_pin.as_deref() != Some(pin.as_str()) => {
+        match self.pinned.as_ref().and_then(|a| a.key_pin.as_deref()) {
+            Some(pin) if self.established.peer_key_pin.as_deref() != Some(pin) => {
                 crate::egress_audit::tls_failed(&self.target, PIN_REFUSED);
                 Err(Failure::Refused(PIN_REFUSED.into()))
             }
@@ -2520,19 +2531,10 @@ impl Connection {
                 Err(e) => {
                     // A dialled refusal is explained; an accepted one (an mTLS client under the
                     // listener's `client_ca`, no pin) keeps the stack's words exactly.
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "error: a failed handshake or record keeps its TLS failure text"
-                    )]
-                    let (text, refusal) = {
-                        let text = if matches!(tls, rustls::Connection::Client(_)) {
-                            crate::tls::explain::handshake_refusal(&e)
-                        } else {
-                            e.to_string()
-                        };
-                        let refusal = format!("tls: {text}");
-                        (text, refusal)
-                    };
+                    let (text, refusal) = crate::cold::framing::tls_failure(
+                        &e,
+                        matches!(tls, rustls::Connection::Client(_)),
+                    );
                     if self.side == SIDE_DIAL && crate::egress_audit::is_verification(&e) {
                         crate::egress_audit::tls_failed(&self.target, &text);
                     }
@@ -2540,7 +2542,7 @@ impl Connection {
                     // Flush the fatal alert that rustls queued (RFC 8446 §6.2) so the
                     // peer sees it before the TCP close.
                     let _ = self.tls_out();
-                    return Err(Failure::Refused(refusal));
+                    return Err(refusal);
                 }
             }
         }
@@ -2555,10 +2557,6 @@ impl Connection {
                 ));
             }
             if !self.tls.as_ref().is_some_and(|t| t.is_handshaking()) {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "boot: a connection's facts keep the protocol its handshake agreed, once per connection"
-                )]
                 let agreed = self
                     .tls
                     .as_ref()
@@ -2569,10 +2567,6 @@ impl Connection {
                     self.established.agreed_protocol.as_deref(),
                 )?;
                 if let Some(rustls::Connection::Server(s)) = self.tls.as_ref() {
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "boot: an accepted connection's facts keep the name its handshake asked for, once per connection"
-                    )]
                     let asked = s.server_name().map(str::to_owned);
                     self.established.offered_name = asked;
                 }
@@ -2686,25 +2680,21 @@ impl Connection {
             match self.tls.as_mut() {
                 Some(tls) => {
                     let written = tls.writer().write_all(&wire).map_err(failed);
-                    wire.zeroize();
+                    wire.clear();
                     written?;
                     self.tls_out()?;
                 }
                 None => self.queue(&wire, false)?,
             }
-            wire.zeroize();
+            wire.clear();
         }
         if y.agreed != 0 {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a broken agreement's fault text names the rule and field"
-            )]
             busbar_contract::abi::transport::check::check_agreed_position(
                 y.agreed,
                 self.offer.len() as u64,
             )
             .map_err(|f| {
-                Failure::Failed(format!(
+                crate::cold::framing::failed(format_args!(
                     "the framer's agreed protocol breaks {:?} at {}",
                     f.rule, f.field
                 ))

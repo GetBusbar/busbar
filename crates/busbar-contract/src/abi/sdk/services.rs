@@ -193,10 +193,15 @@ impl<'b> Judged<'b> {
     /// The addresses as the set an ESTABLISH's dial must land on (`EstablishIn::within`): so the
     #[must_use]
     pub fn within(&self) -> String {
-        self.addresses
-            .names()
-            .collect::<Vec<_>>()
-            .join(WITHIN_SEPARATOR)
+        // The returned text is written once, name by name: no list of the names is built first.
+        let mut within = String::new();
+        for (n, name) in self.addresses.names().enumerate() {
+            if n != 0 {
+                within.push_str(WITHIN_SEPARATOR);
+            }
+            within.push_str(name);
+        }
+        within
     }
 }
 
@@ -407,12 +412,7 @@ fn copied(s: AbiStr) -> Option<Vec<u8>> {
     // SAFETY: the host's own bytes, `len` long, valid until the next call on the connection (the
     // `unit.refuse` contract); copied before this returns.
     let bytes = unsafe { std::slice::from_raw_parts(s.ptr, s.len) };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a refused unit's answer, copied once per refusal"
-    )]
-    let copy = bytes.to_vec();
-    Some(copy)
+    Some(crate::abi::sdk::cold::hook::refusal_bytes(bytes))
 }
 
 /// A prompt message borrowed for a safe `hook.call` crossing.
@@ -1546,7 +1546,6 @@ impl<K: KindMarker> Services<K> {
 
     /// `directory.scan`: rows of `kind` in id order after `after` (for members, of the group
     /// `scope`), at most `limit`. `result.more` says whether another page follows.
-    #[allow(clippy::too_many_arguments)]
     pub fn directory_scan<'b>(
         &self,
         handle: CompletionHandle,
@@ -1610,7 +1609,10 @@ impl<K: KindMarker> Services<K> {
     }
 
     /// `directory.create`: a new record; READY + `DIR_OK`: row 0's key is the kernel-minted id.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the service's ABI fields, one argument each"
+    )]
     pub fn directory_create<'b>(
         &self,
         handle: CompletionHandle,
@@ -1661,14 +1663,9 @@ impl<K: KindMarker> Services<K> {
         use crate::abi::host::directory::DirectoryApplyIn;
         use crate::abi::host::service::check_directory_apply;
         let pairs = interleave(write.indexes.unwrap_or(&[]));
-        let add: Vec<AbiStr> = write.members_add.iter().map(|m| text(m)).collect();
-        let remove: Vec<AbiStr> = write.members_remove.iter().map(|m| text(m)).collect();
-        let replace: Vec<AbiStr> = write
-            .members_replace
-            .unwrap_or(&[])
-            .iter()
-            .map(|m| text(m))
-            .collect();
+        let add = texts(write.members_add);
+        let remove = texts(write.members_remove);
+        let replace = texts(write.members_replace.unwrap_or(&[]));
         use crate::abi::host::directory::{
             APPLY_DOCUMENT, APPLY_INDEXES, APPLY_REPLACE_MEMBERS, APPLY_STATE,
         };
@@ -2213,10 +2210,6 @@ impl<K: KindMarker> Services<K> {
             // `check_unit_refuse`, valid until the next call on the connection; copied below.
             unsafe { std::slice::from_raw_parts(answer.fields, answer.fields_len) }
         };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a refused unit's answer fields, copied once per refusal"
-        )]
         let fields = fields
             .iter()
             .map(|f| {
@@ -2568,7 +2561,10 @@ impl std::fmt::Debug for CredentialSecret {
 
 impl Zeroize for CredentialSecret {
     fn zeroize(&mut self) {
-        self.secret.zeroize();
+        // As `SecureVec`'s own wipe: volatile-zero the live bytes, then hold none (the rest of the
+        // allocation is zero already).
+        crate::secure::wipe(&mut self.secret[..]);
+        self.secret.clear();
         self.live = false;
     }
 }
@@ -2836,12 +2832,24 @@ pub struct DirectoryWrite<'a> {
     pub members_replace: Option<&'a [&'a str]>,
 }
 
-/// Name/value pairs, interleaved, borrowed for one call.
-fn interleave(pairs: &[(&str, &[u8])]) -> Vec<AbiStr> {
-    pairs
-        .iter()
-        .flat_map(|(name, value)| [text(name), raw(value)])
-        .collect()
+/// Index pairs as the ABI's interleaved `[name, value, ..]` [`AbiStr`]s, borrowed: on the stack
+/// for the usual handful of indexes, spilled only past eight.
+fn interleave(pairs: &[(&str, &[u8])]) -> smallvec::SmallVec<[AbiStr; 16]> {
+    let mut out = smallvec::SmallVec::new();
+    out.extend(
+        pairs
+            .iter()
+            .flat_map(|(name, value)| [text(name), raw(value)]),
+    );
+    out
+}
+
+/// Member names as the ABI's [`AbiStr`]s, borrowed: on the stack for the usual handful, spilled
+/// only past sixteen.
+fn texts(names: &[&str]) -> smallvec::SmallVec<[AbiStr; 16]> {
+    let mut out = smallvec::SmallVec::new();
+    out.extend(names.iter().map(|m| text(m)));
+    out
 }
 
 /// A rows answer: PENDING held; READY the result and the rows written.

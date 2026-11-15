@@ -23,7 +23,6 @@ pub(crate) mod node;
 pub mod policy;
 pub mod source;
 
-use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,6 +30,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use busbar_contract::auth::{FieldKind, LoginForm, LoginOutcome, Principal};
 use busbar_contract::auth_calls::RejectHint;
+use foldhash::HashMap;
 
 use crate::auth::login::LoginJudged;
 use crate::diagnostics::{
@@ -159,7 +159,7 @@ impl LoginGuard {
         if let Some(count) = decision.summary {
             (self.sink)(
                 "auth.login_throttled.suppressed",
-                &count.to_string(),
+                &crate::cold::auth::login::suppressed_count(count),
                 crate::audit_ring::OUTCOME_REJECTED,
                 "login-limiter",
             );
@@ -256,7 +256,7 @@ impl LoginGuard {
                 "admin.auth_throttled",
                 &label,
                 crate::audit_ring::OUTCOME_REJECTED,
-                &format!("source:{label}"),
+                &crate::cold::auth::login::source_principal(&label),
             );
         }
     }
@@ -320,7 +320,7 @@ pub trait CredentialDoor: Send + Sync {
     fn complete<'a>(
         &'a self,
         method: &'a str,
-        state: &'a str,
+        state: String,
         submitted: Vec<(String, String)>,
     ) -> DoorFuture<'a, (LoginJudged, Option<RejectHint>)>;
 }
@@ -378,9 +378,9 @@ pub struct Context<'a> {
 }
 
 /// `busbar_login_attempts_total{method,outcome}`: every credential submission, by outcome.
-pub const LOGIN_ATTEMPTS_TOTAL: &str = "busbar_login_attempts_total";
+const LOGIN_ATTEMPTS_TOTAL: &str = "busbar_login_attempts_total";
 /// `busbar_login_throttled_total{method,limiter}`: every throttled submission, by limiter.
-pub const LOGIN_THROTTLED_TOTAL: &str = "busbar_login_throttled_total";
+pub(crate) const LOGIN_THROTTLED_TOTAL: &str = "busbar_login_throttled_total";
 
 fn outcome_label(v: &CredentialVerdict) -> &'static str {
     match v {
@@ -392,11 +392,6 @@ fn outcome_label(v: &CredentialVerdict) -> &'static str {
         CredentialVerdict::Unavailable { .. } => "unavailable",
         CredentialVerdict::Malformed => "malformed",
     }
-}
-
-fn throttled_metric(method: &str, limiter: &'static str) {
-    metrics::counter!(LOGIN_THROTTLED_TOTAL, "method" => method.to_owned(), "limiter" => limiter)
-        .increment(1);
 }
 
 /// Judge one credential submission and, when it is admitted, run it.
@@ -417,6 +412,8 @@ async fn judge_inner(cx: Context<'_>, attempt: CredentialAttempt) -> CredentialV
     let policy = guard.policy();
     let method = attempt.method.as_str();
     let now = cx.now;
+    // The store's own clock, read once for the op: the account slots' expiries.
+    let store_now = crate::store::now();
     let retry_after_secs = policy.retry_after_secs(method);
     let window = policy.account_for(method).window_secs;
 
@@ -463,9 +460,15 @@ async fn judge_inner(cx: Context<'_>, attempt: CredentialAttempt) -> CredentialV
         };
     };
     let fingerprint = canonical.account.as_deref().map(|a| keyer.fingerprint(a));
-    let principal = fingerprint
-        .as_deref()
-        .map_or_else(|| "fp:none".to_string(), |f| format!("fp:{}", &f[..8]));
+    // `fp:` and the fingerprint's first eight hex characters, spelled on the stack.
+    let mut principal_buf = *b"fp:00000000";
+    let principal: &str = match fingerprint.as_deref() {
+        None => "fp:none",
+        Some(f) => {
+            principal_buf[3..].copy_from_slice(&f.as_bytes()[..8]);
+            std::str::from_utf8(&principal_buf).unwrap_or("fp:none")
+        }
+    };
 
     // Per source, this node.
     let source_ticket = match attempt.source {
@@ -478,7 +481,7 @@ async fn judge_inner(cx: Context<'_>, attempt: CredentialAttempt) -> CredentialV
                     let first = guard.audit(
                         "auth.login_throttled",
                         method,
-                        &format!("source:{label}"),
+                        &crate::cold::auth::login::source_principal(&label),
                         policy.source.failures.window_secs,
                         now,
                     );
@@ -490,7 +493,7 @@ async fn judge_inner(cx: Context<'_>, attempt: CredentialAttempt) -> CredentialV
                         diag_debug!(LOGIN_THROTTLED_SOURCE, method = %method, source = %label,
                             "credential sign-in throttled: the source spent its budget");
                     }
-                    throttled_metric(method, "source");
+                    crate::cold::auth::login::throttled_metric(method, "source");
                     return CredentialVerdict::Throttled { retry_after_secs };
                 }
             }
@@ -507,7 +510,7 @@ async fn judge_inner(cx: Context<'_>, attempt: CredentialAttempt) -> CredentialV
     let account_limit = policy.account_for(method);
     let slot = match &fingerprint {
         None => None,
-        Some(fp) => match account::reserve(store, fp, account_limit, crate::store::now()).await {
+        Some(fp) => match account::reserve(store, fp, account_limit, store_now).await {
             Ok(account::Reserved::Held(ticket)) => {
                 guard.store_answered();
                 Some(ticket)
@@ -531,7 +534,7 @@ async fn judge_inner(cx: Context<'_>, attempt: CredentialAttempt) -> CredentialV
                         "an account has been throttled for more than {} consecutive windows: a \
                          targeted account", node::SUSTAINED_WINDOWS);
                 }
-                throttled_metric(method, "account");
+                crate::cold::auth::login::throttled_metric(method, "account");
                 return CredentialVerdict::Throttled { retry_after_secs };
             }
             Err(account::StoreUnavailable) => {
@@ -546,7 +549,7 @@ async fn judge_inner(cx: Context<'_>, attempt: CredentialAttempt) -> CredentialV
 
     let (judged, hint) = cx
         .door
-        .complete(method, &attempt.state, canonical.forwarded)
+        .complete(method, attempt.state, canonical.forwarded)
         .await;
 
     match judged {
@@ -586,10 +589,7 @@ async fn judge_inner(cx: Context<'_>, attempt: CredentialAttempt) -> CredentialV
                     max: widest.max,
                     window_secs: account_limit.window_secs,
                 };
-                if account::saturate(store, fp, held, crate::store::now())
-                    .await
-                    .is_err()
-                {
+                if account::saturate(store, fp, held, store_now).await.is_err() {
                     guard.store_failed("saturate");
                 }
                 let action = match h {
@@ -606,10 +606,16 @@ async fn judge_inner(cx: Context<'_>, attempt: CredentialAttempt) -> CredentialV
             CredentialVerdict::Declined
         }
         LoginJudged::Plugin(LoginOutcome::Outage { retry_after_secs }) => {
-            let opened = lock(&guard.breakers)
-                .entry(method.to_string())
-                .or_default()
-                .outage(now);
+            let opened = {
+                let mut breakers = lock(&guard.breakers);
+                if !breakers.contains_key(method) {
+                    breakers.insert(
+                        crate::cold::auth::login::owned_name(method),
+                        node::Breaker::default(),
+                    );
+                }
+                breakers.get_mut(method).is_some_and(|b| b.outage(now))
+            };
             if opened {
                 diag_warn!(LOGIN_PROVIDER_BREAKER_OPEN, method = %method,
                     outages = node::BREAKER_OUTAGES, open_secs = node::BREAKER_OPEN_SECS,
@@ -635,11 +641,11 @@ impl CredentialDoor for AppDoor<'_> {
     fn complete<'a>(
         &'a self,
         method: &'a str,
-        state: &'a str,
+        state: String,
         submitted: Vec<(String, String)>,
     ) -> DoorFuture<'a, (LoginJudged, Option<RejectHint>)> {
         let request = busbar_contract::auth_calls::LoginCallback {
-            state: state.to_string(),
+            state,
             nonce: None,
             login: busbar_contract::auth::CompleteLogin {
                 submitted: submitted

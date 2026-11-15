@@ -67,20 +67,32 @@ impl ConsumedCredentials {
         }
     }
 
-    /// Strip consumed carriers without imposing HTTP field syntax on the remaining head.
+    /// Strip consumed carriers without imposing HTTP field syntax on the remaining head. One pass
+    /// over the request's own field lines, kept lines in order; a consumed value is wiped (its
+    /// whole allocation, through `busbar_contract::secure`) before it drops.
     pub(crate) fn strip_neutral(&self, head: &mut crate::inbound::Head) {
-        use zeroize::Zeroize as _;
-        head.fields.retain_mut(|(name, value)| {
-            // busbar:expect(bp::state_scan, reason = "config: the carrier names are the configured credential headers, a fixed handful per chain")
-            let keep = !self
-                .names
-                .iter()
-                .any(|carrier| carrier.as_str().eq_ignore_ascii_case(name));
-            if !keep {
-                value.zeroize();
+        let fields = &mut head.fields;
+        let mut kept = 0;
+        for read in 0..fields.len() {
+            if self.carries(&fields[read].0) {
+                let value = std::mem::take(&mut fields[read].1);
+                drop(busbar_contract::secure::SecureVec::from(value));
+            } else {
+                fields.swap(kept, read);
+                kept += 1;
             }
-            keep
-        });
+        }
+        fields.truncate(kept);
+    }
+
+    /// Whether `name` is one of the consumed carriers (ASCII case-insensitive).
+    fn carries(&self, name: &str) -> bool {
+        for carrier in &self.names {
+            if carrier.as_str().eq_ignore_ascii_case(name) {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -105,7 +117,8 @@ impl CallerCredential {
     /// builds the caller credential, once per request.
     fn verified(token: &str) -> Self {
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::SecretCopy);
-        Self(busbar_contract::Secret::new(token.as_bytes().to_vec()).share())
+        let bytes = busbar_contract::secure::SecureVec::from(token.as_bytes()).into_vec();
+        Self(busbar_contract::Secret::new(bytes).share())
     }
 
     /// Bytes already in [`Secret`] custody, MOVED into the one shared buffer (no copy). There is

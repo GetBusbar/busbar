@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
-use busbar_contract::abi::mechanism::rendering::ReadBlob;
+use busbar_contract::abi::host::conn::connector::{DIRECTION_INBOUND, DIRECTION_OUTBOUND};
+use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
 
 fn need(direction: u32, auth: &str) -> ReadNeed {
     need_over(direction, "t", auth)

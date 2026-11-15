@@ -7,6 +7,8 @@ use busbar_contract::plane::{PinMechanismDecl, TrustKeyDecl, TrustRole};
 use busbar_contract::plane_calls::PlaneRegistration;
 
 use super::*;
+use crate::off_path::plane_door::*;
+use crate::plane_driver::registry::BuildCtx;
 
 const NAMED: &str = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3];
 

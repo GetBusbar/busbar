@@ -12,7 +12,6 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, Span}
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     FieldList, OutField, ServeIn, ServeOut, AUDIT_APPLIED, AUDIT_REJECTED, ROUTE_CARRIES_OWN_TOKEN,
-    ROUTE_PUBLIC,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::ReasonCode;
@@ -84,37 +83,81 @@ pub struct Collision {
 /// A request reads the published snapshot without a lock and holds the one instance it is served
 /// by (an `Arc`), never a copy of it; a publish or a withdraw replaces the snapshot, one at a time.
 #[derive(Clone, Default)]
-pub struct ServeTables(Arc<Published>);
+pub struct ServeTables(pub(crate) Arc<Published>);
 
 /// The snapshot requests read, and the turn its writers take.
 #[derive(Default)]
-struct Published {
-    now: arc_swap::ArcSwap<Vec<Arc<ServeTable>>>,
-    writing: Mutex<()>,
+pub(crate) struct Published {
+    pub(crate) now: arc_swap::ArcSwap<Snapshot>,
+    pub(crate) writing: Mutex<()>,
+}
+
+/// ONE PUBLISHED SNAPSHOT: the instances' tables, in publication order, and the route index each
+/// request resolves through (built with the snapshot, [`crate::off_path::plane_serve::snapshot`]).
+#[derive(Default)]
+pub(crate) struct Snapshot {
+    pub(crate) tables: Vec<Arc<ServeTable>>,
+    pub(crate) admin: RouteIndex,
+    pub(crate) public: RouteIndex,
+}
+
+/// One class's routes, `(table, route)` in snapshot order, by their target's second `/`-separated
+/// element: each literal element's bucket also holds, in order, every route whose element there is
+/// a `{param}` (those alone are `any`); `short` holds the targets with no second element.
+#[derive(Default)]
+pub(crate) struct RouteIndex {
+    pub(crate) by_segment: std::collections::BTreeMap<String, Vec<(usize, usize)>>,
+    pub(crate) any: Vec<(usize, usize)>,
+    pub(crate) short: Vec<(usize, usize)>,
+}
+
+impl RouteIndex {
+    /// The routes `path` may fill: the one bucket its second element names.
+    fn bucket(&self, path: &str) -> &[(usize, usize)] {
+        match path.split('/').nth(1) {
+            Some(segment) => self
+                .by_segment
+                .get(segment)
+                .map_or(self.any.as_slice(), Vec::as_slice),
+            None => &self.short,
+        }
+    }
+}
+
+/// The first route of `index` that `path` fills and `method` names, and whether any route of it
+/// filled `path` at all (a wrong verb, then).
+fn resolve<'p>(
+    snapshot: &Snapshot,
+    index: &RouteIndex,
+    method: &str,
+    path: &'p str,
+) -> (Option<(Arc<ServeTable>, usize, &'p str)>, bool) {
+    let mut named = false;
+    for &(t, i) in index.bucket(path) {
+        let table = &snapshot.tables[t];
+        let route = &table.routes[i];
+        let Some(name) = fill(&route.target, path) else {
+            continue;
+        };
+        named = true;
+        if route.verb.eq_ignore_ascii_case(method) {
+            return (Some((Arc::clone(table), i, name)), true);
+        }
+    }
+    (None, named)
 }
 
 impl std::fmt::Debug for ServeTables {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let tables = self.0.now.load();
+        let snapshot = self.0.now.load();
         f.debug_list()
-            .entries(tables.iter().map(|t| &t.instance))
+            .entries(snapshot.tables.iter().map(|t| &t.instance))
             .finish()
     }
 }
 
-fn param(segment: &str) -> bool {
+pub(crate) fn param(segment: &str) -> bool {
     segment.len() > 1 && segment.starts_with('{') && segment.ends_with('}')
-}
-
-fn overlap(a: &str, b: &str) -> bool {
-    let (mut a, mut b) = (a.split('/'), b.split('/'));
-    loop {
-        match (a.next(), b.next()) {
-            (None, None) => return true,
-            (Some(x), Some(y)) if x == y || param(x) || param(y) => {}
-            _ => return false,
-        }
-    }
 }
 
 fn fill<'p>(target: &str, path: &'p str) -> Option<&'p str> {
@@ -129,114 +172,6 @@ fn fill<'p>(target: &str, path: &'p str) -> Option<&'p str> {
             _ => return None,
         }
     }
-}
-
-impl ServeTables {
-    pub fn publish(&self, table: ServeTable, reserved: &[(&str, &str)]) -> Result<(), Collision> {
-        self.publish_batch(vec![table], reserved)
-    }
-
-    /// Check the whole staged composition before committing its native publication
-    /// marker. Publishing repeats this check under the writer lock.
-    pub fn validate_batch(
-        &self,
-        batch: &[ServeTable],
-        reserved: &[(&str, &str)],
-    ) -> Result<(), Collision> {
-        validate_tables(&self.0.now.load(), batch, reserved)
-    }
-
-    /// Publish one fully confirmed composition in a single visible snapshot. Until
-    /// this succeeds, readers retain the entire previous generation's route table.
-    pub fn publish_batch(
-        &self,
-        batch: Vec<ServeTable>,
-        reserved: &[(&str, &str)],
-    ) -> Result<(), Collision> {
-        let _turn = self
-            .0
-            .writing
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let tables = self.0.now.load();
-        validate_tables(&tables, &batch, reserved)?;
-        // busbar:expect(bp::state_scan, reason = "boot: a generation's serve tables are published once per composition")
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a generation's serve tables are published once per composition"
-        )]
-        let mut next: Vec<Arc<ServeTable>> = tables
-            .iter()
-            .filter(|t| !batch.iter().any(|new| new.instance == t.instance))
-            .cloned()
-            .collect();
-        next.extend(batch.into_iter().map(Arc::new));
-        self.0.now.store(Arc::new(next));
-        Ok(())
-    }
-
-    pub fn withdraw(&self, instance: &str) {
-        let _turn = self
-            .0
-            .writing
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let tables = self.0.now.load();
-        // busbar:expect(bp::state_scan, reason = "config: a withdrawn plane instance's serve table is dropped once")
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a withdrawn plane instance's serve table is dropped once"
-        )]
-        let next: Vec<Arc<ServeTable>> = tables
-            .iter()
-            .filter(|t| t.instance != instance)
-            .cloned()
-            .collect();
-        self.0.now.store(Arc::new(next));
-    }
-}
-
-fn validate_tables(
-    tables: &[Arc<ServeTable>],
-    batch: &[ServeTable],
-    reserved: &[(&str, &str)],
-) -> Result<(), Collision> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a composition's serve routes are checked for collisions once, before it publishes"
-    )]
-    let mut seen: Vec<(&str, &str, &str)> =
-        reserved.iter().map(|(v, t)| (*v, *t, "kernel")).collect();
-    for table in tables
-        .iter()
-        .filter(|table| !batch.iter().any(|new| new.instance == table.instance))
-    {
-        seen.extend(
-            admin(&table.routes).map(|route| (&*route.verb, &*route.target, &*table.instance)),
-        );
-    }
-    for table in batch {
-        for route in admin(&table.routes) {
-            if let Some((_, _, with)) = seen.iter().find(|(verb, target, _)| {
-                verb.eq_ignore_ascii_case(&route.verb) && overlap(target, &route.target)
-            }) {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: a colliding serve route refuses the composition once"
-                )]
-                return Err(Collision {
-                    route: (route.verb.clone(), route.target.clone()),
-                    with: (*with).to_string(),
-                });
-            }
-            seen.push((&route.verb, &route.target, &table.instance));
-        }
-    }
-    Ok(())
-}
-
-fn admin(routes: &[ServeRoute]) -> impl Iterator<Item = &ServeRoute> {
-    routes.iter().filter(|r| r.flags & ROUTE_PUBLIC == 0)
 }
 
 fn lent_head(
@@ -259,11 +194,24 @@ fn lent_head(
         .collect()
 }
 
-fn target_of<'p>(path: &'p str, query: Option<&str>) -> std::borrow::Cow<'p, str> {
+/// A served request's target, `path` or `path?query`, as the pieces [`serve_authorized`] lends
+/// joined.
+fn target_of<'a>(path: &'a str, query: Option<&'a str>) -> [&'a [u8]; 3] {
     match query {
-        Some(q) => format!("{path}?{q}").into(),
-        None => path.into(),
+        Some(q) => [path.as_bytes(), b"?", q.as_bytes()],
+        None => [path.as_bytes(), b"", b""],
     }
+}
+
+/// `pieces`, joined into the one owned buffer the crossing lends.
+fn joined(pieces: &[&[u8]]) -> Vec<u8> {
+    let mut bytes = vec![0; pieces.iter().map(|p| p.len()).sum()];
+    let mut at = 0;
+    for piece in pieces {
+        bytes[at..at + piece.len()].copy_from_slice(piece);
+        at += piece.len();
+    }
+    bytes
 }
 
 impl ServeTables {
@@ -275,22 +223,8 @@ impl ServeTables {
             .strip_prefix(ADMIN_PREFIX)
             .unwrap_or_else(|| uri.path());
         let (table, index, name) = {
-            let tables = self.0.now.load();
-            let mut named = false;
-            let mut found = None;
-            'tables: for t in tables.iter() {
-                for (i, r) in t.routes.iter().enumerate() {
-                    let Some(name) = fill(&r.target, path).filter(|_| r.flags & ROUTE_PUBLIC == 0)
-                    else {
-                        continue;
-                    };
-                    named = true;
-                    if r.verb.eq_ignore_ascii_case(req.method().as_str()) {
-                        found = Some((Arc::clone(t), i, name));
-                        break 'tables;
-                    }
-                }
-            }
+            let snapshot = self.0.now.load();
+            let (found, named) = resolve(&snapshot, &snapshot.admin, req.method().as_str(), path);
             match found {
                 Some(f) => f,
                 None if named => {
@@ -323,7 +257,7 @@ impl ServeTables {
             calls,
             table.caps,
             (routes, at),
-            target.as_bytes(),
+            &target,
             head,
             body,
             authority,
@@ -353,14 +287,8 @@ impl ServeTables {
         body: Bytes,
     ) -> Response {
         let found = {
-            let tables = self.0.now.load();
-            tables.iter().find_map(|t| {
-                t.routes.iter().enumerate().find_map(|(i, r)| {
-                    let name = fill(&r.target, path)?;
-                    (r.flags & ROUTE_PUBLIC != 0 && r.verb.eq_ignore_ascii_case(method))
-                        .then(|| (Arc::clone(t), i, name))
-                })
-            })
+            let snapshot = self.0.now.load();
+            resolve(&snapshot, &snapshot.public, method, path).0
         };
         let Some((table, index, name)) = found else {
             return status_only(404);
@@ -419,9 +347,11 @@ async fn audited_reply(
         _ => None,
     };
     if let Some(outcome) = outcome.filter(|_| !route.audit_verb.is_empty()) {
+        let (action, resource) =
+            crate::cold::served_audit_names(&table.audit_kind, &route.audit_verb, name);
         if let Err(error) = crate::audit::auditlog::emit_admin_hostless_confirmed(
-            &format!("{}.{}", table.audit_kind, route.audit_verb),
-            &format!("{}:{name}", table.audit_kind),
+            &action,
+            &resource,
             outcome,
             actor.actor_id(),
         )
@@ -469,14 +399,8 @@ impl ServeTables {
         body: Bytes,
     ) -> Option<Result<Served, Unserved>> {
         let (table, index, name) = {
-            let tables = self.0.now.load();
-            tables.iter().find_map(|t| {
-                t.routes.iter().enumerate().find_map(|(i, r)| {
-                    let name = fill(&r.target, req.path)?;
-                    (r.flags & ROUTE_PUBLIC == 0 && r.verb.eq_ignore_ascii_case(req.method))
-                        .then(|| (Arc::clone(t), i, name))
-                })
-            })
+            let snapshot = self.0.now.load();
+            resolve(&snapshot, &snapshot.admin, req.method, req.path).0
         }?;
 
         let head = lent_head(req.headers, req.consumed);
@@ -499,7 +423,7 @@ impl ServeTables {
             calls,
             table.caps,
             (table.routes.len(), index as u32),
-            target.as_bytes(),
+            &target,
             head,
             body,
             authority,
@@ -526,7 +450,10 @@ pub async fn write_served_records(
     actor: &str,
 ) -> Result<(), Unserved> {
     use busbar_contract::abi::plane::{RECORD_AUDIT, RECORD_PUT};
-    let mut acks = Vec::new();
+    // The acks are awaited after every write is issued; a few fit inline.
+    let mut acks: smallvec::SmallVec<
+        [tokio::sync::oneshot::Receiver<Result<(), &'static str>>; 4],
+    > = smallvec::SmallVec::new();
     for (kind, op, key, value) in &served.records {
         match *op {
             RECORD_AUDIT => {
@@ -659,14 +586,14 @@ pub async fn serve(
     head: HeadFields,
     body: Bytes,
 ) -> Result<Served, Unserved> {
-    serve_authorized(calls, caps, (routes, route), target, head, body, None).await
+    serve_authorized(calls, caps, (routes, route), &[target], head, body, None).await
 }
 
 async fn serve_authorized(
     calls: &dyn PlaneCalls,
     caps: BufferCaps,
     (routes, route): (usize, u32),
-    target: &[u8],
+    target: &[&[u8]],
     head: HeadFields,
     body: Bytes,
     authority: Option<(
@@ -688,7 +615,7 @@ async fn serve_authorized(
         services.grant_trust_decision(caller, ticket, counterparty)
     });
     let keep = Arc::new(Mutex::new(Bufs {
-        target: target.to_vec(),
+        target: joined(target),
         head: FieldList::new(head),
         body,
         reply: vec![0; caps.reply],

@@ -481,7 +481,7 @@ fn path_attribute(attrs: &[Attribute]) -> Option<String> {
 /// and the dev-dependency-only `test-support` feature off compiles it, whatever every other cfg
 /// is. Every `cfg` and every `cfg` inside a (nested) `cfg_attr` gates the item; a gate the
 /// parser cannot read is left out, so it can only make the item count as production.
-pub fn needs_test(attrs: &[Attribute]) -> bool {
+fn needs_test(attrs: &[Attribute]) -> bool {
     let mut gates = Vec::new();
     for attr in attrs {
         if attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr") {
@@ -1098,9 +1098,9 @@ fn test_only_cfg_is_test_or_the_test_support_feature_exactly() {
         ("#[cfg(feature = \"test-seal\")]", false),
         ("#[cfg(feature = \"test-supports\")]", false),
         ("#[cfg(test_support)]", false),
-        ("#[cfg_attr(test, allow(dead_code))]", false),
+        ("#[cfg_attr(test, inline)]", false),
         (
-            "#[cfg_attr(feature = \"test-support\", allow(dead_code))]",
+            "#[cfg_attr(feature = \"test-support\", inline)]",
             false,
         ),
         ("#[cfg_attr(unix, cfg(test))]", false),

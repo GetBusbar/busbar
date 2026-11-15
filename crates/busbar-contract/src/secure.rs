@@ -117,7 +117,7 @@ impl SecureVec {
     pub fn truncate(&mut self, n: usize) {
         if n < self.len() {
             let cut = self.head + n;
-            wipe(&mut self.v[cut..self.end]);
+            fill_wipe(&mut self.v[cut..self.end]);
             self.end = cut;
             if self.head == self.end {
                 self.head = 0;
@@ -134,7 +134,7 @@ impl SecureVec {
         if self.head != 0 {
             let live = self.len();
             self.v.copy_within(self.head..self.end, 0);
-            wipe(&mut self.v[live..self.end]);
+            fill_wipe(&mut self.v[live..self.end]);
             self.head = 0;
             self.end = live;
         }
@@ -173,7 +173,7 @@ impl SecureVec {
     /// empty, both offsets reset for free.
     pub fn consume(&mut self, n: usize) {
         let n = n.min(self.len());
-        wipe(&mut self.v[self.head..self.head + n]);
+        fill_wipe(&mut self.v[self.head..self.head + n]);
         self.head += n;
         if self.head == self.end {
             self.head = 0;
@@ -228,7 +228,7 @@ impl SecureVec {
             _ => 0,
         };
         if tail == Tail::Wipe || overlong {
-            wipe(&mut self.v[self.end + k..lent.end]);
+            fill_wipe(&mut self.v[self.end + k..lent.end]);
         }
         self.end += k;
         Ok(if overlong {
@@ -250,7 +250,7 @@ impl SecureVec {
             // At least half the used span is consumed: move the `live` (≤ `head`) bytes to 0.
             self.v.copy_within(self.head..self.end, 0);
             moved(live);
-            wipe(&mut self.v[live..self.end]);
+            fill_wipe(&mut self.v[live..self.end]);
             self.head = 0;
             self.end = live;
             return Ok(());
@@ -632,9 +632,23 @@ pub enum Tail {
 /// Wipe bytes the buffer still owns and will reuse. These are not dead stores: the allocation is
 /// read again through `as_slice`/`copy_within`, and the final wipe before the free is
 /// `Zeroize`'s, at drop.
-fn wipe(s: &mut [u8]) {
+fn fill_wipe(s: &mut [u8]) {
     s.fill(0);
     std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+}
+
+/// THE FREE-PATH WIPE of bytes held outside a `Secure*` type: volatile-zero every byte of
+/// `bytes`, so no write is elided before the block is freed or handed on. The length is kept. A
+/// `Vec<u8>` whose spare capacity also held secret bytes wipes with
+/// [`crate::abi::sdk::wipe::wipe_bytes`].
+pub fn wipe(bytes: &mut [u8]) {
+    bytes.zeroize();
+}
+
+/// Volatile-zero `text`'s whole allocation (its spare capacity too) and empty it. The allocation
+/// is kept.
+pub fn wipe_string(text: &mut String) {
+    text.zeroize();
 }
 
 #[cfg(any(test, feature = "test-support"))]

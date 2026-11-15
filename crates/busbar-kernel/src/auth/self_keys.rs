@@ -101,16 +101,7 @@ impl DeterministicEd25519Keys {
     }
 
     fn self_group(principal: &Principal) -> String {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a self-serve mint provisions its key and personal group through a config transaction"
-        )]
-        let group = format!(
-            "{}{}",
-            crate::governance::SELF_KEY_GROUP_PREFIX,
-            principal.id
-        );
-        group
+        crate::cold::auth::keys::self_group(&principal.id)
     }
 
     async fn mint(
@@ -126,13 +117,12 @@ impl DeterministicEd25519Keys {
             .await
             .map_err(ExchangeError::MintFailed)?;
 
-        // busbar:expect(bp::clone_alloc, reason = "config: a self-serve mint provisions its key and personal group through a config transaction")
         mint_provisioned_self_key(
-            self.gov.clone(),
+            Arc::clone(&self.gov),
             op,
             principal,
             &self.provider,
-            self.allowed_scopes.clone(),
+            self.allowed_scopes.as_deref(),
             exp,
             now,
         )
@@ -145,19 +135,17 @@ async fn mint_provisioned_self_key(
     op: crate::governance::SelfMintOp,
     principal: &Principal,
     provider: &str,
-    allowed_scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
+    allowed_scopes: Option<&[busbar_contract::records::ScopeRef]>,
     exp: u64,
     now: u64,
 ) -> Result<IssuedKey, ExchangeError> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a self-serve mint provisions its key and personal group through a config transaction"
-    )]
+    let (user_sub, provider, allowed_scopes) =
+        crate::cold::auth::keys::self_mint_parts(&principal.id, provider, allowed_scopes);
     let (binding, token) = crate::governance::mint_self_offloaded(
         gov,
         op,
-        principal.id.clone(),
-        provider.to_string(),
+        user_sub,
+        provider,
         allowed_scopes,
         exp,
         now,
@@ -165,7 +153,9 @@ async fn mint_provisioned_self_key(
     .await
     .map_err(|e| match e {
         crate::governance::SelfMintError::Refused(reason) => ExchangeError::Held(reason),
-        crate::governance::SelfMintError::Store(e) => ExchangeError::MintFailed(e.to_string()),
+        crate::governance::SelfMintError::Store(e) => {
+            ExchangeError::MintFailed(crate::cold::auth::keys::mint_store_failed(&e))
+        }
     })?;
     Ok(IssuedKey {
         secret: busbar_contract::redacted::Secret::new(token),
@@ -210,12 +200,8 @@ impl HandleProvisioner {
 #[async_trait]
 impl SelfGroupProvisioner for HandleProvisioner {
     async fn ensure_leaf(&self, leaf: &str, parent: &str) -> Result<(), String> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a self-serve mint provisions its key and personal group through a config transaction"
-        )]
-        let (leaf, parent) = (leaf.to_string(), parent.to_string());
-        let actor = self.actor.clone();
+        let (leaf, parent, actor) =
+            crate::cold::auth::keys::provision_parts(leaf, parent, &self.actor);
         crate::config::transaction::config_transaction(&self.handle, move |txn| {
             let current = txn.app();
 

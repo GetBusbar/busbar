@@ -30,9 +30,28 @@ enum State {
 #[derive(Default)]
 struct StreamOperations {
     owners: HashMap<u64, Ticket>,
+    /// The streams each ticket took in `owners`, so its end finds them by its key. A stream that
+    /// `owners` no longer names under that ticket (ended, admitted, or taken again) is stale here
+    /// and skipped when the ticket ends.
+    owned: HashMap<Ticket, Vec<u64>>,
+    /// An ended ticket's emptied `owned` list, kept for the next ticket that takes a stream.
+    spare_owned: Vec<u64>,
+    /// A failed operation's retired streams and loans, reused failure after failure.
+    retired: Vec<(u64, Option<StreamPolicy>)>,
     admitted: HashSet<u64>,
     progress: HashSet<Ticket>,
     cancelled: HashSet<Ticket>,
+}
+
+impl StreamOperations {
+    /// `ticket` took `stream` in `owners`: index it under the ticket.
+    fn note_owned(&mut self, ticket: Ticket, stream: u64) {
+        let spare = &mut self.spare_owned;
+        self.owned
+            .entry(ticket)
+            .or_insert_with(|| std::mem::take(spare))
+            .push(stream);
+    }
 }
 
 pub struct FramingContext {
@@ -127,10 +146,12 @@ impl FramingContext {
             )
         };
         let adoption_reply = inherited.map(|transfer| {
-            Arc::from(busbar_contract::abi::mechanism::extensions::encode(&[(
-                busbar_contract::abi::transport::adopted_session::EXT_ADOPTED_SESSION,
-                &transfer.session.encode(),
-            )]))
+            crate::cold::dispatch::runtime::adoption_reply(
+                busbar_contract::abi::mechanism::extensions::encode(&[(
+                    busbar_contract::abi::transport::adopted_session::EXT_ADOPTED_SESSION,
+                    &transfer.session.encode(),
+                )]),
+            )
         });
         Ok(Arc::new(Self {
             owner,
@@ -385,6 +406,7 @@ impl FramingScope for FramingContext {
                 match operations.owners.entry(open.stream) {
                     std::collections::hash_map::Entry::Vacant(at) => {
                         at.insert(ticket);
+                        operations.note_owned(ticket, open.stream);
                     }
                     std::collections::hash_map::Entry::Occupied(at) if *at.get() == ticket => {}
                     _ => return Err(CONTEXT_REFUSED),
@@ -538,6 +560,7 @@ impl FramingScope for FramingContext {
         match operations.owners.entry(stream) {
             std::collections::hash_map::Entry::Vacant(at) => {
                 at.insert(ticket);
+                operations.note_owned(ticket, stream);
                 Ok(())
             }
             std::collections::hash_map::Entry::Occupied(at) if *at.get() == ticket => Ok(()),
@@ -562,7 +585,7 @@ impl FramingScope for FramingContext {
         operations.owners.remove(&stream);
     }
     fn operation_finished(&self, ticket: Ticket, failed: bool) {
-        let retired = {
+        let mut retired = {
             let _state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             let mut operations = self
                 .operations
@@ -572,31 +595,37 @@ impl FramingScope for FramingContext {
             if failed {
                 operations.cancelled.insert(ticket);
             }
-            let owned = operations
-                .owners
-                .extract_if(|_, owner| *owner == ticket)
-                .map(|(stream, _)| stream);
-            if failed {
-                let mut ended = self
-                    .ended_streams
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                let mut loans = self.streams.lock().unwrap_or_else(PoisonError::into_inner);
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: a failed operation ends the streams it owned"
-                )]
-                let retired: Vec<_> = owned
-                    .map(|stream| {
-                        ended.insert(stream);
-                        (stream, loans.remove(&stream))
-                    })
-                    .collect();
-                retired
+            let mut owned = operations.owned.remove(&ticket).unwrap_or_default();
+            // A failed operation ends the streams it owned.
+            let mut retired = if failed {
+                std::mem::take(&mut operations.retired)
             } else {
-                owned.for_each(drop);
                 Vec::new()
+            };
+            let mut ending = failed.then(|| {
+                (
+                    self.ended_streams
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner),
+                    self.streams.lock().unwrap_or_else(PoisonError::into_inner),
+                )
+            });
+            for &stream in &owned {
+                if operations.owners.get(&stream) != Some(&ticket) {
+                    continue;
+                }
+                operations.owners.remove(&stream);
+                if let Some((ended, loans)) = ending.as_mut() {
+                    ended.insert(stream);
+                    retired.push((stream, loans.remove(&stream)));
+                }
             }
+            drop(ending);
+            if owned.capacity() > operations.spare_owned.capacity() {
+                owned.clear();
+                operations.spare_owned = owned;
+            }
+            retired
         };
         self.operation_done(ticket);
         if let Some(host) = self.host.as_ref().and_then(Weak::upgrade) {
@@ -604,7 +633,13 @@ impl FramingScope for FramingContext {
                 host.stream_ended(self.owner, self.leg, *stream);
             }
         }
-        drop(retired);
+        if failed {
+            retired.clear();
+            self.operations
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .retired = retired;
+        }
     }
     fn stream_ended(&self, stream: u64) {
         let loan = {

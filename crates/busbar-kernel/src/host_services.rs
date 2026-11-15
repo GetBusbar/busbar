@@ -4,7 +4,7 @@
 use foldhash::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use busbar_contract::abi::host::service::{self as svc, ItemSpan, MAX_SPANS};
 use busbar_contract::abi::mechanism::call::{Outcome, Span};
@@ -94,20 +94,18 @@ pub trait DestJudge: Send + Sync {
     /// host an exact `advanced.tls.destinations` entry admits plaintext to. The default knows no
     /// entries: loopback only.
     fn plaintext_admitted(&self, dest: &str) -> bool {
-        busbar_contract::net::url_host(dest)
-            .or_else(|| Some(dest.to_owned()))
-            .is_some_and(|h| is_loopback_text(&h))
+        match busbar_contract::net::url_host(dest) {
+            Some(h) => is_loopback_text(&h),
+            None => is_loopback_text(dest),
+        }
     }
 
     fn judge_host(&self, host: &str, class: u32) -> Result<(), DestRefusal> {
-        self.judge_name(host, class, false).map_err(|verdict| {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a refused destination's reason names the host"
-            )]
-            let reason = format!("host `{host}` was refused by the destination guard");
-            DestRefusal { verdict, reason }
-        })
+        self.judge_name(host, class, false)
+            .map_err(|verdict| DestRefusal {
+                verdict,
+                reason: crate::cold::host::services_host_refused(host),
+            })
     }
 
     fn destinations_applied(&self, d: &crate::config::Destinations) {
@@ -212,7 +210,7 @@ pub(crate) const NO_DEST_JUDGE: &str = "no destination judge is installed";
 /// BUSBAR-6014: `dest.judge` refuses the operator-infrastructure egress class from a plugin. That
 /// class is a property of a config-declared target, never a plugin's choice; a host named inside
 /// content is judged in the default or open-web class.
-pub const DEST_JUDGE_OPERATOR_INFRASTRUCTURE: &str = "BUSBAR-6014: dest.judge refuses the \
+const DEST_JUDGE_OPERATOR_INFRASTRUCTURE: &str = "BUSBAR-6014: dest.judge refuses the \
      operator-infrastructure egress class: that class belongs to a target the operator configured, \
      never to a host a plugin names; judge it in the default or open-web class";
 
@@ -797,6 +795,8 @@ fn trust_unread(why: String) -> AdmitRefused {
 struct NativeRecordScope {
     rows: crate::host_records_async::AsyncRecords,
     facts: Arc<InstanceFacts>,
+    /// The declared kind the op names.
+    schema: RecordSchemaId,
 }
 
 struct Records {
@@ -816,23 +816,9 @@ pub type Standing = Arc<
         + Sync,
 >;
 
-/// The monotonic origin a services instance measures `mono_ns` from, read once as it is built.
-fn boot_instant() -> Instant {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the services instance fixes its monotonic origin once, as it is built"
-    )]
-    return Instant::now();
-}
-
-fn system_wall_ms() -> u64 {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the host-services wall clock's single source, injected as WallMs; ops read it once and pass the value down"
-    )]
-    return SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+/// Nanoseconds since `origin` on the node's monotonic clock (one reading), saturating.
+fn since_origin_ns(origin: Instant) -> u64 {
+    u64::try_from(crate::store::elapsed(origin).as_nanos()).unwrap_or(u64::MAX)
 }
 
 struct NativeWorkWriter {
@@ -847,15 +833,11 @@ impl NativeWorkWriter {
     fn rows(
         &self,
     ) -> Result<crate::persistence::scoped::ScopedStore, crate::persistence::scoped::Error> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: persistence::scoped owns its schema names; a native work op binds the one work schema"
-        )]
-        return crate::persistence::scoped::ScopedStore::host_private(
+        crate::persistence::scoped::ScopedStore::host_private(
             Arc::clone(&self.store),
             &self.instance,
             [WORK_SCHEMA.as_str().to_string()],
-        );
+        )
     }
     fn put(&self, key: Vec<u8>, value: RecordBytes, acked: Acked) {
         let instance = Arc::clone(&self.instance);
@@ -920,7 +902,7 @@ impl Drop for WorkOpening {
     }
 }
 
-type NativeClaimKey = (Arc<str>, String, String);
+type NativeClaimKey = (Arc<str>, RecordSchemaId, String);
 #[derive(Clone, Copy)]
 struct NativeClaimAttempt {
     expires_at: u64,
@@ -951,6 +933,21 @@ type TrustDecisionKey = (
 );
 const NO_TRUST_DECISION_GRANT: &str = "this call has no core-issued trust decision grant";
 
+/// The counterparty a trust decision grant is bound to: an entry of the granted instance's own
+/// trust facts, shared rather than copied.
+struct GrantedCounterparty {
+    facts: Arc<InstanceFacts>,
+    index: usize,
+}
+impl GrantedCounterparty {
+    fn name(&self) -> &str {
+        self.facts
+            .trust
+            .get(self.index)
+            .map_or("", |(name, _)| name.as_str())
+    }
+}
+
 /// Held only while core serves an authorized private administrative write. Neither
 /// a plugin's kind nor its request bytes can create this authority.
 pub(crate) struct TrustDecisionGrant<'a> {
@@ -975,7 +972,7 @@ pub struct KernelServices {
 
     mono_ns: Option<MonoNs>,
     instances: Mutex<HashMap<Arc<str>, Arc<InstanceFacts>>>,
-    trust_decisions: Mutex<HashMap<TrustDecisionKey, Arc<str>>>,
+    trust_decisions: Mutex<HashMap<TrustDecisionKey, GrantedCounterparty>>,
     record_bootstrap: Mutex<Option<crate::host_record_bootstrap::Bootstrap>>,
     native_record_bootstrap: Mutex<HashMap<Arc<str>, crate::host_record_bootstrap::Bootstrap>>,
     plane_cleanup: Mutex<Vec<std::sync::Weak<crate::plane_driver::PlaneDriver>>>,
@@ -1021,7 +1018,7 @@ pub struct KernelServices {
 struct CarrierSession {
     incarnation: busbar_contract::services::Incarnation,
 
-    principal: String,
+    principal: Arc<str>,
 
     sink: CarrierSink,
 }
@@ -1102,8 +1099,8 @@ impl KernelServices {
     pub fn new() -> Self {
         Self {
             observations: observations_runtime::ObservationRuntime::default(),
-            origin: boot_instant(),
-            wall_ms: Arc::new(system_wall_ms),
+            origin: crate::off_path::host_services::boot_instant(),
+            wall_ms: Arc::new(crate::store::now_ms),
             mono_ns: None,
             instances: Mutex::default(),
             trust_decisions: Mutex::default(),
@@ -1150,16 +1147,14 @@ impl KernelServices {
         ticket: busbar_contract::abi::mechanism::ticket::Ticket,
         counterparty: &str,
     ) -> Option<TrustDecisionGrant<'_>> {
-        if caller.kind() != busbar_contract::abi::mechanism::KindCode::Plane
-            || ticket.is_none()
-            || !self
-                .facts(caller)?
-                .trust
-                .iter()
-                .any(|(name, _)| name == counterparty)
-        {
+        if caller.kind() != busbar_contract::abi::mechanism::KindCode::Plane || ticket.is_none() {
             return None;
         }
+        let facts = self.facts(caller)?;
+        let index = facts
+            .trust
+            .iter()
+            .position(|(name, _)| name == counterparty)?;
         let key = (caller.incarnation().clone(), ticket);
         let mut grants = self
             .trust_decisions
@@ -1168,9 +1163,7 @@ impl KernelServices {
         if grants.contains_key(&key) {
             return None;
         }
-        // busbar:expect(bp::into_alloc, reason = "config: an operator's private trust decision write holds its counterparty while it is served")
-        let counterparty: Arc<str> = Arc::from(counterparty);
-        grants.insert(key.clone(), counterparty);
+        grants.insert(key.clone(), GrantedCounterparty { facts, index });
         Some(TrustDecisionGrant {
             services: self,
             key,
@@ -1259,8 +1252,7 @@ impl KernelServices {
     pub fn ticket_prefix_of(&self, instance: &str) -> Option<String> {
         let instances = self.lock_instances();
         let facts = instances.get(instance)?;
-        // busbar:expect(bp::clone_alloc, reason = "boot: a served plane's ticket prefix is read once, as its routes are built")
-        facts.ticket_prefix.clone()
+        crate::off_path::host_services::ticket_prefix(facts)
     }
 
     pub fn open_carrier_session(&self, caller: &Caller, principal: &str, sink: CarrierSink) -> u64 {
@@ -1270,11 +1262,7 @@ impl KernelServices {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(number, {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "boot: a carrier session keeps its principal once, as its line opens"
-                )]
-                let principal = principal.to_string();
+                let principal = crate::off_path::host_services::intern(principal);
                 CarrierSession {
                     incarnation: caller.incarnation().clone(),
                     principal,
@@ -1364,8 +1352,7 @@ impl KernelServices {
     }
 
     pub fn bound_work(&self, instance: &str, bounds: WorkBounds) {
-        // busbar:expect(bp::into_alloc, reason = "boot: an instance's work bounds are recorded once, as it is admitted")
-        let instance: Arc<str> = Arc::from(instance);
+        let instance = crate::off_path::host_services::intern(instance);
         self.bounds_of
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1492,17 +1479,14 @@ impl KernelServices {
         let facts = self
             .facts(caller)
             .ok_or_else(|| Stored::refused(NOT_ADMITTED))?;
-        if !facts
+        let Some(schema) = facts
             .record_kinds
             .iter()
-            .any(|schema| schema.as_str() == kind)
-        {
+            .find(|schema| schema.as_str() == kind)
+            .copied()
+        else {
             return Err(Stored::refused(NOT_A_KIND));
-        }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: host_records_async owns its schema names, so a native record op names its declared kinds; no intermediate list"
-        )]
+        };
         let rows = crate::host_records_async::AsyncRecords::authorized(
             Arc::clone(store),
             caller.namespace(),
@@ -1514,8 +1498,14 @@ impl KernelServices {
                     crate::host_chains::CHAIN_LIFE_SCHEMA.as_str().to_string(),
                 )),
         );
-        rows.map(|rows| Some(NativeRecordScope { rows, facts }))
-            .map_err(|_| failed(STORE_FAILED))
+        rows.map(|rows| {
+            Some(NativeRecordScope {
+                rows,
+                facts,
+                schema,
+            })
+        })
+        .map_err(|_| failed(STORE_FAILED))
     }
 
     #[must_use]
@@ -1536,10 +1526,9 @@ impl KernelServices {
         demotions: Arc<DemotionRecord>,
         default_instance: &str,
     ) -> Self {
-        // busbar:expect(bp::into_alloc, reason = "boot: the demotion record's default instance is fixed once, as services are built")
         self.demotions = OnceLock::from(Demotions {
             record: demotions,
-            default_instance: Arc::from(default_instance),
+            default_instance: crate::off_path::host_services::intern(default_instance),
         });
         self
     }
@@ -1553,11 +1542,10 @@ impl KernelServices {
     }
 
     pub fn attach_demotions(&self, demotions: Arc<DemotionRecord>, default_instance: &str) -> bool {
-        // busbar:expect(bp::into_alloc, reason = "boot: the demotion record's default instance is fixed once, as it is attached")
         self.demotions
             .set(Demotions {
                 record: demotions,
-                default_instance: Arc::from(default_instance),
+                default_instance: crate::off_path::host_services::intern(default_instance),
             })
             .is_ok()
     }
@@ -1598,14 +1586,10 @@ impl KernelServices {
                  the instance is refused rather than write beside, or purge under its own rule, \
                  the kernel's records"
             );
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: an admission refusal names the instance and what it collided with"
-            )]
-            return Err(AdmitRefused::KindReserved {
-                instance: instance.to_string(),
-                kind: kind.as_str().to_string(),
-            });
+            return Err(crate::cold::host::services_kind_reserved(
+                instance,
+                kind.as_str(),
+            ));
         }
 
         for chain in &facts.record_chains {
@@ -1635,8 +1619,7 @@ impl KernelServices {
                 return Err(AdmitRefused::ConditionalKind { kind });
             }
         }
-        // busbar:expect(bp::into_alloc, reason = "boot: an instance's label is interned once, when it is admitted")
-        let key: Arc<str> = Arc::from(instance);
+        let key = crate::off_path::host_services::intern(instance);
 
         let (snapshot, default) = match self.demotions.get() {
             Some(d) => (
@@ -1657,13 +1640,7 @@ impl KernelServices {
             .contains_key(instance)
             && instances.contains_key(instance)
         {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: an admission refusal names the instance and what it collided with"
-            )]
-            return Err(AdmitRefused::BootstrapHeld {
-                instance: instance.to_string(),
-            });
+            return Err(crate::cold::host::services_bootstrap_held(instance));
         }
         if self
             .record_bootstrap
@@ -1674,13 +1651,7 @@ impl KernelServices {
                 grant.instance == instance && (instances.contains_key(instance) || !grant.bound())
             })
         {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: an admission refusal names the instance and what it collided with"
-            )]
-            return Err(AdmitRefused::BootstrapHeld {
-                instance: instance.to_string(),
-            });
+            return Err(crate::cold::host::services_bootstrap_held(instance));
         }
         let decided = if instances.contains_key(instance) {
             Vec::new()
@@ -1692,15 +1663,9 @@ impl KernelServices {
                 &***label != instance && f.signing.as_ref().is_some_and(|s| s.domain == domain)
             });
             if let Some((held_by, _)) = holder {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: an admission refusal names the instance and what it collided with"
-                )]
-                return Err(AdmitRefused::DomainHeld {
-                    domain: domain.to_string(),
-                    held_by: held_by.to_string(),
-                    asked_by: instance.to_string(),
-                });
+                return Err(crate::cold::host::services_domain_held(
+                    domain, held_by, instance,
+                ));
             }
         }
         if let Some(prefix) = instances
@@ -1708,29 +1673,18 @@ impl KernelServices {
             .and_then(|f| f.ticket_prefix.as_ref())
         {
             if facts.ticket_prefix.as_ref() != Some(prefix) {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: an admission refusal names the instance and what it collided with"
-                )]
-                return Err(AdmitRefused::TicketPrefixChanged {
-                    instance: instance.to_string(),
-                    prefix: prefix.clone(),
-                });
+                return Err(crate::cold::host::services_ticket_prefix_changed(
+                    instance, prefix,
+                ));
             }
         }
         if let Some(prefix) = &facts.ticket_prefix {
             if let Some((held_by, _)) = instances.iter().find(|(label, f)| {
                 &***label != instance && f.ticket_prefix.as_ref() == Some(prefix)
             }) {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: an admission refusal names the instance and what it collided with"
-                )]
-                return Err(AdmitRefused::TicketPrefixHeld {
-                    prefix: prefix.clone(),
-                    held_by: held_by.to_string(),
-                    asked_by: instance.to_string(),
-                });
+                return Err(crate::cold::host::services_ticket_prefix_held(
+                    prefix, held_by, instance,
+                ));
             }
         }
         let prefix = demotion_key(instance, "");
@@ -1824,18 +1778,19 @@ impl KernelServices {
             .trust
             .rule(instance, counterparty, item, ruling, expected)
             .map_err(trust_refused)?;
-        // busbar:expect(bp::fresh_buffer, reason = "config: an operator trust decision lists the demotion rows it clears")
-        let mut clear = Vec::new();
-        if fact.item.is_none() && ruling == Ruling::Approve {
-            clear.push(demotion_key(&fact.instance, &fact.counterparty));
-            if self
+        let clear = if fact.item.is_none() && ruling == Ruling::Approve {
+            let default = self
                 .demotions
                 .get()
-                .is_some_and(|d| *d.default_instance == *fact.instance)
-            {
-                clear.push(fact.counterparty.clone());
-            }
-        }
+                .is_some_and(|d| *d.default_instance == *fact.instance);
+            crate::off_path::host_services::decision_clears(
+                &fact.instance,
+                &fact.counterparty,
+                default,
+            )
+        } else {
+            Vec::new()
+        };
         Ok(TrustDecision {
             permit,
             fact,
@@ -1978,18 +1933,10 @@ impl KernelServices {
         }
         let pending = &self.pending;
         let make = || {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: the read-your-writes overlay keeps its own copy of a queued write; the writer lent the bytes"
-            )]
             let seq = match chain {
                 Some(_) => 0,
                 None => pending.enqueue(caller.namespace(), kind, key, value.as_slice().to_vec()),
             };
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: the write-behind queue owns a write's key until the store acks it; the writer lent the key"
-            )]
             let key = key.to_vec();
             Write {
                 instance: Arc::clone(caller.namespace()),
@@ -2061,10 +2008,6 @@ impl KernelServices {
         }
         let scope =
             crate::host_chains::scope_of(scope).ok_or(crate::host_chains::CHAIN_SCOPE_UNFIT)?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a chain-life observation's scope outlives this call in its async completion"
-        )]
         let scope = scope.to_string();
         if self.persistence.get().is_some() {
             let rows = self
@@ -2152,10 +2095,6 @@ impl KernelServices {
         for predicate in &candidate.predicates {
             let schema = schema_at(predicate.kind, false)?;
             request.predicates.reserve(1);
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: busbar-contract conditional::Request owns its schema names; a transaction names each one it touches"
-            )]
             request.predicates.push(Predicate {
                 schema: schema.as_str().to_string(),
                 key: record_key(caller.namespace(), &predicate.key),
@@ -2164,10 +2103,6 @@ impl KernelServices {
         }
         for mutation in &candidate.mutations {
             request.mutations.reserve(1);
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: busbar-contract conditional::Request owns its schema names; a transaction names each one it touches"
-            )]
             request.mutations.push(match mutation {
                 RecordMutation::Put { kind, key, value } => {
                     let schema = schema_at(*kind, false)?;
@@ -2226,10 +2161,6 @@ impl KernelServices {
             chain_scopes.insert(address, chains.len());
             let framing = chain_at(kind).ok_or(NOT_A_KIND)?;
             chains.reserve(1);
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: a conditional chain mutation's scope is held by the transaction until it settles"
-            )]
             chains.push(crate::host_chains::ConditionalChain {
                 schema,
                 scope: scope.to_string(),
@@ -2361,12 +2292,7 @@ impl KernelServices {
     fn cleanup_planes(&self, cx: &mut std::task::Context<'_>) -> bool {
         let drivers = {
             let mut registered = self.plane_cleanup.lock().unwrap_or_else(|e| e.into_inner());
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: the 1 s flush tick prunes dropped planes; no request runs it"
-            )]
-            registered.retain(|driver| driver.strong_count() != 0);
-            registered.clone()
+            crate::off_path::host_services::live_planes(&mut registered)
         };
         let mut idle = true;
         for driver in drivers.into_iter().filter_map(|driver| driver.upgrade()) {
@@ -2377,40 +2303,14 @@ impl KernelServices {
 
     /// Settle dropped callers before final billing flushes, retaining pending work on timeout.
     pub async fn drain_plane_cleanup(&self, deadline: std::time::Duration) -> bool {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the shutdown drain fixes its deadline once"
-        )]
-        let until = tokio::time::Instant::now() + deadline;
-        loop {
-            if std::future::poll_fn(|cx| std::task::Poll::Ready(self.cleanup_planes(cx))).await {
-                return true;
-            }
-            // busbar:expect(bp::clock_repeat, reason = "boot: the shutdown drain re-reads the clock once per 2 ms poll until its deadline")
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "boot: the shutdown drain re-reads the clock once per 2 ms poll until its deadline"
-            )]
-            let now = tokio::time::Instant::now();
-            if now >= until {
-                return false;
-            }
-            tokio::time::sleep_until(std::cmp::min(
-                until,
-                now + std::time::Duration::from_millis(2),
-            ))
-            .await;
-        }
+        crate::off_path::host_services::drain_cleanup_until(deadline, |cx| self.cleanup_planes(cx))
+            .await
     }
 
     pub async fn flushes(&self) {
         use futures::StreamExt as _;
         let every = crate::host_records::FLUSH_INTERVAL;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the flusher schedules its first tick once, as it starts"
-        )]
-        let mut at = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+        let mut at = crate::off_path::host_services::flush_ticks(every);
         at.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut jobs = futures::stream::FuturesUnordered::new();
         loop {
@@ -2484,27 +2384,11 @@ impl KernelServices {
     }
 
     pub fn drain(&self, deadline: std::time::Duration) -> bool {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the shutdown drain fixes its deadline once"
-        )]
-        let until = Instant::now() + deadline;
-        loop {
-            if self.batcher.idle() {
-                return true;
-            }
-            // busbar:expect(bp::clock_repeat, reason = "boot: the shutdown drain re-reads the clock once per 2 ms poll until its deadline")
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "boot: the shutdown drain re-reads the clock once per 2 ms poll until its deadline"
-            )]
-            let now = Instant::now();
-            if now >= until {
-                return false;
-            }
-            self.flush_tick();
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
+        crate::off_path::host_services::drain_until(
+            deadline,
+            || self.batcher.idle(),
+            || self.flush_tick(),
+        )
     }
 
     fn lock_instances(&self) -> std::sync::MutexGuard<'_, HashMap<Arc<str>, Arc<InstanceFacts>>> {
@@ -2696,11 +2580,7 @@ pub const DEMOTION_SEP: char = '\u{1f}';
 
 #[must_use]
 pub fn demotion_key(instance: &str, counterparty: &str) -> String {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a demotion row's key is spelled for an operator trust decision or an admission replay"
-    )]
-    return format!("{instance}{DEMOTION_SEP}{counterparty}");
+    crate::cold::host::services_demotion_key(instance, counterparty)
 }
 
 #[must_use]
@@ -2825,10 +2705,6 @@ impl HostServices for KernelServices {
                     .sessions
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "config: an operator inspection lists the carrier sessions it asked about"
-                )]
                 let observations = sessions
                     .iter()
                     .map(|session| SessionObservation {
@@ -2844,21 +2720,11 @@ impl HostServices for KernelServices {
     }
 
     fn now(&self) -> Reading {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the host clock service's single wall source; a plugin's `now` call reads it once and passes it down"
-        )]
-        let wall = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the host clock service's monotonic source when no MonoNs is injected"
-        )]
-        let mono_ns = self.mono_ns.as_ref().map_or_else(
-            || u64::try_from(self.origin.elapsed().as_nanos()).unwrap_or(u64::MAX),
-            |mono| mono(),
-        );
+        let wall = crate::store::now_ns();
+        let mono_ns = self
+            .mono_ns
+            .as_ref()
+            .map_or_else(|| since_origin_ns(self.origin), |mono| mono());
         Reading {
             wall_ns: wall,
             mono_ns,
@@ -2933,14 +2799,10 @@ impl HostServices for KernelServices {
                 let Some(pool) = self.pool() else {
                     return Ran::Now(Stored::refused(NO_POOL));
                 };
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "config: a native record read moves its schema into the async read; host_records_async takes owned names"
-                )]
-                let schema = kind.to_string();
+                let schema = records.schema.as_str();
                 let key = record_key(caller.namespace(), key);
                 return submit_async(pool, later, async move {
-                    match records.rows.get(&schema, &key).await {
+                    match records.rows.get(schema, &key).await {
                         Ok(Some(value)) => {
                             native_record_found(value.expose(&crate::seal::lend()).clone())
                         }
@@ -2986,7 +2848,6 @@ impl HostServices for KernelServices {
                 let scope = crate::host_records::record_scope_len(&instance);
                 let prefix = record_key(&instance, &list.prefix);
                 return submit_async(pool, later, async move {
-                    // busbar:expect(bp::fresh_buffer, reason = "config: busbar-contract merge_list takes the listed rows as an owned list")
                     let mut rows = Vec::new();
                     let mut cursor = None;
                     loop {
@@ -3031,9 +2892,10 @@ impl HostServices for KernelServices {
         later: Later,
     ) -> Ran {
         if let Some(store) = self.persistence.get() {
-            if let Err(refused) = self.native_records(caller, kind) {
-                return Ran::Now(refused);
-            }
+            let schema = match self.native_records(caller, kind) {
+                Err(refused) => return Ran::Now(refused),
+                Ok(scope) => scope.map(|scope| scope.schema),
+            };
             if ttl_ms == 0 {
                 return Ran::Now(Stored::refused(NO_TTL));
             }
@@ -3051,11 +2913,10 @@ impl HostServices for KernelServices {
                 return Ran::Now(failed(STORE_FAILED));
             }
             let token = claim_token(caller.namespace(), kind, key);
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: a native claim holds its kind and token in the in-flight claim table until it settles"
-            )]
-            let claim_key = (Arc::clone(caller.namespace()), kind.to_string(), token);
+            let Some(schema) = schema else {
+                return Ran::Now(failed(STORE_FAILED));
+            };
+            let claim_key = (Arc::clone(caller.namespace()), schema, token);
             let attempt = {
                 let mut claims = self
                     .native_claims
@@ -3093,8 +2954,12 @@ impl HostServices for KernelServices {
                     Err(_) => return failed(STORE_FAILED),
                 };
                 let result = match attempt.pending {
-                    Some(pending) => scoped.retry_claim(kind, pending).await,
-                    None => scoped.redeem(kind, token, attempt.expires_at).await,
+                    Some(pending) => scoped.retry_claim(kind.as_str(), pending).await,
+                    None => {
+                        scoped
+                            .redeem(kind.as_str(), token, attempt.expires_at)
+                            .await
+                    }
                 };
                 match result {
                     Ok(ClaimOutcome::Claimed) => {
@@ -3218,12 +3083,8 @@ impl HostServices for KernelServices {
         let record = Arc::clone(&d.record);
         let key = demotion_key(caller.namespace(), counterparty);
 
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: only a sighting that changes trust state settles a durable row, keyed by its counterparty"
-        )]
-        let unprefixed =
-            (*caller.namespace() == d.default_instance).then(|| counterparty.to_string());
+        let unprefixed = (*caller.namespace() == d.default_instance)
+            .then(|| crate::cold::host::services_counterparty_row(counterparty));
         let owed = TrustSightOwed {
             permit: Some(permit),
             later: Some(later),
@@ -3313,7 +3174,7 @@ impl HostServices for KernelServices {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&session)
             .filter(|s| &s.incarnation == caller.incarnation())
-            .map(|s| (Arc::clone(&s.sink), s.principal.clone()));
+            .map(|s| (Arc::clone(&s.sink), Arc::clone(&s.principal)));
         let Some((sink, principal)) = open else {
             return Stored::refused(SESSION_NOT_OPEN);
         };
@@ -3404,8 +3265,7 @@ impl HostServices for KernelServices {
         let Some(key) = self.units.get(unit).and_then(|r| r.principal.clone()) else {
             return Ran::Now(Stored::refused(TICKET_NO_PRINCIPAL));
         };
-        // busbar:expect(bp::clone_alloc, reason = "config: a ticket mint carries its instance's prefix into the async press")
-        let Some(prefix) = self.facts(caller).and_then(|f| f.ticket_prefix.clone()) else {
+        let Some(facts) = self.facts(caller).filter(|f| f.ticket_prefix.is_some()) else {
             return Ran::Now(Stored::refused(TICKET_NO_PREFIX));
         };
         let Some(press) = self.tickets.get().cloned() else {
@@ -3415,19 +3275,16 @@ impl HostServices for KernelServices {
             return Ran::Now(Stored::refused(NO_POOL));
         };
         let caller = caller.clone();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a ticket mint carries its lent record into the async press as a zeroizing secret"
-        )]
         let record = busbar_contract::Secret::new(record.to_vec());
         let now = (self.wall_ms)() / 1000;
         submit_async(pool, later, async move {
+            let prefix = facts.ticket_prefix.as_deref().unwrap_or_default();
             match press
                 .mint_for_unit(
                     unit,
                     &caller,
                     &key,
-                    &prefix,
+                    prefix,
                     ttl_secs,
                     record.expose(&crate::seal::lend()),
                     now,
@@ -3501,7 +3358,7 @@ impl HostServices for KernelServices {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&(caller.incarnation().clone(), ticket))
-            .is_some_and(|counterparty| counterparty.as_ref() == key.counterparty);
+            .is_some_and(|granted| granted.name() == key.counterparty);
         if !authorized {
             return Ran::Now(Stored::refused(NO_TRUST_DECISION_GRANT));
         }
@@ -3762,10 +3619,6 @@ impl HostServices for KernelServices {
                 let book = Arc::clone(&self.work);
                 let bounds = self.work_bounds_of(caller.namespace());
                 let wall_ms = Arc::clone(&self.wall_ms);
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "config: a native work open moves its lent kind and record into the async writer"
-                )]
                 let (kind, record) = (kind.to_string(), record.to_vec());
                 let owed = Owed(Some(later));
                 let pool = Arc::clone(&writer.pool);
@@ -3784,10 +3637,6 @@ impl HostServices for KernelServices {
                     let now_ms = wall_ms();
                     for gone in book.sweep(&writer.instance, now_ms, bounds.retain_ms) {
                         if let Ok(empty) = RecordBytes::new(Vec::new()) {
-                            #[expect(
-                                clippy::disallowed_methods,
-                                reason = "config: an expired work row's tombstone takes an owned key; only rows past retention reach here"
-                            )]
                             let gone = gone.to_vec();
                             writer.put(gone, empty, Box::new(|_| {}));
                         }
@@ -3824,16 +3673,8 @@ impl HostServices for KernelServices {
                         reference,
                         owed: Some(owed),
                     };
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "config: the write-behind queue owns a work row's key until the store acks it"
-                    )]
                     let key = reference.to_vec();
-                    writer.put(
-                        key,
-                        row,
-                        Box::new(move |result| opening.answer(result)),
-                    );
+                    writer.put(key, row, Box::new(move |result| opening.answer(result)));
                 }));
                 return Ran::Later;
             }
@@ -3943,10 +3784,6 @@ impl HostServices for KernelServices {
                 }
                 let owner = self.owner_of_unit(unit);
                 let in_flight = |unit| self.units.get(unit).is_some();
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "config: a settled work row keeps its record; the plugin lent the bytes"
-                )]
                 let record = record.to_vec();
                 let settled = match self.work.settle(
                     caller.namespace(),
@@ -3963,10 +3800,6 @@ impl HostServices for KernelServices {
                     self.work.cancel_settle(handle);
                     return Ran::Now(Stored::refused(work_refusal::TOO_LONG));
                 };
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "config: the write-behind queue owns a work row's key until the store acks it"
-                )]
                 let key = settled.reference.to_vec();
                 let unwritten = Unwritten {
                     book: Arc::clone(&self.work),
@@ -4035,10 +3868,6 @@ impl HostServices for KernelServices {
             Ok(stage) => stage,
             Err(refused) => return Ran::Now(refused),
         };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a content scan hands its lent bytes to the async stage, which outlives this call"
-        )]
         let content = content.to_vec();
         stage.scan(
             content,
@@ -4300,8 +4129,12 @@ fn is_loopback_text(host: &str) -> bool {
     } else {
         h
     };
-    let h = h.strip_suffix('.').unwrap_or(h).to_ascii_lowercase();
-    h == "localhost"
-        || h.ends_with(".localhost")
+    const UNDER_LOCALHOST: &str = ".localhost";
+    let h = h.strip_suffix('.').unwrap_or(h);
+    h.eq_ignore_ascii_case("localhost")
+        || h.len()
+            .checked_sub(UNDER_LOCALHOST.len())
+            .and_then(|at| h.get(at..))
+            .is_some_and(|tail| tail.eq_ignore_ascii_case(UNDER_LOCALHOST))
         || h.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
