@@ -282,7 +282,7 @@ impl GovState {
             if self.observed_child_receipt(parent, &child).await?.is_some() {
                 continue;
             }
-            let initial = child.intent_with_origin(RecoveryOrigin {
+            let initial = child.intent_with_origin(&RecoveryOrigin {
                 operation_id: parent.operation_id,
                 event_fingerprint: parent.fingerprint().map_err(invalid)?,
             })?;
@@ -1197,11 +1197,11 @@ impl ForeignSettledSnapshot {
     }
 }
 impl RecoveryChild {
-    fn intent_with_origin(&self, origin: RecoveryOrigin) -> RecordStoreResult<RecoveryEvent> {
+    fn intent_with_origin(&self, origin: &RecoveryOrigin) -> RecordStoreResult<RecoveryEvent> {
         // The template is extended as a tree so every field keeps its exact stored form.
         let payload = crate::off_path::governance::runtime::raw_recovery_stamp_origin(
             &self.payload,
-            &origin,
+            origin,
             invalid_dyn,
         )?;
         Ok(RecoveryEvent {
@@ -1276,7 +1276,7 @@ impl GovState {
             return Err(invalid("settled child belongs to another parent"));
         }
 
-        self.verify_external_recovery_origin(&descriptor.intent_with_origin(origin)?)
+        self.verify_external_recovery_origin(&descriptor.intent_with_origin(&origin)?)
             .await
     }
 }
