@@ -54,7 +54,7 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
 use busbar_contract::abi::host::conn::connector::{
-    DIRECTION_OUTBOUND, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
+    DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
 };
 use busbar_contract::abi::host::service::{DEST_NO_ADDRESSES, DEST_UNRESOLVABLE};
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
@@ -278,6 +278,7 @@ fn scheme_admits(egress_class: u32, secure: bool) -> bool {
 /// `advanced.tls.destinations` entry admits plaintext to (`plain_admitted`, which a carrier that
 /// upgrades later also carries: its cleartext window is held on the connection instead,
 /// [`compose::Connection::hold_clear_window`]). `open-web` never admits plaintext.
+/// `loopback-allowed` admits plaintext to loopback only.
 pub(crate) fn class_admits(
     egress_class: u32,
     secure: bool,
@@ -289,6 +290,11 @@ pub(crate) fn class_admits(
     (within.is_empty() || within.contains(&addr.ip()))
         && match egress_class {
             EGRESS_OPEN_WEB => secure,
+            // The class's ABI contract: a secure connection, or plaintext to loopback. Neither a
+            // carrier's cleartext window nor a plaintext entry widens it.
+            EGRESS_LOOPBACK_ALLOWED => {
+                secure || addr.ip().is_loopback() || guard::names_loopback(&host_of(authority))
+            }
             _ => {
                 secure
                     || plain_admitted
