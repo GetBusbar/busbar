@@ -184,7 +184,7 @@ fn locate(lib_name: &str) -> PathBuf {
         .ok()
         .and_then(|exe| Some(exe.parent()?.parent()?.to_path_buf()))
         .unwrap_or_default();
-    let tried = [profile.join(&file), profile.join(&file)];
+    let tried = [profile.join(&file), profile.join("examples").join(&file)];
     tried.iter().find(|p| p.is_file()).cloned().unwrap_or_else(|| {
         panic!(
             "no cdylib for `{lib_name}`: set {var} or BUSBAR_PLUGIN_CDYLIB, or build it to {} or {}",
