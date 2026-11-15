@@ -16,6 +16,15 @@ use crate::walk;
 /// The one file that may build a runtime.
 const RT: &str = "crates/busbar-kernel/src/rt.rs";
 
+/// Justified exemptions: a path prefix and why it may build runtimes. Exactly this directory,
+/// not its crate.
+const EXEMPT: &[(&str, &str)] = &[(
+    "crates/busbar-plugin-test/src/host_target/",
+    "SDK-SAFE-TEST-HOST r7.1 s12.2 needs one runtime per test image inside the test-only \
+     facade, and s10.6 forbids that facade depending on busbar-kernel (coordinator ruling \
+     J41). The crate is never shipped (T-GUARD); no production path is loosened.",
+)];
+
 const RUNTIME_TYPES: &[&str] = &["Builder", "Runtime", "LocalRuntime"];
 const BUILDER_FNS: &[&str] = &["new_current_thread", "new_multi_thread"];
 
@@ -89,7 +98,7 @@ fn rt_builders_only_in_rt() {
     let roots: Vec<&str> = roots.iter().map(String::as_str).collect();
     let mut found = Vec::new();
     for src in walk::production(&roots) {
-        if src.rel == RT {
+        if src.rel == RT || EXEMPT.iter().any(|(prefix, _)| src.rel.starts_with(prefix)) {
             continue;
         }
         for item in walk::items(&src.file.items) {
