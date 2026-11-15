@@ -61,8 +61,8 @@ impl WriterRetirements {
         self.state.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// `retire_after` with no margin and no record (callers that close no open writer of their
-    /// own observation).
+    /// `retire_after` with no margin and no record (the recovery tests' shape).
+    #[cfg(test)]
     pub(crate) async fn retire(
         &self,
         core: &CoreStore,
@@ -799,6 +799,9 @@ impl BootIdentity {
     }
 }
 
+/// A scanned writer lease: its target, key, exact bytes and expiry.
+type ScannedLease = (Target, Vec<u8>, Secret<Vec<u8>>, u64);
+
 /// One writer whose lease expired at least the grace ago (SHUTDOWN-HANG F5 "The scan").
 #[derive(Clone, Debug)]
 pub struct ExpiredWriter {
@@ -833,7 +836,7 @@ impl BootIdentity {
         let own = self.core.authority().map_err(error)?;
         let mut assignments: std::collections::BTreeMap<Target, Vec<(String, u64)>> =
             std::collections::BTreeMap::new();
-        let mut leases: Vec<(Target, Vec<u8>, Secret<Vec<u8>>, u64)> = Vec::new();
+        let mut leases: Vec<ScannedLease> = Vec::new();
         let mut invalid = 0;
         let mut cursor = None;
         loop {
