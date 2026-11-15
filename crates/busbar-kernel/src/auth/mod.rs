@@ -25,6 +25,7 @@ mod admin_sender_constraint;
 mod admitted;
 pub mod effect;
 pub mod relend;
+pub mod verdicts;
 #[cfg(test)]
 use crate::off_path::auth::chain::admin_head;
 pub(crate) use crate::off_path::auth::chain::auth_refusal;

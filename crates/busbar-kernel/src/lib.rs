@@ -447,7 +447,7 @@ pub mod plugin_routes;
 )]
 pub mod ratelimit;
 pub mod refresh;
-pub use busbar_contract::retry;
+pub mod retry;
 
 pub mod persistence;
 // busbar:request-path
@@ -543,6 +543,27 @@ mod breaker_tests;
 mod transport_tests;
 pub mod trust;
 pub mod vocabulary;
+
+// The MIN-3 kernel contracts (ABI-MIN3-INTERFACE §12, §50), landed by W0-ABI as stubs; each wave-1 owner fills its
+// own. `retry` is declared above, `auth::verdicts` and `trust::plane_book` inside their modules.
+pub mod auth_bindings;
+pub mod channels;
+pub mod connections;
+pub mod custody;
+pub mod directory;
+pub mod issued;
+pub mod media;
+pub mod path_claims;
+pub mod plane_grants;
+pub mod plugin_config;
+pub mod plugin_records;
+pub mod plugin_text;
+pub mod port_call;
+pub mod push;
+pub mod recorder;
+pub mod refusal;
+pub mod sessions;
+pub mod upstreams;
 
 pub use vocabulary::{Registration, MAX_VOCABULARY};
 

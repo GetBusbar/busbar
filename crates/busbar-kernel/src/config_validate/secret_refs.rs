@@ -219,6 +219,7 @@ fn walk_secret_refs_with_boot_token<'a>(
         plane_defs,
 
         plane_pools: _,
+        min3: _,
     } = cfg;
 
     let mut refs: Vec<(String, &crate::config::SecretRef)> = Vec::new();
@@ -413,6 +414,27 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
         SecretBearing::DoorDeclared(
             "the folded door row's section: it holds the references read at its door's declared \
              `settings.` paths and answers them through `PlaneCfg::secret_refs`",
+        ),
+    ),
+    (
+        "Bindings",
+        SecretBearing::NotInResolvedConfig(
+            "MIN-3 (IF §12.7, W0-ABI stub): one plugin instance's bound references, built by the config \
+             binder from the instance bag at load. Nothing builds it until W1-K7, which walks it.",
+        ),
+    ),
+    (
+        "StdioCommand",
+        SecretBearing::NotInResolvedConfig(
+            "MIN-3 (IF §12.1, W0-ABI stub): an `upstreams.<name>` stdio command. It is not part of \
+             `RootCfg` until W1-K1/W1-K7 parse upstreams, which walk it then.",
+        ),
+    ),
+    (
+        "UpstreamTls",
+        SecretBearing::NotInResolvedConfig(
+            "MIN-3 (IF §12.1, W0-ABI stub): an `upstreams.<name>.tls` block. It is not part of \
+             `RootCfg` until W1-K1/W1-K7 parse upstreams, which walk it then.",
         ),
     ),
     (

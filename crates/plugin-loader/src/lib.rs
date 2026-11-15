@@ -267,6 +267,24 @@ pub mod store_v4;
 #[deny(unsafe_code)]
 pub mod tarball;
 
+// MIN-3 (ABI-MIN3-INTERFACE §4.3, §8.8, §11): the frozen request encoders and answer decoders, the ports and
+// adapters the kernel consumes, admission, the stamp scan, refusals and instances. Wave-0 stubs (W0-ABI);
+// each wave-1 owner replaces the stubs in its own files.
+#[deny(unsafe_code)]
+pub mod adapters;
+#[deny(unsafe_code)]
+pub mod admit;
+#[deny(unsafe_code)]
+pub mod encode;
+#[deny(unsafe_code)]
+pub mod instance;
+#[deny(unsafe_code)]
+pub mod ports;
+#[deny(unsafe_code)]
+pub mod refusal;
+#[deny(unsafe_code)]
+pub mod scan;
+
 /// The safe test host (SDK-SAFE-TEST-HOST): tests load and drive plugins with no `unsafe`.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_host;

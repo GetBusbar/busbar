@@ -36,6 +36,7 @@ impl TrustState {
 pub mod section;
 
 pub mod book;
+pub mod plane_book;
 
 pub(crate) mod demotion;
 pub use demotion::DemotionRecord;
