@@ -115,9 +115,12 @@ pub fn resolved_settings(value: &Value, host: &dyn MigrateHost) -> Result<Value,
 /// to a string must not become an unquoted numeric YAML scalar after serialization.
 pub(super) fn render_authored(yaml: &str, host: &dyn MigrateHost) -> Result<String, String> {
     let mut doc: Yaml = yaml::from_str(yaml).map_err(|_| "converted template is not YAML")?;
+    // Short enough that the emitter never folds a marker into a block scalar (that would turn
+    // a substituted numeric scalar into a string); the digest only avoids collisions.
+    let digest = hex::encode(busbar_contract::crypto::sha256(yaml.as_bytes()));
     let prefix = format!(
         "__BUSBAR_AUTHORED_{}__",
-        hex::encode(busbar_contract::crypto::sha256(yaml.as_bytes()))
+        digest.chars().take(16).collect::<String>()
     );
     if yaml.contains(&prefix) {
         return Err("authored placeholder marker collision".into());

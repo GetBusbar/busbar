@@ -140,7 +140,10 @@ fn normalize(
         }
     }
     // Preserve comments, authored scalar spellings, and read-only source bytes on no-op.
-    if before == after && normalized.todos.is_empty() && normalized.warnings.is_empty() {
+    if yaml::same_tree(&before, &after)
+        && normalized.todos.is_empty()
+        && normalized.warnings.is_empty()
+    {
         raw.clone_into(&mut normalized.yaml);
     }
     if normalized.yaml != raw {

@@ -77,7 +77,7 @@ pub(crate) fn unfold_zero_cache_write(
     };
     for model in models {
         if let Some(Value::Map(entry)) = card.get_key_mut(model.as_str()) {
-            entry.remove_key("cache_write_utok");
+            super::swap_remove_key(entry, "cache_write_utok");
             let line = format!(
                 "rate_card.{model}.cache_write_utok: 0 removed (1.5.5 spelling of 'no separate \
                  write tariff'); cache writes price at input_utok"
@@ -182,7 +182,7 @@ fn retire_metadata_carve_outs(
             let (Some(name), Value::Map(provider)) = (name.as_str(), provider) else {
                 continue;
             };
-            if let Some(value) = provider.remove_key("allow_metadata_hosts") {
+            if let Some(value) = super::swap_remove_key(provider, "allow_metadata_hosts") {
                 report(&format!("providers.{name}.allow_metadata_hosts"), value);
             }
         }
