@@ -4,6 +4,7 @@
 //! ADMIN-API-1.6 section 7.2: the audit row's new fields under hash scheme 3, the request context
 //! that fills them, the severity, kind and instance filters, and the Store-ranged read.
 
+use super::tests::native_over;
 use super::*;
 
 fn full_row() -> AuditRowInput {
