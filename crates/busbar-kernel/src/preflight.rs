@@ -176,6 +176,10 @@ pub struct RootInstall {
     /// The root's secret admission ([`SecretAdmit`]): what puts a build's dropped-in secret
     /// plugins on [`Self::secret_axis`]. `None` = no dropped-in secret plugin joins the axis.
     pub secret_admit: Option<SecretAdmit>,
+    /// The root's snapshot of the dropped-in secret set [`Self::secret_admit`] replaces: taken
+    /// before a config transaction, restored when the transaction ends without publishing, so an
+    /// unpublished generation's set never stays on the live axis. `None` = nothing to restore.
+    pub secret_snapshot: Option<SecretSnapshotTake>,
     /// The root's rate holder ([`crate::rate_apply::RateApply`]): what every rate resolution, at
     /// boot and on each apply/reload, is staged with and raised to. `None` = no holder hears an
     /// apply (a build with no root ledger).
@@ -221,6 +225,15 @@ pub struct RootInstall {
     /// no projection.
     pub config_projection: Option<crate::appbuild::ConfigProjection>,
 }
+
+/// The live dropped-in secret set as it was when the snapshot was taken.
+pub trait SecretSnapshot: Send {
+    /// Put the snapshot's set back on the live axis if the live set differs from it (by name,
+    /// version and image). An unchanged set is left alone, with its cached checkers.
+    fn restore_if_changed(self: Box<Self>);
+}
+
+pub type SecretSnapshotTake = fn() -> Box<dyn SecretSnapshot>;
 
 pub type PluginLogsCheck = fn(&config::PluginsCfg) -> Result<(), String>;
 

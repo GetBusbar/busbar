@@ -843,6 +843,27 @@ impl SecretRows {
         drop(retired);
     }
 
+    /// The live dropped-in set, for a caller that may need to put it back
+    /// ([`Self::restore_if_changed`]).
+    #[must_use]
+    pub fn dropped(&self) -> Vec<Candidate> {
+        crate::cold::secret_calls::dropped_copy(self)
+    }
+
+    /// Put `snapshot` back as the live dropped-in set if the live set differs from it by name,
+    /// version or image. An unchanged set is left alone, and so are its cached checkers. Returns
+    /// whether the set was replaced.
+    pub fn restore_if_changed(&self, snapshot: Vec<Candidate>) -> bool {
+        let same = crate::cold::secret_calls::same_set(
+            &self.dropped.read().unwrap_or_else(PoisonError::into_inner),
+            &snapshot,
+        );
+        if !same {
+            self.set_dropped(snapshot);
+        }
+        !same
+    }
+
     pub(crate) fn load(&self, c: &Candidate, label: &str) -> Result<Plugin<Secret>, String> {
         self.loader().load(c, label)
     }
