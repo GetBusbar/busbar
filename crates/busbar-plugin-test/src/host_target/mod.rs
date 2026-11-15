@@ -12,7 +12,7 @@
 //! image ([`PluginThread`]), the callers whose tokens flow in and never out ([`Caller`]), and the
 //! run report with its fail-closed judgement ([`Report`], [`Unserved`]). What a target serves on
 //! its listeners is its [`Subject`]: the carrier's routes (feature `target-http`,
-//! [`carrier::Routes`]), and the stream, datagram and plane targets beside it.
+//! [`carrier::Routes`]), and the stream, datagram and plane targets as they join it.
 //!
 //! **Fail closed.** Anything the target was asked and does not serve is recorded; the run then
 //! fails with no allow-list: [`Served::finish`] answers [`Unserved`], `main` exits non-zero, and a
@@ -305,27 +305,41 @@ impl fmt::Display for Unserved {
     }
 }
 
-/// What a target serves on its listeners, one image at a time. The facade's targets implement
-/// it (the carrier's [`carrier::Routes`], the stream, datagram and plane targets).
-pub trait Subject: Send + 'static {
+/// What a target serves on its listeners, one image at a time: the facade's own targets, a closed
+/// set. The carrier's route table is the one today ([`carrier::Routes`], feature `target-http`);
+/// the stream, datagram and plane targets join as variants. A concrete enum, not a trait: every
+/// subject is the facade's, so there is no boundary for a trait to stand on (§3.1).
+#[non_exhaustive]
+pub enum Subject {
+    /// The carrier's route table, served over hyper on every image's listener.
+    #[cfg(feature = "target-http")]
+    Routes(carrier::Routes),
+}
+
+impl Subject {
     /// Binds `image`'s listeners at the addresses [`Binding::addr`] hands out and starts serving
     /// them. Called once per image, in [`Images::names`] order.
-    ///
-    /// # Errors
-    /// When a listener, a thread or the image itself cannot start.
-    fn bind(&mut self, image: &'static str, at: &Binding<'_>) -> Result<Listening, Refused>;
+    fn bind(&mut self, image: &'static str, at: &Binding<'_>) -> Result<Listening, Refused> {
+        match *self {
+            #[cfg(feature = "target-http")]
+            Self::Routes(ref routes) => routes.bind(image, at),
+        }
+    }
 
-    /// A command-line flag `main` does not know, with its value. The default refuses it.
-    ///
-    /// # Errors
-    /// When the subject does not read `flag`, or its value is wrong.
+    /// A command-line flag `main` does not know, with its value: the subject's to read or refuse.
     fn flag(&mut self, flag: &str, value: &str) -> Result<(), Refused> {
-        Err(Refused::Args(format!("unknown flag {flag} {value}")))
+        match *self {
+            #[cfg(feature = "target-http")]
+            Self::Routes(ref mut routes) => routes.flag(flag, value),
+        }
     }
 
     /// The host services the repository answered with its own script, named in the verdict.
     fn scripted(&self) -> Vec<String> {
-        Vec::new()
+        match *self {
+            #[cfg(feature = "target-http")]
+            Self::Routes(_) => Vec::new(),
+        }
     }
 }
 
@@ -390,8 +404,8 @@ pub struct Listening {
 }
 
 /// A host target over `subject`: its images, its address, its callers and upstreams.
-pub struct Target<S> {
-    subject: S,
+pub struct Target {
+    subject: Subject,
     images: Images,
     listen: String,
     ready_file: Option<PathBuf>,
@@ -400,12 +414,12 @@ pub struct Target<S> {
     upstreams: Vec<(String, String)>,
 }
 
-impl<S: Subject> Target<S> {
+impl Target {
     /// A target serving `subject` on `127.0.0.1`, both images, seed 0.
     #[must_use]
-    pub fn new(subject: S) -> Self {
+    pub fn new(subject: impl Into<Subject>) -> Self {
         Self {
-            subject,
+            subject: subject.into(),
             images: Images::Both,
             listen: Ipv4Addr::LOCALHOST.to_string(),
             ready_file: None,

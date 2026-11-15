@@ -64,7 +64,6 @@
       "crates/busbar-migrations/src/native_source.rs": ["ReadSeek", "SourceSpool", "SpoolFactory"],
       "crates/busbar-migrations/src/startup.rs": ["FrozenBindingResolver"],
       "crates/busbar-migrations/src/verification.rs": ["NativeReadback", "TargetRecoveryProbe"],
-      "crates/busbar-plugin-test/src/host_target/mod.rs": ["Subject"],
       "crates/busbar/src/root/serve_neutral.rs": ["Output"],
       "crates/busbar/src/root/startup_upgrade/document_commit.rs": ["Checkpoints"],
       "crates/busbar/src/root/units_admin/mod.rs": ["AuditView"],
