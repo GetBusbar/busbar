@@ -349,7 +349,6 @@ async fn heads(store: &CoreStore) -> Result<Vec<([u8; 16], Head)>, RecoveryError
     let mut buckets = stream::iter(0..=u8::MAX)
         .map(|bucket| bucket_heads(store, bucket))
         .buffer_unordered(4);
-    // busbar:expect(bp::fresh_buffer, reason = "boot: recovery heads are read only by startup replay and operator inspection")
     let mut result = Vec::new();
     while let Some(bucket) = buckets.next().await {
         result.extend(bucket?);
@@ -362,7 +361,6 @@ async fn bucket_heads(
     store: &CoreStore,
     bucket: u8,
 ) -> Result<Vec<([u8; 16], Head)>, RecoveryError> {
-    // busbar:expect(bp::fresh_buffer, reason = "boot: recovery heads are read only by startup replay and operator inspection")
     let mut result = Vec::new();
     let namespace = partition::namespace(RECOVERY, &[&[bucket]]);
     let mut after = None;
@@ -1369,9 +1367,7 @@ impl StoreRecovery {
                 reason: resolution.reason.clone(),
             };
             self.owned().await?;
-            // busbar:expect(bp::fresh_buffer, reason = "error: operator adoption of an unresolved recovery operation")
             let mut runs = Vec::new();
-            // busbar:expect(bp::fresh_buffer, reason = "error: operator adoption of an unresolved recovery operation")
             let mut records = Vec::new();
             let mut previous_head = current;
             let staged_at = crate::store::now_ms() / 1000;
@@ -1484,7 +1480,6 @@ impl RecoverySink for StoreRecovery {
     async fn replay_selections(&self) -> Result<Vec<RecoverySelection>, RecoveryError> {
         self.adopt_pending().await?;
         let local = self.owned().await?;
-        // busbar:expect(bp::fresh_buffer, reason = "boot: recovery heads are read only by startup replay and operator inspection")
         let mut result = Vec::new();
         for (operation, tip) in heads(&self.store).await? {
             if tip.node == self.node {
@@ -1503,12 +1498,10 @@ impl RecoverySink for StoreRecovery {
     async fn replay(&self) -> Result<Vec<RecoveryEvent>, RecoveryError> {
         self.adopt_pending().await?;
         let local = self.owned().await?;
-        // busbar:expect(bp::fresh_buffer, reason = "boot: recovery heads are read only by startup replay and operator inspection")
         let mut events = Vec::new();
         for (operation, tip) in heads(&self.store).await? {
             if tip.node == self.node {
                 let mut history = History::new(&self.store);
-                // busbar:expect(bp::fresh_buffer, reason = "boot: recovery heads are read only by startup replay and operator inspection")
                 let mut chain = Vec::new();
                 history
                     .selection(&operation, &tip, |_, candidate| {
@@ -1587,7 +1580,6 @@ impl RecoverySink for StoreRecovery {
             .ok_or_else(|| invalid("selected handover disappeared"))?
             .0;
         let mut history = History::new(&self.store);
-        // busbar:expect(bp::fresh_buffer, reason = "error: operator adoption of an unresolved recovery operation")
         let mut events = Vec::new();
         history
             .selection(&resolution.operation_id, &tip, |_, candidate| {
