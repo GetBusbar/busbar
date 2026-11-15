@@ -448,16 +448,23 @@ pub fn read_config_documents<'a>(
     } = edits;
     let mut unset_env_vars: Vec<String> = Vec::new();
 
-    let raw_config = std::fs::read_to_string(config_path).map_err(|e| {
-        format!(
-            "cannot read config file '{}': {e} (set {ENV_CONFIG})",
-            config_path.display()
-        )
-    })?;
+    // A document the composition root holds (an unstamped boot's planned config.yaml) is read in
+    // place of the file, which is then not opened (MIGRATE-ON-BOOT r42 §3 step 2).
+    let raw_config = match rules.held_document(ConfigDocument::Deployment, config_path) {
+        Some(held) => held,
+        None => busbar_contract::secure::SecureString::from(
+            std::fs::read_to_string(config_path).map_err(|e| {
+                format!(
+                    "cannot read config file '{}': {e} (set {ENV_CONFIG})",
+                    config_path.display()
+                )
+            })?,
+        ),
+    };
     let normalized_config =
         rules.normalize_document(ConfigDocument::Deployment, config_path, &raw_config)?;
     let interpolated_config = config::interpolate_env_with(
-        normalized_config.as_deref().unwrap_or(raw_config.as_str()),
+        normalized_config.as_deref().unwrap_or(&*raw_config),
         env_mode,
         &mut unset_env_vars,
     )
@@ -566,7 +573,12 @@ fn typed_rest(
         deploy.providers_file.as_deref(),
     );
     let providers_path = location.path.clone();
-    let source = location.read()?;
+    // A held catalog (the planned `providers.busbar-1.6.yaml` step 5 creates) is read in place of
+    // its file (MIGRATE-ON-BOOT r42 §3 step 2).
+    let source = match rules.held_document(ConfigDocument::Providers, &providers_path) {
+        Some(held) => config::providers::CatalogSource::Authored(String::from(&*held)),
+        None => location.read()?,
+    };
     let normalized_providers = match &source {
         config::providers::CatalogSource::Authored(raw) => {
             rules.normalize_document(ConfigDocument::Providers, &providers_path, raw)?

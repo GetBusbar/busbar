@@ -195,8 +195,8 @@ impl Plan {
     /// The text the boot reads in place of the file at `path` (§3 step 2): the planned config.yaml
     /// for config.yaml's own path, `None` for every other file.
     #[must_use]
-    pub fn held(&self, _path: &Path) -> Option<&str> {
-        None
+    pub fn held(&self, path: &Path) -> Option<&str> {
+        (path == self.path.as_path()).then_some(self.planned.as_str())
     }
 }
 
@@ -315,12 +315,30 @@ pub enum WroteBack {
 #[cold]
 #[inline(never)]
 pub fn write_back(
-    _config: &Path,
-    _seen: &[u8; 32],
-    _edit: &dyn Fn(&str) -> Result<String, Refusal>,
+    config: &Path,
+    seen: &[u8; 32],
+    edit: &dyn Fn(&str) -> Result<String, Refusal>,
 ) -> Result<WroteBack, Refusal> {
     entered!(write_back);
-    Ok(WroteBack::Unchanged)
+    let _held = lock::Held::take(config)?;
+    let now = files::read_bounded(config)?;
+    if busbar_contract::crypto::sha256(now.as_bytes()) != *seen {
+        return Ok(WroteBack::Changed);
+    }
+    let edited = edit(&now)?;
+    if edited == now {
+        return Ok(WroteBack::Unchanged);
+    }
+    if read_version(&edited)? != CONFIG_FORMAT {
+        return Err(Refusal::Config(format!(
+            "the settled write-back of {} would not keep `{STAMP_KEY}: {CONFIG_FORMAT}`; \
+             nothing was written",
+            config.display()
+        )));
+    }
+    let fresh = files::create_like(config, edited.as_bytes())?;
+    files::replace(&fresh, config)?;
+    Ok(WroteBack::Written)
 }
 
 /// `STEPS[from..CONFIG_FORMAT]` over the source text, then the stamp.

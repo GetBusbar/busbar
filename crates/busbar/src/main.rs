@@ -1409,28 +1409,31 @@ async fn run(
     // admission, the node book and its lease task, the startup upgrade's holders), so no instance's
     // descriptor reaches the new image, and re-executes onto the stamped file. A stamped boot
     // passes straight through, with every owner kept as before.
-    let (ready, _startup_owners) = root::migrate::finish(
-        (
+    if let Some(written) = root::migrate::finish()
+        .await
+        .unwrap_or_else(|error| die(error))
+    {
+        let owners = (
             ready,
-            (
-                continuation,
-                upgrade,
-                publication,
-                completion,
-                prepared,
-                _boot_store_binding,
-            ),
-        ),
-        |(ready, owners)| {
-            if let Some(task) = ready.node_lease_task.as_ref() {
-                task.abort();
-            }
-            drop(ready);
-            drop(owners);
-        },
-    )
-    .await
-    .unwrap_or_else(|error| die(error));
+            continuation,
+            upgrade,
+            publication,
+            completion,
+            prepared,
+            _boot_store_binding,
+        );
+        die(root::migrate::restart(
+            written,
+            owners,
+            |owners| {
+                if let Some(task) = owners.0.node_lease_task.as_ref() {
+                    task.abort();
+                }
+                drop(owners);
+            },
+            root::migrate::reexec,
+        ));
+    }
     let root::startup_upgrade::continuation::ReadyCandidate {
         startup: store_admission,
         app,

@@ -108,27 +108,25 @@ pub(crate) fn held_in(plan: Option<&Plan>, path: &Path) -> Option<SecureString> 
         .map(SecureString::from)
 }
 
-/// Step 5. With no pending plan (a stamped boot) `owned` comes straight back. Otherwise the plan
-/// is written in place (off the boot's runtime thread: the directory lock may wait), `close`
-/// consumes `owned` (every instance the boot opened), and the process re-executes itself onto the
-/// stamped file; this returns only with the refusal or the re-exec's failure.
+/// Step 5's write. `None` with no pending plan (a stamped boot: nothing is entered). Otherwise the
+/// plan is written in place, off the boot's runtime thread (the directory lock may wait), and the
+/// boot then calls [`restart`].
 ///
 /// # Errors
-/// The write's refusal (LIVE_WRITER, CONFIG), or the re-exec's failure; config.yaml is then either
-/// unchanged or stamped, never half written.
+/// The write's refusal (LIVE_WRITER, CONFIG); config.yaml is then unchanged, never half written.
 #[cold]
 #[inline(never)]
-pub(crate) async fn finish<T>(owned: T, close: impl FnOnce(T)) -> Result<T, String> {
+pub(crate) async fn finish() -> Result<Option<Written>, String> {
     let Some(plan) = PENDING.get() else {
-        return Ok(owned);
+        return Ok(None);
     };
-    let written = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         busbar_migrate::write(plan, &|text: &str| parse_planned(text).map(drop))
     })
     .await
     .map_err(|error| format!("the config.yaml upgrade did not finish its write: {error}"))?
-    .map_err(text_of)?;
-    Err(restart(written, owned, close, reexec))
+    .map(Some)
+    .map_err(text_of)
 }
 
 /// After step 5 wrote (or found a peer's stamp, (q)): hand an armed first start over while its
@@ -149,8 +147,8 @@ pub(crate) fn restart<T>(
             "config.yaml was upgraded by another busbar while this one waited"
         ),
     }
-    let _ = close;
-    drop(owned);
+    crate::root::exit::hand_over_before_exec();
+    close(owned);
     exec()
 }
 
@@ -159,10 +157,18 @@ pub(crate) fn restart<T>(
 /// refuses, as 1.5.5 would not have booted), then typed under the start grammar. The interpolated
 /// text is dropped (wiped) at once.
 fn parse_planned(text: &str) -> Result<Vec<String>, String> {
+    let interpolated = SecureString::from(
+        busbar_kernel::config::interpolate_env_with(
+            text,
+            busbar_kernel::config::EnvSubst::Strict,
+            &mut Vec::new(),
+        )
+        .map_err(|error| format!("config.yaml: {error}"))?,
+    );
     let grammar = crate::root::boot::start_grammar()?;
-    busbar_kernel::config::deploy_from_yaml_str(text, grammar)
-        .map(|_| Vec::new())
-        .map_err(|error| format!("config.yaml: {error}"))
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(&interpolated, grammar)
+        .map_err(|error| format!("config.yaml: {error}"))?;
+    Ok(vec![deploy.listen, deploy.admin_listen])
 }
 
 /// Step 1's verdict on the stamp.
@@ -217,7 +223,7 @@ fn text_of(refusal: Refusal) -> String {
 
 /// Replace this process with a fresh image of itself: the same executable and argv, with
 /// `BUSBAR_MIGRATED=1`. Returns only the failure.
-fn reexec() -> String {
+pub(crate) fn reexec() -> String {
     use std::os::unix::process::CommandExt;
     let executable: PathBuf = match std::env::current_exe() {
         Ok(path) => path,
