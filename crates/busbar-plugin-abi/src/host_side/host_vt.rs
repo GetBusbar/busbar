@@ -5,19 +5,18 @@
 //! `contain`, the one-call-per-request marshalling onto `busbar-crypto`, the fault counters, the deployment id
 //! and the log sink.
 //!
-//! `pub static HOST: Host` is `Host { ctx: null, now: vt::now, mono: vt::mono, .. }`. `Host`'s raw fields are
-//! W1-A2's (host.rs), which the WBS orders after this task (A1, H0, then T1, then A2), so the static is assembled
-//! when they land; every field it points at is here, each body inside `contain` (I10). `grow` (it rewrites the
-//! entry's ACTIVE pool buffer, W1-H1), `log_level` and `migrate_admit` (K9's seam, valid only in a store's open
-//! chain, which the entry guard knows) land with those pieces.
-
-// IF §5/§10.7, owner ruling J46 (per-site escapes for the IF-named unsafe sites): the raw `crypto` entry reads
-// the request a plugin passes by pointer, and every `random`/`crypto` output is handed back as a view of this
-// thread's arena that stays valid until the outermost entry returns.
-#![allow(unsafe_code)]
+//! Safe Rust only (owner, 2026-11-15: no `unsafe`). The IF's raw side is left out until the UNSAFE-MIN design
+//! settles the boundary, as W0-ABI left it:
+//!   pub static HOST: Host;  // IF §10.7: `Host { ctx, now, mono, random, crypto, log, log_level, grow,
+//!                           // deployment, migrate_admit }`, each field an `unsafe extern "C" fn` whose body is
+//!                           // `contain(FALLBACK, || ..)` over the matching `vt` fn here
+//! together with those `extern "C"` entries: reading a `*const CryptoReq` and handing a `random`/`crypto` output
+//! back as a `Bytes<'static>` view of this thread's arena both need `unsafe`. `Host`'s raw fields are also
+//! W1-A2's, which the WBS orders after this task. `grow` (it rewrites the entry's ACTIVE pool buffer, W1-H1),
+//! `log_level` (no source in the IF) and `migrate_admit` (K9's seam, valid only in a store's open chain, which
+//! the entry guard knows) land with those pieces.
 
 use core::cell::RefCell;
-use core::ffi::c_void;
 use core::panic::AssertUnwindSafe;
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering::Relaxed;
@@ -27,8 +26,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use busbar_crypto::{self as crypto, Error};
 use zeroize::Zeroize as _;
 
-use crate::host::{CryptoReq, CryptoRet, DeploymentId, alg, crypto_status as status, key_form};
-use crate::types::{Bytes, Str};
+use crate::host::{CryptoReq, DeploymentId, alg, crypto_status as status, key_form};
 
 /// Round 20: host-side fault counters, `[SELF_TEST, HOST_PANIC, LOG_UNATTRIBUTED]` (indices 0, 1 and, round 24, 2:
 /// a log line the sink got with no slot, §10.7 `set_log_sink`), written only on the failure paths (one Relaxed
@@ -139,21 +137,47 @@ std::thread_local! {
     static ARENA: RefCell<Arena> = const { RefCell::new(Arena { buf: Vec::new(), used: 0 }) };
 }
 
-/// A body's answer: a `crypto_status` and the span of this thread's arena that holds the output.
+/// A `random`/`crypto` answer: a `crypto_status` and the span of the calling thread's arena that holds the
+/// output (empty on every non-OK status). The raw entry turns it into `CryptoRet`'s `out`; safe code reads it
+/// with [`CryptoOut::read`] on the same thread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Out {
+pub struct CryptoOut {
     status: u32,
     at: usize,
     len: usize,
 }
 
-impl Out {
-    const fn status(status: u32) -> Out {
-        Out {
+impl CryptoOut {
+    const fn status(status: u32) -> CryptoOut {
+        CryptoOut {
             status,
             at: 0,
             len: 0,
         }
+    }
+
+    /// The `crypto_status`.
+    pub fn crypto_status(self) -> u32 {
+        self.status
+    }
+
+    pub fn len(self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.len == 0
+    }
+
+    /// Runs `f` over the output bytes in this thread's arena (empty if this thread holds no such span).
+    pub fn read<R>(self, f: impl FnOnce(&[u8]) -> R) -> R {
+        ARENA.with(|cell| {
+            let arena = cell.borrow();
+            f(arena
+                .buf
+                .get(self.at..self.at + self.len)
+                .unwrap_or_default())
+        })
     }
 }
 
@@ -174,25 +198,25 @@ fn status_of(error: Error) -> u32 {
 }
 
 /// One output of `len` bytes, written by `write` straight into fresh arena space.
-fn written(len: usize, write: impl FnOnce(&mut [u8]) -> Result<(), Error>) -> Out {
+fn written(len: usize, write: impl FnOnce(&mut [u8]) -> Result<(), Error>) -> CryptoOut {
     ARENA.with(|cell| {
         let mut arena = cell.borrow_mut();
         let Some(at) = arena.take(len) else {
-            return Out::status(status::LIMIT);
+            return CryptoOut::status(status::LIMIT);
         };
         match write(&mut arena.buf[at..at + len]) {
-            Ok(()) => Out {
+            Ok(()) => CryptoOut {
                 status: status::OK,
                 at,
                 len,
             },
-            Err(error) => Out::status(status_of(error)),
+            Err(error) => CryptoOut::status(status_of(error)),
         }
     })
 }
 
 /// A fixed-size output (digest, MAC, signature).
-fn fixed<const N: usize>(call: impl FnOnce() -> Result<[u8; N], Error>) -> Out {
+fn fixed<const N: usize>(call: impl FnOnce() -> Result<[u8; N], Error>) -> CryptoOut {
     written(N, |out| {
         out.copy_from_slice(&call()?);
         Ok(())
@@ -200,19 +224,19 @@ fn fixed<const N: usize>(call: impl FnOnce() -> Result<[u8; N], Error>) -> Out {
 }
 
 /// An output the facade returns as its own `Vec` (an RSA signature or ciphertext: public bytes).
-fn copied(result: Result<Vec<u8>, Error>) -> Out {
+fn copied(result: Result<Vec<u8>, Error>) -> CryptoOut {
     match result {
         Ok(bytes) => written(bytes.len(), |out| {
             out.copy_from_slice(&bytes);
             Ok(())
         }),
-        Err(error) => Out::status(status_of(error)),
+        Err(error) => CryptoOut::status(status_of(error)),
     }
 }
 
 /// A verification: OK or BAD, no output.
-fn verified(result: Result<(), Error>) -> Out {
-    Out::status(result.map_or_else(status_of, |()| status::OK))
+fn verified(result: Result<(), Error>) -> CryptoOut {
+    CryptoOut::status(result.map_or_else(status_of, |()| status::OK))
 }
 
 /// A `CryptoReq` with its views read.
@@ -229,7 +253,7 @@ struct Req<'a> {
 /// One crypto operation: exactly one `busbar-crypto` call per request (§5.2 table). A `key_form` not listed for
 /// the alg, or an alg number §5 does not define, is INVALID before any call. No DER, PEM or JWK parsing and no
 /// block-mode or MAC construction here: an RSA_COMPONENTS key is split at its length prefix, nothing more.
-fn crypto_body(r: &Req<'_>) -> Out {
+fn crypto_body(r: &Req<'_>) -> CryptoOut {
     use crypto::rsa::Scheme;
     use key_form::{EC_POINT, PKCS8, RAW, RSA_COMPONENTS, RSA_PKCS1_DER, SPKI_DER};
     let forms: &[u32] = match r.alg {
@@ -247,10 +271,10 @@ fn crypto_body(r: &Req<'_>) -> Out {
         alg::VERIFY_ED25519 => &[RAW, SPKI_DER],
         alg::SIGN_RS256 | alg::SIGN_ES256 | alg::SIGN_ED25519 => &[PKCS8],
         alg::RSA_OAEP_SHA1_ENCRYPT => &[SPKI_DER],
-        _ => return Out::status(status::INVALID),
+        _ => return CryptoOut::status(status::INVALID),
     };
     if !forms.is_empty() && !forms.contains(&r.key_form) {
-        return Out::status(status::INVALID);
+        return CryptoOut::status(status::INVALID);
     }
     match r.alg {
         alg::SHA256 => fixed(|| Ok(crypto::sha256(r.data))),
@@ -266,7 +290,7 @@ fn crypto_body(r: &Req<'_>) -> Out {
             Ok(iterations) if PBKDF2_ITERATIONS.contains(&iterations) => written(32, |out| {
                 crypto::pbkdf2_hmac_sha256(r.key, r.data, iterations, out)
             }),
-            _ => Out::status(status::INVALID),
+            _ => CryptoOut::status(status::INVALID),
         },
         alg::VERIFY_RS256 => rsa_verify(Scheme::Pkcs1Sha256, r),
         alg::VERIFY_RS384 => rsa_verify(Scheme::Pkcs1Sha384, r),
@@ -297,18 +321,18 @@ fn crypto_body(r: &Req<'_>) -> Out {
             Ok(iv) => written(r.data.len(), |out| {
                 crypto::aes_ctr::apply(r.key, iv, r.data, out)
             }),
-            Err(_) => Out::status(status::INVALID),
+            Err(_) => CryptoOut::status(status::INVALID),
         },
         alg::RSA_OAEP_SHA1_ENCRYPT => copied(crypto::legacy::rsa_oaep_sha1_encrypt(r.key, r.data)),
-        _ => Out::status(status::INVALID),
+        _ => CryptoOut::status(status::INVALID),
     }
 }
 
-fn rsa_verify(scheme: crypto::rsa::Scheme, r: &Req<'_>) -> Out {
+fn rsa_verify(scheme: crypto::rsa::Scheme, r: &Req<'_>) -> CryptoOut {
     verified(match r.key_form {
         key_form::RSA_COMPONENTS => match rsa_components(r.key) {
             Some((n, e)) => crypto::rsa::verify_components(scheme, n, e, r.data, r.aux),
-            None => return Out::status(status::INVALID),
+            None => return CryptoOut::status(status::INVALID),
         },
         key_form::RSA_PKCS1_DER => crypto::rsa::verify(scheme, r.key, r.data, r.aux),
         _ => crypto::rsa::verify_spki(scheme, r.key, r.data, r.aux),
@@ -351,16 +375,16 @@ impl Gcm {
 }
 
 /// AEAD_SEAL: the module's nonce. Out = nonce(12) || ciphertext || tag(16).
-fn aead_seal(r: &Req<'_>) -> Out {
+fn aead_seal(r: &Req<'_>) -> CryptoOut {
     if !r.aux.is_empty() {
-        return Out::status(status::INVALID);
+        return CryptoOut::status(status::INVALID);
     }
     let gcm = match Gcm::new(r.key) {
         Ok(gcm) => gcm,
-        Err(error) => return Out::status(status_of(error)),
+        Err(error) => return CryptoOut::status(status_of(error)),
     };
     let Some(len) = r.data.len().checked_add(12 + 16) else {
-        return Out::status(status::LIMIT);
+        return CryptoOut::status(status::LIMIT);
     };
     written(len, |out| {
         let (nonce_out, rest) = out.split_at_mut(12);
@@ -377,16 +401,16 @@ fn aead_seal(r: &Req<'_>) -> Out {
 }
 
 /// AEAD_OPEN: aux = 12-byte nonce, data = ciphertext || tag. Out = plaintext (zeroed by the arena rule, I11).
-fn aead_open(r: &Req<'_>) -> Out {
+fn aead_open(r: &Req<'_>) -> CryptoOut {
     let Ok(nonce) = <&[u8; 12]>::try_from(r.aux) else {
-        return Out::status(status::INVALID);
+        return CryptoOut::status(status::INVALID);
     };
     let Some((sealed, tag)) = r.data.split_last_chunk::<16>() else {
-        return Out::status(status::INVALID);
+        return CryptoOut::status(status::INVALID);
     };
     let gcm = match Gcm::new(r.key) {
         Ok(gcm) => gcm,
-        Err(error) => return Out::status(status_of(error)),
+        Err(error) => return CryptoOut::status(status_of(error)),
     };
     written(sealed.len(), |out| {
         out.copy_from_slice(sealed);
@@ -398,16 +422,16 @@ fn aead_open(r: &Req<'_>) -> Out {
 }
 
 /// AEAD_SEAL_EXPLICIT: aux = 12-byte nonce, data = plaintext. Out = ciphertext || tag.
-fn aead_seal_explicit(r: &Req<'_>) -> Out {
+fn aead_seal_explicit(r: &Req<'_>) -> CryptoOut {
     let Ok(nonce) = <&[u8; 12]>::try_from(r.aux) else {
-        return Out::status(status::INVALID);
+        return CryptoOut::status(status::INVALID);
     };
     let gcm = match Gcm::new(r.key) {
         Ok(gcm) => gcm,
-        Err(error) => return Out::status(status_of(error)),
+        Err(error) => return CryptoOut::status(status_of(error)),
     };
     let Some(len) = r.data.len().checked_add(16) else {
-        return Out::status(status::LIMIT);
+        return CryptoOut::status(status::LIMIT);
     };
     written(len, |out| {
         let (body, tag_out) = out.split_at_mut(r.data.len());
@@ -423,33 +447,11 @@ fn aead_seal_explicit(r: &Req<'_>) -> Out {
 
 /// `len` (1..=65,536) random bytes through `fill_checked` (round 21: the backend's error through the facade's
 /// `map`, so a failed self-test is counted and audited like every other crypto call).
-fn random_body(len: usize) -> Out {
+fn random_body(len: usize) -> CryptoOut {
     if len == 0 || len > RANDOM_MAX {
-        return Out::status(status::INVALID);
+        return CryptoOut::status(status::INVALID);
     }
     written(len, crypto::fill_checked)
-}
-
-/// The raw answer: the output as a view of this thread's arena, EMPTY on every non-OK status.
-fn answer(out: Out) -> CryptoRet {
-    let mut ret = CryptoRet {
-        status: out.status,
-        _r: 0,
-        out: Bytes::EMPTY,
-    };
-    if out.status == status::OK && out.len > 0 {
-        ARENA.with(|cell| {
-            let arena = cell.borrow();
-            let span = &arena.buf[out.at..out.at + out.len];
-            // SAFETY: the arena's block is allocated once at its full cap and never grown, moved or freed before
-            // the thread exits, and `[at, at + len)` is not rewritten until the outermost entry on this thread
-            // returns (append-only; reset only at the guard's DEPTH 0, I11), which is how long `out` is valid (§5).
-            let span: &'static [u8] =
-                unsafe { core::slice::from_raw_parts(span.as_ptr(), span.len()) };
-            ret.out = Bytes::new(span);
-        });
-    }
-    ret
 }
 
 /// UTC nanoseconds since the Unix epoch, from the host clock.
@@ -537,42 +539,30 @@ fn log_body(level: u32, error: u32, msg: &str) {
     }
 }
 
-/// The bodies of `Host`'s fields, each inside `contain` (I10): `crypto` and `random` answer RNG with `out`
-/// EMPTY (round 24: the safe layer's `Err(Rng)`, FAILED, never REFUSED), `now`/`mono` 0, `deployment` all zero,
-/// and `log` drops the line. `HOST` points its fields here.
+/// The bodies of `Host`'s fields, in safe Rust, each inside `contain` (I10): `crypto` and `random` answer RNG with
+/// an empty output (round 24: the safe layer's `Err(Rng)`, FAILED, never REFUSED), `now`/`mono` 0, `deployment`
+/// all zero, and `log` drops the line. The raw `extern "C"` entries `HOST` points at wrap these one to one; they
+/// and `HOST` wait for UNSAFE-MIN (module doc).
 pub mod vt {
     use super::*;
 
-    const RNG: CryptoRet = CryptoRet {
-        status: status::RNG,
-        _r: 0,
-        out: Bytes::EMPTY,
-    };
+    const RNG: CryptoOut = CryptoOut::status(status::RNG);
 
-    pub extern "C" fn now(_ctx: *const c_void) -> u64 {
+    pub fn now() -> u64 {
         contain(0, now_ns)
     }
 
-    pub extern "C" fn mono(_ctx: *const c_void) -> u64 {
+    pub fn mono() -> u64 {
         contain(0, mono_ns)
     }
 
-    pub extern "C" fn random(_ctx: *const c_void, len: usize) -> CryptoRet {
-        contain(RNG, || answer(random_body(len)))
+    pub fn random(len: usize) -> CryptoOut {
+        contain(RNG, || random_body(len))
     }
 
-    /// # Safety
-    /// `req` is null (answered INVALID) or points to a `CryptoReq` whose views are valid for the call.
-    pub unsafe extern "C" fn crypto(
-        _ctx: *const c_void,
-        req: *const CryptoReq<'static>,
-    ) -> CryptoRet {
+    pub fn crypto(req: &CryptoReq<'_>) -> CryptoOut {
         contain(RNG, || {
-            // SAFETY: the caller's contract above.
-            let Some(req) = (unsafe { req.as_ref() }) else {
-                return answer(Out::status(status::INVALID));
-            };
-            answer(crypto_body(&Req {
+            crypto_body(&Req {
                 alg: req.alg,
                 key_form: req.key_form,
                 param: req.param,
@@ -580,15 +570,16 @@ pub mod vt {
                 data: req.data.get(),
                 aux: req.aux.get(),
                 aad: req.aad.get(),
-            }))
+            })
         })
     }
 
-    pub extern "C" fn log(_ctx: *const c_void, level: u32, error: u32, msg: Str<'static>) {
-        contain((), || log_body(level, error, msg.get()));
+    /// Round 34: `error` reaches the sink as the raw `u32` it arrived as.
+    pub fn log(level: u32, error: u32, msg: &str) {
+        contain((), || log_body(level, error, msg));
     }
 
-    pub extern "C" fn deployment(_ctx: *const c_void) -> DeploymentId {
+    pub fn deployment() -> DeploymentId {
         contain(DeploymentId([0; 16]), deployment_body)
     }
 }
@@ -616,7 +607,7 @@ mod tests {
     }
 
     /// The bytes of an answer, read back from this thread's arena.
-    fn bytes(out: Out) -> Vec<u8> {
+    fn bytes(out: CryptoOut) -> Vec<u8> {
         assert_eq!(out.status, status::OK, "{out:?}");
         ARENA.with(|cell| cell.borrow().buf[out.at..out.at + out.len].to_vec())
     }
@@ -701,37 +692,44 @@ mod tests {
             {
                 last = next;
             }
-            assert_eq!(random_body(RANDOM_MAX), Out::status(status::LIMIT));
+            assert_eq!(random_body(RANDOM_MAX), CryptoOut::status(status::LIMIT));
             let room = ARENA_CAP - (last.at + last.len);
-            assert_eq!(random_body(room + 1), Out::status(status::LIMIT));
+            assert_eq!(random_body(room + 1), CryptoOut::status(status::LIMIT));
             if room > 0 {
                 assert_eq!(random_body(room).status, status::OK);
             }
-            assert_eq!(random_body(1), Out::status(status::LIMIT));
+            assert_eq!(random_body(1), CryptoOut::status(status::LIMIT));
             assert_eq!(bytes(first), kat);
-            let limit = vt::random(core::ptr::null(), 1);
-            assert_eq!((limit.status, limit.out.len()), (status::LIMIT, 0));
+            let limit = vt::random(1);
+            assert_eq!((limit.crypto_status(), limit.len()), (status::LIMIT, 0));
         });
     }
 
     #[test]
     fn c_random_bounds_and_distinct_outputs() {
         fresh(|| {
-            assert_eq!(random_body(0), Out::status(status::INVALID));
-            assert_eq!(random_body(RANDOM_MAX + 1), Out::status(status::INVALID));
+            assert_eq!(random_body(0), CryptoOut::status(status::INVALID));
+            assert_eq!(
+                random_body(RANDOM_MAX + 1),
+                CryptoOut::status(status::INVALID)
+            );
             let (a, b) = (random_body(32), random_body(32));
             assert_ne!(bytes(a), bytes(b));
             assert_ne!(bytes(a), [0; 32]);
-            let raw = vt::random(core::ptr::null(), 16);
-            assert_eq!((raw.status, raw.out.len()), (status::OK, 16));
-            let refused = vt::random(core::ptr::null(), 0);
-            assert_eq!((refused.status, refused.out.len()), (status::INVALID, 0));
+            let raw = vt::random(16);
+            assert_eq!((raw.crypto_status(), raw.len()), (status::OK, 16));
+            assert_eq!(raw.read(<[u8]>::len), 16);
+            let refused = vt::random(0);
+            assert_eq!(
+                (refused.crypto_status(), refused.len()),
+                (status::INVALID, 0)
+            );
         });
     }
 
     #[test]
     fn crypto_key_forms_and_parameters_are_checked_before_any_call() {
-        let invalid = Out::status(status::INVALID);
+        let invalid = CryptoOut::status(status::INVALID);
         let k16 = [7_u8; 16];
         for (alg, form, key, aux) in [
             (alg::HMAC_SHA256, key_form::SPKI_DER, &k16[..], &[][..]),
@@ -823,7 +821,7 @@ mod tests {
             let mut bad = body.to_vec();
             bad[0] ^= 1;
             let refused = crypto_body(&req(alg::AEAD_OPEN, key_form::RAW, &key, &bad, nonce));
-            assert_eq!(refused, Out::status(status::BAD));
+            assert_eq!(refused, CryptoOut::status(status::BAD));
             let explicit = bytes(crypto_body(&req(
                 alg::AEAD_SEAL_EXPLICIT,
                 key_form::RAW,
@@ -870,7 +868,7 @@ mod tests {
                 b"msg",
                 &sig,
             ));
-            assert_eq!(ok, Out::status(status::OK));
+            assert_eq!(ok, CryptoOut::status(status::OK));
             let no = crypto_body(&req(
                 alg::VERIFY_ES256,
                 key_form::EC_POINT,
@@ -878,7 +876,7 @@ mod tests {
                 b"msh",
                 &sig,
             ));
-            assert_eq!(no, Out::status(status::BAD));
+            assert_eq!(no, CryptoOut::status(status::BAD));
             let ed = crypto::ed25519::SigningKey::generate().expect("Ed25519 key");
             let public = ed.verifying_key().to_bytes();
             let signature = ed.sign(b"msg");
@@ -889,7 +887,7 @@ mod tests {
                 b"msg",
                 &signature,
             ));
-            assert_eq!(ok, Out::status(status::OK));
+            assert_eq!(ok, CryptoOut::status(status::OK));
             let no = crypto_body(&req(
                 alg::VERIFY_ED25519,
                 key_form::RAW,
@@ -897,7 +895,7 @@ mod tests {
                 b"msh",
                 &signature,
             ));
-            assert_eq!(no, Out::status(status::BAD));
+            assert_eq!(no, CryptoOut::status(status::BAD));
         });
     }
 
@@ -918,18 +916,18 @@ mod tests {
         fresh(|| {
             let before = faults(HOST_PANIC);
             conformance::arm_panic();
-            assert_eq!(vt::now(core::ptr::null()), 0);
+            assert_eq!(vt::now(), 0);
             conformance::arm_panic();
-            assert_eq!(vt::mono(core::ptr::null()), 0);
+            assert_eq!(vt::mono(), 0);
             conformance::arm_panic();
-            let random = vt::random(core::ptr::null(), 16);
-            assert_eq!((random.status, random.out.len()), (status::RNG, 0));
+            let random = vt::random(16);
+            assert_eq!((random.crypto_status(), random.len()), (status::RNG, 0));
             conformance::arm_panic();
-            assert_eq!(vt::deployment(core::ptr::null()), DeploymentId([0; 16]));
+            assert_eq!(vt::deployment(), DeploymentId([0; 16]));
             conformance::arm_panic();
-            vt::log(core::ptr::null(), 3, 0, Str::new("dropped"));
+            vt::log(3, 0, "dropped");
             assert_eq!(faults(HOST_PANIC), before + 5);
-            assert!(vt::now(core::ptr::null()) > 1_600_000_000_000_000_000);
+            assert!(vt::now() > 1_600_000_000_000_000_000);
             assert_eq!(
                 faults(HOST_PANIC),
                 before + 5,
@@ -956,14 +954,14 @@ mod tests {
 
     #[test]
     fn mono_never_goes_back() {
-        let a = vt::mono(core::ptr::null());
-        let b = vt::mono(core::ptr::null());
+        let a = vt::mono();
+        let b = vt::mono();
         assert!(b >= a);
     }
 
     #[test]
     fn c_deployment_id_is_read_all_zero_or_whole() {
-        assert_eq!(vt::deployment(core::ptr::null()), DeploymentId([0; 16]));
+        assert_eq!(vt::deployment(), DeploymentId([0; 16]));
         if cfg!(debug_assertions) {
             assert!(std::panic::catch_unwind(|| set_deployment([0; 16])).is_err());
         }
@@ -982,7 +980,7 @@ mod tests {
                     let mut torn = 0_usize;
                     let mut reads = 0_usize;
                     while reads < 125_000 || !stop.load(Relaxed) {
-                        let seen = vt::deployment(core::ptr::null()).0;
+                        let seen = vt::deployment().0;
                         torn += usize::from(seen != [0; 16] && seen != id);
                         reads += 1;
                     }
@@ -995,7 +993,7 @@ mod tests {
         for reader in readers {
             assert_eq!(reader.join().expect("reader"), 0);
         }
-        assert_eq!(vt::deployment(core::ptr::null()), DeploymentId(id));
+        assert_eq!(vt::deployment(), DeploymentId(id));
         set_deployment(id);
         if cfg!(debug_assertions) {
             assert!(std::panic::catch_unwind(|| set_deployment([1; 16])).is_err());

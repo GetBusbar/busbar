@@ -6,7 +6,6 @@
       "busbar-plugin-loader": "W4.3"
     },
     "sites": {
-      "crates/busbar-plugin-abi/src/host_side/host_vt.rs": { "keywords": 3, "allows": 1, "by": "permanent: IF §5/§10.7 Host vtable entries (W1-H0)" },
       "crates/busbar-core-connector/src/conns.rs": { "keywords": 0, "allows": 1, "by": "slimming (callback_waker)" },
       "crates/busbar-core-connector/src/child_job.rs": { "keywords": 35, "allows": 0, "by": "W3.6 (edge::sys)" },
       "crates/busbar-core-connector/src/io/unix.rs": { "keywords": 1, "allows": 1, "by": "W3.6 (edge::sys)" },
@@ -45,9 +44,7 @@
       "tools/ci-checks/src/main.rs"
     ]
   },
-  "admitted": {
-    "crates/busbar-plugin-abi/src/host_side/host_vt.rs": "OWNER-QUEUE J46 (coordinator, 2026-11-15): per-site admission for the IF-named unsafe sites. IF §5 and §10.7: the raw `crypto` entry reads the plugin's request pointer, and `random`/`crypto` outputs are returned as views of the thread's scratch arena"
-  },
+  "admitted": {},
   "dead_code": {
     "crates/busbar-contract/src/abi/mechanism/decl.rs": 2,
     "crates/busbar-contract/src/abi/mod.rs": 2,
