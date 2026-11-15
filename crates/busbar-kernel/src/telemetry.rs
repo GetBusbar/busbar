@@ -447,6 +447,10 @@ pub(crate) fn declared_dialects(plane: &str) -> &'static [&'static str] {
 #[path = "tests/telemetry_tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "tests/telemetry_exited_banks_tests.rs"]
+mod exited_banks_tests;
+
 pub const UPSTREAM_ATTEMPTS_TOTAL: &str = "busbar_upstream_attempts_total";
 
 pub const UPSTREAM_FAILURES_TOTAL: &str = "busbar_upstream_failures_total";
@@ -658,7 +662,7 @@ thread_local! {
             .threads
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .push(bank.clone());
+            .insert(bank_key(&bank), bank.clone());
         LocalBank(bank)
     };
 }
@@ -691,9 +695,17 @@ impl<H> SlotTable<H> {
 pub(crate) struct Registry {
     pub(crate) counters: SlotTable<metrics::Counter>,
     pub(crate) hists: SlotTable<metrics::Histogram>,
-    pub(crate) threads: Mutex<Vec<Arc<ThreadBank>>>,
+    /// Every registered bank, keyed by its allocation address ([`bank_key`]).
+    pub(crate) threads: Mutex<foldhash::HashMap<usize, Arc<ThreadBank>>>,
+    /// Banks whose thread has exited while the recorder retains them: the next flush folds and
+    /// releases exactly these, in O(exited), instead of scanning every registered bank.
+    pub(crate) exited: Mutex<Vec<Arc<ThreadBank>>>,
 
     pub(crate) flush_lock: Mutex<()>,
+}
+
+pub(crate) fn bank_key(bank: &Arc<ThreadBank>) -> usize {
+    Arc::as_ptr(bank) as usize
 }
 
 pub(crate) fn registry() -> &'static Registry {
@@ -701,7 +713,8 @@ pub(crate) fn registry() -> &'static Registry {
     REGISTRY.get_or_init(|| Registry {
         counters: SlotTable::new(),
         hists: SlotTable::new(),
-        threads: Mutex::new(Vec::new()),
+        threads: Mutex::new(foldhash::HashMap::default()),
+        exited: Mutex::new(Vec::new()),
         flush_lock: Mutex::new(()),
     })
 }

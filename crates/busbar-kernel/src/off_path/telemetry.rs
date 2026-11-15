@@ -13,10 +13,10 @@ use std::sync::{Arc, OnceLock};
 use crate::diag_warn;
 use crate::diagnostics::TELEMETRY_SLOT_TABLE_FULL;
 use crate::telemetry::{
-    counter_slot, declared_dialects, histogram_slot, phase_duration_slot, registry, AppSlots,
-    CounterSlot, LaneFamily, LocalBank, MountedFamily, RequestFamily, SlotDesc, SlotTable,
-    COUNTER_CHUNK, DISPOSITIONS, HIST_CHUNK, HIST_PARKED, KEY_SEP, OUTCOMES, POOL_LABEL_UNRESOLVED,
-    PRODUCER_DRIVE, REASONS, RESPONSE_READY,
+    bank_key, counter_slot, declared_dialects, histogram_slot, phase_duration_slot, registry,
+    AppSlots, CounterSlot, LaneFamily, LocalBank, MountedFamily, RequestFamily, SlotDesc,
+    SlotTable, COUNTER_CHUNK, DISPOSITIONS, HIST_CHUNK, HIST_PARKED, KEY_SEP, OUTCOMES,
+    POOL_LABEL_UNRESOLVED, PRODUCER_DRIVE, REASONS, RESPONSE_READY,
 };
 
 /// The process's translation slot table: one slot per ordered pair of the model plane's declared
@@ -182,16 +182,20 @@ impl AppSlots {
 
 impl Drop for LocalBank {
     fn drop(&mut self) {
+        let reg = registry();
         if crate::snapshot::retaining() {
+            reg.exited
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(Arc::clone(&self.0));
             return;
         }
 
-        let reg = registry();
         let _flush = reg.flush_lock.lock().unwrap_or_else(|p| p.into_inner());
         reg.threads
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .retain(|bank| !Arc::ptr_eq(bank, &self.0));
+            .remove(&bank_key(&self.0));
         let descs = reg.counters.descs.read().unwrap_or_else(|p| p.into_inner());
         for (i, desc) in descs.iter().enumerate() {
             if let Some(chunk) = self.counters[i / COUNTER_CHUNK].get() {
@@ -285,10 +289,11 @@ pub(crate) fn flush_to_recorder() {
     let _guard = reg.flush_lock.lock().unwrap_or_else(|p| p.into_inner());
 
     let mut banks = reg.threads.lock().unwrap_or_else(|p| p.into_inner());
-    let exited: Vec<_> = banks
-        .extract_if(.., |b| Arc::strong_count(b) == 1)
-        .collect();
-    let threads = banks.clone();
+    let exited = std::mem::take(&mut *reg.exited.lock().unwrap_or_else(|p| p.into_inner()));
+    for bank in &exited {
+        banks.remove(&bank_key(bank));
+    }
+    let threads: Vec<_> = banks.values().cloned().collect();
     drop(banks);
     std::sync::atomic::fence(Ordering::Acquire);
 
