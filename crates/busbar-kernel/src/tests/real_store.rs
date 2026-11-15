@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 #[path = "memory_backend.rs"]
-mod memory_backend;
+pub(crate) mod memory_backend;
 
 /// A fresh primitive store for one test: the in-tree in-memory backend (`memory_backend.rs`), the
 /// contract busbar-store-memory serves, with no plugin loaded (core is built and tested solo).

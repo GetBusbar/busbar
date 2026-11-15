@@ -412,6 +412,8 @@ pub fn legacy_algs() {
         assert_ne!(c, legacy::rsa_oaep_sha1_encrypt(&pubk, b"pw").unwrap());
         assert!(legacy::rsa_oaep_sha1_encrypt(b"not a key", b"pw").is_err());
         assert!(legacy::rsa_oaep_sha1_encrypt(&pubk, &[0; 256]).is_err());
+        legacy::rsa_oaep_public_key_check(&pubk).unwrap();
+        assert!(legacy::rsa_oaep_public_key_check(b"not a key").is_err());
     } else {
         assert!(refused(&c, "OAEP"));
     }

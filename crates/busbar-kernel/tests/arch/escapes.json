@@ -42,15 +42,7 @@
       "crates/busbar/src/main.rs"
     ]
   },
-  "admitted": {
-    "crates/busbar-contract/src/abi/host/service.rs": "owner R-CHECKS 2026-11-15: the file carries ABI unsafe and no inner forbid; the forbid entry was stale",
-    "crates/busbar-contract/src/abi/sdk/conn.rs": "owner R-CHECKS 2026-11-15: the file carries ABI unsafe and no inner forbid; the forbid entry was stale",
-    "crates/busbar-contract/src/abi/sdk/io.rs": "owner R-CHECKS 2026-11-15: the file carries ABI unsafe and no inner forbid; the forbid entry was stale",
-    "crates/busbar-contract/src/abi/sdk/out.rs": "owner R-CHECKS 2026-11-15: the file carries ABI unsafe and no inner forbid; the forbid entry was stale",
-    "crates/busbar-contract/src/abi/sdk/publish.rs": "owner R-CHECKS 2026-11-15: the file carries ABI unsafe and no inner forbid; the forbid entry was stale",
-    "crates/busbar-core-connector/src/conns.rs": "owner R-CHECKS 2026-11-15: keep the unsafe-placement check, freeze today's sites, new ones fail",
-    "crates/busbar-kernel/src/persistence/slot_seal.rs": "owner R-CHECKS 2026-11-15: keep the unsafe-placement check, freeze today's sites, new ones fail"
-  },
+  "admitted": {},
   "dead_code": {
     "crates/busbar-contract/src/abi/mechanism/decl.rs": 2,
     "crates/busbar-contract/src/abi/mod.rs": 2,

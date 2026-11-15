@@ -215,6 +215,12 @@ mod linked {
     }
     static SCANS: Mutex<Vec<ScanCrossing>> = Mutex::new(Vec::new());
 
+    /// Settings the fixture refuses to open with, carrying a secret it never echoes.
+    const REFUSING_SETTINGS: &[u8] = br#"{"url":"rediss://u:hunter2@db#insecure"}"#;
+    /// The fixture's own open refusal, with its BUSBAR code.
+    const OPEN_REFUSAL: &[u8] =
+        b"BUSBAR-3143 settings.url: `#insecure` is refused; certificate verification stays on";
+
     fn info() -> owned::BackendInfo {
         owned::BackendInfo {
             dataset: owned::DatasetId([1; 16]),
@@ -249,6 +255,14 @@ mod linked {
                         &*input.cast::<busbar_contract::abi::mechanism::lifecycle::OpenIn>();
                     let settings =
                         std::slice::from_raw_parts(input.settings.ptr, input.settings.len);
+                    if settings == REFUSING_SETTINGS {
+                        // A plugin refusing its open says why through the lent reason buffer.
+                        let reason = std::slice::from_raw_parts_mut(input.err_buf, input.err_cap);
+                        reason[..OPEN_REFUSAL.len()].copy_from_slice(OPEN_REFUSAL);
+                        out.err_len = OPEN_REFUSAL.len();
+                        out.head.outcome = RawOutcome::of(Outcome::Failed);
+                        return RawOutcome::of(Outcome::Failed);
+                    }
                     if settings == br#"{"openhold":true}"# {
                         let mut state = OPEN_GATE.0.lock().unwrap();
                         state.0 = true;
@@ -480,6 +494,28 @@ mod linked {
             backend.clock(info().dataset).await.unwrap().unix_seconds,
             123
         );
+    }
+
+    /// An operator whose store open is refused reads the plugin's own reason and its BUSBAR code
+    /// (the same lent reason buffer every kind's open reports through), never an opaque
+    /// "plugin answered unknown", and the host adds no settings bytes to it.
+    #[tokio::test]
+    async fn a_refused_open_carries_the_plugins_reason_and_code() {
+        use owned::axis::{PersistenceAxis, StoreDoor};
+        let Err(error) = axis()
+            .open(StoreDoor::Linked(door), "refusing-store", REFUSING_SETTINGS)
+            .await
+        else {
+            panic!("a refused open opened");
+        };
+        let reason = std::str::from_utf8(OPEN_REFUSAL).unwrap();
+        assert!(
+            error.ends_with(&format!(" open failed: {reason}")),
+            "the plugin's reason is lost: {error}"
+        );
+        assert!(error.contains("BUSBAR-3143"), "{error}");
+        assert!(!error.contains("plugin answered"), "{error}");
+        assert!(!error.contains("hunter2"), "a secret was echoed: {error}");
     }
 
     #[tokio::test]

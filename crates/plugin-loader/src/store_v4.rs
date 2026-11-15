@@ -220,15 +220,17 @@ impl LoadedPersistence {
             ));
         }
         if done.outcome != Outcome::Ready {
-            let (code, name) = match done.outcome {
-                Outcome::Refused => (owned::lifecycle::Error::Refused, "refused"),
-                Outcome::Fault => (owned::lifecycle::Error::Corrupt, "fault"),
-                _ => (owned::lifecycle::Error::Unknown, "unknown"),
+            let code = match done.outcome {
+                Outcome::Refused => owned::lifecycle::Error::Refused,
+                Outcome::Fault => owned::lifecycle::Error::Corrupt,
+                _ => owned::lifecycle::Error::Unknown,
             };
-            return Err(OpenFailure::new(
-                code,
-                crate::cold::store_v4::open_refused(name),
-            ));
+            // The plugin's own reason, as every kind's open reports it.
+            let answered = crate::dispatch::Answered {
+                outcome: done.outcome,
+                error: done.error,
+            };
+            return Err(OpenFailure::new(code, answered.open_failure(plugin.name())));
         }
         let info = done
             .frame

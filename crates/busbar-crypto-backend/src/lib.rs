@@ -171,5 +171,7 @@ pub mod link {
 /// Legacy algorithms, for protocol use only (Postgres md5, MySQL RSA password exchange, webhook
 /// SHA-1). Always available in this backend.
 pub mod legacy {
-    pub use crate::legacy_impl::{hmac_sha1, md5, rsa_oaep_sha1_encrypt, sha1};
+    pub use crate::legacy_impl::{
+        hmac_sha1, md5, rsa_oaep_public_key_check, rsa_oaep_sha1_encrypt, sha1,
+    };
 }

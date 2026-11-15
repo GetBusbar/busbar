@@ -77,9 +77,9 @@ fn spki_from_pkcs1(pkcs1: &[u8]) -> Vec<u8> {
     out
 }
 
-/// `msg` encrypted with RSAES-OAEP (SHA-1, MGF1-SHA-1, empty label; RFC 8017 7.1) to the RSA
-/// public key `public_key_der`, a DER `SubjectPublicKeyInfo` or PKCS#1 `RSAPublicKey`.
-pub fn rsa_oaep_sha1_encrypt(public_key_der: &[u8], msg: &[u8]) -> Result<Vec<u8>, Error> {
+/// The RSA public key `public_key_der` (a DER `SubjectPublicKeyInfo` or PKCS#1 `RSAPublicKey`),
+/// parsed by AWS-LC, if it is one RSA-OAEP encrypts to: an RSA key of 2048..=8192 bits.
+fn oaep_key(public_key_der: &[u8]) -> Result<PublicEncryptingKey, Error> {
     let key = PublicEncryptingKey::from_der(public_key_der)
         .or_else(|_| PublicEncryptingKey::from_der(&spki_from_pkcs1(public_key_der)))
         .map_err(|_| Error::Invalid("RSA public key"))?;
@@ -87,7 +87,20 @@ pub fn rsa_oaep_sha1_encrypt(public_key_der: &[u8], msg: &[u8]) -> Result<Vec<u8
     if !(2048..=8192).contains(&bits) {
         return Err(Error::Invalid("RSA modulus outside 2048..=8192 bits"));
     }
-    let key = OaepPublicEncryptingKey::new(key).map_err(|_| Error::Invalid("RSA public key"))?;
+    Ok(key)
+}
+
+/// Whether `public_key_der` is an RSA public key [`rsa_oaep_sha1_encrypt`] encrypts to, checked by
+/// the same parse: `Ok` exactly when that encryption would accept the key.
+pub fn rsa_oaep_public_key_check(public_key_der: &[u8]) -> Result<(), Error> {
+    oaep_key(public_key_der).map(|_| ())
+}
+
+/// `msg` encrypted with RSAES-OAEP (SHA-1, MGF1-SHA-1, empty label; RFC 8017 7.1) to the RSA
+/// public key `public_key_der`, a DER `SubjectPublicKeyInfo` or PKCS#1 `RSAPublicKey`.
+pub fn rsa_oaep_sha1_encrypt(public_key_der: &[u8], msg: &[u8]) -> Result<Vec<u8>, Error> {
+    let key = OaepPublicEncryptingKey::new(oaep_key(public_key_der)?)
+        .map_err(|_| Error::Invalid("RSA public key"))?;
     let mut out = vec![0_u8; key.ciphertext_size()];
     let n = key
         .encrypt(&OAEP_SHA1_MGF1SHA1, msg, &mut out, None)

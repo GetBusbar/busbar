@@ -34,12 +34,6 @@ impl OpenFailure {
     }
 }
 
-/// Error: the store plugin refused to open.
-#[cold]
-pub(crate) fn open_refused(name: &str) -> String {
-    format!("primitive store open failed: plugin answered {name}")
-}
-
 /// Error: the store plugin's open answer had no frame.
 #[cold]
 pub(crate) fn open_frameless() -> String {
