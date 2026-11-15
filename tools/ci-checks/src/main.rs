@@ -17,6 +17,8 @@
 //!   (`migrate.rs`).
 //! - `migrate-overlay-separation`, `migrate-overlay-keys`, `migrate-overlay-docs`: the 1.5.5
 //!   overlay's separation, key and upgrade-page checks (`migrate_overlay.rs`).
+//! - `migrate-size`: the migrator's separation and anchor gates, with its sizes printed
+//!   (`migrate_size.rs`).
 //!
 //! Usage: `busbar-ci-checks [check...]`; with no argument every check runs. Each finding prints as
 //! one line; any finding or error fails the run.
@@ -35,8 +37,9 @@ use syn::{
 
 mod migrate;
 mod migrate_overlay;
+mod migrate_size;
 
-const CHECKS: [&str; 8] = [
+const CHECKS: [&str; 9] = [
     "no-getrandom",
     "crypto-graph",
     "migrate-flag-text",
@@ -45,6 +48,7 @@ const CHECKS: [&str; 8] = [
     "migrate-overlay-separation",
     "migrate-overlay-keys",
     "migrate-overlay-docs",
+    "migrate-size",
 ];
 /// The crypto seam: `busbar-crypto` and `busbar-crypto-backend` (crate directories and packages).
 const SEAM: &str = "busbar-crypto";
@@ -70,6 +74,7 @@ fn main() -> ExitCode {
             "migrate-overlay-separation" => migrate_overlay::separation(&root),
             "migrate-overlay-keys" => migrate_overlay::hook_keys(&root),
             "migrate-overlay-docs" => migrate_overlay::docs(&root),
+            "migrate-size" => migrate_size::run(&root),
             other => Err(format!(
                 "unknown check `{other}` (checks: {})",
                 CHECKS.join(", ")
@@ -532,3 +537,7 @@ fn seam_only_reached(tree: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "migrate_size_tests.rs"]
+mod migrate_size_tests;
