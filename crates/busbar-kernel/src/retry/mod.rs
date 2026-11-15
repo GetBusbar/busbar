@@ -139,9 +139,47 @@ impl Policy {
 
 impl RetryPolicy for Policy {
     fn next(&self, site: RetrySite, attempt: u32, err: &PortError) -> Retry {
-        let _ = (site, attempt, err);
-        todo!("W1-K3: the schedules")
+        match site {
+            // The credential cache's failure window: no jitter (other requests read it as a fact),
+            // 30 s × 2^(attempt − 1), never under the backend's Retry-After, never over MAX_WAIT.
+            RetrySite::AuthOutbound => {
+                if !is_transient(err) {
+                    return Retry::Stop;
+                }
+                let doublings = attempt.saturating_sub(1).min(31);
+                let window = AUTH_WINDOW
+                    .checked_mul(1_u32 << doublings)
+                    .unwrap_or(MAX_WAIT);
+                Retry::After(window.max(retry_after(err)).min(MAX_WAIT))
+            }
+            RetrySite::ExportDeliver(stream) => {
+                if !is_transient(err) || is_limit(err) {
+                    Retry::Stop
+                } else if stream == STREAM_CONTENT {
+                    self.wait(EXPORT_BACKOFF, attempt, err)
+                } else {
+                    self.bounded(EXPORT_BACKOFF, EXPORT_ATTEMPTS, attempt, err)
+                }
+            }
+            RetrySite::PlanePush => self.bounded(PUSH_BACKOFF, PUSH_ATTEMPTS, attempt, err),
+            // A probe is periodic health evidence: it keeps trying, slowly.
+            RetrySite::PlaneProbe => {
+                if is_transient(err) {
+                    self.wait(PROBE_BACKOFF, attempt, err)
+                } else {
+                    Retry::Stop
+                }
+            }
+            RetrySite::StoreRead
+            | RetrySite::StoreScan
+            | RetrySite::StoreCommit
+            | RetrySite::StoreClock
+            | RetrySite::SecretResolve
+            | RetrySite::AuthRefresh
+            | RetrySite::PlaneAdmin => self.bounded(CALL_BACKOFF, CALL_ATTEMPTS, attempt, err),
+        }
     }
 }
+
 #[cfg(test)]
 mod tests;
