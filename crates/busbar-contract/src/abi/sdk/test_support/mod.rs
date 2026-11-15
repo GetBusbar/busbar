@@ -10,6 +10,7 @@ mod sealed {
     pub trait Sealed {}
 }
 
+pub mod canary;
 #[cfg(any(test, feature = "test-seal"))]
 pub mod chip;
 pub mod cpu;
