@@ -172,12 +172,34 @@ const LIVE_AXIS_GRAMMAR: &[&str] = &[
     "SecretAxis::sugars(crate::root::linked::secret_rows()",
 ];
 
-/// The one production site that may: the connector's admission authority is issued once per
-/// process-lifetime table, and there is no per-generation secret axis (SECRET-SHORTHAND-BOOT OQ3).
-const LIVE_AXIS_ALLOWED: &[(&str, &str)] = &[(
-    "crates/busbar/src/root/connector.rs",
-    "SecretAxis::sugars(crate::root::linked::secret_rows()",
-)];
+/// The production sites that may: process-lifetime machinery past admission that holds no
+/// generation of its own. The connector's admission authority is issued once per process-lifetime
+/// table; plane-bound fills, door section references and export sinks are judged by the plane and
+/// export machinery. The grammar pin makes the axis equal the generation's grammar on every word a
+/// generation uses, except during a build, and there is no per-generation secret axis
+/// (SECRET-SHORTHAND-BOOT OQ3). `config/secret.rs` defines the one accessor.
+const LIVE_AXIS_ALLOWED: &[(&str, &str)] = &[
+    (
+        "crates/busbar/src/root/connector.rs",
+        "SecretAxis::sugars(crate::root::linked::secret_rows()",
+    ),
+    (
+        "crates/busbar-kernel/src/config/secret.rs",
+        "admitted_sugars(",
+    ),
+    (
+        "crates/busbar-kernel/src/config/filled.rs",
+        "admitted_sugars(",
+    ),
+    (
+        "crates/busbar-kernel/src/off_path/plane_door.rs",
+        "admitted_sugars(",
+    ),
+    (
+        "crates/busbar-kernel/src/off_path/export.rs",
+        "admitted_sugars(",
+    ),
+];
 
 /// SECRET-SHORTHAND-BOOT §3.4 (MR-B3): every reader takes the grammar of the read or generation it
 /// serves, passed explicitly: an admin request body its own phase 1, a generation's settings,

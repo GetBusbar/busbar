@@ -18,7 +18,7 @@ use super::{PluginsCfg, RootCfg};
 pub struct ConfiguredView {
     /// Private comparison digests only; never expose policy material or a reusable source document.
     #[serde(skip)]
-    pub(crate) security_digest: [u8; 32],
+    pub(crate) security_digest: super::security_policy::SecurityDigest,
     #[serde(skip)]
     pub(crate) deployment_security_digest: [u8; 32],
     pub meaning: &'static str,
@@ -462,14 +462,15 @@ fn tls_view(tls: Option<&super::TlsCfg>) -> Value {
 }
 
 /// The shorthand a generation was read under: what its readback treats as a reference (§3.17). A
-/// generation decoded without a grammar (a fixture) redacts by what the live axis admitted.
+/// generation decoded without a grammar (a fixture; every read binds one) admits no word: only
+/// canonical references are references, never what the live axis holds now.
 fn generation_sources(
     grammar: &super::grammar::GrammarField,
 ) -> busbar_contract::secret_ref::Sugars {
-    grammar.get().map_or_else(
-        |_| super::secret::admitted_sugars(),
-        |grammar| grammar.sugars.clone(),
-    )
+    grammar
+        .get()
+        .map(|grammar| grammar.sugars.clone())
+        .unwrap_or_default()
 }
 
 fn plugin_view(

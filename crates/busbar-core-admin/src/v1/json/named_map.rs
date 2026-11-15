@@ -77,11 +77,14 @@ async fn read_snapshot(
             return Ok::<_, AdminError>(txn.done((current, PendingDefs::new())));
         }
         Ok(txn.store_write_async(async move {
+            // The stored entries the serving generation could not read, judged under the grammar
+            // it was read under (SECRET-SHORTHAND-BOOT §3.4).
+            let grammar = crate::v1::service::running_grammar(&current);
             let pending = async {
                 busbar_kernel::config::overlay::unparseable_named_map_entries_async(
                     current.overlay_path.as_deref(),
                     section,
-                    &busbar_kernel::config::grammar::admitted(),
+                    &grammar,
                 )
                 .await
             }
@@ -408,15 +411,13 @@ async fn apply(
 
 
         Ok(txn.store_write_async(async move {
-            let mut loaded = busbar_kernel::load_config_from_disk_with_store(
+            let mut loaded = crate::v1::service::read_disk_generation(
+                &snapshot,
                 &config_path,
-                snapshot.providers_override.as_deref(),
-                false,
-                busbar_kernel::config::EnvSubst::Strict,
-                &*snapshot.root_rules,
-                snapshot.overlay_path.clone(),
-            ).await
-            .map_err(AdminError::Validation)?;
+                crate::v1::service::overlay_anchor(&snapshot),
+                "config.named_map",
+            )
+            .await?;
 
 
 

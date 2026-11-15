@@ -212,6 +212,10 @@ fn reference_to(
         .map_err(|_| "cannot encode admitted source reference".to_owned())
 }
 
+/// A plane section's fills and shorthand made canonical. Plane sections are bound by the
+/// process-lifetime plane machinery, which holds no generation of its own: they read the shorthand
+/// admission last published, which the grammar pin keeps equal to the generation's on every word it
+/// uses, except during a build (SECRET-SHORTHAND-BOOT OQ3).
 pub fn plane_bound(prefix: &[&str], value: serde_json::Value) -> Result<serde_json::Value, String> {
     plane_bound_with_sources(prefix, value, &super::secret::admitted_sugars())
 }

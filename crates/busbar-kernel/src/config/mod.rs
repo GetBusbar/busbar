@@ -39,7 +39,7 @@ pub mod secret;
 
 pub mod settings_public;
 
-pub(crate) mod security_policy;
+pub mod security_policy;
 pub mod transaction;
 
 pub use grammar::{Grammar, GrammarField, GrammarRefusal};

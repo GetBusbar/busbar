@@ -116,7 +116,10 @@ async fn nested_references_refresh_on_every_configure_push() {
             declared_reference.into_iter().map(str::to_owned).collect();
         let paths = [declared_secret.clone(), declared_reference.clone()].concat();
         let hook = settings(value);
-        assert!(resolution::key_for_settings(1, HOOK_NAME, &hook, &paths).is_none());
+        assert!(
+            resolution::key_for_settings(1, HOOK_NAME, &hook, &paths, &Default::default())
+                .is_none()
+        );
         assert!(
             source.reads.load(Ordering::SeqCst) == 0,
             "cache admission must not read the source"
@@ -211,9 +214,9 @@ async fn opaque_and_literal_settings_still_reuse_the_opened_transport() {
             reads: AtomicUsize::new(0),
         };
         let hook = settings(value);
-        let first =
-            resolution::key_for_settings(1, HOOK_NAME, &hook, &[]).expect("cacheable settings");
-        let second = resolution::key_for_settings(1, HOOK_NAME, &hook, &[])
+        let first = resolution::key_for_settings(1, HOOK_NAME, &hook, &[], &Default::default())
+            .expect("cacheable settings");
+        let second = resolution::key_for_settings(1, HOOK_NAME, &hook, &[], &Default::default())
             .expect("same cacheable settings");
         assert_eq!(
             first, second,
@@ -366,14 +369,16 @@ async fn replacing_the_public_registry_cannot_reuse_a_stale_path_snapshot() {
 fn changing_signal_grants_invalidates_cached_hook_policy() {
     let mut hook = settings(json!({}));
     hook.signals.clear();
-    let empty = resolution::key_for_settings(1, HOOK_NAME, &hook, &[]).unwrap();
+    let empty =
+        resolution::key_for_settings(1, HOOK_NAME, &hook, &[], &Default::default()).unwrap();
     hook.signals
         .push(busbar_contract::Signal::RequestTextComplete);
-    let granted = resolution::key_for_settings(1, HOOK_NAME, &hook, &[]).unwrap();
+    let granted =
+        resolution::key_for_settings(1, HOOK_NAME, &hook, &[], &Default::default()).unwrap();
     assert_ne!(empty, granted);
     hook.signals.clear();
     assert_eq!(
         Some(empty),
-        resolution::key_for_settings(1, HOOK_NAME, &hook, &[])
+        resolution::key_for_settings(1, HOOK_NAME, &hook, &[], &Default::default())
     );
 }

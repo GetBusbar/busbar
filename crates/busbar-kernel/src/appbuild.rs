@@ -708,6 +708,112 @@ pub async fn load_config_from_disk_with_store(
     Ok(loaded)
 }
 
+/// THE FIRST HALF OF A RELOAD-CLASS DISK READ (SECRET-SHORTHAND-BOOT §3.11-3.12): `config.yaml`
+/// with the Store's durable document patch, and the Store's overlay, read up to (not including)
+/// the read's grammar. [`DiskRead::candidate`] is what the authority pre-check judges and what
+/// phase 1 fetches and scans for; [`DiskRead::typed`] then reads the documents under the grammar
+/// phase 1 gave. Nothing here fetches, scans `plugins.dir` or computes a grammar.
+pub struct DiskRead {
+    pub candidate: config::security_policy::Candidate,
+    /// The reopened Store overlay; `None` when `config.yaml` is locked (nothing to reopen).
+    overlay: Option<Arc<config::overlay::OverlayStore>>,
+    doc: Option<config::overlay::OverlayDoc>,
+}
+
+/// Read `config.yaml` and the Store overlay for a reload-class operation ([`DiskRead`]). `overlay`
+/// is the Store to reopen, or why there is none (refused only when `config.yaml` is unlocked). The
+/// candidate's grammar-bearing security fields are read under `running`, the serving generation's
+/// grammar.
+pub async fn read_disk_candidate(
+    config_path: &std::path::Path,
+    providers_override: Option<&std::path::Path>,
+    env_mode: config::EnvSubst,
+    rules: &dyn RootRules,
+    overlay: Result<Arc<config::overlay::OverlayStore>, String>,
+    running: &config::Grammar,
+) -> Result<DiskRead, String> {
+    let text = |patch: Option<&mut config::document_patch::DocumentPatch>| {
+        read_config_documents(
+            config_path,
+            providers_override,
+            false,
+            env_mode,
+            rules,
+            DocumentPatchLoad {
+                patch,
+                providers_patch: None,
+                admission: None,
+            },
+        )
+        .map(|raw| raw.config_text)
+    };
+    let file = config::security_policy::Candidate::of_yaml(text(None)?.as_ref(), running, None)?;
+    if file.locked {
+        return Ok(DiskRead {
+            candidate: file,
+            overlay: None,
+            doc: None,
+        });
+    }
+    let (reopened, doc) = overlay?.reopen_for_reload_async().await?;
+    let mut patch = doc.as_ref().and_then(|doc| doc.document_patch.clone());
+    let effective = match patch.as_mut() {
+        Some(patch) => text(Some(patch))?,
+        None => text(None)?,
+    };
+    let candidate =
+        config::security_policy::Candidate::of_yaml(effective.as_ref(), running, doc.as_ref())?;
+    Ok(DiskRead {
+        candidate,
+        overlay: Some(reopened),
+        doc,
+    })
+}
+
+impl DiskRead {
+    /// The documents typed under `grammar` (the read's phase 1), with the Store's durable patches
+    /// applied and its overlay attached, as [`load_config_from_disk_with_store`] reads them.
+    pub fn typed(
+        self,
+        config_path: &std::path::Path,
+        providers_override: Option<&std::path::Path>,
+        env_mode: config::EnvSubst,
+        rules: &dyn RootRules,
+        grammar: &config::Grammar,
+    ) -> Result<LoadedConfig, String> {
+        let DiskRead {
+            overlay, mut doc, ..
+        } = self;
+        let mut patch = doc.as_ref().and_then(|doc| doc.document_patch.clone());
+        let mut providers_patch = doc.as_ref().and_then(|doc| doc.providers_patch.clone());
+        let raw = read_config_documents(
+            config_path,
+            providers_override,
+            false,
+            env_mode,
+            rules,
+            DocumentPatchLoad {
+                patch: patch.as_mut(),
+                providers_patch: providers_patch.as_mut(),
+                admission: None,
+            },
+        )?;
+        let mut loaded = raw.typed(grammar)?;
+        // A stored patch from an earlier binary that moves the operator credential is refused at
+        // every re-read, as at boot: never applied or dropped silently.
+        if let Some(patch) = doc.as_ref().and_then(|doc| doc.document_patch.as_ref()) {
+            config::operator_file::stored_document_patch(patch, &loaded)?;
+        }
+        if let Some(reopened) = overlay {
+            if !loaded.config_locked {
+                loaded.overlay_path = Some(reopened);
+            }
+            loaded.overlay_doc = doc.take();
+        }
+        Ok(loaded)
+    }
+}
+
 pub type GovCredentialRotation = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
 
 async fn rewrap_at_rest(gs: &governance::GovState) {
@@ -1021,11 +1127,24 @@ async fn bootstrap_store_inputs(
         })
         .map(|(module, settings)| (module.clone(), settings.clone()))
         .collect();
-    let resolver = build_secret_resolver(registry.clone(), &bootstrap_secrets)?;
+    let resolver = build_secret_resolver(
+        registry.clone(),
+        &bootstrap_secrets,
+        &generation_sugars(cfg),
+    )?;
 
     let _signer = resolve_signing_key(cfg.auth.as_ref(), &resolver)?;
     let _at_rest = resolve_at_rest_keys(&cfg.credentials, &resolver)?;
     Ok((registry, resolver))
+}
+
+/// The secret shorthand of the generation `cfg` was read under (SECRET-SHORTHAND-BOOT §3.4): what
+/// its settings, hooks and references are resolved and judged under, carried by its resolver. A
+/// configuration decoded without a grammar (a fixture; every read binds one) admits no word.
+fn generation_sugars(cfg: &config::RootCfg) -> busbar_contract::secret_ref::Sugars {
+    cfg.grammar()
+        .map(|grammar| grammar.sugars.clone())
+        .unwrap_or_default()
 }
 
 /// THE GRAMMAR PIN after admission (SECRET-SHORTHAND-BOOT §3.8, BUSBAR-3170): every item the
@@ -1273,6 +1392,28 @@ fn fetch_config_plugins(
     cfg: &config::RootCfg,
     boot: bool,
 ) -> Result<(), String> {
+    fetch_plugins(plugins, &cfg.blocked_metadata_hosts, boot)
+}
+
+/// A reload-class read's phase 1 fetch (SECRET-SHORTHAND-BOOT §3.14): `plugins.fetch` downloaded
+/// into `plugins.dir` before the read scans it, so a reload can use a newly fetched module's word.
+/// A miss keeps the current artifact (warned), as the build's own reload fetch does. The caller runs
+/// the authority pre-check first, and runs this outside the plugin scan gate.
+pub fn fetch_for_read(
+    plugins: &config::PluginsCfg,
+    blocked_metadata_hosts: &[String],
+) -> Result<(), String> {
+    if !plugins.enabled || plugins.fetch.is_empty() {
+        return Ok(());
+    }
+    fetch_plugins(plugins, blocked_metadata_hosts, false)
+}
+
+fn fetch_plugins(
+    plugins: &config::PluginsCfg,
+    blocked_metadata_hosts: &[String],
+    boot: bool,
+) -> Result<(), String> {
     let targets = plugins.fetch_targets()?;
     let dir = std::path::Path::new(&plugins.dir);
     crate::durable::create_dir_all(dir).map_err(|error| {
@@ -1284,7 +1425,7 @@ fn fetch_config_plugins(
     let fetch = crate::preflight::root_rows().plugins_fetch.ok_or_else(|| {
         plugins_fetch_refusal(&["no composition root installed the plugins fetch"])
     })?;
-    let outcomes = fetch(dir, &targets, boot, &cfg.blocked_metadata_hosts)
+    let outcomes = fetch(dir, &targets, boot, blocked_metadata_hosts)
         .map_err(|errors| plugins_fetch_refusal(&errors))?;
     for outcome in outcomes {
         match outcome {
@@ -1532,6 +1673,7 @@ async fn build_app_native(
     let secret_resolver = Arc::new(build_secret_resolver(
         plugin_registry.clone(),
         &cfg.secrets,
+        &generation_sugars(&cfg),
     )?);
 
     let mut lanes_data = Vec::new();

@@ -51,7 +51,10 @@ pub fn install(connector: Arc<Connector>) -> Result<&'static Arc<Connector>, Arc
     }
 }
 
-/// The composition root chooses the enforcement table before any settings are admitted.
+/// The composition root chooses the enforcement table before any settings are admitted. The
+/// authority is issued per process-lifetime table, not per configuration generation, so it carries
+/// the shorthand admission last published: there is no per-generation secret axis
+/// (SECRET-SHORTHAND-BOOT OQ3).
 pub(crate) fn admit(
     table: Arc<dyn busbar_contract::conn::DeclaredConns>,
 ) -> busbar_contract::conn::admissions::AdmissionAuthority {

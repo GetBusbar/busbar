@@ -92,6 +92,13 @@ impl From<&str> for SecretModuleError {
 
 /// The NEUTRAL secret-resolver SEAM an extracted plane names instead of the engine's concrete
 pub trait SecretResolve: Send + Sync {
+    /// The secret shorthand of the configuration generation this resolver serves: what a reference
+    /// written in that generation is read under. `None` for a resolver bound to no generation,
+    /// which reads canonical `{ module, settings }` references only.
+    fn sources(&self) -> Option<&crate::secret_ref::Sugars> {
+        None
+    }
+
     /// Resolve a reference to raw bytes (fail-closed). Some consumers — a raw-file loader, for
     fn resolve(&self, secret: &SecretRef) -> Result<crate::redacted::Secret<Vec<u8>>, String>;
 

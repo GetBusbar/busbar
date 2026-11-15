@@ -1663,6 +1663,14 @@ pub(crate) const PASSTHROUGH_STYLE: &str = "bearer";
 
 pub(crate) const TOKEN_EXCHANGE_STYLE: &str = "oauth-token-exchange";
 
+/// The secret shorthand of the generation a plane section was written in: what its resolver serves
+/// (SECRET-SHORTHAND-BOOT §3.4). A resolver bound to no generation reads canonical references only.
+fn generation_sources(
+    secrets: &dyn busbar_contract::secret::SecretResolve,
+) -> busbar_contract::secret_ref::Sugars {
+    secrets.sources().cloned().unwrap_or_default()
+}
+
 pub(crate) fn token_exchange_binding(
     entry: &str,
     registration: &busbar_contract::yaml::Value,
@@ -1676,6 +1684,8 @@ pub(crate) fn token_exchange_binding(
     let Some(block) = registration.get(TOKEN_EXCHANGE_KEY) else {
         return Ok(None);
     };
+    // Read under the shorthand of the generation the section was written in (its resolver's).
+    let sources = generation_sources(reach.secrets.as_ref());
     let subject: busbar_contract::secret_ref::SecretRef = block
         .get(SUBJECT_TOKEN_KEY)
         .cloned()
@@ -1683,7 +1693,7 @@ pub(crate) fn token_exchange_binding(
         .and_then(|v| {
             busbar_contract::secret_ref::context::deserialize(
                 busbar_contract::yaml::deserializer(v),
-                &busbar_contract::secret::SecretAxis::sugars(crate::root::linked::secret_rows()),
+                &sources,
             )
             .map_err(|e| format!("member '{entry}': its subject token reference: {e}"))
         })?;
@@ -1768,6 +1778,7 @@ pub(crate) fn upstream_credential(
     let Some(block) = registration.get(UPSTREAM_CREDENTIAL_KEY) else {
         return Ok(None);
     };
+    let sources = generation_sources(reach.secrets.as_ref());
     let secret: busbar_contract::secret_ref::SecretRef = block
         .get(CREDENTIAL_SECRET_KEY)
         .cloned()
@@ -1780,7 +1791,7 @@ pub(crate) fn upstream_credential(
         .and_then(|v| {
             busbar_contract::secret_ref::context::deserialize(
                 busbar_contract::yaml::deserializer(v),
-                &busbar_contract::secret::SecretAxis::sugars(crate::root::linked::secret_rows()),
+                &sources,
             )
             .map_err(|_| {
                 format!(
@@ -3005,6 +3016,7 @@ pub(crate) fn registration_anchors(
     {
         None => None,
         Some((key, identity)) => {
+            let sources = generation_sources(secrets);
             let reference = |half: &str| {
                 identity
                     .get(half)
@@ -3014,12 +3026,7 @@ pub(crate) fn registration_anchors(
                         busbar_contract::secret_ref::context::deserialize::<
                             busbar_contract::secret_ref::SecretRef,
                             _,
-                        >(
-                            busbar_contract::yaml::deserializer(v),
-                            &busbar_contract::secret::SecretAxis::sugars(
-                                crate::root::linked::secret_rows(),
-                            ),
-                        )
+                        >(busbar_contract::yaml::deserializer(v), &sources)
                         .map_err(|e| format!("member '{entry}': `{key}.{half}:` {e}"))
                     })
             };

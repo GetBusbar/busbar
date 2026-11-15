@@ -843,31 +843,35 @@ pub(crate) mod resolution {
         }
 
         let paths = env.resolution_paths.modules.get(&hook.plugin)?;
+        let none = busbar_contract::secret_ref::Sugars::default();
         key_for_settings(
             std::sync::Arc::as_ptr(&env.registry) as *const u8 as usize,
             name,
             hook,
             paths,
+            env.secret_resolver.sources().unwrap_or(&none),
         )
     }
 
+    /// `sources`: the shorthand of the generation the hook's settings were written in (its
+    /// resolver's, SECRET-SHORTHAND-BOOT §3.4).
     pub(crate) fn key_for_settings(
         registry: usize,
         name: &str,
         hook: &crate::config::HookCfg,
         paths: &[String],
+        sources: &busbar_contract::secret_ref::Sugars,
     ) -> Option<u64> {
         use std::hash::{Hash as _, Hasher as _};
-        let sources = crate::config::secret::admitted_sugars();
         if hook
             .settings
-            .undeclared_reference(&[], &sources)
+            .undeclared_reference(&[], sources)
             .ok()
             .flatten()
             .is_some()
             || !hook
                 .settings
-                .reference_modules(paths, &sources)
+                .reference_modules(paths, sources)
                 .ok()?
                 .is_empty()
         {
@@ -1136,15 +1140,17 @@ pub async fn fetch_status(
         .await
 }
 
+/// The settings keys a hook reports differently from its definition. `sources`: the shorthand of
+/// the generation that defines it (SECRET-SHORTHAND-BOOT §3.4).
 pub fn settings_drift_keys(
     hook: &crate::config::HookCfg,
     reported: Option<&busbar_contract::plugin_settings::Settings>,
+    sources: &busbar_contract::secret_ref::Sugars,
 ) -> Vec<String> {
     let Some(observed) = reported else {
         return Vec::new();
     };
-    hook.settings
-        .drift_keys(observed, &crate::config::secret::admitted_sugars())
+    hook.settings.drift_keys(observed, sources)
 }
 
 pub async fn fetch_schema(
