@@ -425,6 +425,11 @@ impl<'a> Records<'a> {
             fused: false,
         }
     }
+    /// The bytes not yet read, from the next record on. W1-A5: `decode_settled` hands the CORE_CFG tail of an
+    /// answer on as `Records` over the answer's own bytes.
+    pub fn rest(&self) -> &'a [u8] {
+        self.bytes.get(self.at..).unwrap_or_default()
+    }
     /// Bounds-checked iteration. After the first Err the iterator is fused.
     ///
     /// Framing only: `_r` must be 0 (else Reserved); the head, the body and its zero padding must lie inside the
