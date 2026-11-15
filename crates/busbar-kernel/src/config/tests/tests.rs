@@ -79,6 +79,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         listen_explicit: false,
         authored_routing: None,
         document_source_fingerprints: None,
+        operator_overlay_names: Vec::new(),
 
         endpoint: Default::default(),
         oauth_as: None,

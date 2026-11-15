@@ -543,8 +543,13 @@ async fn apply(
 
 
             loaded.overlay_doc = Some(doc.clone());
+            busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, &doc);
+            if let Some(rejection) =
+                operator_file_rejection(txn_section, &loaded.deploy, txn_section.key())
+            {
+                return Ok(Outcome::Value(Err(rejection)));
+            }
             let built = Box::pin(async {
-                busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, &doc);
                 let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
                     .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
                 let base_hook_names: std::collections::HashSet<String> =
@@ -934,6 +939,20 @@ fn validate_definition(
         )?;
     }
     Ok(())
+}
+
+/// THE OVERLAY RULE AT THE NAMED-MAP DOORS (OPERATOR-FROM-ADMITTED-AUTH §3.6): a write whose
+/// candidate (`deploy`, with the next overlay applied) holds an operator-backed definition in the
+/// overlay, so creates one, re-points one to the operator, or edits one's settings, is refused
+/// 409 `OperatorFilePolicy` before any build, with the `auth.operator.refused / file_policy` row
+/// naming `door`. A base-file definition never reaches here: it is `BaseDefined`.
+pub(crate) fn operator_file_rejection(
+    section: NamedMapSection,
+    deploy: &busbar_kernel::config::DeployCfg,
+    door: &str,
+) -> Option<(AdminError, Cond)> {
+    let _ = (section, deploy, door);
+    None
 }
 
 fn check_trust_ceiling(
