@@ -552,15 +552,29 @@ impl RuntimeJournal {
         &self,
         prior: Option<&VerifiedHead>,
     ) -> std::result::Result<(), RuntimeError> {
+        let journal = StoreJournal::new(&self.store, self.node).map_err(RuntimeError::from)?;
+        // The tail after `prior` is read outside the driver, so request-path
+        // appends keep committing while it is checked (holding the driver here
+        // would make every such append wait on this read, and an append the
+        // read itself waits for would never land).
+        let checked = match prior {
+            Some(prior) => {
+                let checked = self.live_head()?;
+                prefix_of(prior, &checked)?;
+                journal
+                    .confirm_extends(prior, &checked)
+                    .await
+                    .map_err(RuntimeError::from)?;
+                Some(checked)
+            }
+            None => None,
+        };
         let _driver = self.driving.lock().await;
         let verified = self.live_head()?;
-        let journal = StoreJournal::new(&self.store, self.node).map_err(RuntimeError::from)?;
-        if let Some(prior) = prior {
-            prefix_of(prior, &verified)?;
-            journal
-                .confirm_extends(prior, &verified)
-                .await
-                .map_err(RuntimeError::from)?;
+        // Anything after `checked` is this owner's own Applied appends, each
+        // verified as it was applied: the one writer vouches for them.
+        if let Some(checked) = &checked {
+            prefix_of(checked, &verified)?;
         }
         journal
             .confirm_owned(&verified)

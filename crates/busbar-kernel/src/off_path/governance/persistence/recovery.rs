@@ -606,10 +606,13 @@ impl<'a> History<'a> {
         }
         check(self.store, predicates).await?;
         if let Some(journal) = live {
-            journal
-                .confirm_live_owned(self.proofs.get(&journal.node()).map(Arc::as_ref))
-                .await
-                .map_err(unavailable)?;
+            match self.proofs.get(&journal.node()) {
+                Some(proof) => confirm_this_node(self.store, journal, proof).await?,
+                None => journal
+                    .confirm_live_owned(None)
+                    .await
+                    .map_err(unavailable)?,
+            }
         }
         Ok(())
     }
@@ -699,6 +702,9 @@ struct Pending {
     predecessor: Option<Secret<Vec<u8>>>,
     run: Arc<StagedRun>,
     selection_proof: Option<Arc<VerifiedHead>>,
+    /// A re-driven uncertain attempt met a definite no-effect: its first crossing may still
+    /// land, so it is never resubmitted and only reconciliation resolves it.
+    reconciling: bool,
 }
 #[derive(Clone)]
 struct PendingAdoption {
@@ -832,7 +838,7 @@ impl StoreRecovery {
         }
     }
     async fn owned(&self) -> Result<Arc<VerifiedHead>, RecoveryError> {
-        let mut history = History::new(&self.store);
+        let mut history = History::observing(&self.store, &self.journal);
         self.owned_with_history(&mut history).await
     }
     async fn owned_with_history(
@@ -858,10 +864,7 @@ impl StoreRecovery {
         proof: &VerifiedHead,
     ) -> Result<(), RecoveryError> {
         if let Some(journal) = history.live.filter(|journal| journal.node() == self.node) {
-            return journal
-                .confirm_live_owned(Some(proof))
-                .await
-                .map_err(unavailable);
+            return confirm_this_node(&self.store, journal, proof).await;
         }
         StoreJournal::new(&self.store, self.node)
             .map_err(unavailable)?
@@ -879,7 +882,7 @@ impl StoreRecovery {
         Ok(())
     }
     async fn verify_origin_at(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
-        let mut history = History::new(&self.store);
+        let mut history = History::observing(&self.store, &self.journal);
         self.verify_origin_with_history(event, Pin::Strict, &mut history)
             .await
     }
@@ -953,7 +956,7 @@ impl StoreRecovery {
         event: &RecoveryEvent,
         owned: bool,
     ) -> Result<(), RecoveryError> {
-        let mut history = History::new(&self.store);
+        let mut history = History::observing(&self.store, &self.journal);
         self.verify_checkpoint_with_history(event, owned, Pin::Strict, &mut history)
             .await
     }
@@ -1026,7 +1029,7 @@ impl StoreRecovery {
         operation: &[u8; 16],
         tip: &Head,
     ) -> Result<RecoverySelection, RecoveryError> {
-        let mut history = History::new(&self.store);
+        let mut history = History::observing(&self.store, &self.journal);
         let selection = history.selection(operation, tip, |_, _| Ok(())).await?;
         history.finish().await?;
         Ok(selection)
@@ -1037,7 +1040,7 @@ impl StoreRecovery {
         resolution: &RecoveryResolution,
         transitions: &[RecoveryEvent],
     ) -> Result<RecoverySelection, RecoveryError> {
-        let mut history = History::new(&self.store);
+        let mut history = History::observing(&self.store, &self.journal);
         let mut attested = false;
         let result = history
             .selection(&resolution.operation_id, tip, |_, candidate| {
@@ -1057,6 +1060,28 @@ impl StoreRecovery {
     }
 }
 
+/// Confirm this node's `proof` is owned and admitted: either the store still
+/// holds exactly that head (one read), or this node's one writer vouches that
+/// its live head extends the proof (only the tail after it is read, outside
+/// the writer's driver). The writer keeps appending on the request path, so an
+/// exact match alone would lose to every append made since the proof.
+async fn confirm_this_node(
+    store: &CoreStore,
+    journal: &RuntimeJournal,
+    proof: &VerifiedHead,
+) -> Result<(), RecoveryError> {
+    let exact = StoreJournal::new(store, journal.node())
+        .map_err(unavailable)?
+        .confirm_owned(proof)
+        .await;
+    if exact.is_ok() {
+        return Ok(());
+    }
+    journal
+        .confirm_live_owned(Some(proof))
+        .await
+        .map_err(unavailable)
+}
 fn applied(result: WriteResult) -> Result<bool, RecoveryError> {
     match result {
         WriteResult::Submitted(submission) => match submission.result {
@@ -1150,6 +1175,7 @@ impl StoreRecovery {
                 predecessor: current.map(|(_, raw)| raw),
                 run,
                 selection_proof: None,
+                reconciling: false,
             };
             self.state
                 .lock()
@@ -1158,7 +1184,15 @@ impl StoreRecovery {
                 .insert(event.operation_id, pending.clone());
             pending
         };
-        if pending.selection_proof.is_none() {
+        if pending.reconciling {
+            return Err(unavailable(
+                "recovery candidate remains retained and unconfirmed",
+            ));
+        }
+        // A retained proof means an earlier crossing of this exact attempt has an
+        // unknown outcome (cancelled or reply lost).
+        let redrive = pending.selection_proof.is_some();
+        if !redrive {
             self.journal
                 .confirm(&pending.run)
                 .await
@@ -1191,12 +1225,35 @@ impl StoreRecovery {
             .await
             .map_err(unavailable)?;
         let selected = applied(result)?;
+        if !selected && redrive {
+            // The re-drive's no-effect does not resolve the earlier crossing, which
+            // may still land: keep the exact attempt and never resubmit it.
+            if let Some(saved) = self
+                .state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .pending
+                .get_mut(&event.operation_id)
+            {
+                saved.reconciling = true;
+            }
+            return Err(unavailable(
+                "recovery candidate remains retained and unconfirmed",
+            ));
+        }
         if !selected {
             // A definitive no-effect may coincide with another exact selector.
             // Its complete current ancestry remains the only acceptable proof.
+            // This node's ownership is re-proved first, then the selection.
             // Only a genuine selection conflict discards the pending work; a
             // transient refusal keeps it and the next attempt re-proves (PERFPASS-F2 T2c).
-            match self.verify_written_checkpoint(event).await {
+            let verified = async {
+                let mut history = self.continuing();
+                self.owned_with_history(&mut history).await?;
+                drop(history);
+                self.verify_written_checkpoint(event).await
+            };
+            match verified.await {
                 Ok(()) => {}
                 Err(RecoveryError::Conflict(_)) => {
                     self.state
@@ -1471,11 +1528,7 @@ impl RecoverySink for StoreRecovery {
                 result.push(selected);
             }
         }
-        StoreJournal::new(&self.store, self.node)
-            .map_err(unavailable)?
-            .confirm_owned(&local)
-            .await
-            .map_err(unavailable)?;
+        confirm_this_node(&self.store, &self.journal, &local).await?;
         Ok(result)
     }
     async fn replay(&self) -> Result<Vec<RecoveryEvent>, RecoveryError> {
@@ -1484,7 +1537,7 @@ impl RecoverySink for StoreRecovery {
         let mut events = Vec::new();
         for (operation, tip) in heads(&self.store).await? {
             if tip.node == self.node {
-                let mut history = History::new(&self.store);
+                let mut history = History::observing(&self.store, &self.journal);
                 let mut chain = Vec::new();
                 history
                     .selection(&operation, &tip, |_, candidate| {
@@ -1499,11 +1552,7 @@ impl RecoverySink for StoreRecovery {
                 events.extend(chain);
             }
         }
-        StoreJournal::new(&self.store, self.node)
-            .map_err(unavailable)?
-            .confirm_owned(&local)
-            .await
-            .map_err(unavailable)?;
+        confirm_this_node(&self.store, &self.journal, &local).await?;
         Ok(events)
     }
     async fn verify_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
@@ -1562,7 +1611,7 @@ impl RecoverySink for StoreRecovery {
             .await?
             .ok_or_else(|| invalid("selected handover disappeared"))?
             .0;
-        let mut history = History::new(&self.store);
+        let mut history = History::observing(&self.store, &self.journal);
         let mut events = Vec::new();
         history
             .selection(&resolution.operation_id, &tip, |_, candidate| {

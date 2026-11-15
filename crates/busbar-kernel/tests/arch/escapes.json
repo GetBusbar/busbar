@@ -6,11 +6,13 @@
       "busbar-plugin-loader": "W4.3"
     },
     "sites": {
+      "crates/busbar-core-connector/src/conns.rs": { "keywords": 0, "allows": 1, "by": "slimming (callback_waker)" },
       "crates/busbar-core-connector/src/child_job.rs": { "keywords": 35, "allows": 0, "by": "W3.6 (edge::sys)" },
       "crates/busbar-core-connector/src/io/unix.rs": { "keywords": 1, "allows": 1, "by": "W3.6 (edge::sys)" },
       "crates/busbar-core-connector/src/lib.rs": { "keywords": 0, "allows": 1, "by": "W3.6 (edge::sys)" },
       "crates/busbar-kernel/src/lib.rs": { "keywords": 0, "allows": 1, "by": "W3.10 (boot::mallctl)" },
       "crates/busbar-kernel/src/mallctl.rs": { "keywords": 2, "allows": 0, "by": "W3.10 (boot::mallctl)" },
+      "crates/busbar-kernel/src/persistence/slot_seal.rs": { "keywords": 0, "allows": 1, "by": "W4.3 (no_mangle root)" },
       "crates/busbar-kernel/src/plane_driver/registry.rs": { "keywords": 1, "allows": 1, "by": "W3.11" },
       "crates/busbar-kernel/src/preflight.rs": { "keywords": 1, "allows": 1, "by": "W3.11" },
       "crates/busbar-kernel/src/seal.rs": { "keywords": 0, "allows": 1, "by": "W4.3" },
@@ -18,11 +20,6 @@
       "crates/busbar-migrations/src/seal.rs": { "keywords": 0, "allows": 1, "by": "W4.S3" }
     },
     "forbid": [
-      "crates/busbar-contract/src/abi/host/service.rs",
-      "crates/busbar-contract/src/abi/sdk/conn.rs",
-      "crates/busbar-contract/src/abi/sdk/io.rs",
-      "crates/busbar-contract/src/abi/sdk/out.rs",
-      "crates/busbar-contract/src/abi/sdk/publish.rs",
       "crates/busbar-contract/src/caps/mod.rs",
       "crates/busbar-contract/src/json_grammar.rs",
       "crates/busbar-contract/src/secure.rs",
@@ -44,6 +41,15 @@
       "crates/busbar-plugin-test/src/lib.rs",
       "crates/busbar/src/main.rs"
     ]
+  },
+  "admitted": {
+    "crates/busbar-contract/src/abi/host/service.rs": "owner R-CHECKS 2026-11-15: the file carries ABI unsafe and no inner forbid; the forbid entry was stale",
+    "crates/busbar-contract/src/abi/sdk/conn.rs": "owner R-CHECKS 2026-11-15: the file carries ABI unsafe and no inner forbid; the forbid entry was stale",
+    "crates/busbar-contract/src/abi/sdk/io.rs": "owner R-CHECKS 2026-11-15: the file carries ABI unsafe and no inner forbid; the forbid entry was stale",
+    "crates/busbar-contract/src/abi/sdk/out.rs": "owner R-CHECKS 2026-11-15: the file carries ABI unsafe and no inner forbid; the forbid entry was stale",
+    "crates/busbar-contract/src/abi/sdk/publish.rs": "owner R-CHECKS 2026-11-15: the file carries ABI unsafe and no inner forbid; the forbid entry was stale",
+    "crates/busbar-core-connector/src/conns.rs": "owner R-CHECKS 2026-11-15: keep the unsafe-placement check, freeze today's sites, new ones fail",
+    "crates/busbar-kernel/src/persistence/slot_seal.rs": "owner R-CHECKS 2026-11-15: keep the unsafe-placement check, freeze today's sites, new ones fail"
   },
   "dead_code": {
     "crates/busbar-contract/src/abi/mechanism/decl.rs": 2,
