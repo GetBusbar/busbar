@@ -565,18 +565,6 @@ pub fn apply_named_maps_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
                      applied (edit or remove it, then reload)",
                     section.key()
                 );
-                continue;
-            }
-            // Provenance for the operator file policy (OPERATOR-FROM-ADMITTED-AUTH §3.5): an
-            // operator-backed definition the overlay holds is refused by `config_validate`.
-            if matches!(section, NamedMapSection::IdentityProviders)
-                && deploy
-                    .identity_providers
-                    .get(name)
-                    .is_some_and(crate::config::operator_file::operator_backed)
-                && !deploy.operator_overlay_names.contains(name)
-            {
-                deploy.operator_overlay_names.push(name.clone());
             }
         }
     }

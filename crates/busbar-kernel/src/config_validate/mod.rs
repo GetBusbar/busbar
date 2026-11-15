@@ -1934,27 +1934,6 @@ fn judge_operator(cfg: &RootCfg, errors: &mut Vec<String>, advisories: &mut Advi
     if cfg.admin_auth.iter().any(|name| name.trim().is_empty()) {
         refuse(errors, operator::no_default_admin_chain());
     }
-
-    // THE FILE POLICY (ruling 2, §3.5/§3.6.1): an operator-backed definition the overlay holds is
-    // refused; a candidate held to the base file's reference is refused on any difference.
-    let file_policy = crate::config::operator_file::overlay_operator_definition(cfg)
-        .map(|name| (name, operator::operator_file_policy(name)))
-        .or_else(|| {
-            let reference = cfg.operator_file_defs.as_deref()?;
-            let name = crate::config::operator_file::operator_file_difference(
-                &cfg.identity_providers,
-                reference,
-            )?;
-            Some((name, operator::operator_file_policy(name)))
-        });
-    if let Some((name, text)) = file_policy {
-        crate::audit::auditlog::record_operator(
-            crate::audit::auditlog::OperatorAudit::RefusedFilePolicy,
-            name,
-            "config",
-        );
-        refuse(errors, text);
-    }
 }
 
 fn example_reference(sugars: &busbar_contract::secret_ref::Sugars, var: &str) -> String {

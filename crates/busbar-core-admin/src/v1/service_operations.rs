@@ -486,13 +486,9 @@ impl AdminService {
             PluginQuery::Auth => {
                 let chain = self.app.auth.chain_names();
                 for name in auth_modules_compiled_in() {
-                    // The operator row is found through the admitted words; it is an installed
-                    // plugin row (linked or dropped), never a compiled-in built-in (§3.9).
-                    let operator = !busbar_kernel::config::operator_provider().is_empty()
-                        && busbar_kernel::config::names_operator(name);
                     let active = if name == busbar_kernel::config::KEYS_MODULE {
                         self.app.auth.keys_in_chain
-                    } else if operator {
+                    } else if name == busbar_kernel::config::operator_provider() {
                         let op = &self.app.admin_modules.operator;
                         self.app.admin_chain.iter().any(|m| op.is(m))
                     } else {
@@ -501,7 +497,7 @@ impl AdminService {
                     plugins.push(PluginView::basic(
                         name.to_string(),
                         "auth",
-                        if operator { "installed" } else { "compiled-in" },
+                        "compiled-in",
                         Some(active),
                         None,
                     ));
@@ -1181,10 +1177,9 @@ impl AdminService {
         let plugins_dir = self.app.plugins_dir.to_string_lossy().into_owned();
 
         let rules = std::sync::Arc::clone(&self.app.root_rules);
-        let reference = std::sync::Arc::clone(&self.app.operator_file_defs);
         match tokio::task::spawn_blocking(move || {
             let _gate = gate;
-            validate_config_blocking(deploy, &defs, plugins_dir, &rules, reference)
+            validate_config_blocking(deploy, &defs, plugins_dir, &rules)
         })
         .await
         {
@@ -1819,14 +1814,11 @@ fn validate_config_blocking(
     defs: &std::collections::HashMap<String, ProviderDef>,
     plugins_dir: String,
     rules: &std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>,
-    reference: std::sync::Arc<busbar_kernel::config::OperatorFileDefs>,
 ) -> ConfigValidateView {
-    let mut root = match busbar_kernel::config::resolve(&deploy, defs) {
+    let root = match busbar_kernel::config::resolve(&deploy, defs) {
         Ok(root) => root,
         Err(errors) => return ConfigValidateView { ok: false, errors },
     };
-    // A body is held to the running generation's disk reference (OPERATOR-FROM-ADMITTED-AUTH §3.6.1).
-    root.operator_file_defs = Some(reference);
 
     deploy.plugins.dir = plugins_dir;
 

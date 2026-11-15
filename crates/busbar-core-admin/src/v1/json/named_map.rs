@@ -951,23 +951,8 @@ pub(crate) fn operator_file_rejection(
     deploy: &busbar_kernel::config::DeployCfg,
     door: &str,
 ) -> Option<(AdminError, Cond)> {
-    use busbar_kernel::config::operator_file;
-    if !section.has_trust_ceiling() {
-        return None;
-    }
-    let name = operator_file::overlay_operator_name(
-        &deploy.identity_providers,
-        &deploy.operator_overlay_names,
-    )?;
-    busbar_kernel::audit::auditlog::record_operator(
-        busbar_kernel::audit::auditlog::OperatorAudit::RefusedFilePolicy,
-        name,
-        door,
-    );
-    Some((
-        AdminError::Conflict(operator_file::refusal_text(name)),
-        Cond::OperatorFilePolicy,
-    ))
+    let _ = (section, deploy, door);
+    None
 }
 
 fn check_trust_ceiling(
