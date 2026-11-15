@@ -14,7 +14,7 @@ RETIRED. Serving no longer applies deprecated operational environment overrides.
 
 ## How to fix it
 
-Run the 1.6 migration before serving, review and validate its output, then remove the retired variables from launchers. See docs/migration-1.6.md.
+Run the 1.6 migration before serving, review and validate its output, then remove the retired variables from launchers. See docs/migration-1.6.md. See BUSBAR-3029.
 
 ---
 
