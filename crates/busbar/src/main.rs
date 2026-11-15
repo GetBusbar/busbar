@@ -678,6 +678,7 @@ async fn run(
         config_read_only: _,
         overlay_doc: _,
         unset_env_vars: _,
+        operator_reference: _,
     } = loaded;
     // The 1.5.5 overlay selection of the authored deployment, captured while startup custody
     // is open. Startup conversion drops the selector; the serve gate below still answers for

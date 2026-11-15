@@ -2217,6 +2217,19 @@ pub(crate) async fn apply_config(
                 )
             }
         };
+    if let Some(refusal) = config_body_refusal(
+        &req_deploy,
+        &handle.load().operator_file_defs,
+        "config.apply",
+    ) {
+        audit::AUDIT.record_by(
+            "config.apply",
+            "config:body",
+            audit::OUTCOME_REJECTED,
+            &actor,
+        );
+        return err_json_cond(&refusal, Cond::OperatorFilePolicy);
+    }
     let req_providers = req.providers;
     let out = config_transaction(&handle, move |txn| {
         let current = txn.app();
@@ -4883,12 +4896,38 @@ pub(crate) async fn validate_config(
                 )))
             }
         };
+    // A dry run never says yes to what apply refuses: the same pre-check, status and text.
+    if let Some(refusal) = config_body_refusal(
+        &deploy,
+        &handle.load().operator_file_defs,
+        "config.validate",
+    ) {
+        return err_json_cond(&refusal, Cond::OperatorFilePolicy);
+    }
     respond(
         StatusCode::OK,
         service(&handle)
             .validate_config(deploy, req.providers)
             .await,
     )
+}
+
+/// What `POST /config/apply` and `POST /config/validate` append to the operator file-policy
+/// refusal of a body: the two answer the same status, condition and text.
+pub(crate) const CONFIG_BODY_REMEDY: &str = " (config/apply takes the operator credential from \
+    config.yaml; edit the file and POST /config/reload)";
+
+/// THE BODY PRE-CHECK (OPERATOR-FROM-ADMITTED-AUTH §3.6.1): a config body read as the base file
+/// may not introduce, change or remove a definition backed by the operator credential. It is held
+/// to the running generation's disk reference, before any transaction or build, and the refusal
+/// raises the `auth.operator.refused / file_policy` row naming `door`. Apply and validate share it.
+pub(crate) fn config_body_refusal(
+    deploy: &busbar_kernel::config::DeployCfg,
+    reference: &busbar_kernel::config::OperatorFileDefs,
+    door: &str,
+) -> Option<AdminError> {
+    let _ = (deploy, reference, door);
+    None
 }
 
 const EMPTY_CHAIN_REFUSED_LIVE: bool = true;

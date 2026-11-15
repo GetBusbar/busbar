@@ -119,6 +119,10 @@ pub struct LoadedConfig {
     pub overlay_doc: Option<config::overlay::OverlayDoc>,
 
     pub unset_env_vars: Vec<String>,
+
+    /// config.yaml's operator-backed definitions exactly as read from disk, before any
+    /// `document_patch` is composed (OPERATOR-FROM-ADMITTED-AUTH §000.1): the file-policy reference.
+    pub operator_reference: config::OperatorFileDefs,
 }
 
 #[cold]
@@ -378,7 +382,9 @@ pub fn load_config_from_disk_compacting_document_patches(
     let config_read_only = false;
 
     let overlay_doc = None;
+    let operator_reference = config::OperatorFileDefs::of(&deploy.identity_providers);
     Ok(LoadedConfig {
+        operator_reference,
         deploy,
         defs,
         providers_path,

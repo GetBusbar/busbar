@@ -110,6 +110,7 @@ pub const REASONS: &[ReasonRow] = &[
     row!("name_collision", "conflict", 409),
     row!("invalid_labels", "invalid_request", 400),
     row!("trust_ceiling_raise", "conflict", 409),
+    row!("operator_file_policy", "conflict", 409),
     row!("still_referenced", "conflict", 409),
     row!("unpriced", "unpriced_class", 409),
     row!("restart_unreachable", "conflict", 409),

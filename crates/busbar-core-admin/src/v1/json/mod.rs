@@ -672,5 +672,9 @@ mod tests;
 #[path = "tests/envelope_reasons.rs"]
 mod envelope_reasons;
 
+#[cfg(test)]
+#[path = "tests/operator_file_policy_tests.rs"]
+mod operator_file_policy_tests;
+
 #[cfg(feature = "test-support")]
 pub use handlers::credential_flush_response_for_test;
