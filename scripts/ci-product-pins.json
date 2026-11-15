@@ -32,7 +32,10 @@
       "alias": "ldap",
       "image": "libbusbar_auth_ldap_plugin.so",
       "declares": "auth-ldap/declares.json",
-      "lock_sha256": "9c3da7cd397f2425181329ea73e1c2ec998fac2520f98ceb7d4bdaff3a0b8b00"
+      "lock_sha256": "9c3da7cd397f2425181329ea73e1c2ec998fac2520f98ceb7d4bdaff3a0b8b00",
+      "former_names": [
+        "busbar-auth-ldap-plugin"
+      ]
     },
     {
       "repo": "busbar-auth-sigv4",
@@ -142,7 +145,10 @@
       "alias": "sqlite",
       "image": "libbusbar_store_sqlite_plugin.so",
       "declares": "store-sqlite/declares.json",
-      "lock_sha256": "652651e2c0893ee629c4358940413dcb149284ecb85b131459c456c5e2ffaf6b"
+      "lock_sha256": "652651e2c0893ee629c4358940413dcb149284ecb85b131459c456c5e2ffaf6b",
+      "former_names": [
+        "busbar-store-sqlite-plugin"
+      ]
     },
     {
       "repo": "busbar-transport-grpc",
@@ -219,7 +225,10 @@
       "alias": "github",
       "image": "libbusbar_auth_github_plugin.so",
       "declares": "auth-github/declares.json",
-      "lock_sha256": "a5b82d7141cab880c835eb39a287c2257fb5e7f63ce19075e14abae8a0346969"
+      "lock_sha256": "a5b82d7141cab880c835eb39a287c2257fb5e7f63ce19075e14abae8a0346969",
+      "former_names": [
+        "busbar-auth-github-plugin"
+      ]
     },
     {
       "repo": "busbar-auth-oauth",
@@ -241,7 +250,10 @@
       "alias": "oidc",
       "image": "libbusbar_auth_oidc_plugin.so",
       "declares": "auth-oidc/declares.json",
-      "lock_sha256": "474e591fa7f0404e72f767ac629d33c893f0611340d6c48c66e260beab81f79f"
+      "lock_sha256": "474e591fa7f0404e72f767ac629d33c893f0611340d6c48c66e260beab81f79f",
+      "former_names": [
+        "busbar-auth-oidc-plugin"
+      ]
     },
     {
       "repo": "busbar-export-otlp",
@@ -274,7 +286,10 @@
       "alias": "webrequest",
       "image": "libbusbar_hook_webrequest_plugin.so",
       "declares": "hook-webrequest/declares.json",
-      "lock_sha256": "096fc325f1cbe1c241a1afa6297e65a89c515d981f1d8e1a389193db40c091dc"
+      "lock_sha256": "096fc325f1cbe1c241a1afa6297e65a89c515d981f1d8e1a389193db40c091dc",
+      "former_names": [
+        "busbar-webrequest"
+      ]
     },
     {
       "repo": "busbar-plane-a2a",
@@ -329,7 +344,10 @@
       "alias": "vault",
       "image": "libbusbar_secret_vault_plugin.so",
       "declares": "secret-vault/declares.json",
-      "lock_sha256": "3486835b020bd1d7bc955d15ac169064d31ace122a20cdf6507634a5ff0e2928"
+      "lock_sha256": "3486835b020bd1d7bc955d15ac169064d31ace122a20cdf6507634a5ff0e2928",
+      "former_names": [
+        "busbar-hashicorp-vault"
+      ]
     },
     {
       "repo": "busbar-store-mysql",
@@ -340,7 +358,10 @@
       "alias": "mysql",
       "image": "libbusbar_store_mysql_plugin.so",
       "declares": "store-mysql/declares.json",
-      "lock_sha256": "889e9836fc9a0f77484d75b0e7621b511955dacef10baa250854dda365abcff0"
+      "lock_sha256": "889e9836fc9a0f77484d75b0e7621b511955dacef10baa250854dda365abcff0",
+      "former_names": [
+        "busbar-store-mysql-plugin"
+      ]
     },
     {
       "repo": "busbar-store-postgres",
@@ -351,7 +372,10 @@
       "alias": "postgres",
       "image": "libbusbar_store_postgres_plugin.so",
       "declares": "store-postgres/declares.json",
-      "lock_sha256": "1cd28ac529ab2c6aa9df64e8caf4104773b8f72250939b28ee15e50cae9ad15e"
+      "lock_sha256": "1cd28ac529ab2c6aa9df64e8caf4104773b8f72250939b28ee15e50cae9ad15e",
+      "former_names": [
+        "busbar-store-postgres-plugin"
+      ]
     },
     {
       "repo": "busbar-store-valkey",
@@ -362,7 +386,10 @@
       "alias": "valkey",
       "image": "libbusbar_store_valkey_plugin.so",
       "declares": "store-valkey/declares.json",
-      "lock_sha256": "615fabb0e3ae3adb2cd786058c50f08e9c8084723a056fe06f7b73d3ec5aecef"
+      "lock_sha256": "615fabb0e3ae3adb2cd786058c50f08e9c8084723a056fe06f7b73d3ec5aecef",
+      "former_names": [
+        "busbar-store-valkey-plugin"
+      ]
     },
     {
       "repo": "busbar-hook-complexity",
