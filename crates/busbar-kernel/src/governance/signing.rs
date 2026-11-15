@@ -190,9 +190,10 @@ impl TokenSigner {
         }
         #[cfg(test)]
         SUBKEY_DERIVATIONS.with(|c| c.set(c.get() + 1));
-        let mut seed = self.derived_subkey_seed(domain);
+        // The seed is wiped when it drops, right after the key is built from it.
+        let seed = busbar_contract::secure::SecureArray::from(self.derived_subkey_seed(domain));
         let key = Arc::new(signing_key(&seed));
-        zeroize::Zeroize::zeroize(&mut seed);
+        drop(seed);
         if set.len() < MAX_SIGNING_DOMAINS {
             set.push((domain.into(), Arc::clone(&key)));
         }
@@ -261,21 +262,7 @@ impl TokenSigner {
     /// `prefix` + base64url(payload) + `.` + base64url(signature), written into the one token
     /// String with no intermediate encodings.
     fn sign_token(&self, prefix: &str, claims: &MintClaims<'_>) -> String {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a signed token is minted once per key mint or token exchange (control plane)"
-        )]
-        let payload = serde_json::to_vec(claims).expect("TokenClaims serializes");
-        let sig = self.key.sign(&payload);
-        let encoded = |bytes: usize| bytes.div_ceil(3) * 4;
-        // busbar:expect(bp::fresh_buffer, reason = "config: a signed token is minted once per key mint or token exchange (control plane)")
-        let mut token =
-            String::with_capacity(prefix.len() + encoded(payload.len()) + 1 + encoded(64));
-        token.push_str(prefix);
-        URL_SAFE_NO_PAD.encode_string(&payload, &mut token);
-        token.push('.');
-        URL_SAFE_NO_PAD.encode_string(sig, &mut token);
-        token
+        crate::cold::governance::state::signing_token(&self.key, prefix, claims)
     }
 }
 

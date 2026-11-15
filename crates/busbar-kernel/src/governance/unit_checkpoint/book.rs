@@ -122,10 +122,9 @@ impl RecoveredTargets {
                         .or_insert(NonZeroUsize::MIN);
                 }
                 None => {
-                    index.insert(
-                        target.bucket.as_str().into(),
-                        BTreeMap::from([(target.window, NonZeroUsize::MIN)]),
-                    );
+                    let mut windows = BTreeMap::new();
+                    windows.insert(target.window, NonZeroUsize::MIN);
+                    index.insert(target.bucket.as_str().into(), windows);
                 }
             }
         }
@@ -308,7 +307,9 @@ impl PendingGuard<'_> {
                 .get(id)
                 .is_some_and(|entry| !entry.recovered)
             {
-                several |= found.replace(*id).is_some();
+                if found.replace(*id).is_some() {
+                    several = true;
+                }
             }
         }
         match found {
@@ -327,12 +328,15 @@ impl PendingGuard<'_> {
 
     /// Every id. A cold walk: the flusher's pass and shutdown only.
     pub(super) fn ids(&self) -> Vec<Id> {
-        self.inner.entries.keys().copied().collect()
+        crate::off_path::governance::runtime::unit_checkpoint_book_ids(self.inner.entries.keys())
     }
 
     /// Whether every entry satisfies `f`. A cold walk: boot only.
     pub(super) fn all(&self, f: impl FnMut(&Pending) -> bool) -> bool {
-        self.inner.entries.values().all(f)
+        crate::off_path::governance::runtime::unit_checkpoint_book_all(
+            self.inner.entries.values(),
+            f,
+        )
     }
 }
 

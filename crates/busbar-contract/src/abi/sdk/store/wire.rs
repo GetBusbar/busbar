@@ -10,8 +10,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::task::{Context, Poll, Waker};
 
-use zeroize::Zeroize;
-
 use crate::secure::SecureVec;
 
 use super::op::{Checkout, Op, Step};
@@ -83,7 +81,7 @@ impl Output {
 
     fn consume(&mut self, n: usize) {
         let end = self.done + n.min(self.bytes.len() - self.done);
-        self.bytes[self.done..end].zeroize();
+        crate::secure::wipe(&mut self.bytes[self.done..end]);
         self.done = end;
         if self.done == self.bytes.len() {
             self.clear();
@@ -91,7 +89,8 @@ impl Output {
     }
 
     fn clear(&mut self) {
-        self.bytes.zeroize();
+        crate::secure::wipe(&mut self.bytes);
+        self.bytes.clear();
         self.done = 0;
     }
 }
@@ -532,7 +531,7 @@ impl ReadBufs {
 
     /// Keep `buf` for the next op (dropped past [`READ_BUFS_KEPT`]).
     fn give(&self, mut buf: SecureVec) {
-        buf[..].zeroize();
+        crate::secure::wipe(&mut buf[..]);
         let mut kept = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         if kept.len() < READ_BUFS_KEPT {
             kept.push(buf);
@@ -629,10 +628,6 @@ impl Channels {
     #[must_use]
     pub fn new(count: usize) -> Self {
         assert!(count > 0, "native channels require a connection slot");
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a store instance's retained channels, made once as it opens"
-        )]
         let (pools, wires) = (
             (0..count).map(|_| Pool::new(1)).collect(),
             (0..count).map(|_| Wire::default()).collect(),
@@ -685,11 +680,7 @@ pub fn drive_channels<T: 'static>(
             channels.waiting.clone(),
         ))
     };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a lifecycle operation's retained channels, listed once per operation"
-    )]
-    let pools = channels.pools.iter().cloned().map(Some).collect();
+    let pools = channels.pools.iter().cloned().map(Some);
     run_channels(cx, pools, Some(&channels.wires), claim, |wires| {
         start(wires.into_vec())
     })
@@ -786,10 +777,10 @@ fn run<T: 'static>(
     pool: Option<&Arc<Pool>>,
     start: impl FnOnce(Wire) -> Body<T>,
 ) -> Step<T> {
-    // One channel: its pool, channel and wire lists stay inline, never on the heap.
+    // One channel: its channel and wire lists stay inline, never on the heap.
     run_channels(
         cx,
-        smallvec::smallvec![pool.cloned()],
+        std::iter::once(pool.cloned()),
         None,
         None,
         |mut wires| start(wires.swap_remove(0)),
@@ -798,7 +789,7 @@ fn run<T: 'static>(
 
 fn run_channels<T: 'static>(
     cx: &mut Op<'_>,
-    pools: OpChannels<Option<Arc<Pool>>>,
+    pools: impl IntoIterator<Item = Option<Arc<Pool>>>,
     wires: Option<&[Wire]>,
     claim: Option<ChannelClaim>,
     start: impl FnOnce(OpChannels<Wire>) -> Body<T>,
@@ -1440,7 +1431,7 @@ fn serve(
                     replay: true,
                 },
             };
-            buf.zeroize();
+            crate::secure::wipe(buf);
             served
         }
         Ask::Upgrade { name, verify_off } => match services.upgrade_secure_flagged(

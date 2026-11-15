@@ -25,6 +25,7 @@ use busbar_contract::auth_calls::{
 };
 use busbar_contract::secure::{SecureString, SecureVec};
 
+use crate::cold::auth_door as cold;
 use crate::dispatch::call::{Answering, Pending, Ticketed};
 use crate::dispatch::kinds::auth::{Auth, AuthFacts};
 use crate::dispatch::lifecycle::{
@@ -220,9 +221,15 @@ struct Held {
 
     groups: *mut Span,
     groups_cap: u32,
+
+    // The three allocations the pointers above point into. They are never touched again until
+    // `Drop` (moving a `Vec` does not move its heap block), so the pointers stay valid.
+    _strip_store: Vec<StripName>,
+    buf_store: Vec<u8>,
+    _groups_store: Vec<Span>,
 }
 
-// SAFETY: the three buffers point only into allocations `Held` owns and frees in `Drop`;
+// SAFETY: the three buffers point only into allocations `Held` owns and frees when dropped;
 // after construction nothing writes through them but the plugin crossing under the dispatcher,
 // which never runs concurrently with the host's read (the host reads only after the op completed).
 unsafe impl Send for Held {}
@@ -252,20 +259,21 @@ impl Headers {
 
 impl Held {
     fn new(input: Arc<VerifyInput>, buf_cap: usize, groups_cap: u32, strip_cap: u32) -> Arc<Self> {
-        let buf = Box::into_raw(vec![0u8; buf_cap].into_boxed_slice()).cast::<u8>();
+        let mut buf_store = vec![0u8; buf_cap];
+        let buf = buf_store.as_mut_ptr();
         let empty = Span {
             offset: SPAN_ABSENT,
             len: 0,
         };
-        let groups =
-            Box::into_raw(vec![empty; groups_cap as usize].into_boxed_slice()).cast::<Span>();
+        let mut groups_store = vec![empty; groups_cap as usize];
+        let groups = groups_store.as_mut_ptr();
         let unnamed = StripName {
             name: empty,
             place: 0,
             _reserved: 0,
         };
-        let strip =
-            Box::into_raw(vec![unnamed; strip_cap as usize].into_boxed_slice()).cast::<StripName>();
+        let mut strip_store = vec![unnamed; strip_cap as usize];
+        let strip = strip_store.as_mut_ptr();
         Arc::new(Self {
             input,
             strip,
@@ -274,6 +282,9 @@ impl Held {
             buf_cap,
             groups,
             groups_cap,
+            _strip_store: strip_store,
+            buf_store,
+            _groups_store: groups_store,
         })
     }
 
@@ -429,21 +440,8 @@ impl Held {
 
 impl Drop for Held {
     fn drop(&mut self) {
-        // SAFETY: the three allocations were made in `new` from boxed slices of exactly these
-        // lengths, and nothing reads them once the last `Arc` is dropped.
-        unsafe {
-            let buf = std::ptr::slice_from_raw_parts_mut(self.buf, self.buf_cap);
-            zero(&mut *buf);
-            drop(Box::from_raw(buf));
-            drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
-                self.groups,
-                self.groups_cap as usize,
-            )));
-            drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
-                self.strip,
-                self.strip_cap as usize,
-            )));
-        }
+        // Nothing reads the buffers once the last `Arc` is dropped; the stores free themselves.
+        zero(&mut self.buf_store);
     }
 }
 
@@ -485,16 +483,7 @@ pub(crate) fn declined(
 ) -> Option<String> {
     let text = crate::dispatch::plugin::copy_str(out.head.error)?;
     let reason = crate::dispatch::lifecycle::lossy(text);
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the auth plugin declined and said why"
-    )]
-    let line = format!("{what}: {reason}");
-    plugin.note(severity, &line);
-    match severity {
-        0 => tracing::info!(plugin = %plugin.name(), "{line}"),
-        _ => tracing::warn!(plugin = %plugin.name(), "{line}"),
-    }
+    cold::note_declined(plugin, severity, what, &reason);
     Some(reason)
 }
 
@@ -547,13 +536,8 @@ pub struct AuthSink(Arc<FlushSink>);
 impl AuthSink {
     #[must_use]
     pub fn new(plugin: &str) -> Self {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: an auth instance's sink keeps its plugin name"
-        )]
-        let plugin = plugin.to_string();
         Self(Arc::new(FlushSink {
-            plugin,
+            plugin: cold::sink_plugin(plugin),
             family: Mutex::new(None),
             flushed: AtomicU64::new(0),
         }))
@@ -720,21 +704,20 @@ impl KeptSecrets {
             return Ok(Vec::new());
         }
         let seal = seal.ok_or("credential lending requires the host settings seal")?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: an auth instance lends its credentials once, when it opens"
-        )]
-        let blobs = self
-            .0
-            .iter()
-            .map(|s| Blob {
-                ptr: s.expose(seal).as_ptr(),
-                len: s.expose(seal).len(),
-                fmt: BLOB_OCTETS,
-                flags: BLOB_SECRET,
-            })
-            .collect();
-        Ok(blobs)
+        Ok(cold::lent_blobs(self, seal))
+    }
+
+    /// One secret blob per kept secret, pointing into the material `self` holds.
+    pub(crate) fn lent<'a>(
+        &'a self,
+        seal: &'a (dyn busbar_contract::plugin::KernelSeal + Send + Sync),
+    ) -> impl Iterator<Item = Blob> + 'a {
+        self.0.iter().map(move |s| Blob {
+            ptr: s.expose(seal).as_ptr(),
+            len: s.expose(seal).len(),
+            fmt: BLOB_OCTETS,
+            flags: BLOB_SECRET,
+        })
     }
 }
 
@@ -754,18 +737,9 @@ fn instance_carriers(
     use busbar_contract::abi::auth::{EXT_CARRIERS, FACT_DEFAULT_INBOUND_STYLE};
     use busbar_contract::abi::mechanism::extensions;
 
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the auth instance returned invalid carrier metadata"
-    )]
-    let invalid = || "auth instance returned invalid carrier metadata".to_string();
+    let invalid = cold::invalid_carriers;
     if blob.fmt == BLOB_ABSENT && blob.len == 0 {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: an open or refresh that names no carriers keeps the previous ones"
-        )]
-        let kept = previous.to_vec();
-        return Ok(kept);
+        return Ok(cold::kept_carriers(previous));
     }
     if blob.fmt != BLOB_OCTETS || (blob.len != 0 && blob.ptr.is_null()) {
         return Err(invalid());
@@ -782,26 +756,27 @@ fn instance_carriers(
         if selection.is_some() {
             return Err(invalid());
         }
-        let names: Vec<String> = serde_json::from_slice(value).map_err(|_| invalid())?;
-        // busbar:expect(bp::fresh_buffer, reason = "config: an open or refresh selects the instance's carriers once")
-        let mut selected = Vec::new();
-        for name in names {
+        // The selection is the stated names themselves, lowered and deduplicated in place
+        // (first occurrence kept, in order).
+        let mut selected: Vec<String> = serde_json::from_slice(value).map_err(|_| invalid())?;
+        for name in &mut selected {
             if !facts
                 .carriers
                 .iter()
-                .any(|declared| declared.eq_ignore_ascii_case(&name))
+                .any(|declared| declared.eq_ignore_ascii_case(name.as_str()))
             {
                 return Err(invalid());
             }
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: an open or refresh selects the instance's carriers once"
-            )]
-            let name = name.to_ascii_lowercase();
-            if !selected.contains(&name) {
-                selected.push(name);
+            name.make_ascii_lowercase();
+        }
+        let mut kept = 0;
+        for at in 0..selected.len() {
+            if !selected[..kept].contains(&selected[at]) {
+                selected.swap(kept, at);
+                kept += 1;
             }
         }
+        selected.truncate(kept);
         if selected.is_empty() && facts.facts & FACT_DEFAULT_INBOUND_STYLE != 0 {
             return Err(invalid());
         }
@@ -810,12 +785,7 @@ fn instance_carriers(
     if consumed != bytes.len() {
         return Err(invalid());
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: an open or refresh that names no carriers keeps the previous ones"
-    )]
-    let selected = selection.unwrap_or_else(|| previous.to_vec());
-    Ok(selected)
+    Ok(selection.unwrap_or_else(|| cold::kept_carriers(previous)))
 }
 
 fn instance_metadata(
@@ -827,19 +797,13 @@ fn instance_metadata(
     let carriers = instance_carriers(blob, previous, facts)?;
     // SAFETY: instance_carriers checked the envelope; the caller retains the READY reply lease.
     let bytes = unsafe { crate::dispatch::plugin::blob_bytes(blob) };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the auth instance's login presentation did not read"
-    )]
     let presentation = busbar_contract::auth_calls::presentation::login_presentation(bytes)
-        .map_err(str::to_string)?;
+        .map_err(cold::presentation_refused)?;
     if presentation.is_some() && facts.caps & busbar_contract::abi::auth::CAP_LOGIN == 0 {
         return Err("auth login presentation requires the login capability".into());
     }
-    // busbar:expect(bp::into_alloc, reason = "config: an instance's carriers are shared once per open or refresh")
-    let carriers: Arc<[String]> = Arc::from(carriers);
     Ok(InstanceMetadata {
-        carriers,
+        carriers: cold::shared_carriers(carriers),
         presentation,
         generation,
         attempted_generation: generation,
@@ -876,7 +840,7 @@ impl AuthInstance {
                 .generation
                 .max(metadata.attempted_generation)
                 .checked_add(1)
-                .ok_or_else(|| (None, "auth lifecycle generation exhausted".to_string()))?;
+                .ok_or_else(|| (None, cold::generation_exhausted()))?;
             metadata.attempted_generation = generation;
             generation
         };
@@ -980,10 +944,6 @@ impl AuthInstance {
             0,
             Arc::clone(&tick_failed),
         );
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: an opened auth instance keeps its settings and label"
-        )]
         let opened = Self {
             shared: Arc::new(Shared {
                 plugin,
@@ -997,7 +957,7 @@ impl AuthInstance {
             settings: SecureVec::from(settings),
             secrets: Mutex::new(Arc::new(secrets)),
             lent_fingerprint: Mutex::new(lent_fingerprint),
-            label: label.to_string(),
+            label: cold::instance_label(label),
             lifecycle: Mutex::new(()),
             schedule,
             tick_failed,
@@ -1063,12 +1023,7 @@ impl AuthCalls for AuthInstance {
             .metadata
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: lists the instance's carriers for config and admin"
-        )]
-        let carriers = metadata.carriers.to_vec();
-        carriers
+        cold::listed_carriers(&metadata.carriers)
     }
 
     fn issued_shape(&self) -> Option<busbar_contract::auth_calls::IssuedShape> {
@@ -1172,15 +1127,7 @@ impl AuthCalls for AuthInstance {
             Ok(one) => one,
             Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
             Err(std::sync::TryLockError::WouldBlock) => {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: a second refresh found one already in flight"
-                )]
-                let refused = format!(
-                    "auth instance `{}`: a refresh is already in flight",
-                    self.label
-                );
-                return Err(refused);
+                return Err(cold::refresh_in_flight(&self.label));
             }
         };
         let secrets = Arc::clone(

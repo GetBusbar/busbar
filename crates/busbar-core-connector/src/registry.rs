@@ -101,27 +101,17 @@ impl Transports {
         for (at, e) in entries.iter().enumerate() {
             let facts = e.door.facts();
             if facts.claims.is_empty() {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: a load-time refusal names the entry"
-                )]
-                return Err(ViewRefusal::NoClaim {
-                    entry: facts.name.as_str().to_owned(),
-                });
+                return Err(crate::cold::lines::no_claim(&facts.name));
             }
             for (claim, &scheme) in facts.claims.iter().enumerate() {
                 match by_scheme.entry(scheme) {
                     std::collections::hash_map::Entry::Occupied(first) => {
                         let first = &entries[first.get().0].door.facts().name;
-                        #[expect(
-                            clippy::disallowed_methods,
-                            reason = "error: a load-time refusal names both entries and the scheme"
-                        )]
-                        return Err(ViewRefusal::ClaimedTwice {
-                            scheme: scheme.to_owned(),
-                            first: first.as_str().to_owned(),
-                            second: facts.name.as_str().to_owned(),
-                        });
+                        return Err(crate::cold::lines::claimed_twice(
+                            scheme,
+                            first,
+                            &facts.name,
+                        ));
                     }
                     std::collections::hash_map::Entry::Vacant(slot) => {
                         slot.insert((at, claim));
@@ -136,14 +126,7 @@ impl Transports {
                 .iter()
                 .find(|l| !by_scheme.contains_key(*l))
             {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: a load-time refusal names the entry and the layer"
-                )]
-                return Err(ViewRefusal::UnservedLayer {
-                    entry: facts.name.as_str().to_owned(),
-                    layer: (*layer).to_owned(),
-                });
+                return Err(crate::cold::lines::unserved_layer(&facts.name, layer));
             }
         }
         let carrier = entries.iter().position(|e| {

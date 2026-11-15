@@ -38,7 +38,9 @@ fn accrue(gov: &GovState, id: &str) {
     cell.accrue_raw(
         "m",
         RawRateEra::legacy(0),
-        &BTreeMap::from([("input".into(), Count::ONE)]),
+        &[("input".into(), Count::ONE)]
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>(),
     )
     .unwrap();
     cell.dirty = true;

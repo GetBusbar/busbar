@@ -22,7 +22,7 @@ const WAIT: Duration = Duration::from_secs(30);
 
 /// These are the same backend and CoreStore already selected by native startup.
 /// Authored locations come from the observed Documents inventory, not reconstructed file names.
-pub struct Inputs {
+pub(crate) struct Inputs {
     pub backend: OpenedBackend,
     pub core: Arc<CoreStore>,
     pub documents: Arc<Documents>,
@@ -33,17 +33,17 @@ pub struct Inputs {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PrepareProgress {
+pub(crate) enum PrepareProgress {
     Pending,
     Ready,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PublishProgress {
+pub(crate) enum PublishProgress {
     Pending,
     Complete,
 }
 /// Even Pending returns its custody owner. Resume this same value rather than constructing anew.
-pub struct Preparation {
+pub(crate) struct Preparation {
     pub publication: Publication,
     pub progress: PrepareProgress,
 }
@@ -55,7 +55,7 @@ enum Prepared {
 type Preparing = Pin<Box<dyn Future<Output = Result<Prepared, String>> + Send>>;
 type Publishing = Pin<Box<dyn Future<Output = Result<Report, String>> + Send>>;
 
-pub struct Publication {
+pub(crate) struct Publication {
     inputs: Inputs,
     scope: Option<[u8; 32]>,
     custody_id: Option<[u8; 16]>,
@@ -69,7 +69,7 @@ pub struct Publication {
 }
 
 impl Publication {
-    pub async fn prepare(
+    pub(crate) async fn prepare(
         upgrade: &mut StartupUpgrade,
         inputs: Inputs,
     ) -> Result<Preparation, String> {
@@ -101,7 +101,7 @@ impl Publication {
     }
 
     /// One bounded step. Native registration and checkpoint attempts remain owned across Pending.
-    pub async fn prepare_more(
+    pub(crate) async fn prepare_more(
         &mut self,
         upgrade: &mut StartupUpgrade,
     ) -> Result<PrepareProgress, String> {
@@ -226,7 +226,7 @@ impl Publication {
 
     /// Call after the actual candidate's readiness receipt and before StartupUpgrade::finalize.
     /// A different receipt cannot take over an unfinished publication.
-    pub async fn publish_complete(
+    pub(crate) async fn publish_complete(
         &mut self,
         readiness: [u8; 32],
     ) -> Result<PublishProgress, String> {
@@ -317,7 +317,7 @@ impl Publication {
     }
 
     #[cfg(test)]
-    pub fn report(&self) -> Option<&Report> {
+    pub(crate) fn report(&self) -> Option<&Report> {
         self.report.as_ref()
     }
 }

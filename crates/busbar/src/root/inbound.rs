@@ -14,7 +14,7 @@ use crate::root::loader::dispatch::auth_handle::{
     RefusalBytes, RefuseAsk, StreamPolicy, UnitSecret,
 };
 
-pub const ROOT_OWNER: u64 = 0;
+pub(crate) const ROOT_OWNER: u64 = 0;
 
 pub fn host() -> &'static Arc<Inbound> {
     static ONE: OnceLock<Arc<Inbound>> = OnceLock::new();
@@ -116,7 +116,9 @@ impl AuthHandleHost for LoaderSide {
             stream: ask.stream,
             head: head_of(ask.request),
             body: ask.body,
-            deadline: ask.deadline.map(|d| std::time::Instant::now() + d),
+            deadline: ask
+                .deadline
+                .map(|d| busbar_core_connector::framer::now() + d),
             framing: ask.framing,
         };
         match self
@@ -152,7 +154,7 @@ impl AuthHandleHost for LoaderSide {
                 framing: ask.framing,
                 head: head_of(ask.request),
             },
-            deadline.map(|remaining| std::time::Instant::now() + remaining),
+            deadline.map(|remaining| busbar_core_connector::framer::now() + remaining),
         )
     }
 
@@ -281,7 +283,7 @@ pub(crate) fn published() -> &'static arc_swap::ArcSwapOption<Published> {
     ONE.get_or_init(arc_swap::ArcSwapOption::empty)
 }
 
-pub type ListenerPolicy =
+pub(crate) type ListenerPolicy =
     Arc<dyn Fn(&kin::Listener) -> Result<kin::Listener, String> + Send + Sync>;
 
 pub(in crate::root) struct ListenerRegistration {

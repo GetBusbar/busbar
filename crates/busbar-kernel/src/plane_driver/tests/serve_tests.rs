@@ -11,7 +11,7 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Field, Outcome as AbiOutcome
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, ProjectIn, ProjectOut, RecordWrite, RefusalIn,
-    RefusalOut, ServeIn, ServeOut, AUDIT_APPLIED, RECORD_AUDIT,
+    RefusalOut, ServeIn, ServeOut, AUDIT_APPLIED, RECORD_AUDIT, ROUTE_PUBLIC,
 };
 use busbar_contract::plane_calls::{
     Answered, Grow, InstanceDecl, Lent, PieceInFlight, PlaneCalls, ServeInFlight,
@@ -221,6 +221,7 @@ fn a_composition_route_collision_publishes_none_of_its_staged_instances() {
             .0
             .now
             .load()
+            .tables
             .iter()
             .map(|t| t.instance.as_str())
             .collect::<Vec<_>>(),
@@ -234,6 +235,7 @@ fn a_composition_route_collision_publishes_none_of_its_staged_instances() {
             .0
             .now
             .load()
+            .tables
             .iter()
             .map(|t| t.instance.as_str())
             .collect::<Vec<_>>(),

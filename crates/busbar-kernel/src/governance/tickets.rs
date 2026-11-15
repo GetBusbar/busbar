@@ -19,9 +19,7 @@ pub const TICKET_SPENT_KIND: &str = "ticket-spent";
 const OWNER: &str = "@kernel.tickets";
 const EXPIRY_SCHEMA: &str = "ticket-expiry";
 fn expiry_key(id: &str, expiry: u64) -> Vec<u8> {
-    let mut key = expiry.to_be_bytes().to_vec();
-    key.extend_from_slice(id.as_bytes());
-    key
+    crate::cold::governance::state::tickets_expiry_key(id, expiry)
 }
 
 /// Why a ticket was not minted. Each answer is the refusal's reason, never secret material.
@@ -236,11 +234,7 @@ fn scope(core: Arc<CoreStore>) -> Option<ScopedStore> {
     .ok()
 }
 fn encoded_record(expires_at: u64, record: &[u8]) -> Secret<Vec<u8>> {
-    let mut bytes = Vec::with_capacity(9 + record.len());
-    bytes.push(1);
-    bytes.extend_from_slice(&expires_at.to_be_bytes());
-    bytes.extend_from_slice(record);
-    Secret::new(bytes)
+    crate::cold::governance::state::tickets_encoded_record(expires_at, record)
 }
 /// The audited refusal of a ticket whose signing key changed between its verification and a
 /// later standing re-check.
@@ -277,7 +271,7 @@ fn record_body_len(bytes: &Secret<Vec<u8>>, expires_at: u64) -> Option<usize> {
 }
 /// The three native addresses one ticket is observed through: its record, its spent marker and
 /// its expiry index row.
-fn ticket_addresses(
+pub(crate) fn ticket_addresses(
     id: &str,
     expires_at: u64,
 ) -> RecordStoreResult<[busbar_contract::persistence::Address; 3]> {
@@ -304,18 +298,14 @@ fn ticket_addresses(
 
 /// Judge one ticket's three observed values (record, spent, index), already known to be within
 /// its expiry at the store's clock.
-fn judge_ticket(
+pub(crate) fn judge_ticket(
     expires_at: u64,
     active: Option<Secret<Vec<u8>>>,
-    spent: Option<Secret<Vec<u8>>>,
-    index: Option<Secret<Vec<u8>>>,
+    spent: Option<&Secret<Vec<u8>>>,
+    index: Option<&Secret<Vec<u8>>>,
 ) -> RecordStoreResult<Option<Secret<Vec<u8>>>> {
-    if index
-        .as_ref()
-        .is_some_and(|value| value.expose(&crate::seal::lend()) != &[1])
-        || spent
-            .as_ref()
-            .is_some_and(|value| record_body_len(value, expires_at) != Some(0))
+    if index.is_some_and(|value| value.expose(&crate::seal::lend()) != &[1])
+        || spent.is_some_and(|value| record_body_len(value, expires_at) != Some(0))
     {
         return Err(RecordStoreError("invalid native ticket metadata".into()));
     }
@@ -345,7 +335,7 @@ async fn native_record(
         .backend()
         .read(Arc::new(Read {
             dataset: core.info().dataset,
-            addresses: addresses.to_vec(),
+            addresses: crate::cold::governance::state::tickets_read_addresses(&addresses),
             time: Some(time),
         }))
         .await
@@ -375,7 +365,7 @@ async fn native_record(
     let index = values.pop().expect("validated count");
     let spent = values.pop().expect("validated count");
     let active = values.pop().expect("validated count");
-    judge_ticket(expires_at, active, spent, index)
+    judge_ticket(expires_at, active, spent.as_ref(), index.as_ref())
 }
 
 /// A truthful native reservation observation for host custody maintenance.
@@ -391,7 +381,7 @@ pub async fn ticket_record_live(
 }
 
 /// Tickets observed per batched `Read` (three addresses each), bounded by the store's page budget.
-fn tickets_per_read(core: &CoreStore) -> usize {
+pub(crate) fn tickets_per_read(core: &CoreStore) -> usize {
     (core.limits().scan_items / 3).max(1)
 }
 
@@ -406,85 +396,19 @@ pub async fn ticket_records_live(
     core: Arc<CoreStore>,
     items: &[(String, u64)],
 ) -> RecordStoreResult<Vec<RecordStoreResult<bool>>> {
-    let mut verdicts = Vec::with_capacity(items.len());
-    for chunk in items.chunks(tickets_per_read(&core)) {
-        let mut addresses = Vec::with_capacity(chunk.len() * 3);
-        let mut judged = Vec::with_capacity(chunk.len());
-        for (id, expires_at) in chunk {
-            match ticket_addresses(id, *expires_at) {
-                Ok(three) => {
-                    addresses.extend(three);
-                    judged.push(Ok(*expires_at));
-                }
-                Err(error) => judged.push(Err(error)),
-            }
-        }
-        if addresses.is_empty() {
-            verdicts.extend(judged.into_iter().map(|judged| judged.map(|_| false)));
-            continue;
-        }
-        let observed = core
-            .backend()
-            .read(Arc::new(Read {
-                dataset: core.info().dataset,
-                addresses,
-                time: None,
-            }))
-            .await
-            .map_err(|_| RecordStoreError("native ticket observation unavailable".into()))?;
-        let ReadResult::Values {
-            observed_at,
-            values,
-        } = observed
-        else {
-            return Err(RecordStoreError(
-                "invalid native ticket batch observation".into(),
-            ));
-        };
-        let readable = judged.iter().filter(|judged| judged.is_ok()).count();
-        if observed_at.authority != core.info().clock_authority || values.len() != readable * 3 {
-            return Err(RecordStoreError(
-                "invalid native ticket batch observation".into(),
-            ));
-        }
-        let mut values = values.into_iter();
-        for judged in judged {
-            let expires_at = match judged {
-                Ok(expires_at) => expires_at,
-                Err(error) => {
-                    verdicts.push(Err(error));
-                    continue;
-                }
-            };
-            let (Some(active), Some(spent), Some(index)) =
-                (values.next(), values.next(), values.next())
-            else {
-                return Err(RecordStoreError(
-                    "invalid native ticket batch observation".into(),
-                ));
-            };
-            if observed_at.unix_seconds > expires_at {
-                verdicts.push(Ok(false));
-                continue;
-            }
-            verdicts.push(
-                judge_ticket(expires_at, active, spent, index).map(|record| record.is_some()),
-            );
-        }
-    }
-    Ok(verdicts)
+    crate::off_path::governance::state::tickets_records_live(core, items).await
 }
 
 impl GovState {
     pub(super) fn has_unsettled_ticket_operations(&self) -> bool {
-        self.ticket_operations
+        let pending = self
+            .ticket_operations
             .pending
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values()
-            .any(|operation| {
-                !operation.delivered.load(Ordering::Acquire) || operation.runner.is_running()
-            })
+            .unwrap_or_else(|p| p.into_inner());
+        crate::off_path::governance::state::tickets_any_unsettled(&*pending, |operation| {
+            !operation.delivered.load(Ordering::Acquire) || operation.runner.is_running()
+        })
     }
     fn ticket_operation(&self, id: &str) -> Option<Arc<TicketOperation>> {
         self.ticket_operations.pending.lock().ok()?.get(id).cloned()
@@ -525,7 +449,9 @@ impl GovState {
                 break;
             }
             // The cleanup's map key carries the id; the id is borrowed from it, not copied out.
-            let cleanup_id = format!("expiry:{}", std::str::from_utf8(&key[8..]).ok()?);
+            let cleanup_id = crate::cold::governance::state::tickets_cleanup_id(
+                std::str::from_utf8(&key[8..]).ok()?,
+            );
             let id = &cleanup_id["expiry:".len()..];
             if !valid_ticket_id(id) {
                 return None;
@@ -596,14 +522,17 @@ impl GovState {
                 delivered: AtomicBool::new(false),
                 runner: Default::default(),
             });
-            let operation = self
-                .ticket_operations
-                .pending
-                .lock()
-                .ok()?
-                .entry(cleanup_id.clone())
-                .or_insert(operation)
-                .clone();
+            let operation = {
+                let mut pending = self.ticket_operations.pending.lock().ok()?;
+                match pending.get(&cleanup_id) {
+                    Some(retained) => retained.clone(),
+                    None => crate::cold::governance::state::tickets_keep_first(
+                        &mut *pending,
+                        &cleanup_id,
+                        operation,
+                    ),
+                }
+            };
             let Ok(_running) = operation.runner.enter(false).await else {
                 continue;
             };
@@ -625,14 +554,13 @@ impl GovState {
     /// Drive retained immutable ticket attempts without admitting a credential.
     /// Root may call this during maintenance/drain, including after expiry.
     pub async fn settle_ticket_operations(&self) -> usize {
-        let pending = self
-            .ticket_operations
-            .pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .iter()
-            .map(|(id, op)| (id.clone(), op.clone()))
-            .collect::<Vec<_>>();
+        let pending = crate::off_path::governance::state::tickets_pending_snapshot(
+            &*self
+                .ticket_operations
+                .pending
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()),
+        );
         let mut settled = 0;
         for (id, operation) in pending {
             let Ok(_running) = operation.runner.enter(false).await else {
@@ -699,7 +627,9 @@ impl GovState {
         } else {
             let original = original?;
             record_body_len(&original, expires_at)?;
-            let record = Secret::new(original.expose(&crate::seal::lend())[9..].to_vec());
+            let record = crate::cold::governance::state::tickets_record_body(
+                &original.expose(&crate::seal::lend())[9..],
+            );
             let op_id = request_id(&core)?;
             let mut spent = vec![1];
             spent.extend_from_slice(&expires_at.to_be_bytes());
@@ -1103,7 +1033,7 @@ impl GovState {
             );
             crate::audit_ring::AUDIT.record_by(
                 TICKET_SIGNING_ROTATED,
-                &format!("key:{}", ticket.claims.sub),
+                &crate::cold::governance::state::tickets_rotated_resource(&ticket.claims.sub),
                 crate::audit_ring::OUTCOME_REJECTED,
                 &ticket.claims.sub,
             );

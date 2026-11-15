@@ -233,17 +233,15 @@ pub type HookAxisBuild =
         &std::sync::Arc<dyn PluginRows>,
     ) -> Result<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>, String>;
 
-static ROOT_ROWS: std::sync::atomic::AtomicPtr<RootInstall> =
-    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+static ROOT_ROWS: std::sync::RwLock<Option<RootInstall>> = std::sync::RwLock::new(None);
 
 pub fn install_linked_rows(rows: RootInstall) {
-    let fresh: *mut RootInstall = Box::leak(Box::new(rows));
-    let _ = ROOT_ROWS.compare_exchange(
-        std::ptr::null_mut(),
-        fresh,
-        std::sync::atomic::Ordering::AcqRel,
-        std::sync::atomic::Ordering::Acquire,
-    );
+    let mut held = ROOT_ROWS
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if held.is_none() {
+        *held = Some(rows);
+    }
 }
 
 /// Set the install record to `rows`, replacing any set before. The composition root never calls
@@ -251,21 +249,16 @@ pub fn install_linked_rows(rows: RootInstall) {
 /// publishes the rows it stands in through it.
 #[doc(hidden)]
 pub fn publish_root_rows(rows: RootInstall) {
-    ROOT_ROWS.store(
-        Box::leak(Box::new(rows)),
-        std::sync::atomic::Ordering::Release,
-    );
+    *ROOT_ROWS
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(rows);
 }
 
-#[allow(unsafe_code)]
 pub fn root_rows() -> RootInstall {
-    let ptr = ROOT_ROWS.load(std::sync::atomic::Ordering::Acquire);
-    if ptr.is_null() {
-        return unset();
-    }
-    // SAFETY: `ptr` is non-null and was stored in `ROOT_ROWS` from `Box::leak`, which is never
-    // freed or mutated; the Acquire load that read it pairs with the store that wrote it.
-    unsafe { *ptr }
+    let held = *ROOT_ROWS
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    held.unwrap_or_else(unset)
 }
 
 fn unset() -> RootInstall {

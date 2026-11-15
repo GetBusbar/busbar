@@ -3,8 +3,6 @@
 
 use super::*;
 
-pub(super) use crate::root::off_path::serve_observations::parse;
-
 /// Carries only root-owned policy, selected after normal member authorization.
 pub(super) struct UnitBinding<'a> {
     pub served: &'a ServedPlane,

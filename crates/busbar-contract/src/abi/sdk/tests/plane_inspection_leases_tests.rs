@@ -108,7 +108,11 @@ mod plugin {
 }
 fn table() -> &'static crate::abi::plane::Ops {
     // SAFETY: this test's static door was built with the plane Ops table.
-    unsafe { &*plugin::door().ops.cast::<crate::abi::plane::Ops>() }
+    unsafe {
+        &*(plugin::MACRO_DOOR.door_fn())()
+            .ops
+            .cast::<crate::abi::plane::Ops>()
+    }
 }
 fn zero<T>() -> T {
     // SAFETY: every ABI input/output used here is explicitly plain all-zero-valid data.

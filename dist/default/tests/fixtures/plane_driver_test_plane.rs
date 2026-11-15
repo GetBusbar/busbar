@@ -110,7 +110,7 @@ struct Shared<T>(T);
 // SAFETY: immutable `'static` data (pointers into other statics).
 unsafe impl<T> Sync for Shared<T> {}
 
-pub const WEDGE: Duration = Duration::from_millis(1500);
+const WEDGE: Duration = Duration::from_millis(1500);
 
 const fn s(b: &'static [u8]) -> AbiStr {
     AbiStr {

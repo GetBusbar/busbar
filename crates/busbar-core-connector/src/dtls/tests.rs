@@ -13,8 +13,8 @@ fn p(s: &str) -> SocketAddr {
 
 fn creds(ufrag: &str, pwd: &str) -> IceCredentials {
     IceCredentials {
-        ufrag: ufrag.into(),
-        pwd: pwd.into(),
+        ufrag: ufrag.to_owned(),
+        pwd: pwd.to_owned(),
     }
 }
 

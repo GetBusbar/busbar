@@ -13,18 +13,25 @@ use super::{same_request, HandIn, Head};
 
 impl Head {
     fn stripped(&self, strips: &[Strip]) -> Option<Self> {
-        use zeroize::Zeroize as _;
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::StripScan);
-        let mut head = self.duplicate();
-        head.fields.retain_mut(|(name, value)| {
-            let remove = strips.iter().any(|strip| {
-                strip.place == StripPlace::Field && strip.name.eq_ignore_ascii_case(name)
-            });
-            if remove {
-                value.zeroize();
-            }
-            !remove
-        });
+        // Only the kept field lines are copied: a stripped credential is never duplicated.
+        let mut head = Self {
+            method: self.method.clone(),
+            target: self.target.clone(),
+            authority: self.authority.clone(),
+            query: self.query.clone(),
+            fields: Vec::with_capacity(self.fields.len()),
+        };
+        head.fields.extend(
+            self.fields
+                .iter()
+                .filter(|(name, _)| {
+                    !strips.iter().any(|strip| {
+                        strip.place == StripPlace::Field && strip.name.eq_ignore_ascii_case(name)
+                    })
+                })
+                .cloned(),
+        );
         let keys: Vec<&str> = strips
             .iter()
             .filter(|strip| strip.place == StripPlace::Query)
@@ -36,10 +43,11 @@ impl Head {
                 .as_deref()
                 .and_then(|query| crate::auth::without_query_keys_text(query, &keys))
             {
-                let mut original =
+                let original =
                     std::mem::replace(&mut head.query, (!stripped.is_empty()).then_some(stripped));
-                if let Some(query) = &mut original {
-                    query.zeroize();
+                if let Some(query) = original {
+                    // Into custody, whose drop wipes it.
+                    drop(busbar_contract::secure::SecureString::from(query));
                 }
             }
         }

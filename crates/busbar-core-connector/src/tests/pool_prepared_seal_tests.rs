@@ -16,7 +16,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::task::Waker;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::ticket::Ticket as OpTicket;
@@ -146,7 +146,7 @@ async fn stub(leaves: &[(Vec<u8>, Vec<u8>)], h2: bool) -> Stub {
 /// Answer every request id read on `tls`, until it ends.
 async fn serve<S: AsyncRead + AsyncWrite + Unpin>(tls: &mut S, decoded: &Mutex<Vec<String>>) {
     let mut pending = Vec::new();
-    let mut buf = [0_u8; 4096];
+    let mut buf = vec![0_u8; 4096];
     loop {
         let n = match tls.read(&mut buf).await {
             Ok(0) | Err(_) => return,
@@ -545,10 +545,12 @@ fn sealed<'a>(target: &'a str, body: &'static [u8]) -> OpenDesc<'a> {
 
 /// `poll` until it answers other than `Pending`, or [`BOUND`] passes (then its `Pending`).
 async fn settle<T>(mut poll: impl FnMut() -> Result<T, ConnError>) -> Result<T, ConnError> {
-    let deadline = Instant::now() + BOUND;
+    // At most 2500 polls (about `BOUND`), counted rather than read off the clock.
+    let mut polls = 0_u32;
     loop {
         match poll() {
-            Err(ConnError::Pending) if Instant::now() < deadline => {
+            Err(ConnError::Pending) if polls < 2500 => {
+                polls += 1;
                 tokio::time::sleep(Duration::from_millis(2)).await;
             }
             other => return other,
@@ -561,14 +563,16 @@ async fn settle<T>(mut poll: impl FnMut() -> Result<T, ConnError>) -> Result<T, 
 async fn answer(c: &Connector, conn: ConnId) -> (Vec<u8>, bool, Option<ConnError>) {
     let mut buf = [0_u8; 64];
     let mut got = Vec::new();
-    let deadline = Instant::now() + BOUND;
+    // At most 2500 polls (about `BOUND`), counted rather than read off the clock.
+    let mut polls = 0_u32;
     loop {
         match c.read(OWNER, conn, TICKET, &mut buf) {
             Ok(p) if p.kind == PieceKind::Completion => {
                 return (got, p.stream != StreamId(0), None);
             }
             Ok(p) => got.extend_from_slice(&buf[..p.len]),
-            Err(ConnError::Pending) if Instant::now() < deadline => {
+            Err(ConnError::Pending) if polls < 2500 => {
+                polls += 1;
                 tokio::time::sleep(Duration::from_millis(2)).await;
             }
             Err(e) => return (got, false, Some(e)),
@@ -579,14 +583,16 @@ async fn answer(c: &Connector, conn: ConnId) -> (Vec<u8>, bool, Option<ConnError
 /// The first bytes of `conn`'s answer (its exchange still in flight).
 async fn in_flight(c: &Connector, conn: ConnId) -> Result<Vec<u8>, ConnError> {
     let mut buf = [0_u8; 64];
-    let deadline = Instant::now() + BOUND;
+    // At most 2500 polls (about `BOUND`), counted rather than read off the clock.
+    let mut polls = 0_u32;
     loop {
         match c.read(OWNER, conn, TICKET, &mut buf) {
             Ok(p) if p.kind != PieceKind::Completion && p.len > 0 => {
                 return Ok(buf[..p.len].to_vec());
             }
             Ok(_) => {}
-            Err(ConnError::Pending) if Instant::now() < deadline => {
+            Err(ConnError::Pending) if polls < 2500 => {
+                polls += 1;
                 tokio::time::sleep(Duration::from_millis(2)).await;
             }
             Err(e) => return Err(e),
@@ -981,8 +987,10 @@ mod lost_wire_fail_never_redials_queued_stream {
             rig.c.close(OWNER, *conn).unwrap();
         }
         rig.c.close(OWNER, a).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while one.decoded(A) == 0 && Instant::now() < deadline {
+        // At most 200 polls (about 2 s), counted rather than read off the clock.
+        let mut polls = 0_u32;
+        while one.decoded(A) == 0 && polls < 200 {
+            polls += 1;
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;

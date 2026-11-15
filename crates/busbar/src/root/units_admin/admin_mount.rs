@@ -1,25 +1,25 @@
 use super::*;
 
-pub struct AdminNode {
+pub(crate) struct AdminNode {
     pub(super) kernel: busbar_kernel::teller::Kernel,
     pub(super) units: crate::root::kernel::ProductionUnits,
 }
 
 impl AdminNode {
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         kernel: busbar_kernel::teller::Kernel,
         units: crate::root::kernel::ProductionUnits,
     ) -> Self {
         AdminNode { kernel, units }
     }
 
-    pub fn next_unit(&self) -> u64 {
+    pub(crate) fn next_unit(&self) -> u64 {
         crate::root::plane_node::node().mint().get()
     }
 
     #[cfg(test)]
-    pub async fn answer(&self, request: AdminRequest) -> AdminAnswer {
+    pub(crate) async fn answer(&self, request: AdminRequest) -> AdminAnswer {
         self.answer_with_admission(request, None).await
     }
 
@@ -325,7 +325,7 @@ pub(crate) type Errand = (
     tokio::sync::oneshot::Sender<AdminAnswer>,
 );
 
-pub struct RouterDispatch {
+pub(crate) struct RouterDispatch {
     errands: tokio::sync::mpsc::UnboundedSender<Errand>,
 }
 
@@ -333,7 +333,7 @@ use busbar_core_admin::keys::KeyReplayCache;
 
 impl RouterDispatch {
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         inner: axum::Router,
         runtime: &tokio::runtime::Handle,
         replays: Arc<KeyReplayCache>,
@@ -526,7 +526,7 @@ async fn root_admin_answers_are_never_stored() {
     }
 }
 
-pub fn mount(
+pub(crate) fn mount(
     inner: axum::Router,
     kernel: busbar_kernel::teller::Kernel,
     request_body_max_bytes: usize,
@@ -621,7 +621,7 @@ pub fn mount(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn mount_node(
+pub(crate) fn mount_node(
     admin_router: axum::Router,
     request_body_max_bytes: usize,
     app: &Arc<busbar_kernel::state::AppHandle>,

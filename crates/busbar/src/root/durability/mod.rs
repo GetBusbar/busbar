@@ -34,21 +34,21 @@ pub(crate) use unit_checkpoint_audit::RunningAudit;
 pub(crate) use usage_recovery::usage_recovery_sink;
 
 mod store_identity;
-pub use store_identity::{host_identity, take_node};
+pub(crate) use store_identity::{host_identity, take_node};
 #[cfg(test)]
-pub use store_identity::{stored_keyset, BootIdentity};
+pub(crate) use store_identity::{stored_keyset, BootIdentity};
 
-pub use store_identity::walk_stored_chains;
+pub(crate) use store_identity::walk_stored_chains;
 
 mod amend;
 
-pub use amend::bind_amendments;
+pub(crate) use amend::bind_amendments;
 
 pub(crate) use amend::verify_held;
 
 mod audit;
 
-pub use audit::AuditWindowAt;
+pub(crate) use audit::AuditWindowAt;
 
 mod audit_page;
 
@@ -56,19 +56,19 @@ mod ring;
 pub(crate) use ring::AuditRing;
 
 mod recovery;
-pub use recovery::{node_verb_store, report_operator_breaks};
+pub(crate) use recovery::{node_verb_store, report_operator_breaks};
 
 mod plugin_floor;
-pub use plugin_floor::{
+pub(crate) use plugin_floor::{
     check_prepared_candidate as check_prepared_plugin_floor_candidate, hold as hold_plugin_floor,
     prepare_candidate as prepare_plugin_floor_candidate,
 };
 
-pub const AUDIT_RING: usize = 1_024;
+pub(crate) const AUDIT_RING: usize = 1_024;
 
 /// The accepted journal configuration. Persistence is always owned by the configured Store.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct DurabilityConfig {
+pub(crate) struct DurabilityConfig {
     /// The legacy data directory, accepted for compatibility and never opened by these builders.
     pub data_dir: Option<PathBuf>,
 }
@@ -100,7 +100,7 @@ pub struct Durability {
 impl Durability {
     /// The retained audit ring: the newest <= `AUDIT_RING` sealed records, oldest first.
     #[must_use]
-    pub fn audit_records(&self) -> &[AuditRecord] {
+    pub(crate) fn audit_records(&self) -> &[AuditRecord] {
         self.audit_ring.as_slice()
     }
 
@@ -119,7 +119,7 @@ impl Durability {
 
 pub type ChainRead = std::io::Result<Result<Vec<JournalRecord>, busbar_kernel_wal::JournalBreak>>;
 
-pub struct ChainAt {
+pub(crate) struct ChainAt {
     journal: Arc<RuntimeJournal>,
     budget: BufferBudget,
     through: u64,
@@ -164,14 +164,14 @@ impl Durability {
         false
     }
     #[must_use]
-    pub fn keeps_chain(&self) -> bool {
+    pub(crate) fn keeps_chain(&self) -> bool {
         self.resumed
     }
     pub async fn chain(&self) -> ChainRead {
         self.chain_at().read().await
     }
     #[must_use]
-    pub fn chain_at(&self) -> ChainAt {
+    pub(crate) fn chain_at(&self) -> ChainAt {
         ChainAt {
             journal: self.journal.clone(),
             budget: self.history_budget,
@@ -182,11 +182,13 @@ impl Durability {
         unreadable_in(None, e)
     }
     #[must_use]
-    pub fn runtime_journal(&self) -> Arc<RuntimeJournal> {
+    pub(crate) fn runtime_journal(&self) -> Arc<RuntimeJournal> {
         self.journal.clone()
     }
     #[must_use]
-    pub fn stored_walk_inputs(&self) -> (Arc<RuntimeJournal>, u64, AuditKeySet, BufferBudget) {
+    pub(crate) fn stored_walk_inputs(
+        &self,
+    ) -> (Arc<RuntimeJournal>, u64, AuditKeySet, BufferBudget) {
         (
             self.journal.clone(),
             self.journal.node(),
@@ -196,17 +198,17 @@ impl Durability {
     }
     #[cfg(test)]
     #[must_use]
-    pub fn durable_in_store(&self) -> bool {
+    pub(crate) fn durable_in_store(&self) -> bool {
         true
     }
     #[cfg(test)]
-    pub fn stage_entries(&self, entries: &[Entry]) -> Result<Arc<StagedRun>, String> {
+    pub(crate) fn stage_entries(&self, entries: &[Entry]) -> Result<Arc<StagedRun>, String> {
         self.journal
             .stage_run(entries)
             .map_err(|error| format!("native journal stage failed: {error:?}"))
     }
     #[cfg(test)]
-    pub async fn journal_claim(
+    pub(crate) async fn journal_claim(
         book: &Arc<std::sync::Mutex<Self>>,
         claim: ClaimBalance,
         stamp: ClaimStamp,
@@ -274,7 +276,7 @@ impl Durability {
 }
 
 #[must_use]
-pub fn keyset_of(chain: &AuditChain) -> AuditKeySet {
+pub(crate) fn keyset_of(chain: &AuditChain) -> AuditKeySet {
     let mut keys = AuditKeySet::new();
     if let Some(key) = chain
         .public_key_hex()
@@ -305,7 +307,7 @@ pub struct ClaimKey {
 #[cfg(test)]
 /// What a claim is taken as: the claim itself, the balance and the window it is journalled on.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClaimBalance {
+pub(crate) struct ClaimBalance {
     /// The claim — the idempotency key.
     pub claim: String,
     /// The balance.
@@ -317,7 +319,7 @@ pub struct ClaimBalance {
 #[cfg(test)]
 /// When a claim was taken: whole seconds, and the node's monotonic reading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ClaimStamp {
+pub(crate) struct ClaimStamp {
     /// Whole seconds.
     pub wall: u64,
     /// The node's monotonic clock.
@@ -427,7 +429,7 @@ fn audit_entry(record: &AuditRecord) -> Result<Entry, busbar_kernel_audit::Field
         .under(record.controls.lease_epoch, record.controls.policy_epoch))
 }
 
-pub fn decode_audit(record: &JournalRecord) -> Result<Option<AuditRecord>, String> {
+pub(crate) fn decode_audit(record: &JournalRecord) -> Result<Option<AuditRecord>, String> {
     if record.class != RecordClass::Transaction {
         return Ok(None);
     }
@@ -442,7 +444,7 @@ pub struct NodeBook {
 }
 impl NodeBook {
     #[cfg(test)]
-    pub fn runtime_journal(&self) -> Arc<RuntimeJournal> {
+    pub(crate) fn runtime_journal(&self) -> Arc<RuntimeJournal> {
         self.runtime_journal.clone()
     }
 }
@@ -454,7 +456,7 @@ fn native_open_error(error: impl std::fmt::Debug) -> std::io::Error {
 #[cfg(test)]
 /// The root opens one native owner and shares this exact Arc with every
 /// journal-writing service. There is no legacy shipper or second live sealer.
-pub async fn node_book(
+pub(crate) async fn node_book(
     journal: Arc<RuntimeJournal>,
     history_budget: BufferBudget,
 ) -> Result<NodeBook, std::io::Error> {
@@ -474,7 +476,7 @@ pub async fn node_book(
     })
 }
 
-pub async fn build_on_store(
+pub(crate) async fn build_on_store(
     _cfg: &DurabilityConfig,
     node: u64,
     journal: Arc<RuntimeJournal>,

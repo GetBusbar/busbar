@@ -48,10 +48,6 @@ impl Prepared {
         {
             return None;
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a protected body outlives the host call that lent it, so the host keeps one copy until dispatch takes it"
-        )]
         let prepared = Self {
             need: ask.need,
             member: ask.member.to_owned(),
@@ -86,10 +82,10 @@ impl AsRef<[u8]> for Body {
 }
 
 #[derive(PartialEq, Eq)]
-struct Key {
-    instance: Incarnation,
-    owner: String,
-    connection: String,
+pub(crate) struct Key {
+    pub(crate) instance: Incarnation,
+    pub(crate) owner: String,
+    pub(crate) connection: String,
 }
 
 impl Hash for Key {
@@ -105,10 +101,10 @@ impl Hash for Key {
 
 /// A borrowed [`Key`]: a bind looks its connection up without copying the owner or connection.
 #[derive(Hash)]
-struct KeyRef<'a> {
-    instance: &'a Incarnation,
-    owner: &'a str,
-    connection: &'a str,
+pub(crate) struct KeyRef<'a> {
+    pub(crate) instance: &'a Incarnation,
+    pub(crate) owner: &'a str,
+    pub(crate) connection: &'a str,
 }
 
 impl Equivalent<Key> for KeyRef<'_> {
@@ -119,30 +115,15 @@ impl Equivalent<Key> for KeyRef<'_> {
     }
 }
 
-impl KeyRef<'_> {
-    fn to_key(&self) -> Key {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: enrolling a new outbound connection stores its owner and connection identity"
-        )]
-        let key = Key {
-            instance: self.instance.clone(),
-            owner: self.owner.to_owned(),
-            connection: self.connection.to_owned(),
-        };
-        key
-    }
-}
-
-struct Entry {
-    body: bool,
-    revision: u64,
-    expires: u64,
-    need: u32,
-    member: String,
-    resource: String,
-    field_name: String,
-    credential: Option<Secret<Vec<u8>>>,
+pub(crate) struct Entry {
+    pub(crate) body: bool,
+    pub(crate) revision: u64,
+    pub(crate) expires: u64,
+    pub(crate) need: u32,
+    pub(crate) member: String,
+    pub(crate) resource: String,
+    pub(crate) field_name: String,
+    pub(crate) credential: Option<Secret<Vec<u8>>>,
 }
 
 /// One request's host-retained binding. Its debug representation discloses no account metadata.
@@ -196,10 +177,6 @@ impl Bound {
         if row.body {
             return Some(Presentation::Body(row.credential.clone()?));
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: busbar-contract AuthField owns its name bytes; the enrolled field name is copied until the contract can borrow it"
-        )]
         let name = row.field_name.as_bytes().to_vec();
         Some(Presentation::Field(AuthField {
             name,
@@ -275,34 +252,14 @@ impl Custody {
                 row.revision = next;
                 row.expires = ask.expires_at_unix;
                 ask.field_name.clone_into(&mut row.field_name);
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "config: re-publishing an enrolled credential stores the new secret once"
-                )]
-                let credential = Secret::new(ask.credential.to_vec());
-                row.credential = Some(credential);
+                row.credential = Some(crate::off_path::host_outbound::credential(ask.credential));
                 return Ok((next, None));
             }
             if ask.expected_revision != 0 || entries.len() >= MAX_CONNECTIONS {
                 return Err(REFUSED);
             }
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: enrolling a new outbound connection stores its credential row once"
-            )]
-            entries.insert(
-                key.to_key(),
-                Arc::new(Mutex::new(Entry {
-                    body,
-                    revision: 1,
-                    expires: ask.expires_at_unix,
-                    need: ask.need,
-                    member: ask.member.to_owned(),
-                    resource: ask.resource.to_owned(),
-                    field_name: ask.field_name.to_owned(),
-                    credential: Some(Secret::new(ask.credential.to_vec())),
-                })),
-            );
+            let (owned, entry) = crate::off_path::host_outbound::enrolled(&key, ask, body);
+            entries.insert(owned, entry);
             return Ok((1, None));
         }
         if !ask.credential.is_empty() || !ask.field_name.is_empty() || ask.expires_at_unix != 0 {
@@ -315,23 +272,8 @@ impl Custody {
             if entries.len() >= MAX_CONNECTIONS {
                 return Err(REFUSED);
             }
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: a revocation tombstone stores the connection row once"
-            )]
-            entries.insert(
-                key.to_key(),
-                Arc::new(Mutex::new(Entry {
-                    body: false,
-                    revision: 1,
-                    expires: 0,
-                    need: ask.need,
-                    member: ask.member.to_owned(),
-                    resource: ask.resource.to_owned(),
-                    field_name: String::new(),
-                    credential: None,
-                })),
-            );
+            let (owned, entry) = crate::off_path::host_outbound::tombstone(&key, ask);
+            entries.insert(owned, entry);
             return Ok((1, None));
         }
         let cell = entries.get(&key).ok_or(REFUSED)?;

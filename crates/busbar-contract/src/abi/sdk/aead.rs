@@ -5,8 +5,6 @@
 
 use std::fmt;
 
-use zeroize::Zeroize as _;
-
 use crate::crypto::{Aes128Gcm, Aes256Gcm};
 
 /// AES-128 key size in bytes (FIPS 197).
@@ -86,7 +84,7 @@ impl AesGcm {
             Ok(needed)
         })();
         if result.is_err() {
-            output.zeroize();
+            crate::secure::wipe(output);
         }
         result
     }
@@ -113,7 +111,7 @@ impl AesGcm {
             Ok(len)
         })();
         if result.is_err() {
-            output.zeroize();
+            crate::secure::wipe(output);
         }
         result
     }

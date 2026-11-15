@@ -7,9 +7,7 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use crate::open_once::OpenOnce;
 use std::time::{Duration, Instant};
 
-use busbar_contract::abi::mechanism::call::{
-    Blob, DeadlineClass, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
-};
+use busbar_contract::abi::mechanism::call::{Blob, DeadlineClass, Outcome, BLOB_JSON};
 use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::lifecycle::slot as life;
 use busbar_contract::abi::mechanism::KindCode;
@@ -27,6 +25,12 @@ use busbar_contract::secret_ref::SecretRef;
 use busbar_contract::secure::SecureVec;
 
 use crate::boot::Candidate;
+use crate::cold::secret_calls::{
+    answer_text, budget_left, check_answered, check_failed, declares_unread, encode_refused,
+    instance_label, label, lane_copies, lent_material, load_refused, module_name,
+    not_a_secret_door, open_timed_out, open_unsealed, open_without_ticket, refused_fmt,
+    secret_blobs, statement_unread, unanswered, unencodable_settings, unsealed_check,
+};
 use crate::dispatch::kinds::secret::Secret;
 use crate::dispatch::lifecycle::{self, blob, AnswerLease};
 use crate::dispatch::Called;
@@ -130,34 +134,23 @@ struct Loader {
 
 impl Loader {
     fn load(&self, c: &Candidate, label: &str) -> Result<Plugin<Secret>, String> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: names the secret module that could not be loaded"
-        )]
         let sink: Arc<dyn EnvelopeSink> = match self.logs {
             Some(logs) => Arc::new(
                 logs()
                     .sink(label, KindCode::Secret, Arc::new(NoSink))
-                    .map_err(|e| format!("secret module '{}' could not be loaded: {e}", c.name))?,
+                    .map_err(|e| load_refused(&c.name, &e))?,
             ),
             None => Arc::new(NoSink),
         };
-        // busbar:expect(bp::into_alloc, reason = "boot: a loaded secret instance keeps its label")
         let bind = Bind {
-            instance: Arc::from(label),
+            instance: instance_label(label),
             max_inflight_cap: MAX_INFLIGHT_CAP,
             sink,
             dispatcher: (self.dispatcher)().adopter(),
 
             conns: ConnTable::serving((self.conns)()),
         };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: names the secret module that could not be loaded"
-        )]
-        let loaded = crate::boot::open_candidate::<Secret>(c, bind)
-            .map_err(|e| format!("secret module '{}' could not be loaded: {e}", c.name));
-        loaded
+        crate::boot::open_candidate::<Secret>(c, bind).map_err(|e| load_refused(&c.name, &e))
     }
 
     fn placed(&self, c: &Candidate, opened: LoadedSecret) -> LoadedSecret {
@@ -283,43 +276,15 @@ pub fn check(plugin: &Plugin<Secret>, settings: &[u8]) -> Result<(), Vec<String>
     let c = plugin.call(slot::CHECK, &mut f);
     let _lease = AnswerLease::new(plugin, c.lease);
     let name = plugin.name();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: lists why the secret module refused a reference at config time"
-    )]
-    let checked = match c.outcome {
+    match c.outcome {
         Outcome::Ready | Outcome::Refused => Ok(()),
-        Outcome::Failed => {
-            let text = c.error.as_deref().unwrap_or_default();
-            if busbar_contract::abi::mechanism::lifecycle::check_validate_refusal(text).is_err() {
-                return Err(vec![format!(
-                    "secret module '{name}' refused the reference without saying why"
-                )]);
-            }
-            Err(String::from_utf8_lossy(text)
-                .split('\n')
-                .map(str::to_string)
-                .collect())
-        }
-        o => Err(vec![format!(
-            "secret module '{name}' answered {o:?} to check the reference"
-        )]),
-    };
-    checked
+        Outcome::Failed => Err(check_failed(name, c.error.as_deref().unwrap_or_default())),
+        o => Err(check_answered(name, o)),
+    }
 }
 
 fn refused(error_kind: u32, text: String) -> SecretRefused {
     SecretRefused { error_kind, text }
-}
-
-/// A refusal whose text is formatted here, on the refusal path only.
-fn refused_fmt(error_kind: u32, text: std::fmt::Arguments<'_>) -> SecretRefused {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: names the secret module whose resolve was refused"
-    )]
-    let text = format!("{text}");
-    refused(error_kind, text)
 }
 
 fn changed_size(name: &str) -> SecretRefused {
@@ -336,19 +301,6 @@ fn short_again(outcome: Outcome, out: &ResolveOut, lent: usize) -> bool {
     outcome == Outcome::Fault && out.needed > lent as u64
 }
 
-/// The plugin's own refusal text, or the fallback, formatted only when it is the answer.
-fn answer_text(error: Option<&[u8]>, fallback: std::fmt::Arguments<'_>) -> String {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the text of a refused secret resolve"
-    )]
-    let text = match error.filter(|e| !e.is_empty()) {
-        Some(e) => String::from_utf8_lossy(e).into_owned(),
-        None => format!("{fallback}"),
-    };
-    text
-}
-
 impl LoadedSecret {
     /// OPEN an instance through the dispatcher, as every other op on it crosses: a PENDING open
     /// (a plugin that authenticates before it is ready) is resumed by the dispatcher until it
@@ -361,30 +313,13 @@ impl LoadedSecret {
     ) -> Result<Self, String> {
         let owned: Vec<SecureVec> = match (secrets.is_empty(), dispatcher.seal()) {
             (true, _) => Vec::new(),
-            (false, Some(seal)) => {
-                let mut owned = Vec::with_capacity(secrets.len());
-                owned.extend(
-                    secrets
-                        .iter()
-                        .map(|s| SecureVec::from(s.expose(seal).as_slice())),
-                );
-                owned
-            }
-            (false, None) => {
-                return Err(format!(
-                    "plugin '{}' open failed: its secret material is revealed only on a \
-                         dispatcher the host lent its seal",
-                    plugin.name()
-                ));
-            }
+            (false, Some(seal)) => lent_material(secrets, seal),
+            (false, None) => return Err(open_unsealed(plugin.name())),
         };
         let lent = Arc::new(lifecycle::OpenLent::new(settings, owned));
         let f = lent.frame();
         let Some(ticket) = dispatcher.mint(0) else {
-            return Err(format!(
-                "plugin '{}' open failed: no ticket to open it on",
-                plugin.name()
-            ));
+            return Err(open_without_ticket(plugin.name()));
         };
         let deadline = now_ns().saturating_add(CALL_DEADLINE.as_nanos() as u64);
         let done = dispatcher
@@ -400,11 +335,7 @@ impl LoadedSecret {
             .wait(WAIT);
         dispatcher.recycle(ticket);
         let Some(done) = done else {
-            return Err(format!(
-                "secret module '{}' did not complete its open within {} s",
-                plugin.name(),
-                WAIT.as_secs()
-            ));
+            return Err(open_timed_out(plugin.name(), WAIT.as_secs()));
         };
         let opened = AnswerLease::new(&plugin, done.lease);
         if done.outcome != Outcome::Ready || done.detached || done.disposition.is_some() {
@@ -451,11 +382,7 @@ impl LoadedSecret {
         lane: DiskRun,
         settings: &[u8],
     ) -> Result<SecretValue<Vec<u8>>, SecretRefused> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a disk-lane resolve runs at config time only, off this thread"
-        )]
-        let (name, owned) = (self.name().to_string(), settings.to_vec());
+        let (name, owned) = lane_copies(self.name(), settings);
         let deadline = instant_at(now_ns()) + WAIT;
         let opened = Arc::clone(&self.opened);
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
@@ -474,8 +401,7 @@ impl LoadedSecret {
                 format_args!("secret module '{name}' could not reach the host's disk lane: {e}"),
             )
         })?;
-        // busbar:expect(bp::clock_repeat, reason = "config: a config-time disk-lane resolve waits out the rest of its budget")
-        let left = deadline.saturating_duration_since(instant_at(now_ns()));
+        let left = budget_left(deadline);
         let answer = rx.recv_timeout(left);
 
         drop(waiting);
@@ -557,10 +483,7 @@ impl LoadedSecret {
         secrets: &[SecretValue<Vec<u8>>],
     ) -> Called {
         let blobs: Vec<Blob> = match self.dispatcher.seal() {
-            Some(seal) => secrets
-                .iter()
-                .map(|s| blob(s.expose(seal), BLOB_OCTETS, BLOB_SECRET))
-                .collect(),
+            Some(seal) => secret_blobs(secrets, seal),
             None => Vec::new(),
         };
         let generation = relending
@@ -622,7 +545,7 @@ impl SecretCalls for LoadedSecret {
         }
         let encoded = remaining
             .encode()
-            .map_err(|e| refused(RelendCause::Unresolvable, e.to_string()))?;
+            .map_err(|e| refused(RelendCause::Unresolvable, encode_refused(&e)))?;
         let bytes = encoded.expose(seal);
         let called = self.refresh_in_place(relending, bytes, &secrets);
         let _lease = AnswerLease::new(&self.opened.plugin, called.lease);
@@ -751,24 +674,24 @@ pub struct SecretRows {
     conns: fn() -> Option<AdmissionAuthority>,
 
     logs: Option<fn() -> PluginLogConfig>,
-    linked: Vec<Candidate>,
-    dropped: RwLock<Vec<Candidate>>,
+    pub(crate) linked: Vec<Candidate>,
+    pub(crate) dropped: RwLock<Vec<Candidate>>,
 
     shared: OpenOnce<String, LoadedSecret>,
 
     disk_run: Option<DiskRun>,
 
-    checkers: Mutex<Checkers>,
+    pub(crate) checkers: Mutex<Checkers>,
 }
 
 #[derive(Default)]
-struct Checkers {
-    generation: Arc<()>,
-    plugins: foldhash::HashMap<CheckerKey, Arc<Plugin<Secret>>>,
+pub(crate) struct Checkers {
+    pub(crate) generation: Arc<()>,
+    pub(crate) plugins: foldhash::HashMap<CheckerKey, Arc<Plugin<Secret>>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-enum CheckerKey {
+pub(crate) enum CheckerKey {
     Linked(usize),
     Dropped(usize),
 }
@@ -821,22 +744,9 @@ impl SecretRows {
 
     pub fn declare_linked(&mut self, door: DoorFn, json: &str) -> Result<&mut Self, String> {
         let name = Candidate::linked(door)?.name;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a linked secret's declares section did not read"
-        )]
         let declares = crate::sign::Declares::from_declares_json(json.as_bytes())
-            .map_err(|e| format!("linked secret '{name}': its declares section: {e}"))?;
-        // busbar:expect(bp::state_scan, reason = "boot: a linked secret's declares are matched to its row once, at link time")
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a linked secret declares, but no linked row is it"
-        )]
-        let row = self
-            .linked
-            .iter_mut()
-            .find(|c| c.name == name)
-            .ok_or_else(|| format!("linked secret '{name}' declares, but no linked row is it"))?;
+            .map_err(|e| declares_unread(&name, &e))?;
+        let row = self.declared_row(&name)?;
         row.disk = declares.disk;
         Ok(self)
     }
@@ -860,24 +770,10 @@ impl SecretRows {
         self
     }
 
-    fn label(module: &str) -> String {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a secret module's instance label, named when config opens or checks it"
-        )]
-        let label = format!("secrets.{module}");
-        label
-    }
-
     pub fn link(&mut self, door: DoorFn) -> Result<&mut Self, String> {
         let c = Candidate::linked(door)?;
         if c.kind != KindCode::Secret {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "boot: a linked door of another kind was offered as a secret"
-            )]
-            let refused = format!("`{}` is a {:?} door, not a secret one", c.name, c.kind);
-            return Err(refused);
+            return Err(not_a_secret_door(&c.name, c.kind));
         }
         self.linked.push(c);
 
@@ -904,16 +800,7 @@ impl SecretRows {
         candidates: impl IntoIterator<Item = Candidate>,
     ) -> Result<(), String> {
         let secrets = self.judge_dropped(candidates)?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: admitting dropped secrets checks them with the linked ones once"
-        )]
-        let all: Vec<Candidate> = self
-            .linked
-            .iter()
-            .cloned()
-            .chain(secrets.iter().cloned())
-            .collect();
+        let all = self.with_linked(&secrets);
         for line in crate::boot::both_doors(&all) {
             tracing::info!("{line}");
         }
@@ -929,147 +816,51 @@ impl SecretRows {
             clippy::disallowed_methods,
             reason = "boot: judging dropped secrets checks them with the linked ones once"
         )]
-        let (secrets, all) = {
-            let secrets: Vec<Candidate> = candidates
-                .into_iter()
-                .filter(|c| c.kind == KindCode::Secret)
-                .collect();
-            let all: Vec<Candidate> = self
-                .linked
-                .iter()
-                .cloned()
-                .chain(secrets.iter().cloned())
-                .collect();
-            (secrets, all)
-        };
+        let secrets: Vec<Candidate> = candidates
+            .into_iter()
+            .filter(|c| c.kind == KindCode::Secret)
+            .collect();
+        let all = self.with_linked(&secrets);
         crate::boot::one_owner(&all)?;
         crate::boot::sugars_of(&all)?;
         Ok(secrets)
     }
 
     pub fn set_dropped(&self, candidates: impl IntoIterator<Item = Candidate>) {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the admitted dropped secrets are set once per registry load"
-        )]
-        let secrets = candidates
-            .into_iter()
-            .filter(|c| c.kind == KindCode::Secret)
-            .collect();
         let retired = {
             let mut dropped = self.dropped.write().unwrap_or_else(PoisonError::into_inner);
             let mut checkers = self.checkers.lock().unwrap_or_else(PoisonError::into_inner);
-            let candidates = std::mem::replace(&mut *dropped, secrets);
+            let retired = std::mem::take(&mut *dropped);
+            dropped.extend(
+                candidates
+                    .into_iter()
+                    .filter(|c| c.kind == KindCode::Secret),
+            );
             let checkers = std::mem::take(&mut *checkers);
-            (candidates, checkers)
+            (retired, checkers)
         };
 
         drop(retired);
     }
 
-    fn checker(&self, module: &str) -> Result<Option<Arc<Plugin<Secret>>>, String> {
-        let (key, candidate, generation) = {
-            let dropped = self.dropped.read().unwrap_or_else(PoisonError::into_inner);
-            let checkers = self.checkers.lock().unwrap_or_else(PoisonError::into_inner);
-            let Some((key, candidate)) = self
-                .linked
-                .iter()
-                .enumerate()
-                .find(|(_, c)| c.answers(module))
-                .map(|(i, c)| (CheckerKey::Linked(i), c))
-                .or_else(|| {
-                    dropped
-                        .iter()
-                        .enumerate()
-                        .find(|(_, c)| c.answers(module))
-                        .map(|(i, c)| (CheckerKey::Dropped(i), c))
-                })
-            else {
-                return Ok(None);
-            };
-            if let Some(plugin) = checkers.plugins.get(&key) {
-                return Ok(Some(Arc::clone(plugin)));
-            }
-            (key, candidate.clone(), Arc::clone(&checkers.generation))
-        };
-
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a secret module's checker is loaded once per registry generation"
-        )]
-        let label = format!("{}.check", Self::label(module));
-        let loaded = Arc::new(self.load(&candidate, &label)?);
-        let plugin = {
-            let mut checkers = self.checkers.lock().unwrap_or_else(PoisonError::into_inner);
-            if Arc::ptr_eq(&generation, &checkers.generation) {
-                Arc::clone(
-                    checkers
-                        .plugins
-                        .entry(key)
-                        .or_insert_with(|| Arc::clone(&loaded)),
-                )
-            } else {
-                Arc::clone(&loaded)
-            }
-        };
-        Ok(Some(plugin))
-    }
-
-    fn find(&self, module: &str) -> Option<Candidate> {
-        // busbar:expect(bp::state_scan, reason = "config: a configured secret module is matched to its candidate when config is read")
-        if let Some(c) = self.linked.iter().find(|c| c.answers(module)) {
-            return Some(c.clone());
-        }
-        let dropped = self.dropped.read().unwrap_or_else(PoisonError::into_inner);
-        // busbar:expect(bp::state_scan, reason = "config: a configured secret module is matched to its candidate when config is read")
-        dropped.iter().find(|c| c.answers(module)).cloned()
-    }
-
-    fn load(&self, c: &Candidate, label: &str) -> Result<Plugin<Secret>, String> {
+    pub(crate) fn load(&self, c: &Candidate, label: &str) -> Result<Plugin<Secret>, String> {
         self.loader().load(c, label)
     }
 
     fn secret_refs(c: &Candidate) -> Result<Vec<String>, String> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a secret module's Statement did not read back"
-        )]
-        let refs = busbar_contract::abi::mechanism::rendering::read(&c.stated)
+        busbar_contract::abi::mechanism::rendering::read(&c.stated)
             .map(|r| r.secret_refs)
-            .map_err(|e| {
-                format!(
-                    "secret module '{}': its Statement does not read back (byte {}: {})",
-                    c.name, e.at, e.what
-                )
-            });
-        refs
+            .map_err(|e| statement_unread(&c.name, &e))
     }
 }
 
 impl SecretAxis for SecretRows {
     fn sugars(&self) -> busbar_contract::secret_ref::Sugars {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the secret sugars are gathered when config is read"
-        )]
-        let all: Vec<Candidate> = self
-            .linked
-            .iter()
-            .cloned()
-            .chain(
-                self.dropped
-                    .read()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .iter()
-                    .cloned(),
-            )
-            .collect();
-
-        crate::boot::sugars_of(&all).unwrap_or_default()
+        crate::boot::sugars_of(&self.all_candidates()).unwrap_or_default()
     }
 
     fn answers(&self, module: &str) -> bool {
-        self.find(module).is_some()
+        self.find_candidate(module).is_some()
     }
 
     fn check(
@@ -1080,44 +871,22 @@ impl SecretAxis for SecretRows {
         let Some(plugin) = self.checker(module).map_err(|e| vec![e])? else {
             return Ok(());
         };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a secret reference's settings did not render for checking"
-        )]
-        let held = settings
-            .encode()
-            .map_err(|_| vec!["cannot encode source settings".to_owned()])?;
+        let held = settings.encode().map_err(|_| unencodable_settings())?;
         let dispatcher = (self.dispatcher)();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: checking a secret reference needs the host settings seal"
-        )]
-        let seal = dispatcher
-            .seal()
-            .ok_or_else(|| vec!["source validation requires the host settings seal".to_owned()])?;
+        let seal = dispatcher.seal().ok_or_else(unsealed_check)?;
         check(&plugin, held.expose(seal))
     }
 
     fn linked(&self, module: &str) -> bool {
-        // busbar:expect(bp::state_scan, reason = "config: whether config names a linked secret module")
-        self.linked.iter().any(|c| c.answers(module))
+        self.answers_linked(module)
     }
 
     fn shared(&self, module: &str) -> Result<Arc<dyn SecretCalls>, String> {
-        // busbar:expect(bp::state_scan, reason = "config: a shared secret module is matched when config opens it")
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: names a configured secret module no linked plugin answers to"
-        )]
-        let c = self
-            .linked
-            .iter()
-            .find(|c| c.answers(module))
-            .ok_or_else(|| format!("no linked secret module answers to '{module}'"))?;
+        let c = self.linked_candidate(module)?;
 
-        let label = Self::label(module);
+        let instance = label(module);
         let (s, _) = self.shared.get_or_open(&c.name, || {
-            LoadedSecret::open(self.load(c, &label)?, (self.dispatcher)(), &[], &[])
+            LoadedSecret::open(self.load(c, &instance)?, (self.dispatcher)(), &[], &[])
                 .map(|opened| self.placed(c, opened))
         })?;
         Ok(s)
@@ -1129,13 +898,9 @@ impl SecretAxis for SecretRows {
         settings: Option<&busbar_contract::plugin_settings::Settings>,
         resolve: &dyn Fn(&SecretRef) -> Result<SecretValue<Vec<u8>>, String>,
     ) -> Result<Arc<dyn SecretCalls>, String> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: names a configured secret module no plugin answers to"
-        )]
         let c = self
-            .find(module)
-            .ok_or_else(|| format!("no secret module answers to '{module}'"))?;
+            .find_candidate(module)
+            .ok_or_else(|| unanswered(module))?;
         let keys = Self::secret_refs(&c)?;
         let dispatcher = (self.dispatcher)();
         let seal = dispatcher
@@ -1146,12 +911,12 @@ impl SecretAxis for SecretRows {
                 Some(settings) => {
                     let (remaining, _) =
                         settings.lend_references(&keys, &self.sugars(), module, resolve)?;
-                    remaining.encode().map_err(|error| error.to_string())?
+                    remaining.encode().map_err(|error| encode_refused(&error))?
                 }
                 None => SecretValue::default(),
             };
             let opened = LoadedSecret::open(
-                self.load(&c, &Self::label(module))?,
+                self.load(&c, &label(module))?,
                 Arc::clone(&dispatcher),
                 bytes.expose(seal),
                 &[],
@@ -1162,8 +927,8 @@ impl SecretAxis for SecretRows {
         // candidate (never the global dropped set a later admission replaces), so a rotated
         // credential reaches the plugin without a reload.
         let spec = Arc::new(RelendSpec {
-            module: module.to_string(),
-            label: Self::label(module),
+            module: module_name(module),
+            label: label(module),
             settings: settings.clone(),
             keys,
             sugars: self.sugars(),
@@ -1173,7 +938,7 @@ impl SecretAxis for SecretRows {
         let (remaining, secrets) =
             spec.settings
                 .lend_references(&spec.keys, &spec.sugars, module, resolve)?;
-        let bytes = remaining.encode().map_err(|error| error.to_string())?;
+        let bytes = remaining.encode().map_err(|error| encode_refused(&error))?;
         Ok(Arc::new(spec.open(bytes.expose(seal), &secrets)?))
     }
 }

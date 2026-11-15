@@ -79,7 +79,7 @@ pub trait DurableFixture: Fixture {
 }
 
 /// Every case `run_durable` executes, in order.
-pub const DURABLE_CASES: &[&str] = &["t17_import_rows_do_not_block_initialize"];
+const DURABLE_CASES: &[&str] = &["t17_import_rows_do_not_block_initialize"];
 
 /// The durable-only cases, each on its own fresh dataset. Run beside `run`.
 pub async fn run_durable<F: DurableFixture>(fixture: &F) {
@@ -329,7 +329,7 @@ pub async fn k3_racing_initialize<F: Fixture>(fixture: &F) {
 
 /// T1 (FIRST-START-TAKEOVER §8): a writer that boots while another's first start is live waits,
 /// writes nothing and retires nobody; it is admitted, with no first start, after publication.
-pub async fn t1_staggered_boot<F: Fixture>(fixture: &F) {
+async fn t1_staggered_boot<F: Fixture>(fixture: &F) {
     const CASE: &str = "t1_staggered_boot";
     let dataset = fixture.fresh().await;
     let h1 = fixture.open(&dataset).await;
@@ -366,7 +366,7 @@ pub async fn t1_staggered_boot<F: Fixture>(fixture: &F) {
 
 /// T2 (FIRST-START-TAKEOVER §8): a waiter that restarts during a long first start starts waiting
 /// again; the owner is never retired, and the restarted waiter is admitted after publication.
-pub async fn t2_waiter_restart<F: Fixture>(fixture: &F) {
+async fn t2_waiter_restart<F: Fixture>(fixture: &F) {
     const CASE: &str = "t2_waiter_restart";
     let dataset = fixture.fresh().await;
     let h1 = fixture.open(&dataset).await;

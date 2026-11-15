@@ -57,24 +57,23 @@ fn pbkdf2_sha256(
 impl Cred {
     /// The credential as a field value, unchanged (an API key header).
     pub fn field(&self) -> Seal {
-        self.seal(SecureVec::from(self.wire().to_vec()))
+        self.seal(SecureVec::from(self.wire()))
     }
 
     /// `Bearer <credential>`.
     pub fn bearer(&self) -> Seal {
-        // Exact size in one allocation (`concat`): the wiping buffer never grows (LR-117).
-        self.seal(SecureVec::from(
-            [b"Bearer ".as_slice(), self.wire()].concat(),
-        ))
+        // Exact size in one allocation: the wiping buffer never grows (LR-117).
+        self.seal(digests::joined(&[b"Bearer ".as_slice(), self.wire()]))
     }
 
     /// `Basic base64(user:credential)` (RFC 7617; the user's octets as they are).
     pub fn basic(&self, user: impl AsRef<[u8]>) -> Seal {
         let user = user.as_ref();
-        let pair = SecureVec::from([user, b":", self.wire()].concat());
-        self.seal(SecureVec::from(
-            [b"Basic ".as_slice(), b64(&pair).as_slice()].concat(),
-        ))
+        let pair = digests::joined(&[user, b":", self.wire()]);
+        self.seal(digests::joined(&[
+            b"Basic ".as_slice(),
+            b64(&pair).as_slice(),
+        ]))
     }
 
     /// Whether `presented` equals the credential, compared over SHA-256 digests so neither content
@@ -87,33 +86,24 @@ impl Cred {
     /// `text` with every occurrence of the credential replaced by `[redacted]`: for a destination
     pub fn redact_echo(&self, text: &str) -> String {
         let needle = self.wire();
-        if needle.is_empty() || needle.len() > text.len() {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a far end's error text, copied once on its way to a diagnostic"
-            )]
-            let echo = text.to_owned();
-            return echo;
-        }
         let hay = text.as_bytes();
-        // busbar:expect(bp::fresh_buffer, reason = "error: a far end's error text, redacted once on its way to a diagnostic")
         let mut out = Vec::with_capacity(hay.len());
-        let mut i = 0;
-        while i < hay.len() {
-            if hay[i..].starts_with(needle) {
-                out.extend_from_slice(b"[redacted]");
-                i += needle.len();
-            } else {
-                out.push(hay[i]);
-                i += 1;
+        if needle.is_empty() || needle.len() > hay.len() {
+            out.extend_from_slice(hay);
+        } else {
+            let mut i = 0;
+            while i < hay.len() {
+                if hay[i..].starts_with(needle) {
+                    out.extend_from_slice(b"[redacted]");
+                    i += needle.len();
+                } else {
+                    out.push(hay[i]);
+                    i += 1;
+                }
             }
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a far end's error text whose redaction split a character"
-        )]
-        let echo = String::from_utf8(out).unwrap_or_else(|_| "[redacted]".to_owned());
-        echo
+        String::from_utf8(out)
+            .unwrap_or_else(|_| crate::abi::sdk::cold::cred::redaction_split_a_character())
     }
 }
 

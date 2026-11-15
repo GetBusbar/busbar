@@ -78,7 +78,7 @@ pub(super) fn source_parts(key: &[u8]) -> Result<(&str, &[u8]), Error> {
 }
 pub(super) fn hash_field(hash: &mut Sha256, bytes: &[u8]) {
     hash.update(&(bytes.len() as u64).to_le_bytes());
-    hash.update(&bytes[..]);
+    hash.update(bytes);
 }
 pub(crate) fn code_digest() -> [u8; 32] {
     let mut hash = Sha256::new();
@@ -167,15 +167,15 @@ pub(crate) fn code_digest() -> [u8; 32] {
         )),
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../busbar-kernel/src/governance/persistence/identity.rs"
+            "/../busbar-kernel/src/off_path/governance/persistence/identity.rs"
         )),
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../busbar-kernel/src/governance/persistence/ledger.rs"
+            "/../busbar-kernel/src/off_path/governance/persistence/ledger.rs"
         )),
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../busbar-kernel/src/governance/persistence/recovery.rs"
+            "/../busbar-kernel/src/off_path/governance/persistence/recovery.rs"
         )),
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -258,7 +258,7 @@ pub(super) fn registered_edge(
     bounds: Bounds,
 ) -> Result<Edge, super::super::Error> {
     let code_digest = code_digest();
-    let verification_rule_digest=busbar_contract::crypto::sha256(b"busbar.legacy/native-readback+all-source-coverage+exact-mirror+graph+original-receipt-fenced-resolution/1").into();
+    let verification_rule_digest=busbar_contract::crypto::sha256(b"busbar.legacy/native-readback+all-source-coverage+exact-mirror+graph+original-receipt-fenced-resolution/1");
     let mut identity = Sha256::new();
     hash_field(&mut identity, &code_digest);
     hash_field(&mut identity, &preconditions_digest);

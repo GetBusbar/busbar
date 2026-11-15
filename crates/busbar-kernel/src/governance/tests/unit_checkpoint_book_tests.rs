@@ -76,7 +76,7 @@ fn unit(n: u64, unit: u64, targets: &[(&str, u64)], units: &[(&str, Count)]) -> 
         targets: targets
             .iter()
             .map(|(bucket, window)| UnitTarget {
-                bucket: (*bucket).into(),
+                bucket: (*bucket).to_owned(),
                 window: *window,
                 group: None,
             })

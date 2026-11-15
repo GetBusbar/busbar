@@ -30,7 +30,7 @@ use tokio::{
 
 use crate::root::{durability::NodeBook, linked::Compose};
 
-pub struct Preparation {
+pub(crate) struct Preparation {
     pub startup: Startup,
     pub config: RootCfg,
     /// The semantic pass's one result when boot already judged `config` (the fresh-instance
@@ -53,7 +53,7 @@ pub struct Preparation {
 
 /// Moving this value into serving transfers the actual validated owners.
 /// No field is rebuilt or reopened after the migration checkpoint commits.
-pub struct ReadyCandidate {
+pub(crate) struct ReadyCandidate {
     pub startup: Startup,
     pub core: Arc<CoreStore>,
     pub app: Arc<App>,
@@ -67,7 +67,7 @@ pub struct ReadyCandidate {
 
 /// A failed preparation keeps every owner it has constructed. This type cannot
 /// be adopted as a serving candidate; disposal owns the real shutdown path.
-pub struct PreparationFailure {
+pub(crate) struct PreparationFailure {
     reason: String,
     pub startup: Option<Startup>,
     pub app: Option<Arc<App>>,
@@ -95,7 +95,7 @@ impl PreparationFailure {
         }
         Box::new(self)
     }
-    pub fn reason(&self) -> &str {
+    pub(crate) fn reason(&self) -> &str {
         &self.reason
     }
 }
@@ -120,7 +120,7 @@ impl std::error::Error for PreparationFailure {}
 
 /// The exact application-building segment shared by normal and upgraded startup.
 /// Call through StartupContinuation so cancellation retains this future.
-pub async fn prepare(input: Preparation) -> Result<ReadyCandidate, Box<PreparationFailure>> {
+pub(crate) async fn prepare(input: Preparation) -> Result<ReadyCandidate, Box<PreparationFailure>> {
     // The retained future may be polled by a task other than its creator. Scope its execution,
     // including appbuild's Secret/Store work before BookPreparation installs measurement custody.
     Box::pin(crate::root::measurements::maintenance(prepare_inner(input))).await
@@ -255,7 +255,7 @@ async fn prepare_inner(input: Preparation) -> Result<ReadyCandidate, Box<Prepara
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Phase {
+pub(crate) enum Phase {
     Reopening,
     Hydrating,
     Validating,
@@ -264,7 +264,7 @@ pub enum Phase {
 }
 
 #[derive(Clone)]
-pub struct UpgradeBinding {
+pub(crate) struct UpgradeBinding {
     pub upgrade_id: [u8; 16],
     pub target: migration::Identity,
 }
@@ -312,7 +312,7 @@ impl Drop for State {
 
 /// Owns both pending futures and their candidate. A bounded-out caller cannot
 /// restart application construction or initialize the global owners a second time.
-pub struct StartupContinuation {
+pub(crate) struct StartupContinuation {
     /// `None` binds the current format (no upgrade).
     binding: Option<UpgradeBinding>,
     state: Mutex<State>,
@@ -320,10 +320,10 @@ pub struct StartupContinuation {
 
 impl StartupContinuation {
     #[cfg(test)]
-    pub fn current(input: Preparation) -> Arc<Self> {
+    pub(crate) fn current(input: Preparation) -> Arc<Self> {
         Self::new(input, None)
     }
-    pub fn for_upgrade(input: Preparation, binding: UpgradeBinding) -> Arc<Self> {
+    pub(crate) fn for_upgrade(input: Preparation, binding: UpgradeBinding) -> Arc<Self> {
         Self::new(input, Some(binding))
     }
     fn new(input: Preparation, binding: Option<UpgradeBinding>) -> Arc<Self> {
@@ -343,17 +343,17 @@ impl StartupContinuation {
         })
     }
     #[cfg(test)]
-    pub async fn phase(&self) -> Phase {
+    pub(crate) async fn phase(&self) -> Phase {
         self.state.lock().await.phase
     }
 
     #[cfg(test)]
-    pub async fn pending_reason(&self) -> Option<&'static str> {
+    pub(crate) async fn pending_reason(&self) -> Option<&'static str> {
         self.state.lock().await.pending_reason
     }
 
     /// One bounded wait. Timeout leaves the same future in custody for the next call.
-    pub async fn readiness(&self) -> Result<Option<[u8; 32]>, String> {
+    pub(crate) async fn readiness(&self) -> Result<Option<[u8; 32]>, String> {
         let mut state = self.state.lock().await;
         if state.taken {
             return Err("startup candidate was already adopted".into());
@@ -457,7 +457,7 @@ impl StartupContinuation {
         }
     }
     #[cfg(test)]
-    pub async fn verify_target(
+    pub(crate) async fn verify_target(
         &self,
         target: &migration::Identity,
     ) -> Result<[u8; 32], migration::Error> {
@@ -469,7 +469,7 @@ impl StartupContinuation {
             .map_err(|_| migration::Error::Verification)?
             .ok_or(migration::Error::ReconciliationRequired)
     }
-    pub async fn take_ready(
+    pub(crate) async fn take_ready(
         &self,
         completion: &migration::CompletionReceipt,
     ) -> Result<Option<ReadyCandidate>, String> {

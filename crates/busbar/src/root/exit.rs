@@ -23,7 +23,7 @@ static FIRST_START: OnceLock<Arc<FirstStart>> = OnceLock::new();
 pub const EXIT_RETIRE_BUDGET: Duration = Duration::from_secs(5);
 
 /// The status of an exit on SIGTERM, SIGINT or a console close: 128 + SIGTERM.
-pub const EXIT_SIGNALLED: i32 = 143;
+pub(crate) const EXIT_SIGNALLED: i32 = 143;
 
 /// Right after Store admission: arm the exit path if this process owns a first start.
 pub fn arm(store: &CoreStore) {
@@ -43,7 +43,7 @@ pub fn exit(code: i32) -> ! {
 /// The first statement of `run`: until the listener's own handler owns signals, SIGTERM, SIGINT
 /// and a console close exit through [`exit`] (status 143), so an armed owner hands over. Send on
 /// the returned handoff (or drop it) once the listener's handler is installed.
-pub fn exit_on_signal() -> tokio::sync::oneshot::Sender<()> {
+pub(crate) fn exit_on_signal() -> tokio::sync::oneshot::Sender<()> {
     exit_on(crate::shutdown_signal(), |code| exit(code))
 }
 
