@@ -646,6 +646,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-plugin-test"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "tokio",
+]
+
+[[package]]
 name = "bytecount"
 version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"

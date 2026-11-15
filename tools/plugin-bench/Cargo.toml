@@ -11,15 +11,22 @@ license = "Apache-2.0"
 # loader's `test-support`, which must never unify into a root workspace build of the engine.
 [workspace]
 
-[[bin]]
+[[example]]
 name = "busbar-plugin-bench"
 path = "src/main.rs"
 
 [dependencies]
-busbar-contract = { path = "../../crates/busbar-contract", features = ["test-seal"] }
+busbar-contract = { path = "../../crates/busbar-contract" }
 busbar-plugin-loader = { path = "../../crates/plugin-loader", features = ["test-support"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 tokio = { version = "1", features = ["rt", "time"] }
+
+# The harness plays the kernel for the export door, so it needs the contract's test seal. That
+# feature is named only on dev edges (`crates/busbar-contract/tests/test_seal_is_dev_only.rs`), so
+# the tool is an example target, built with its dev-dependencies; a plugin repo that depends on
+# this crate as a dev-dependency supplies the same dev edge itself.
+[dev-dependencies]
+busbar-contract = { path = "../../crates/busbar-contract", features = ["test-seal"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
