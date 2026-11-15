@@ -20,6 +20,8 @@ memio = []
 
 [dependencies]
 zerocopy = { version = "0.8", features = ["derive"] }
+# The volatile wipe of a Reply block before it is freed (I11; IF §1 names zerocopy + zeroize). Never `Zeroizing`.
+zeroize = { workspace = true }
 
 [lints]
 workspace = true

@@ -17,7 +17,11 @@
       "crates/busbar-kernel/src/preflight.rs": { "keywords": 1, "allows": 1, "by": "W3.11" },
       "crates/busbar-kernel/src/seal.rs": { "keywords": 0, "allows": 1, "by": "W4.3" },
       "crates/busbar-kernel/src/timing/mod.rs": { "keywords": 1, "allows": 1, "by": "W6.2" },
-      "crates/busbar-migrations/src/seal.rs": { "keywords": 0, "allows": 1, "by": "W4.S3" }
+      "crates/busbar-migrations/src/seal.rs": { "keywords": 0, "allows": 1, "by": "W4.S3" },
+      "crates/busbar-plugin-abi/src/host.rs": { "keywords": 10, "allows": 1, "by": "permanent: the MIN-3 Host vtable, IF §5 (W1-A1, mechanism! block)" },
+      "crates/busbar-plugin-abi/src/plugin.rs": { "keywords": 6, "allows": 0, "by": "permanent: the MIN-3 plugin header and EntryFn, IF §7.1 (W1-A1, mechanism! block)" },
+      "crates/busbar-plugin-abi/src/records.rs": { "keywords": 5, "allows": 2, "by": "permanent: Out writes the host buffer in place, IF §3.2 (W1-A1)" },
+      "crates/busbar-plugin-abi/src/types.rs": { "keywords": 10, "allows": 10, "by": "permanent: View and the empty-rule views, IF §2 (W1-A1)" }
     },
     "forbid": [
       "crates/busbar-contract/src/caps/mod.rs",
@@ -44,7 +48,12 @@
       "tools/ci-checks/src/main.rs"
     ]
   },
-  "admitted": {},
+  "admitted": {
+    "crates/busbar-plugin-abi/src/host.rs": "J46 (OWNER-QUEUE 2026-11-15, under R-CHECKS): IF §5 Host fn-pointer fields (now, mono, random, crypto, log, log_level, grow, deployment, migrate_admit) and unsafe impl Sync for Host; W1-A1",
+    "crates/busbar-plugin-abi/src/plugin.rs": "J46 (OWNER-QUEUE 2026-11-15, under R-CHECKS): IF §7.1 Plugin header fn-pointer fields (describe, open, resume, cancel, close) and EntryFn; W1-A1",
+    "crates/busbar-plugin-abi/src/records.rs": "J46 (OWNER-QUEUE 2026-11-15, under R-CHECKS): IF §3.2 Out writes straight into the host buffer and grows it through Host::grow (Out::from_raw and its RawWrite impl); W1-A1",
+    "crates/busbar-plugin-abi/src/types.rs": "J46 (OWNER-QUEUE 2026-11-15, under R-CHECKS): IF §2 unsafe trait View and its impls for Bytes, Str, Slice, Pair, u32, u64, and the from_raw_parts arms of Bytes/Str/Slice::get (round-17 empty rule); W1-A1"
+  },
   "dead_code": {
     "crates/busbar-contract/src/abi/mechanism/decl.rs": 2,
     "crates/busbar-contract/src/abi/mod.rs": 2,

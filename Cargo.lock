@@ -617,6 +617,7 @@ name = "busbar-plugin-abi"
 version = "1.6.0"
 dependencies = [
  "zerocopy",
+ "zeroize",
 ]
 
 [[package]]
