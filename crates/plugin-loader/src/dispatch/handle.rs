@@ -95,11 +95,10 @@ fn drawn_key() -> Result<(u64, u64), LoadError> {
     if let Some(k) = KEY.get() {
         return Ok(*k);
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the process-wide handle key is drawn once (armed at load) and cached"
-    )]
-    let k = draw(|b| busbar_contract::crypto::fill(b).map_err(|e| e.to_string()))?;
+    // The process-wide handle key is drawn once (armed at load) and cached.
+    let k = draw(|b| {
+        busbar_contract::crypto::fill(b).map_err(crate::cold::dispatch::runtime::entropy_refused)
+    })?;
     Ok(*KEY.get_or_init(|| k))
 }
 

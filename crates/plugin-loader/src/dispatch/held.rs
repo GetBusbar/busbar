@@ -8,8 +8,6 @@ use arc_swap::ArcSwap;
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::sdk::completion_retirement::{Domain, Handle};
 
-use super::ticket::decode;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct Issued {
     caller: usize,
@@ -55,11 +53,8 @@ impl Held {
     }
 
     fn publish(&self, all: &HashMap<Ticket, Cycle>) {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a driver ticket's start or stop republishes the lock-free snapshot; no service call does"
-        )]
-        let drivers: HashSet<Ticket> = all.keys().copied().collect();
+        // A driver ticket's start or stop republishes the lock-free snapshot; no service call does.
+        let drivers = crate::cold::dispatch::runtime::driver_snapshot(all);
         self.drivers.store(Arc::new(drivers));
     }
 
@@ -82,11 +77,8 @@ impl Held {
     pub(crate) fn untrack_worker(&self, worker: u32) {
         let mut all = self.lock();
         let before = all.len();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a wedged worker's replacement forgets every driver ticket it held"
-        )]
-        all.retain(|t, _| decode(t.slot).0 != worker);
+        // A wedged worker's replacement forgets every driver ticket it held.
+        crate::cold::dispatch::runtime::forget_worker_drivers(&mut *all, worker);
         if all.len() != before {
             self.publish(&all);
         }
