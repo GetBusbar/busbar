@@ -2586,3 +2586,7 @@ mod credential_echo_tests;
 #[cfg(test)]
 #[path = "tests/boot_advice_tests.rs"]
 mod boot_advice_tests;
+
+#[cfg(test)]
+#[path = "tests/operator_third_party_tests.rs"]
+mod operator_third_party_tests;

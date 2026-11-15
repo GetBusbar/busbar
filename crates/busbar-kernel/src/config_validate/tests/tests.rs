@@ -2018,3 +2018,23 @@ fn test_reserved_admin_name_boundaries() {
         "'admin' is not the native-API root; it is refused by the legacy rule, not this one"
     );
 }
+
+/// OPERATOR-FROM-ADMITTED-AUTH R5: the no-mint-path refusal offers only remedies that exist: an
+/// operator entry with its `settings`, or a provider whose ceiling and role binding reach `full`.
+/// It never shows an empty operator word and never offers `mint`, which is not a scope.
+#[test]
+fn no_mint_path_names_remedies_that_exist() {
+    for op in ["", "fixture-operator"] {
+        let text = busbar_kernel_identity::operator::no_mint_path(op);
+        assert!(text.contains("max_admin_scope: full"), "{op:?}: {text}");
+        assert!(text.contains("settings"), "{op:?}: {text}");
+        assert!(
+            !text.contains("``"),
+            "{op:?}: an empty word is shown: {text}"
+        );
+        assert!(
+            !text.contains("`mint`"),
+            "{op:?}: `mint` is offered: {text}"
+        );
+    }
+}

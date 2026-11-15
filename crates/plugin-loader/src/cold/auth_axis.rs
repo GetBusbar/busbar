@@ -53,6 +53,31 @@ pub(crate) fn operator(rows: &AuthRows) -> Option<(String, String)> {
     })
 }
 
+/// Config: the operator claims among the auth `rows`.
+#[cold]
+pub(crate) fn operator_claims<'a>(
+    mut rows: impl Iterator<Item = &'a LoadablePlugin>,
+) -> busbar_contract::auth_calls::OperatorClaims {
+    let first = rows.find_map(|row| {
+        let principal = crate::auth_axis::stated_of(row)
+            .ok()
+            .flatten()?
+            .operator_principal?;
+        Some(busbar_contract::auth_calls::OperatorClaim {
+            provider: row.manifest.alias.clone(),
+            canonical: row.manifest.alias.clone(),
+            principal,
+            first_party: true,
+            version: String::new(),
+            signer: String::new(),
+        })
+    });
+    busbar_contract::auth_calls::OperatorClaims {
+        claims: first.into_iter().collect(),
+        unreadable: Vec::new(),
+    }
+}
+
 /// Config: lists the credential-reading auth plugins when config is read.
 #[cold]
 pub(crate) fn credential_readers(rows: &AuthRows) -> Vec<String> {

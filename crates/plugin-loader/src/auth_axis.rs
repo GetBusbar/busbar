@@ -142,13 +142,7 @@ impl AuthRows {
     }
 
     fn stated_read(&self, row: &LoadablePlugin) -> Result<Option<AuthFacts>, String> {
-        match row.door() {
-            Some(door) => crate::dispatch::kinds::auth::stated_facts_raw(door).map(Some),
-            None => match row.manifest.stated_rendering()? {
-                Some(r) => crate::dispatch::kinds::auth::rendered_facts(&r).map(Some),
-                None => Ok(None),
-            },
-        }
+        stated_of(row)
     }
 
     pub(crate) fn stated(&self, row: &LoadablePlugin) -> Option<AuthFacts> {
@@ -386,6 +380,29 @@ impl busbar_contract::auth_calls::AuthAxis for AuthRows {
     ) -> Result<Arc<dyn AuthCalls>, String> {
         AuthRows::open(self, module, label, settings)
     }
+}
+
+/// The facts one auth row's Statement states: the linked door's, or the signed manifest's rendering
+/// (the signature covers it), with no dlopen. `Err` when the Statement does not decode.
+pub(crate) fn stated_of(row: &LoadablePlugin) -> Result<Option<AuthFacts>, String> {
+    match row.door() {
+        Some(door) => crate::dispatch::kinds::auth::stated_facts_raw(door).map(Some),
+        None => match row.manifest.stated_rendering()? {
+            Some(r) => crate::dispatch::kinds::auth::rendered_facts(&r).map(Some),
+            None => Ok(None),
+        },
+    }
+}
+
+/// THE OPERATOR CLAIMS among `rows` (linked rows first, then the dropped-in ones): every `kind:
+/// auth` row stating the operator fact, and every auth row whose Statement does not read
+/// (OPERATOR-FROM-ADMITTED-AUTH §3.2). Process start reads them from the start scan's rows; every
+/// build reads them again from its registry.
+#[must_use]
+pub fn operator_claims<'a>(
+    rows: impl Iterator<Item = &'a LoadablePlugin>,
+) -> busbar_contract::auth_calls::OperatorClaims {
+    cold::operator_claims(rows.filter(|p| p.manifest.kind == AUTH))
 }
 
 #[must_use]

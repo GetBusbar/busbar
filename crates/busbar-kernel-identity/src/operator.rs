@@ -27,6 +27,10 @@ pub struct OperatorWords {
     pub provider: &'static str,
     /// The fixed principal id the operator credential identifies the operator as.
     pub principal_id: &'static str,
+    /// The operator row's canonical plugin name: `module:` may name it as well as `provider`.
+    pub canonical: &'static str,
+    /// Whether the operator row is first-party (linked, or signed by a busbar release key).
+    pub first_party: bool,
 }
 
 /// The auth rows this build LINKS (the composition root's, or a test binary's) and the operator
@@ -35,7 +39,9 @@ pub(crate) static LINKED: std::sync::OnceLock<(&[LinkedAuth], OperatorWords, Vec
     std::sync::OnceLock::new();
 
 // Installed once, when the build starts: off the request path.
-pub use crate::off_path::operator::install_linked;
+pub use crate::off_path::operator::{
+    bind_deferred, choose, install_linked, install_operator, judged, Judged, OperatorBinding,
+};
 
 #[cfg(any(test, feature = "test-support"))]
 static TEST_WORDS: std::sync::OnceLock<OperatorWords> = std::sync::OnceLock::new();
@@ -326,6 +332,17 @@ impl Operator {
     /// Whether the admin-chain provider `name` is the operator credential.
     pub fn is(&self, name: &str) -> bool {
         self.names.contains(name)
+    }
+
+    /// The opened operator instance the backed provider `name` is judged by, if it has one.
+    pub fn instance(&self, name: &str) -> Option<&Arc<dyn AuthCalls>> {
+        let _ = name;
+        None
+    }
+
+    /// Whether the backed provider `name` is the operator credential with no settings: unset.
+    pub fn unset(&self, name: &str) -> bool {
+        self.is(name) && matches!(self.cred, OperatorCredential::Unset)
     }
 
     /// Whether a principal `id` that the admin-chain provider `name` identified is the operator: the

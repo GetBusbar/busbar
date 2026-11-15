@@ -291,7 +291,7 @@ fn unset() -> RootInstall {
 }
 
 pub use busbar_kernel_identity::operator::{
-    install_linked as install_linked_auth, linked as linked_auth_rows,
+    install_linked as install_linked_auth, install_operator, linked as linked_auth_rows,
     linked_names as linked_auth_names,
 };
 

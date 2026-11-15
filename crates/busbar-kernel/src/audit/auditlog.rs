@@ -1494,3 +1494,9 @@ async fn drain_native(
 #[cfg(test)]
 #[path = "tests/auditlog_native_tests.rs"]
 mod native_tests;
+
+/// The `auth.operator` rows held for the audit chain, as `"<action> <resource>"`.
+#[cfg(test)]
+pub(crate) fn held_operator_rows() -> Vec<String> {
+    Vec::new()
+}

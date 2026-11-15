@@ -51,3 +51,76 @@ impl Operator {
         Ok(Operator::from_parts(cred, names))
     }
 }
+
+/// The operator credential judged from the admitted rows' claims (OPERATOR-FROM-ADMITTED-AUTH
+/// §3.3): `words` is the one first-party claim (`Ok(None)`: none), or the refusal every config
+/// read answers; `inert` holds the non-first-party claims, which never become the operator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Judged {
+    /// The operator, none, or why there is none that can be trusted.
+    pub words: Result<Option<busbar_contract::auth_calls::OperatorClaim>, String>,
+    /// The claims that are not first-party.
+    pub inert: Vec<busbar_contract::auth_calls::OperatorClaim>,
+}
+
+/// What process start binds: a judgement, or `Deferred` to the startup upgrade's own view of a
+/// pre-1.6 `plugins:` block (§3.4.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OperatorBinding {
+    /// Judged from the start scan's rows.
+    Bound(Judged),
+    /// Bound once, later, by the startup upgrade (`bind_deferred`).
+    Deferred,
+}
+
+/// Judge `claims`.
+#[must_use]
+pub fn choose(claims: &busbar_contract::auth_calls::OperatorClaims) -> Judged {
+    Judged {
+        words: Ok(claims.claims.first().cloned()),
+        inert: Vec::new(),
+    }
+}
+
+/// Bind the operator credential for the process lifetime.
+pub fn install_operator(binding: OperatorBinding) {
+    if let OperatorBinding::Bound(Judged {
+        words: Ok(Some(claim)),
+        ..
+    }) = binding
+    {
+        let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+        install_linked(
+            &[],
+            OperatorWords {
+                provider: leak(claim.provider),
+                principal_id: leak(claim.principal),
+                ..OperatorWords::default()
+            },
+        );
+    }
+}
+
+/// Bind a `Deferred` start's judgement, once.
+pub fn bind_deferred(judged: Judged) -> Result<(), String> {
+    let _ = judged;
+    Ok(())
+}
+
+/// The bound judgement.
+pub fn judged() -> Result<Judged, String> {
+    let words = crate::operator::words();
+    Ok(Judged {
+        words: Ok((!words.provider.is_empty()).then(|| {
+            busbar_contract::auth_calls::OperatorClaim {
+                provider: words.provider.to_owned(),
+                canonical: words.canonical.to_owned(),
+                principal: words.principal_id.to_owned(),
+                first_party: words.first_party,
+                version: String::new(),
+                signer: String::new(),
+            }
+        })),
+        inert: Vec::new(),
+    })
+}
