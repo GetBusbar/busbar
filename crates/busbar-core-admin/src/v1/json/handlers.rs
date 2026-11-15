@@ -1983,11 +1983,7 @@ pub(crate) async fn rebuild_app_from_disk(
     )
     .await?;
 
-    if let Some(doc) = loaded.overlay_doc.as_ref() {
-        busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
-    }
-    let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
-        .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
+    let mut cfg = loaded.disk_candidate()?;
 
     let base_hook_names: std::collections::HashSet<String> = cfg.hooks.keys().cloned().collect();
     let base_group_names: std::collections::HashSet<String> = cfg.groups.keys().cloned().collect();

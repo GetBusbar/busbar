@@ -3,10 +3,10 @@
 
 //! OPERATOR-FROM-ADMITTED-AUTH r3.1 R24 (§000.1): the operator credential's reference is config.yaml
 //! exactly as read from disk, before any stored `document_patch` is composed. The loader returns that
-//! unpatched reference beside the patched document, so a patch can never become "the file". A stored
-//! patch from an earlier binary that moves the operator credential, or the plugin admission set,
-//! refuses boot naming its paths and both remedies. The words are process-global: this test owns its
-//! binary.
+//! unpatched reference beside the patched document, so a patch can never become "the file", and a
+//! disk rebuild takes that reference. A stored patch from an earlier binary that moves the
+//! operator credential, or the plugin admission set, refuses boot naming its paths and both
+//! remedies. The words are process-global: this test owns its binary.
 
 use std::path::{Path, PathBuf};
 
@@ -137,5 +137,55 @@ fn a_stored_patch_that_moves_the_operator_credential_refuses_boot_by_path() {
         stored_document_patch(&stored, &loaded).is_ok(),
         "plugins.logs has no admission effect"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn reference_of(yaml: &str) -> OperatorFileDefs {
+    OperatorFileDefs::of(
+        &busbar_kernel::config::deploy_from_yaml_str(yaml)
+            .expect("config.yaml parses")
+            .identity_providers,
+    )
+}
+
+/// §3.6.1: a disk rebuild (`POST /config/reload`, `POST /plugins/reload`, `POST /plugins/rollback`)
+/// re-reads config.yaml, so its candidate carries config.yaml's operator definitions as the
+/// reference every later apply and validate is held to. Editing `settings` in config.yaml and
+/// reloading is the 1.6.0 rotation path: the edited file becomes the reference.
+#[test]
+fn a_disk_rebuild_takes_config_yaml_as_its_operator_reference() {
+    bind_operator();
+    let dir = scratch("rebuild");
+    let config = dir.join("config.yaml");
+    let reload = || {
+        load_config_from_disk_with_document_patches(
+            &config,
+            None,
+            false,
+            EnvSubst::Strict,
+            &AcceptAll,
+            None,
+            None,
+        )
+        .expect("config.yaml loads")
+        .disk_candidate()
+        .expect("the candidate resolves")
+        .operator_file_defs
+    };
+
+    assert_eq!(
+        reload().as_deref(),
+        Some(&reference_of(&file())),
+        "the rebuild's reference is config.yaml's operator definition"
+    );
+
+    let rotated = file().replace(DIGEST, OTHER);
+    std::fs::write(&config, &rotated).expect("config.yaml");
+    assert_eq!(
+        reload().as_deref(),
+        Some(&reference_of(&rotated)),
+        "the edited config.yaml is the new reference"
+    );
+
     let _ = std::fs::remove_dir_all(&dir);
 }
