@@ -291,6 +291,7 @@ pub fn register_stores(linked: &Linked) {
             store_axis: Some(store_axis),
             secret_axis: Some(secrets),
             secret_admit: Some(crate::root::boot::admit_secrets),
+            secret_snapshot: Some(secret_snapshot),
 
             rate_apply: Some(&crate::root::kernel::CardRepricer),
             rate_epoch: Some(&crate::root::kernel::CardRepricer),
@@ -375,6 +376,20 @@ fn conns() -> Option<busbar_contract::conn::admissions::AdmissionAuthority> {
             std::sync::Arc::clone(one) as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>
         )
     })
+}
+
+/// The dropped-in secret set a config transaction found, put back if the transaction publishes
+/// nothing ([`busbar_kernel::preflight::RootInstall::secret_snapshot`]).
+struct DroppedSecrets(Vec<crate::root::loader::boot::Candidate>);
+
+impl busbar_kernel::preflight::SecretSnapshot for DroppedSecrets {
+    fn restore_if_changed(self: Box<Self>) {
+        secret_rows().restore_if_changed(self.0);
+    }
+}
+
+fn secret_snapshot() -> Box<dyn busbar_kernel::preflight::SecretSnapshot> {
+    Box::new(DroppedSecrets(secret_rows().dropped()))
 }
 
 /// The process's one secret axis: this build's linked secret sources, whichever reader asks first.
