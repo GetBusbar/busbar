@@ -695,7 +695,7 @@ pub mod plane {
     /// releases one session's message only after the previous one's reply was demuxed; round 18, exactly:
     /// core writes one MSG_ASK at a time, the next only after the DEMUX with DX_FINAL for the previous one;
     /// an EX_MSG without MSG_ASK, a reply or a notification, is written at once and never waits). Answered by a
-    /// piece(FROM_CORE, exchange, P_CHANNEL, ChanAttach). Messages to the channel are EX_MSG on `exchange`;
+    /// piece(FROM_CORE, exchange, P_CHANNEL, CH_ATTACH). Messages to the channel are EX_MSG on `exchange`;
     /// messages from it arrive as piece(FROM_UPSTREAM, exchange, P_TEXT|P_FIN, message).
     #[repr(C)]
     #[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout)]
@@ -987,6 +987,8 @@ pub mod plane {
         /// Round 16: the destination-judge intent (JudgeRec + destination text) and its core-built answer.
         pub const JUDGE: u16 = 0x0151;
         pub const JUDGE_ANS: u16 = 0x0152;
+        /// R6a (#257, IF r35): core-built P_CHANNEL answer: `ChanAttach` + the CH_READY tail, one record.
+        pub const CH_ATTACH: u16 = 0x0153;
         /// describe: D_ROUTE*, D_DIALECT* (text: upstream dialects this plane can encode), D_TICK_S (U64Rec:
         /// the period core calls admin(ADMIN_TICK); absent = never), D_USAGE_CLASS* (UsageClassRec + class).
         /// Round 13: D_PROVIDER_SCHEMA (UTF-8 JSON Schema, the D_SCHEMA dialect) = the keys this plane owns in a
@@ -1063,7 +1065,7 @@ pub mod plane {
     /// §12.19), the client went away while DETACHed (empty). P_RENDEZVOUS: exchange = the
     /// rendezvous exchange, bytes = the local description text; P_RV_FAILED: bytes = one REFUSAL.
     /// P_COMMITTED: COMMITTED*. P_TRUST: TRUST_ANS*. P_CHANNEL: exchange = the attached exchange,
-    /// bytes = ChanAttach (+ tail); a channel that died mid-session arrives as P_ERROR on that exchange.
+    /// bytes = exactly one CH_ATTACH record (ChanAttach + tail); a channel that died mid-session arrives as P_ERROR on that exchange.
     pub const P_LOOKUP: u32 = 0x100;
     pub const P_STORE_FAILED: u32 = 0x200;
     pub const P_TIMER: u32 = 0x400;

@@ -1327,4 +1327,28 @@ mod tests {
             Err(RecErr::Reserved)
         );
     }
+
+    #[test]
+    fn a_chan_attach_is_one_ch_attach_record_with_the_ready_tail() {
+        let mut w = Reply::new();
+        encode_chan_attach(&mut w, 7, 9, true, b"tail-bytes").expect("fits");
+        let records = recs(w.as_bytes());
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].tag, tag::CH_ATTACH);
+        let (head, tail) = records[0]
+            .pod_tail::<plane::ChanAttach>()
+            .expect("ChanAttach");
+        assert_eq!((head.generation, head.slot, head.greet), (7, 9, 1));
+        assert_eq!(head._r, 0);
+        assert_eq!(tail, b"tail-bytes");
+
+        let mut w = Reply::new();
+        encode_chan_attach(&mut w, 1, 2, false, &[]).expect("fits");
+        let records = recs(w.as_bytes());
+        let (head, tail) = records[0]
+            .pod_tail::<plane::ChanAttach>()
+            .expect("ChanAttach");
+        assert_eq!(head.greet, 0);
+        assert!(tail.is_empty());
+    }
 }
