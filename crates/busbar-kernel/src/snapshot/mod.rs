@@ -299,6 +299,9 @@ pub const LANE_REQUEST_DURATION_SECONDS: &str = "busbar_lane_request_duration_se
 /// Units that did not complete, by closed unit `reason` and `instance`.
 pub const UNIT_REFUSALS_TOTAL: &str = "busbar_unit_refusals_total";
 
+/// Build identity: a gauge fixed at 1, labelled `version` (ADMIN-API 1.6 section 12).
+pub const BUILD_INFO: &str = "busbar_build_info";
+
 pub const BILLING_TAP_DECODE_FAIL_TOTAL: &str = "busbar_billing_tap_decode_fail_total";
 
 pub(crate) fn usage_tap_decode_fail_should_warn(protocol: &str, reason: &'static str) -> bool {
@@ -565,6 +568,10 @@ fn describe() {
         LANE_AVAILABLE_PERMITS,
         Unit::Count,
         "Per-(pool,lane) available concurrency permits for a BOUNDED lane (scrape-time; unbounded lanes emit no sample)"
+    );
+    describe_gauge!(
+        BUILD_INFO,
+        "Build identity: always 1, labelled with the running version"
     );
     describe_gauge!(
         POOL_QUEUED,
