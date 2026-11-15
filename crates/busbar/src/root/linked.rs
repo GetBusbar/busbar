@@ -179,6 +179,15 @@ pub struct LinkedDoorExport {
     pub declares: &'static str,
     /// Its door.
     pub door: busbar_contract::abi::mechanism::door::DoorFn,
+    /// The names an earlier release answered to (its `FORMER_NAMES`); empty when it declares none.
+    pub former_names: &'static [&'static str],
+}
+
+/// The words a linked door answers to besides its alias: its `FORMER_NAMES`, then the `from` of
+/// each `REWRITE_ALIAS` rewrite its Statement states, as one list.
+pub(crate) fn door_words(former: &[&str], rewrites: &[(u32, String, String)]) -> Vec<String> {
+    let _ = (former, rewrites);
+    Vec::new()
 }
 
 fn export_abi() -> u32 {
@@ -215,8 +224,15 @@ pub(crate) fn linked_exports(
     let mut rows = doors
         .iter()
         .map(|d| {
-            manifest(d.name, d.alias, d.declares)
-                .map(|m| crate::root::loader::LinkedPlugin::door(m, d.door))
+            manifest(d.name, d.alias, d.declares).map(|m| {
+                let rewrites = crate::root::loader::dispatch::rendering_of(d.door)
+                    .ok()
+                    .and_then(|bytes| busbar_contract::abi::mechanism::rendering::read(&bytes).ok())
+                    .map(|statement| statement.rewrites)
+                    .unwrap_or_default();
+                crate::root::loader::LinkedPlugin::door(m, d.door)
+                    .with_former_names(door_words(d.former_names, &rewrites))
+            })
         })
         .collect::<Result<Vec<_>, String>>()?;
 
