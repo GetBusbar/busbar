@@ -325,6 +325,13 @@ pub(crate) fn linked_source(
             .collect()
     };
 
+    let former_names_of = |feature: &str| -> String {
+        metadata_value(manifest, "package.metadata.busbar.linked-former-names", feature)
+            .map_or_else(
+                || String::from("&[]"),
+                |door| format!("{door}.former_names()"),
+            )
+    };
     out.push_str(
         "/// The store axis: each linked store's `(key, ephemeral, door, canonical)`.\n\
          static LINKED_STORES: ::std::sync::LazyLock<::std::vec::Vec<busbar_kernel::preflight::LinkedStore>> =\n    \
@@ -350,10 +357,52 @@ pub(crate) fn linked_source(
             continue;
         }
         let c = ident(krate);
+        let former = format!("{c}::MACRO_DOOR.former_names()");
         out.push_str(&format!(
             "crate::root::linked::LinkedDoorExport {{ name: {c}::NAME, alias: {c}::ALIAS, \
-             declares: {c}::DECLARES, door: {door}, former_names: &[] }}, "
+             declares: {c}::DECLARES, door: {door}, former_names: {former} }}, "
         ));
+    }
+    out.push_str("]);\n");
+
+    out.push_str(
+        "/// The former names each linked store, auth, secret and plane door declares, one row each.\n\
+         static LINKED_FORMER: ::std::sync::LazyLock<::std::vec::Vec<crate::root::linked::LinkedFormer>> =\n    \
+         ::std::sync::LazyLock::new(|| ::std::vec![",
+    );
+    for (((entry, axes), door), (feature, _)) in linked.iter().zip(&doors).zip(&on) {
+        let row = |axis: &str, key: &str, door: &str, former: &str| {
+            format!(
+                "crate::root::linked::LinkedFormer {{ axis: {axis:?}, key: {key}, door: {door}, \
+                 former_names: {former} }}, "
+            )
+        };
+        if axes.iter().any(|a| a == "stores") {
+            let store = format!("busbar_kernel::preflight::StoreRow({entry}::STORE)");
+            out.push_str(&row(
+                "store",
+                &format!("{store}.linked().0"),
+                &format!("{store}.linked().2"),
+                &format!("{store}.former_names()"),
+            ));
+        }
+        let declared = metadata_value(manifest, "package.metadata.busbar.linked-former-names", feature)
+            .is_some();
+        if !declared {
+            continue;
+        }
+        let former = former_names_of(feature);
+        if axes.iter().any(|a| a == AUTH_AXIS) {
+            let name = metadata_value(manifest, "package.metadata.busbar.linked-name", feature)
+                .unwrap_or_default();
+            out.push_str(&row("auth", &format!("{name:?}"), door, &former));
+        }
+        if axes.iter().any(|a| a == SECRET_AXIS) {
+            out.push_str(&row("secret", "\"\"", door, &former));
+        }
+        if axes.iter().any(|a| a == PLANE_DOOR_AXIS) {
+            out.push_str(&row("plane", "\"\"", door, &former));
+        }
     }
     out.push_str("]);\n");
 
@@ -444,6 +493,7 @@ pub(crate) fn linked_source(
         .unwrap_or_default();
     out.push_str(&format!("    operator_auth: {operator:?},\n"));
     out.push_str("    export_doors: &LINKED_EXPORT_DOORS,\n");
+    out.push_str("    former: &LINKED_FORMER,\n");
     out.push_str("    stores: &LINKED_STORES,\n");
     out.push_str("    claims: &[");
     for e in on_axis(CLAIMS_AXIS) {
