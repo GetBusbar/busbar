@@ -1126,6 +1126,9 @@ pub struct ExpiredWriters {
     pub rows: Vec<ExpiredWriter>,
     pub remaining: usize,
     pub invalid: usize,
+    /// Other writers' leases not yet expired for the grace: live, never closed, reported as
+    /// F5's `skipped_live`.
+    pub live: usize,
 }
 
 impl BootIdentity {
@@ -1211,9 +1214,11 @@ impl BootIdentity {
             ..ExpiredWriters::default()
         };
         for (target, lease_key, lease, expires_ms) in leases {
-            if target == (own.writer_epoch, own.writer)
-                || now_ms < expires_ms.saturating_add(grace_ms)
-            {
+            if target == (own.writer_epoch, own.writer) {
+                continue;
+            }
+            if now_ms < expires_ms.saturating_add(grace_ms) {
+                out.live += 1;
                 continue;
             }
             if out.rows.len() >= max {
@@ -1307,6 +1312,7 @@ impl PredecessorFence {
         };
         pass.invalid = scan.invalid;
         pass.remaining = scan.remaining;
+        pass.skipped_live = scan.live;
         'writers: for row in &scan.rows {
             if stopped() {
                 break;
