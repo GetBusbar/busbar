@@ -12,7 +12,7 @@ mod relay_tests;
 mod walk_tests;
 mod zero_copy_tests;
 
-use std::collections::HashMap;
+use foldhash::HashMap;
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::caps::{Pass, Route};
@@ -109,7 +109,7 @@ impl Node {
             clock: Arc::new(TestClock::at(rt.handle().clone(), 1_000)),
             telemetry: Arc::new(TestTelemetry::new()),
             conns: Arc::new(TestConns::new()),
-            pools: HashMap::new(),
+            pools: HashMap::default(),
             lanes: lanes.to_vec(),
             floor: WeightedFloor::new(),
             timeout_secs: 120,

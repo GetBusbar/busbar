@@ -335,7 +335,7 @@ pub(crate) fn compose_egress(
         sealed.insert(destination, route);
         names.push((destination, name));
     }
-    let mut built: std::collections::HashMap<String, Pool> = std::collections::HashMap::new();
+    let mut built: foldhash::HashMap<String, Pool> = foldhash::HashMap::default();
     for (label, entries) in pools.pools() {
         let list = entries
             .iter()

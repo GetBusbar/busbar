@@ -364,7 +364,7 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
         clock: Arc::new(Wall),
         journal: Arc::new(Quiet),
         telemetry: Arc::new(Quiet),
-        pools: HashMap::from([(
+        pools: foldhash::HashMap::from_iter([(
             pool_name.clone(),
             Pool {
                 name: pool_name.clone(),
