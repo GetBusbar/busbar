@@ -56,8 +56,8 @@ fn a_kind_op_crosses_both_images_with_the_loans_own_lengths() {
                 assert_eq!(a.outcome(), Outcome::Ready, "{image}: {:?}", a.error());
                 assert_eq!(
                     a.get(|o| o.len),
-                    12,
-                    "{image}: 5 lent bytes and connection 7, never the forged length"
+                    5,
+                    "{image}: the 5 lent bytes on connection 7, never the forged length 999"
                 );
             }
             Called::Pending(p) => {
