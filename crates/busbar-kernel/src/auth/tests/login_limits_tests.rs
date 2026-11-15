@@ -281,7 +281,7 @@ fn capture(action: &str, _: &str, _: &'static str, principal: &str) {
     lock(&AUDITED).push((action.to_string(), principal.to_string()));
 }
 
-// ---- store-backed (CI provides BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN) ----------------------------
+// ---- store-backed (the in-tree memory backend) ----------------------------
 
 async fn store() -> Arc<CoreStore> {
     crate::real_store::core().await
