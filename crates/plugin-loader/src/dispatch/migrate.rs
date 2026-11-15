@@ -34,11 +34,8 @@ fn settings_migration(
     references: bool,
 ) -> Result<Option<MigrationAnswer>, String> {
     let mut section = SecureVec::new();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a cold settings migration"
-    )]
-    serde_json::to_writer(&mut section, settings).map_err(|e| e.to_string())?;
+    serde_json::to_writer(&mut section, settings)
+        .map_err(|e| crate::cold::dispatch::load::text_of(&e))?;
     let Some((outcome, answer)) = call_migration(door, &section, BLOB_JSON, from, references)?
     else {
         return Ok(None);
@@ -55,11 +52,7 @@ pub fn migrate_credential_door(
     seal: &dyn busbar_contract::plugin::KernelSeal,
 ) -> Result<busbar_contract::abi::sdk::migrate::MigratedCredential, String> {
     use busbar_contract::abi::sdk::migrate::{encode_credential_input, CredentialMigration};
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a refused credential migration"
-    )]
-    let refused = || "credential owner could not migrate the original reference".to_owned();
+    let refused = crate::cold::dispatch::load::credential_refused;
     let call =
         |file: Option<&busbar_contract::Secret<Vec<u8>>>| -> Result<CredentialMigration, String> {
             let input = encode_credential_input(credential, file, seal);
@@ -85,11 +78,7 @@ fn complete_credential_migration(
     ) -> Result<busbar_contract::abi::sdk::migrate::CredentialMigration, String>,
 ) -> Result<busbar_contract::abi::sdk::migrate::MigratedCredential, String> {
     use busbar_contract::abi::sdk::migrate::CredentialMigrationStep;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a refused credential migration"
-    )]
-    let refused = || "credential owner could not migrate the original reference".to_owned();
+    let refused = crate::cold::dispatch::load::credential_refused;
     let answer = call(None)?;
     match answer.step() {
         CredentialMigrationStep::Unchanged => {
@@ -106,15 +95,9 @@ fn complete_credential_migration(
             .into_os_string()
             .into_encoded_bytes(),
     );
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a cold credential migration"
-    )]
-    let path = busbar_contract::Secret::new(
-        std::str::from_utf8(&encoded)
-            .map_err(|_| refused())?
-            .to_owned(),
-    );
+    let path = busbar_contract::Secret::new(crate::cold::dispatch::load::text(
+        std::str::from_utf8(&encoded).map_err(|_| refused())?,
+    ));
     let file = read_credential_file(&path, seal).map_err(|_| refused())?;
     let answer = call(Some(&file))?;
     answer.finish(Some(&path), seal).map_err(|_| refused())
@@ -173,11 +156,8 @@ fn call_migration(
     references: bool,
 ) -> Result<Option<MigrationWireAnswer>, String> {
     let p = super::load::enter_door(door);
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a refused settings migration"
-    )]
-    let admitted = super::load::validate_any(p).map_err(|e| e.to_string())?;
+    let admitted =
+        super::load::validate_any(p).map_err(|e| crate::cold::dispatch::load::text_of(&e))?;
     if format == BLOB_OCTETS && admitted.kind != busbar_contract::abi::mechanism::KindCode::Auth {
         return Err("credential migration requires an auth owner".into());
     }
@@ -216,10 +196,6 @@ fn call_migration(
         err_cap: answer.len(),
     };
     let mut out = super::out_head();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a refused settings migration"
-    )]
     let called = crate::ffi_thread::on_plugin_thread(|| {
         // SAFETY: the door's admitted `migrate`, called with no instance on a frame the host owns for the
         // whole call: `input` and what it lends (`section`, `from`, `answer`) outlive it, and `out`
@@ -242,7 +218,7 @@ fn call_migration(
             raw
         }
     })
-    .map_err(|_| "its migrate panicked".to_string())?;
+    .map_err(|_| crate::cold::dispatch::load::migrate_panicked())?;
     let outcome = called.outcome();
     let named = out.error;
     let lent = answer.as_ptr();
@@ -251,11 +227,7 @@ fn call_migration(
     } else if named.ptr == lent && named.len <= answer.len() {
         &answer[..named.len]
     } else {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a refused settings migration"
-        )]
-        return Err("its migrate named an answer outside the host's buffer".to_string());
+        return Err(crate::cold::dispatch::load::migrate_outside());
     };
     let answer = SecureVec::from(bytes);
     Ok(Some((outcome, answer)))
@@ -263,7 +235,10 @@ fn call_migration(
 
 /// Pure current-settings validation after a cold migration, before the host emits configuration.
 /// The plugin gets no instance. Refusal details are deliberately not copied into migration logs.
-pub fn validate_migrated_door(door: RawDoorFn, settings: &serde_json::Value) -> Result<(), String> {
+pub fn validate_migrated_door(
+    door: RawDoorFn,
+    settings: &(impl serde::Serialize + ?Sized),
+) -> Result<(), String> {
     use busbar_contract::abi::mechanism::call::Outcome;
     let p = super::load::enter_door(door);
     let admitted =
@@ -319,7 +294,7 @@ pub fn validate_migrated_door(door: RawDoorFn, settings: &serde_json::Value) -> 
 pub fn validate_migrated_library(
     bytes: &[u8],
     display: &str,
-    settings: &serde_json::Value,
+    settings: &(impl serde::Serialize + ?Sized),
 ) -> Result<(), String> {
     let (lib, staged) = crate::stage::load_library_from_bytes(bytes, display)?;
     // SAFETY: the admitted library stays open for the complete call; DOOR_SYMBOL has RawDoorFn ABI.
@@ -371,14 +346,7 @@ fn settings_migration_library(
     };
     let answered = match door {
         Ok(door) => settings_migration(door, settings, from, references),
-        Err(e) => {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a refused settings migration"
-            )]
-            let refusal = format!("{display}: no door: {e}");
-            Err(refusal)
-        }
+        Err(e) => Err(crate::cold::dispatch::load::migration_no_door(display, &e)),
     };
     crate::stage::dlclose_on_worker(lib);
     drop(staged);

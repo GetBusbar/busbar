@@ -264,6 +264,5 @@ pub(crate) unsafe fn answer(
 }
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "inspection_tests.rs"]
 mod tests;

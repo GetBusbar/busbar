@@ -89,7 +89,7 @@ fn fixture() -> (OutboundInstance, FieldsRequest, u64) {
     let plugin = load_linked::<Auth>(
         &row,
         Bind {
-            instance: Arc::from("custody"),
+            instance: "custody".into(),
             max_inflight_cap: 16,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),

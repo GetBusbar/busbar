@@ -69,8 +69,7 @@ pub(crate) fn spawn(pool: Weak<Pool>, period: Duration, min_budget: Duration) {
         .name("busbar-dispatch-watchdog".into())
         .spawn(move || {
             // The sweep's scratch: one buffer for the watchdog thread's life, cleared per scan.
-            // busbar:expect(bp::fresh_buffer, reason = "boot: allocated once when the watchdog thread starts and reused by every scan")
-            let mut live = Vec::new();
+            let mut live = crate::cold::dispatch::runtime::watchdog_scratch();
             let mut next = next_wake(period, min_budget, None);
             loop {
                 std::thread::sleep(next);
@@ -129,20 +128,8 @@ fn scan(pool: &Pool, live: &mut Vec<Arc<Instance>>) -> Option<Duration> {
 
 fn ticketless(pool: &Pool, now: u64, live: &mut Vec<Arc<Instance>>) -> Option<Duration> {
     live.clear();
-    let mut adopted = pool.adopted.lock().unwrap_or_else(|e| e.into_inner());
     // One pass both drops the dead adoptions and takes the live ones.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the crossing watchdog's periodic wedge sweep, on its own thread; no request runs it"
-    )]
-    adopted.retain(|w| match w.upgrade() {
-        Some(inst) => {
-            live.push(inst);
-            true
-        }
-        None => false,
-    });
-    drop(adopted);
+    crate::cold::dispatch::runtime::live_adoptions(&pool.adopted, live);
     let now = super::instant_at(now);
     let mut earliest: Option<Duration> = None;
     for inst in live.drain(..) {
@@ -190,15 +177,8 @@ fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: u64) {
         let quarantined = breach(pool, &breached);
         st.dead = true;
 
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: replacing a wedged worker; its successor's slab generations"
-        )]
-        let gens: Vec<Option<u32>> = st
-            .entries
-            .iter()
-            .map(|e| super::worker::next_count(e.count))
-            .collect();
+        // Its successor's slab generations.
+        let gens = crate::cold::dispatch::runtime::successor_counts(&st.entries);
         (Worker::fault_all(&mut st), gens, breached, quarantined)
     };
 
@@ -208,11 +188,8 @@ fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: u64) {
     }
     pool.env.services.forget_worker(old.index);
     pool.env.services.held.untrack_worker(old.index);
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: replacing a wedged worker; the connections its faulted tickets held"
-    )]
-    let conns: Vec<_> = gone.iter().flat_map(|e| e.conns.iter().copied()).collect();
+    // The connections its faulted tickets held.
+    let conns = crate::cold::dispatch::runtime::wedged_conns(&gone);
     super::conn_services::forget_worker(&conns, old.index);
     let (orphans, gone) = old.orphans(gone, &breached);
     let (w, rx) = Worker::new(old.index, gens, pool.env.ticket_key);
