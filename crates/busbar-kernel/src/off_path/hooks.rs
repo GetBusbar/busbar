@@ -785,14 +785,14 @@ pub(crate) mod resolution {
     }
 
     impl Paths {
-        pub(super) fn matches(
+        pub(crate) fn matches(
             &self,
             registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
         ) -> bool {
             std::sync::Weak::ptr_eq(&self.registry, &std::sync::Arc::downgrade(registry))
         }
 
-        pub(super) fn new(
+        pub(crate) fn new(
             registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
         ) -> std::sync::Arc<Self> {
             let mut modules = HashMap::default();
@@ -913,7 +913,7 @@ pub(crate) mod resolution {
     }
 
     impl Claim {
-        pub(super) fn publish(mut self, value: Resolved) {
+        pub(crate) fn publish(mut self, value: Resolved) {
             let (lock, cv) = state();
             {
                 let mut inner = lock.lock().unwrap_or_else(|p| p.into_inner());
