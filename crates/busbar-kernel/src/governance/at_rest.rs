@@ -81,27 +81,16 @@ impl CredentialKek {
         let mut buf = SecureVec::from(Vec::with_capacity(plain.len() + TAG_LEN));
         buf.extend_from_slice(plain);
         let sealed = with_aad(meta, |aad| self.key.seal_random_nonce(aad, &mut buf[..]));
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a seal failure renders its message once"
-        )]
-        let (nonce, tag) = sealed.map_err(|e| match e {
-            crypto::Error::Rng(e) => format!("CSPRNG unavailable: {e}"),
-            _ => "the credential could not be sealed".to_string(),
-        })?;
+        let (nonce, tag) =
+            sealed.map_err(crate::cold::governance::runtime::at_rest_seal_refusal)?;
         // The stored ciphertext is the encrypted bytes followed by the tag, as it always was.
         buf.extend_from_slice(&tag);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the sealed envelope is the stored row, written at mint or re-wrap"
-        )]
-        let envelope = format!(
-            "{AEAD}{}:{}:{}",
-            self.kid,
-            b64().encode(nonce),
-            b64().encode(&buf[..])
-        );
-        Ok(envelope)
+        Ok(crate::cold::governance::runtime::at_rest_envelope(
+            AEAD,
+            &self.kid,
+            &nonce,
+            &buf[..],
+        ))
     }
 
     fn open_sealed(&self, meta: &CredentialMeta, rest: &str) -> Option<SecureString> {
@@ -187,22 +176,9 @@ pub fn parse_key(path: &str, bytes: &[u8]) -> Result<SecureVec, String> {
         }
     }
     if bytes.len() == 32 {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the at-rest key is read once per boot or reload"
-        )]
-        let raw = bytes.to_vec();
-        return Ok(SecureVec::from(raw));
+        return Ok(crate::cold::governance::runtime::at_rest_raw_key(bytes));
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a malformed at-rest key renders its message once"
-    )]
-    let refusal = format!(
-        "{path} must resolve to a 32-byte key (32 raw bytes, or 64 hex characters: `openssl rand \
-         -hex 32`)"
-    );
-    Err(refusal)
+    Err(crate::cold::governance::runtime::at_rest_key_refusal(path))
 }
 
 #[must_use]
@@ -275,11 +251,7 @@ fn refused(keys: Option<&AtRestKeys>, meta: &CredentialMeta, kid: &str) {
         if seen.contains(kid) || seen.len() >= REFUSED_KIDS_CAP {
             return;
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a refused kid is remembered once, at most REFUSED_KIDS_CAP times"
-        )]
-        seen.insert(kid.to_string());
+        crate::cold::governance::runtime::at_rest_refused_kid(&mut seen, kid);
     }
     let node = NodeKids(keys);
     crate::diagnostics::diag_warn!(
@@ -292,11 +264,7 @@ fn refused(keys: Option<&AtRestKeys>, meta: &CredentialMeta, kid: &str) {
          authenticate. Configure the key with kid {kid} as credentials.at_rest.previous (or as \
          key) and reload; a row whose key is lost cannot be recovered and must be re-minted"
     );
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a refused kid is audited once, at most REFUSED_KIDS_CAP times"
-    )]
-    let resource = format!("kid:{kid}");
+    let resource = crate::cold::governance::runtime::at_rest_kid_resource(kid);
     crate::audit_ring::AUDIT.record_by(
         "credential.at_rest.open",
         &resource,

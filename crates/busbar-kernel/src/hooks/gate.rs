@@ -325,22 +325,10 @@ fn failed_gate(hook: &str, closed: bool) -> HookApplied {
 
 /// The refusal when a content-reading gate's access audit did not confirm.
 fn unconfirmed_audit(hook: &str) -> GateVerdict {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: an unconfirmed content audit refuses the request, naming its gate"
-    )]
-    return GateVerdict::Reject {
-        status: 503,
-        message: "content access audit is unconfirmed".to_owned(),
-        hook: hook.to_owned(),
-    };
+    crate::cold::gate_refused(503, "content access audit is unconfirmed", hook)
 }
 
 fn gate_ran(hook: &str, head: HookHead, failed: bool) -> HookApplied {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: busbar-kernel-audit HookApplied owns its hook name; borrowing it needs an audit record change"
-    )]
     let hook = hook.to_string();
     HookApplied { hook, head, failed }
 }
@@ -351,18 +339,11 @@ fn verdict_of(
     subject: &GateSubject<'_>,
 ) -> Option<GateVerdict> {
     match answer {
-        RoutingDecision::Reject { status, message } => {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a gate's rejection refuses the request, naming the gate"
-            )]
-            let hook = hook.to_string();
-            Some(GateVerdict::Reject {
-                status: clamp_reject_status(status),
-                message: sanitize_reject_message(&message),
-                hook,
-            })
-        }
+        RoutingDecision::Reject { status, message } => Some(crate::cold::gate_rejected(
+            clamp_reject_status(status),
+            sanitize_reject_message(&message),
+            hook,
+        )),
 
         RoutingDecision::Prefer(_)
         | RoutingDecision::Prioritize(_)
@@ -479,16 +460,11 @@ impl Fallback<'_, '_> {
 
 fn fail_closed(on_error: &crate::config::PolicyOnError, hook: &str) -> Option<GateVerdict> {
     crate::hooks::failed_call_refuses(on_error).then(|| {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a failed load-bearing gate refuses the request, naming the gate"
-        )]
-        let verdict = GateVerdict::Reject {
-            status: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
-            message: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE.to_string(),
-            hook: hook.to_string(),
-        };
-        verdict
+        crate::cold::gate_refused(
+            crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
+            crate::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
+            hook,
+        )
     })
 }
 
@@ -501,10 +477,6 @@ fn project<'a>(
     let shape = subject.facts.shape();
     let mut content_delivered = false;
     let prompt = send_prompt.then(|| {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a `prompt` grant asks for the projection, whose message list busbar-contract PromptProjection owns"
-        )]
         let messages = items
             .iter()
             .filter(|(i, _)| i.slot() != Slot::System)
@@ -536,18 +508,11 @@ fn project<'a>(
         stream: subject.facts.wants_stream(),
 
         prompt,
-        identity: send_user.then(|| {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: a `user` grant asks for the caller identity, which busbar-contract CallerIdentity owns"
-            )]
-            let identity = crate::hooks::CallerIdentity {
-                key_id: subject.key.map(|k| k.id.clone()),
-                key_name: subject.key.map(|k| k.name.clone()),
+        identity: send_user.then(|| crate::hooks::CallerIdentity {
+            key_id: subject.key.map(|k| k.id.clone()),
+            key_name: subject.key.map(|k| k.name.clone()),
 
-                user: subject.facts.end_user().map(str::to_string),
-            };
-            identity
+            user: subject.facts.end_user().map(str::to_string),
         }),
 
         signals: Default::default(),
@@ -662,18 +627,23 @@ impl Drop for GateProjection {
 }
 
 fn wipe_projected_value(value: &mut DataValue) {
-    use zeroize::Zeroize as _;
     match value {
-        DataValue::String(text) => text.zeroize(),
+        DataValue::String(text) => wipe_text(text),
         DataValue::Array(items) => items.iter_mut().for_each(wipe_projected_value),
         DataValue::Object(members) => {
             for (mut name, mut value) in std::mem::take(members) {
-                name.zeroize();
+                wipe_text(&mut name);
                 wipe_projected_value(&mut value);
             }
         }
         _ => {}
     }
+}
+
+/// Zero `text`'s whole allocation and leave it empty.
+fn wipe_text(text: &mut String) {
+    let mut bytes = std::mem::take(text).into_bytes();
+    busbar_contract::abi::sdk::wipe::wipe_bytes(&mut bytes);
 }
 
 fn read_projected(projected: Option<&[u8]>) -> Option<GateProjection> {
@@ -691,19 +661,15 @@ fn read_projected(projected: Option<&[u8]>) -> Option<GateProjection> {
     let mut normalized = GateProjection {
         body: DataValue::Object(Default::default()),
     };
-    if let DataValue::Object(fields) = &mut normalized.body {
+    if let (DataValue::Object(fields), DataValue::Object(members)) =
+        (&mut normalized.body, &mut document.body)
+    {
+        // Each member moves over with its own key; an absent one is named once, cold.
         for name in ["tool", "arguments"] {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: a configured door gate screens a tool call as exactly its tool and arguments members"
-            )]
-            fields.insert(
-                name.to_string(),
-                document
-                    .body
-                    .get_mut(name)
-                    .map_or(DataValue::Null, DataValue::take),
-            );
+            match members.remove_entry(name) {
+                Some((key, value)) => fields.insert(key, value),
+                None => fields.insert(crate::cold::door_member(name), DataValue::Null),
+            };
         }
     }
     Some(normalized)
@@ -755,10 +721,6 @@ fn join_system<'a>(items: &'a ScreenedContent<'a>) -> Option<Cow<'a, str>> {
     if parts.peek().is_none() {
         return (!first.is_empty()).then_some(Cow::Borrowed(first));
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a `prompt` grant over several system blocks joins them into one owned text"
-    )]
     let mut out = first.to_string();
     for p in parts {
         out.push('\n');

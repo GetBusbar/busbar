@@ -1140,7 +1140,6 @@ impl Identity<'_> {
         let tx = Tx::start(self.store).await?;
         let output = match query {
             Query::Snapshot => {
-                // busbar:expect(bp::fresh_buffer, reason = "config: identity store queries run only for key management, cache refresh and boot hydration")
                 let mut keys = Vec::new();
                 for (at, value) in tx.scan(vec![b'K']).await? {
                     let key = key_decode(&value)?;
@@ -1149,7 +1148,6 @@ impl Identity<'_> {
                     }
                     keys.push(key);
                 }
-                // busbar:expect(bp::fresh_buffer, reason = "config: identity store queries run only for key management, cache refresh and boot hydration")
                 let mut credentials = Vec::new();
                 for (at, value) in tx.scan(vec![b'C']).await? {
                     let meta = meta_decode(&value)?;
@@ -1158,7 +1156,6 @@ impl Identity<'_> {
                     }
                     credentials.push(tx.credential(&meta.id).await?.ok_or_else(corrupt)?);
                 }
-                // busbar:expect(bp::fresh_buffer, reason = "config: identity store queries run only for key management, cache refresh and boot hydration")
                 let mut denied = Vec::new();
                 for (at, value) in tx.scan(vec![b'D']).await? {
                     let entry: Denied = decode(&value, None, false)?;
@@ -1194,7 +1191,6 @@ impl Identity<'_> {
                 Output::Denied(subjects)
             }
             Query::SelfKeys(subject) => {
-                // busbar:expect(bp::fresh_buffer, reason = "config: identity store queries run only for key management, cache refresh and boot hydration")
                 let mut keys = Vec::new();
                 for (address, value) in tx.scan(vec![b'K']).await? {
                     let key = key_decode(&value)?;
@@ -1219,7 +1215,6 @@ impl Identity<'_> {
                 Output::Keys(keys)
             }
             Query::Keys(since) => {
-                // busbar:expect(bp::fresh_buffer, reason = "config: identity store queries run only for key management, cache refresh and boot hydration")
                 let mut keys = Vec::new();
                 if let Some(since) = since {
                     for (id, revision) in tx.since(b'K', *since).await? {
@@ -1243,7 +1238,6 @@ impl Identity<'_> {
                 Output::Keys(keys)
             }
             Query::Credentials(id) => {
-                // busbar:expect(bp::fresh_buffer, reason = "config: identity store queries run only for key management, cache refresh and boot hydration")
                 let mut metas = Vec::new();
                 for (at, value) in tx.scan(keys::framed(b'S', &[id.as_bytes()])?).await? {
                     let index: Index = decode(&value, None, false)?;
@@ -1257,7 +1251,6 @@ impl Identity<'_> {
                 Output::Metadata(metas)
             }
             Query::CredentialsSince(since) => {
-                // busbar:expect(bp::fresh_buffer, reason = "config: identity store queries run only for key management, cache refresh and boot hydration")
                 let mut credentials = Vec::new();
                 for (id, revision) in tx.since(b'C', *since).await? {
                     let credential = tx.credential(&id).await?.ok_or_else(corrupt)?;
@@ -1270,7 +1263,6 @@ impl Identity<'_> {
                 Output::Credentials(credentials)
             }
             Query::Denylist => {
-                // busbar:expect(bp::fresh_buffer, reason = "config: identity store queries run only for key management, cache refresh and boot hydration")
                 let mut subjects = Vec::new();
                 for (at, value) in tx.scan(vec![b'D']).await? {
                     let denied: Denied = decode(&value, None, false)?;
@@ -1336,7 +1328,6 @@ enum Output {
 }
 impl Tx<'_> {
     async fn since(&self, family: u8, since: u64) -> Result<Vec<(String, u64)>> {
-        // busbar:expect(bp::fresh_buffer, reason = "config: identity store queries run only for key management, cache refresh and boot hydration")
         let mut result = Vec::new();
         let Some(first) = since.checked_add(1) else {
             return Ok(result);

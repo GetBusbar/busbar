@@ -175,7 +175,7 @@ pub struct MigrateOutput {
 }
 
 /// What [`MigrateOutput::decision_paths`] names a TODO that states no `<path>: ` prefix.
-pub const UNNAMED_DECISION: &str = "(unnamed decision)";
+const UNNAMED_DECISION: &str = "(unnamed decision)";
 
 impl MigrateOutput {
     /// The configuration path each unresolved decision is about, in order and without

@@ -51,7 +51,7 @@ fn member_incarnations_refuse_exhaustion_instead_of_reusing_an_identity() {
 fn program_heads_bind_command_and_monotonic_member_incarnation_without_private_recipe_values() {
     worker().block_on(async {
         async fn head(c: &Connector, id: ConnId) -> std::collections::BTreeMap<String, String> {
-            let mut bytes = [0; 4096];
+            let mut bytes = vec![0_u8; 4096];
             let piece = read(c, id, &mut bytes).await.unwrap();
             assert_eq!(piece.kind, PieceKind::Fields);
             assert_eq!(
@@ -200,10 +200,12 @@ async fn read(
     id: ConnId,
     buf: &mut [u8],
 ) -> Result<busbar_contract::conn::Piece, ConnError> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    // At most 2000 polls (about 10 s), counted rather than read off the clock.
+    let mut polls = 0_u32;
     loop {
         match c.read(OWNER, id, 7, buf) {
-            Err(ConnError::Pending) if std::time::Instant::now() < deadline => {
+            Err(ConnError::Pending) if polls < 2000 => {
+                polls += 1;
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
             other => return other,
@@ -272,8 +274,10 @@ fn gone(pid: &str) -> bool {
 }
 
 async fn until_gone(pid: &str) -> bool {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while !gone(pid) && std::time::Instant::now() < deadline {
+    // At most 250 polls (about 5 s), counted rather than read off the clock.
+    let mut polls = 0_u32;
+    while !gone(pid) && polls < 250 {
+        polls += 1;
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     gone(pid)
@@ -710,11 +714,7 @@ fn a_leases_bound_runs_past_its_head_to_the_programs_answer() {
             "the bound is the open's timeout_ms from the open"
         );
 
-        set_due(
-            &c,
-            id,
-            std::time::Instant::now() + Duration::from_secs(3600),
-        );
+        set_due(&c, id, after + Duration::from_secs(3600));
         assert_eq!(generation(&c, id).await, 1, "the head is served at once");
         assert!(due(&c, id).is_some(), "the head does not spend the bound");
         let mut buf = [0_u8; 64];
@@ -724,7 +724,7 @@ fn a_leases_bound_runs_past_its_head_to_the_programs_answer() {
             "short of the bound, the mute program's answer pends"
         );
 
-        set_due(&c, id, std::time::Instant::now());
+        set_due(&c, id, after);
         assert_eq!(c.read(OWNER, id, 7, &mut buf), Err(ConnError::Timeout));
         c.close(OWNER, id).unwrap();
     });
@@ -734,16 +734,13 @@ fn a_leases_bound_runs_past_its_head_to_the_programs_answer() {
 #[test]
 fn a_leases_bound_below_the_answer_is_a_timeout_and_the_answer_spends_it() {
     worker().block_on(async {
+        let now = std::time::Instant::now();
         let c = connector();
         declare(&c, &[("echo", sh(ECHO_PID, &[]))]).unwrap();
         let mut buf = [0_u8; 64];
 
         let id = open_bounded(&c, "echo");
-        set_due(
-            &c,
-            id,
-            std::time::Instant::now() + Duration::from_secs(3600),
-        );
+        set_due(&c, id, now + Duration::from_secs(3600));
         assert_eq!(generation(&c, id).await, 1);
         let piece = read(&c, id, &mut buf).await.expect("the answer");
         assert_eq!(piece.kind, PieceKind::Body);
@@ -751,13 +748,9 @@ fn a_leases_bound_below_the_answer_is_a_timeout_and_the_answer_spends_it() {
         c.close(OWNER, id).unwrap();
 
         let id = open_bounded(&c, "echo");
-        set_due(
-            &c,
-            id,
-            std::time::Instant::now() + Duration::from_secs(3600),
-        );
+        set_due(&c, id, now + Duration::from_secs(3600));
         generation(&c, id).await;
-        set_due(&c, id, std::time::Instant::now());
+        set_due(&c, id, now);
         assert_eq!(
             c.read(OWNER, id, 7, &mut buf),
             Err(ConnError::Timeout),
