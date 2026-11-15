@@ -1312,6 +1312,41 @@ pub fn validate_abi(
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+std::thread_local! {
+    static FIPS_BACKEND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// TEST SEAM, dev builds only: while the value is held, trust evaluation on this thread answers
+/// as a binary linked with a FIPS crypto backend does (`busbar_crypto::EXTERNAL_PLUGINS ==
+/// false`). The backend is a `[patch]` swap of the whole build, so a test binary cannot link a
+/// second one; this substitutes only the backend's answer. It only ever narrows admission: it
+/// can make a software-backend test refuse what a FIPS build refuses, and nothing can make a FIPS
+/// build admit more, so a build that unifies `test-support` in still fails closed.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug)]
+pub struct FipsBackend {
+    was: bool,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl FipsBackend {
+    /// Judge as a FIPS backend on this thread until the value is dropped.
+    #[must_use]
+    pub fn link() -> Self {
+        Self {
+            was: FIPS_BACKEND.with(|stated| stated.replace(true)),
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for FipsBackend {
+    fn drop(&mut self) {
+        FIPS_BACKEND.with(|stated| stated.set(self.was));
+    }
+}
+
 fn hard_seal_refusal(refusal: &crate::release_trust::SealRefusal) -> Option<RejectKind> {
     use crate::release_trust::SealRefusal as S;
     match refusal {
