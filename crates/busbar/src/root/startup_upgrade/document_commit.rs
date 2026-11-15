@@ -915,6 +915,80 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.path);
         }
     }
+    /// First boot reads its documents through the one loader, as `main` does.
+    fn load_through_custody(config: &Path) -> Result<Arc<Documents>, String> {
+        let documents = Arc::new(Documents::default());
+        busbar_kernel::appbuild::load_config_from_disk_judged(
+            config,
+            None,
+            false,
+            busbar_kernel::config::EnvSubst::Strict,
+            &super::super::documents::BootstrapRules(documents.clone()),
+        )?;
+        Ok(documents)
+    }
+    async fn commit(
+        documents: &Documents,
+        checkpoint: &CheckpointMemory,
+    ) -> Result<Report, String> {
+        let (inventory, intent) = Inventory::prepare(
+            documents,
+            &crate::root::admission::DURABLE,
+            checkpoint,
+            [8; 16],
+        )
+        .await?;
+        let proof = inventory.validated(intent, checkpoint).await?;
+        inventory
+            .publish(
+                proof,
+                checkpoint,
+                &crate::root::admission::DURABLE,
+                documents,
+            )
+            .await
+    }
+    /// The loader reads an absent default providers.yaml as the empty catalog, so `--validate`
+    /// passes. First boot plans, fingerprints and commits the same absence: it never refuses the
+    /// absent file as a changed document (BUSBAR-9007) and never creates it.
+    #[tokio::test]
+    async fn first_boot_without_a_default_providers_file_commits_and_restarts() {
+        let fixture = Fixture::new();
+        let providers = fixture.publications[1].0.clone();
+        std::fs::remove_file(&providers).unwrap();
+        let config = fixture.publications[0].0.clone();
+        let checkpoint = CheckpointMemory {
+            stored: Mutex::new(None),
+            fault: AtomicU8::new(0),
+        };
+        let documents = load_through_custody(&config).expect("the loader reads an empty catalog");
+        let report = commit(&documents, &checkpoint)
+            .await
+            .expect("first boot without providers.yaml commits its migration intent");
+        assert!(report.complete);
+        assert!(!providers.exists(), "the absent catalog is never written");
+        assert_eq!(
+            std::fs::read(&config).unwrap(),
+            b"store: {module: custom}\n"
+        );
+
+        // A restart recovers the completed checkpoint and the same absence.
+        let completed = checkpoint.stored.lock().unwrap().clone();
+        let restarted = load_through_custody(&config).unwrap();
+        let report = commit(&restarted, &checkpoint)
+            .await
+            .expect("a restart recognizes the retained absence");
+        assert!(report.complete);
+        assert!(!providers.exists());
+        assert_eq!(*checkpoint.stored.lock().unwrap(), completed);
+
+        // A providers.yaml that appears under a retained checkpoint is a changed source.
+        std::fs::write(&providers, b"{}\n").unwrap();
+        let appeared = load_through_custody(&config).unwrap();
+        assert!(commit(&appeared, &checkpoint).await.is_err());
+        assert_eq!(*checkpoint.stored.lock().unwrap(), completed);
+        assert_eq!(std::fs::read(&providers).unwrap(), b"{}\n");
+    }
     #[tokio::test]
     async fn a_different_checkpoint_readback_never_grants_publication_authority() {
         let fixture = Fixture::new();
