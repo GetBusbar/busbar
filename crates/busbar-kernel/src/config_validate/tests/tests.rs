@@ -32,7 +32,9 @@ fn make_root_cfg(
         pools,
         upstream_credentials: crate::auth::UpstreamCreds::Own,
         hooks: HashMap::new(),
-        admin_auth: config::default_admin_auth_names(),
+        // No operator row is bound in these tests, so the default chain would be refused
+        // (OPERATOR-FROM-ADMITTED-AUTH R19); the fixtures name the open dev posture explicitly.
+        admin_auth: Vec::new(),
         groups: std::collections::BTreeMap::new(),
         rate_card: None,
         plugin_rate_cards: Default::default(),
