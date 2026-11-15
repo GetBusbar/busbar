@@ -30,7 +30,8 @@ fn install_inert() {
 }
 
 fn errors_of(yaml: &str) -> Vec<String> {
-    let deploy = crate::config::deploy_from_yaml_str(yaml).expect("the config parses");
+    let deploy = crate::config::deploy_from_yaml_str(yaml, &crate::config::Grammar::empty())
+        .expect("the config parses");
     let cfg = crate::config::resolve(&deploy, &std::collections::HashMap::new())
         .expect("the config resolves");
     super::validate(&cfg).err().unwrap_or_default()

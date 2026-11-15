@@ -26,7 +26,9 @@ fn install() {
 }
 
 fn errors_of(yaml: &str) -> Vec<String> {
-    let deploy = busbar_kernel::config::deploy_from_yaml_str(yaml).expect("the config parses");
+    let deploy =
+        busbar_kernel::config::deploy_from_yaml_str(yaml, &busbar_kernel::config::Grammar::empty())
+            .expect("the config parses");
     let cfg = busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
         .expect("the config resolves");
     busbar_kernel::config_validate::validate(&cfg)
