@@ -154,6 +154,8 @@ pub(crate) fn far_end_first_refusal(
     err: busbar_contract::conn::ConnError,
 ) {
     last.insert(provider.to_owned(), err);
+}
+
 // --- plane_driver (door, registry, serve, dispatch, slots, needs, route_tables, timing, authenticated_route) ---
 
 /// `plane_driver::slots`: a plane's runtime slot key, `<plane_key>:runtime`, composed and leaked
@@ -172,20 +174,6 @@ pub(crate) fn first_queued_depth(
     depth: u64,
 ) {
     queued.insert(pool.to_owned(), depth);
-}
-
-/// `plane_driver::timing`: an attempt's start, read only when tracing enables its span (a
-/// disabled span reads no clock).
-#[inline(never)]
-pub(crate) fn traced_start() -> std::time::Instant {
-    std::time::Instant::now()
-}
-
-/// `plane_driver::timing`: the wall interval since a traced attempt's `start`, read only at a
-/// boundary its enabled span records.
-#[inline(never)]
-pub(crate) fn traced_since(start: std::time::Instant) -> std::time::Duration {
-    start.elapsed()
 }
 
 /// `plane_driver::authenticated_route`: whether a failed route lookup's deadline had passed, read
