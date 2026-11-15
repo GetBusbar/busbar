@@ -12,6 +12,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         listen_explicit: false,
         authored_routing: None,
         document_source_fingerprints: None,
+        operator_overlay_names: Vec::new(),
         grammar: busbar_kernel::config::GrammarField::bound(busbar_kernel::config::Grammar::empty()),
 
         endpoint: Default::default(),

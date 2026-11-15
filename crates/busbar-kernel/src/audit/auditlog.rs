@@ -1585,9 +1585,10 @@ fn open_operator_rows() {
     });
 }
 
-/// The `auth.operator` rows still held for the audit chain, as `"<action> <resource>"`.
-#[cfg(test)]
-pub(crate) fn held_operator_rows() -> Vec<String> {
+/// The `auth.operator` rows still held for the audit chain, as `"<action> <resource>"`. Tests of the
+/// admin write doors (core-admin) read them through `test-support`.
+#[cfg(any(test, feature = "test-support"))]
+pub fn held_operator_rows() -> Vec<String> {
     OPERATOR_ROWS
         .lock()
         .rows

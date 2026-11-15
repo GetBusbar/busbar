@@ -78,6 +78,7 @@ const COND_REASONS: &[&str] = &[
     "name_collision",
     "invalid_labels",
     "trust_ceiling_raise",
+    "operator_file_policy",
     "still_referenced",
     "unpriced",
     "restart_unreachable",

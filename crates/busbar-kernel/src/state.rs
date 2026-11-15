@@ -63,6 +63,10 @@ pub struct App {
     pub configured_view: Option<Arc<crate::config::readback::ConfiguredView>>,
     /// Private exact consumed-source binding; contains no raw operator data.
     pub document_source_fingerprints: Option<crate::config::document_patch::SourceFingerprints>,
+    /// The base file's operator-backed `identity-providers` definitions as last read from disk
+    /// (OPERATOR-FROM-ADMITTED-AUTH §3.6.1): set by boot and `POST /config/reload`, carried
+    /// unchanged by every other build. An apply or validate body is held to it.
+    pub operator_file_defs: Arc<crate::config::OperatorFileDefs>,
     /// The grammar this generation's configuration was read under: what an admin edit of it reads
     /// the running shorthand by. `Unbound` until a build binds it.
     pub grammar: crate::config::GrammarField,
@@ -720,6 +724,7 @@ impl App {
             config_projection,
             configured_view: None,
             document_source_fingerprints: None,
+            operator_file_defs: Arc::default(),
             grammar: crate::config::GrammarField::default(),
             providers_override: providers_path.clone(),
             config_pending_restart: Vec::new(),

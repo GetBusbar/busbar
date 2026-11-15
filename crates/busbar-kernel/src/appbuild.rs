@@ -119,6 +119,30 @@ pub struct LoadedConfig {
     pub overlay_doc: Option<config::overlay::OverlayDoc>,
 
     pub unset_env_vars: Vec<String>,
+
+    /// config.yaml's operator-backed definitions exactly as read from disk, before any
+    /// `document_patch` is composed (OPERATOR-FROM-ADMITTED-AUTH §000.1): the file-policy reference.
+    pub operator_reference: config::OperatorFileDefs,
+}
+
+impl LoadedConfig {
+    /// A disk rebuild's candidate (`POST /config/reload`, `POST /plugins/reload`,
+    /// `POST /plugins/rollback`): the overlay's root applied to config.yaml's deploy, then resolved.
+    /// A disk rebuild re-reads config.yaml, so config.yaml's operator definitions, before any
+    /// patch, become the file-policy reference (OPERATOR-FROM-ADMITTED-AUTH §3.6.1): editing them
+    /// and reloading is how the operator credential rotates. The caller merges the overlay's named
+    /// maps after it records the base names.
+    #[cold]
+    #[inline(never)]
+    pub fn disk_candidate(&mut self) -> Result<config::RootCfg, String> {
+        if let Some(doc) = self.overlay_doc.as_ref() {
+            config::overlay::apply_root_to_deploy(&mut self.deploy, doc);
+        }
+        let mut cfg = config::resolve(&self.deploy, &self.defs)
+            .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
+        cfg.operator_file_defs = Some(Arc::new(std::mem::take(&mut self.operator_reference)));
+        Ok(cfg)
+    }
 }
 
 #[cold]
@@ -258,6 +282,9 @@ pub struct RawDocuments<'a> {
     config_text: busbar_contract::secure::SecureString,
     /// Whether `config_text` carries a durable document patch (its parse refusal says so).
     patched: bool,
+    /// Whether that patch edits `identity-providers`: then config.yaml's operator definitions
+    /// (the file-policy reference) are read from `source_text`, not the patched document.
+    operator_patched: bool,
     unset_env_vars: Vec<String>,
 }
 
@@ -305,6 +332,7 @@ impl RawDocuments<'_> {
             source_text,
             config_text,
             patched,
+            operator_patched,
             mut unset_env_vars,
         } = self;
         let mut deploy =
@@ -318,6 +346,21 @@ impl RawDocuments<'_> {
                     )
                 })
             })?;
+        // The operator credential's reference is config.yaml as read from disk, before any
+        // document_patch (OPERATOR-FROM-ADMITTED-AUTH §000.1).
+        let operator_reference = if operator_patched {
+            let unpatched =
+                config::deploy_from_yaml_str(source_text.as_ref(), grammar).map_err(|e| {
+                    grammar.with_report(format!(
+                        "config.yaml: invalid YAML: {} (the operator credential is read from \
+                         config.yaml before any document_patch)",
+                        config::augment_config_error(e)
+                    ))
+                })?;
+            config::OperatorFileDefs::of(&unpatched.identity_providers)
+        } else {
+            config::OperatorFileDefs::of(&deploy.identity_providers)
+        };
         let (defs, providers_path) = typed_rest(
             inputs,
             &source_text,
@@ -335,6 +378,7 @@ impl RawDocuments<'_> {
             config_read_only: false,
             overlay_doc: None,
             unset_env_vars,
+            operator_reference,
         })
     }
 }
@@ -411,9 +455,13 @@ pub fn read_config_documents<'a>(
         }
     }
 
+    // The operator credential's reference is config.yaml as read, before any patch (§000.1). Only a
+    // patch that edits `identity-providers` can make the composed document's differ.
+    let mut operator_patched = false;
     let (config_text, patched) = match patch.filter(|_| !ignore_overlay) {
         Some(patch) => {
             *patch = patch.compacted_against_yaml(&interpolated_config)?;
+            operator_patched = config::operator_file::touches_identity_providers(patch);
             let text = patch.patched_text(&interpolated_config, |keys| {
                 rules.unloaded_plane_refusal(keys).map_or(Ok(()), Err)
             })?;
@@ -437,6 +485,7 @@ pub fn read_config_documents<'a>(
         source_text: busbar_contract::secure::SecureString::from(interpolated_config),
         config_text,
         patched,
+        operator_patched,
         unset_env_vars,
     })
 }
@@ -544,6 +593,11 @@ pub async fn load_config_from_disk_with_store(
                     doc.document_patch.as_ref(),
                     doc.providers_patch.as_ref(),
                 )?;
+                // A stored patch from an earlier binary that moves the operator credential is
+                // refused at every re-read, as at boot: never applied or dropped silently.
+                if let Some(patch) = doc.document_patch.as_ref() {
+                    config::operator_file::stored_document_patch(patch, &loaded)?;
+                }
                 patched_locked = loaded.config_locked;
             }
             loaded.overlay_path = (!patched_locked).then_some(reopened);
@@ -1217,6 +1271,13 @@ async fn build_app_native(
     judged: Option<config_validate::Judged>,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
     config::security_policy::check_candidate(prior, &cfg, &plugins_cfg)?;
+    // The operator file-policy reference (§3.6.1): a disk read sets it on the candidate; every
+    // other build carries the running generation's unchanged.
+    let operator_file_defs = cfg
+        .operator_file_defs
+        .clone()
+        .or_else(|| prior.map(|p| Arc::clone(&p.operator_file_defs)))
+        .unwrap_or_default();
     let configured_card = config::card::CardFields::of_root(&cfg);
     let grammar = cfg.grammar.clone();
     let configured_view = Arc::new(config::readback::ConfiguredView::from_root(
@@ -2169,6 +2230,7 @@ async fn build_app_native(
     }
 
     app.configured_view = Some(configured_view);
+    app.operator_file_defs = operator_file_defs;
     app.grammar = grammar;
     // Existing direct builders pass an explicit providers path. The executable replaces this
     // initial default with its actual CLI/env provenance; subsequent generations inherit it.

@@ -162,6 +162,9 @@ pub(super) async fn put(
             doc.document_patch = Some(prior.without_paths(&request.reset_document_paths)
                 .and_then(|prior| prior.updated(&request.document_patch))
                 .map_err(|error| AdminError::Validation(error.to_string()))?);
+            if let Some(rejection) = doc.document_patch.as_ref().and_then(|patch| document_patch_rejection(patch, None)) {
+                return Ok(Outcome::Value(Err(rejection)));
+            }
             if request.providers_patch.is_some() || !request.reset_providers_paths.is_empty() {
                 let prior = doc.providers_patch.take().map(Ok)
                     .unwrap_or_else(|| DocumentPatch::from_value(json!({})))
@@ -197,6 +200,9 @@ pub(super) async fn put(
             ).map_err(|error| if source_admission.as_ref().is_some_and(|admission| admission.drifted()) {
                 AdminError::Conflict("operator source changed since the installed generation; reload and refresh before document edits".into())
             } else { AdminError::Validation(error) })?;
+            if let Some(rejection) = doc.document_patch.as_ref().and_then(|patch| document_patch_rejection(patch, Some(&loaded))) {
+                return Ok(Outcome::Value(Err(rejection)));
+            }
             if loaded.deploy.advanced.worker_threads == Some(0) {
                 return Err(AdminError::Validation("advanced.worker_threads must be positive".into()));
             }
@@ -268,13 +274,13 @@ pub(super) async fn put(
                 origin,
                 async move {
                     if let Some(rotate) = rotate { rotate.await; }
-                    Ok(Outcome::Value(installed))
+                    Ok(Outcome::Value(Ok(installed)))
                 },
             ))
         }))
     }).await;
     match out {
-        Ok(installed) => {
+        Ok(Ok(installed)) => {
             super::audit::AUDIT.record_by(
                 "config.document",
                 "config:document",
@@ -298,6 +304,15 @@ pub(super) async fn put(
                 installed.config_version,
             )
         }
+        Ok(Err((error, cond))) => {
+            super::audit::AUDIT.record_by(
+                "config.document",
+                "config:document",
+                super::audit::OUTCOME_REJECTED,
+                &actor,
+            );
+            super::err_json_cond(&error, cond)
+        }
         Err(error) => {
             super::audit::AUDIT.record_by(
                 "config.document",
@@ -308,6 +323,35 @@ pub(super) async fn put(
             err_json(&error)
         }
     }
+}
+
+/// THE `document_patch` DOOR (OPERATOR-FROM-ADMITTED-AUTH §000.1): the composed patch may not touch
+/// the plugin admission set (rule (b), judged with `loaded` absent, before the document is read), nor
+/// add, change or remove an operator-backed definition of config.yaml as read from disk (rule (a),
+/// judged over `loaded`). Refused 409 `OperatorFilePolicy` before anything is written, with the
+/// `auth.operator.refused / file_policy` row, door `config.settings`.
+pub(super) fn document_patch_rejection(
+    patch: &DocumentPatch,
+    loaded: Option<&busbar_kernel::appbuild::LoadedConfig>,
+) -> Option<(AdminError, crate::v1::contract::taxonomy::Cond)> {
+    use busbar_kernel::config::operator_file;
+    let refusal = match loaded {
+        None => operator_file::admission_refusal(patch),
+        Some(loaded) => operator_file::document_patch_refusal(
+            patch,
+            &loaded.deploy.identity_providers,
+            &loaded.operator_reference,
+        ),
+    }?;
+    busbar_kernel::audit::auditlog::record_operator(
+        busbar_kernel::audit::auditlog::OperatorAudit::RefusedFilePolicy,
+        &refusal.subject,
+        "config.settings",
+    );
+    Some((
+        AdminError::Conflict(refusal.text),
+        crate::v1::contract::taxonomy::Cond::OperatorFilePolicy,
+    ))
 }
 
 fn pointer(key: &str) -> String {
