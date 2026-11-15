@@ -144,7 +144,7 @@ fn metadata_requires_one_complete_named_extension() {
         dataset: owned::DatasetId([1; 16]),
         atomic_domain: [2; 16],
         clock_authority: [3; 16],
-        physical_version: 1,
+        physical_version: busbar_contract::abi::sdk::store::v4::slot::PHYSICAL_VERSION,
         durability: owned::Durability::Local,
     };
     let metadata = metadata::encode(info).unwrap();
@@ -232,7 +232,7 @@ mod linked {
             dataset: owned::DatasetId([1; 16]),
             atomic_domain: [2; 16],
             clock_authority: [3; 16],
-            physical_version: 1,
+            physical_version: busbar_contract::abi::sdk::store::v4::slot::PHYSICAL_VERSION,
             durability: owned::Durability::Ephemeral,
         }
     }

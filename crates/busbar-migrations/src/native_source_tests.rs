@@ -85,7 +85,7 @@ fn info() -> BackendInfo {
         dataset: DatasetId([6; 16]),
         atomic_domain: [7; 16],
         clock_authority: [8; 16],
-        physical_version: 1,
+        physical_version: busbar_contract::abi::sdk::store::v4::slot::PHYSICAL_VERSION,
         durability: Durability::Local,
     }
 }
