@@ -11,11 +11,11 @@ impl Cred {
     /// `<scheme> <credential>`, or the bare `<scheme>` when the credential is empty (a scheme that
     pub fn scheme(&self, scheme: impl AsRef<[u8]>) -> Seal {
         let scheme = scheme.as_ref();
-        // Exact size in one allocation (`concat`): the wiping buffer never grows (LR-117).
+        // Exact size in one allocation: the wiping buffer never grows (LR-117).
         let v = if self.is_empty() {
-            SecureVec::from(scheme.to_vec())
+            SecureVec::from(scheme)
         } else {
-            SecureVec::from([scheme, b" ", self.wire()].concat())
+            super::digests::joined(&[scheme, b" ", self.wire()])
         };
         self.seal(v)
     }

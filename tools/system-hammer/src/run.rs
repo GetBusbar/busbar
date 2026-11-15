@@ -949,7 +949,7 @@ fn merged_errors(load: &Outcome, probe: &Outcome) -> BTreeMap<String, u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sonic_rs::{JsonValueTrait as _, Value};
+    use sonic_rs::Value;
 
     /// codeaudit r1 error-handling-5: a failed system RNG fill must never be discarded, or the
     /// admin token degrades to `hammer-admin-` plus 32 zeros.

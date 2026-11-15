@@ -128,16 +128,13 @@ mod platform {
         put(&mut out, &(m.mode() & 0o7777).to_le_bytes())?;
         #[cfg(target_os = "macos")]
         {
-            append(&mut out, &mac_acl::get(file)?)?;
+            mac_acl::append_to(file, &mut out)?;
         }
         #[cfg(not(target_os = "macos"))]
         {
             append(&mut out, &[])?;
         }
-        for (key, value) in xattrs::get(file)? {
-            append(&mut out, &key)?;
-            append(&mut out, &value)?;
-        }
+        xattrs::append_to(file, &mut out)?;
         Ok(out)
     }
     fn metadata(dir: &File, file: &File) -> io::Result<SecureVec> {
@@ -264,14 +261,9 @@ mod platform {
         let mut random = [0; 16];
         busbar_contract::crypto::fill(&mut random)
             .map_err(|_| io::Error::other("document temporary entropy failed"))?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a startup document commit names its temporary file"
-        )]
         let temporary = Temporary {
             dir: &dir,
-            name: CString::new(format!(".busbar-document-{}.tmp", hex::encode(random)))
-                .map_err(|_| invalid())?,
+            name: crate::cold::durable_documents::temporary_name(&random).map_err(|_| invalid())?,
         };
         let mut file = open_at(
             &dir,
@@ -372,14 +364,15 @@ mod platform {
                 }
             }
         }
-        pub(super) fn get(file: &File) -> io::Result<Vec<u8>> {
+        /// Append the file's extended ACL text (empty when it has none) as one field of `out`.
+        pub(super) fn append_to(file: &File, out: &mut SecureVec) -> io::Result<()> {
             // SAFETY: the file descriptor is live; ACL_TYPE_EXTENDED is from the platform header.
             let acl = Owned(unsafe { acl_get_fd_np(file.as_raw_fd(), 0x100) });
             if acl.0.is_null() {
                 let error = io::Error::last_os_error();
                 // macOS reports ENOENT for an existing regular file with no extended ACL.
                 if error.kind() == io::ErrorKind::NotFound {
-                    return Ok(Vec::new());
+                    return append(out, &[]);
                 }
                 return Err(error);
             }
@@ -389,13 +382,9 @@ mod platform {
             if text.0.is_null() {
                 return Err(io::Error::last_os_error());
             }
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "boot: a startup document commit keeps the file's ACL text"
-            )]
             // SAFETY: acl_to_text returns a valid NUL-terminated allocated text until Owned drops.
-            let acl = unsafe { CStr::from_ptr(text.0.cast()) }.to_bytes().to_vec();
-            Ok(acl)
+            let acl = unsafe { CStr::from_ptr(text.0.cast()) };
+            append(out, acl.to_bytes())
         }
         pub(super) fn set(file: &File, bytes: &[u8]) -> io::Result<()> {
             let text = CString::new(bytes).map_err(|_| invalid())?;
@@ -420,7 +409,9 @@ mod platform {
     }
     mod xattrs {
         use super::*;
-        pub(super) fn get(file: &File) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        /// Append the file's security xattrs to `out`, each as a key field then a value field,
+        /// in key byte order (keys are unique), so the record never depends on list order.
+        pub(super) fn append_to(file: &File, out: &mut SecureVec) -> io::Result<()> {
             #[cfg(target_os = "linux")]
             {
                 // SAFETY: null with zero size queries the required list buffer size.
@@ -437,11 +428,15 @@ mod platform {
                     return Err(io::Error::last_os_error());
                 }
                 names.truncate(n as usize);
-                // busbar:expect(bp::fresh_buffer, reason = "boot: a startup document commit keeps the file's security attributes")
-                let mut out = Vec::new();
-                for key in names.split(|b| *b == 0).filter(|key| {
-                    key.starts_with(b"security.") || key.starts_with(b"system.posix_acl_")
-                }) {
+                let mut last: Option<&[u8]> = None;
+                while let Some(key) = names
+                    .split(|b| *b == 0)
+                    .filter(|key| {
+                        (key.starts_with(b"security.") || key.starts_with(b"system.posix_acl_"))
+                            && last.is_none_or(|prev| *key > prev)
+                    })
+                    .min()
+                {
                     let name = CString::new(key).map_err(|_| invalid())?;
                     // SAFETY: native name and file descriptor are valid; zero queries size.
                     let n = unsafe {
@@ -464,15 +459,16 @@ mod platform {
                         return Err(io::Error::last_os_error());
                     }
                     value.truncate(n as usize);
-                    out.push((key.to_vec(), value));
+                    append(out, key)?;
+                    append(out, &value)?;
+                    last = Some(key);
                 }
-                out.sort();
-                Ok(out)
+                Ok(())
             }
             #[cfg(not(target_os = "linux"))]
             {
-                let _ = file;
-                Ok(Vec::new())
+                let _ = (file, out);
+                Ok(())
             }
         }
         pub(super) fn set(file: &File, key: &[u8], value: &[u8]) -> io::Result<()> {
@@ -553,7 +549,6 @@ mod platform {
             return Err(invalid());
         }
         let mut current = PathBuf::new();
-        // busbar:expect(bp::fresh_buffer, reason = "boot: a startup document commit holds its parent directories open")
         let mut held = Vec::new();
         for component in absolute.parent().ok_or_else(invalid)?.components() {
             current.push(component.as_os_str());

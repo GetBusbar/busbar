@@ -50,12 +50,18 @@ impl PlaneDispatch for DrivenOnce {
         _op: busbar_contract::ids::OpClassId,
         drive: busbar_kernel::teller::RouteLeg<'a>,
     ) -> busbar_kernel::teller::RouteLeg<'a> {
-        Box::pin(async move {
-            #[cfg(test)]
-            self.driven
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            drive.await
-        })
+        #[cfg(test)]
+        {
+            Box::pin(async move {
+                self.driven
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                drive.await
+            })
+        }
+        #[cfg(not(test))]
+        {
+            drive
+        }
     }
 
     #[cfg(test)]

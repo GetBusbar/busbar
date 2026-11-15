@@ -152,8 +152,11 @@ mod migrating {
 fn a_plane_life_door_states_migrate_when_it_names_one() {
     use crate::abi::mechanism::call::{BLOB_JSON, BLOB_OCTETS};
     use crate::abi::sdk::migrate::read_answer;
-    assert!(plugin::door().migrate().is_none(), "no migrate: none");
-    let op = migrating::door()
+    assert!(
+        (plugin::MACRO_DOOR.door_fn())().migrate().is_none(),
+        "no migrate: none"
+    );
+    let op = (migrating::MACRO_DOOR.door_fn())()
         .migrate()
         .expect("the door states migrate");
     let settings = br#"{"old": 1}"#;
@@ -198,7 +201,7 @@ fn a_plane_life_door_states_migrate_when_it_names_one() {
 
 fn table() -> &'static Ops {
     // SAFETY: the macro's `'static` door and its plane table.
-    unsafe { &*plugin::door().ops.cast::<Ops>() }
+    unsafe { &*(plugin::MACRO_DOOR.door_fn())().ops.cast::<Ops>() }
 }
 
 fn in_head<T>(op: u32) -> InHead {
@@ -531,7 +534,7 @@ fn serve_op(op: Option<Op>) -> Outcome {
 #[test]
 fn the_plane_arm_defaults_hydrate_and_start_to_ready_and_leaves_serve_absent() {
     use crate::abi::plane::slot::{HYDRATE, START};
-    let t = arm_table(defaulted::door);
+    let t = arm_table(defaulted::MACRO_DOOR.door_fn());
     assert_eq!(gen_op(t.hydrate, HYDRATE), Outcome::Ready);
     assert_eq!(gen_op(t.start, START), Outcome::Ready);
     assert!(
@@ -545,7 +548,7 @@ fn the_plane_arm_defaults_hydrate_and_start_to_ready_and_leaves_serve_absent() {
 #[test]
 fn the_plane_arm_keeps_the_ops_a_plane_names() {
     use crate::abi::plane::slot::{HYDRATE, START};
-    let t = arm_table(named::door);
+    let t = arm_table(named::MACRO_DOOR.door_fn());
     assert_eq!(gen_op(t.hydrate, HYDRATE), Outcome::Failed);
     assert_eq!(gen_op(t.start, START), Outcome::Ready);
     assert_eq!(serve_op(t.serve), Outcome::Ready);

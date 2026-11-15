@@ -10,29 +10,29 @@ use crate::state::App;
 /// `busbar_request_duration_seconds`, for a fixed `(ingress_protocol, pool)` pair ON THE PLANE THIS
 /// BANK REGISTERS (see [`AppSlots::build`]).
 #[derive(Clone, Copy)]
-struct RequestFamily {
-    requests: [CounterSlot; OUTCOMES.len()],
-    duration: HistogramSlot,
-    producer_duration: [HistogramSlot; OUTCOMES.len()],
+pub(crate) struct RequestFamily {
+    pub(crate) requests: [CounterSlot; OUTCOMES.len()],
+    pub(crate) duration: HistogramSlot,
+    pub(crate) producer_duration: [HistogramSlot; OUTCOMES.len()],
 }
 
 /// The banked slots for one mounted plane and declared dialect, at the fixed unresolved pool label
 /// mounted ingress observes: `busbar_plane_requests_total` (per outcome),
 /// `busbar_plane_request_duration_seconds`, and the response-ready phase histogram.
 #[derive(Clone, Copy)]
-struct MountedFamily {
-    requests: [CounterSlot; OUTCOMES.len()],
-    duration: HistogramSlot,
-    phase: [HistogramSlot; OUTCOMES.len()],
+pub(crate) struct MountedFamily {
+    pub(crate) requests: [CounterSlot; OUTCOMES.len()],
+    pub(crate) duration: HistogramSlot,
+    pub(crate) phase: [HistogramSlot; OUTCOMES.len()],
 }
 
 /// The banked slots for one `(pool label, lane)` pair on the upstream walk:
 /// attempts, per-disposition failures, and breaker trips.
 #[derive(Clone, Copy)]
-struct LaneFamily {
-    attempts: CounterSlot,
-    failures: [CounterSlot; DISPOSITIONS.len()],
-    trips: CounterSlot,
+pub(crate) struct LaneFamily {
+    pub(crate) attempts: CounterSlot,
+    pub(crate) failures: [CounterSlot; DISPOSITIONS.len()],
+    pub(crate) trips: CounterSlot,
 }
 
 /// All hot-path metric slots for ONE `App` snapshot, resolved at config load (`App` construction)
@@ -51,176 +51,20 @@ pub(crate) struct AppSlots {
     /// `busbar_request_duration_seconds` families carry NO `plane` label (they are the model
     /// plane's v1.5.4-identical series); the mounted planes emit their own `busbar_plane_*`
     /// families from `request_finished` instead.
-    banked_plane: &'static str,
+    pub(crate) banked_plane: &'static str,
     /// pool label (ingress convention: pools ∪ models ∪ "unresolved") → per-dialect request
     /// families, indexed by position in the banked plane's declared dialects
     /// ([`declared_dialects`]).
-    request: HashMap<Box<str>, Box<[RequestFamily]>>,
+    pub(crate) request: HashMap<Box<str>, Box<[RequestFamily]>>,
     /// engine pool label (pools ∪ models, matching `proxy::metric_pool_label`) → lane idx → family.
-    lane: HashMap<Box<str>, HashMap<usize, LaneFamily>>,
+    pub(crate) lane: HashMap<Box<str>, HashMap<usize, LaneFamily>>,
     /// engine pool label → failover-reason slots, indexed by position in [`REASONS`].
-    failover: HashMap<Box<str>, [CounterSlot; REASONS.len()]>,
+    pub(crate) failover: HashMap<Box<str>, [CounterSlot; REASONS.len()]>,
     /// mounted plane key → families, indexed by position in that plane's declared dialects.
-    mounted: HashMap<&'static str, Box<[MountedFamily]>>,
+    pub(crate) mounted: HashMap<&'static str, Box<[MountedFamily]>>,
 }
 
 impl AppSlots {
-    pub(crate) fn build<'a>(
-        pools: &[(&'a str, Vec<usize>)],
-        by_model: &[(&'a str, usize)],
-        lane_model: impl Fn(usize) -> Option<&'a str>,
-        plane: &'static str,
-    ) -> AppSlots {
-        use crate::snapshot::{
-            BREAKER_TRIPS_TOTAL, FAILOVERS_TOTAL, PLANE_REQUESTS_TOTAL,
-            PLANE_REQUEST_DURATION_SECONDS, REQUESTS_TOTAL, REQUEST_DURATION_SECONDS,
-            UPSTREAM_ATTEMPTS_TOTAL, UPSTREAM_FAILURES_TOTAL,
-        };
-
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the metric bank is built once per App snapshot, at config load"
-        )]
-        let mut ingress_labels: Vec<&str> = pools.iter().map(|(pool, _)| *pool).collect();
-        ingress_labels.extend(by_model.iter().map(|(model, _)| *model));
-        ingress_labels.push(POOL_LABEL_UNRESOLVED);
-        ingress_labels.sort();
-        ingress_labels.dedup();
-
-        let mut request =
-            HashMap::with_capacity_and_hasher(ingress_labels.len(), Default::default());
-        for pool in &ingress_labels {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: the metric bank is built once per App snapshot, at config load"
-            )]
-            let families: Box<[RequestFamily]> = declared_dialects(plane)
-                .iter()
-                .map(|proto| RequestFamily {
-                    requests: std::array::from_fn(|oi| {
-                        counter_slot(
-                            REQUESTS_TOTAL,
-                            &[
-                                ("ingress_protocol", proto),
-                                ("pool", pool),
-                                ("outcome", OUTCOMES[oi]),
-                            ],
-                        )
-                    }),
-                    producer_duration: phase_duration_slot(plane, PRODUCER_DRIVE, proto, pool),
-                    duration: histogram_slot(
-                        REQUEST_DURATION_SECONDS,
-                        &[("ingress_protocol", proto), ("pool", pool)],
-                    ),
-                })
-                .collect();
-            // busbar:expect(bp::into_alloc, reason = "config: the metric bank is built once per App snapshot, at config load")
-            let pool: Box<str> = Box::from(*pool);
-            request.insert(pool, families);
-        }
-
-        let mut lane_map: HashMap<Box<str>, HashMap<usize, LaneFamily>> = HashMap::default();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the metric bank is built once per App snapshot, at config load"
-        )]
-        let engine_labels: Vec<(&str, Vec<usize>)> = pools
-            .iter()
-            .map(|(pool, member_idxs)| (*pool, member_idxs.clone()))
-            .chain(by_model.iter().map(|(model, idx)| (*model, vec![*idx])))
-            .collect();
-
-        let mut failover =
-            HashMap::with_capacity_and_hasher(engine_labels.len(), Default::default());
-        for (pool, member_idxs) in &engine_labels {
-            let mut per_lane =
-                HashMap::with_capacity_and_hasher(member_idxs.len(), Default::default());
-            for &idx in member_idxs {
-                let Some(lane_label) = lane_model(idx) else {
-                    continue;
-                };
-                per_lane.insert(
-                    idx,
-                    LaneFamily {
-                        attempts: counter_slot(
-                            UPSTREAM_ATTEMPTS_TOTAL,
-                            &[("pool", pool), ("lane", lane_label)],
-                        ),
-                        failures: std::array::from_fn(|di| {
-                            counter_slot(
-                                UPSTREAM_FAILURES_TOTAL,
-                                &[
-                                    ("pool", pool),
-                                    ("lane", lane_label),
-                                    ("disposition", DISPOSITIONS[di]),
-                                ],
-                            )
-                        }),
-                        trips: counter_slot(
-                            BREAKER_TRIPS_TOTAL,
-                            &[("pool", pool), ("lane", lane_label)],
-                        ),
-                    },
-                );
-            }
-            // busbar:expect(bp::into_alloc, reason = "config: the metric bank is built once per App snapshot, at config load")
-            let key: Box<str> = Box::from(*pool);
-            lane_map.entry(key).or_default().extend(per_lane);
-            // busbar:expect(bp::into_alloc, reason = "config: the metric bank is built once per App snapshot, at config load")
-            let key: Box<str> = Box::from(*pool);
-            failover.entry(key).or_insert_with(|| {
-                std::array::from_fn(|ri| {
-                    counter_slot(FAILOVERS_TOTAL, &[("pool", pool), ("reason", REASONS[ri])])
-                })
-            });
-        }
-
-        // Mounted ingress currently observes response-ready at its middleware boundary, before
-        // body consumption, with the fixed unresolved pool label. Never infer producer completion.
-        // Mounted planes bank the same way: their request series are bounded by the plane's
-        // declared dialects at that one pool label, so the request path never builds a key.
-        let pool = POOL_LABEL_UNRESOLVED;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the metric bank is built once per App snapshot, at config load"
-        )]
-        let mounted = crate::plane_driver::dispatch::plane_keys()
-            .filter(|key| !crate::plane_driver::dispatch::is_fallback(key))
-            .map(|key| {
-                let families = declared_dialects(key)
-                    .iter()
-                    .map(|proto| MountedFamily {
-                        requests: std::array::from_fn(|oi| {
-                            counter_slot(
-                                PLANE_REQUESTS_TOTAL,
-                                &[
-                                    ("plane", key),
-                                    ("ingress_protocol", proto),
-                                    ("pool", pool),
-                                    ("outcome", OUTCOMES[oi]),
-                                ],
-                            )
-                        }),
-                        duration: histogram_slot(
-                            PLANE_REQUEST_DURATION_SECONDS,
-                            &[("plane", key), ("ingress_protocol", proto), ("pool", pool)],
-                        ),
-                        phase: phase_duration_slot(key, RESPONSE_READY, proto, pool),
-                    })
-                    .collect();
-                (key, families)
-            })
-            .collect();
-
-        AppSlots {
-            mounted,
-            banked_plane: plane,
-            request,
-            lane: lane_map,
-            failover,
-        }
-    }
-
     fn request_family(
         &self,
         plane: &str,
@@ -447,79 +291,90 @@ fn failover_in(slots: &AppSlots, pool_label: &str, reason: &'static str) {
     }
 }
 
+/// A map keyed by one label value.
+pub(crate) type LabelMap<V> = HashMap<Box<str>, V>;
+
+/// Process-wide recorder state for the unbanked emissions, keyed by label value.
+pub(crate) type Handles<V> = std::sync::LazyLock<RwLock<LabelMap<V>>>;
+
+// The unbanked emissions (a label set outside this generation's bank, or a caller with no bank)
+// keep the recorder handle each label set registered: a hit borrows the caller's labels and
+// allocates nothing; the first sight of a label set registers it once, in the cold module. Only
+// counters are kept: the recorder never deletes a counter, so a kept handle stays live (an idle
+// gauge is deleted, so the pool-depth gauge keeps its interned label value instead).
+
+/// `busbar_breaker_trips_total`: pool → lane → handle.
+pub(crate) static UNBANKED_BREAKER_TRIPS: Handles<LabelMap<metrics::Counter>> =
+    std::sync::LazyLock::new(RwLock::default);
+/// `busbar_failovers_total`: pool → reason → handle.
+pub(crate) static UNBANKED_FAILOVERS: Handles<HashMap<&'static str, metrics::Counter>> =
+    std::sync::LazyLock::new(RwLock::default);
+/// `busbar_upstream_attempts_total`: pool → lane → handle.
+pub(crate) static UNBANKED_ATTEMPTS: Handles<LabelMap<metrics::Counter>> =
+    std::sync::LazyLock::new(RwLock::default);
+/// `busbar_upstream_failures_total`: pool → lane → disposition → handle.
+pub(crate) static UNBANKED_FAILURES: Handles<LabelMap<HashMap<&'static str, metrics::Counter>>> =
+    std::sync::LazyLock::new(RwLock::default);
+/// `busbar_translations_total`: from → to → handle.
+pub(crate) static UNBANKED_TRANSLATIONS: Handles<LabelMap<metrics::Counter>> =
+    std::sync::LazyLock::new(RwLock::default);
+/// The pool-depth gauge's interned pool label values.
+pub(crate) static POOL_LABELS: Handles<Arc<str>> = std::sync::LazyLock::new(RwLock::default);
+
+/// Bump the kept handle for `(a, b)`; false when that label set has none yet.
+fn bump_kept(cache: &Handles<LabelMap<metrics::Counter>>, a: &str, b: &str) -> bool {
+    let held = cache.read().unwrap_or_else(|p| p.into_inner());
+    match held.get(a).and_then(|inner| inner.get(b)) {
+        Some(counter) => {
+            counter.increment(1);
+            true
+        }
+        None => false,
+    }
+}
+
 pub fn breaker_trip_on(pool_label: &str, lane_label: &str) {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the unbanked emission (a label outside this generation's bank); the metrics registry owns its labels"
-    )]
-    metrics::counter!(
-        crate::snapshot::BREAKER_TRIPS_TOTAL,
-        "pool" => pool_label.to_owned(),
-        "lane" => lane_label.to_owned()
-    )
-    .increment(1);
+    if !bump_kept(&UNBANKED_BREAKER_TRIPS, pool_label, lane_label) {
+        crate::cold::host::telemetry_breaker_trip_first(pool_label, lane_label);
+    }
 }
 
 pub fn failover_on(pool_label: &str, reason: &'static str) {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the unbanked emission (a label outside this generation's bank); the metrics registry owns its labels"
-    )]
-    metrics::counter!(
-        crate::snapshot::FAILOVERS_TOTAL,
-        "pool" => pool_label.to_owned(),
-        "reason" => reason
-    )
-    .increment(1);
+    {
+        let held = UNBANKED_FAILOVERS.read().unwrap_or_else(|p| p.into_inner());
+        if let Some(counter) = held.get(pool_label).and_then(|reasons| reasons.get(reason)) {
+            counter.increment(1);
+            return;
+        }
+    }
+    crate::cold::host::telemetry_failover_first(pool_label, reason);
 }
 
 pub fn pool_queued_on(pool_label: &str, depth: i64) {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the unbanked emission (a label outside this generation's bank); the metrics registry owns its labels"
-    )]
-    metrics::gauge!(crate::snapshot::POOL_QUEUED, "pool" => pool_label.to_owned())
-        .set(depth as f64);
+    let kept = POOL_LABELS
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(pool_label)
+        .map(Arc::clone);
+    let pool = match kept {
+        Some(pool) => pool,
+        None => crate::cold::host::telemetry_pool_label(pool_label),
+    };
+    metrics::gauge!(crate::snapshot::POOL_QUEUED, "pool" => pool).set(depth as f64);
 }
 
 pub fn translation(from: &str, to: &str) {
     static SLOTS: OnceLock<Vec<(&'static str, &'static str, CounterSlot)>> = OnceLock::new();
-    let table = SLOTS.get_or_init(|| {
-        // busbar:expect(bp::fresh_buffer, reason = "boot: the translation slot table is built once per process")
-        let mut v = Vec::new();
-        let dialects = declared_dialects(crate::plane_driver::dispatch::fallback_key());
-        for f in dialects {
-            for t in dialects {
-                if f != t {
-                    v.push((
-                        *f,
-                        *t,
-                        counter_slot(
-                            crate::snapshot::TRANSLATIONS_TOTAL,
-                            &[("from", f), ("to", t)],
-                        ),
-                    ));
-                }
-            }
-        }
-        v
-    });
+    let table = SLOTS.get_or_init(crate::off_path::telemetry::translation_slots);
     match table
         .iter()
         .find(|(f, t, slot)| *f == from && *t == to && slot.is_valid())
     {
         Some((_, _, slot)) => slot.incr(),
         None => {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: the unbanked emission (a dialect pair outside the bank); the metrics registry owns its labels"
-            )]
-            let counter = metrics::counter!(
-                crate::snapshot::TRANSLATIONS_TOTAL,
-                "from" => from.to_string(),
-                "to" => to.to_string()
-            );
-            counter.increment(1);
+            if !bump_kept(&UNBANKED_TRANSLATIONS, from, to) {
+                crate::cold::host::telemetry_translation_first(from, to);
+            }
         }
     }
 }
@@ -527,10 +382,10 @@ pub fn translation(from: &str, to: &str) {
 // Internal observation stream: Source exports exact cumulative integer samples, not a summary.
 pub(crate) const REQUEST_PHASE_DURATION: &str = "busbar_request_phase_duration_seconds";
 pub(crate) const REQUEST_PHASE_DROPPED: &str = "busbar_request_phase_observations_dropped_total";
-const PRODUCER_DRIVE: &str = "LlmProducerDrive";
-const RESPONSE_READY: &str = "MountedResponseReady";
+pub(crate) const PRODUCER_DRIVE: &str = "LlmProducerDrive";
+pub(crate) const RESPONSE_READY: &str = "MountedResponseReady";
 
-fn phase_duration_slot(
+pub(crate) fn phase_duration_slot(
     plane: &str,
     phase: &str,
     protocol: &str,
@@ -584,7 +439,7 @@ fn record_phase_duration(
     }
 }
 
-fn declared_dialects(plane: &str) -> &'static [&'static str] {
+pub(crate) fn declared_dialects(plane: &str) -> &'static [&'static str] {
     crate::plane_driver::registry::plane_decl_for(plane).map_or(&[], |d| (d.wire_format_names)(d))
 }
 
@@ -597,16 +452,9 @@ pub const UPSTREAM_ATTEMPTS_TOTAL: &str = "busbar_upstream_attempts_total";
 pub const UPSTREAM_FAILURES_TOTAL: &str = "busbar_upstream_failures_total";
 
 pub fn upstream_attempt_on(pool_label: &str, lane_label: &str) {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the unbanked emission (a label outside this generation's bank); the metrics registry owns its labels"
-    )]
-    metrics::counter!(
-        UPSTREAM_ATTEMPTS_TOTAL,
-        "pool" => pool_label.to_owned(),
-        "lane" => lane_label.to_owned()
-    )
-    .increment(1);
+    if !bump_kept(&UNBANKED_ATTEMPTS, pool_label, lane_label) {
+        crate::cold::host::telemetry_upstream_attempt_first(pool_label, lane_label);
+    }
 }
 
 pub fn plugin_label_refused() {
@@ -614,17 +462,18 @@ pub fn plugin_label_refused() {
 }
 
 pub fn upstream_failure_on(pool_label: &str, lane_label: &str, disposition: &'static str) {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the unbanked emission (a label outside this generation's bank); the metrics registry owns its labels"
-    )]
-    metrics::counter!(
-        UPSTREAM_FAILURES_TOTAL,
-        "pool" => pool_label.to_owned(),
-        "lane" => lane_label.to_owned(),
-        "disposition" => disposition
-    )
-    .increment(1);
+    {
+        let held = UNBANKED_FAILURES.read().unwrap_or_else(|p| p.into_inner());
+        if let Some(counter) = held
+            .get(pool_label)
+            .and_then(|lanes| lanes.get(lane_label))
+            .and_then(|dispositions| dispositions.get(disposition))
+        {
+            counter.increment(1);
+            return;
+        }
+    }
+    crate::cold::host::telemetry_upstream_failure_first(pool_label, lane_label, disposition);
 }
 
 pub fn outcome_of(status: u16) -> &'static str {
@@ -639,13 +488,13 @@ pub fn outcome_of(status: u16) -> &'static str {
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
-use crate::diag_warn;
-use crate::diagnostics::TELEMETRY_SLOT_TABLE_FULL;
-
-const COUNTER_CHUNK: usize = 1024;
+pub(crate) const COUNTER_CHUNK: usize = 1024;
 const COUNTER_CHUNKS: usize = 64;
-const HIST_CHUNK: usize = 256;
+pub(crate) const HIST_CHUNK: usize = 256;
 const HIST_CHUNKS: usize = 32;
+
+/// Histogram slots a table holds (its interning cap).
+const HIST_SLOTS: usize = HIST_CHUNK * HIST_CHUNKS;
 
 pub const HIST_DRAIN_THRESHOLD: usize = 65_536;
 
@@ -659,7 +508,7 @@ const HIST_PARK_MAX_BUFFERS: usize =
 /// Full buffers one slot may have parked at once; a further one replays on the request thread.
 const HIST_PARK_PER_SLOT: usize = 2;
 
-const KEY_SEP: char = '\u{1f}';
+pub(crate) const KEY_SEP: char = '\u{1f}';
 
 pub(crate) const OUTCOMES: [&str; 4] = ["ok", "exhausted", "client_error", "error"];
 
@@ -716,7 +565,8 @@ impl CounterSlot {
         let idx = self.0 as usize;
 
         let _ = BANK.try_with(|bank| {
-            let chunk = bank.counters[idx / COUNTER_CHUNK].get_or_init(new_counter_chunk);
+            let chunk = bank.counters[idx / COUNTER_CHUNK]
+                .get_or_init(crate::cold::host::telemetry_new_counter_chunk);
             let cell = &chunk[idx % COUNTER_CHUNK];
             cell.store(
                 cell.load(Ordering::Relaxed).wrapping_add(n),
@@ -750,7 +600,8 @@ impl HistogramSlot {
         }
         let idx = self.0 as usize;
         let _ = BANK.try_with(|bank| {
-            let chunk = bank.hists[idx / HIST_CHUNK].get_or_init(new_hist_chunk);
+            let chunk = bank.hists[idx / HIST_CHUNK]
+                .get_or_init(crate::cold::host::telemetry_new_hist_chunk);
             let mut buf = chunk[idx % HIST_CHUNK]
                 .lock()
                 .unwrap_or_else(|p| p.into_inner());
@@ -764,14 +615,14 @@ impl HistogramSlot {
     }
 }
 
-type HistChunk = Box<[Mutex<Vec<f64>>]>;
+pub(crate) type HistChunk = Box<[Mutex<Vec<f64>>]>;
 
-struct ThreadBank {
-    counters: [OnceLock<Box<[AtomicU64]>>; COUNTER_CHUNKS],
-    hists: [OnceLock<HistChunk>; HIST_CHUNKS],
+pub(crate) struct ThreadBank {
+    pub(crate) counters: [OnceLock<Box<[AtomicU64]>>; COUNTER_CHUNKS],
+    pub(crate) hists: [OnceLock<HistChunk>; HIST_CHUNKS],
 }
 
-struct LocalBank(Arc<ThreadBank>);
+pub(crate) struct LocalBank(pub(crate) Arc<ThreadBank>);
 
 impl std::ops::Deref for LocalBank {
     type Target = ThreadBank;
@@ -779,50 +630,6 @@ impl std::ops::Deref for LocalBank {
     fn deref(&self) -> &ThreadBank {
         &self.0
     }
-}
-
-impl Drop for LocalBank {
-    fn drop(&mut self) {
-        if crate::snapshot::retaining() {
-            return;
-        }
-
-        let reg = registry();
-        let _flush = reg.flush_lock.lock().unwrap_or_else(|p| p.into_inner());
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a worker thread's exit releases its bank once"
-        )]
-        reg.threads
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .retain(|bank| !Arc::ptr_eq(bank, &self.0));
-        let descs = reg.counters.descs.read().unwrap_or_else(|p| p.into_inner());
-        for (i, desc) in descs.iter().enumerate() {
-            if let Some(chunk) = self.counters[i / COUNTER_CHUNK].get() {
-                desc.retired.fetch_add(
-                    chunk[i % COUNTER_CHUNK].load(Ordering::Relaxed),
-                    Ordering::Relaxed,
-                );
-            }
-        }
-    }
-}
-
-fn new_counter_chunk() -> Box<[AtomicU64]> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a thread's bank chunk is built once, on its first emission into it"
-    )]
-    return (0..COUNTER_CHUNK).map(|_| AtomicU64::new(0)).collect();
-}
-
-fn new_hist_chunk() -> HistChunk {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a thread's bank chunk is built once, on its first emission into it"
-    )]
-    return (0..HIST_CHUNK).map(|_| Mutex::new(Vec::new())).collect();
 }
 
 impl ThreadBank {
@@ -856,20 +663,20 @@ thread_local! {
     };
 }
 
-struct SlotDesc<H> {
-    name: &'static str,
-    labels: Vec<(&'static str, String)>,
+pub(crate) struct SlotDesc<H> {
+    pub(crate) name: &'static str,
+    pub(crate) labels: Vec<(&'static str, String)>,
 
-    handle: OnceLock<H>,
+    pub(crate) handle: OnceLock<H>,
 
-    flushed: AtomicU64,
+    pub(crate) flushed: AtomicU64,
 
-    retired: AtomicU64,
+    pub(crate) retired: AtomicU64,
 }
 
-struct SlotTable<H> {
-    index: Mutex<HashMap<String, u32>>,
-    descs: RwLock<Vec<Arc<SlotDesc<H>>>>,
+pub(crate) struct SlotTable<H> {
+    pub(crate) index: Mutex<HashMap<String, u32>>,
+    pub(crate) descs: RwLock<Vec<Arc<SlotDesc<H>>>>,
 }
 
 impl<H> SlotTable<H> {
@@ -879,66 +686,17 @@ impl<H> SlotTable<H> {
             descs: RwLock::new(Vec::new()),
         }
     }
-
-    fn intern(
-        &self,
-        name: &'static str,
-        labels: &[(&'static str, &str)],
-        max: usize,
-    ) -> Option<u32> {
-        // busbar:expect(bp::fresh_buffer, reason = "config: a slot is interned when a bank is built, at config load")
-        let mut key = String::with_capacity(name.len() + labels.len() * 16);
-        key.push_str(name);
-        for (k, v) in labels {
-            key.push(KEY_SEP);
-            key.push_str(k);
-            key.push(KEY_SEP);
-            key.push_str(v);
-        }
-        let mut index = self.index.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(&id) = index.get(key.as_str()) {
-            return Some(id);
-        }
-        let mut descs = self.descs.write().unwrap_or_else(|p| p.into_inner());
-        if descs.len() >= max {
-            static WARNED: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
-            if !WARNED.swap(true, Ordering::Relaxed) {
-                diag_warn!(
-                    TELEMETRY_SLOT_TABLE_FULL,
-                    metric = name,
-                    cap = max,
-                    "telemetry bank slot table full; further label sets fall back to the metrics macros"
-                );
-            }
-            return None;
-        }
-        let id = descs.len() as u32;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a new slot keeps its labels once, when it is interned"
-        )]
-        descs.push(Arc::new(SlotDesc {
-            name,
-            labels: labels.iter().map(|(k, v)| (*k, (*v).to_string())).collect(),
-            handle: OnceLock::new(),
-            flushed: AtomicU64::new(0),
-            retired: AtomicU64::new(0),
-        }));
-        index.insert(key, id);
-        Some(id)
-    }
 }
 
-struct Registry {
-    counters: SlotTable<metrics::Counter>,
-    hists: SlotTable<metrics::Histogram>,
-    threads: Mutex<Vec<Arc<ThreadBank>>>,
+pub(crate) struct Registry {
+    pub(crate) counters: SlotTable<metrics::Counter>,
+    pub(crate) hists: SlotTable<metrics::Histogram>,
+    pub(crate) threads: Mutex<Vec<Arc<ThreadBank>>>,
 
-    flush_lock: Mutex<()>,
+    pub(crate) flush_lock: Mutex<()>,
 }
 
-fn registry() -> &'static Registry {
+pub(crate) fn registry() -> &'static Registry {
     static REGISTRY: OnceLock<Registry> = OnceLock::new();
     REGISTRY.get_or_init(|| Registry {
         counters: SlotTable::new(),
@@ -959,41 +717,26 @@ pub fn counter_slot(name: &'static str, labels: &[(&'static str, &str)]) -> Coun
 }
 
 pub fn histogram_slot(name: &'static str, labels: &[(&'static str, &str)]) -> HistogramSlot {
-    match registry()
-        .hists
-        .intern(name, labels, HIST_CHUNK * HIST_CHUNKS)
-    {
+    match registry().hists.intern(name, labels, HIST_SLOTS) {
         Some(id) => HistogramSlot(id),
         None => HistogramSlot::INVALID,
     }
 }
 
-static METADATA: metrics::Metadata<'static> =
-    metrics::Metadata::new(module_path!(), metrics::Level::INFO, Some(module_path!()));
-
-fn key_of<H>(desc: &SlotDesc<H>) -> metrics::Key {
-    let labels = desc
-        .labels
-        .iter()
-        .map(|(k, v)| metrics::Label::new(*k, v.clone()));
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a slot's recorder handle is minted once, on its first flush"
-    )]
-    return metrics::Key::from_parts(desc.name, labels.collect::<Vec<_>>());
+/// Full histogram buffers waiting for the maintenance thread's next flush.
+pub(crate) struct Parked {
+    /// The parked buffers, as `(slot, samples)`. Bounded by [`HIST_PARK_MAX_BUFFERS`] overall and
+    /// [`HIST_PARK_PER_SLOT`] per slot.
+    pub(crate) buffers: Vec<(u32, Vec<f64>)>,
+    /// Per histogram slot, how many of `buffers` are its own; kept with every park and zeroed when
+    /// the flush takes the buffers.
+    pub(crate) per_slot: [u8; HIST_SLOTS],
 }
 
-fn mint_counter(desc: &SlotDesc<metrics::Counter>) -> metrics::Counter {
-    metrics::with_recorder(|r| r.register_counter(&key_of(desc), &METADATA))
-}
-
-fn mint_histogram(desc: &SlotDesc<metrics::Histogram>) -> metrics::Histogram {
-    metrics::with_recorder(|r| r.register_histogram(&key_of(desc), &METADATA))
-}
-
-/// Full histogram buffers waiting for the maintenance thread's next flush, as `(slot, samples)`.
-/// Bounded by [`HIST_PARK_MAX_BUFFERS`] overall and [`HIST_PARK_PER_SLOT`] per slot.
-static HIST_PARKED: Mutex<Vec<(u32, Vec<f64>)>> = Mutex::new(Vec::new());
+pub(crate) static HIST_PARKED: Mutex<Parked> = Mutex::new(Parked {
+    buffers: Vec::new(),
+    per_slot: [0; HIST_SLOTS],
+});
 
 /// A full buffer leaves the request thread without touching the recorder: it is parked for the
 /// maintenance thread's flush. Only when the slot already has its share parked, or the process-wide
@@ -1004,10 +747,13 @@ fn park_or_replay(slot: u32, samples: Vec<f64>) {
     }
     let samples = {
         let mut parked = HIST_PARKED.lock().unwrap_or_else(|p| p.into_inner());
-        let mine = parked.iter().filter(|(s, _)| *s == slot).count();
-        if parked.len() < HIST_PARK_MAX_BUFFERS && mine < HIST_PARK_PER_SLOT {
-            parked.push((slot, samples));
-            return;
+        let Parked { buffers, per_slot } = &mut *parked;
+        if let Some(mine) = per_slot.get_mut(slot as usize) {
+            if buffers.len() < HIST_PARK_MAX_BUFFERS && usize::from(*mine) < HIST_PARK_PER_SLOT {
+                *mine += 1;
+                buffers.push((slot, samples));
+                return;
+            }
         }
         samples
     };
@@ -1030,7 +776,9 @@ fn drain_hist_overflow(slot: u32, samples: Vec<f64>) {
             None => return,
         }
     };
-    let handle = desc.handle.get_or_init(|| mint_histogram(&desc));
+    let handle = desc
+        .handle
+        .get_or_init(|| crate::off_path::telemetry::mint_histogram(&desc));
     #[cfg(test)]
     bank_internals::REQUEST_THREAD_RECORDS.with(|n| n.set(n.get() + samples.len() as u64));
     for s in samples {
@@ -1071,78 +819,7 @@ pub mod drain_serial {
 }
 
 pub fn flush_to_recorder() {
-    #[cfg(any(test, feature = "test-support"))]
-    let _serial = drain_serial::lock();
-    if !crate::snapshot::recorder_installed() {
-        return;
-    }
-    let reg = registry();
-    let _guard = reg.flush_lock.lock().unwrap_or_else(|p| p.into_inner());
-
-    let mut banks = reg.threads.lock().unwrap_or_else(|p| p.into_inner());
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a scrape releases the banks of exited threads; no request runs it"
-    )]
-    let exited: Vec<_> = banks
-        .extract_if(.., |b| Arc::strong_count(b) == 1)
-        .collect();
-    let threads = banks.clone();
-    drop(banks);
-    std::sync::atomic::fence(Ordering::Acquire);
-
-    let counter_descs = reg.counters.descs.read().unwrap_or_else(|p| p.into_inner());
-    for (i, desc) in counter_descs.iter().enumerate() {
-        let (chunk_i, off) = (i / COUNTER_CHUNK, i % COUNTER_CHUNK);
-        let mut sum: u64 = desc.retired.load(Ordering::Relaxed);
-        for bank in threads.iter().chain(&exited) {
-            if let Some(chunk) = bank.counters[chunk_i].get() {
-                sum = sum.wrapping_add(chunk[off].load(Ordering::Relaxed));
-            }
-        }
-
-        let gone = exited.iter().filter_map(|b| b.counters[chunk_i].get());
-        let gone = gone.fold(0u64, |t, c| t.wrapping_add(c[off].load(Ordering::Relaxed)));
-        desc.retired.fetch_add(gone, Ordering::Relaxed);
-        let prev = desc.flushed.load(Ordering::Relaxed);
-        if sum > prev {
-            let handle = desc.handle.get_or_init(|| mint_counter(desc));
-            handle.increment(sum - prev);
-            desc.flushed.store(sum, Ordering::Relaxed);
-        }
-    }
-    drop(counter_descs);
-
-    let hist_descs = reg.hists.descs.read().unwrap_or_else(|p| p.into_inner());
-    let parked = std::mem::take(&mut *HIST_PARKED.lock().unwrap_or_else(|p| p.into_inner()));
-    for (slot, samples) in parked {
-        let Some(desc) = hist_descs.get(slot as usize) else {
-            continue;
-        };
-        let handle = desc.handle.get_or_init(|| mint_histogram(desc));
-        for s in samples {
-            handle.record(s);
-        }
-    }
-    for (i, desc) in hist_descs.iter().enumerate() {
-        let (chunk_i, off) = (i / HIST_CHUNK, i % HIST_CHUNK);
-        for bank in threads.iter().chain(&exited) {
-            let Some(chunk) = bank.hists[chunk_i].get() else {
-                continue;
-            };
-            let samples = {
-                let mut buf = chunk[off].lock().unwrap_or_else(|p| p.into_inner());
-                if buf.is_empty() {
-                    continue;
-                }
-                std::mem::take(&mut *buf)
-            };
-            let handle = desc.handle.get_or_init(|| mint_histogram(desc));
-            for s in samples {
-                handle.record(s);
-            }
-        }
-    }
+    crate::off_path::telemetry::flush_to_recorder();
 }
 
 #[cfg(test)]

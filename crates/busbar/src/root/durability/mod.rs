@@ -48,7 +48,7 @@ pub(crate) use amend::verify_held;
 
 mod audit;
 
-pub use audit::AuditWindowAt;
+pub(crate) use audit::AuditWindowAt;
 
 mod audit_page;
 
@@ -68,7 +68,7 @@ pub(crate) const AUDIT_RING: usize = 1_024;
 
 /// The accepted journal configuration. Persistence is always owned by the configured Store.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct DurabilityConfig {
+pub(crate) struct DurabilityConfig {
     /// The legacy data directory, accepted for compatibility and never opened by these builders.
     pub data_dir: Option<PathBuf>,
 }
@@ -119,7 +119,7 @@ impl Durability {
 
 pub type ChainRead = std::io::Result<Result<Vec<JournalRecord>, busbar_kernel_wal::JournalBreak>>;
 
-pub struct ChainAt {
+pub(crate) struct ChainAt {
     journal: Arc<RuntimeJournal>,
     budget: BufferBudget,
     through: u64,
@@ -307,7 +307,7 @@ pub struct ClaimKey {
 #[cfg(test)]
 /// What a claim is taken as: the claim itself, the balance and the window it is journalled on.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClaimBalance {
+pub(crate) struct ClaimBalance {
     /// The claim — the idempotency key.
     pub claim: String,
     /// The balance.
@@ -319,7 +319,7 @@ pub struct ClaimBalance {
 #[cfg(test)]
 /// When a claim was taken: whole seconds, and the node's monotonic reading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ClaimStamp {
+pub(crate) struct ClaimStamp {
     /// Whole seconds.
     pub wall: u64,
     /// The node's monotonic clock.

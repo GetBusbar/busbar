@@ -26,14 +26,19 @@ pub struct ConfigureCheckpoint {
 impl ConfigureCheckpoint {
     /// Own a complete, normalized JSON settings object. Its semantics belong to the plugin; the
     pub fn new(revision: u64, settings_version: u64, settings: Vec<u8>) -> Result<Self, String> {
-        let settings = SecureVec::from(settings);
+        Self::owned(revision, settings_version, SecureVec::from(settings))
+            .ok_or_else(crate::abi::sdk::cold::hook::invalid_configure_checkpoint)
+    }
+
+    /// The checks of [`Self::new`], over settings already in wiping custody.
+    fn owned(revision: u64, settings_version: u64, settings: SecureVec) -> Option<Self> {
         if revision == 0
             || settings.is_empty()
             || settings.len() > MAX_BYTES.saturating_sub(extensions::entry_len(KEY, &[]) + HEADER)
         {
-            return Err("invalid complete hook configuration checkpoint".into());
+            return None;
         }
-        Ok(Self {
+        Some(Self {
             revision,
             settings_version,
             settings,
@@ -50,18 +55,22 @@ impl ConfigureCheckpoint {
     #[must_use]
     pub fn encode(&self) -> SecureVec {
         let length = HEADER + self.settings.len();
-        // One exact allocation (`concat`): the wiping buffer never grows (LINT-RULES LR-117).
-        SecureVec::from(
-            [
-                &(KEY.len() as u16).to_le_bytes()[..],
-                KEY.as_bytes(),
-                &(length as u32).to_le_bytes(),
-                &self.revision.to_le_bytes(),
-                &self.settings_version.to_le_bytes(),
-                &self.settings[..],
-            ]
-            .concat(),
-        )
+        // One exact zeroed allocation filled in place: the wiping buffer never grows (LINT-RULES
+        // LR-117).
+        let mut out = SecureVec::zeroed(2 + KEY.len() + 4 + length);
+        let mut at = 0;
+        for part in [
+            &(KEY.len() as u16).to_le_bytes()[..],
+            KEY.as_bytes(),
+            &(length as u32).to_le_bytes(),
+            &self.revision.to_le_bytes(),
+            &self.settings_version.to_le_bytes(),
+            &self.settings[..],
+        ] {
+            out[at..at + part.len()].copy_from_slice(part);
+            at += part.len();
+        }
+        out
     }
 
     /// Copy one checkpoint out of a still-leased extensions blob. Unknown entries are ignored;
@@ -98,12 +107,10 @@ impl ConfigureCheckpoint {
                 }
                 let revision = u64::from_le_bytes(value[..8].try_into().map_err(|_| INVALID)?);
                 let version = u64::from_le_bytes(value[8..HEADER].try_into().map_err(|_| INVALID)?);
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "config: a configure checkpoint's settings, restored once per configure"
-                )]
-                let settings = value[HEADER..].to_vec();
-                found = Some(Self::new(revision, version, settings).map_err(|_| INVALID)?);
+                // The settings move straight into wiping custody: one exact zeroed allocation.
+                let mut settings = SecureVec::zeroed(value.len() - HEADER);
+                settings.copy_from_slice(&value[HEADER..]);
+                found = Some(Self::owned(revision, version, settings).ok_or(INVALID)?);
             }
         }
         Ok(found)

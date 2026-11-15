@@ -414,7 +414,7 @@ fn importer_format(actual: lifecycle::Format) -> Result<Format, Error> {
 }
 fn field(hash: &mut Sha256, bytes: &[u8]) {
     hash.update(&(bytes.len() as u64).to_le_bytes());
-    hash.update(&bytes[..]);
+    hash.update(bytes);
 }
 fn canonical_bindings(bindings: &mut Bindings, budget: usize) -> Result<(), Error> {
     use busbar_contract::records::{PlaneDisposition, PlaneRecordRef};

@@ -24,14 +24,9 @@ const SECRET_WORDS: &[&str] = &[
 #[must_use]
 pub fn mask_url(url: &str) -> String {
     let Some((scheme, rest)) = url.split_once("://") else {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a sink's URL, masked once as its instance opens"
-        )]
         let unmasked = url.to_string();
         return unmasked;
     };
-    // busbar:expect(bp::fresh_buffer, reason = "config: a sink's URL, masked once as its instance opens")
     let mut out = String::with_capacity(url.len() + MASK.len());
     out.push_str(scheme);
     out.push_str("://");

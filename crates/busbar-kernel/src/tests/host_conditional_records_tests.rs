@@ -379,7 +379,7 @@ fn malformed_life_and_drop_overflow_refuse_before_submission() {
 
 fn queued(request: Request, answers: Arc<Mutex<Vec<ConditionalResult>>>) -> ConditionalWrite {
     ConditionalWrite::new(
-        Arc::from(INSTANCE),
+        INSTANCE.into(),
         request,
         vec![operation(Some(b"event"))],
         ConditionalOwed::new(
@@ -528,7 +528,7 @@ fn changed_body_operation_identity_is_distinct_from_condition_conflict() {
         .attempt(
             &rows,
             &crate::host_chains::ChainBook::default(),
-            std::time::Instant::now()
+            clock_read()
         )
         .is_none());
     assert_eq!(
@@ -544,7 +544,7 @@ fn replay_horizon_reports_indeterminate_without_new_dispatch_or_loss_of_custody(
     let mut write = queued(request(Expected::Absent, b"state"), Arc::clone(&answers));
     write.prepared = true;
     write.submitted = Some(
-        std::time::Instant::now()
+        clock_read()
             - std::time::Duration::from_secs(busbar_contract::abi::store::OP_ID_RETENTION_SECS),
     );
     let identity = write.request.clone();
@@ -552,7 +552,7 @@ fn replay_horizon_reports_indeterminate_without_new_dispatch_or_loss_of_custody(
         .attempt(
             &rows,
             &crate::host_chains::ChainBook::default(),
-            std::time::Instant::now(),
+            clock_read(),
         )
         .expect("expired ambiguous operation remains owned");
     assert_eq!(retained.request, identity);
@@ -565,10 +565,14 @@ fn replay_horizon_reports_indeterminate_without_new_dispatch_or_loss_of_custody(
         .attempt(
             &rows,
             &crate::host_chains::ChainBook::default(),
-            std::time::Instant::now()
+            clock_read()
         )
         .is_some());
     assert_eq!(answers.lock().unwrap().len(), 1);
+}
+
+fn clock_read() -> std::time::Instant {
+    std::time::Instant::now()
 }
 
 struct Inline;
@@ -580,7 +584,7 @@ impl crate::host_services::Offload for Inline {
 
 fn caller() -> busbar_contract::services::Caller {
     busbar_contract::services::Caller::for_test(
-        Arc::from(INSTANCE),
+        INSTANCE.into(),
         busbar_contract::abi::mechanism::KindCode::Plane,
     )
 }
@@ -737,7 +741,7 @@ fn later_refusal_does_not_discard_an_earlier_unknown_commit() {
         .attempt(
             &rows,
             &crate::host_chains::ChainBook::default(),
-            std::time::Instant::now(),
+            clock_read(),
         )
         .unwrap();
     rows.0.lock().unwrap().refuse = true;
@@ -745,7 +749,7 @@ fn later_refusal_does_not_discard_an_earlier_unknown_commit() {
         .attempt(
             &rows,
             &crate::host_chains::ChainBook::default(),
-            std::time::Instant::now(),
+            clock_read(),
         )
         .expect("refused retry does not settle earlier commit");
     assert!(answers.lock().unwrap().is_empty());
@@ -754,7 +758,7 @@ fn later_refusal_does_not_discard_an_earlier_unknown_commit() {
         .attempt(
             &rows,
             &crate::host_chains::ChainBook::default(),
-            std::time::Instant::now()
+            clock_read()
         )
         .is_none());
     assert_eq!(answers.lock().unwrap()[0].decision, Ok(Decision::Applied));

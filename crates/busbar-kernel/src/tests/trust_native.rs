@@ -207,7 +207,7 @@ impl Rig {
             clock,
         }
     }
-    pub async fn node_on(
+    async fn node_on(
         core: Arc<CoreStore>,
         clock: Arc<AtomicU64>,
         pool: Arc<dyn Offload>,

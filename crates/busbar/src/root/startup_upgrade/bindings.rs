@@ -65,7 +65,7 @@ pub(crate) fn inventory() -> Result<DeclarationInventory, String> {
         }
         statements.push(AdmittedStatement {
             owner: candidate.name.clone(),
-            statement_sha256: busbar_contract::crypto::sha256(&candidate.stated).into(),
+            statement_sha256: busbar_contract::crypto::sha256(&candidate.stated),
             kind: statement.kind,
             kind_abi: statement.kind_abi,
             layout_fingerprint: candidate.kind.layout_fingerprint(),
@@ -450,7 +450,7 @@ fn conversion_digest() -> [u8; 32] {
         include_bytes!("../../../../busbar-migrations/src/config/migrate_export.rs").as_slice(),
     ] {
         hash.update(&(source.len() as u64).to_be_bytes());
-        hash.update(&source[..]);
+        hash.update(source);
     }
     for (key, value) in busbar_migrations::config::migration_table::rows() {
         hash.update(&(key.len() as u64).to_be_bytes());

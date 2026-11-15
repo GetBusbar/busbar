@@ -143,7 +143,7 @@ fn a_source_that_takes_no_settings_refuses_one_naming_it() {
 #[test]
 fn a_failed_resolve_answers_its_code_and_text_through_the_door() {
     // SAFETY: the actual SDK-generated secret door declares this full Ops table.
-    let table = unsafe { &*plugin::door().ops().cast::<Ops>() };
+    let table = unsafe { &*(plugin::MACRO_DOOR.door_fn())().ops().cast::<Ops>() };
     let open_with = |settings: &[u8]| {
         let mut input: OpenIn = zeroed();
         input.head.size = std::mem::size_of::<OpenIn>() as u32;

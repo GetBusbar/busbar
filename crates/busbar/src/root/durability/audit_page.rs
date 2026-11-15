@@ -76,7 +76,7 @@ impl Cursor {
 }
 
 /// Captured under the durability lock; all Store calls run after releasing it.
-pub struct AuditPagePlan {
+pub(crate) struct AuditPagePlan {
     body: Value,
     cursor: Cursor,
     records: Vec<AuditRecord>,

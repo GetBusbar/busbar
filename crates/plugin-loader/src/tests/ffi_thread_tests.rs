@@ -81,7 +81,8 @@ fn a_nested_call_takes_a_second_worker_and_does_not_deadlock() {
 #[test]
 fn non_send_values_cross_the_rendezvous_in_both_directions() {
     let _serial = identity_lock();
-    let borrowed = String::from("borrowed by the closure, never moved");
+    let mut borrowed = String::new();
+    borrowed.push_str("borrowed by the closure, never moved");
     let ptr: *const u8 = borrowed.as_ptr();
     let expected_len = borrowed.len();
     let out = on_plugin_thread(move || (ptr, borrowed.len())).expect("no panic");
@@ -134,7 +135,8 @@ fn lifecycle_callback_runs_on_an_actual_plugin_worker() {
 #[test]
 fn borrowed_input_and_result_remain_valid_after_the_rendezvous() {
     let _serial = identity_lock();
-    let mut input = String::from("borrowed");
+    let mut input = String::new();
+    input.push_str("borrowed");
     run_plugin_lifecycle(|| input.push_str(" lifecycle")).unwrap();
     let result = run_plugin_lifecycle(|| input.as_str()).unwrap();
     assert_eq!(result, "borrowed lifecycle");
@@ -147,7 +149,9 @@ fn callback_panic_preserves_its_payload_and_the_pool_remains_usable() {
     let mut ran_on = None;
     let outcome: std::thread::Result<()> = run_plugin_lifecycle(|| {
         ran_on = Some(std::thread::current().id());
-        std::panic::panic_any(String::from("lifecycle panic payload"));
+        let mut payload = String::new();
+        payload.push_str("lifecycle panic payload");
+        std::panic::panic_any(payload);
     });
     assert_ne!(ran_on.unwrap(), caller);
     let payload = outcome.unwrap_err().downcast::<String>().unwrap();

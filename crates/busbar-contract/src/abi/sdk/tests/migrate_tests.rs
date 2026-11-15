@@ -310,9 +310,11 @@ mod witness {
 #[test]
 fn a_door_states_migrate_on_its_tail_and_the_host_calls_it_with_no_instance() {
     use crate::abi::mechanism::door::Door;
-    let door = witness::with::door();
+    let door = (witness::with::MACRO_DOOR.door_fn())();
     assert!(
-        witness::without::door().migrate().is_none(),
+        (witness::without::MACRO_DOOR.door_fn())()
+            .migrate()
+            .is_none(),
         "no migrate: none"
     );
     let op = door.migrate().expect("the door states migrate");

@@ -39,56 +39,11 @@ pub trait EngineTablesView {
 /// ([`set_pool_queued_depth`]).
 #[derive(Debug, Default)]
 pub struct ConfigTables {
-    lanes: Vec<(String, String, String)>,
-    by_model: foldhash::HashMap<String, usize>,
-    pools: foldhash::HashMap<String, Vec<(usize, u32)>>,
-    fallbacks: foldhash::HashMap<String, String>,
-    upstream_credentials: busbar_contract::config::UpstreamCreds,
-}
-
-impl ConfigTables {
-    #[must_use]
-    pub fn of<'m>(
-        lanes: &[crate::plane_driver::route_input::LaneInput],
-        pools: &[crate::plane_driver::route_input::PoolInput],
-        by_model: impl IntoIterator<Item = (&'m String, &'m usize)>,
-        upstream_credentials: busbar_contract::config::UpstreamCreds,
-    ) -> Self {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the kernel's tables view is built once per generation"
-        )]
-        let tables = ConfigTables {
-            lanes: lanes
-                .iter()
-                .map(|l| (l.model.clone(), l.provider.clone(), l.base_url.clone()))
-                .collect(),
-            by_model: by_model
-                .into_iter()
-                .map(|(model, &idx)| (model.clone(), idx))
-                .collect(),
-            pools: pools
-                .iter()
-                .map(|p| {
-                    (
-                        p.name.clone(),
-                        p.members.iter().map(|m| (m.lane_idx, m.weight)).collect(),
-                    )
-                })
-                .collect(),
-            fallbacks: pools
-                .iter()
-                .filter_map(|p| match &p.on_exhausted {
-                    crate::plane_driver::route_input::OnExhaustedInput::FallbackPool(to) => {
-                        Some((p.name.clone(), to.clone()))
-                    }
-                    _ => None,
-                })
-                .collect(),
-            upstream_credentials,
-        };
-        tables
-    }
+    pub(crate) lanes: Vec<(String, String, String)>,
+    pub(crate) by_model: foldhash::HashMap<String, usize>,
+    pub(crate) pools: foldhash::HashMap<String, Vec<(usize, u32)>>,
+    pub(crate) fallbacks: foldhash::HashMap<String, String>,
+    pub(crate) upstream_credentials: busbar_contract::config::UpstreamCreds,
 }
 
 /// The live `on_exhausted: queue` depth per pool. A pool's slot, once created, stays (at depth 0 when
@@ -106,11 +61,7 @@ fn with_queued_depth(pool: &str, change: impl FnOnce(&mut u64)) {
     }
     let mut depth = 0;
     change(&mut depth);
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a configured pool's queue-depth slot is created once, at its first queued request"
-    )]
-    queued.insert(pool.to_string(), depth);
+    crate::cold::first_queued_depth(&mut queued, pool, depth);
 }
 
 pub fn set_pool_queued_depth(pool: &str, depth: u64) {
@@ -121,54 +72,14 @@ pub fn change_pool_queued_depth(pool: &str, delta: i64) {
     with_queued_depth(pool, |d| *d = d.saturating_add_signed(delta));
 }
 
-impl EngineTablesView for ConfigTables {
-    fn pools(&self) -> Vec<(&str, Vec<usize>)> {
-        self.pools
-            .iter()
-            .map(|(name, members)| (name.as_str(), members.iter().map(|(i, _)| *i).collect()))
-            .collect()
-    }
-    fn pool_exists(&self, pool: &str) -> bool {
-        self.pools.contains_key(pool)
-    }
-    fn model_indices(&self) -> Vec<(&str, usize)> {
-        self.by_model
-            .iter()
-            .map(|(m, &idx)| (m.as_str(), idx))
-            .collect()
-    }
-    fn model_index(&self, model: &str) -> Option<usize> {
-        self.by_model.get(model).copied()
-    }
-    fn lane_view(&self, idx: usize) -> Option<LaneView<'_>> {
-        self.lanes
-            .get(idx)
-            .map(|(model, provider, base_url)| LaneView {
-                model,
-                provider,
-                base_url,
-            })
-    }
-    fn lane_count(&self) -> usize {
-        self.lanes.len()
-    }
-    fn pool_members(&self, pool: &str) -> Vec<(usize, u32)> {
-        self.pools.get(pool).cloned().unwrap_or_default()
-    }
-    fn queued_depth(&self, pool: &str) -> u64 {
-        QUEUED
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(pool)
-            .copied()
-            .unwrap_or(0)
-    }
-    fn on_exhausted_fallback(&self, pool: &str) -> Option<String> {
-        self.fallbacks.get(pool).cloned()
-    }
-    fn upstream_creds(&self) -> busbar_contract::config::UpstreamCreds {
-        self.upstream_credentials
-    }
+/// The live queue depth of `pool` (`0` before its first queued request).
+pub(crate) fn queued_depth_of(pool: &str) -> u64 {
+    QUEUED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(pool)
+        .copied()
+        .unwrap_or(0)
 }
 
 #[cfg(test)]

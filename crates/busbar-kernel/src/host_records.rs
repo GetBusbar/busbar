@@ -55,7 +55,6 @@ pub const CLAIM_KIND: &str = "busbar.record-claim";
 pub fn record_key(instance: &str, key: &[u8]) -> Vec<u8> {
     let label = instance.as_bytes();
     let len = u16::try_from(label.len()).unwrap_or(u16::MAX);
-    // busbar:expect(bp::fresh_buffer, reason = "config: the scoped key is the store's owned key; callers that only compare use the borrowed parts")
     let mut k = Vec::with_capacity(2 + label.len() + key.len());
     k.extend_from_slice(&len.to_be_bytes());
     k.extend_from_slice(label);
@@ -92,33 +91,24 @@ impl PendingRecords {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
         let mut map = self.lock();
         if !map.contains_key(instance) {
-            // busbar:expect(bp::into_alloc, reason = "config: an instance's overlay row is created once, at its first queued write; acks keep it")
-            let row: Arc<str> = Arc::from(instance);
-            map.insert(row, KindQueues::default());
+            map.insert(
+                crate::cold::host::records_instance_row(instance),
+                KindQueues::default(),
+            );
         }
         let Some(kinds) = map.get_mut(instance) else {
             return seq;
         };
         let keys = match kinds.get_mut(kind) {
             Some(keys) => keys,
-            None => {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "config: a record kind's overlay row is created once, at its first queued write; acks keep it"
-                )]
-                let kind = kind.to_string();
-                kinds.entry(kind).or_default()
-            }
+            None => kinds
+                .entry(crate::cold::host::records_kind_row(kind))
+                .or_default(),
         };
         match keys.get_mut(key) {
             Some(queued) => *queued = (seq, value),
             None => {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "config: the overlay owns a queued write's key until the store acks it; the writer's buffer is lent"
-                )]
-                let key = key.to_vec();
-                keys.insert(key, (seq, value));
+                keys.insert(key.to_vec(), (seq, value));
             }
         }
         seq
@@ -136,17 +126,11 @@ impl PendingRecords {
 
     #[must_use]
     pub fn get(&self, instance: &str, kind: &str, key: &[u8]) -> Option<Vec<u8>> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a read of a still-queued write answers with its own copy of the bytes"
-        )]
-        let value = self
-            .lock()
+        self.lock()
             .get(instance)?
             .get(kind)?
             .get(key)
-            .map(|(_, v)| v.to_vec());
-        value
+            .map(|(_, v)| v.to_vec())
     }
 
     #[must_use]
@@ -156,16 +140,10 @@ impl PendingRecords {
         let Some(keys) = map.get(instance).and_then(|kinds| kinds.get(kind)) else {
             return Vec::new();
         };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a list over still-queued writes answers with its own copy of the rows"
-        )]
-        let rows = keys
-            .range::<[u8], _>((Bound::Included(prefix), Bound::Unbounded))
+        keys.range::<[u8], _>((Bound::Included(prefix), Bound::Unbounded))
             .take_while(|(key, _)| key.starts_with(prefix))
             .map(|(key, (_, v))| (key.to_vec(), v.to_vec()))
-            .collect();
-        rows
+            .collect()
     }
 
     #[must_use]
@@ -198,7 +176,7 @@ impl Owed {
         Self(Some(acked))
     }
 
-    fn answer(mut self, result: Result<(), &'static str>) {
+    pub(crate) fn answer(mut self, result: Result<(), &'static str>) {
         if let Some(acked) = self.0.take() {
             acked(result);
         }
@@ -250,8 +228,8 @@ pub type ConditionalAcked = Box<dyn FnOnce(ConditionalResult) + Send>;
 pub type ChainLifeAcked = Box<dyn FnOnce(Result<conditional::Expected, &'static str>) + Send>;
 
 pub(crate) struct ConditionalOwed {
-    correlation: u64,
-    acked: Option<ConditionalAcked>,
+    pub(crate) correlation: u64,
+    pub(crate) acked: Option<ConditionalAcked>,
 }
 
 impl ConditionalOwed {
@@ -262,7 +240,7 @@ impl ConditionalOwed {
         }
     }
 
-    fn answer(mut self, decision: Result<conditional::Decision, ConditionalFailure>) {
+    pub(crate) fn answer(mut self, decision: Result<conditional::Decision, ConditionalFailure>) {
         if let Some(acked) = self.acked.take() {
             acked(ConditionalResult {
                 correlation: self.correlation,
@@ -288,11 +266,11 @@ pub(crate) struct ConditionalWrite {
     pub chains: Vec<crate::host_chains::ConditionalChain>,
     pub owed: ConditionalOwed,
     _unit: Option<Arc<crate::host_units::UnitRecord>>,
-    prepared: bool,
+    pub(crate) prepared: bool,
     submitted: Option<std::time::Instant>,
     uncertain: bool,
-    positions: Vec<crate::host_chains::ConditionalPosition>,
-    native_pending: Option<crate::persistence::facade::PendingId>,
+    pub(crate) positions: Vec<crate::host_chains::ConditionalPosition>,
+    pub(crate) native_pending: Option<crate::persistence::facade::PendingId>,
 }
 
 impl ConditionalWrite {
@@ -317,7 +295,7 @@ impl ConditionalWrite {
         }
     }
 
-    fn attempt(
+    pub(crate) fn attempt(
         mut self,
         rows: &dyn RecordRows,
         book: &crate::host_chains::ChainBook,
@@ -380,310 +358,14 @@ impl ConditionalWrite {
     }
 }
 
-struct NativeWrite {
-    write: Write,
-    request: Option<crate::persistence::scoped::Request>,
-    pending: Option<crate::persistence::facade::PendingId>,
-    positions: Vec<crate::host_chains::ConditionalPosition>,
-    private: bool,
-    conflicts: usize,
+pub(crate) struct NativeWrite {
+    pub(crate) write: Write,
+    pub(crate) request: Option<crate::persistence::scoped::Request>,
+    pub(crate) pending: Option<crate::persistence::facade::PendingId>,
+    pub(crate) positions: Vec<crate::host_chains::ConditionalPosition>,
+    pub(crate) private: bool,
+    pub(crate) conflicts: usize,
 }
-
-impl NativeWrite {
-    async fn attempt(
-        &mut self,
-        store: &Arc<crate::persistence::facade::CoreStore>,
-        book: &crate::host_chains::ChainBook,
-    ) -> Option<Result<(), &'static str>> {
-        use crate::persistence::scoped::{Mutation, Outcome, Predicate, Request, ScopedStore};
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the write-behind flusher binds a write's schemas as owned names; persistence::scoped owns them"
-        )]
-        let schemas = [
-            self.write.schema.as_str().to_string(),
-            crate::host_chains::CHAIN_LIFE_SCHEMA.as_str().to_string(),
-        ];
-        let scoped = match if self.private {
-            ScopedStore::host_private(Arc::clone(store), &self.write.instance, schemas.clone())
-        } else {
-            ScopedStore::authorized(Arc::clone(store), &self.write.instance, schemas.clone())
-        } {
-            Ok(scoped) => scoped,
-            Err(_) => return Some(Err(WRITE_FAILED)),
-        };
-        if self.request.is_none() {
-            let operation = match store.next_id() {
-                Ok(id) => id.operation,
-                Err(_) => return Some(Err(WRITE_FAILED)),
-            };
-            if let Some(framing) = self.write.chain {
-                let rows = match crate::host_records_async::AsyncRecords::authorized(
-                    Arc::clone(store),
-                    &self.write.instance,
-                    schemas,
-                ) {
-                    Ok(rows) => rows,
-                    Err(_) => return Some(Err(WRITE_FAILED)),
-                };
-                let scope = match std::str::from_utf8(&self.write.key) {
-                    Ok(scope) => scope,
-                    Err(_) => return Some(Err(crate::host_chains::CHAIN_SCOPE_UNFIT)),
-                };
-                let input = crate::host_chains::OrdinaryChain {
-                    instance: &self.write.instance,
-                    schema: self.write.schema,
-                    scope,
-                    content: self.write.value.as_slice(),
-                    framing,
-                };
-                let (request, position) =
-                    match book.prepare_ordinary_async(&rows, input, operation).await {
-                        Ok(prepared) => prepared,
-                        Err(why) => return Some(Err(why)),
-                    };
-                match native_request(&self.write.instance, &request) {
-                    Ok(request) => self.request = Some(request),
-                    Err(why) => return Some(Err(why)),
-                };
-                self.positions.push(position);
-            } else {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "config: the write-behind flusher hands persistence::scoped its own copy of the write"
-                )]
-                let request = Request {
-                    op_id: operation,
-                    predicates: Vec::<Predicate>::new(),
-                    mutations: vec![if self.write.value.as_slice().is_empty() {
-                        Mutation::Delete {
-                            schema: self.write.schema.as_str().into(),
-                            key: self.write.key.clone(),
-                        }
-                    } else {
-                        Mutation::Put {
-                            schema: self.write.schema.as_str().into(),
-                            key: self.write.key.clone(),
-                            value: busbar_contract::Secret::new(
-                                self.write.value.as_slice().to_vec(),
-                            ),
-                        }
-                    }],
-                };
-                self.request = Some(request);
-            }
-        }
-        let result = match self.pending {
-            Some(id) => scoped.retry(id).await,
-            None => scoped.conditional_native(self.request.as_ref()?).await,
-        };
-        match result {
-            Ok(Outcome::Applied) => {
-                for position in &self.positions {
-                    book.conditional_settled(position, conditional::Decision::Applied);
-                }
-                Some(Ok(()))
-            }
-            Ok(Outcome::ConditionConflict) if self.write.chain.is_some() => {
-                for position in &self.positions {
-                    book.conditional_settled(position, conditional::Decision::ConditionConflict);
-                }
-                self.request = None;
-                self.pending = None;
-                self.positions.clear();
-                self.conflicts += 1;
-                if self.conflicts >= crate::host_chains::CLAIM_ATTEMPTS {
-                    Some(Err(WRITE_FAILED))
-                } else {
-                    None
-                }
-            }
-            Ok(Outcome::ConditionConflict | Outcome::OpIdConflict | Outcome::NoEffect(_)) => {
-                Some(Err(WRITE_FAILED))
-            }
-            Ok(Outcome::Pending(id) | Outcome::Reconcile(id) | Outcome::Busy(Some(id))) => {
-                self.pending = Some(id);
-                None
-            }
-            Ok(Outcome::Busy(None)) => None,
-            Err(_) if self.pending.is_some() => None,
-            Err(_) => Some(Err(WRITE_FAILED)),
-        }
-    }
-}
-
-fn native_request(
-    instance: &str,
-    request: &conditional::Request,
-) -> Result<crate::persistence::scoped::Request, &'static str> {
-    use crate::persistence::scoped::{Expected, Mutation, Predicate, Request};
-    let scope = record_key(instance, &[]);
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the write-behind flusher translates a record transaction into persistence::scoped's owned request"
-    )]
-    let key = |key: &[u8]| {
-        key.strip_prefix(scope.as_slice())
-            .map(<[u8]>::to_vec)
-            .ok_or(WRITE_FAILED)
-    };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the write-behind flusher translates a record transaction into persistence::scoped's owned request"
-    )]
-    return Ok(Request {
-        op_id: request.op_id.0,
-        predicates: request
-            .predicates
-            .iter()
-            .map(|predicate| {
-                Ok(Predicate {
-                    schema: predicate.schema.clone(),
-                    key: key(&predicate.key)?,
-                    expected: match &predicate.expected {
-                        conditional::Expected::Absent => Expected::Absent,
-                        conditional::Expected::Bytes(bytes) => {
-                            Expected::Exact(busbar_contract::Secret::new(bytes.clone()))
-                        }
-                    },
-                })
-            })
-            .collect::<Result<_, &'static str>>()?,
-        mutations: request
-            .mutations
-            .iter()
-            .map(|mutation| {
-                Ok(match mutation {
-                    conditional::Mutation::Put {
-                        schema,
-                        key: at,
-                        value,
-                    } => Mutation::Put {
-                        schema: schema.clone(),
-                        key: key(at)?,
-                        value: busbar_contract::Secret::new(value.clone()),
-                    },
-                    conditional::Mutation::Delete { schema, key: at } => Mutation::Delete {
-                        schema: schema.clone(),
-                        key: key(at)?,
-                    },
-                    conditional::Mutation::DeleteRange {
-                        schema,
-                        prefix,
-                        exact_key_length,
-                    } => Mutation::DeleteRange {
-                        schema: schema.clone(),
-                        prefix: key(prefix)?,
-                        exact_key_length: exact_key_length
-                            .checked_sub(scope.len() as u64)
-                            .ok_or(WRITE_FAILED)?,
-                    },
-                })
-            })
-            .collect::<Result<_, &'static str>>()?,
-    });
-}
-
-impl ConditionalWrite {
-    async fn attempt_native(
-        &mut self,
-        store: &Arc<crate::persistence::facade::CoreStore>,
-        book: &crate::host_chains::ChainBook,
-    ) -> Option<Result<conditional::Decision, ConditionalFailure>> {
-        use crate::persistence::scoped::Outcome;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the write-behind flusher binds a transaction's schemas as owned names; host_records_async owns them"
-        )]
-        let schemas: std::collections::BTreeSet<String> = self
-            .request
-            .predicates
-            .iter()
-            .map(|p| p.schema.clone())
-            .chain(
-                self.request
-                    .mutations
-                    .iter()
-                    .map(|m| m.address().0.to_string()),
-            )
-            .chain(
-                self.chains
-                    .iter()
-                    .map(|chain| chain.schema.as_str().to_string()),
-            )
-            .chain(std::iter::once(
-                crate::host_chains::CHAIN_LIFE_SCHEMA.as_str().to_string(),
-            ))
-            .collect();
-        let rows = match crate::host_records_async::AsyncRecords::authorized(
-            Arc::clone(store),
-            &self.instance,
-            schemas,
-        ) {
-            Ok(rows) => rows,
-            Err(_) => return Some(Err(ConditionalFailure::Refused(WRITE_FAILED))),
-        };
-        if !self.prepared {
-            // Discovery may await between chains. Publish the complete plan to
-            // retained queue custody only after every chain has been prepared;
-            // cancellation cannot append a second copy to a partial request.
-            let mut request = self.request.clone();
-            // busbar:expect(bp::fresh_buffer, reason = "config: a conditional write's chain positions are prepared once, on the write-behind flusher")
-            let mut positions = Vec::new();
-            for chain in self.chains.iter() {
-                match chain
-                    .prepare_async(&rows, &self.instance, &mut request, book)
-                    .await
-                {
-                    Ok(position) => positions.push(position),
-                    Err(why) => return Some(Err(ConditionalFailure::Refused(why))),
-                }
-            }
-            if request.encode_held().is_err() {
-                return Some(Err(ConditionalFailure::Refused(
-                    "invalid record transaction",
-                )));
-            }
-            self.request = request;
-            self.positions = positions;
-            self.prepared = true;
-        }
-        let result = match self.native_pending {
-            Some(id) => rows.retry(id).await,
-            None => rows.conditional(&self.request).await,
-        };
-        let decision = match result {
-            Ok(Outcome::Applied) => conditional::Decision::Applied,
-            Ok(Outcome::ConditionConflict) => conditional::Decision::ConditionConflict,
-            Ok(Outcome::OpIdConflict) => return Some(Err(ConditionalFailure::OpIdConflict)),
-            Ok(Outcome::Pending(id) | Outcome::Busy(Some(id))) => {
-                self.native_pending = Some(id);
-                return None;
-            }
-            Ok(Outcome::Reconcile(id)) => {
-                self.native_pending = Some(id);
-                if let Some(acked) = self.owed.acked.take() {
-                    acked(ConditionalResult {
-                        correlation: self.owed.correlation,
-                        decision: Err(ConditionalFailure::Indeterminate),
-                    })
-                };
-                return None;
-            }
-            Ok(Outcome::Busy(None)) => return None,
-            Ok(Outcome::NoEffect(_)) => {
-                return Some(Err(ConditionalFailure::Refused(WRITE_FAILED)))
-            }
-            Err(_) if self.native_pending.is_some() => return None,
-            Err(_) => return Some(Err(ConditionalFailure::Refused(WRITE_FAILED))),
-        };
-        for position in &self.positions {
-            book.conditional_settled(position, decision);
-        }
-        Some(Ok(decision))
-    }
-}
-
 impl std::fmt::Debug for NativeWrite {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NativeWrite")
@@ -693,17 +375,17 @@ impl std::fmt::Debug for NativeWrite {
 }
 
 #[derive(Debug)]
-enum QueuedWrite {
+pub(crate) enum QueuedWrite {
     Ordinary(Write),
     Conditional(ConditionalWrite),
     Native(NativeWrite),
 }
 
 #[derive(Debug, Default)]
-struct Queue {
-    writes: Vec<QueuedWrite>,
-    flushing: bool,
-    in_flight: usize,
+pub(crate) struct Queue {
+    pub(crate) writes: Vec<QueuedWrite>,
+    pub(crate) flushing: bool,
+    pub(crate) in_flight: usize,
 }
 
 /// THE WRITE-BEHIND BATCHER of record writes: at most one flush runs at a time.
@@ -714,11 +396,11 @@ pub struct WriteBehind {
 
 /// A cancelled asynchronous waiter returns its exact prepared writes to the
 /// existing queue before releasing the single-flush flag.
-struct AsyncBatch {
-    owner: Arc<WriteBehind>,
-    batch: std::collections::VecDeque<QueuedWrite>,
-    unresolved: Vec<QueuedWrite>,
-    count: usize,
+pub(crate) struct AsyncBatch {
+    pub(crate) owner: Arc<WriteBehind>,
+    pub(crate) batch: std::collections::VecDeque<QueuedWrite>,
+    pub(crate) unresolved: Vec<QueuedWrite>,
+    pub(crate) count: usize,
 }
 impl Drop for AsyncBatch {
     fn drop(&mut self) {
@@ -736,7 +418,7 @@ impl Drop for AsyncBatch {
 }
 
 impl WriteBehind {
-    fn lock(&self) -> MutexGuard<'_, Queue> {
+    pub(crate) fn lock(&self) -> MutexGuard<'_, Queue> {
         self.queue.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -805,175 +487,6 @@ impl WriteBehind {
 
     pub fn abandon(&self) {
         self.lock().flushing = false;
-    }
-
-    pub(crate) async fn flush_native(
-        self: &Arc<Self>,
-        pending: &PendingRecords,
-        store: &Arc<crate::persistence::facade::CoreStore>,
-        chains: &crate::host_chains::ChainBook,
-    ) {
-        loop {
-            let batch = {
-                let mut queue = self.lock();
-                let count = queue.writes.len().min(BATCH_CAP);
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "config: one batch of up to BATCH_CAP writes per flusher round, not per request"
-                )]
-                let batch: std::collections::VecDeque<_> = queue.writes.drain(..count).collect();
-                queue.in_flight += count;
-                if count == 0 {
-                    queue.flushing = false;
-                    return;
-                }
-                batch
-            };
-            let mut held = AsyncBatch {
-                owner: Arc::clone(self),
-                count: batch.len(),
-                batch,
-                unresolved: Vec::new(),
-            };
-            while !held.batch.is_empty() {
-                if matches!(held.batch.front(), Some(QueuedWrite::Ordinary(_))) {
-                    if let Some(QueuedWrite::Ordinary(write)) = held.batch.pop_front() {
-                        held.batch.push_front(QueuedWrite::Native(NativeWrite {
-                            write,
-                            request: None,
-                            pending: None,
-                            positions: Vec::new(),
-                            private: false,
-                            conflicts: 0,
-                        }));
-                    }
-                }
-                match held.batch.front_mut() {
-                    Some(QueuedWrite::Native(write)) => {
-                        let result = write.attempt(store, chains).await;
-                        if let Some(result) = result {
-                            if let Some(QueuedWrite::Native(write)) = held.batch.pop_front() {
-                                pending.acked(
-                                    &write.write.instance,
-                                    write.write.schema.as_str(),
-                                    &write.write.key,
-                                    write.write.seq,
-                                );
-                                write.write.owed.answer(result);
-                            }
-                        } else if let Some(write) = held.batch.pop_front() {
-                            held.unresolved.push(write);
-                            held.unresolved.extend(held.batch.drain(..));
-                            break;
-                        }
-                    }
-                    Some(QueuedWrite::Conditional(write)) => {
-                        let result = write.attempt_native(store, chains).await;
-                        if let Some(result) = result {
-                            if let Some(QueuedWrite::Conditional(write)) = held.batch.pop_front() {
-                                write.owed.answer(result);
-                            }
-                        } else if let Some(write) = held.batch.pop_front() {
-                            held.unresolved.push(write);
-                            held.unresolved.extend(held.batch.drain(..));
-                            break;
-                        }
-                    }
-                    _ => unreachable!("ordinary writes converted before crossing"),
-                }
-            }
-            let retry = !held.unresolved.is_empty();
-            {
-                let mut queue = self.lock();
-                queue.in_flight -= held.count;
-                if retry {
-                    let mut retained = std::mem::take(&mut held.unresolved);
-                    retained.append(&mut queue.writes);
-                    queue.writes = retained;
-                    queue.flushing = false;
-                }
-            }
-            held.count = 0;
-            if retry {
-                return;
-            }
-        }
-    }
-
-    pub fn flush(
-        &self,
-        pending: &PendingRecords,
-        rows: &dyn RecordRows,
-        chains: &crate::host_chains::ChainBook,
-    ) {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the write-behind flusher reads the clock once per flush, never per request"
-        )]
-        let now = std::time::Instant::now();
-        loop {
-            // busbar:expect(bp::fresh_buffer, reason = "config: one retry list per write-behind batch of up to BATCH_CAP writes, on the flusher")
-            let mut unresolved = Vec::new();
-            let batch = {
-                let mut q = self.lock();
-                let n = q.writes.len().min(BATCH_CAP);
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "config: one batch of up to BATCH_CAP writes per flusher round, not per request"
-                )]
-                let batch: Vec<QueuedWrite> = q.writes.drain(..n).collect();
-                q.in_flight += batch.len();
-                if batch.is_empty() {
-                    q.flushing = false;
-                    return;
-                }
-                batch
-            };
-            let batch_len = batch.len();
-            for queued in batch {
-                let w = match queued {
-                    QueuedWrite::Ordinary(w) => w,
-                    QueuedWrite::Native(w) => {
-                        unresolved.push(QueuedWrite::Native(w));
-                        continue;
-                    }
-                    QueuedWrite::Conditional(w) => {
-                        if let Some(write) = w.attempt(rows, chains, now) {
-                            unresolved.push(QueuedWrite::Conditional(write));
-                        }
-                        continue;
-                    }
-                };
-                if let Some(framing) = w.chain {
-                    let scope = String::from_utf8_lossy(&w.key);
-                    let took = if w.value.as_slice().is_empty() {
-                        chains.drop_chain(rows, &w.instance, w.schema, &scope)
-                    } else {
-                        chains.append(
-                            rows,
-                            &w.instance,
-                            w.schema,
-                            &scope,
-                            w.value.as_slice(),
-                            framing,
-                        )
-                    };
-                    w.owed.answer(took);
-                    continue;
-                }
-                let key = record_key(&w.instance, &w.key);
-                let took = rows.record_put(w.schema, &key, &w.value);
-                pending.acked(&w.instance, w.schema.as_str(), &w.key, w.seq);
-                w.owed.answer(took.map_err(|_| WRITE_FAILED));
-            }
-            let mut q = self.lock();
-            q.in_flight -= batch_len;
-            if !unresolved.is_empty() {
-                q.writes.append(&mut unresolved);
-                q.flushing = false;
-                return;
-            }
-        }
     }
 }
 

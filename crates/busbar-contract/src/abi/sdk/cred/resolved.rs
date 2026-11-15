@@ -41,14 +41,9 @@ fn write_resolved(
     }
     if bytes.len() > MAX_SECRET_BYTES {
         out.set(|o| &o.error_kind, ERROR_KIND_INVALID);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: an oversized secret's refusal, written once per refusal"
-        )]
-        return out.fail(Refusal::failed(format!(
-            "the secret is {} bytes, over the {MAX_SECRET_BYTES}-byte limit a secret may be",
-            bytes.len()
-        )));
+        return out.fail(Refusal::failed(
+            crate::abi::sdk::cold::cred::oversized_secret(bytes.len()),
+        ));
     }
     out.set(|o| &o.error_kind, ERROR_KIND_UNSET);
     if bytes.len() > buf.cap() {

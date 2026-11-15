@@ -234,7 +234,7 @@ fn an_expired_queued_disk_resolve_releases_its_instance_before_the_queue_runs() 
     let plugin = load_linked::<SecretKind>(
         &LinkedRow::of(door).unwrap(),
         Bind {
-            instance: Arc::from("expired-disk-resolve"),
+            instance: crate::cold::secret_calls::instance_label("expired-disk-resolve"),
             max_inflight_cap: 16,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
@@ -309,6 +309,7 @@ fn an_expired_callback_with_an_unscheduled_waiter_drops_without_running() {
 
 #[test]
 fn dropped_waiter_and_completed_callback_release_queued_custody() {
+    let now = std::time::Instant::now();
     for abandon in [true, false] {
         let owned = Arc::new(());
         let weak = Arc::downgrade(&owned);
@@ -321,7 +322,7 @@ fn dropped_waiter_and_completed_callback_release_queued_custody() {
         let pending = Arc::new(std::sync::Mutex::new(Some(work)));
         let waiting = super::QueuedDiskResolve {
             pending: Arc::clone(&pending),
-            deadline: std::time::Instant::now() + super::WAIT,
+            deadline: now + super::WAIT,
         };
         let queued = super::QueuedDiskResolve {
             pending,

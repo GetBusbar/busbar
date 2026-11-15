@@ -911,27 +911,6 @@ impl FramerDoor for TestDoor {
     }
 }
 
-/// The threads this process runs now.
-pub fn thread_count() -> usize {
-    #[cfg(target_os = "linux")]
-    {
-        std::fs::read_dir("/proc/self/task")
-            .map(Iterator::count)
-            .unwrap_or(0)
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let out = std::process::Command::new("ps")
-            .args(["-M", "-p", &std::process::id().to_string()])
-            .output()
-            .expect("ps runs");
-        String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .count()
-            .saturating_sub(1)
-    }
-}
-
 /// A current-thread runtime, as a worker runs: its reactor and its clock, and no other thread.
 pub fn worker() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
@@ -1023,7 +1002,7 @@ impl TestDoor {
                 (
                     "listen",
                     io_crossed(io.listen(OWNER, t, &bind), |(h, addr)| {
-                        let mut bytes: VecDeque<u8> = addr.into_bytes().into();
+                        let mut bytes: VecDeque<u8> = addr.bytes().collect();
                         let n = bytes.len().min(i.addr_cap);
                         put(i.addr_buf, &mut bytes, n);
                         o.addr_written = n as u64;
@@ -1036,7 +1015,7 @@ impl TestDoor {
                 polled(
                     io.accept(OWNER, t, i.listener, &self.waker_of(side)),
                     |(h, peer)| {
-                        let mut bytes: VecDeque<u8> = peer.into_bytes().into();
+                        let mut bytes: VecDeque<u8> = peer.bytes().collect();
                         let n = bytes.len().min(i.peer_cap);
                         put(i.peer_buf, &mut bytes, n);
                         o.peer_written = n as u64;

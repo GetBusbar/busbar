@@ -9,11 +9,11 @@
 //! cut of each (plugin, field) pair logs BUSBAR-6013 once for the life of the process.
 
 use busbar_contract::hook_wire::reply::{
-    parse_status_metrics_counted, HookMetric, TextCuts, TextField, MAX_METRIC_HELP_CHARS,
-    MAX_METRIC_LABEL_CHARS, MAX_METRIC_UNIT_CHARS, REJECT_MESSAGE_MAX_CHARS,
+    TextCuts, TextField, MAX_METRIC_HELP_CHARS, MAX_METRIC_LABEL_CHARS, MAX_METRIC_UNIT_CHARS,
+    REJECT_MESSAGE_MAX_CHARS,
 };
-use std::collections::HashMap;
-use std::sync::RwLock;
+use foldhash::HashMap;
+use std::sync::{Arc, RwLock};
 
 /// What [`report`] did with a cut.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,34 +25,35 @@ pub enum Reported {
 }
 
 /// The (plugin, field) pairs already warned, one bit per [`TextField`] under each plugin name, so a
-/// repeat is found by a borrowed `&str` under the read lock. Never cleared in-process.
-static WARNED: RwLock<Option<HashMap<Box<str>, u8>>> = RwLock::new(None);
+/// repeat is found by a borrowed `&str` under the read lock. The name is keyed once, on its first
+/// cut, and shared from then on as the counter's `plugin` label. Never cleared in-process.
+static WARNED: RwLock<Option<HashMap<Arc<str>, u8>>> = RwLock::new(None);
 
 const fn bit(field: TextField) -> u8 {
     1 << field as u8
 }
 
-fn warned(plugin: &str, field: TextField) -> bool {
+/// The shared name `plugin` is keyed under, if it has been cut before, and whether `field` has.
+fn warned(plugin: &str, field: TextField) -> Option<(Arc<str>, bool)> {
     let guard = WARNED.read().unwrap_or_else(|e| e.into_inner());
     guard
         .as_ref()
-        .and_then(|m| m.get(plugin))
-        .is_some_and(|bits| bits & bit(field) != 0)
+        .and_then(|m| m.get_key_value(plugin))
+        .map(|(name, bits)| (Arc::clone(name), bits & bit(field) != 0))
 }
 
-fn latch(plugin: &str, field: TextField) -> bool {
+/// Marks `field` cut for `plugin`: its shared name, and whether this was the first such cut.
+fn latch(plugin: &str, field: TextField) -> (Arc<str>, bool) {
     let mut guard = WARNED.write().unwrap_or_else(|e| e.into_inner());
-    let map = guard.get_or_insert_with(HashMap::new);
-    match map.get_mut(plugin) {
-        Some(bits) => {
+    let map = guard.get_or_insert_with(HashMap::default);
+    match map.get_key_value(plugin).map(|(name, _)| Arc::clone(name)) {
+        Some(name) => {
+            let bits = map.entry(Arc::clone(&name)).or_default();
             let first = *bits & bit(field) == 0;
             *bits |= bit(field);
-            first
+            (name, first)
         }
-        None => {
-            map.insert(Box::from(plugin), bit(field));
-            true
-        }
+        None => (crate::cold::first_text_cut(map, plugin, bit(field)), true),
     }
 }
 
@@ -66,13 +67,17 @@ pub fn report(
     count: u32,
     max_sanitised: usize,
 ) -> Reported {
+    let (name, first) = match warned(plugin, field) {
+        Some((name, true)) => (name, false),
+        _ => latch(plugin, field),
+    };
     metrics::counter!(
         crate::snapshot::PLUGIN_TEXT_CUT_TOTAL,
-        "plugin" => plugin.to_string(),
+        "plugin" => name,
         "field" => field.as_str()
     )
     .increment(u64::from(count));
-    if warned(plugin, field) || !latch(plugin, field) {
+    if !first {
         return Reported::Counted;
     }
     crate::diagnostics::diag_warn!(
@@ -88,7 +93,7 @@ pub fn report(
 }
 
 /// [`report`] once for each field `cuts` holds, at the cap `caps` names for it.
-pub fn report_cuts(plugin: &str, cuts: &TextCuts, caps: impl Fn(TextField) -> usize) {
+pub(crate) fn report_cuts(plugin: &str, cuts: &TextCuts, caps: impl Fn(TextField) -> usize) {
     for (field, count, max_sanitised) in cuts.iter() {
         report(plugin, field, caps(field), count, max_sanitised);
     }
@@ -107,12 +112,8 @@ pub fn cap_of(field: TextField) -> usize {
     }
 }
 
-/// A hook's `status` metrics, parsed as 1.5.5 does, with every cut reported against hook `name`.
-pub fn parse_hook_status_metrics(name: &str, raw: &[serde_json::Value]) -> Vec<HookMetric> {
-    let (metrics, cuts) = parse_status_metrics_counted(raw);
-    report_cuts(name, &cuts, cap_of);
-    metrics
-}
+/// A hook's `status` metrics, parsed (per admin status read or snapshot refresh) off the request path.
+pub use crate::off_path::hooks::parse_hook_status_metrics;
 
 #[cfg(test)]
 #[path = "tests/text_cut_tests.rs"]
