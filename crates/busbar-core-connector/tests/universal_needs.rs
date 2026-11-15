@@ -10,7 +10,6 @@
 
 use std::sync::OnceLock;
 
-#[allow(unsafe_code)]
 #[path = "../src/tests/support.rs"]
 mod support;
 

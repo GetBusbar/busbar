@@ -15,7 +15,7 @@ use busbar_contract::conn::{
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::transport::ConnFacts;
-use foldhash::HashMap;
+use foldhash::{HashMap, HashSet};
 
 use crate::compose::{Connection, Failure, Via, RECEIVE_BUFFER_BYTES};
 use crate::map;
@@ -292,9 +292,26 @@ fn next_supervision_key(counter: &std::sync::atomic::AtomicU64) -> Result<u64, C
 }
 
 /// The callers waiting for a program's connection to come back, each kept once by the task its
-/// waker wakes: keyed by [`waker_key`], the identity [`Waker::will_wake`] compares, so keeping one
+/// waker wakes, in the order they first missed it (woken first missed, first woken): a repeat is
+/// found by its [`waker_key`] (the identity [`Waker::will_wake`] compares) in `held`, so keeping one
 /// is no scan.
-type Missed = HashMap<(usize, usize), Arc<Waker>>;
+#[derive(Default)]
+struct Missed {
+    held: HashSet<(usize, usize)>,
+    order: Vec<Arc<Waker>>,
+}
+
+impl Missed {
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.order.len()
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.order.is_empty()
+    }
+}
 
 /// `waker`'s identity as [`Waker::will_wake`] compares it: its data pointer and its vtable.
 fn waker_key(waker: &Waker) -> (usize, usize) {
@@ -380,7 +397,7 @@ impl State {
             }
         }
         let missed = std::mem::take(&mut self.missed);
-        self.wake_missed.extend(missed.into_values());
+        self.wake_missed.extend(missed.order);
         self.wake_fan = true;
     }
 
@@ -393,9 +410,9 @@ impl State {
 
     /// `waker`'s caller found the program's connection out: it is woken once it is back.
     fn miss(&mut self, waker: &Arc<Waker>) {
-        self.missed
-            .entry(waker_key(waker))
-            .or_insert_with(|| Arc::clone(waker));
+        if self.missed.held.insert(waker_key(waker)) {
+            self.missed.order.push(Arc::clone(waker));
+        }
     }
 }
 
@@ -492,7 +509,7 @@ impl Member {
             None => st.doomed.push(conn),
         }
         let missed = std::mem::take(&mut st.missed);
-        st.wake_missed.extend(missed.into_values());
+        st.wake_missed.extend(missed.order);
         (st, Some(r))
     }
 
