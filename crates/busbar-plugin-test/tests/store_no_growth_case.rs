@@ -86,7 +86,7 @@ impl PersistenceBackend for Double {
                     }
                     Some(every) => {
                         held.rows.push((slot, seq));
-                        if held.commits % every == 0 {
+                        if held.commits.is_multiple_of(every) {
                             let mut last: Vec<(u32, u64)> = Vec::new();
                             for &(s, q) in held.rows.iter().rev() {
                                 if !last.iter().any(|(l, _)| *l == s) {

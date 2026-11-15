@@ -507,7 +507,7 @@ pub async fn no_growth(subject: &impl Subject, commits: usize, peak: u32) -> boo
     bootstrap(b).await;
     let mut jumped = false;
     for n in 0..commits {
-        if n > 0 && n % cycle == 0 {
+        if n > 0 && n.is_multiple_of(cycle) {
             bounded(n);
         }
         if n == commits / 2 {
