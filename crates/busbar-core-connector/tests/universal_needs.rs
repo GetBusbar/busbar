@@ -10,6 +10,8 @@
 
 use std::sync::OnceLock;
 
+use busbar_core_connector::{carrier, compose, framer, hostio};
+
 #[path = "../src/tests/support.rs"]
 mod support;
 
