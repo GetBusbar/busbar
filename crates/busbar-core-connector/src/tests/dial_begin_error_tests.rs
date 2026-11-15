@@ -18,15 +18,15 @@ fn refused(outcome: Outcome) -> Refused {
 #[test]
 fn a_dial_minting_failure_is_a_fault_and_a_dial_refusal_is_refused() {
     assert_eq!(
-        dial_begin_error(DialBegin::Mint(refused(Outcome::Fault))),
+        dial_begin_error(&DialBegin::Mint(refused(Outcome::Fault))),
         ConnError::Fault
     );
     assert_eq!(
-        dial_begin_error(DialBegin::Dial(refused(Outcome::Refused))),
+        dial_begin_error(&DialBegin::Dial(refused(Outcome::Refused))),
         ConnError::Refused
     );
     assert_eq!(
-        dial_begin_error(DialBegin::Dial(refused(Outcome::Fault))),
+        dial_begin_error(&DialBegin::Dial(refused(Outcome::Fault))),
         ConnError::Refused
     );
 }

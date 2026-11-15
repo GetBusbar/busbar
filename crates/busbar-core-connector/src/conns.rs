@@ -317,7 +317,7 @@ fn pended_verdict(v: Verdict) -> ConnError {
 
 /// WHAT A MINTED DIAL THAT DID NOT BEGIN ANSWERS THE CONNECTION'S CALLER: a certificate that would not mint is
 /// the host's fault; a refused dial is a refusal.
-fn dial_begin_error(failure: datagram::DialBegin) -> ConnError {
+fn dial_begin_error(failure: &datagram::DialBegin) -> ConnError {
     match failure {
         datagram::DialBegin::Mint(_) => ConnError::Fault,
         datagram::DialBegin::Dial(_) => ConnError::Refused,
@@ -3764,7 +3764,7 @@ impl Connector {
             Arc::clone(&self.judge),
             judged_class,
         )
-        .map_err(dial_begin_error)?;
+        .map_err(|failure| dial_begin_error(&failure))?;
         let description = began
             .pieces
             .iter()
