@@ -300,6 +300,11 @@ fn refusal_for(blocked: &LimitBlocked) -> Refusal {
     match blocked {
         LimitBlocked::Disabled(_) => Refusal::new(ReasonCode::GroupFrozen),
         LimitBlocked::MissingGroup(_) => Refusal::new(ReasonCode::OverBudget),
+        // SHUTDOWN-HANG F4a: "retry on another instance", so no Retry-After.
+        LimitBlocked::Draining => Refusal::new(ReasonCode::Drain),
+        LimitBlocked::CustodyFull { .. } => {
+            Refusal::new(ReasonCode::DurabilityUnavailable).retry_after(1)
+        }
         LimitBlocked::Limit {
             metric: "budget",
             retry_after,

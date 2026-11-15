@@ -1612,9 +1612,16 @@ impl BookPreparation {
         }
         // Recovery may wait for foreign writers' leases. Renew our actual writer
         // before any journal, keyset, price or recovery await can outlast its lease.
+        // The refresh runs until the drain retires the writer, not until the first
+        // shutdown signal: a drain may outlast the lease TTL (SHUTDOWN-HANG F4 "Lease").
+        // A preparation that fails still aborts the task on its way out.
         if let (Some(watch), Some(lease)) = (&self.lease_watch, self.node_lease.clone()) {
             self.node_lease_task = Some(tokio::spawn(super::measurements::maintenance(
-                crate::refresh_node_lease(lease, watch.stop.clone(), watch.failure.clone()),
+                crate::refresh_node_lease(
+                    lease,
+                    super::shutdown::retire_rx(),
+                    watch.failure.clone(),
+                ),
             )));
         }
         let node = self.taken.as_ref().expect("retained node result").id;
