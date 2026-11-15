@@ -44,7 +44,7 @@ hex = { workspace = true }
 serde = { workspace = true }
 arc-swap = { workspace = true }
 foldhash = { workspace = true }
-tower = { workspace = true }
+tower = { workspace = true, features = ["util"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "process"] }
 axum = { workspace = true }
 http-body = { workspace = true }
