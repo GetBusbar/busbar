@@ -48,7 +48,9 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, BLOB_JSON};
+use busbar_contract::abi::mechanism::call::{
+    AbiStr, Blob, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
+};
 use busbar_contract::abi::mechanism::check::HARD_MAX_BYTES;
 use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
@@ -282,19 +284,12 @@ impl Host {
         name: &str,
         settings: &[u8],
     ) -> Result<Opened<K>, Refused> {
-        let plugin = self.bind(&img, name)?;
-        K::open(&plugin, settings).map_err(Refused::Open)?;
-        plugin
-            .ready(&self.dispatcher, crate::dispatch::ready::READY_DEADLINE)
-            .map_err(Refused::Ready)?;
-        Ok(Opened {
-            plugin: Some(plugin),
-            flight: Rc::new(Cell::new(0)),
-        })
+        self.open_lent(img, name, settings, &[])
     }
 
-    /// As [`Host::open`], with `secrets` lent to OPEN (SDK-SAFE-TEST-HOST §12.1, Gaps 5). RED
-    /// STAGE: lends nothing yet.
+    /// As [`Host::open`], with `secrets` lent to OPEN (SDK-SAFE-TEST-HOST §12.1, Gaps 5): each a
+    /// `BLOB_SECRET` octet blob, as production lends a resolved secret, held only for the call.
+    /// A plane is lent none here: a non-empty `secrets` refuses its open.
     pub fn open_lent<K: Openable>(
         &self,
         img: Image<K>,
@@ -302,8 +297,15 @@ impl Host {
         settings: &[u8],
         secrets: &[&[u8]],
     ) -> Result<Opened<K>, Refused> {
-        let _ = secrets;
-        self.open(img, name, settings)
+        let plugin = self.bind(&img, name)?;
+        K::open(&plugin, settings, secrets).map_err(Refused::Open)?;
+        plugin
+            .ready(&self.dispatcher, crate::dispatch::ready::READY_DEADLINE)
+            .map_err(Refused::Ready)?;
+        Ok(Opened {
+            plugin: Some(plugin),
+            flight: Rc::new(Cell::new(0)),
+        })
     }
 
     /// A store image opened as the loader's typed [`LoadedPersistence`](crate::store_v4::LoadedPersistence).
@@ -397,9 +399,17 @@ mod sealed {
 /// A kind [`Host::open`] can open: OPEN with JSON settings (a plane through its own open).
 pub trait Openable: Kind + Sized + sealed::Sealed {
     #[doc(hidden)]
-    fn open(plugin: &Plugin<Self>, settings: &[u8]) -> Result<(), String> {
+    fn open(plugin: &Plugin<Self>, settings: &[u8], secrets: &[&[u8]]) -> Result<(), String> {
+        let lent: Vec<Blob> = secrets
+            .iter()
+            .map(|s| lifecycle::blob(s, BLOB_OCTETS, BLOB_SECRET))
+            .collect();
         let mut i: OpenIn = blank_in();
         i.settings = lifecycle::blob(settings, BLOB_JSON, 0);
+        if !lent.is_empty() {
+            i.secrets = lent.as_ptr();
+            i.secrets_len = lent.len();
+        }
         i.generation = 1;
         let mut f = Frame::new(i, blank_out::<OpenOut>());
         let opened = plugin.call(life::OPEN, &mut f);
@@ -418,7 +428,12 @@ macro_rules! openable {
 openable!(Transport, StoreV4, Secret, Auth, Hook, Export);
 impl sealed::Sealed for Plane {}
 impl Openable for Plane {
-    fn open(plugin: &Plugin<Self>, settings: &[u8]) -> Result<(), String> {
+    fn open(plugin: &Plugin<Self>, settings: &[u8], secrets: &[&[u8]]) -> Result<(), String> {
+        if !secrets.is_empty() {
+            return Err(String::from(
+                "the test host lends a plane's OPEN no secrets: open it with none",
+            ));
+        }
         crate::dispatch::kinds::plane::open_door(plugin, settings, b"", None).map(drop)
     }
 }
