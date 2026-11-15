@@ -1285,6 +1285,31 @@ fn doc_for(
         KernelVerb::GetRecords => records_doc(schema_of(
             gen.subschema_for::<crate::v1::records::RecordsPage>(),
         )),
+        KernelVerb::GetConfigTree => VerbDoc {
+            summary: "The whole configuration, declared or effective, under the secret rule",
+            description: "`view=effective` (the default) is the resolved generation: every section \
+                the kernel reads back (plugin and plane sections included) and `process`, the \
+                command-line and environment inputs. `view=declared` is the configuration as \
+                written, by `layer`: `base` (the operator's file as it stands), `overlay` (the \
+                Store overlay's per-section documents, tombstones, document-patch paths and \
+                version) or `merged` (both side by side, the default). `section=<dotted key>` \
+                narrows the sections served. Every secret position (a secret-named field, a \
+                plugin setting the plugin did not declare public, a private key) is \
+                `{set, secret_ref}`: never a value, never a hash of one; public key material is \
+                a `sha256` fingerprint. `digest` is over the projected sections. The ETag is the \
+                config ETag."
+                .to_string(),
+            success: Success::Json(
+                schema_of(gen.subschema_for::<super::config_tree::ConfigTreeView>()),
+                "The configuration tree",
+            ),
+            request: None,
+            query: super::config_tree::QUERY_DOC
+                .iter()
+                .filter_map(|param| busbar_contract::json::parse_foreign(param.as_bytes()).ok())
+                .collect(),
+            errors: vec![unavailable_503("the node could not take the read")],
+        },
         _ => return None,
     })
 }
