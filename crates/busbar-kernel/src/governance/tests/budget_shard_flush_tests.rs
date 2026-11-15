@@ -5,7 +5,6 @@
 //! last tick, instead of every shard twice per 100 ms tick.
 
 use super::*;
-use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 
 async fn gov() -> GovState {

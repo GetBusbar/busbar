@@ -618,3 +618,9 @@ pub(crate) struct RawTarget {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) absorbed_dated: Option<RawDebt>,
 }
+
+/// Operator provenance (actor, reason) copied into a recovery verdict or its retained resolution:
+/// once per operator-issued recovery decision, never per request.
+pub(crate) fn operator_provenance(actor: &str, reason: &str) -> (String, String) {
+    (actor.to_owned(), reason.to_owned())
+}

@@ -1565,7 +1565,7 @@ impl PendingMetering {
             .expect("metering accumulation exceeds Count range");
     }
 
-    pub fn try_accrue(&self, key: MeterKey, add: MeterCounts) -> Result<(), CountError> {
+    fn try_accrue(&self, key: MeterKey, add: MeterCounts) -> Result<(), CountError> {
         let mut map = self
             .shard_for(&key.0)
             .lock()
