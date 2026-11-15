@@ -1242,8 +1242,100 @@ fn doc_for(
             schema_of(gen.subschema_for::<AuditChainKeysView>()),
             "The published verifying keys (empty when the node signs nothing)",
         ),
+        KernelVerb::GetRecords => records_doc(schema_of(
+            gen.subschema_for::<crate::v1::records::RecordsPage>(),
+        )),
         _ => return None,
     })
+}
+
+/// `GET /records` (ADMIN-API-1.6 §3.3): the per-unit records feed of this node.
+#[cfg(feature = "openapi-schema")]
+fn records_doc(schema: Value) -> VerbDoc {
+    use crate::v1::records::{
+        RECORDS_LIMIT_DEFAULT, RECORDS_LIMIT_MAX, RECORDS_SCAN_BOUND, RECORDS_WAIT_MAX_SECS,
+    };
+    let text = |name: &str, description: &str| {
+        json!({"name": name, "in": "query", "required": false,
+               "schema": {"type": "string"}, "description": description})
+    };
+    let integer = |name: &str, maximum: u64, description: &str| {
+        json!({"name": name, "in": "query", "required": false,
+               "schema": {"type": "integer", "minimum": 0, "maximum": maximum},
+               "description": description})
+    };
+    let mut query = vec![
+        text(
+            "cursor",
+            "Opaque `next_cursor` of an earlier page of this node. A cursor of another node is \
+             400 `cursor_mismatch` with `details.cursor_node_id`.",
+        ),
+        integer(
+            "limit",
+            RECORDS_LIMIT_MAX as u64,
+            &format!("At most this many records (default {RECORDS_LIMIT_DEFAULT})."),
+        ),
+        integer(
+            "wait",
+            RECORDS_WAIT_MAX_SECS,
+            "Seconds to wait for a record when the page would be empty and caught up.",
+        ),
+        integer(
+            "from_ms",
+            u64::MAX,
+            "A SEEK, not a filter: the first page starts at the first record whose \
+             `arrived_at_ms` is at least this (a binary search over the chain). Ignored with a \
+             cursor. A backward clock step can misplace records near the boundary.",
+        ),
+        integer(
+            "to_ms",
+            u64::MAX,
+            "Only records whose `arrived_at_ms` is before this.",
+        ),
+    ];
+    for name in [
+        "kind", "instance", "key", "group", "model", "provider", "target", "outcome", "reason",
+        "unit",
+    ] {
+        query.push(text(
+            name,
+            "An exact filter on the record field of this name.",
+        ));
+    }
+    VerbDoc {
+        summary: "Per-unit records: the sealed audit chain, one record per unit, as a feed",
+        description: format!(
+            "A read-time projection of this node's sealed per-unit audit records, oldest first. \
+             `next_cursor` is always a string; `complete: true` means caught up. With no cursor \
+             the feed starts at the oldest retained record. A request scans at most \
+             {RECORDS_SCAN_BOUND} sealed records, so a filtered page may be short or empty with a \
+             cursor that continues. Records are per node: `/info.nodes` lists every node. Spend \
+             is priced at read by the rule `GET /usage` uses. A read: it mutates nothing and is \
+             never posture-gated."
+        ),
+        success: Success::Json(schema, "One page of records"),
+        request: None,
+        query,
+        errors: vec![
+            (
+                "400",
+                "`invalid_request`: a malformed or unknown query parameter or cursor; \
+                 `cursor_mismatch`: a cursor of another node"
+                    .to_string(),
+            ),
+            (
+                "404",
+                "`not_found`: this node binds no audit chain to read".to_string(),
+            ),
+            (
+                "410",
+                "`cursor_expired`: the cursor's position is no longer retained; \
+                 `details.oldest_available` resumes"
+                    .to_string(),
+            ),
+            unavailable_503("the node could not take the unit, or the chain did not answer"),
+        ],
+    }
 }
 
 #[cfg(feature = "openapi-schema")]

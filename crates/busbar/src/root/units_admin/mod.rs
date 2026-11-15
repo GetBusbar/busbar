@@ -786,6 +786,9 @@ impl busbar_core_admin::Governance for CoreGovernance {
             .audit
             .as_deref()
             .ok_or(busbar_core_admin::GovernanceError::NotFound)?;
+        if verb == KernelVerb::GetRecords {
+            return Ok(records::records_answer(view, &*self.planes, &self.request.path).await);
+        }
         render_audit_view(verb, &self.request.path, view)
             .await
             .map(json_answer)
@@ -2152,6 +2155,7 @@ pub(crate) use admin_mount::*;
 mod adjust;
 pub(crate) use adjust::live_adjuster;
 pub(crate) mod bound;
+pub(crate) mod records;
 pub(crate) use bound::{
     live_admin_door, live_planes, live_records, live_replay_store, no_planes, no_trust,
     PlaneLookup, PlaneRecordSink, TrustDesk,

@@ -231,7 +231,7 @@ fn the_v2_page_is_kept_and_v4_is_v2_less_currency_plus_incarnation_and_node() {
 fn the_published_table_still_describes_what_this_build_seals() {
     use busbar_contract::caps::{Audit as AuditStep, KernelSeal, Pass};
 
-    let doc = published_page("audit-chain-digest-v5.md");
+    let doc = published_page("audit-chain-digest-v7.md");
     let order = published_field_order(&doc);
 
     let token: Pass<AuditStep> = Pass::mint(&KernelSeal::acquire_for_kernel());

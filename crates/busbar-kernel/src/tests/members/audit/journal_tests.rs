@@ -69,17 +69,29 @@ fn whole_fractional_whole_chain_keeps_v5_bytes_and_verifies_v6() {
         .signing_with(signer)
         .sealing_as(SEALING_NODE);
     let counts = ["120", "27.5", "121"];
+    // V5 and V6 are verify-only since v7 (ADMIN-API-1.6 §3.2): this build seals v7, so the chain a
+    // previous build left is rebuilt here as it was sealed, each record under the recipe that
+    // build chose (v5 whole, v6 fractional), linked and signed again.
+    let legacy = AuditSigningKey::from_seed(&[73; 32]);
+    let mut previous = String::new();
     let records: Vec<_> = counts
         .iter()
         .enumerate()
         .map(|(index, count)| {
             let mut inputs = super::sign_tests::rich_inputs(index as u64 + 1);
             inputs.usage.lines[0].quantity = busbar_contract::Count::parse(count).unwrap();
-            Audit::seal(
+            let mut record = Audit::seal(
                 &mut chain,
                 inputs,
                 &Pass::<AuditStep>::mint(&crate::seal::acquire()),
-            )
+            );
+            record.recipe = if index == 1 { Recipe::V6 } else { Recipe::V5 };
+            record.unit = busbar_kernel_audit::UnitFacts::default();
+            record.prev_hash = std::mem::take(&mut previous);
+            record.hash = AuditChain::digest_of(&record);
+            record.signature = Some(legacy.sign_digest(&record.hash));
+            previous.clone_from(&record.hash);
+            record
         })
         .collect();
     assert_eq!(

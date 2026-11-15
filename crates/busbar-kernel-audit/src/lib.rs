@@ -143,12 +143,13 @@ pub use heads::{HeadHistory, SignedHead, HEAD_SAMPLE_SECONDS};
 pub use journal::{from_journal_body, journal_body, FieldTooLong, JOURNAL_TAG};
 pub use recipe::{
     digest_over, digest_record, visit_fields, DigestField, DigestValue, FieldSink, Recipe,
-    DIGEST_RECIPE, DIGEST_RECIPE_V2, DIGEST_RECIPE_V4, DIGEST_RECIPE_V6,
+    DIGEST_RECIPE, DIGEST_RECIPE_V2, DIGEST_RECIPE_V4, DIGEST_RECIPE_V6, DIGEST_RECIPE_V7,
 };
 pub use record::{
-    Audit, AuditBreak, AuditBreakKind, AuditChain, AuditInputs, AuditRecord, Controls, FinishClass,
-    HookApplied, HookHead, OpClassId, OutcomeFacts, QuantitySource, Subject, Usage, UsageLine,
-    What,
+    attribution, Attempt, AttemptOutcome, Audit, AuditBreak, AuditBreakKind, AuditChain,
+    AuditInputs, AuditRecord, Controls, FinishClass, HookApplied, HookHead, OpClassId,
+    OutcomeFacts, QuantitySource, Subject, UnitFacts, UnitId, Usage, UsageLine, What,
+    ATTEMPT_SLOTS, ATTRIBUTION_SEP,
 };
 pub use sign::{
     checkpoint_preimage, AuditKeySet, AuditSigningKey, AuditVerifyingKey, KeyError,

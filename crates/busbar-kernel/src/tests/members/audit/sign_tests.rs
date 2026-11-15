@@ -93,6 +93,7 @@ fn inputs(unit: u64) -> AuditInputs {
             children: vec![UnitKey::new(unit + 1000), UnitKey::new(unit + 1001)],
         },
         correlation_label: Some("customer-order-99".into()),
+        unit: busbar_kernel_audit::UnitFacts::default(),
     }
 }
 
@@ -512,7 +513,7 @@ fn the_head_read_answers_with_the_tip_and_the_recipe_it_was_sealed_under() {
     let last = last.expect("three records were sealed");
     let body = expose::head_body(&chain);
     assert!(
-        body.contains("\"recipe\":\"busbar.audit.digest.v5\""),
+        body.contains("\"recipe\":\"busbar.audit.digest.v7\""),
         "{body}"
     );
     assert!(
@@ -637,7 +638,7 @@ fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
             );
         }
     }
-    assert_eq!(parsed["recipe"].as_str(), Some("busbar.audit.digest.v5"));
+    assert_eq!(parsed["recipe"].as_str(), Some("busbar.audit.digest.v7"));
 
     assert_eq!(parsed["records"][0]["tier_bp"].as_str(), Some("9000"));
     assert_eq!(parsed["records"][0]["fee_count"].as_str(), Some("1"));
@@ -759,7 +760,7 @@ fn the_legacy_v4_worked_example_keeps_its_exact_record_hash_and_signature() {
         let mut value: serde_json::Value =
             serde_json::from_str(&body).expect("a published body is JSON");
         assert_eq!(
-            value["recipe"], "busbar.audit.digest.v5",
+            value["recipe"], "busbar.audit.digest.v7",
             "the envelope names this build's writer"
         );
         value["recipe"] = serde_json::json!("busbar.audit.digest.v4");

@@ -129,6 +129,10 @@ impl AdminNode {
                 ..Controls::default()
             },
             correlation_label: None,
+            unit: busbar_kernel_audit::UnitFacts {
+                boot_nonce: busbar_kernel::snapshot::boot_nonce(),
+                ..busbar_kernel_audit::UnitFacts::at(arrived_ms)
+            },
         };
         let token = self.kernel.durability_token();
         let sealed = crate::root::durability::Durability::seal_unit(

@@ -148,6 +148,7 @@ fn current_producer_output_verifies_with_wide_numbers_and_repeated_groups() {
             ..Controls::default()
         },
         correlation_hash: None,
+        unit: busbar_kernel_audit::UnitFacts::default(),
         seq: 1,
         prev_hash: String::new(),
         recipe: Recipe::V5,
