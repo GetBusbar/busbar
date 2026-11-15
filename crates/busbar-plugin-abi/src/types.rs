@@ -225,3 +225,67 @@ impl KindCode {
 // rule: no trait named Sealed, no single impl at wave 0).
 pub trait SyncArg {}
 pub trait AsyncArg {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// C-NULL-EMPTY (c), the Rust arm (round 17 empty rule): `{NULL, 0}`, `{dangling, 0}` and `{misaligned, 0}`
+    /// are the empty value; `get` never reads the pointer (Miri runs this without UB).
+    #[test]
+    fn an_empty_view_reads_empty_whatever_its_pointer() {
+        let bytes = [
+            Bytes {
+                ptr: core::ptr::null(),
+                len: 0,
+                _l: PhantomData,
+            },
+            Bytes::EMPTY,
+            Bytes {
+                ptr: core::ptr::without_provenance(1),
+                len: 0,
+                _l: PhantomData,
+            },
+        ];
+        for b in bytes {
+            assert!(b.is_empty());
+            assert_eq!(b.get(), &[] as &[u8]);
+            assert_eq!(Str(b).get(), "");
+        }
+        let slices: [Slice<'static, u64>; 3] = [
+            Slice {
+                ptr: core::ptr::null(),
+                len: 0,
+                _l: PhantomData,
+            },
+            Slice::EMPTY,
+            Slice {
+                ptr: core::ptr::without_provenance(3),
+                len: 0,
+                _l: PhantomData,
+            },
+        ];
+        for s in slices {
+            assert!(s.get().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_view_reads_back_what_it_borrows() {
+        assert_eq!(Bytes::new(b"abc").get(), b"abc");
+        assert_eq!(Str::new("h\u{e9}").get(), "h\u{e9}");
+        assert_eq!(Str::new("h\u{e9}").len(), 3);
+        assert_eq!(Slice::new(&[1u64, 2, 3][..]).get(), &[1, 2, 3]);
+        let pairs = [Pair {
+            name: Str::new("accept"),
+            value: Bytes::new(b"*/*"),
+        }];
+        let read = Slice::new(&pairs[..]).get();
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].name.get(), "accept");
+        assert_eq!(read[0].value.get(), b"*/*");
+        // The empty constructors never hand out null.
+        assert!(!Bytes::new(&[]).ptr.is_null());
+        assert!(!Bytes::EMPTY.ptr.is_null());
+    }
+}
