@@ -500,7 +500,8 @@ fn dup_claim_guard_passes_for_the_shipped_registry() {
 
 fn resolved(yaml: &str) -> RootCfg {
     register_planes();
-    let deploy = deploy_from_yaml_str(yaml).expect("the fixture configuration parses");
+    let deploy = deploy_from_yaml_str(yaml, &crate::root::boot::axis_test_grammar())
+        .expect("the fixture configuration parses");
     resolve(&deploy, &HashMap::new()).unwrap_or_else(|e| panic!("the fixture resolves: {e:?}"))
 }
 
@@ -772,12 +773,15 @@ async fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         .iter()
         .find(|store| store.1)
         .expect("the actual distribution links an ephemeral product store");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {},
-        "models": {},
-        "store": { "module": store.0 },
-        "auth": { "chain": [], "admin_auth": [] },
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {},
+            "models": {},
+            "store": { "module": store.0 },
+            "auth": { "chain": [], "admin_auth": [] },
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the actual app deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &HashMap::new())
         .expect("the actual app deployment resolves");
@@ -928,12 +932,15 @@ async fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
         .iter()
         .find(|store| store.1)
         .expect("the actual distribution links an ephemeral product store");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {},
-        "models": {},
-        "store": { "module": store.0 },
-        "auth": { "chain": [], "admin_auth": [] },
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {},
+            "models": {},
+            "store": { "module": store.0 },
+            "auth": { "chain": [], "admin_auth": [] },
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the actual app deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &HashMap::new())
         .expect("the actual app deployment resolves");
