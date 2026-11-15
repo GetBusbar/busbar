@@ -271,6 +271,95 @@ impl MigrateHost for NoPlugins {
     }
 }
 
+/// A host that delegates to `0` in everything. Pass 1 of the startup upgrade (see
+/// [`super::normalize_plugins_view`]) uses it before the operator words are bound.
+pub struct ViewOnly<'a>(pub &'a dyn MigrateHost);
+
+impl MigrateHost for ViewOnly<'_> {
+    fn source_declarations(&self) -> Result<busbar_contract::secret_ref::Sugars, String> {
+        self.0.source_declarations()
+    }
+    fn admit_config_profile(&self, proof: &super::HistoricalConfigProof) -> Result<(), String> {
+        self.0.admit_config_profile(proof)
+    }
+    fn resolved_authored_scalar(&self, scalar: &str) -> Result<Option<serde_json::Value>, String> {
+        self.0.resolved_authored_scalar(scalar)
+    }
+    fn plane_selecting_sections(&self, module: &str) -> Vec<String> {
+        self.0.plane_selecting_sections(module)
+    }
+    fn externalize_secret(
+        &self,
+        site: &str,
+        path: &[String],
+        bytes: &[u8],
+    ) -> Result<String, String> {
+        self.0.externalize_secret(site, path, bytes)
+    }
+    fn validate_migrated(
+        &self,
+        kind: &str,
+        module: &str,
+        settings: &serde_json::Value,
+    ) -> Result<(), String> {
+        self.0.validate_migrated(kind, module, settings)
+    }
+    fn validate_current(
+        &self,
+        kind: &str,
+        module: &str,
+        settings: &serde_json::Value,
+    ) -> Result<(), Unvalidated> {
+        self.0.validate_current(kind, module, settings)
+    }
+    fn migrating_from(&self) -> &str {
+        self.0.migrating_from()
+    }
+    fn migrate(
+        &self,
+        kind: &str,
+        module: &str,
+        settings: &serde_json::Value,
+        from: &str,
+    ) -> Result<Option<(String, MigrationAnswer)>, String> {
+        self.0.migrate(kind, module, settings, from)
+    }
+    fn migrate_references(
+        &self,
+        kind: &str,
+        module: &str,
+        settings: &serde_json::Value,
+        from: &str,
+    ) -> Result<Option<(String, MigrationAnswer)>, String> {
+        self.0.migrate_references(kind, module, settings, from)
+    }
+    fn repin(&self, github: &str) -> Result<Option<String>, String> {
+        self.0.repin(github)
+    }
+    fn release_for(&self, kind: &str, module: &str) -> Result<Option<String>, String> {
+        self.0.release_for(kind, module)
+    }
+    fn rewrite_catalog(&self) -> Result<Option<(String, Vec<String>)>, String> {
+        self.0.rewrite_catalog()
+    }
+    fn providers_catalog(
+        &self,
+    ) -> Result<Option<serde_json::Map<String, serde_json::Value>>, String> {
+        self.0.providers_catalog()
+    }
+    fn migrate_credential(
+        &self,
+        module: &str,
+        credential: &busbar_contract::secret_ref::SecretRef,
+        from: &str,
+    ) -> Result<Option<busbar_contract::secret_ref::SecretRef>, String> {
+        self.0.migrate_credential(module, credential, from)
+    }
+    fn resolve(&self, host: &str) -> Result<Vec<IpAddr>, String> {
+        self.0.resolve(host)
+    }
+}
+
 pub(super) struct Ledger<'a> {
     pub changes: &'a mut Vec<String>,
     pub todos: &'a mut Vec<String>,
