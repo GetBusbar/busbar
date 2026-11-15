@@ -890,3 +890,7 @@ fn open_writer() -> control::Writer {
 #[cfg(test)]
 #[path = "startup_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/manifest_format_tests.rs"]
+mod manifest_format_tests;

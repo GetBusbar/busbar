@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 mod files;
 mod lock;
 pub mod patch;
+pub mod records;
 mod steps;
 
 pub use busbar_contract::upgrade::{CONFIG_FORMAT, MIGRATED_ENV, STAMP_KEY, UPGRADE_FIRST};
