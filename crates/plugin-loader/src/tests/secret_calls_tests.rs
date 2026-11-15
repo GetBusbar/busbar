@@ -627,3 +627,38 @@ fn a_value_that_grew_between_the_two_reads_is_a_named_transient_refusal() {
         refused.text
     );
 }
+
+/// SECRET-SHORTHAND-BOOT B2 (GA2 at the loader): a read-scoped view checks a judged dropped-in
+/// module's references with that module's own checker, in its own cache, and opens nothing. The
+/// live axis admits nothing and its checker cache stays empty.
+#[test]
+fn a_view_checks_a_judged_module_and_leaves_the_axis_alone() {
+    let rows = SecretRows::new(dispatcher, || None);
+    let view = rows.view([dropped_secret_candidate()]);
+    assert!(view.answers(NAME), "the view answers the judged module");
+    assert!(!rows.answers(NAME), "the live axis admitted nothing");
+    assert_eq!(view.check(NAME, &reference_settings()), Ok(()));
+    assert_eq!(
+        rows.checkers.lock().unwrap().plugins.len(),
+        0,
+        "the live checker cache is untouched"
+    );
+    assert!(
+        view.open(NAME, None, &unreached).is_err(),
+        "a view opens no dropped-in instance"
+    );
+}
+
+/// B2: a read's grammar is judged as admission judges it, without admitting: the live dropped-in
+/// set is unchanged.
+#[test]
+fn grammar_of_judges_without_admitting() {
+    let rows = SecretRows::new(dispatcher, || None);
+    rows.grammar_of([dropped_secret_candidate()])
+        .expect("one module, one owner per word");
+    assert!(rows.dropped().is_empty(), "nothing was admitted");
+    assert!(
+        !rows.answers(NAME),
+        "the live axis does not answer the judged module"
+    );
+}

@@ -240,7 +240,9 @@ pub(crate) async fn node_rig(instance: &'static str, port: u16, opts: NodeRigOpt
          store:\n  module: {store_module}\n  settings: {store_settings}\n",
         key = key_file.display(),
     );
-    let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("the deployment");
+    let deploy =
+        busbar_kernel::config::deploy_from_yaml_str(&yaml, &crate::root::boot::axis_test_grammar())
+            .expect("the deployment");
     let defs: HashMap<String, busbar_kernel::config::ProviderDef> =
         busbar_contract::yaml::from_str(&format!(
             "oai0:\n  protocol: {}\n  base_url: 'http://127.0.0.1:{port}'\n",

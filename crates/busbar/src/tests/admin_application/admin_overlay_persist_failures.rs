@@ -107,8 +107,11 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_install_limits()
     )
     .unwrap();
     std::fs::write(&config_path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &definitions)
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -261,8 +264,11 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_crede
     )
     .unwrap();
     std::fs::write(&config_path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &definitions)
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())

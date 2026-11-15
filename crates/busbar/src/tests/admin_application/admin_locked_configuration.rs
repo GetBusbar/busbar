@@ -45,8 +45,11 @@ async fn test_admin_v1_put_auth_refused_on_locked_config() {
         serde_json::to_vec_pretty(&document).expect("serialize actual base config"),
     )
     .expect("write actual base configuration");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -173,8 +176,11 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
         serde_json::to_vec_pretty(&document).expect("serialize actual base config"),
     )
     .expect("write actual base configuration");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &definitions)
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -293,8 +299,11 @@ async fn test_admin_v1_config_settings_put_on_locked_config_is_refused() {
         serde_json::to_vec_pretty(&document).expect("serialize actual base config"),
     )
     .expect("write actual base configuration");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -399,8 +408,11 @@ async fn test_admin_v1_config_settings_put_refuses_locked_store_mutation() {
         serde_json::to_vec_pretty(&document).expect("serialize actual base config"),
     )
     .expect("write actual base configuration");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -511,8 +523,11 @@ async fn test_admin_v1_config_settings_put_rejects_retired_persist() {
         serde_json::to_vec_pretty(&document).expect("serialize actual base config"),
     )
     .expect("write actual base configuration");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -614,8 +629,11 @@ async fn test_admin_v1_config_settings_put_still_rejects_an_unknown_field_includ
         serde_json::to_vec_pretty(&document).expect("serialize actual base config"),
     )
     .expect("write actual base configuration");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())

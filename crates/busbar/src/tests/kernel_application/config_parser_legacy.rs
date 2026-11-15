@@ -299,7 +299,10 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
 
     assert!(detect_legacy_markers(&doc).is_empty());
     let deploy: Result<busbar_kernel::config::DeployCfg, _> =
-        busbar_kernel::config::deploy_from_yaml_str(&out.yaml);
+        busbar_kernel::config::deploy_from_yaml_str(
+            &out.yaml,
+            &crate::root::boot::axis_test_grammar(),
+        );
     assert!(
         deploy.is_ok(),
         "migrated config must boot-parse: {:?}",
@@ -502,9 +505,11 @@ global_hooks:
         detect_legacy_markers(&doc).is_empty(),
         "no residual 1.x marker"
     );
-    let deploy: busbar_kernel::config::DeployCfg =
-        busbar_kernel::config::deploy_from_yaml_str(&out1.yaml)
-            .expect("migrated config boot-parses");
+    let deploy: busbar_kernel::config::DeployCfg = busbar_kernel::config::deploy_from_yaml_str(
+        &out1.yaml,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("migrated config boot-parses");
 
     assert!(
         !deploy.hooks.is_empty(),
@@ -563,8 +568,9 @@ fn assert_loud_fail_with_breadcrumb(raw: &str, needle: &str) {
 fn migrate_golden(raw: &str) -> (busbar_migrations::config::migrate::MigrateOutput, Value) {
     let (out, doc) = migrate_to_value(raw);
     let yaml = yaml::to_string(&doc).expect("serializable");
-    let _: busbar_kernel::config::DeployCfg = busbar_kernel::config::deploy_from_yaml_str(&yaml)
-        .expect("the migrated config must boot-parse as 1.5.3");
+    let _: busbar_kernel::config::DeployCfg =
+        busbar_kernel::config::deploy_from_yaml_str(&yaml, &crate::root::boot::axis_test_grammar())
+            .expect("the migrated config must boot-parse as 1.5.3");
     let (_out2, doc2) = migrate_to_value(&yaml);
     assert_eq!(
         doc, doc2,
@@ -702,9 +708,11 @@ fn golden_migrate_type_keyed_export_becomes_a_named_map() {
         Some("Authorization")
     );
 
-    let deploy: busbar_kernel::config::DeployCfg =
-        busbar_kernel::config::deploy_from_yaml_str(&yaml::to_string(&doc).unwrap())
-            .expect("boot-parses");
+    let deploy: busbar_kernel::config::DeployCfg = busbar_kernel::config::deploy_from_yaml_str(
+        &yaml::to_string(&doc).unwrap(),
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("boot-parses");
     let mut errs = Vec::new();
     let export = busbar_kernel::config::resolve_export(&built_ins(&deploy.export), &mut errs);
     assert!(errs.is_empty(), "{errs:?}");
@@ -835,9 +843,11 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
         out.changes
     );
 
-    let deploy: busbar_kernel::config::DeployCfg =
-        busbar_kernel::config::deploy_from_yaml_str(&yaml::to_string(&doc).unwrap())
-            .expect("boot-parses");
+    let deploy: busbar_kernel::config::DeployCfg = busbar_kernel::config::deploy_from_yaml_str(
+        &yaml::to_string(&doc).unwrap(),
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("boot-parses");
     let mut errs = Vec::new();
     let auth = busbar_kernel::config::resolve_auth(
         deploy.auth.as_ref().expect("auth"),

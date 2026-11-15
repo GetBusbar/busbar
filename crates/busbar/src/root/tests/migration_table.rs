@@ -170,8 +170,11 @@ fn the_observability_lift_out_meets_its_1_5_5_bytes() {
             "the frozen 1.5.5 fixture retains its historical destination guidance: {stderr}"
         );
         let config = field(row, "config");
-        let current = busbar_kernel::config::deploy_from_yaml_str(&config)
-            .expect_err("the current parser refuses the retired historical spelling");
+        let current = busbar_kernel::config::deploy_from_yaml_str(
+            &config,
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect_err("the current parser refuses the retired historical spelling");
         let current = current.to_string();
         assert!(current.contains(&msg));
         assert_eq!(

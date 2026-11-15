@@ -551,6 +551,8 @@ pub(crate) async fn run(
         busbar_migrations::config::migrate_overlay::migrate_overlay_with(&bytes, &host)?;
     let changes = serde_json::to_string(&changes)
         .map_err(|_| "cannot encode the overlay migration changes")?;
+    // The migrated definitions are read under the grammar the base document was read under.
+    let grammar = deploy.grammar.get().map_err(String::from)?.clone();
     for (key, entries) in &doc.named_maps {
         let section = config::named_map::NamedMapSection::sections()
             .into_iter()
@@ -558,7 +560,7 @@ pub(crate) async fn run(
             .ok_or("overlay names an unavailable definition section")?;
         for (name, value) in entries {
             section
-                .validate_def(name, value)
+                .validate_def(name, value, &grammar)
                 .map_err(|_| "migrated overlay definition is invalid")?;
         }
     }

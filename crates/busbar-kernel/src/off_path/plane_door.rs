@@ -365,7 +365,7 @@ pub(crate) fn collect_refs(
                 _,
             >(
                 busbar_contract::yaml::deserializer(value.clone()),
-                &crate::config::secret::sugars(),
+                &crate::config::secret::admitted_sugars(),
             ) {
                 out.push((at.clone(), r));
             }

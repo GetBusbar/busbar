@@ -324,9 +324,17 @@ pools:
     );
 
     assert!(
-        busbar_kernel::config::deploy_from_yaml_str(&out.yaml).is_ok(),
+        busbar_kernel::config::deploy_from_yaml_str(
+            &out.yaml,
+            &crate::root::boot::axis_test_grammar()
+        )
+        .is_ok(),
         "on_exhausted-bearing config must boot-parse: {:?}",
-        busbar_kernel::config::deploy_from_yaml_str(&out.yaml).err()
+        busbar_kernel::config::deploy_from_yaml_str(
+            &out.yaml,
+            &crate::root::boot::axis_test_grammar()
+        )
+        .err()
     );
 }
 
@@ -412,9 +420,17 @@ pools: {}
     );
 
     assert!(
-        busbar_kernel::config::deploy_from_yaml_str(&out.yaml).is_ok(),
+        busbar_kernel::config::deploy_from_yaml_str(
+            &out.yaml,
+            &crate::root::boot::axis_test_grammar()
+        )
+        .is_ok(),
         "real top-level 1.4.x auth surfaces must migrate to a bootable config: {:?}",
-        busbar_kernel::config::deploy_from_yaml_str(&out.yaml).err()
+        busbar_kernel::config::deploy_from_yaml_str(
+            &out.yaml,
+            &crate::root::boot::axis_test_grammar()
+        )
+        .err()
     );
 }
 
@@ -453,9 +469,17 @@ global_hooks: [audit-tap]
         "the registry name became a named hook definition"
     );
     assert!(
-        busbar_kernel::config::deploy_from_yaml_str(&out.yaml).is_ok(),
+        busbar_kernel::config::deploy_from_yaml_str(
+            &out.yaml,
+            &crate::root::boot::axis_test_grammar()
+        )
+        .is_ok(),
         "global_hooks must migrate to a bootable config: {:?}",
-        busbar_kernel::config::deploy_from_yaml_str(&out.yaml).err()
+        busbar_kernel::config::deploy_from_yaml_str(
+            &out.yaml,
+            &crate::root::boot::axis_test_grammar()
+        )
+        .err()
     );
 }
 
@@ -525,7 +549,11 @@ pools:
     assert_eq!(hooks[0].as_str(), Some("cheapest"));
 
     assert!(
-        busbar_kernel::config::deploy_from_yaml_str(&out.yaml).is_ok(),
+        busbar_kernel::config::deploy_from_yaml_str(
+            &out.yaml,
+            &crate::root::boot::axis_test_grammar()
+        )
+        .is_ok(),
         "policy-only pool must migrate to a bootable config"
     );
 }
@@ -756,7 +784,10 @@ observability:
     );
 
     let deploy: Result<busbar_kernel::config::DeployCfg, _> =
-        busbar_kernel::config::deploy_from_yaml_str(&out.yaml);
+        busbar_kernel::config::deploy_from_yaml_str(
+            &out.yaml,
+            &crate::root::boot::axis_test_grammar(),
+        );
     assert!(
         deploy.is_ok(),
         "migrated config must boot-parse: {:?}",
@@ -831,7 +862,10 @@ global_hooks:
     );
 
     let deploy: Result<busbar_kernel::config::DeployCfg, _> =
-        busbar_kernel::config::deploy_from_yaml_str(&out.yaml);
+        busbar_kernel::config::deploy_from_yaml_str(
+            &out.yaml,
+            &crate::root::boot::axis_test_grammar(),
+        );
     assert!(
         deploy.is_ok(),
         "migrated config must boot-parse: {:?}",
@@ -940,9 +974,11 @@ pools: {}
     );
 
     let migrated_yaml = yaml::to_string(&doc).unwrap();
-    let deploy: busbar_kernel::config::DeployCfg =
-        busbar_kernel::config::deploy_from_yaml_str(&migrated_yaml)
-            .expect("the migrated config must boot-parse");
+    let deploy: busbar_kernel::config::DeployCfg = busbar_kernel::config::deploy_from_yaml_str(
+        &migrated_yaml,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the migrated config must boot-parse");
     let mut errs = Vec::new();
     let export = busbar_kernel::config::resolve_export(&built_ins(&deploy.export), &mut errs);
     assert!(errs.is_empty(), "{errs:?}");
@@ -1625,7 +1661,11 @@ fn migrate_rewrites_a_lingering_at_key_on_a_named_hook_def() {
         "the retired `at:` key is gone"
     );
     assert!(
-        busbar_kernel::config::deploy_from_yaml_str(&out.yaml).is_ok(),
+        busbar_kernel::config::deploy_from_yaml_str(
+            &out.yaml,
+            &crate::root::boot::axis_test_grammar()
+        )
+        .is_ok(),
         "the rewritten config boot-parses on 1.6.0"
     );
 }

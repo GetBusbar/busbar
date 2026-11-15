@@ -83,7 +83,7 @@ pools:
         out.yaml
     );
 
-    let deploy: DeployCfg = deploy_from_yaml_str(&out.yaml).unwrap_or_else(|e| {
+    let deploy: DeployCfg = deploy_from_yaml_str(&out.yaml, &live_grammar()).unwrap_or_else(|e| {
         panic!(
             "migrated config must boot-parse on 1.6.0: {e}\n{}",
             out.yaml
@@ -149,8 +149,8 @@ agents:
         *doc.at_mut(section).at_mut("pools") = yaml::from_str("{}").unwrap();
         *doc.at_mut(section).at_mut("pools").at_mut("p") = pool;
         let raw = yaml::to_string(&doc).expect("the config renders");
-        let deploy: DeployCfg =
-            deploy_from_yaml_str(&raw).unwrap_or_else(|e| panic!("the config parses: {e}\n{raw}"));
+        let deploy: DeployCfg = deploy_from_yaml_str(&raw, &live_grammar())
+            .unwrap_or_else(|e| panic!("the config parses: {e}\n{raw}"));
         resolve(&deploy, &defs)
             .map(|_| ())
             .map_err(|e| format!("{e:?}"))
@@ -220,7 +220,7 @@ fn unreleased_tool_and_agent_pool_keys_are_left_for_admission_to_refuse() {
             "no rewrite is reported for `{key}`: {:?}",
             out.changes
         );
-        let error = deploy_from_yaml_str(&out.yaml)
+        let error = deploy_from_yaml_str(&out.yaml, &live_grammar())
             .err()
             .unwrap_or_else(|| panic!("`{key}:` must be refused at admission"))
             .to_string();
@@ -230,4 +230,16 @@ fn unreleased_tool_and_agent_pool_keys_are_left_for_admission_to_refuse() {
             "the refusal never echoes authored values: {error}"
         );
     }
+}
+
+/// The grammar these fixtures read under: the words the installed secret axis declares (this
+/// distribution's linked secret modules), passed explicitly.
+fn live_grammar() -> busbar_kernel::config::Grammar {
+    busbar_kernel::config::Grammar::new(
+        busbar_kernel::config::secret::live_axis()
+            .map(busbar_contract::secret::SecretAxis::sugars)
+            .unwrap_or_default(),
+        Default::default(),
+        Vec::new(),
+    )
 }

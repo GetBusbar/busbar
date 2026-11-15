@@ -86,14 +86,17 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
     );
     let signing_key = directory.join("signing.key");
     std::fs::write(&signing_key, [7u8; 32]).expect("write the configured signing key");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {},
-        "models": {},
-        "auth": { "chain": [], "admin_auth": [], "signing_key": { "file": signing_key } },
-        "groups": { "team": {} },
-        "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {},
+            "models": {},
+            "auth": { "chain": [], "admin_auth": [], "signing_key": { "file": signing_key } },
+            "groups": { "team": {} },
+            "store": { "module": module, "settings": settings },
+            "advanced": { "allow_destinations": ["127.0.0.1"] },
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
@@ -292,7 +295,7 @@ async fn auto_provision_stops_at_the_group_ceiling() {
         "groups": { "team": {} },
         "store": { "module": module, "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
+    }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let mut config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");

@@ -269,10 +269,13 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
         .find(|row| row.1)
         .expect("the assembled product links an ephemeral store")
         .0;
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
-        "store": {"module": module, "settings": {}}
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+            "store": {"module": module, "settings": {}}
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the actual deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual deployment resolves");

@@ -5,7 +5,7 @@ use super::{resolve, ProviderDef, ProviderDeploy};
 fn deployment_refusal(key: &str) -> busbar_contract::yaml::Error {
     crate::config::deploy_from_yaml_str(&format!(
         "providers:\n  p:\n    api_key: {{module: fixture-source, settings: {{slot: K}}}}\n    {key}: [a]\n"
-    ))
+    ), &crate::config::Grammar::empty())
     .expect_err("a sequence where the provider key wants a scalar or a map is refused")
 }
 

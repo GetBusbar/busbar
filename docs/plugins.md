@@ -203,6 +203,20 @@ shorthand no admitted plugin declares is refused, naming the word. `busbar --lis
 which plugins were admitted. Secret plugins go through the same signed-plugin trust pipeline as
 every other kind.
 
+Which shorthand a document may use is decided per read, by that document's own `plugins:` block:
+a word counts when a `kind: secret` plugin that block admits (linked, or dropped into its
+`plugins.dir` and passing the same trust, floor and conflict checks the registry build applies)
+declares it. Boot, `--validate`, `--migrate-config`, a config reload and the startup upgrade each
+judge their own document this way; none reads the words an earlier generation admitted. So a
+secret plugin dropped in after start serves its shorthand on the next `POST config/reload`, and a
+reload that removes a plugin whose word the document still uses is refused (the running
+generation keeps serving). A refused word is followed by one line per `kind: secret | plane |
+auth` file the read did not admit, naming the file and why. `plugins.fetch` entries are not
+shorthand: `{ env: NAME }` there is the fetch list's own form. A plugin that arrives only through
+`plugins.fetch` cannot declare a shorthand for the start that first fetches it, because the boot
+fetch runs after the configuration is read: pre-seed `plugins.dir`, or write the canonical form
+for that first start.
+
 A secret plugin implements the secret kind's typed lifecycle and `resolve`/`check` slots under
 `busbar_contract::abi`. Per-reference settings describe the requested secret; instance settings
 configure the backend. Use the shared credential SDK for guarded response bodies, selected JSON

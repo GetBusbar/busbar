@@ -858,7 +858,7 @@ pub(crate) mod resolution {
         paths: &[String],
     ) -> Option<u64> {
         use std::hash::{Hash as _, Hasher as _};
-        let sources = crate::config::secret::sugars();
+        let sources = crate::config::secret::admitted_sugars();
         if hook
             .settings
             .undeclared_reference(&[], &sources)
@@ -1144,7 +1144,7 @@ pub fn settings_drift_keys(
         return Vec::new();
     };
     hook.settings
-        .drift_keys(observed, &crate::config::secret::sugars())
+        .drift_keys(observed, &crate::config::secret::admitted_sugars())
 }
 
 pub async fn fetch_schema(

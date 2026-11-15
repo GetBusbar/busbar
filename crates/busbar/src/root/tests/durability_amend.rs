@@ -98,13 +98,16 @@ async fn application(core: Arc<CoreStore>) -> Arc<busbar_kernel::state::App> {
     std::fs::write(directory.0.join("store.tar.gz"), archive)
         .expect("the actual store archive is staged");
     let settings = crate::root::test_plugins::application_store_settings(&directory.0);
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {},
-        "models": {},
-        "auth": { "chain": [], "admin_auth": [] },
-        "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {},
+            "models": {},
+            "auth": { "chain": [], "admin_auth": [] },
+            "store": { "module": module, "settings": settings },
+            "advanced": { "allow_destinations": ["127.0.0.1"] },
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the amendment deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the amendment deployment resolves");

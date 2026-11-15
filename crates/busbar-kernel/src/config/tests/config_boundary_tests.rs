@@ -10,14 +10,14 @@ fn duplicate_lifted_sections_and_policies_are_refused_by_the_live_reader() {
         "oauth_as: null\noauth_as: null\n",
         "auth: {policy: {self_mint: false}, policy: {self_mint: true}}\n",
     ] {
-        let error = deploy_from_yaml_str(yaml)
+        let error = deploy_from_yaml_str(yaml, &crate::config::Grammar::empty())
             .expect_err("duplicates must not replace policy")
             .to_string();
         assert!(error.contains("duplicate field"), "{error}");
     }
 
     let mut json = serde_json::Deserializer::from_str(r#"{"auth":{"policy":{},"policy":{}}}"#);
-    let error = deploy_from_deserializer(&mut json)
+    let error = deploy_from_deserializer(&mut json, &crate::config::Grammar::empty())
         .expect_err("duplicate JSON policy")
         .to_string();
     assert!(
@@ -28,14 +28,17 @@ fn duplicate_lifted_sections_and_policies_are_refused_by_the_live_reader() {
 
 #[test]
 fn duplicate_provider_names_are_refused_in_deployment_and_catalog_readers() {
-    let error = deploy_from_yaml_str("providers: {p: {api_key: none}, p: {api_key: none}}")
-        .expect_err("a duplicate deployment must not silently replace its destination")
-        .to_string();
+    let error = deploy_from_yaml_str(
+        "providers: {p: {api_key: none}, p: {api_key: none}}",
+        &crate::config::Grammar::empty(),
+    )
+    .expect_err("a duplicate deployment must not silently replace its destination")
+    .to_string();
     assert!(
         error.contains("duplicate entry") && error.contains("p"),
         "{error}"
     );
-    let error = providers::catalog_from_str("p: {protocol: x, base_url: https://one.example}\np: {protocol: x, base_url: https://two.example}\n")
+    let error = providers::catalog_from_str("p: {protocol: x, base_url: https://one.example}\np: {protocol: x, base_url: https://two.example}\n", &crate::config::Grammar::empty())
         .expect_err("a duplicate catalog name must not replace its destination").to_string();
     assert!(
         error.contains("duplicate entry") && error.contains("p"),
@@ -81,7 +84,8 @@ fn interpolation_cannot_replace_a_lifted_auth_policy() {
     );
     std::env::set_var(POLICY_VAR, "3d");
     let expanded = interpolate_env(POLICY_TEMPLATE).expect("ordinary scalar interpolation");
-    deploy_from_yaml_str(&expanded).expect("the valid interpolated config still parses");
+    deploy_from_yaml_str(&expanded, &crate::config::Grammar::empty())
+        .expect("the valid interpolated config still parses");
 }
 
 #[test]
@@ -193,5 +197,5 @@ fn hook_timeout_validation_covers_zero_boundary_and_overflow_in_resolved_config(
 fn noninterpolated_malformed_yaml_keeps_the_typed_readers_diagnostic() {
     let raw = "auth: [";
     assert_eq!(interpolate_env(raw).unwrap(), raw);
-    assert!(deploy_from_yaml_str(raw).is_err());
+    assert!(deploy_from_yaml_str(raw, &crate::config::Grammar::empty()).is_err());
 }

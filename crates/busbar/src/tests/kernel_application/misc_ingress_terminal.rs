@@ -51,7 +51,7 @@ async fn deployment(pool: &str) -> Arc<App> {
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
+    }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let providers = std::collections::HashMap::from([(
         "local".to_owned(),

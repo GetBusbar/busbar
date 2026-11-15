@@ -47,7 +47,7 @@ fn secrets_block_rejects_builtin_resolver_names() {
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
+    }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
         let mut cfg = busbar_kernel::config::resolve(&deploy, &provider_defs)
             .expect("the product deployment resolves");
@@ -82,6 +82,7 @@ fn secrets_block_rejects_builtin_resolver_names() {
                 root: &busbar_kernel::config_validate::no_root_rules,
                 fetch: None,
                 resolve_builtins: false,
+                secret_axis: busbar_kernel::config::secret::live_axis(),
             },
         )
         .unwrap_err();
@@ -136,7 +137,7 @@ fn one_validator_refuses_in_one_order() {
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
+    }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let mut cfg = busbar_kernel::config::resolve(&deploy, &provider_defs)
         .expect("the product deployment resolves");
@@ -152,6 +153,7 @@ fn one_validator_refuses_in_one_order() {
                 root,
                 fetch: None,
                 resolve_builtins,
+                secret_axis: busbar_kernel::config::secret::live_axis(),
             },
         )
     };

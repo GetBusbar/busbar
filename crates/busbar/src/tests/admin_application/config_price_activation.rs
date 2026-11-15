@@ -72,8 +72,11 @@ async fn an_absent_card_and_unchanged_prices_allow_a_successful_settings_handler
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
-        .expect("the product deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document.clone(),
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
@@ -269,8 +272,11 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
             "advanced": { "allow_destinations": ["127.0.0.1"] },
         });
         document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
-        let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
-            .expect("the product deployment parses");
+        let deploy = busbar_kernel::config::deploy_from_deserializer(
+            document.clone(),
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("the product deployment parses");
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the product deployment resolves");
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
@@ -638,8 +644,11 @@ async fn config_refusal_or_unknown_reply_never_attempts_price_activation() {
             "advanced": { "allow_destinations": ["127.0.0.1"] },
         });
         document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
-        let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
-            .expect("the product deployment parses");
+        let deploy = busbar_kernel::config::deploy_from_deserializer(
+            document.clone(),
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("the product deployment parses");
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the product deployment resolves");
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
@@ -824,8 +833,11 @@ async fn pending_activation_and_canceled_handler_keep_the_old_generation_until_c
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
-        .expect("the product deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document.clone(),
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
@@ -1132,8 +1144,11 @@ async fn callback_panics_preserve_one_coherent_published_price_generation() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
-        .expect("the product deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document.clone(),
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);

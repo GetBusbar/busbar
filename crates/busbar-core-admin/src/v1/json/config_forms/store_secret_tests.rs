@@ -59,7 +59,11 @@ fn store_forms_match_actual_wrapper_and_deployment_parsers() {
         let raw = deployment("store", case);
         assert_eq!(
             document.is_valid(&raw),
-            busbar_kernel::config::deploy_from_deserializer(raw).is_ok(),
+            busbar_kernel::config::deploy_from_deserializer(
+                raw,
+                &busbar_kernel::config::Grammar::empty()
+            )
+            .is_ok(),
             "store deployment case {index}"
         );
     }
@@ -162,7 +166,11 @@ fn secret_module_forms_match_actual_module_keyed_parser() {
         let raw = deployment("secrets", case);
         assert_eq!(
             document.is_valid(&raw),
-            busbar_kernel::config::deploy_from_deserializer(raw).is_ok(),
+            busbar_kernel::config::deploy_from_deserializer(
+                raw,
+                &busbar_kernel::config::Grammar::empty()
+            )
+            .is_ok(),
             "secret module map case {index}"
         );
     }
@@ -200,7 +208,11 @@ fn store_secret_forms_keep_runtime_rules_and_never_publish_input_values() {
         "store":{"module":"fixture","settings":{"password":{"file":"/private/STORE_FORM_CANARY"}}},
         "secrets":{"fixture":{"settings":{"token":{"env":"SECRET_FORM_CANARY"},"opaque":"PRIVATE_FORM_CANARY"}}}
     });
-    let parsed = busbar_kernel::config::deploy_from_deserializer(raw.clone()).unwrap();
+    let parsed = busbar_kernel::config::deploy_from_deserializer(
+        raw.clone(),
+        &busbar_kernel::config::Grammar::empty(),
+    )
+    .unwrap();
     assert!(super::validator(&before["schema"]).is_valid(&raw));
     assert_eq!(
         serde_json::to_value(

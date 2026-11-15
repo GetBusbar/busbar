@@ -141,8 +141,11 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
             .remove(section)
             .expect("the exact fixture census was checked");
     }
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let mut plugin_config = busbar_kernel::config::PluginsCfg {

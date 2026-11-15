@@ -453,7 +453,7 @@ fn plugin_view(module: &str, settings: &busbar_contract::plugin_settings::Settin
         module,
         settings,
         &super::settings_public::public(module),
-        &super::secret::sugars(),
+        &super::secret::admitted_sugars(),
     )
 }
 

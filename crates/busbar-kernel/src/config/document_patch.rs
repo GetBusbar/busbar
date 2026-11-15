@@ -441,20 +441,21 @@ impl DocumentPatch {
     /// that the file reader accepts, and has different null/default handling.
     #[cfg(test)]
     pub(crate) fn parse_deploy_yaml(&self, yaml: &str) -> Result<super::DeployCfg, String> {
-        self.parse_deploy_yaml_checked(yaml, |_| Ok(()))
+        self.parse_deploy_yaml_checked(yaml, |_| Ok(()), &super::Grammar::empty())
     }
 
     /// Catalog edits share the exact reader used for the operator's providers.yaml.
     pub fn parse_catalog_yaml(
         &self,
         yaml: &str,
+        grammar: &super::Grammar,
     ) -> Result<std::collections::HashMap<String, super::ProviderDef>, String> {
         let mut document = source::SourceDocument::parse(yaml)?;
         document.apply(self)?;
         let bytes = document.to_yaml_bytes()?;
         let text = std::str::from_utf8(&bytes)
             .map_err(|_| "patched provider catalog encoding failed".to_owned())?;
-        super::providers::catalog_from_str(text)
+        super::providers::catalog_from_str(text, grammar)
             .map_err(|_| "patched provider catalog failed boot parsing".to_owned())
     }
 
@@ -497,7 +498,20 @@ impl DocumentPatch {
         &self,
         yaml: &str,
         check_keys: impl FnOnce(&[&str]) -> Result<(), String>,
+        grammar: &super::Grammar,
     ) -> Result<super::DeployCfg, String> {
+        let text = self.patched_text(yaml, check_keys)?;
+        super::deploy_from_yaml_str(&text, grammar)
+            .map_err(|_| "patched configuration failed boot parsing".to_owned())
+    }
+
+    /// The deployment document with this patch applied, as guarded text, after `check_keys` judged
+    /// its effective top-level keys: what a read computes its grammar from before the typed parse.
+    pub fn patched_text(
+        &self,
+        yaml: &str,
+        check_keys: impl FnOnce(&[&str]) -> Result<(), String>,
+    ) -> Result<busbar_contract::secure::SecureString, String> {
         let mut document = source::SourceDocument::parse(yaml)?;
         document.apply(self)?;
         let mapping = document
@@ -514,10 +528,9 @@ impl DocumentPatch {
             .collect::<Result<Vec<_>, _>>()?;
         check_keys(&keys)?;
         let bytes = document.to_yaml_bytes()?;
-        let text = std::str::from_utf8(&bytes)
-            .map_err(|_| "patched configuration encoding failed".to_owned())?;
-        super::deploy_from_yaml_str(text)
-            .map_err(|_| "patched configuration failed boot parsing".to_owned())
+        std::str::from_utf8(&bytes)
+            .map(busbar_contract::secure::SecureString::from)
+            .map_err(|_| "patched configuration encoding failed".to_owned())
     }
 
     /// Validate and prepare every edit before mutation. Sequence indices address the input
@@ -893,7 +906,8 @@ mod tests {
             assert_eq!(edited.admin_listen, expected);
         }
         let base = "providers: {}\nmodels: {}\ngroups:\n  '18446744073709551617': {}\n  child:\n    parent: 18446744073709551617\n";
-        let original = super::super::deploy_from_yaml_str(base).unwrap();
+        let original =
+            super::super::deploy_from_yaml_str(base, &super::super::Grammar::empty()).unwrap();
         let edited = patch(json!({"set": {"/per_request_fee": 3}}))
             .parse_deploy_yaml(base)
             .unwrap();
@@ -923,7 +937,8 @@ mod tests {
     #[test]
     fn unrelated_edits_preserve_implicit_scalar_string_spellings_and_aliases() {
         let base = "providers: {}\nmodels: {}\npublic_url: TRUE\nadmin_listen: 0x10\ngroups:\n  TRUE: {}\n  0x20: {}\n";
-        let original = super::super::deploy_from_yaml_str(base).unwrap();
+        let original =
+            super::super::deploy_from_yaml_str(base, &super::super::Grammar::empty()).unwrap();
         let edited = patch(json!({"set": {"/per_request_fee": 3}}))
             .parse_deploy_yaml(base)
             .unwrap();
@@ -950,9 +965,11 @@ mod tests {
     #[test]
     fn catalog_edits_preserve_implicit_alias_and_omitted_scalar_spellings() {
         let base = "TRUE:\n  protocol: TRUE\n  base_url: 0x10\n  path: 0x20\n";
-        let original = super::super::providers::catalog_from_str(base).unwrap();
+        let original =
+            super::super::providers::catalog_from_str(base, &super::super::Grammar::empty())
+                .unwrap();
         let edited = patch(json!({"set": {"/TRUE/scope": "updated"}}))
-            .parse_catalog_yaml(base)
+            .parse_catalog_yaml(base, &super::super::Grammar::empty())
             .unwrap();
         assert_eq!(edited["TRUE"].protocol, original["TRUE"].protocol);
         assert_eq!(edited["TRUE"].base_url, "0x10");
@@ -969,6 +986,7 @@ mod tests {
         let catalog = patch
             .parse_catalog_yaml(
                 "example:\n  protocol: test-wire\n  base_url: opaque:base\n  path: /kept\n",
+                &super::super::Grammar::empty(),
             )
             .unwrap();
         assert_eq!(catalog["example"].base_url, "opaque:edited");
@@ -977,7 +995,10 @@ mod tests {
             "remove": ["/example/protocol"]
         }))
         .unwrap()
-        .parse_catalog_yaml("example:\n  protocol: test-wire\n  base_url: opaque:base\n",)
+        .parse_catalog_yaml(
+            "example:\n  protocol: test-wire\n  base_url: opaque:base\n",
+            &super::super::Grammar::empty()
+        )
         .is_err());
     }
 
@@ -985,6 +1006,7 @@ mod tests {
     fn catalog_edits_refuse_shadowed_deployment_fields_without_exposing_credentials() {
         let deploy = super::super::deploy_from_yaml_str(
             "providers:\n  example:\n    api_key: {module: fixture-source, settings: {slot: PRIVATE_KEY}}\n    base_url: opaque:deployment\nmodels: {}\n",
+            &super::super::Grammar::empty(),
         ).unwrap();
         let patch = |path: &str| {
             super::DocumentPatch::from_value(serde_json::json!({"set": {path: "opaque:catalog"}}))
@@ -1084,7 +1106,9 @@ mod tests {
                 // arbitrary_precision numbers use a private map marker). JSON text is a YAML
                 // subset and gives an independent file-side input without using our converter.
                 let file_text = serde_json::to_string(&direct).unwrap();
-                let boot = super::super::deploy_from_yaml_str(&file_text).is_ok();
+                let boot =
+                    super::super::deploy_from_yaml_str(&file_text, &super::super::Grammar::empty())
+                        .is_ok();
                 let admin = edit
                     .parse_deploy_yaml("providers: {}\nmodels: {}\n")
                     .is_ok();
@@ -1433,7 +1457,8 @@ mod tests {
         // This kernel-only fixture declares no plane sections. Its base must independently
         // pass boot before the test can attribute any failure to the document edit.
         let base = "providers: {}\nmodels: {}\n";
-        super::super::deploy_from_yaml_str(base).expect("boot accepts the kernel-only base");
+        super::super::deploy_from_yaml_str(base, &super::super::Grammar::empty())
+            .expect("boot accepts the kernel-only base");
         let deploy = patch
             .parse_deploy_yaml(base)
             .expect("shared deployment reader");
@@ -1483,6 +1508,7 @@ mod tests {
                 assert!(!keys.contains(&"old_section"));
                 Err("key policy refused".into())
             },
+            &super::super::Grammar::empty(),
         );
         assert!(checked);
         assert_eq!(result.unwrap_err(), "key policy refused");

@@ -477,7 +477,8 @@ auth:
             (name.to_string(), def)
         })
         .collect();
-    let cfg = crate::config::resolve(&deploy, &defs).expect("the fixture config must resolve");
+    let mut cfg = crate::config::resolve(&deploy, &defs).expect("the fixture config must resolve");
+    cfg.grammar = crate::config::GrammarField::bound(crate::config::Grammar::empty());
 
     let keyless: Vec<String> = super::secret_refs(&cfg)
         .into_iter()
@@ -528,7 +529,8 @@ credentials:
     key: { module: fixture-source, settings: { slot: /run/secrets/busbar-at-rest.key } }
     previous: { module: fixture-source, settings: { slot: BUSBAR_TEST_NEVER_SET_AT_REST_PREVIOUS } }
 "#;
-    let deploy = crate::config::deploy_from_yaml_str(yaml).expect("the fixture must parse");
+    let deploy = crate::config::deploy_from_yaml_str(yaml, &crate::config::Grammar::empty())
+        .expect("the fixture must parse");
     let cfg = crate::config::resolve(&deploy, &std::collections::HashMap::new())
         .expect("the fixture config must resolve");
     for walk in [
@@ -556,7 +558,7 @@ credentials:
     );
 
     let misspelt = yaml.replace("previous:", "previos:");
-    let e = crate::config::deploy_from_yaml_str(&misspelt)
+    let e = crate::config::deploy_from_yaml_str(&misspelt, &crate::config::Grammar::empty())
         .expect_err("an unknown key under credentials.at_rest is refused")
         .to_string();
     assert!(e.contains("previos"), "{e}");

@@ -94,7 +94,9 @@ fn deployment(providers: &[(&str, &str, &[&str])], security: &str) -> RootCfg {
         ));
     }
     yaml.push_str(security);
-    let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+    let deploy =
+        busbar_kernel::config::deploy_from_yaml_str(&yaml, &crate::root::boot::axis_test_grammar())
+            .expect("parses");
     busbar_kernel::config::resolve(&deploy, &defs).expect("resolves")
 }
 

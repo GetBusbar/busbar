@@ -63,6 +63,7 @@ fn host_reference_input(reference: crate::config::SecretRef) -> crate::config::R
     .expect("host policy input parses");
     let mut cfg =
         crate::config::resolve(&deploy, &Default::default()).expect("host policy input resolves");
+    cfg.grammar = crate::config::GrammarField::bound(crate::config::Grammar::empty());
     let provider = crate::config::ProviderCfg {
         protocol: "inert-host-metadata".into(),
         base_url: "https://api.example.com".into(),

@@ -352,6 +352,7 @@ pub fn register_stores(linked: &Linked) {
 
             in_process_auth: None,
             config_projection: Some(crate::root::door_steps::door_config),
+            grammar: Some(crate::root::boot::phase_one),
         }),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");

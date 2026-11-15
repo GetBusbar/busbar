@@ -525,11 +525,29 @@ pub(super) fn deploy_grammar_keys() -> &'static [&'static str] {
     super::grammar_fields::struct_keys(ProviderDeployCore::deserialize)
 }
 
+/// The provider catalog under `grammar`, the grammar of this read: every entry's secret shorthand
+/// is read by the read's own context, which governs the entries' own.
 pub fn catalog<'de, D: serde::Deserializer<'de>>(
     de: D,
+    grammar: &super::Grammar,
 ) -> Result<HashMap<String, ProviderDef>, D::Error> {
-    let entries: HashMap<String, ProviderDef> = unique_entries(de)?;
-    Ok(entries)
+    struct Entries(HashMap<String, ProviderDef>);
+    impl<'de> Deserialize<'de> for Entries {
+        fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+            unique_entries(de).map(Entries)
+        }
+    }
+    busbar_contract::secret_ref::context::deserialize::<Entries, _>(de, &grammar.sugars)
+        .map(|entries| entries.0)
+}
+
+/// An admin request body's catalog, decoded with the body before its own read is computed: under
+/// the words the serving generation admitted (the live axis), as the body's decode always has.
+/// SECRET-SHORTHAND-BOOT MR-B3 reads admin bodies under their own phase 1.
+pub fn catalog_admitted<'de, D: serde::Deserializer<'de>>(
+    de: D,
+) -> Result<HashMap<String, ProviderDef>, D::Error> {
+    catalog(de, &super::grammar::admitted())
 }
 
 fn unique_entries<'de, D, T>(de: D) -> Result<HashMap<String, T>, D::Error>
@@ -566,8 +584,9 @@ where
 
 pub fn catalog_from_str(
     text: &str,
+    grammar: &super::Grammar,
 ) -> Result<HashMap<String, ProviderDef>, busbar_contract::yaml::Error> {
-    busbar_contract::yaml::with_deserializer(text, |d| catalog(d))
+    busbar_contract::yaml::with_deserializer(text, |d| catalog(d, grammar))
 }
 
 macro_rules! provider_entry {
@@ -612,7 +631,7 @@ macro_rules! provider_entry {
                 // document, the document's own source context governs.
                 busbar_contract::secret_ref::context::deserialize::<Written, _>(
                     de,
-                    &super::secret::sugars(),
+                    &super::secret::admitted_sugars(),
                 )
                 .map(|written| written.0)
             }

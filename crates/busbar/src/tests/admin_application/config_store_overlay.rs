@@ -110,8 +110,11 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
             "advanced": { "allow_destinations": ["127.0.0.1"] },
         });
         document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
-        let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
-            .expect("the product deployment parses");
+        let deploy = busbar_kernel::config::deploy_from_deserializer(
+            document.clone(),
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("the product deployment parses");
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the product deployment resolves");
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
@@ -282,8 +285,11 @@ async fn reload_refuses_a_store_read_failure_and_preserves_the_running_generatio
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
-        .expect("the product deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document.clone(),
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
@@ -454,8 +460,11 @@ async fn group_creation_refuses_store_failure_and_unknown_commit() {
             "advanced": { "allow_destinations": ["127.0.0.1"] },
         });
         document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
-        let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
-            .expect("the product deployment parses");
+        let deploy = busbar_kernel::config::deploy_from_deserializer(
+            document.clone(),
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("the product deployment parses");
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the product deployment resolves");
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
@@ -574,8 +583,11 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
-        .expect("the product deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document.clone(),
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
@@ -728,8 +740,11 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
-        .expect("the product deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document.clone(),
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
@@ -962,8 +977,11 @@ async fn an_unknown_store_overlay_commit_never_swaps_or_claims_success() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
-        .expect("the product deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document.clone(),
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
@@ -1101,8 +1119,11 @@ async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain(
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
-        .expect("the product deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document.clone(),
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
