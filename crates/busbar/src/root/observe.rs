@@ -110,9 +110,9 @@ impl ObservationSink for Output<'_> {
     fn metric(&self, m: &busbar_contract::hook_wire::reply::HookMetric, canonical: bool) {
         let labels = labels_for((!canonical).then_some(self.0), m);
         match m.kind.as_str() {
-            "counter" => metrics::counter!(m.name.clone(), labels).increment(m.value as u64),
-            "gauge" => metrics::gauge!(m.name.clone(), labels).set(m.value),
-            "histogram" => metrics::histogram!(m.name.clone(), labels).record(m.value),
+            "counter" => metrics::counter!(m.name.clone(), &labels).increment(m.value as u64),
+            "gauge" => metrics::gauge!(m.name.clone(), &labels).set(m.value),
+            "histogram" => metrics::histogram!(m.name.clone(), &labels).record(m.value),
             _ => {}
         }
     }
@@ -160,21 +160,47 @@ impl ObservationSink for Output<'_> {
     }
 }
 
-fn labels_for(
-    plugin: Option<&Arc<str>>,
-    m: &busbar_contract::hook_wire::reply::HookMetric,
-) -> Vec<metrics::Label> {
-    let provenance = plugin.map(|p| metrics::Label::new(PLUGIN_LABEL, Arc::clone(p)));
-    let mut labels: Vec<metrics::Label> = provenance.into_iter().collect();
-    if let Some(own) = &m.labels {
-        for (k, v) in own {
-            if k == PLUGIN_LABEL {
-                continue;
-            }
-            labels.push(metrics::Label::new(k.clone(), v.clone()));
-        }
+/// The labels one metric carries. The metrics macros take it by reference and build the key's
+/// label set themselves, so this module hands over borrowed fields and allocates no label list.
+struct LabelsOf<'a> {
+    plugin: Option<&'a Arc<str>>,
+    own: Option<&'a std::collections::BTreeMap<String, String>>,
+}
+
+impl<'a> IntoIterator for &LabelsOf<'a> {
+    type Item = metrics::Label;
+    type IntoIter = std::iter::Chain<std::option::IntoIter<metrics::Label>, OwnLabels<'a>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let provenance = self
+            .plugin
+            .map(|p| metrics::Label::new(PLUGIN_LABEL, Arc::clone(p)));
+        provenance
+            .into_iter()
+            .chain(OwnLabels(self.own.map(|own| own.iter())))
     }
-    labels
+}
+
+/// A metric's own labels, less any that claims the reserved plugin label.
+struct OwnLabels<'a>(Option<std::collections::btree_map::Iter<'a, String, String>>);
+
+impl Iterator for OwnLabels<'_> {
+    type Item = metrics::Label;
+
+    fn next(&mut self) -> Option<metrics::Label> {
+        let (k, v) = self.0.as_mut()?.find(|(k, _)| k.as_str() != PLUGIN_LABEL)?;
+        Some(metrics::Label::new(k.clone(), v.clone()))
+    }
+}
+
+fn labels_for<'a>(
+    plugin: Option<&'a Arc<str>>,
+    m: &'a busbar_contract::hook_wire::reply::HookMetric,
+) -> LabelsOf<'a> {
+    LabelsOf {
+        plugin,
+        own: m.labels.as_ref(),
+    }
 }
 
 pub fn install(catalogue: busbar_kernel::diagnostics::Catalogue) {

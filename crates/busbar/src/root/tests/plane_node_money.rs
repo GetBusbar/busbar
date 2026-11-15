@@ -1174,13 +1174,15 @@ fn concurrent_unit_ends_land_their_money_while_the_book_is_held() {
         .expect("governance builds"),
     );
     let money = Arc::new(PlaneMoney::new(Arc::clone(&gov), Arc::new(post)));
-    let rates = std::collections::BTreeMap::from([(
+    let rates = [(
         "m".to_string(),
         busbar_kernel::config::RateEntryCfg {
             input_utok: 1.0,
             ..Default::default()
         },
-    )]);
+    )]
+    .into_iter()
+    .collect::<std::collections::BTreeMap<_, _>>();
     let cost = Arc::new(busbar_kernel::cost::CostModel::resolve_parts(
         Some(&rates),
         0,

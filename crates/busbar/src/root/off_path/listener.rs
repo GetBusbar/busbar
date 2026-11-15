@@ -14,7 +14,7 @@ use crate::root::listener::{ConnBalancer, PaddedCount, HANDOFF_CHANNEL_DEPTH};
 impl ConnBalancer {
     /// One balancer per accept worker: a shared count cell and hand-off sender per worker, and
     /// each worker's own receiver.
-    pub fn build(n: usize) -> Vec<ConnBalancer> {
+    pub(crate) fn build(n: usize) -> Vec<ConnBalancer> {
         let counts: Arc<[PaddedCount]> = (0..n)
             .map(|_| PaddedCount(std::sync::atomic::AtomicU32::new(0)))
             .collect();
