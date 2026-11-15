@@ -427,7 +427,8 @@ fn main() {
         let argv = root::cli::argv();
         let config =
             std::path::PathBuf::from(root::cli::resolve_config_path(argv.config.as_deref()));
-        root::migrate::run(&config, argv.providers.is_some()).unwrap_or_else(|error| die(error));
+        root::migrate::run(&config, argv.providers.is_some(), argv.ignore_overlay)
+            .unwrap_or_else(|error| die(error));
     }
     #[cfg(not(unix))]
     let worker_threads = WORKERS.0;

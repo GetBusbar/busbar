@@ -35,6 +35,27 @@ impl Scratch {
         path
     }
 
+    /// Write `name` (a path relative to the directory, parents created) with `text`; its path.
+    pub(crate) fn file(&self, name: &str, text: &str) -> PathBuf {
+        let path = self.dir.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("parent dir");
+        }
+        std::fs::write(&path, text).expect("write file");
+        path
+    }
+
+    /// Whether this test process runs as root (a file it creates is owned by uid 0): mode bits
+    /// do not stop root, so a mode-0444 leg asserts only when this is false.
+    pub(crate) fn as_root(&self) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        let probe = self.dir.join(".uid-probe");
+        std::fs::write(&probe, "").expect("uid probe");
+        let uid = std::fs::metadata(&probe).expect("uid probe").uid();
+        std::fs::remove_file(&probe).expect("uid probe");
+        uid == 0
+    }
+
     /// Every file name in the directory, sorted.
     pub(crate) fn names(&self) -> Vec<String> {
         let mut names: Vec<String> = std::fs::read_dir(&self.dir)

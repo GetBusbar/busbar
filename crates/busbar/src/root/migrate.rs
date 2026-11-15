@@ -12,6 +12,7 @@
 //! listener serves, the plan is written in place and the process re-executes itself, with the same
 //! argv and `BUSBAR_MIGRATED=1`, onto the stamped file.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -21,6 +22,13 @@ use busbar_migrate::{Inputs, Plan, Refusal, Written};
 /// The plan step 1 made for an unstamped config, written by [`finish`].
 static PENDING: OnceLock<Plan> = OnceLock::new();
 
+/// What step 1 reads from outside the process: the environment and config.yaml (`None`: absent).
+/// The boot passes the real ones; a test counts what a stamped boot touches.
+pub(crate) struct Probe<'a> {
+    pub(crate) env: &'a dyn Fn(&str) -> Option<OsString>,
+    pub(crate) read: &'a dyn Fn(&Path) -> Result<Option<String>, String>,
+}
+
 /// Step 1. `Ok` when the boot may go on: stamped, absent (the config reader reports that in its own
 /// words), or planned and held for [`finish`].
 ///
@@ -28,23 +36,49 @@ static PENDING: OnceLock<Plan> = OnceLock::new();
 /// The migration's refusal text (NEWER, VERIFY, CONFIG, UNSUPPORTED), nothing written.
 #[cold]
 #[inline(never)]
-pub(crate) fn run(config: &Path, providers_flag: bool) -> Result<(), String> {
-    if !config.exists() {
+pub(crate) fn run(config: &Path, providers_flag: bool, ignore_overlay: bool) -> Result<(), String> {
+    let env = |name: &str| std::env::var_os(name);
+    run_in(
+        config,
+        providers_flag,
+        ignore_overlay,
+        &Probe {
+            env: &env,
+            read: &read_config,
+        },
+    )
+}
+
+/// [`run`] over `probe`. A stamped config costs one read of config.yaml and the re-exec marker:
+/// no other file and no other variable (257c); the unstamped path hands the environment to the
+/// migration, which reads the 1.5.5 overlay's selector there.
+pub(crate) fn run_in(
+    config: &Path,
+    providers_flag: bool,
+    ignore_overlay: bool,
+    probe: &Probe<'_>,
+) -> Result<(), String> {
+    let Some(text) = (probe.read)(config)? else {
         return Ok(());
-    }
-    let version =
-        config_version(&read_bounded(config)?).map_err(|text| format!("CONFIG: {text}"))?;
-    let migrated = std::env::var_os(MIGRATED_ENV).is_some();
+    };
+    let version = config_version(&text).map_err(|text| format!("CONFIG: {text}"))?;
+    let migrated = (probe.env)(MIGRATED_ENV).is_some();
     match admit(version, migrated, providers_flag).map_err(text_of)? {
         Stamp::Current => Ok(()),
         Stamp::Older(_) => {
             let plan = busbar_migrate::plan(&Inputs {
                 path: config,
                 check: &strict_parse,
+                env: probe.env,
+                interpolate: &busbar_kernel::config::interpolate_env,
+                ignore_overlay,
             })
             .map_err(text_of)?;
             for line in plan.report() {
                 tracing::info!(target: "busbar::migrate", "{line}");
+            }
+            for line in plan.warnings() {
+                tracing::warn!(target: "busbar::migrate", "{line}");
             }
             tracing::info!(
                 target: "busbar::migrate",
@@ -118,15 +152,17 @@ pub(crate) fn admit(version: u64, migrated: bool, providers_flag: bool) -> Resul
     Ok(Stamp::Older(version))
 }
 
-/// config.yaml, bounded as the migration bounds it, as UTF-8.
-fn read_bounded(config: &Path) -> Result<String, String> {
+/// config.yaml, bounded as the migration bounds it, as UTF-8; `None` when it does not exist.
+fn read_config(config: &Path) -> Result<Option<String>, String> {
     use std::io::Read;
+    let file = match std::fs::File::open(config) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("CONFIG: cannot read {}: {error}", config.display())),
+    };
     let mut bytes = Vec::new();
-    std::fs::File::open(config)
-        .and_then(|file| {
-            file.take(busbar_migrate::MAX_CONFIG_BYTES.saturating_add(1))
-                .read_to_end(&mut bytes)
-        })
+    file.take(busbar_migrate::MAX_CONFIG_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
         .map_err(|error| format!("CONFIG: cannot read {}: {error}", config.display()))?;
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > busbar_migrate::MAX_CONFIG_BYTES {
         return Err(format!(
@@ -135,7 +171,9 @@ fn read_bounded(config: &Path) -> Result<String, String> {
             busbar_migrate::MAX_CONFIG_BYTES
         ));
     }
-    String::from_utf8(bytes).map_err(|_| format!("CONFIG: {} is not UTF-8 text", config.display()))
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| format!("CONFIG: {} is not UTF-8 text", config.display()))
 }
 
 fn text_of(refusal: Refusal) -> String {

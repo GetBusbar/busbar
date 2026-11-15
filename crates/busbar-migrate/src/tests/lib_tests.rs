@@ -29,11 +29,7 @@ fn accept(_: &str) -> Result<(), String> {
 fn a_newer_stamp_is_refused_newer() {
     let scratch = Scratch::new();
     let path = scratch.config("config_version: 2\nlisten: x\n");
-    let refused = plan(&Inputs {
-        path: &path,
-        check: &accept,
-    })
-    .unwrap_err();
+    let refused = plan(&Inputs::new(&path, &accept)).unwrap_err();
     assert_eq!(refused, Refusal::Newer { found: 2 });
     assert!(refused.to_string().starts_with("NEWER: "), "{refused}");
     assert_eq!(scratch.names(), ["config.yaml"]);
@@ -62,11 +58,7 @@ fn a_1_5_5_config_is_stamped_once_in_place_with_its_backup() {
         assert_eq!(read_version(text), Ok(CONFIG_FORMAT));
         Ok(())
     };
-    let plan = plan(&Inputs {
-        path: &path,
-        check: &check,
-    })
-    .expect("planned");
+    let plan = plan(&Inputs::new(&path, &check)).expect("planned");
     assert_eq!(seen.get(), 1, "plan runs the strict parse once");
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
@@ -88,6 +80,8 @@ fn a_1_5_5_config_is_stamped_once_in_place_with_its_backup() {
     assert_eq!(
         scratch.names(),
         [
+            // 5c: the writable default overlay path is guarded (P), present or absent.
+            "busbar-overlay.json",
             "config.yaml",
             "config.yaml.1.5.5",
             "config.yaml.busbar-lock"
@@ -95,11 +89,7 @@ fn a_1_5_5_config_is_stamped_once_in_place_with_its_backup() {
         "no temporary is left"
     );
     // A stamped file is never planned again.
-    let again = super::plan(&Inputs {
-        path: &path,
-        check: &accept,
-    })
-    .unwrap_err();
+    let again = super::plan(&Inputs::new(&path, &accept)).unwrap_err();
     assert_eq!(again.word(), "CONFIG");
 }
 
@@ -108,11 +98,7 @@ fn a_1_5_5_config_is_stamped_once_in_place_with_its_backup() {
 fn a_config_stamped_by_a_peer_is_not_written_again() {
     let scratch = Scratch::new();
     let path = scratch.config(CONFIG_1_5_5);
-    let plan = plan(&Inputs {
-        path: &path,
-        check: &accept,
-    })
-    .unwrap();
+    let plan = plan(&Inputs::new(&path, &accept)).unwrap();
     let peer = patch::stamp(CONFIG_1_5_5, CONFIG_FORMAT).unwrap();
     std::fs::write(&path, &peer).unwrap();
     assert_eq!(write(&plan, &accept), Ok(Written::StampedByPeer));
@@ -125,11 +111,7 @@ fn a_config_stamped_by_a_peer_is_not_written_again() {
 fn a_config_changed_after_the_plan_is_a_live_writer() {
     let scratch = Scratch::new();
     let path = scratch.config(CONFIG_1_5_5);
-    let plan = plan(&Inputs {
-        path: &path,
-        check: &accept,
-    })
-    .unwrap();
+    let plan = plan(&Inputs::new(&path, &accept)).unwrap();
     let edited = format!("{CONFIG_1_5_5}groups: {{}}\n");
     std::fs::write(&path, &edited).unwrap();
     let refused = write(&plan, &accept).unwrap_err();
@@ -146,11 +128,7 @@ fn a_planned_document_the_strict_parse_refuses_is_config_with_the_upgrade_line()
     let refuse = |_: &str| -> Result<(), String> {
         Err("config.yaml: unknown field `governance`".to_owned())
     };
-    let refused = plan(&Inputs {
-        path: &path,
-        check: &refuse,
-    })
-    .unwrap_err();
+    let refused = plan(&Inputs::new(&path, &refuse)).unwrap_err();
     let text = refused.to_string();
     assert!(
         text.starts_with("CONFIG: config.yaml: unknown field `governance`\n"),
@@ -166,11 +144,7 @@ fn a_backup_with_other_bytes_refuses_the_write() {
     let scratch = Scratch::new();
     let path = scratch.config(CONFIG_1_5_5);
     std::fs::write(backup_path(&path), "listen: elsewhere\n").unwrap();
-    let plan = plan(&Inputs {
-        path: &path,
-        check: &accept,
-    })
-    .unwrap();
+    let plan = plan(&Inputs::new(&path, &accept)).unwrap();
     let refused = write(&plan, &accept).unwrap_err();
     assert_eq!(refused.word(), "CONFIG");
     assert!(
@@ -192,11 +166,7 @@ fn a_crash_between_backup_and_rename_converges() {
         "half written",
     )
     .unwrap();
-    let plan = plan(&Inputs {
-        path: &path,
-        check: &accept,
-    })
-    .unwrap();
+    let plan = plan(&Inputs::new(&path, &accept)).unwrap();
     assert_eq!(write(&plan, &accept), Ok(Written::Stamped));
     assert_eq!(read_version(&read_config(&path).unwrap()), Ok(1));
     assert_eq!(
@@ -206,6 +176,7 @@ fn a_crash_between_backup_and_rename_converges() {
     assert_eq!(
         scratch.names(),
         [
+            "busbar-overlay.json",
             "config.yaml",
             "config.yaml.1.5.5",
             "config.yaml.busbar-lock"
@@ -221,11 +192,7 @@ fn the_rewritten_config_keeps_the_source_mode() {
         let scratch = Scratch::new();
         let path = scratch.config("listen: 0.0.0.0:8080\nurl: postgres://u:pw@db/b\n");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
-        let plan = plan(&Inputs {
-            path: &path,
-            check: &accept,
-        })
-        .unwrap();
+        let plan = plan(&Inputs::new(&path, &accept)).unwrap();
         assert_eq!(write(&plan, &accept), Ok(Written::Stamped));
         let new_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o7777;
         assert_eq!(new_mode, mode, "config.yaml");

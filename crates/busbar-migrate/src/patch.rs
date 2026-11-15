@@ -88,6 +88,36 @@ fn proof_two(source: &str, written: &str, at: usize, inserted: usize) -> bool {
         && written[at + inserted..] == source[at..]
 }
 
+/// The document's tree: a mapping (a blank or comments-only document is the empty mapping).
+///
+/// # Errors
+/// CONFIG when the text is not YAML or its top level is not a mapping.
+pub fn document(text: &str) -> Result<yaml::Value, Refusal> {
+    if first_key_offset(text) == text.len() {
+        return Ok(yaml::Value::Map(Vec::new()));
+    }
+    let value: yaml::Value = yaml::from_str(text)
+        .map_err(|error| Refusal::Config(format!("config.yaml is not valid YAML: {error}")))?;
+    match value {
+        yaml::Value::Null => Ok(yaml::Value::Map(Vec::new())),
+        value if value.is_mapping() => Ok(value),
+        _ => Err(Refusal::Config(
+            "config.yaml's top level is not a mapping; 1.5.5 did not boot it either".to_owned(),
+        )),
+    }
+}
+
+/// Rewrite `source` so that it reads as `planned` (red: the general edit lands next).
+///
+/// # Errors
+/// CONFIG, always, in this commit.
+pub fn rewrite(source: &str, planned: &yaml::Value, what: &str) -> Result<String, Refusal> {
+    let _ = (source, planned);
+    Err(Refusal::Config(format!(
+        "{what}: the patch writer's general edit is not written yet"
+    )))
+}
+
 #[cfg(test)]
 #[path = "tests/patch_tests.rs"]
 mod tests;
