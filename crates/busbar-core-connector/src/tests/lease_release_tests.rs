@@ -4,7 +4,7 @@
 //! A transport door's READY answers that lease (a framer's `framer.retained_input` report) are
 //! released as the connector's crossing ends: the plugin holds no answer after `go` or `go_inline`.
 
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::host::service::SCHEME_PLAIN;
@@ -33,14 +33,19 @@ const FRAMER: TransportTail = {
     tail
 };
 
-/// The plugin's answer leases, published on first use; read only while the plugin is open.
-static LEASES: AtomicPtr<Leases> = AtomicPtr::new(std::ptr::null_mut());
+/// How many leases the instance held when its last slot body began: every body records it on entry,
+/// so a crossing reads the count the connector left behind once the previous crossing ended.
+/// `usize::MAX` until a body runs (reset before each crossing so a stale count never passes).
+static HELD_AT_ENTRY: AtomicUsize = AtomicUsize::new(usize::MAX);
 
-fn held() -> usize {
-    let leases = LEASES.load(Ordering::Acquire);
-    assert!(!leases.is_null(), "the plugin answered once");
-    // SAFETY: the instance's `Held` lives until close; the test reads it while the door is open.
-    unsafe { &*leases }.held()
+/// Record the instance's held leases as a slot body begins.
+fn observe(leases: &Leases) {
+    HELD_AT_ENTRY.store(leases.held(), Ordering::Release);
+}
+
+/// The count the last slot body saw on entry, and reset it for the next crossing.
+fn held_at_entry() -> usize {
+    HELD_AT_ENTRY.swap(usize::MAX, Ordering::AcqRel)
 }
 
 struct Witness;
@@ -81,10 +86,7 @@ impl SafeSlot for Begin {
         let Some(held) = instance.get() else {
             return Outcome::Refused;
         };
-        LEASES.store(
-            std::ptr::from_ref(held.leases()).cast_mut(),
-            Ordering::Release,
-        );
+        observe(held.leases());
         out.set(|o| &o.framing, 1);
         Outcome::Ready
     }
@@ -115,6 +117,7 @@ impl SafeSlot for Ingest {
         let Some(held) = instance.get() else {
             return Outcome::Refused;
         };
+        observe(held.leases());
         report(held, input.get().len, &mut out)
     }
 }
@@ -133,6 +136,7 @@ impl SafeSlot for Emit {
         let Some(held) = instance.get() else {
             return Outcome::Refused;
         };
+        observe(held.leases());
         report(held, 0, &mut out)
     }
 }
@@ -199,10 +203,12 @@ fn every_answer_is_released(inline: bool) {
     let crossed = door.cross_scoped(Some(&cx), side, false, Call::Begin(&mut begin, &mut begun));
     assert_eq!(crossed.outcome, Outcome::Ready, "{crossed:?}");
     cx.confirm(begun.framing).expect("the framing confirms");
-    assert_eq!(held(), 0, "BEGIN leases nothing");
+    assert_eq!(held_at_entry(), 0, "the instance opens holding nothing");
 
+    // Each body records the held count on entry, so the crossing after an answer reads what the
+    // connector left once that answer's crossing ended.
     let bytes = [b'x'; 16];
-    for exchange in 1..=8 {
+    let ingest = |exchange: usize| {
         let mut i: IngestIn = blank_in();
         i.framing = begun.framing;
         i.bytes = bytes.as_ptr();
@@ -215,12 +221,8 @@ fn every_answer_is_released(inline: bool) {
             Outcome::Ready,
             "ingest {exchange}: {crossed:?}"
         );
-        assert_eq!(
-            held(),
-            0,
-            "ingest {exchange}: the answer's lease was released"
-        );
-
+    };
+    let emit = |exchange: usize| {
         let mut i: EmitIn = blank_in();
         i.framing = begun.framing;
         i.sink = sink;
@@ -231,8 +233,20 @@ fn every_answer_is_released(inline: bool) {
             Outcome::Ready,
             "emit {exchange}: {crossed:?}"
         );
+    };
+
+    ingest(1);
+    assert_eq!(held_at_entry(), 0, "BEGIN leases nothing");
+    for exchange in 1..=8 {
+        emit(exchange);
         assert_eq!(
-            held(),
+            held_at_entry(),
+            0,
+            "ingest {exchange}: the answer's lease was released"
+        );
+        ingest(exchange + 1);
+        assert_eq!(
+            held_at_entry(),
             0,
             "emit {exchange}: the answer's lease was released"
         );
