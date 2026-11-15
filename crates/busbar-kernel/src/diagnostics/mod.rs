@@ -1200,6 +1200,15 @@ diagnostics! {
         example "busbar --validate --config",
         detail "--config requires a value; try 'busbar --help'";
 
+    /// A plane claims bytes on a transport protocol that no installed or admitted transport provides.
+    COMPOSITION_TRANSPORT_UNPROVIDED = 9201, Boot, Fatal, "composition-transport-unprovided", "1.6.0", false,
+        "A plane needs a transport protocol that no installed transport provides",
+        "A plane serves on a transport protocol (the admin plane serves on `http`, for example). Busbar itself provides no transport: every protocol comes from a plugin of kind `transport`, linked into the build or installed in `plugins.dir` and admitted at boot. No installed or admitted transport provides the protocol the message names, so the plane could never receive a request, and busbar refused to start rather than serve without it. This describes the deployment's installed plugins, not a fault in the binary. Nothing was served; the process exited with status 2.",
+        "Install a transport plugin that provides the protocol the message names (a signed plugin of kind `transport` in `plugins.dir`), then restart. `busbar --list-plugins` lists the installed plugins and whether each one was admitted."
+        => composition_transport_unprovided(plane, transport) "plane `{plane}` needs a transport of kind `transport` that provides the protocol `{transport}`, and none is installed or admitted; install a transport plugin that provides `{transport}`",
+        example "busbar --config /etc/busbar/config.yaml",
+        detail "plane `admin` needs a transport of kind `transport` that provides the protocol `http`, and none is installed or admitted; install a transport plugin that provides `http`";
+
     MIGRATE_PATH_MISSING = 3401, Config, Fatal, "migrate-path-missing", "1.6.0", false,
         "--migrate-config was given no file to migrate",
         "`busbar --migrate-config` converts one old config file and needs its path. None was given, so nothing was read or printed; the process exited with the usage status (2).",

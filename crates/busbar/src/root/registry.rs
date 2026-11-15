@@ -16,15 +16,18 @@ use crate::root::linked::LinkedClaims;
 pub(crate) enum BootRefusal {
     /// Two planes claim bytes that could both match.
     ClaimOverlap(Box<ClaimConflict>),
-    /// A plane claims bytes on a transport no crate in the tree provides.
+    /// A plane claims bytes on a transport protocol no installed or admitted transport provides.
     ///
-    /// The design lists thirteen transports and six wires exist. What the root owes is that a claim
-    /// on one of the missing seven is a refusal an operator sees at boot, with the plane and the
-    /// transport named — never a silent 404 at the first request that would have matched it.
+    /// Core provides no transport of its own: every protocol comes from a `kind: transport` plugin,
+    /// linked or dropped in and admitted. What the root owes is that a claim on a protocol none of
+    /// them provides is a coded refusal an operator sees at boot (BUSBAR-9201), with the plane and
+    /// the protocol named and the kind of plugin to install, never a silent 404 at the first
+    /// request that would have matched it. It names no plugin: which one provides the protocol is
+    /// the deployment's choice.
     UnregisteredClaimTransport {
         /// The plane that made the claim.
         plane: &'static str,
-        /// The transport it claimed on.
+        /// The transport protocol it claimed on.
         transport: &'static str,
     },
     /// Two planes of one kind declare one key.
@@ -42,7 +45,10 @@ impl std::fmt::Display for BootRefusal {
             Self::ClaimOverlap(conflict) => write!(f, "{conflict}"),
             Self::UnregisteredClaimTransport { plane, transport } => write!(
                 f,
-                "plane `{plane}` claims on transport `{transport}`, which no crate provides"
+                "{}",
+                busbar_kernel::diagnostics::coded::composition_transport_unprovided(
+                    plane, transport
+                )
             ),
             Self::DuplicateKey { kind, key } => {
                 write!(f, "two {kind:?} plugins both declare the key {key:?}")
@@ -146,7 +152,11 @@ pub(crate) fn check(
 pub(crate) fn check_or_exit(planes: &[LinkedClaims]) {
     let connector = crate::root::connector::the();
     check(planes, &|scheme| connector.framer_for(scheme).is_some()).unwrap_or_else(|refusal| {
-        eprintln!("busbar: the composition root did not seal: {refusal}");
+        match refusal {
+            // The deployment's installed plugins, not the build: the coded line says what to install.
+            BootRefusal::UnregisteredClaimTransport { .. } => eprintln!("[error] {refusal}"),
+            _ => eprintln!("busbar: the composition root did not seal: {refusal}"),
+        }
         crate::root::exit::exit(2);
     });
 }

@@ -278,3 +278,4 @@ BUSBAR-9021	shutdown-drain-incomplete-unrecorded	1.6.0
 BUSBAR-9022	expired-writer-row-invalid	1.6.0
 BUSBAR-9023	expired-writer-close-failed	1.6.0
 BUSBAR-9024	expired-writers-remaining	1.6.0
+BUSBAR-9201	composition-transport-unprovided	1.6.0

@@ -1130,14 +1130,8 @@ async fn run(
         );
     }
 
-    match busbar_kernel::observability::init_logging() {
-        Ok(()) => {}
-        Err(busbar_kernel::observability::LoggingError::RustLog(e)) => die(e),
-        Err(e @ busbar_kernel::observability::LoggingError::AlreadyInitialized(_)) => {
-            eprintln!("busbar: {e}");
-        }
-    }
-    // Startup conversion notices raised while the configuration loaded, before the log existed.
+    // The subscriber is `main`'s, installed once before any work; nothing here installs another.
+    // Startup conversion notices raised while the configuration loaded.
     documents.replay_notices();
 
     if ignore_overlay {
