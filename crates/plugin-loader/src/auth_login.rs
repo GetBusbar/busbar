@@ -14,9 +14,8 @@ use busbar_contract::abi::mechanism::call::{
 };
 use busbar_contract::auth::{BeginLogin, FieldKind, LoginForm, LoginOutcome, Principal};
 use busbar_contract::auth_calls::{LoginCall, LoginCallback, LoginSettled};
-use busbar_contract::secure::SecureVec;
 
-use super::{blob, grown, identify_out, lend, lend_opt, zero, Held, Shared, VerifyInput};
+use super::{blob, grown, identify_out, lend, lend_opt, Held, Shared, VerifyInput};
 use crate::dispatch::call::{Answering, Pending, Ticketed};
 use crate::dispatch::kinds::auth::Auth;
 use crate::dispatch::lifecycle::{release, AnswerLease};
@@ -211,68 +210,58 @@ where
     }
 }
 
+/// What one `complete_login` is lent: the callback itself, shared with the step that may recall it
+/// with larger identity buffers, so no field is copied.
 struct CompleteHeld {
-    code: Option<Vec<u8>>,
-    state: String,
-    redirect_uri: Option<String>,
-    code_verifier: Option<Vec<u8>>,
-    nonce: Option<String>,
-    submitted: Vec<(String, SecureVec)>,
+    request: Arc<LoginCallback>,
     named: Vec<busbar_contract::abi::auth::NamedValue>,
     id: Arc<Held>,
 }
 
-// SAFETY: `named` points only into `submitted`, which `CompleteHeld` owns and never mutates after
-// construction (it is zeroed only in `Drop`, once nothing reads it).
+// SAFETY: `named` points only into `request`'s submitted values, which `CompleteHeld` shares
+// through an `Arc` that hands out no `&mut`, so nothing mutates them while it lives.
 unsafe impl Send for CompleteHeld {}
 // SAFETY: as above.
 unsafe impl Sync for CompleteHeld {}
 
 impl CompleteHeld {
     fn new(
-        req: &LoginCallback,
+        req: &Arc<LoginCallback>,
         seal: Option<&(dyn busbar_contract::plugin::KernelSeal + Send + Sync)>,
         buf_cap: usize,
         groups_cap: u32,
     ) -> Arc<Self> {
-        let login = &req.login;
-        let mut held = Self {
-            code: login.code.as_ref().map(|c| c.as_bytes().to_vec()),
-            state: req.state.clone(),
-            redirect_uri: login.redirect_uri.clone(),
-            code_verifier: login.code_verifier.as_ref().map(|c| c.as_bytes().to_vec()),
-            nonce: req.nonce.clone(),
-            submitted: login
-                .submitted
-                .iter()
-                .filter_map(|(n, v)| Some((n.clone(), SecureVec::from(v.expose(seal?).as_bytes()))))
-                .collect(),
-            named: Vec::new(),
-            id: Held::new(VerifyInput::empty(), buf_cap, groups_cap, 0),
-        };
-        held.named = held
+        let named = req
+            .login
             .submitted
             .iter()
-            .map(|(name, value)| busbar_contract::abi::auth::NamedValue {
-                name: lend(name),
-                value: blob(value, BLOB_OCTETS, BLOB_SECRET),
+            .filter_map(|(name, value)| {
+                Some(busbar_contract::abi::auth::NamedValue {
+                    name: lend(name),
+                    value: blob(value.expose(seal?).as_bytes(), BLOB_OCTETS, BLOB_SECRET),
+                })
             })
             .collect();
-        Arc::new(held)
+        Arc::new(Self {
+            request: Arc::clone(req),
+            named,
+            id: Held::new(VerifyInput::empty(), buf_cap, groups_cap, 0),
+        })
     }
 
     fn input(&self) -> CompleteLoginIn {
-        let secret = |b: &Option<Vec<u8>>| {
-            b.as_deref().map_or(crate::dispatch::NO_BLOB, |b| {
-                blob(b, BLOB_OCTETS, BLOB_SECRET)
+        let secret = |b: Option<&str>| {
+            b.map_or(crate::dispatch::NO_BLOB, |b| {
+                blob(b.as_bytes(), BLOB_OCTETS, BLOB_SECRET)
             })
         };
+        let req = &*self.request;
         CompleteLoginIn {
             head: in_head(),
-            code: secret(&self.code),
-            state: lend(&self.state),
-            redirect_uri: lend_opt(self.redirect_uri.as_deref()),
-            code_verifier: secret(&self.code_verifier),
+            code: secret(req.login.code.as_deref()),
+            state: lend(&req.state),
+            redirect_uri: lend_opt(req.login.redirect_uri.as_deref()),
+            code_verifier: secret(req.login.code_verifier.as_deref()),
             submitted: if self.named.is_empty() {
                 std::ptr::null()
             } else {
@@ -280,21 +269,7 @@ impl CompleteHeld {
             },
             submitted_len: self.named.len(),
             out_buf: self.id.input(false).out_buf,
-            nonce: lend_opt(self.nonce.as_deref()),
-        }
-    }
-}
-
-impl Drop for CompleteHeld {
-    fn drop(&mut self) {
-        for b in [&mut self.code, &mut self.code_verifier]
-            .into_iter()
-            .flatten()
-        {
-            zero(b);
-        }
-        for (_, v) in &mut self.submitted {
-            zero(v);
+            nonce: lend_opt(req.nonce.as_deref()),
         }
     }
 }
@@ -354,6 +329,7 @@ pub(super) fn complete(shared: &Arc<Shared>, request: LoginCallback) -> Box<dyn 
     if !request.login.submitted.is_empty() && seal.is_none() {
         return Box::new(LoginSettled(Some(LoginOutcome::Reject)));
     }
+    let request = Arc::new(request);
     let held = CompleteHeld::new(&request, seal, IDENTITY_BUF_BYTES, IDENTITY_GROUPS);
     submit_complete(shared, &mut call, &held);
     Box::new(Pending::new(
@@ -386,7 +362,7 @@ fn submit_complete(
 
 struct Complete {
     shared: Arc<Shared>,
-    request: LoginCallback,
+    request: Arc<LoginCallback>,
     held: Arc<CompleteHeld>,
     recalled: bool,
     hint: Option<busbar_contract::auth_calls::RejectHint>,

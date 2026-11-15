@@ -1734,7 +1734,6 @@ fn evaluate_against_with_evidence(
 }
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/sign_tests.rs"]
 mod tests;
 

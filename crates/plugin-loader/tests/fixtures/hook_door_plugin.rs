@@ -452,7 +452,6 @@ pub mod ordering {
 }
 
 pub mod untailed {
-    #[allow(unsafe_code)]
     pub extern "C" fn door() -> &'static busbar_contract::abi::mechanism::door::Door {
         use busbar_contract::abi::mechanism::door::{Door, DoorParts, Statement};
         const STATEMENT: Statement = busbar_contract::abi::sdk::door::stamp::<
