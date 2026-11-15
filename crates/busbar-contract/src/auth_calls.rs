@@ -448,28 +448,10 @@ pub trait AuthAxis: Send + Sync {
     /// Whether `module` names a row this build LINKS.
     fn linked(&self, module: &str) -> bool;
 
-    /// THE OPERATOR CREDENTIAL'S ROW: the auth row whose Statement states
-    fn operator(&self) -> Option<(String, String)>;
-
-    /// Every admitted auth row whose Statement states the operator credential fact, and every row
-    /// whose Statement does not read (OPERATOR-FROM-ADMITTED-AUTH §3.2).
-    fn operator_claims(&self) -> OperatorClaims {
-        OperatorClaims {
-            claims: self
-                .operator()
-                .map(|(provider, principal)| OperatorClaim {
-                    canonical: provider.clone(),
-                    provider,
-                    principal,
-                    first_party: true,
-                    version: String::new(),
-                    signer: String::new(),
-                })
-                .into_iter()
-                .collect(),
-            unreadable: Vec::new(),
-        }
-    }
+    /// THE OPERATOR CLAIMS: every admitted auth row whose Statement states the operator credential
+    /// fact, and every auth row whose Statement does not read (OPERATOR-FROM-ADMITTED-AUTH §3.2).
+    /// The kernel judges them (first-party only, at most one); the axis never picks one.
+    fn operator_claims(&self) -> OperatorClaims;
 
     /// OPEN one instance of `module` over `settings` (the provider's settings, one JSON document,
     fn open(

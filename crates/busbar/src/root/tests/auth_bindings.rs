@@ -34,7 +34,15 @@ fn an_unbound_node_binds_no_authority() {
 }
 
 fn hand_in_the_root_words() {
-    busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths, operator_words());
+    busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
+}
+
+/// The operator words process start judges from this root's admitted rows (OPERATOR-FROM-ADMITTED-AUTH
+/// §3.4): the linked operator row stating the operator fact.
+fn operator_words() -> busbar_kernel_identity::operator::OperatorWords {
+    hand_in_the_root_words();
+    busbar_kernel_identity::operator::words()
 }
 
 #[test]
@@ -44,8 +52,10 @@ fn the_operator_provider_is_the_row_the_manifest_names() {
         !words.provider.is_empty(),
         "the manifest names an operator row"
     );
-    assert_eq!(words.provider, crate::LINKED.operator_auth);
-    assert_eq!(words.principal_id, ADMIN_PRINCIPAL_ID);
+    assert_eq!(
+        words.principal_id, "admin",
+        "the principal the operator row states"
+    );
     let stating: Vec<&str> = crate::LINKED
         .auths
         .iter()

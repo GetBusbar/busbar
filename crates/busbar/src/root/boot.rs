@@ -1196,6 +1196,17 @@ pub(crate) fn with_skip_lines(mut refusal: String) -> String {
     refusal
 }
 
+/// Whether process start found a `plugins:` block that does not read as the current shape: the
+/// startup upgrade's, whose converted view binds the operator credential (OPERATOR-FROM-ADMITTED-AUTH
+/// §3.4.1).
+static HISTORICAL_PLUGINS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the start scan deferred a pre-1.6 `plugins:` block to the startup upgrade.
+pub(crate) fn plugins_block_is_historical() -> bool {
+    HISTORICAL_PLUGINS.load(std::sync::atomic::Ordering::Acquire)
+}
+
 /// Process start's scan of the configured `plugins.dir`. `Ok(None)`: no `plugins:` block, or
 /// `enabled: false`. Deferred to the reader, which reports them itself (`Ok(None)`): an unreadable
 /// file, an interpolation or YAML error, and a `plugins:` block that does not read as the current
@@ -1223,6 +1234,7 @@ fn scan_configured() -> Result<Option<crate::root::loader::PluginRegistry>, Stri
     let Ok(plugins) =
         busbar_contract::yaml::from_value::<busbar_kernel::config::PluginsCfg>(block.clone())
     else {
+        HISTORICAL_PLUGINS.store(true, std::sync::atomic::Ordering::Release);
         return Ok(None);
     };
     if !plugins.enabled {

@@ -141,10 +141,8 @@ async fn serve_admission_with_inputs(
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     busbar_core_admin::install();
 
-    busbar_kernel::preflight::install_linked_auth(
-        crate::LINKED.auths,
-        crate::root::auth_bindings::operator_words(),
-    );
+    busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
     crate::dist_root_install::install();
     let module = busbar_kernel::preflight::root_rows()
         .stores

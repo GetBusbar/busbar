@@ -113,8 +113,8 @@ impl AuthAxis for Axis {
     fn linked(&self, module: &str) -> bool {
         module == MODULE
     }
-    fn operator(&self) -> Option<(String, String)> {
-        None
+    fn operator_claims(&self) -> busbar_contract::auth_calls::OperatorClaims {
+        busbar_contract::auth_calls::OperatorClaims::default()
     }
     fn open(
         &self,
@@ -520,8 +520,8 @@ mod operator_instance {
         fn linked(&self, _: &str) -> bool {
             false
         }
-        fn operator(&self) -> Option<(String, String)> {
-            None
+        fn operator_claims(&self) -> busbar_contract::auth_calls::OperatorClaims {
+            busbar_contract::auth_calls::OperatorClaims::default()
         }
         fn open(
             &self,

@@ -28,7 +28,6 @@ pub mod relend;
 #[cfg(test)]
 use crate::off_path::auth::chain::admin_head;
 pub(crate) use crate::off_path::auth::chain::auth_refusal;
-pub use crate::off_path::auth::chain::open_operator;
 use crate::off_path::auth::chain::{admin_head_with, admin_verbs_named};
 pub use admitted::{admitted_context, AdmittedContext, AdmittedRefusal};
 
@@ -1166,12 +1165,17 @@ async fn run_admin_chain(
     for name in &app.admin_chain {
         let operator = app.admin_modules.operator.is(name);
         let outcome = match name.as_str() {
+            // The operator arm stays first. A backed provider with an opened instance is judged
+            // through the same bounded admission call as every admin module; an unset one passes.
             _ if operator => {
                 let operator = &app.admin_modules.operator;
-                let head = admin_head_with(method, target, headers, now, candidate);
-                match probe {
-                    true => operator.probe(&head),
-                    false => operator.judge(head).await,
+                match operator.instance(name) {
+                    Some(calls) => {
+                        let head = admin_head_with(method, target, headers, now, candidate);
+                        Some(judge_admin_calls(calls, head, probe).await)
+                    }
+                    None if operator.unset(name) => Some(Judgement::of(AuthVerdict::Pass)),
+                    None => None,
                 }
             }
 

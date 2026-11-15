@@ -576,24 +576,23 @@ fn test_admin_scope_cap_ceilings_external_module() {
 #[test]
 fn an_unanswered_operator_does_not_open_a_verifier() {
     use crate::auth::{Operator, OperatorCredential};
-    let digest = busbar_contract::redacted::sha256_hex(b"tok");
 
-    let open = |digest| {
+    // OPERATOR-FROM-ADMITTED-AUTH §3.8: the operator instance is opened by the admin chain build
+    // with its own settings (never over a core digest); an unanswered operator holds none.
+    let open = |answered| {
         Operator::open(
             "operator-provider",
             std::iter::empty(),
             &|module: &str| module == "operator-provider",
-            false,
-            digest,
-            |_| panic!("an unanswered operator must not invoke a verifier factory"),
+            answered,
+            foldhash::HashMap::default(),
         )
-        .expect("an unanswered operator is represented explicitly")
     };
-    assert!(matches!(
-        *open(Some(digest)),
-        OperatorCredential::Unanswered
-    ));
-    assert!(matches!(*open(None), OperatorCredential::Unanswered));
+    assert!(matches!(*open(false), OperatorCredential::Unanswered));
+    assert!(open(false).instance("operator-provider").is_none());
+    assert!(!open(false).unset("operator-provider"));
+    assert!(matches!(*open(true), OperatorCredential::Unset));
+    assert!(open(true).unset("operator-provider"));
 }
 
 pub(super) fn admin_headers(bearer: Option<&str>, header: Option<&str>) -> HeaderMap {
