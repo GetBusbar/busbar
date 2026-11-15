@@ -377,7 +377,14 @@ async fn a_day_old_correction_sent_here_resends_its_operation_and_applies_once()
     let delta = delta();
     let adj = correction(&key, &delta, now);
     assert!(gov.adjust_usage_async(&cm, &adj).await.is_err());
-    let operation = store.correction_calls.lock().unwrap()[0].op_id.0;
+    // The recovery book keys a correction by its request operation; read it from the book itself
+    // rather than from the store fixture's observed commit.
+    let operation = gov
+        .selected_recovery_events()
+        .into_iter()
+        .find(|event| event.kind == RecoveryKind::Correction)
+        .expect("the sent correction is selected in the recovery book")
+        .operation_id;
     gov.backdate_recovery_send(operation, std::time::Duration::from_secs(24 * 60 * 60 + 1));
     gov.adjust_usage_async(&cm, &adj).await.unwrap().unwrap();
     assert_eq!(
