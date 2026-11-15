@@ -1145,7 +1145,8 @@ async fn run(
     busbar_kernel::router::configure_server_timing(response_headers_cfg.server_timing);
 
     let resolved_export = config::resolve_export(&deploy.export, &mut Vec::new());
-    snapshot::configure(
+    snapshot::configure_telemetry(
+        &deploy.telemetry,
         resolved_export
             .recorder
             .as_ref()

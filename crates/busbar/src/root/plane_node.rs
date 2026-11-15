@@ -1368,6 +1368,15 @@ impl SessionSlot<'_> {
             .unwrap_or(Outcome::Aborted(busbar_contract::caps::Abort::Kernel {
                 reason: busbar_contract::caps::ReasonCode::ClientGone,
             }));
+        if let Some(reason) = refusal_reason(outcome) {
+            busbar_kernel::telemetry::unit_refusal_on(
+                self.money.as_ref().map_or_else(
+                    busbar_kernel::plane_driver::dispatch::fallback_key,
+                    |(_, facts)| facts.plane.plane_key(),
+                ),
+                reason.as_str(),
+            );
+        }
         let ended = self.own.take().map(|own| {
             own.finish(
                 &node.kernel,
@@ -1393,6 +1402,16 @@ impl SessionSlot<'_> {
         };
         self.occupied.reached_end = true;
         confirmation
+    }
+}
+
+/// The closed reason a unit that did not complete ended under; `None` for a completed unit.
+fn refusal_reason(outcome: Outcome) -> Option<busbar_contract::caps::ReasonCode> {
+    match outcome {
+        Outcome::Completed => None,
+        Outcome::Refused(_, reason) | Outcome::Failed(_, reason) => Some(reason),
+        Outcome::Aborted(abort) => Some(abort.reason()),
+        Outcome::TimedOut(_) => Some(busbar_contract::caps::ReasonCode::DeadlineExceeded),
     }
 }
 
