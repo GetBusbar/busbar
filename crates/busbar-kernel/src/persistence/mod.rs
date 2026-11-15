@@ -10,6 +10,7 @@
 pub mod boot_identity;
 pub(crate) mod candidate_codec;
 pub mod plugin_floor;
+pub mod undrained;
 // Staged host-service owner; the old caller port removes this allowance.
 pub(crate) mod claims;
 pub mod commit;

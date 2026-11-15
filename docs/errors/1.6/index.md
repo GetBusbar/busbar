@@ -324,6 +324,10 @@ The thousands digit is the area.
 | [BUSBAR-9018](/docs/1.6/errors/BUSBAR-9018/) | First start not handed over on exit (the next start waits) | 1.6.0 |
 | [BUSBAR-9019](/docs/1.6/errors/BUSBAR-9019/) | Shutdown drain incomplete (the writer was not retired; exit 75 or 70) | 1.6.0 |
 | [BUSBAR-9020](/docs/1.6/errors/BUSBAR-9020/) | Completed spend not in durable custody at exit (exit 70) | 1.6.0 |
+| [BUSBAR-9021](/docs/1.6/errors/BUSBAR-9021/) | A closed writer's shutdown.drain_incomplete record could not be queued (retried) | 1.6.0 |
+| [BUSBAR-9022](/docs/1.6/errors/BUSBAR-9022/) | A writer lease or host assignment row does not decode (never closed) | 1.6.0 |
+| [BUSBAR-9023](/docs/1.6/errors/BUSBAR-9023/) | An expired writer was not closed (the next start retries) | 1.6.0 |
+| [BUSBAR-9024](/docs/1.6/errors/BUSBAR-9024/) | More expired writers remain than one start closes (the next start continues) | 1.6.0 |
 | [BUSBAR-9101](/docs/1.6/errors/BUSBAR-9101/) | The command line names an argument busbar does not know | 1.6.0 |
 | [BUSBAR-9102](/docs/1.6/errors/BUSBAR-9102/) | A command's arguments do not fit together | 1.6.0 |
 | [BUSBAR-9103](/docs/1.6/errors/BUSBAR-9103/) | A command-line flag is missing its value | 1.6.0 |
