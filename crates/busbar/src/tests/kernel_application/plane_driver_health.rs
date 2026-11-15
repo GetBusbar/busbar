@@ -146,10 +146,10 @@ async fn healthz_with_no_model_lane_is_unready_when_the_planes_open_refused() {
 }
 
 #[tokio::test]
-async fn healthz_with_no_plane_configured_stays_unready() {
+async fn healthz_of_an_admin_only_engine_is_ready() {
     assert_eq!(
         lane_less_healthz(None).await,
-        (503, b"no usable lanes".to_vec()),
-        "with nothing configured /healthz answers 1.5.5's 503"
+        (200, b"ok".to_vec()),
+        "no LLM plane, no providers and no other plane configured: lanes do not count against health"
     );
 }
