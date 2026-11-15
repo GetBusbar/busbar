@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Transport request encoders and answer decoders (IF §8.8). `decode_offer` is written; `encode_path` and
-//! `encode_keying` are held on GitLab busbar#256 (the event argument has no record tag in the frozen table).
+//! Transport request encoders and answer decoders (IF §8.8). `encode_path` and `encode_keying` write the
+//! EV_PATH and EV_KEYING arguments, one record each (R6b, busbar#256).
 
 use busbar_plugin_abi::host_side::answer::Answer;
 use busbar_plugin_abi::records::{tag as generic, Full, RecErr, Records, Writer};
-use busbar_plugin_abi::transport::{tag, ROLE_CLIENT, ROLE_SERVER};
+use busbar_plugin_abi::transport::{tag, KeyingRec, PathRec, ROLE_CLIENT, ROLE_SERVER};
 
 /// The most ALPN ids, and the most default lines, one `offer` answer may carry (§8.7).
 const OFFER_MAX: usize = 8;
@@ -14,8 +14,7 @@ const OFFER_MAX: usize = 8;
 const ALPN_MAX: usize = 255;
 
 pub fn encode_path(w: &mut impl Writer, path: u32, flags: u32, addr: &str) -> Result<(), Full> {
-    let _ = (w, path, flags, addr);
-    todo!("busbar#256: the EV_PATH argument has no record tag in the frozen table (IF §8.7, §8.8)")
+    w.put_pod_tail(tag::EVENT_PATH, &PathRec { path, flags }, addr.as_bytes())
 }
 
 pub fn encode_keying(
@@ -24,10 +23,7 @@ pub fn encode_keying(
     profile: u32,
     material: &[u8],
 ) -> Result<(), Full> {
-    let _ = (w, path, profile, material);
-    todo!(
-        "busbar#256: the EV_KEYING argument has no record tag in the frozen table (IF §8.7, §8.8)"
-    )
+    w.put_pod_tail(tag::EVENT_KEYING, &KeyingRec { path, profile }, material)
 }
 
 /// Round 9: the `offer` answer (ALPN*, each 1..=255 bytes, at most 8). Round 22: then, for ROLE_CLIENT only,
@@ -136,7 +132,6 @@ mod tests {
             .map(|(name, value)| (&**name, &**value))
             .collect()
     }
-
 
     /// R6b (busbar#256): an EV_PATH argument is exactly one record, tag 0x0117, body PathRec + address text.
     #[test]

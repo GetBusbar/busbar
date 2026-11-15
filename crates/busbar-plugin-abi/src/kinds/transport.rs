@@ -99,8 +99,8 @@ crate::kind::kind_stub! {
             Err(crate::fail::Fail::unsupported())
         }
 
-        /// Core-side datagram events: EV_PATH (arg = PathRec + addr: path added, gone, bound, verified, rejected
-        /// or denied), EV_KEYING (arg = KeyingRec + material, after DTLS on a path), EV_RENDEZVOUS (arg = the far
+        /// Core-side datagram events: EV_PATH (arg = one EVENT_PATH record, PathRec + addr: path added, gone, bound, verified, rejected
+        /// or denied), EV_KEYING (arg = one EVENT_KEYING record, KeyingRec + material, after DTLS on a path), EV_RENDEZVOUS (arg = one generic TEXT record, the far
         /// end's session description text). Answer: as datagram, plus RENDEZVOUS, ICE_TERMS (with the remote
         /// credentials, after EV_RENDEZVOUS) and ICE_CANDIDATE* (the far end's candidates).
         fn event(
@@ -359,6 +359,10 @@ pub mod transport {
         /// never need it: core owns the socket and stops calling `emit` while the socket is not writable.
         pub const STREAM_FULL: u16 = 0x0115;
         pub const STREAM_WRITABLE: u16 = 0x0116;
+        /// R6b: an EV_PATH `event` argument is exactly one record of this tag, body = PathRec + remote address text.
+        pub const EVENT_PATH: u16 = 0x0117;
+        /// R6b: an EV_KEYING `event` argument is exactly one record of this tag, body = KeyingRec + material.
+        pub const EVENT_KEYING: u16 = 0x0118;
         /// describe: D_PROTOCOL (text protocol name for UPGRADE targets, e.g. "websocket", "grpc").
         /// Round 9: 0x0180 (round 8's D_ALPN) is retired; the ALPN offer is per instance and per side (`offer`).
         pub const D_PROTOCOL: u16 = 0x0181;
@@ -591,7 +595,7 @@ mod tests {
     use zerocopy::IntoBytes;
 
     /// Every transport tag, in table order.
-    const TAGS: [u16; 24] = [
+    const TAGS: [u16; 26] = [
         tag::WRITE,
         tag::CLOSE,
         tag::WAKE_AT,
@@ -615,14 +619,16 @@ mod tests {
         tag::ALPN,
         tag::STREAM_FULL,
         tag::STREAM_WRITABLE,
+        tag::EVENT_PATH,
+        tag::EVENT_KEYING,
         tag::D_PROTOCOL,
     ];
 
-    /// The call records are 0x0100..=0x0116 in table order; the one describe item is D_PROTOCOL 0x0181, and
+    /// The call records are 0x0100..=0x0118 in table order; the one describe item is D_PROTOCOL 0x0181, and
     /// round 8's D_ALPN (0x0180) stays retired.
     #[test]
     fn the_tags_keep_their_numbers_and_d_alpn_stays_retired() {
-        assert!(TAGS[..23].iter().copied().eq(0x0100..=0x0116));
+        assert!(TAGS[..25].iter().copied().eq(0x0100..=0x0118));
         assert_eq!(tag::D_PROTOCOL, 0x0181);
         assert!(!TAGS.contains(&0x0180));
     }
