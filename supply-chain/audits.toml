@@ -55,6 +55,12 @@ delta = "2.1.0 -> 2.1.0@git:e62d0c9a92189d705642ebebe48545e2a556fa62"
 importable = false
 notes = "busbar's own patch, reviewed by us (parser input-safety review before pinning): upstream tag 2.1.0 (f8d30ef6, byte-identical src to the published crate) plus two commits adding Options::bom_inside_document_as_content (default false; when true a U+FEFF where a token would begin inside a document starts a plain scalar, as libyaml reads it; BOM before content still skipped) and its doc, plus a backport of upstream #53 (5eacd651: under-indented quoted-scalar continuations in block context accepted by default, still refused under strict_indentation; scanner.rs condition sharing, no new state). scanner.rs, options.rs, lib.rs docs, tests. No unsafe, no new dependencies, no I/O; default behaviour unchanged. Offered upstream. Covers only this exact revision."
 
+[[audits.serde-saphyr]]
+criteria = "safe-to-deploy"
+delta = "2.1.1@git:8ec56f9acc93e8f2f2c30f4e52497acc76cce86a -> 2.1.1@git:9e1666f3199cf41ab83394936a5093f72c7e22c1"
+importable = false
+notes = "busbar's own patch: one commit, src/de/message_formatters.rs only. Unknown field and unknown variant refusals render their expected names as serde's default de::Error does (`a`, `a` or `b`, one of `a`, `b`, `c`; there are no fields/variants when empty) via a pure string helper. Display text only: no parsing, unsafe, I/O or dependency change. Covers only this exact revision."
+
 [[audits.h2]]
 criteria = "safe-to-deploy"
 delta = "0.4.18 -> 0.4.18@git:d6146a5c425e55653cdfebc5660e52d87430c588"

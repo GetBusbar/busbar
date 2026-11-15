@@ -193,7 +193,7 @@ tungstenite = { git = "https://github.com/MattJackson/tungstenite-rs", rev = "89
 # YAML: serde-saphyr and granit-parser carry busbar's opt-in serde_yaml-compatibility options
 # (null_scalars_as_text, lowercase_radix_prefixes_only, bom_inside_document_as_content), offered
 # upstream; forks of the exact published versions plus those commits.
-serde-saphyr = { git = "https://github.com/MattJackson/serde-saphyr", rev = "8ec56f9acc93e8f2f2c30f4e52497acc76cce86a" }
+serde-saphyr = { git = "https://github.com/MattJackson/serde-saphyr", rev = "9e1666f3199cf41ab83394936a5093f72c7e22c1" }
 granit-parser = { git = "https://github.com/MattJackson/granit-parser", rev = "e62d0c9a92189d705642ebebe48545e2a556fa62" }
 
 [profile.release]
