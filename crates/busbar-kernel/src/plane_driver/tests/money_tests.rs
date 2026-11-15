@@ -2702,7 +2702,7 @@ async fn exit_evidence_counts_admissions_not_opens() {
     drop(parent);
     let evidence = exit_evidence(&r);
     let mut units: Vec<u64> = evidence.iter().map(|unit| unit.unit.get()).collect();
-    units.sort_unstable();
+    units.sort();
     assert_eq!(
         units,
         [1, 2, 3],

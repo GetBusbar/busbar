@@ -396,7 +396,8 @@ impl PersistenceBackend for Mem {
             }
             let mode = *self.mode.lock().unwrap();
             match mode {
-                Mode::Forward => {}
+                // `TamperRecovery` acts on the next recovery selection only (above).
+                Mode::Forward | Mode::TamperRecovery => {}
                 Mode::AppendInWindow => {
                     let landed = self.inject();
                     if tokio::time::timeout(Duration::from_millis(300), landed)

@@ -1624,6 +1624,17 @@ impl PendingMetering {
         })
     }
 
+    /// Metering cells pending in the shards plus writes in flight: a count only, for the
+    /// shutdown drain's progress line (SHUTDOWN-HANG F4 "Progress"). Never on the request path.
+    #[must_use]
+    pub fn pending_cells(&self) -> usize {
+        let mut len = 0usize;
+        for shard in self.shards.iter() {
+            len += shard.lock().unwrap_or_else(|e| e.into_inner()).len();
+        }
+        len + self.flight.lock().unwrap_or_else(|p| p.into_inner()).len()
+    }
+
     #[cfg(test)]
     pub fn totals(&self) -> (usize, MeterCounts) {
         let mut len = 0usize;

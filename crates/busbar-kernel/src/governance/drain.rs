@@ -540,7 +540,7 @@ impl GovState {
                     .unwrap_or_else(|p| p.into_inner())
                     .len(),
             ),
-            metering: count(self.pending_metering.totals().0),
+            metering: count(self.pending_metering.pending_cells()),
         }
     }
 }
