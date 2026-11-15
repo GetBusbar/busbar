@@ -133,7 +133,6 @@ impl StoredEntry {
         )]
         let card: serde_json::Value =
             serde_json::from_slice(&self.card.to_bytes()).unwrap_or(serde_json::Value::Null);
-        // busbar:expect(bp::clone_alloc, reason = "boot: the legacy price codec runs only in offline startup migration")
         let json = EntryJson {
             v: 1,
             from: self.effective_from,
@@ -274,7 +273,6 @@ impl VoidRecord {
 
 #[must_use]
 pub fn part_key(key: &EntryKey, part: u16) -> Vec<u8> {
-    // busbar:expect(bp::fresh_buffer, reason = "boot: the legacy price codec runs only in offline startup migration")
     let mut out = Vec::with_capacity(ENTRY_KEY_LEN + 2);
     out.extend_from_slice(key.as_bytes());
     out.extend_from_slice(&part.to_be_bytes());
@@ -425,7 +423,6 @@ fn data_key(key: EntryKey, part: u64) -> Vec<u8> {
 fn value_records(key: EntryKey, value: &[u8], own: bool) -> Result<Records, String> {
     let length = u64::try_from(value.len()).map_err(|_| "card value length overflow")?;
     let count = length.div_ceil(PART_BYTES as u64);
-    // busbar:expect(bp::fresh_buffer, reason = "boot: the legacy price codec runs only in offline startup migration")
     let mut records = Vec::new();
     for (index, part) in value.chunks(PART_BYTES).enumerate() {
         let index = u64::try_from(index).map_err(|_| "card chunk index overflow")?;
@@ -471,7 +468,6 @@ fn assemble(parts: &BTreeMap<u64, Vec<u8>>, meta: &[u8]) -> Result<(Vec<u8>, boo
     {
         return Err("card chunk count does not match its value length");
     }
-    // busbar:expect(bp::fresh_buffer, reason = "boot: the legacy price codec runs only in offline startup migration")
     let mut value = Vec::new();
     for (expected, (&index, chunk)) in (0..count).zip(parts.iter()) {
         if index != expected {
@@ -499,7 +495,6 @@ impl Scanned {
         let mut grouped: BTreeMap<EntryKey, Parts> = BTreeMap::new();
         let mut unique: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
         let mut scanned = Self::default();
-        // busbar:expect(bp::fresh_buffer, reason = "boot: the legacy price codec runs only in offline startup migration")
         let mut voids = Vec::new();
         for (key, value) in records {
             let Some(entry_key) = key.get(..ENTRY_KEY_LEN).and_then(EntryKey::from_slice) else {
@@ -517,7 +512,6 @@ impl Scanned {
                 }
                 continue;
             }
-            // busbar:expect(bp::clone_alloc, reason = "boot: the legacy price codec runs only in offline startup migration")
             unique.insert(key.clone(), value.clone());
             let rest = &key[ENTRY_KEY_LEN..];
             match rest {

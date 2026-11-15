@@ -208,6 +208,12 @@ pub mod audit_ring;
 pub mod auth;
 
 pub mod boot;
+// The one cold module (LINT-RULES LR-167): refusal text and rare first-sight paths the request-path
+// modules beside it call out of line.
+pub(crate) mod cold;
+// The request-path modules' code that runs off the request path: once per configuration, generation
+// or process lifecycle, never per request.
+pub(crate) mod off_path;
 pub mod catalogue;
 pub mod config;
 pub mod config_validate;
