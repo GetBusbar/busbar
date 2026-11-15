@@ -57,5 +57,5 @@ fn yaml_writer_still_writes_an_ordinary_struct() {
             plain.end()
         }
     }
-    assert_eq!(yaml::to_string(&Plain).unwrap().trim(), "n: 30");
+    assert_eq!(yaml::to_string(&Plain).unwrap().trim(), "\"n\": 30");
 }
