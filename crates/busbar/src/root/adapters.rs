@@ -74,7 +74,7 @@ impl BreakerPolicy {
     }
 
     #[must_use]
-    pub fn with_default_cell(mut self, cfg: BreakerCfg) -> Self {
+    pub(crate) fn with_default_cell(mut self, cfg: BreakerCfg) -> Self {
         self.fallback = Some(cfg);
         self
     }

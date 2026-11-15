@@ -6,9 +6,7 @@ pub(crate) mod projection;
 pub(crate) mod scrape;
 pub mod traces;
 
-use crate::config::ExportCfg;
 use crate::export::projection::{ProjectedRecord, Rendered};
-use crate::plugin_routes::RouteDecl;
 use busbar_contract::abi::export::{ExportField, ExportStream};
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::Arc;
@@ -33,93 +31,18 @@ pub fn serve_test_sink(
     Arc::new(scrape::Granted(plugin::served(sink)))
 }
 
-/// Host-owned user configuration capabilities, derived from the same producer tables used by
-/// export projection resolution. Module-specific carried streams remain an admission check.
+/// Host-owned user configuration capabilities (the admin configuration schema), built off the
+/// request path.
 #[cfg(feature = "openapi-schema")]
-pub fn configuration_capabilities() -> serde_json::Value {
-    #[expect(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        clippy::disallowed_types,
-        reason = "config: the admin configuration schema documents the export producers"
-    )]
-    let capabilities = serde_json::json!({
-        "durable": false,
-        "request_timing": {
-            "profile": "observed-pump-v1",
-            "stream": "traces",
-            "record": "span.attributes",
-            "requires": "enabled hot-path tracing and an exporter taking full span records",
-            "coverage": "selected request-pump attempts, including normal, degraded and retry attempts; not pre-route refusals or session traffic outside the request pump",
-            "identity": "trace_id/parent_span_id link the request; the request_attempts parent span scopes attempt ordinals, including separate session turns; retry_of_attempt names its predecessor",
-            "clock": "monotonic elapsed microseconds from the attempt timing guard after member selection; route_wait_us is the preceding member selection duration",
-            "intervals": {
-                "route_wait_us": "member selection, including waits within selection; not an isolated queue duration",
-                "response_ready_us": "first observed far-end status or nonempty bytes; not stream completion",
-                "first_body_us": "first nonempty non-trailer far-end bytes; not a token event or TTFT",
-                "far_end_last_us": "far-end terminal piece or end-of-pieces without cut/failover",
-                "producer_complete_us": "pump completed its output writes; not proof of remote client consumption",
-                "cancelled_us": "pump observed cancellation; cancel_reason is the engine reason code",
-                "attempt_end_us": "pump attempt terminated, retried, or was abandoned"
-            },
-            "unknown": ["first_token", "provider_internal_cpu", "isolated_queue_wait", "client_consumption"],
-            "missing_fields": "unobserved; never zero or inferred",
-            "aggregation": "offsets overlap; never sum them as disjoint durations; busy_ns/idle_ns are span entry accounting, not CPU profiling",
-            "sampling": "no producer probabilistic sampling; disabled/level-filtered tracing omits records; exporter sampling is exporter-specific",
-            "loss": "bounded best-effort exporter admission and queue; host refusals call exporter shed; inspect exporter status for loss, absence is not zero loss or complete coverage",
-            "privacy": "added timing fields contain generated identity, destination index, fixed outcomes and timings only; no body, headers, prompt, credential or provider error text; other span attributes retain the existing exporter policy",
-            "metrics": "existing producer_drive and response_ready cumulative distributions are unchanged"
-        },
-        "streams": projection::PRODUCED_STREAMS.iter().map(|stream| {
-            let produced = projection::produced_fields(*stream);
-            serde_json::json!({
-                "name": stream.as_token(),
-                "default_fields": if *stream == ExportStream::Traces {
-                    stream.default_fields()
-                } else { produced }.iter().map(|field| field.as_token()).collect::<Vec<_>>(),
-                "produced_fields": produced.iter().map(|field| field.as_token()).collect::<Vec<_>>(),
-                "pinned_fields": stream.pinned_fields().iter().map(|field| field.as_token()).collect::<Vec<_>>(),
-                "fields_override": !stream.default_fields().is_empty()
-                    && stream.pinned_fields().iter().all(|field| produced.contains(field))
-            })
-        }).collect::<Vec<_>>()
-    });
-    capabilities
-}
+pub use crate::off_path::export::configuration_capabilities;
 
 /// Exercise the owning projection resolver without loading an exporter in focused schema tests.
 #[cfg(all(feature = "openapi-schema", any(test, feature = "test-support")))]
 #[doc(hidden)]
-pub fn validate_configuration_projection(
-    def: &crate::config::ExportDefCfg,
-) -> Result<(), Vec<String>> {
-    // busbar:expect(bp::fresh_buffer, reason = "config: a schema check collects one form's refusals")
-    let mut errors = Vec::new();
-    projection::resolve_projection(
-        "schema-test",
-        &def.module,
-        None,
-        def.streams.as_deref(),
-        def.fields.as_deref(),
-        def.durable,
-        &mut errors,
-    );
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors)
-    }
-}
+pub use crate::off_path::export::validate_configuration_projection;
 
-pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
-    plugin::route_decls(cfg)
-}
-
-pub(crate) fn route_projection(
-    cfg: &ExportCfg,
-) -> (Vec<RouteDecl>, std::collections::HashSet<String>) {
-    plugin::route_projection(cfg)
-}
+/// The export route table, built once per configuration generation.
+pub(crate) use crate::off_path::export::{route_decls, route_projection};
 
 pub(crate) struct RequestLogFacts<'a> {
     pub(crate) ts: u64,

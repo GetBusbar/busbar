@@ -29,10 +29,6 @@ fn read_pem(
     secret: &SecretRef,
     what: &str,
 ) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a TLS secret resolves once at config load; the text names its failure"
-    )]
     let resolved = resolver
         .resolve_at_config(
             secret,
@@ -51,18 +47,10 @@ fn load_cert_chain(
     let bytes = read_pem(resolver, secret, "cert")?;
     let seal = busbar_kernel::seal::lend();
     let bytes = bytes.expose(&seal);
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the TLS chain is parsed once at config load into the owned chain rustls keeps"
-    )]
     let certs = CertificateDer::pem_slice_iter(bytes)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("cannot parse TLS cert ({src}): {e}"))?;
     if certs.is_empty() {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: config-load refusal text naming the secret source"
-        )]
         return Err(format!(
             "TLS cert ({src}) contains no certificates (expected a PEM chain, leaf first)"
         ));
@@ -81,10 +69,6 @@ fn load_private_key(
     let bytes = bytes.expose(&seal);
 
     use rustls::pki_types::pem::Error as PemError;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: config-load refusal text naming the secret source"
-    )]
     let key = PrivateKeyDer::from_pem_slice(bytes).map_err(|e| match e {
         PemError::NoItemsFound => {
             format!("TLS key ({src}) contains no private key (expected PKCS#8 / PKCS#1 / SEC1 PEM)")
@@ -102,10 +86,6 @@ pub fn client_identity(
 ) -> Result<busbar_contract::transport::trust::ClientIdentity, String> {
     let chain = load_cert_chain(resolver, cert)?;
     let key = load_private_key(resolver, key)?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a destination's client identity is built once at config load"
-    )]
     let identity = busbar_contract::transport::trust::ClientIdentity {
         cert_chain: chain.into_iter().map(|c| c.as_ref().to_vec()).collect(),
         private_key: key.secret_der().to_vec().into(),
@@ -122,26 +102,14 @@ fn load_client_roots(
     let bytes = read_pem(resolver, secret, "client_ca")?;
     let seal = busbar_kernel::seal::lend();
     let bytes = bytes.expose(&seal);
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the client CA bundle is parsed once at config load"
-    )]
     let cas = CertificateDer::pem_slice_iter(bytes)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("cannot parse TLS client_ca ({src}): {e}"))?;
     if cas.is_empty() {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: config-load refusal text naming the secret source"
-        )]
         return Err(format!("TLS client_ca ({src}) contains no CA certificates"));
     }
     let mut roots = RootCertStore::empty();
     for ca in cas {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: config-load refusal text naming the secret source"
-        )]
         roots
             .add(ca)
             .map_err(|e| format!("invalid CA certificate in TLS client_ca ({src}): {e}"))?;
@@ -240,10 +208,6 @@ pub fn build_server_config(
     let verifier = match &tls.client_ca {
         Some(ca) => {
             let roots = load_client_roots(resolver, ca)?;
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: config-load refusal text naming the secret source"
-            )]
             let verifier = crypto_tls::client_verifier(Arc::new(roots), |b| b).map_err(|e| {
                 format!(
                     "cannot build client-cert verifier from TLS client_ca ({}): {e}",
@@ -255,10 +219,6 @@ pub fn build_server_config(
         None => None,
     };
 
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: config-load refusal text naming the secret sources"
-    )]
     let config = crypto_tls::server_config(|builder| {
         let builder = match verifier {
             Some(verifier) => builder.with_client_cert_verifier(verifier),
@@ -373,18 +333,10 @@ pub fn prepare(
         return Ok(Arc::new(Identity));
     };
     if !transport_capable {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the fail-closed refusal names the binding"
-        )]
         return Err(FailClosed::IncapableTransport {
             label: label.to_string(),
         });
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the fail-closed refusal names the binding"
-    )]
     let config =
         build_server_config(tls, resolver).map_err(|reason| FailClosed::MaterialUnavailable {
             label: label.to_string(),

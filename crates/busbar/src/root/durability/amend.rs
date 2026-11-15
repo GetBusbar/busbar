@@ -157,7 +157,7 @@ fn linked_run(records: &[JournalRecord]) -> (Vec<Amendment>, usize) {
 }
 
 impl Durability {
-    pub async fn restore_amendments(
+    pub(crate) async fn restore_amendments(
         &mut self,
         journal: &NodeAmendments,
         token: &Grant<DurableWrite>,
@@ -299,7 +299,7 @@ impl AmendSink for BookAmendments {
     }
 }
 
-pub async fn bind_amendments(
+pub(crate) async fn bind_amendments(
     book: &Arc<Mutex<Durability>>,
     journal: &NodeAmendments,
 ) -> Result<(), String> {
