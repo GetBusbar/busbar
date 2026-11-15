@@ -1827,6 +1827,24 @@ diagnostics! {
         "Another process owns this dataset's first start and has not published it, and its progress rows (birth record, writer row, R0 progress row) changed within the stall window, so this process waits instead of retiring it. It binds no listener while it waits. The line names the owner's writer id, how long ago its progress last changed and when this process takes over if nothing changes. A restart resets the wait.",
         "Let it wait: it is admitted once the owner publishes, or takes over once the owner stops making progress for the window. Do not stop or restart it before the named takeover time; give the supervisor a startup budget of at least 200 + 105 x P seconds (P = conditional-records planes), see docs/operations.md First start with several replicas.";
 
+    /// The shutdown drain ended without retiring the writer (deadline, undrained custody, or a refused retirement).
+    SHUTDOWN_DRAIN_INCOMPLETE = 9019, Boot, Actionable, "shutdown-drain-incomplete", "1.6.0", false,
+        "Shutdown drain incomplete (the writer was not retired; exit 75 or 70)",
+        "The process stopped serving but did not retire its store writer: the drain budget ran out or a second signal arrived (cause=deadline), requests, governed units or persistence were still unsettled at their cut (cause=undrained), or the store refused the retirement (cause=retire_refused). Nothing in flight was cancelled. The exit status is 75 when every completed request's spend is in durable custody (running streams were cut) and 70 when some completed spend is not; each unsettled item is printed on stderr. The writer stays open until its lease lapses and the next start closes it.",
+        "Read the cause and the stderr lists. For cause=deadline on a slow store, raise the drain budget or fix the store's latency. A 70 exit lists the unpersisted spend as evidence: correct it through the audited admin correction path once the store is back.";
+
+    /// Some completed spend was not in durable custody at a non-retired exit.
+    SHUTDOWN_SPEND_UNPERSISTED = 9020, Boot, Actionable, "shutdown-spend-unpersisted", "1.6.0", false,
+        "Completed spend not in durable custody at exit (exit 70)",
+        "At a shutdown that could not retire the writer, at least one finished request's spend (a terminal unit checkpoint, a budget cell, a metering count or a correction) was not persisted, or its write was still unconfirmed. Each item is printed on stderr with its identity and amounts, as evidence; busbar never imports it on the next start, because an import can double-spend.",
+        "Restore the store, then reconcile the listed items through the audited admin correction path. Find why the drain could not persist them (store outage or latency at shutdown).";
+
+    /// Governed admission is refused while the gateway drains or the settlement backlog is at its cap.
+    GOVERNED_ADMISSION_PAUSED = 8030, Governance, Actionable, "governed-admission-paused", "1.6.0", false,
+        "Governed admission paused (draining, or finished requests await settlement)",
+        "New governed requests are refused with a 503: either the gateway is shutting down (cause=drain, reason drain, retry on another instance) or the number of finished governed requests whose spend still awaits settlement in the store reached its cap (cause=custody_full, reason durability_unavailable, Retry-After 1). Running requests and streams are never refused, and every refusal is audited on its unit. Logged once per episode; an Info line follows when the backlog falls below 90% of the cap.",
+        "For custody_full, check the store's latency and throughput: settlement is slower than governed arrival. For drain, route traffic to another instance until this one restarts.";
+
     /// A retired 1.5.x launch environment variable is set; 1.6 ignores it.
     RETIRED_ENV_VAR_IGNORED = 3029, Config, Actionable, "retired-env-var-ignored", "1.6.0", false,
         "A retired launch environment variable is set and IGNORED",

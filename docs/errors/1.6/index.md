@@ -288,6 +288,7 @@ The thousands digit is the area.
 | [BUSBAR-8027](/docs/1.6/errors/BUSBAR-8027/) | A plane member's upstream credential lapsed or was revoked at its source | 1.6.0 |
 | [BUSBAR-8028](/docs/1.6/errors/BUSBAR-8028/) | A plugin's rotated credential could not be applied | 1.6.0 |
 | [BUSBAR-8029](/docs/1.6/errors/BUSBAR-8029/) | A plugin instance's scheduled tick failed | 1.6.0 |
+| [BUSBAR-8030](/docs/1.6/errors/BUSBAR-8030/) | Governed admission paused (draining, or finished requests await settlement) | 1.6.0 |
 | [BUSBAR-8101](/docs/1.6/errors/BUSBAR-8101/) | The admin resource named in the request does not exist | 1.6.0 |
 | [BUSBAR-8102](/docs/1.6/errors/BUSBAR-8102/) | The admin request carries no valid admin credential | 1.6.0 |
 | [BUSBAR-8103](/docs/1.6/errors/BUSBAR-8103/) | The admin path does not take this HTTP method | 1.6.0 |
@@ -321,6 +322,8 @@ The thousands digit is the area.
 | [BUSBAR-9016](/docs/1.6/errors/BUSBAR-9016/) | First start step slower than its budget (waiters may take over) | 1.6.0 |
 | [BUSBAR-9017](/docs/1.6/errors/BUSBAR-9017/) | First start handed over on exit (writer retired) | 1.6.0 |
 | [BUSBAR-9018](/docs/1.6/errors/BUSBAR-9018/) | First start not handed over on exit (the next start waits) | 1.6.0 |
+| [BUSBAR-9019](/docs/1.6/errors/BUSBAR-9019/) | Shutdown drain incomplete (the writer was not retired; exit 75 or 70) | 1.6.0 |
+| [BUSBAR-9020](/docs/1.6/errors/BUSBAR-9020/) | Completed spend not in durable custody at exit (exit 70) | 1.6.0 |
 | [BUSBAR-9101](/docs/1.6/errors/BUSBAR-9101/) | The command line names an argument busbar does not know | 1.6.0 |
 | [BUSBAR-9102](/docs/1.6/errors/BUSBAR-9102/) | A command's arguments do not fit together | 1.6.0 |
 | [BUSBAR-9103](/docs/1.6/errors/BUSBAR-9103/) | A command-line flag is missing its value | 1.6.0 |
