@@ -101,6 +101,24 @@ impl AdminService {
     }
 
     pub(crate) async fn info(&self) -> Result<InfoView, AdminError> {
+        let live = busbar_kernel::persistence::boot_identity::live();
+        let nodes = match live {
+            Some(live) => live
+                .nodes()
+                .await
+                .map_err(|_| AdminError::Internal)?
+                .into_iter()
+                .map(|n| NodeView {
+                    node_id: n.node_id,
+                    started_at: n.started_at,
+                    last_seen_at: n.last_seen_at,
+                    state: n.state.into(),
+                    role: n.role.into(),
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+
         let auth_modules = auth_modules_compiled_in();
         let hook_plugins = hook_plugins_compiled_in();
 
@@ -128,6 +146,9 @@ impl AdminService {
             config_persistence: self.app.overlay_path.is_some(),
             config_version: self.app.config_version,
             overlay_ignored: busbar_kernel::appbuild::booted_with_ignore_overlay(),
+            deployment_id: live.map(|l| l.deployment_id().to_string()),
+            node_id: live.map(|l| l.node_id()),
+            nodes,
         })
     }
 

@@ -59,6 +59,10 @@ mod virtual_key_wire {
     use super::{scope_kinds, ScopeRef, VirtualKey};
     use std::collections::BTreeMap;
 
+    fn is_zero(n: &u64) -> bool {
+        *n == 0
+    }
+
     /// The mirror struct that IS the persistence wire contract for [`VirtualKey`]. Field names,
     /// order and defaults must stay in lockstep with the in-memory struct; the only divergence is
     /// the scope partition documented on the module.
@@ -95,6 +99,15 @@ mod virtual_key_wire {
         pub minted_by: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub idp_provider: Option<String>,
+        /// Unix seconds of the last rotation; absent until the key is first rotated.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub rotated_at: Option<u64>,
+        /// How many times the key has been rotated; absent while zero.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        pub rotation_count: u64,
+        /// The release a key was migrated from; absent on a key minted by this release.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub migrated_from: Option<String>,
     }
 
     /// The per-kind wire partition: `(allowed_pools, {allowed_{kind}s → values})`. The map carries
@@ -170,6 +183,9 @@ mod virtual_key_wire {
                 binding_mode: self.binding_mode.clone(),
                 minted_by: self.minted_by.clone(),
                 idp_provider: self.idp_provider.clone(),
+                rotated_at: self.rotated_at,
+                rotation_count: self.rotation_count,
+                migrated_from: self.migrated_from.clone(),
             }
             .serialize(s)
         }
@@ -197,6 +213,9 @@ mod virtual_key_wire {
                 binding_mode: w.binding_mode,
                 minted_by: w.minted_by,
                 idp_provider: w.idp_provider,
+                rotated_at: w.rotated_at,
+                rotation_count: w.rotation_count,
+                migrated_from: w.migrated_from,
             })
         }
     }
@@ -283,6 +302,13 @@ pub struct VirtualKey {
     /// crates/busbar/src/governance/state.rs:487). `None` for every other key and for a self-serve
     /// key minted before the field existed (it adopts the first provider that logs in).
     pub idp_provider: Option<String>,
+    /// Unix seconds of the last rotation (`POST /keys/{id}/rotate`); `None` until first rotated.
+    /// Stored state: it moves the key's ETag, like any other edit of the row.
+    pub rotated_at: Option<u64>,
+    /// How many times the key has been rotated; `0` for a key never rotated (the 1.5.5 default).
+    pub rotation_count: u64,
+    /// `Some("1.5.5")` on a key the migration carried from that release; `None` on a key minted here.
+    pub migrated_from: Option<String>,
 }
 
 impl VirtualKey {
@@ -325,6 +351,9 @@ impl std::fmt::Debug for VirtualKey {
             .field("binding_mode", &self.binding_mode)
             .field("minted_by", &self.minted_by)
             .field("idp_provider", &self.idp_provider)
+            .field("rotated_at", &self.rotated_at)
+            .field("rotation_count", &self.rotation_count)
+            .field("migrated_from", &self.migrated_from)
             .finish()
     }
 }
