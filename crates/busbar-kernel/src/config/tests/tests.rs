@@ -2696,7 +2696,7 @@ fn auth_refusals_describe_the_current_schema_and_source_location() {
     let typo = refusal("auth:\n  policy:\n    slef_mint: true\n");
     assert!(typo
         .to_string()
-        .contains("auth.policy: unknown field `slef_mint`"));
+        .contains("auth.policy.slef_mint: unknown field `slef_mint`"));
     assert_eq!(typo.location().unwrap().line(), 5);
     assert!(refusal("auth: 5\n").to_string().contains("invalid type"));
     assert!(refusal("auth:\n  policy: {}\n  policy: {}\n")
