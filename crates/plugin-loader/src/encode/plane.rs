@@ -421,9 +421,8 @@ pub fn encode_trust_answers(w: &mut impl Writer, answers: &[TrustAnswer<'_>]) ->
     Ok(())
 }
 
-/// W1-A10 hold (GitLab #257): P_CHANNEL's bytes are an unframed ChanAttach + tail (§8.6), and a `Writer` writes
-/// only whole records; no tag carries ChanAttach. The lead designer rules on the wire form; until then this
-/// stays a stub.
+/// P_CHANNEL's bytes (§8.6, R6a / #257): exactly one CH_ATTACH record, the `ChanAttach` pod plus the
+/// CH_READY tail handed to later attachers.
 pub fn encode_chan_attach(
     w: &mut impl Writer,
     generation: u64,
@@ -431,8 +430,13 @@ pub fn encode_chan_attach(
     greet: bool,
     ready_tail: &[u8],
 ) -> Result<(), Full> {
-    let _ = (w, generation, slot, greet, ready_tail);
-    todo!("IF hole #257: P_CHANNEL's unframed ChanAttach cannot be written through a Writer")
+    let attach = plane::ChanAttach {
+        generation,
+        slot,
+        greet: u32::from(greet),
+        _r: 0,
+    };
+    w.put_pod_tail(tag::CH_ATTACH, &attach, ready_tail)
 }
 
 /// One CAT_MODEL text per model, in the order core shows them (`render(RENDER_CATALOG)`'s arg).
