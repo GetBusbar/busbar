@@ -39,7 +39,8 @@ fn both_slots_are_masked_after_every_round() {
         barrier.wait();
         for slot in [10u32, 11] {
             let secret = value(slot, round);
-            let shown = scrub.text(&format!("leak {secret}"));
+            let line = format!("leak {secret}");
+            let shown = scrub.text(&line);
             assert!(
                 !shown.contains(&secret),
                 "round {round}: slot {slot} unmasked"
