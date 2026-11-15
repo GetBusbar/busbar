@@ -2153,8 +2153,10 @@ impl EgressFarEnd<'_> {
                 return fail_over();
             }
             let head_us = e.clock.now_micros().saturating_sub(anchor_us);
-            e.telemetry
-                .upstream_latency(target.1, micros_f64(head_us) / 1000.0);
+            e.telemetry.upstream_latency(
+                target.1,
+                micros_f64(u64::try_from(head_us).unwrap_or(u64::MAX)) / 1000.0,
+            );
             if !self.owns_attempt(target.0, target.1) {
                 return fail_over();
             }
