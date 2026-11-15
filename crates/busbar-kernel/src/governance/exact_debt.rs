@@ -478,7 +478,6 @@ struct Chunk {
     op: busbar_contract::records::OpId,
     plain: UsageDelta,
     dated: UsageDelta,
-    started: std::time::Instant,
 }
 
 struct FlightDebt {
@@ -852,7 +851,6 @@ impl GovState {
                         op: crate::door::op_id(),
                         plain,
                         dated,
-                        started: crate::off_path::governance::runtime::exact_debt_chunk_clock(),
                     });
                 }
                 debt.chunk
@@ -860,9 +858,6 @@ impl GovState {
                     .expect("immutable chunk retained")
                     .clone()
             };
-            if crate::off_path::governance::runtime::recovery_retention_lapsed(chunk.started) {
-                return (confirmed,Some(RecordStoreError("raw usage chunk receipt retention expired; exact debt and identity retained".into())));
-            }
             // At most the plain and the dated row: held inline, and the dated bucket is named only
             // when it carries debt.
             let era_bucket = (!chunk.dated.is_zero()).then(|| era_bucket(&flight.bucket));

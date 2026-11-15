@@ -157,23 +157,11 @@ pub(crate) fn ledger_corrections_snapshot<T: Clone>(
     corrections.values().cloned().collect()
 }
 
-/// `ledger_correction`: whether a correction's op-id receipt retention has lapsed since it was
-/// sent.
-pub(crate) fn ledger_correction_retention_expired(started: std::time::Instant) -> bool {
-    started.elapsed().as_secs() >= busbar_contract::abi::store::OP_ID_RETENTION_SECS
-}
-
-/// `ledger_correction`: the instants a fresh correction operation is sent at: wall seconds (its
-/// durable first-send time) and the monotonic start its receipt retention is measured from. Read
-/// once per sent operation; a condition-conflict retry sends a new operation.
-pub(crate) fn ledger_correction_sent_clock() -> (u64, std::time::Instant) {
-    (crate::store::now(), std::time::Instant::now())
-}
-
-/// `ledger_correction`: the monotonic start a correction restored from custody measures its
-/// receipt retention from (recovery replay).
-pub(crate) fn ledger_correction_started() -> std::time::Instant {
-    std::time::Instant::now()
+/// `ledger_correction`: the wall seconds a fresh correction operation is sent at (its durable
+/// first-send time). Read once per sent operation; a condition-conflict retry sends a new
+/// operation.
+pub(crate) fn ledger_correction_sent_clock() -> u64 {
+    crate::store::now()
 }
 
 /// `ledger_correction`: a settled correction's selected raw cuts, keyed by (bucket, window).

@@ -75,12 +75,6 @@ pub(crate) fn recovery_selected_events<'a>(
     entries.filter_map(|entry| entry.selected.clone()).collect()
 }
 
-/// `recovery`: whether an operation's retained first-send clock has outlived op-id retention
-/// (recovery replay decisions).
-pub(crate) fn recovery_retention_lapsed(sent: std::time::Instant) -> bool {
-    sent.elapsed().as_secs() >= busbar_contract::abi::store::OP_ID_RETENTION_SECS
-}
-
 /// `raw_recovery`: a recovery custody payload, encoded once per durable custody event.
 pub(crate) fn raw_recovery_encode<T: serde::Serialize>(value: &T) -> serde_json::Result<Vec<u8>> {
     serde_json::to_vec(value)
@@ -403,12 +397,6 @@ pub(crate) fn exact_debt_unpark<T>(parked: &mut Vec<(u64, T)>, window: u64) {
 /// `exact_debt`: the flight-table address of a finished flight (the flusher).
 pub(crate) fn exact_debt_flight_address(bucket: &str, window: u64) -> (String, u64) {
     (bucket.to_owned(), window)
-}
-
-/// `exact_debt`: the monotonic clock a flush chunk's receipt retention starts from, once per
-/// chunk (the flusher).
-pub(crate) fn exact_debt_chunk_clock() -> std::time::Instant {
-    std::time::Instant::now()
 }
 
 /// `exact_debt`: every in-flight flush flight (the flusher's resume pass).
