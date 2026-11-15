@@ -268,7 +268,6 @@ impl TokenSigner {
         let payload = serde_json::to_vec(claims).expect("TokenClaims serializes");
         let sig = self.key.sign(&payload);
         let encoded = |bytes: usize| bytes.div_ceil(3) * 4;
-        // busbar:expect(bp::fresh_buffer, reason = "config: a signed token is minted once per key mint or token exchange (control plane)")
         let mut token =
             String::with_capacity(prefix.len() + encoded(payload.len()) + 1 + encoded(64));
         token.push_str(prefix);

@@ -889,7 +889,6 @@ impl RecoveryAdmin<'_> {
 
 impl super::GovState {
     pub(super) fn has_unsettled_recovery(&self) -> bool {
-        // busbar:expect(bp::state_scan, reason = "boot: shutdown custody inspection, run once after admission has stopped")
         self.recovery_book.attaching.is_running()
             || self
                 .recovery_book
@@ -1025,7 +1024,6 @@ impl super::GovState {
     }
 
     pub(super) fn selected_recovery_events(&self) -> Vec<RecoveryEvent> {
-        // busbar:expect(bp::state_scan, reason = "boot: every selected event is restored at attach or listed for the operator")
         #[expect(
             clippy::disallowed_methods,
             reason = "boot: every selected event is restored at attach or listed for the operator"

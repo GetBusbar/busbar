@@ -280,7 +280,7 @@ pub async fn serve(
     accept_loop(admits, shutdown, balancer, served).await
 }
 
-pub async fn serve_admitted(
+pub(crate) async fn serve_admitted(
     admits: impl Admits,
     router: Router,
     security: Option<Arc<dyn ConnectionSecurity>>,
@@ -290,7 +290,7 @@ pub async fn serve_admitted(
     accept_loop(admits, shutdown, balancer, Served::new(router, security)).await
 }
 
-pub async fn serve_admitted_framed(
+pub(crate) async fn serve_admitted_framed(
     admits: impl Admits,
     router: Router,
     security: Option<Arc<dyn ConnectionSecurity>>,
