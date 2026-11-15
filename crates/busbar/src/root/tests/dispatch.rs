@@ -20,6 +20,14 @@ fn one_plugin_worker_per_data_worker() {
 }
 
 #[test]
+fn test_builds_watch_with_the_shipped_budgets() {
+    assert_eq!(
+        config(1).budgets,
+        crate::root::loader::dispatch::Budgets::default()
+    );
+}
+
+#[test]
 fn the_binarys_dispatcher_serves_dest_judge_once_composed() {
     use busbar_contract::abi::host::service as svc;
     use busbar_contract::services::{Ran, Stored};
