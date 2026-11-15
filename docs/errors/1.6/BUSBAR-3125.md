@@ -18,7 +18,7 @@ A provider's outbound credential is invalid for its auth style: the referenced s
 
 ## How to fix it
 
-Fix the secret the message points at (its `env:`, `file:` or module source) or the provider's auth settings, then run `busbar --validate`.
+Fix the secret the message points at (its secret module source) or the provider's auth settings, then run `busbar --validate`.
 
 ## Example
 
@@ -26,13 +26,13 @@ Fix the secret the message points at (its `env:`, `file:` or module source) or t
 providers:
   vertex:
     auth: jwt-bearer
-    api_key: { env: VERTEX_SA }   # not a service-account JSON
+    api_key: { module: <secret module>, settings: { … } }   # not a service-account JSON
 ```
 
 Busbar reports:
 
 ```text
-BUSBAR-3125: provider 'vertex' jwt-bearer credential (from env:VERTEX_SA) is invalid: service-account key is not JSON. See https://getbusbar.com/docs/1.6/errors/BUSBAR-3125
+BUSBAR-3125: provider 'vertex' jwt-bearer credential (from secret module '<secret module>') is invalid: service-account key is not JSON. See https://getbusbar.com/docs/1.6/errors/BUSBAR-3125
 ```
 
 ---
