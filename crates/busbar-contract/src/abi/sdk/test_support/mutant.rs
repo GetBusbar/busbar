@@ -11,13 +11,18 @@
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use std::sync::OnceLock;
 
-use crate::abi::mechanism::call::{AbiStr, OutHead, Outcome, RawOutcome};
+use crate::abi::mechanism::call::{AbiStr, Op, OutHead, Outcome, RawOutcome};
 use crate::abi::mechanism::door::{Door, DoorFn, DoorParts, KindTailHead, Statement};
+use crate::abi::mechanism::lifecycle::OpsHead;
 use crate::abi::mechanism::KindCode;
 use crate::abi::plane::PlaneTail;
 use crate::abi::sdk::door::RawDoorFn;
-use crate::abi::transport::TransportTail;
+use crate::abi::transport::{
+    slot as framer, AdoptIn, BeginIn, EmitIn, EncodeIn, FinishIn, FramerOut, FramerSink, FramingIn,
+    IngestIn, Ops as TransportOps, RefuseIn, TransportTail,
+};
 
 /// How many mutants one process may forge: the bank of door functions below.
 const BANK: usize = 16;
@@ -32,6 +37,21 @@ static READY_TEXT: [(AtomicPtr<u8>, AtomicUsize); BANK] =
 
 /// READY crossings into a failing READY, process-wide.
 static READY_CALLS: AtomicU64 = AtomicU64::new(0);
+
+/// The framer op a corrupting bank slot wraps, which of the door's slots it sat in, and which of
+/// its wire-writing answers is corrupted.
+#[derive(Debug, Clone, Copy)]
+struct Corrupting {
+    real: Op,
+    slot: u32,
+    nth: u64,
+}
+
+/// Each bank slot's corrupting wrap, set once when its mutant is forged.
+static CORRUPTING: [OnceLock<Corrupting>; BANK] = [const { OnceLock::new() }; BANK];
+
+/// Each bank slot's READY answers that wrote wire bytes so far.
+static WIRED: [AtomicU64; BANK] = [const { AtomicU64::new(0) }; BANK];
 
 macro_rules! bank {
     ($($i:literal)+) => {
@@ -50,6 +70,20 @@ macro_rules! bank {
                 fail_ready($i, out)
             }
             ready
+        }),+];
+        /// One corrupting framer op per slot: it forwards the crossing to the op it wraps, then
+        /// corrupts the answer's wire. Atomics, a `OnceLock` read and one byte store besides the
+        /// wrapped op (an SDK op, which catches its own panics), so nothing unwinds out of
+        /// `extern "C"`.
+        const CORRUPT: [Op; BANK] = [$({
+            extern "C" fn corrupt(
+                instance: *mut c_void,
+                input: *const c_void,
+                out: *mut c_void,
+            ) -> RawOutcome {
+                corrupt_wire($i, instance, input, out)
+            }
+            corrupt
         }),+];
     };
 }
@@ -75,11 +109,100 @@ fn fail_ready(slot: usize, out: *mut c_void) -> RawOutcome {
     failed
 }
 
+/// The corrupting op of bank slot `bank`: the crossing goes to the op it wraps; on that op's
+/// `nth` READY answer that wrote wire bytes, the first of them is flipped (every bit inverted)
+/// before the host reads them, as a plugin writing one wrong byte would.
+fn corrupt_wire(
+    bank: usize,
+    instance: *mut c_void,
+    input: *const c_void,
+    out: *mut c_void,
+) -> RawOutcome {
+    let Some(c) = CORRUPTING[bank].get().copied() else {
+        return RawOutcome::of(Outcome::Fault);
+    };
+    // SAFETY: the host calls this op under the call convention, for the slot the wrapped op sat
+    // in; the instance, `in` and `out` are forwarded unchanged to that op, which honours it.
+    let answered = unsafe { (c.real)(instance, input, out) };
+    if answered.outcome() != Outcome::Ready || input.is_null() || out.is_null() {
+        return answered;
+    }
+    // SAFETY: the host lends framer slot `c.slot` its own complete `in` of that slot's type for
+    // the crossing, and each of them holds the op's `FramerSink`.
+    let sink: FramerSink = unsafe {
+        match c.slot {
+            framer::BEGIN => (*input.cast::<BeginIn>()).sink,
+            framer::INGEST => (*input.cast::<IngestIn>()).sink,
+            framer::EMIT => (*input.cast::<EmitIn>()).sink,
+            framer::ENCODE => (*input.cast::<EncodeIn>()).sink,
+            framer::REFUSE => (*input.cast::<RefuseIn>()).sink,
+            framer::FINISH => (*input.cast::<FinishIn>()).sink,
+            framer::DETACH | framer::TIMER => (*input.cast::<FramingIn>()).sink,
+            framer::ADOPT => (*input.cast::<AdoptIn>()).sink,
+            _ => return answered,
+        }
+    };
+    // SAFETY: a framer slot's `out` is the host's own complete `FramerOut`, which the wrapped op
+    // just answered.
+    let wire_len = unsafe { (*out.cast::<FramerOut>()).yielded.wire_len };
+    if wire_len == 0 || sink.wire.is_null() || wire_len > sink.wire_cap as u64 {
+        return answered;
+    }
+    if WIRED[bank].fetch_add(1, Ordering::SeqCst).wrapping_add(1) == c.nth {
+        // SAFETY: `sink.wire` is the host's buffer of `wire_cap` bytes, lent to this crossing
+        // alone; the op answered `wire_len` (at least 1, at most `wire_cap`) of them, so byte 0
+        // lies inside it and was written.
+        unsafe { *sink.wire = !*sink.wire };
+    }
+    answered
+}
+
+/// A transport door's ops table, copied.
+///
+/// # Panics
+/// When the door is not a transport's, or its table is shorter than this host's.
+fn transport_ops(p: &DoorParts) -> TransportOps {
+    assert_eq!(
+        p.kind,
+        KindCode::Transport as u32,
+        "this row corrupts a Transport framer only"
+    );
+    assert!(!p.ops.is_null(), "the door states no ops table");
+    // SAFETY: a real door's ops table is `'static`, readable in full, and states its size in its
+    // head.
+    let head = unsafe { p.ops.read_unaligned() };
+    assert!(
+        head.size as usize >= std::mem::size_of::<TransportOps>(),
+        "the door's ops table is older than this host's"
+    );
+    // SAFETY: the door is a transport's (checked above), so its table is a transport `Ops` at
+    // least that long; the copy keeps every op of it.
+    unsafe { p.ops.cast::<TransportOps>().read_unaligned() }
+}
+
+/// The op of framer slot `slot` in `table`; `None` for a slot whose `in` lends no sink.
+fn framer_op(table: &mut TransportOps, slot: u32) -> Option<&mut Option<Op>> {
+    Some(match slot {
+        framer::BEGIN => &mut table.begin,
+        framer::INGEST => &mut table.ingest,
+        framer::EMIT => &mut table.emit,
+        framer::ENCODE => &mut table.encode,
+        framer::REFUSE => &mut table.refuse,
+        framer::FINISH => &mut table.finish,
+        framer::DETACH => &mut table.detach,
+        framer::ADOPT => &mut table.adopt,
+        framer::TIMER => &mut table.timer,
+        _ => return None,
+    })
+}
+
 /// A real door with one fact changed.
 #[derive(Debug, Clone, Copy)]
 pub struct Mutant {
     parts: Option<DoorParts>,
     ready_text: Option<&'static str>,
+    /// The framer slot whose wire is corrupted, and on which of its wire-writing answers.
+    corrupt: Option<(u32, u64)>,
 }
 
 impl Mutant {
@@ -92,6 +215,7 @@ impl Mutant {
         Self {
             parts: Some(parts),
             ready_text: None,
+            corrupt: None,
         }
     }
 
@@ -152,6 +276,35 @@ impl Mutant {
         self
     }
 
+    /// THE CORRUPTING ROW (SDK-SAFE-TEST-HOST §11.6): `door` with its transport framer op `slot`
+    /// (`transport::slot::EMIT`, `INGEST`, ...) wrapped, so that the `nth` (from 1) of that op's
+    /// READY answers that wrote wire bytes has the first of them flipped (every bit inverted)
+    /// before the host reads it. Everything else, the Statement included, is the door's own, so
+    /// the mutant is admitted as its door is. The negative control of a conformance run: served
+    /// this mutant, the suite must fail.
+    ///
+    /// # Panics
+    /// When `door` is not a transport's, `slot` is not a framer op that writes a sink, the door
+    /// serves no op there, or `nth` is 0.
+    #[must_use]
+    pub fn corrupting(door: DoorFn, slot: u32, nth: u64) -> Self {
+        assert!(nth >= 1, "the first wire-writing answer is nth 1");
+        let m = Self::of(door);
+        if let Some(p) = m.parts.as_ref() {
+            let mut table = transport_ops(p);
+            let op = framer_op(&mut table, slot)
+                .expect("this row corrupts a framer op that writes a sink");
+            assert!(
+                op.is_some(),
+                "the door serves no op in the slot this row corrupts"
+            );
+        }
+        Self {
+            corrupt: Some((slot, nth)),
+            ..m
+        }
+    }
+
     /// READY crossings into any failing READY so far, process-wide.
     #[must_use]
     pub fn failed_readies() -> u64 {
@@ -208,10 +361,23 @@ impl Mutant {
                 READY_TEXT[i].1.store(text.len(), Ordering::Release);
                 p.ready = Some(READY[i]);
             }
+            if let Some((slot, nth)) = self.corrupt {
+                let mut table = transport_ops(&p);
+                let op = framer_op(&mut table, slot).expect("checked by `corrupting`");
+                let real = op.expect("checked by `corrupting`");
+                assert!(
+                    CORRUPTING[i].set(Corrupting { real, slot, nth }).is_ok(),
+                    "each bank slot is forged once"
+                );
+                *op = Some(CORRUPT[i]);
+                p.ops = std::ptr::from_ref(Box::leak(Box::new(table))).cast::<OpsHead>();
+            }
             // SAFETY: the parts are a real `'static` door's: its Statement (or a leaked copy of
-            // it with one scalar or `'static` string changed), its ops table and its kind are
-            // unchanged, and a replaced READY is this bank's, which honours the call convention.
-            // Leaked, so the door is `'static` as a door function's answer must be.
+            // it with one scalar or `'static` string changed), its ops table (or a leaked copy of
+            // it whose one framer op is this bank's corrupting op, which forwards every crossing
+            // to the op it replaced under the same convention) and its kind, and a replaced READY
+            // is this bank's, which honours the call convention. Leaked, so the door is `'static`
+            // as a door function's answer must be.
             Box::into_raw(Box::new(unsafe { Door::__from_parts(p) }))
         });
         DOORS[i].store(door, Ordering::Release);

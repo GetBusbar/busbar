@@ -2,7 +2,12 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The host's own transport fixture: an SDK-authored carrier whose `write` takes every byte it
-//! was lent on connection 7 (refusing any other connection), and refuses every other kind op.
+//! was lent on connection 7 (refusing any other connection), whose `locate` answers SHORT on its
+//! instance's first call and READY on the re-call (the facade's one SHORT re-call, end to end),
+//! whose `emit` echoes the bytes it was lent into its sink's wire, and which refuses every other
+//! kind op.
+
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use busbar_contract::abi::mechanism::call::{AbiStr, OutHead, Outcome};
 use busbar_contract::abi::sdk::door::{abi_str, statement, AbiIn, AbiOut};
@@ -22,12 +27,21 @@ const TAIL: TransportTail = {
     tail
 };
 
-struct Fixture;
+struct Fixture {
+    /// `locate` crossings on this instance so far.
+    locates: AtomicU64,
+    /// The authority buffer the SHORT `locate` was lent, as an address: the re-call must lend
+    /// the same one (a pending crossing owns its loans; moving it moves none of them).
+    short_lent: AtomicUsize,
+}
 impl Life for Fixture {
     type Kind = Marker;
     const CANCEL: u32 = CANCEL_NOTHING_MOVED;
     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
-        Ok(Self)
+        Ok(Self {
+            locates: AtomicU64::new(0),
+            short_lent: AtomicUsize::new(0),
+        })
     }
     fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
         Ok(Refreshed::default())
@@ -64,6 +78,72 @@ impl SafeSlot for Echo {
     }
 }
 
+/// `locate`: the instance's first call answers SHORT, needing one byte more authority than it
+/// was lent; the re-call, lent the same buffer, writes the target as the authority.
+struct ShortOnce;
+impl SafeSlot for ShortOnce {
+    type Kind = Marker;
+    type In = LocateIn;
+    type Out = LocateOut;
+    type State = Held<Fixture>;
+    fn call(
+        instance: Instance<'_, Self::State, Marker>,
+        i: Lent<'_, LocateIn>,
+        mut o: Out<'_, LocateOut>,
+    ) -> Outcome {
+        let Some(held) = instance.get() else {
+            return o.fail(Refusal::refused(
+                "locate: the fixture locates on an open instance only",
+            ));
+        };
+        let f = held.life();
+        let mut authority = i.authority_buf();
+        let lent = i.authority_buf.addr();
+        if f.locates.fetch_add(1, Ordering::SeqCst) == 0 {
+            f.short_lent.store(lent, Ordering::SeqCst);
+            o.set(|x| &x.authority_needed, authority.cap() as u64 + 1);
+            return o.fail(Refusal::failed("locate: the fixture answers SHORT once"));
+        }
+        if f.short_lent.load(Ordering::SeqCst) != lent {
+            return o.fail(Refusal::failed(
+                "locate: the re-call lent another authority buffer than the SHORT call",
+            ));
+        }
+        authority.extend(i.target().bytes());
+        if !authority.fits() {
+            return o.fail(Refusal::failed(
+                "locate: the target is longer than the authority buffer",
+            ));
+        }
+        o.set(|x| &x.authority_written, authority.written() as u64);
+        Outcome::Ready
+    }
+}
+
+/// `emit`: the bytes it was lent, written whole to its sink's wire.
+struct EchoEmit;
+impl SafeSlot for EchoEmit {
+    type Kind = Marker;
+    type In = EmitIn;
+    type Out = FramerOut;
+    type State = Held<Fixture>;
+    fn call(
+        _: Instance<'_, Self::State, Marker>,
+        i: Lent<'_, EmitIn>,
+        mut o: Out<'_, FramerOut>,
+    ) -> Outcome {
+        let mut wire = i.sink().wire();
+        wire.extend(i.bytes());
+        if !wire.fits() {
+            return o.fail(Refusal::failed(
+                "emit: the echo is longer than the wire buffer",
+            ));
+        }
+        o.set(|x| &x.yielded.wire_len, wire.written() as u64);
+        Outcome::Ready
+    }
+}
+
 type No<I, O> = Safe<Refuses<I, O>>;
 busbar_contract::plugin_door! {
     ops: Ops,
@@ -73,8 +153,8 @@ busbar_contract::plugin_door! {
         listen: No<ListenIn, ListenOut>, accept: No<AcceptIn, AcceptOut>,
         dial: No<DialIn, ConnOut>, read: No<ReadIn, IoOut>, write: Safe<Echo>,
         flush: No<ConnIn, OutHead>, shut: No<ShutIn, OutHead>,
-        arrival: No<ArrivalIn, ArrivalOut>, locate: No<LocateIn, LocateOut>,
-        begin: No<BeginIn, FramerOut>, ingest: No<IngestIn, FramerOut>, emit: No<EmitIn, FramerOut>,
+        arrival: No<ArrivalIn, ArrivalOut>, locate: Safe<ShortOnce>,
+        begin: No<BeginIn, FramerOut>, ingest: No<IngestIn, FramerOut>, emit: Safe<EchoEmit>,
         encode: No<EncodeIn, FramerOut>, refuse: No<RefuseIn, FramerOut>,
         finish: No<FinishIn, FramerOut>, detach: No<FramingIn, FramerOut>,
         adopt: No<AdoptIn, FramerOut>, timer: No<FramingIn, FramerOut>,
