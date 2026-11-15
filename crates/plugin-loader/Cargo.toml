@@ -139,6 +139,13 @@ name = "hook_door"
 path = "tests/fixtures/hook_door.rs"
 crate-type = ["cdylib"]
 
+# An HTTP-calling hook on the SDK hook door: core's kind-level hook double for tests that drive a
+# hook over a real HTTP target.
+[[example]]
+name = "http_hook_door"
+path = "tests/fixtures/http_hook_door.rs"
+crate-type = ["cdylib"]
+
 [[example]]
 name = "neutral_export_disk_door"
 path = "tests/fixtures/neutral_export_disk_door.rs"
