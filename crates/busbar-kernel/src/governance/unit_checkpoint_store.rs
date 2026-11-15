@@ -6,7 +6,7 @@ use crate::persistence::{
     commit::SubmitResult,
     facade::CoreStore,
     journal::{
-        runtime::{LiveChange, RuntimeJournal, StagedRun},
+        runtime::{Carried, LiveChange, RuntimeJournal, StagedRun},
         Selection, StoreJournal, VerifiedHead, WriteResult,
     },
     partition,
@@ -117,6 +117,13 @@ impl UnitCheckpointEvidence {
         )
         .await
     }
+    /// A terminal unit's live audit line, read by the evidence this process carried from its
+    /// append (SHUTDOWN-HANG F1a).
+    pub async fn find_audit_at(&self, _line: Carried) -> RecordStoreResult<AuditRecord> {
+        Err(refusal(
+            "audit line lookup by its carried hint is not built",
+        ))
+    }
     /// Retain the exact signed audit and original sealed frame before native IO.
     /// Callers reuse pending_audit after uncertainty rather than sealing a new line.
     pub async fn append_audit(&self, audit: AuditRecord) -> RecordStoreResult<()> {
@@ -215,6 +222,11 @@ impl StoreUnitCheckpoints {
             pending: Mutex::new(None),
             driving: tokio::sync::Mutex::new(()),
         }
+    }
+    /// Test probe: the evidence carried for checkpoint `id`'s selected original.
+    #[cfg(test)]
+    pub(crate) fn carried(&self, _id: &[u8; 16]) -> Option<Carried> {
+        None
     }
     fn namespace(&self) -> NamespaceId {
         partition::namespace(FAMILY, &[&self.evidence.node.to_be_bytes()])

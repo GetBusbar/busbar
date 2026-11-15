@@ -68,6 +68,10 @@ struct Mem {
     seen: Mutex<Vec<Seen>>,
     decisions: Mutex<Vec<&'static str>>,
     appenders: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// Hold the reply to every applied journal append this long (the store applied it; the owner
+    /// has not heard yet), so a pinned group is in flight with the head already moved.
+    append_delay: Mutex<Option<Duration>>,
+    appends_applied: AtomicUsize,
 }
 
 fn control_address(key: Vec<u8>) -> Address {
@@ -121,6 +125,17 @@ fn is_unitcp(prepared: &PreparedCandidate) -> bool {
             Mutation::DeleteRange { .. } => false,
         })
 }
+/// A node journal append: it moves the journal head `H`.
+fn is_append(prepared: &PreparedCandidate) -> bool {
+    prepared
+        .candidate()
+        .mutations
+        .iter()
+        .any(|mutation| match mutation {
+            Mutation::Put { address, .. } => journal_tag(&address.key) == Some(b'H'),
+            _ => false,
+        })
+}
 fn decision_name(decision: &Decision) -> &'static str {
     match decision {
         Decision::Applied(_) => "Applied",
@@ -145,6 +160,8 @@ impl Mem {
             seen: Mutex::default(),
             decisions: Mutex::default(),
             appenders: Mutex::default(),
+            append_delay: Mutex::new(None),
+            appends_applied: AtomicUsize::new(0),
         }
     }
     fn set_mode(&self, mode: Mode) {
@@ -283,7 +300,15 @@ impl PersistenceBackend for Mem {
     ) -> Call<'_, Decision> {
         Box::pin(async move {
             if !is_unitcp(&prepared) {
-                return Ok(self.apply(&prepared));
+                let decision = self.apply(&prepared);
+                if is_append(&prepared) && matches!(decision, Decision::Applied(_)) {
+                    self.appends_applied.fetch_add(1, Ordering::SeqCst);
+                    let delay = *self.append_delay.lock().unwrap();
+                    if let Some(delay) = delay {
+                        tokio::time::sleep(delay).await;
+                    }
+                }
+                return Ok(decision);
             }
             let head = prepared
                 .candidate()
@@ -372,6 +397,7 @@ impl UnitCheckpointAudit for Signer {
 struct Fixture {
     backend: Arc<Mem>,
     journal: Arc<RuntimeJournal>,
+    evidence: Arc<UnitCheckpointEvidence>,
     sink: StoreUnitCheckpoints,
 }
 async fn fixture() -> Fixture {
@@ -410,12 +436,13 @@ async fn fixture() -> Fixture {
         crate::teller::Kernel::new().durability_token(),
     ));
     let sink = StoreUnitCheckpoints::new(
-        evidence,
+        evidence.clone(),
         Arc::new(Signer(AuditSigningKey::from_seed(&[0x27; 32]))),
     );
     Fixture {
         backend,
         journal,
+        evidence,
         sink,
     }
 }
@@ -693,6 +720,250 @@ async fn locator_mismatch_fails_closed() {
         assert!(refused.contains("Corrupt"), "{refused}");
         assert_eq!(selected_raw(&fixture.backend), Some(selected));
         assert_eq!(fixture.backend.conflicts.load(Ordering::SeqCst), 1);
+    })
+    .await;
+}
+
+/// Rewrite this node's original at `ordinal` self-consistently: a valid frame at the same
+/// sequence, with its own chain hash recomputed, that is not the bytes this process sealed.
+fn rewrite_original(backend: &Mem, ordinal: u64) {
+    let mut state = backend.state.lock().unwrap();
+    let (address, value) = state
+        .rows
+        .iter()
+        .find(|(at, _)| at.key == journal_key(b'R', ordinal))
+        .map(|(at, value)| (at.clone(), value.clone()))
+        .expect("the original frame");
+    let mut record =
+        busbar_kernel_wal::JournalRecord::decode(value.expose(&crate::seal::lend())).unwrap();
+    record.wall += 1;
+    record.hash = record.digest_of_chain();
+    state.rows.insert(address, Secret::new(record.encode()));
+}
+
+/// The sealed audit line of unit 17, incarnation 7, as the root seals a terminal unit's line.
+fn audit_line() -> busbar_kernel_audit::AuditRecord {
+    use busbar_contract::caps::{Audit as AuditStep, KernelSeal, Origin, OriginKind, Outcome};
+    use busbar_kernel_audit::record::{
+        AuditChain, AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage,
+        What,
+    };
+    let mut chain = AuditChain::new()
+        .signing_with(AuditSigningKey::from_seed(&[0x5a; 32]))
+        .sealing_as(NODE);
+    let inputs = AuditInputs {
+        subject: Subject::PrincipalId("race-principal".into()),
+        what: What {
+            unit_key: busbar_contract::caps::UnitKey::new(17),
+            incarnation: 7,
+            op_class: OpClassId::new("chat.completion"),
+            destination: None,
+            parent: None,
+            pre_hook_head: None,
+            post_hook_head: None,
+        },
+        wall: 1_700_000_000,
+        mono: 5,
+        origin: Origin::seal(&KernelSeal::acquire_for_kernel(), OriginKind::Client),
+        outcome: OutcomeFacts {
+            unit_end: Outcome::Completed,
+            step: None,
+            finish: FinishClass::Complete,
+            hook_failed: false,
+            emission_delta: 0,
+            stale_policy: false,
+        },
+        usage: Usage {
+            lines: Vec::new(),
+            tier_bp: 10_000,
+            fee_count: 0,
+            rate_card_version: None,
+            bucket_chain_ref: String::new(),
+        },
+        controls: Controls::default(),
+        correlation_label: None,
+    };
+    busbar_kernel_audit::record::Audit::seal(
+        &mut chain,
+        inputs,
+        &busbar_contract::caps::Pass::<AuditStep>::mint(&crate::seal::acquire()),
+    )
+}
+
+/// One request-path append on the shared journal, confirmed.
+async fn append_one(journal: &RuntimeJournal) {
+    let run = journal
+        .stage_run(&[Entry::new(RecordClass::Transaction, INJECTED.to_vec())])
+        .unwrap();
+    journal.confirm(&run).await.unwrap();
+}
+
+/// WHO: unit checkpoint custody confirming its custody while request-path appends commit as groups.
+/// DOES: (SHUTDOWN-HANG 8.16) a confirmation never waits for the publication driver; while a
+/// pinned group is in flight, a head the store has already moved to the group's end is accepted as
+/// this owner's own; under 8 appenders with a delayed append reply, at most 1% of confirmations
+/// fall back to the driver and none is refused.
+/// WHY: confirmations serialised on the append lane capped the flusher at ~150 items/s, and a head
+/// moved by our own in-flight group was misreported as lost authority.
+#[tokio::test]
+async fn confirm_with_accepts_a_pinned_group_head() {
+    bounded(async {
+        let fixture = fixture().await;
+        let backend = fixture.backend.clone();
+        append_one(&fixture.journal).await;
+        *backend.append_delay.lock().unwrap() = Some(Duration::from_millis(400));
+        let applied = backend.appends_applied.load(Ordering::SeqCst);
+        let journal = fixture.journal.clone();
+        let held = tokio::spawn(async move { append_one(&journal).await });
+        while backend.appends_applied.load(Ordering::SeqCst) == applied {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert!(
+            !fixture.journal.driver_is_free(),
+            "the held append keeps the publication driver"
+        );
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            fixture.journal.confirm_with(&[]),
+        )
+        .await
+        .expect("a confirmation never waits for the publication driver")
+        .expect("the in-flight group's head is this owner's own");
+        held.await.unwrap();
+        fixture.journal.confirm_with(&[]).await.unwrap();
+
+        *backend.append_delay.lock().unwrap() = Some(Duration::from_millis(5));
+        let mut appenders = Vec::new();
+        for _ in 0..8 {
+            let journal = fixture.journal.clone();
+            appenders.push(tokio::spawn(async move {
+                for _ in 0..20 {
+                    append_one(&journal).await;
+                }
+            }));
+        }
+        let mut confirmations = 0u64;
+        while confirmations < 200 || appenders.iter().any(|a| !a.is_finished()) {
+            fixture
+                .journal
+                .confirm_with(&[])
+                .await
+                .expect("an own group never reads as lost authority");
+            confirmations += 1;
+            tokio::task::yield_now().await;
+        }
+        for appender in appenders {
+            appender.await.unwrap();
+        }
+        let fallbacks = fixture.journal.lane_fallbacks();
+        assert!(
+            fallbacks * 100 <= confirmations,
+            "{fallbacks} of {confirmations} confirmations fell back to the driver"
+        );
+    })
+    .await;
+}
+
+/// WHO: the flusher removing a terminal unit whose audit line this process sealed.
+/// DOES: (SHUTDOWN-HANG F1a, 8.3, 8.5b) the line is read by the hint carried from its append: one
+/// original read and no journal replay, whatever the journal length; a self-consistent rewrite of
+/// that original is refused against the carried hash.
+/// WHY: a full-journal replay per terminal unit made each shutdown drain cost O(N²) in requests.
+#[tokio::test]
+async fn a_terminal_audit_line_is_read_once_by_its_carried_hint() {
+    bounded(async {
+        let fixture = fixture().await;
+        let audit = audit_line();
+        let run = fixture
+            .journal
+            .stage_run(&[Entry::new(
+                RecordClass::Transaction,
+                busbar_kernel_audit::journal_body(&audit).unwrap(),
+            )
+            .at(audit.wall, audit.mono)])
+            .unwrap();
+        fixture.journal.confirm(&run).await.unwrap();
+        let hint = run.carried().next().expect("one original");
+        for _ in 0..50 {
+            append_one(&fixture.journal).await;
+        }
+        fixture.backend.original_reads.store(0, Ordering::SeqCst);
+        let replays = crate::persistence::journal::replays_on_this_thread();
+        let found = fixture
+            .evidence
+            .find_audit_at(hint)
+            .await
+            .expect("the hinted line is found");
+        assert_eq!(found, audit);
+        let reads = fixture.backend.original_reads.load(Ordering::SeqCst);
+        assert!(reads <= 1, "the lookup read {reads} original frames");
+        assert_eq!(
+            crate::persistence::journal::replays_on_this_thread(),
+            replays,
+            "no journal replay"
+        );
+        let ordinal = fixture
+            .journal
+            .locate(&fixture.journal.verified().unwrap(), hint.seq)
+            .unwrap();
+        rewrite_original(&fixture.backend, ordinal);
+        let refused = fixture.evidence.find_audit_at(hint).await.unwrap_err().0;
+        assert!(refused.contains("carried"), "{refused}");
+    })
+    .await;
+}
+
+/// WHO: unit checkpoint custody through one unit's life.
+/// DOES: (SHUTDOWN-HANG 8.3) P's append confirmation carries the checkpoint original's sequence
+/// and hash, a later revision replaces it, and R's applied delete pops it.
+/// WHY: own originals are evidence from their append; nothing carried may outlive custody.
+#[tokio::test]
+async fn carried_checkpoint_evidence_follows_its_selection() {
+    bounded(async {
+        let fixture = fixture().await;
+        let id = unit(1).id;
+        let seq = fixture.journal.next_seq();
+        fixture.sink.persist(&unit(1)).await.unwrap();
+        let first = fixture
+            .sink
+            .carried(&id)
+            .expect("P's append confirmation carries its original");
+        assert_eq!(first.seq, seq);
+        append_one(&fixture.journal).await;
+        fixture.sink.persist(&unit(2)).await.unwrap();
+        let second = fixture.sink.carried(&id).expect("the terminal revision");
+        assert!(second.seq > first.seq + 1, "{second:?} after {first:?}");
+        fixture.sink.remove(&unit(2)).await.unwrap();
+        assert_eq!(
+            fixture.sink.carried(&id),
+            None,
+            "R pops the carried evidence"
+        );
+        assert_eq!(selected_revision(&fixture.backend), None);
+    })
+    .await;
+}
+
+/// WHO: unit checkpoint custody when its own selected original was rewritten in the store with a
+/// self-consistent frame (same sequence, valid hash, H untouched).
+/// DOES: (SHUTDOWN-HANG 8.5b) the next persist refuses with the carried-evidence mismatch and
+/// selects nothing.
+/// WHY: the checkpoint signature covers the body only; without the carried hash a rewritten own
+/// original passed as evidence.
+#[tokio::test]
+async fn a_rewritten_checkpoint_original_is_refused_against_carried_evidence() {
+    bounded(async {
+        let fixture = fixture().await;
+        let seq = fixture.journal.next_seq();
+        fixture.sink.persist(&unit(1)).await.unwrap();
+        let ordinal = fixture
+            .journal
+            .locate(&fixture.journal.verified().unwrap(), seq)
+            .unwrap();
+        rewrite_original(&fixture.backend, ordinal);
+        let refused = fixture.sink.persist(&unit(2)).await.unwrap_err().0;
+        assert!(refused.contains("carried"), "{refused}");
+        assert_eq!(selected_revision(&fixture.backend), Some(1));
     })
     .await;
 }

@@ -52,12 +52,34 @@ pub struct StagedRun {
     owner: Arc<()>,
     ticket: u64,
     records: Arc<[Record]>,
+    /// The chain hash this process sealed for each record, in order (SHUTDOWN-HANG F1).
+    hashes: Arc<[[u8; 32]]>,
     bytes: usize,
 }
 impl StagedRun {
     pub fn records(&self) -> &[Record] {
         &self.records
     }
+    /// The evidence this process holds for each original of the run: its sequence and the chain
+    /// hash it sealed. It is evidence of a journal original only once `confirm` returned Ok.
+    pub fn carried(&self) -> impl Iterator<Item = Carried> + '_ {
+        self.records
+            .iter()
+            .zip(self.hashes.iter())
+            .map(|(record, hash)| Carried {
+                seq: record.node_seq,
+                hash: *hash,
+            })
+    }
+}
+
+/// What this process holds for one of its own originals (SHUTDOWN-HANG F1): the sequence it sealed
+/// and the chain hash of those exact bytes. A record read back against it is that original, or the
+/// read is refused as `Corrupt`. RAM only; never persisted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Carried {
+    pub seq: u64,
+    pub hash: [u8; 32],
 }
 
 /// A group submitted to the store: the proof it was appended under and how
@@ -398,11 +420,16 @@ impl RuntimeJournal {
         records
             .try_reserve_exact(entries.len())
             .map_err(|_| RuntimeError::Budget)?;
+        let mut hashes = Vec::new();
+        hashes
+            .try_reserve_exact(entries.len())
+            .map_err(|_| RuntimeError::Budget)?;
         for entry in entries {
             let record = super::recovery_hooks::seal_record(self.node, head, entry.clone())
                 .map_err(RuntimeError::from)?;
             let decoded = decode_record(self.node, &record.body).map_err(RuntimeError::from)?;
             head = advance(head, &decoded).map_err(RuntimeError::from)?;
+            hashes.push(decoded.hash);
             records.push(record);
         }
         state
@@ -413,6 +440,7 @@ impl RuntimeJournal {
             owner: self.owner.clone(),
             ticket: state.next_ticket,
             records: records.into(),
+            hashes: hashes.into(),
             bytes,
         });
         state.pending.push_back(PendingRun {
@@ -733,6 +761,26 @@ impl RuntimeJournal {
             .map_err(RuntimeError::from)?;
         drop(driver);
         Ok((proof, result))
+    }
+
+    /// This owner's verified head right now, without the publication driver: a snapshot for
+    /// locating its own originals, never a CAS predicate by itself.
+    pub(crate) fn verified(&self) -> std::result::Result<Arc<VerifiedHead>, RuntimeError> {
+        self.live_head()
+    }
+
+    /// Custody and admission of this owner plus `guards`, in one read (SHUTDOWN-HANG F1).
+    pub(crate) async fn confirm_with(
+        &self,
+        guards: &[Predicate],
+    ) -> std::result::Result<(), RuntimeError> {
+        self.confirm_live_owned_with(guards).await
+    }
+
+    /// Test probe: confirmations that fell back to the publication driver.
+    #[cfg(test)]
+    pub(crate) fn lane_fallbacks(&self) -> u64 {
+        0
     }
 
     fn live_head(&self) -> std::result::Result<Arc<VerifiedHead>, RuntimeError> {
