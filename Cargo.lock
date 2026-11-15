@@ -629,6 +629,7 @@ dependencies = [
  "base64 0.22.1",
  "busbar-crypto",
  "hex",
+ "hyper",
  "percent-encoding",
  "zerocopy",
  "zeroize",
