@@ -271,9 +271,6 @@ fn root_address() -> Address {
 /// fences, so they never enter the candidate fingerprint.
 #[must_use]
 pub fn fences<O>(prepared: &PreparedCandidate<O>) -> Vec<Predicate> {
-    if prepared.candidate().codec == CANDIDATE_VERSION {
-        return Vec::new();
-    }
     let id = prepared.candidate().id;
     if initialization(prepared, id.dataset) {
         return vec![Predicate {
@@ -305,9 +302,6 @@ pub fn fences<O>(prepared: &PreparedCandidate<O>) -> Vec<Predicate> {
 /// for a zero writer or a row that does not encode.
 #[must_use]
 pub fn writer_put(writer: [u8; 16], old: Option<Writer>, next: Writer) -> Option<Vec<Mutation>> {
-    if writer != [0; 16] {
-        return None;
-    }
     if writer == [0; 16] {
         return None;
     }
@@ -388,9 +382,6 @@ fn transition(writer: [u8; 16], old: Option<Writer>, next: Writer, mut emit: imp
 /// Every refusal is [`Failure::Refused`].
 pub fn admit<O>(prepared: &PreparedCandidate<O>) -> Result<(), Failure> {
     let candidate = prepared.candidate();
-    if candidate.codec == CANDIDATE_VERSION {
-        return Ok(());
-    }
     if candidate
         .predicates
         .iter()
@@ -555,7 +546,7 @@ impl Writer {
     #[must_use]
     pub fn live(self) -> RangeInclusive<u64> {
         match self.retired_through.checked_add(1) {
-            Some(first) => first..=self.admitted_through.saturating_add(1),
+            Some(first) => first..=self.admitted_through,
             None => NONE_LIVE,
         }
     }
@@ -563,7 +554,10 @@ impl Writer {
     /// Fixed versioned representation, independent of backend physical format. A window of more
     /// than [`MAX_LIVE_EPOCHS`] live epochs has none.
     pub fn encode(self) -> Option<[u8; 24]> {
-        if self.admitted_through == 0 || self.retired_through > self.admitted_through {
+        if self.admitted_through == 0
+            || self.retired_through > self.admitted_through
+            || self.admitted_through - self.retired_through > MAX_LIVE_EPOCHS
+        {
             return None;
         }
         let mut bytes = [0; 24];

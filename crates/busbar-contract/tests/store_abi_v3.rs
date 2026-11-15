@@ -98,5 +98,4 @@ fn the_zero_readings_are_the_safe_ones() {
         busbar_contract::abi::store::DIAG_OPID_CONFLICT,
         "STORE_OPID_CONFLICT"
     );
-    const { assert!(busbar_contract::abi::store::OP_ID_RETENTION_SECS >= 24 * 60 * 60) };
 }

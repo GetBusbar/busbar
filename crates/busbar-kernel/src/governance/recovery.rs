@@ -1007,15 +1007,16 @@ impl super::GovState {
         entry.sent_clock = Some(sent.checked_sub(by).expect("a representable instant"));
     }
 
-    /// Only a retained same-process monotonic clock authorizes receipt replay.
-    pub(super) fn recovery_retention_expired(&self, operation_id: [u8; 16]) -> Option<bool> {
+    /// Whether this process sent the operation, so it may resend it: its slot is held until it
+    /// settles, however long ago it was sent. After a restart the send is unknown here and the
+    /// operation lands unknown (a fact about custody, not a time rule).
+    pub(super) fn recovery_sent_here(&self, operation_id: [u8; 16]) -> bool {
         self.recovery_book
             .entries
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get(&operation_id)
-            .and_then(|entry| entry.sent_clock)
-            .map(crate::off_path::governance::runtime::recovery_retention_lapsed)
+            .is_some_and(|entry| entry.sent_clock.is_some())
     }
 
     pub(super) async fn confirm_pending_recovery(

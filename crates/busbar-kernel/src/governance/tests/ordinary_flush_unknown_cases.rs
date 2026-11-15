@@ -68,8 +68,9 @@ async fn ordinary_small_usage_unwind_does_not_duplicate_committed_effect() {
 /// STORE-TRANSACTIONS §8 item 19: a first send a day and a second in the past.
 const DAY_AND_A_SECOND: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60 + 1);
 
-/// Exact debt (item 19): a chunk whose reply was lost a day and a second ago is resent with its
-/// operation while its slot is held, and the store replays Applied: no retention give-up.
+/// Exact debt (item 19): a chunk whose reply was lost is resent with its operation however long
+/// ago it was first sent (the chunk keeps no clock to compare), and the store replays Applied: no
+/// retention give-up.
 #[tokio::test]
 async fn a_day_old_exact_debt_chunk_resends_its_operation_and_settles_once() {
     let store = Arc::new(FlakyStore::new().await);
@@ -85,7 +86,6 @@ async fn a_day_old_exact_debt_chunk_resends_its_operation_and_settles_once() {
         0,
         "the lost reply keeps the chunk"
     );
-    gov.age_exact_debt_chunks(DAY_AND_A_SECOND);
     assert_eq!(gov.flush_budgets().await, 1, "the resend settles the chunk");
     assert_eq!(
         store

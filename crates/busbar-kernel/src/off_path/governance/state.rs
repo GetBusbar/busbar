@@ -485,17 +485,9 @@ pub(crate) fn metering_flush_take_unretained<K, V, T>(
     }
 }
 
-/// `metering_flush`: a first attempt's clock readings: its receipt replay deadline and its
-/// first-send wall time in milliseconds.
-pub(crate) fn metering_flush_attempt_clock() -> (std::time::Instant, u64) {
-    let replay_before = std::time::Instant::now()
-        + std::time::Duration::from_secs(busbar_contract::abi::store::OP_ID_RETENTION_SECS);
-    (replay_before, crate::store::now_ms())
-}
-
-/// `metering_flush`: whether a retained attempt's receipt retention has expired.
-pub(crate) fn metering_flush_expired(replay_before: std::time::Instant) -> bool {
-    std::time::Instant::now() >= replay_before
+/// `metering_flush`: a first attempt's first-send wall time in milliseconds.
+pub(crate) fn metering_flush_attempt_clock() -> u64 {
+    crate::store::now_ms()
 }
 
 /// `metering_flush`: the fresh pending cells a failed shutdown flush leaves behind.

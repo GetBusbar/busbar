@@ -385,7 +385,7 @@ fn admit_refuses_every_breach() {
     assert_eq!(
         mutated(|c| c.mutations.push(Mutation::DeleteRange {
             namespace: NAMESPACE,
-            prefix: vec![b'w'],
+            prefix: vec![b'x'],
             exact_key_length: 17,
         })),
         Err(Failure::Refused),
