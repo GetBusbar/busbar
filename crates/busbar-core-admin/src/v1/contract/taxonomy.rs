@@ -128,9 +128,64 @@ pub enum Cond {
     /// A restart-only admin config change on an in-memory (Ephemeral) Store: the restart that
     /// would apply it is the same event that erases it, so it is refused, not silently lost.
     RestartUnreachable,
+    /// A plugin refused an op in its own words, or an instance open failed in the plugin
+    /// (`plugin_rejected`); its text and condition word are in `details`.
+    PluginRejected,
 }
 
 impl Cond {
+    /// The closed reason this condition puts on the wire (`error.reason`): its snake-case name.
+    /// An exhaustive match, so a new condition does not compile until it is named here and in
+    /// `busbar_kernel::admin::reasons::REASONS`.
+    pub fn reason(self) -> &'static str {
+        match self {
+            Cond::StaleIfMatch => "stale_if_match",
+            Cond::ArchiveChanged => "archive_changed",
+            Cond::MalformedIfMatch => "malformed_if_match",
+            Cond::UnknownResource => "unknown_resource",
+            Cond::MalformedBody => "malformed_body",
+            Cond::InvalidTree => "invalid_tree",
+            Cond::BaseDefined => "base_defined",
+            Cond::GrantChange => "grant_change",
+            Cond::BoundKeys => "bound_keys",
+            Cond::StillParent => "still_parent",
+            Cond::GovernanceOff => "governance_off",
+            Cond::NoSigningKey => "no_signing_key",
+            Cond::IdempotencyInFlight => "idempotency_in_flight",
+            Cond::RecoveryConflict => "recovery_conflict",
+            Cond::AtKeyCap => "at_key_cap",
+            Cond::KeyRevoked => "key_revoked",
+            Cond::ParentWithoutGroup => "parent_without_group",
+            Cond::KeyExpiryFields => "key_expiry_fields",
+            Cond::RebindTargetMissing => "rebind_target_missing",
+            Cond::HookNoAck => "hook_no_ack",
+            Cond::SettingsPush => "settings_push",
+            Cond::MalformedCursor => "malformed_cursor",
+            Cond::MissingRequiredQuery => "missing_required_query",
+            Cond::InvalidQueryValue => "invalid_query_value",
+            Cond::NonNumericPath => "non_numeric_path",
+            Cond::InvalidConfig => "invalid_config",
+            Cond::UnknownModule => "unknown_module",
+            Cond::LockoutSelf => "lockout_self",
+            Cond::NoDiskBase => "no_disk_base",
+            Cond::UntrustedUpload => "untrusted_upload",
+            Cond::InvalidFilename => "invalid_filename",
+            Cond::NotLoadable => "not_loadable",
+            Cond::Overlong => "overlong",
+            Cond::NothingToRotate => "nothing_to_rotate",
+            Cond::NoSupervisor => "no_supervisor",
+            Cond::NotRestartable => "not_restartable",
+            Cond::UnknownSection => "unknown_section",
+            Cond::NameCollision => "name_collision",
+            Cond::InvalidLabels => "invalid_labels",
+            Cond::TrustCeilingRaise => "trust_ceiling_raise",
+            Cond::StillReferenced => "still_referenced",
+            Cond::Unpriced => "unpriced",
+            Cond::RestartUnreachable => "restart_unreachable",
+            Cond::PluginRejected => "plugin_rejected",
+        }
+    }
+
     #[cfg(feature = "openapi-schema")]
     pub fn phrase(self) -> &'static str {
         match self {
@@ -214,6 +269,9 @@ impl Cond {
             Cond::NameCollision => {
                 "the plugin name/alias collides with an already-installed plugin under a different \
                  filename"
+            }
+            Cond::PluginRejected => {
+                "a plugin refused the request in its own words (its text and condition are in `details`)"
             }
         }
     }
@@ -304,13 +362,20 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
         ],
 
         (Post, "/tools/{name}/connect") => {
-            de![Validation / InvalidConfig, NotFound / UnknownResource,]
+            de![
+                Validation / InvalidConfig,
+                Validation / PluginRejected,
+                NotFound / UnknownResource,
+            ]
         }
 
-        (Post, "/agents/{name}/connect") => de![NotFound / UnknownResource,],
+        (Post, "/agents/{name}/connect") => {
+            de![Validation / PluginRejected, NotFound / UnknownResource,]
+        }
         (Post, "/agents/{name}/approve") => de![
             Validation / MalformedBody,
             Validation / InvalidConfig,
+            Validation / PluginRejected,
             NotFound / UnknownResource,
         ],
 

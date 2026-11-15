@@ -2,7 +2,9 @@
 
 use super::*;
 
-/// The frozen wire shape, from the one place it is written.
+/// The wire shape, from the one place it is written. 1.5.5's keys survive unchanged (the top-level
+/// pair, `error.code`, `error.message`: 1.5.5's `Error` schema is an open object, so the v1 rule is
+/// additive-only), and `error` carries exactly the six keys of ADMIN-API-1.6 section 1.2.
 #[test]
 fn envelope_shape_matches_the_1_5_5_error_contract() {
     let rendered = envelope_of("forbidden", "insufficient scope");
@@ -19,18 +21,34 @@ fn envelope_shape_matches_the_1_5_5_error_contract() {
         .expect("error key")
         .as_object()
         .expect("an object");
-    assert_eq!(error.len(), 2);
     assert_eq!(error["code"], "forbidden");
     assert_eq!(error["message"], "insufficient scope");
+    assert_eq!(error.len(), 6, "{rendered}");
+    for key in [
+        "code",
+        "reason",
+        "message",
+        "request_id",
+        "retryable",
+        "details",
+    ] {
+        assert!(error.contains_key(key), "no `{key}`: {rendered}");
+    }
+    assert_eq!(error["reason"], "scope_insufficient");
+    assert_eq!(error["retryable"], false);
 }
 
-/// Byte-for-byte, not merely shaped right once parsed.
+/// Byte-for-byte, not merely shaped right once parsed: within one request the envelope is exactly
+/// these bytes, its `request_id` that request's.
 #[test]
 fn the_envelope_is_the_frozen_bytes_and_not_merely_the_frozen_document() {
+    let rendered = busbar_kernel::admin::gate::in_request_scope("r_00000000000000a1", || {
+        envelope_of("not_found", "not_found")
+    });
     assert_eq!(
-        envelope_of("not_found", "not_found"),
+        rendered,
         format!(
-            r#"{{"code":"{}","error":{{"code":"not_found","message":"not_found"}}}}"#,
+            r#"{{"code":"{}","error":{{"code":"not_found","details":{{}},"message":"not_found","reason":"unknown_resource","request_id":"r_00000000000000a1","retryable":false}}}}"#,
             busbar_kernel::diagnostics::ADMIN_NOT_FOUND.banner()
         )
     );
@@ -75,7 +93,7 @@ fn a_message_carrying_caller_text_is_escaped_into_one_string() {
     let error = parsed["error"].as_object().expect("an object");
     assert_eq!(
         error.len(),
-        2,
+        6,
         "no key of the caller's choosing: {rendered}"
     );
     assert_eq!(error["code"], "invalid_request");

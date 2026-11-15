@@ -5,6 +5,8 @@
 
 pub use busbar_contract::net::*;
 
+use foldhash::HashSet;
+
 use crate::cold::scheme_of;
 
 /// WHY A GUARDED FETCH WAS REFUSED — the FACT, not the sentence.
@@ -106,9 +108,9 @@ struct HostSet<'a> {
     /// whitespace-only entries are not kept, so they can never match.
     names: Vec<std::borrow::Cow<'a, str>>,
     /// The entries that are IPv4 literals, parsed.
-    v4: Vec<std::net::Ipv4Addr>,
+    v4: HashSet<std::net::Ipv4Addr>,
     /// The entries that are IPv6 literals, parsed.
-    v6: Vec<std::net::Ipv6Addr>,
+    v6: HashSet<std::net::Ipv6Addr>,
 }
 
 /// AN OPERATOR'S LIST ENTRY (`security.blocked_metadata_hosts`, `security.allow_metadata_hosts`, a
@@ -148,9 +150,9 @@ impl<'a> HostSet<'a> {
                 continue;
             }
             if let Ok(v4) = norm.parse::<std::net::Ipv4Addr>() {
-                set.v4.push(v4);
+                set.v4.insert(v4);
             } else if let Ok(v6) = norm.parse::<std::net::Ipv6Addr>() {
-                set.v6.push(v6);
+                set.v6.insert(v6);
             }
             set.names.push(norm);
         }

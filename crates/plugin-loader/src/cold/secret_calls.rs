@@ -23,6 +23,40 @@ use crate::dispatch::lifecycle::blob;
 use crate::dispatch::{instant_at, now_ns, Plugin};
 use crate::secret_calls::{CheckerKey, SecretRows};
 
+/// Config transaction: a copy of the live dropped-in set, put back if the transaction publishes
+/// nothing.
+#[cold]
+pub(crate) fn dropped_copy(rows: &SecretRows) -> Vec<Candidate> {
+    rows.dropped
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+}
+
+/// Config transaction: whether the live dropped-in set is `snapshot`, module for module: name,
+/// version, Statement, archive file and the library bytes its signed manifest names.
+#[cold]
+pub(crate) fn same_set(live: &[Candidate], snapshot: &[Candidate]) -> bool {
+    fn image(c: &Candidate) -> Option<(&str, &Arc<Vec<u8>>)> {
+        match &c.origin {
+            crate::boot::Origin::Dropped { file, bytes } => Some((file.as_str(), bytes)),
+            crate::boot::Origin::Linked(_) => None,
+        }
+    }
+    let same = |a: &Candidate, b: &Candidate| {
+        a.name == b.name
+            && a.version == b.version
+            && a.stated == b.stated
+            && match (image(a), image(b)) {
+                (Some((file_a, bytes_a)), Some((file_b, bytes_b))) => {
+                    file_a == file_b && (Arc::ptr_eq(bytes_a, bytes_b) || bytes_a == bytes_b)
+                }
+                _ => false,
+            }
+    };
+    live.len() == snapshot.len() && live.iter().zip(snapshot).all(|(a, b)| same(a, b))
+}
+
 /// Boot: names the secret module that could not be loaded.
 #[cold]
 pub(crate) fn load_refused(name: &str, e: &dyn Display) -> String {

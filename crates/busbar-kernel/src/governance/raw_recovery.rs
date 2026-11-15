@@ -388,7 +388,7 @@ impl GovState {
         self.restore_raw_recovery(&event)?;
         if event.state == RecoveryState::Intent {
             self.keep_recovery_event(&event).await?;
-            if self.recovery_retention_expired(event.operation_id) != Some(false) {
+            if !self.recovery_sent_here(event.operation_id) {
                 let next = self
                     .new_recovery_event(
                         event.operation_id,
@@ -396,7 +396,7 @@ impl GovState {
                         event.body_fingerprint,
                         RecoveryState::LandedUnknown,
                         event.first_sent_at_ms,
-                        self.expired_raw_payload(&event)?,
+                        Self::quarantined_raw_payload(&event)?,
                     )
                     .map_err(invalid)?;
                 self.keep_recovery_event(&next).await?;
@@ -467,25 +467,14 @@ impl GovState {
         Ok(())
     }
 
-    fn expired_raw_payload(&self, event: &RecoveryEvent) -> RecordStoreResult<Vec<u8>> {
-        Self::quarantined_raw_payload(
-            event,
-            self.recovery_retention_expired(event.operation_id)
-                .is_none(),
-        )
-    }
-
-    fn quarantined_raw_payload(
-        event: &RecoveryEvent,
-        age_unknown: bool,
-    ) -> RecordStoreResult<Vec<u8>> {
+    fn quarantined_raw_payload(event: &RecoveryEvent) -> RecordStoreResult<Vec<u8>> {
         if event.kind == RecoveryKind::Metering {
             let mut custody: MeteringCustody = decode(&event.payload)?;
-            custody.age_unknown = age_unknown;
+            custody.age_unknown = true;
             return encode(&custody);
         }
         let mut custody: UsageCustody = decode(&event.payload)?;
-        custody.age_unknown = age_unknown;
+        custody.age_unknown = true;
         let mut unsent_plain = custody.plain.clone();
         let mut unsent_dated = custody.dated.clone();
         unsent_plain.subtract(&custody.chunk_plain);
@@ -1151,7 +1140,7 @@ impl GovState {
             )
         };
         let (quarantined, unknown) = if event.state == RecoveryState::Intent {
-            let payload = Self::quarantined_raw_payload(event, true).map_err(|error| {
+            let payload = Self::quarantined_raw_payload(event).map_err(|error| {
                 crate::governance::rendered_error(RecoveryError::Invalid, error)
             })?;
             let unknown = event.checkpoint(RecoveryState::LandedUnknown, normalize(payload)?)?;

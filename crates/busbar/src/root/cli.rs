@@ -321,6 +321,13 @@ fn ordinary_cli_flags() -> Option<i32> {
             Some(EXIT_SUCCESS)
         }
         Some(OPTION_METADATA_BLOCKLIST) => {
+            if let Some(refusal) = crate::root::boot::start_refusal() {
+                eprintln!(
+                    "[error] {}",
+                    diagnostics::CLI_VALIDATE_CONFIG_INVALID.coded(refusal)
+                );
+                return Some(EXIT_FAILURE);
+            }
             let mut entries = config_validate::metadata_enforced_entries();
             let config_path = resolve_config_path(argv.config.as_deref());
             if let Ok(raw) = std::fs::read_to_string(&config_path) {
@@ -460,13 +467,16 @@ pub(crate) fn validate_judged(
     providers_override: Option<&std::path::Path>,
     ignore_overlay: bool,
 ) -> Result<Validated, ValidateRefusal> {
+    if let Some(refusal) = crate::root::boot::start_refusal() {
+        return Err(ValidateRefusal::Load(refusal));
+    }
     let mut loaded = load_config_from_disk(
         config_path,
         providers_override,
         ignore_overlay,
         config::EnvSubst::Lenient,
     )
-    .map_err(ValidateRefusal::Load)?;
+    .map_err(|e| ValidateRefusal::Load(crate::root::boot::with_skip_lines(e)))?;
     let unset_env_vars = loaded.unset_env_vars.clone();
 
     if let Some(doc) = loaded.overlay_doc.as_ref() {
@@ -604,31 +614,53 @@ pub(crate) fn validate_config_command() -> i32 {
 
 const LIST_PLUGINS_HEADER: &str = "FILE                               NAME                     ALIAS        KIND   VERSION   SIGNATURE                STATUS";
 
+/// The plugins block and store reference `--list-plugins` inventories against.
+///
+/// A config file that exists but cannot be read, parsed or env-substituted is refused (BUSBAR-3016):
+/// inventorying the default plugins dir would describe a directory the deployment does not use. The
+/// default block applies only when there is no config file at the resolved path (a bare inventory).
+fn list_plugins_config(
+    config_path: &std::path::Path,
+    providers: Option<&std::path::Path>,
+) -> Result<(config::PluginsCfg, Option<String>), String> {
+    if !config_path.exists() {
+        eprintln!(
+            "[info] no config file at {}; inventorying the default plugins block",
+            config_path.display()
+        );
+        return Ok((config::PluginsCfg::default(), None));
+    }
+    match load_config_from_disk(config_path, providers, false, config::EnvSubst::Lenient) {
+        Ok(l) => {
+            let store = l.deploy.store.as_ref().map(|g| g.module.clone());
+            Ok((l.deploy.plugins, store))
+        }
+        Err(e) => Err(diagnostics::CLI_LIST_PLUGINS_CONFIG_UNREADABLE.coded(format_args!(
+            "config {} exists but is not readable ({e}); refusing to inventory the default plugins block",
+            config_path.display()
+        ))
+        .to_string()),
+    }
+}
+
 fn list_plugins_command() -> i32 {
     let argv = argv();
     let config_path = std::path::PathBuf::from(resolve_config_path(argv.config.as_deref()));
 
-    let (plugins_cfg, store_ref) = match load_config_from_disk(
+    let (plugins_cfg, store_ref) = match list_plugins_config(
         &config_path,
         argv.providers.as_deref().map(std::path::Path::new),
-        false,
-        config::EnvSubst::Lenient,
     ) {
-        Ok(l) => {
-            let store = l.deploy.store.as_ref().map(|g| g.module.clone());
-            (l.deploy.plugins, store)
-        }
+        Ok(c) => c,
         Err(e) => {
-            eprintln!(
-                "[warn] {}",
-                diagnostics::CLI_LIST_PLUGINS_CONFIG_UNREADABLE.coded(format_args!(
-                    "config not readable ({e}); using the default plugins block"
-                ))
-            );
-            (config::PluginsCfg::default(), None)
+            eprintln!("[error] {e}");
+            return EXIT_FAILURE;
         }
     };
     plugins_cfg.warn_invalid_floors();
+    if let Some(refusal) = crate::root::boot::start_refusal() {
+        println!("process start: {refusal}");
+    }
     let policy = match crate::root::boot::trust_policy(&plugins_cfg, env!("CARGO_PKG_VERSION")) {
         Ok(p) => p,
         Err(e) => {

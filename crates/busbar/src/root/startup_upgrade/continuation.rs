@@ -750,12 +750,7 @@ async fn validate(
     let mut proof = Sha256::new();
     proof.update(b"busbar.startup-readiness.v1\0");
     if let Some(binding) = binding {
-        if candidate.core.info().dataset.0 != binding.target.dataset
-            || candidate.core.info().physical_version != binding.target.format.physical
-            || binding.target.format.owner != migration::CORE_FORMAT_OWNER
-            || binding.target.format.logical != migration::CORE_FORMAT.logical
-            || binding.target.format.codec != migration::CORE_FORMAT.codec
-        {
+        if !binding.target.realized_by(&candidate.core.info()) {
             return Err(Permanent(
                 "candidate target identity does not match the upgrade",
             ));

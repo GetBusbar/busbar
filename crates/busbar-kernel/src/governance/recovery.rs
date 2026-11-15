@@ -373,6 +373,17 @@ impl RecoveryEntry {
             || self.resolution_runner.is_running()
             || self.driver.is_running()
     }
+
+    /// SHUTDOWN-HANG §5: a staged original not yet confirmed is `in_doubt`; a selected operation
+    /// not yet Settled is durable custody the adopter settles.
+    pub(crate) fn custody(&self) -> (bool, bool) {
+        let staged = self.pending.is_some() || self.runner.is_running() || self.driver.is_running();
+        let selected = self
+            .selected
+            .as_ref()
+            .is_some_and(|event| event.state != RecoveryState::Settled);
+        (staged, selected)
+    }
 }
 
 impl RecoveryBook {
@@ -860,6 +871,16 @@ impl RecoveryAdmin<'_> {
 }
 
 impl super::GovState {
+    /// `(staged, selected)` counts of recovery custody at a non-retired exit (SHUTDOWN-HANG §5).
+    pub(super) fn recovery_custody_counts(&self) -> (usize, usize) {
+        let entries = self
+            .recovery_book
+            .entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        crate::off_path::governance::runtime::recovery_custody_counts(entries.values())
+    }
+
     pub(super) fn has_unsettled_recovery(&self) -> bool {
         self.recovery_book.attaching.is_running()
             || crate::off_path::governance::runtime::recovery_any_unsettled(
@@ -992,15 +1013,31 @@ impl super::GovState {
         )
     }
 
-    /// Only a retained same-process monotonic clock authorizes receipt replay.
-    pub(super) fn recovery_retention_expired(&self, operation_id: [u8; 16]) -> Option<bool> {
+    /// Move an operation's first send from this process `by` into the past.
+    #[cfg(test)]
+    pub(super) fn backdate_recovery_send(&self, operation_id: [u8; 16], by: std::time::Duration) {
+        let mut entries = self
+            .recovery_book
+            .entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let entry = entries
+            .get_mut(&operation_id)
+            .expect("a selected operation");
+        let sent = entry.sent_clock.expect("sent from this process");
+        entry.sent_clock = Some(sent.checked_sub(by).expect("a representable instant"));
+    }
+
+    /// Whether this process sent the operation, so it may resend it: its slot is held until it
+    /// settles, however long ago it was sent. After a restart the send is unknown here and the
+    /// operation lands unknown (a fact about custody, not a time rule).
+    pub(super) fn recovery_sent_here(&self, operation_id: [u8; 16]) -> bool {
         self.recovery_book
             .entries
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get(&operation_id)
-            .and_then(|entry| entry.sent_clock)
-            .map(crate::off_path::governance::runtime::recovery_retention_lapsed)
+            .is_some_and(|entry| entry.sent_clock.is_some())
     }
 
     pub(super) async fn confirm_pending_recovery(

@@ -271,4 +271,11 @@ BUSBAR-9015	first-start-takeover-unconfirmed	1.6.0
 BUSBAR-9016	first-start-slow-step	1.6.0
 BUSBAR-9017	first-start-exit-retired	1.6.0
 BUSBAR-9018	first-start-exit-retire-failed	1.6.0
+BUSBAR-9019	shutdown-drain-incomplete	1.6.0
+BUSBAR-9020	shutdown-spend-unpersisted	1.6.0
+BUSBAR-8030	governed-admission-paused	1.6.0
+BUSBAR-9021	shutdown-drain-incomplete-unrecorded	1.6.0
+BUSBAR-9022	expired-writer-row-invalid	1.6.0
+BUSBAR-9023	expired-writer-close-failed	1.6.0
+BUSBAR-9024	expired-writers-remaining	1.6.0
 BUSBAR-9201	composition-transport-unprovided	1.6.0

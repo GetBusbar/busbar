@@ -1051,7 +1051,12 @@ fn validate_refuses_retired_overlay_selectors_without_file_effects() {
             code, 1,
             "a retired file selector cannot replace the configured Store: {stderr}"
         );
-        assert!(stderr.contains("unknown field `overlay`"), "{stderr}");
+        assert!(
+            stderr.contains("`config.overlay` is retired in 1.6.0")
+                && stderr.contains("busbar --migrate-config")
+                && stderr.contains("--migrate-overlay"),
+            "{stderr}"
+        );
         assert_eq!(
             overlay_validation_tree(&dir),
             before,
@@ -1096,7 +1101,12 @@ fn validate_refuses_even_a_well_formed_legacy_overlay_selector() {
         code, 1,
         "the retired YAML selector requires migration: {stderr}"
     );
-    assert!(stderr.contains("unknown field `overlay`"), "{stderr}");
+    assert!(
+        stderr.contains("`config.overlay` is retired in 1.6.0")
+            && stderr.contains("busbar --migrate-config")
+            && stderr.contains("--migrate-overlay"),
+        "{stderr}"
+    );
     assert_eq!(overlay_validation_tree(&dir), before);
     let _ = std::fs::remove_dir_all(&dir);
 }

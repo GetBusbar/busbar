@@ -553,7 +553,7 @@ impl AuditChain {
                 .as_deref()
                 .map(|label| crate::digest::sha256_hex(label.as_bytes())),
             seq: self.next_seq,
-            prev_hash: self.tail_hash.clone(),
+            prev_hash: std::mem::take(&mut self.tail_hash),
             recipe,
             hash: String::new(),
             signature: None,
@@ -565,7 +565,14 @@ impl AuditChain {
             record.key_id = Some(signer.key_id_shared());
             record.signature = Some(signer.sign_digest(&record.hash));
         }
-        let custody = stage(&record)?;
+        let custody = match stage(&record) {
+            Ok(custody) => custody,
+            Err(refused) => {
+                // The chain did not advance: the refused record's prev_hash is the tail it took.
+                self.tail_hash = std::mem::take(&mut record.prev_hash);
+                return Err(refused);
+            }
+        };
         self.tail_hash.clone_from(&record.hash);
         self.next_seq = self.next_seq.saturating_add(1);
         self.sealed += 1;

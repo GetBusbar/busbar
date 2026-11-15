@@ -102,3 +102,100 @@ fn the_linked_source_fixture_is_independent_of_the_boot_registry_rows() {
     assert!(!std::ptr::eq(boot, axis));
     assert_eq!(boot.linked(NAME), before);
 }
+
+macro_rules! door_named {
+    ($mod:ident, $name:literal $(, former_names: $former:expr)?) => {
+        mod $mod {
+            busbar_contract::plugin_door! {
+                ops: busbar_contract::abi::secret::Ops,
+                statement: busbar_contract::abi::sdk::door::statement($name, "1.0.0", 16),
+                lifecycle: life(super::Fixed),
+                kind_ops: {
+                    resolve: super::Safe<super::Resolve>,
+                    check: super::Safe<super::Check>,
+                }
+                $(, former_names: $former)?
+            }
+        }
+    };
+}
+door_named!(renamed, "test-renamed-secret", former_names: &["test-renamed-old"]);
+door_named!(plain, "test-plain-secret");
+door_named!(clashing, "test-clashing-secret", former_names: &["test-plain-secret"]);
+
+fn former_row(
+    axis: &'static str,
+    key: &'static str,
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+    former_names: &'static [&'static str],
+) -> crate::root::linked::LinkedFormer {
+    crate::root::linked::LinkedFormer {
+        axis,
+        key,
+        door,
+        former_names,
+    }
+}
+
+#[test]
+fn a_door_declaring_former_names_carries_them_and_one_omitting_them_carries_none() {
+    assert_eq!(renamed::MACRO_DOOR.former_names(), ["test-renamed-old"]);
+    assert!(plain::MACRO_DOOR.former_names().is_empty());
+    assert!(fixture::MACRO_DOOR.former_names().is_empty());
+}
+
+#[test]
+fn a_linked_secret_door_is_registered_under_its_former_name() {
+    use busbar_contract::secret::SecretAxis;
+    let former = [former_row(
+        "secret",
+        "",
+        renamed::door,
+        renamed::MACRO_DOOR.former_names(),
+    )];
+    let rows = crate::root::linked::build_secrets(&[renamed::door, plain::door], &[], &former)
+        .expect("the doors link");
+    assert!(rows.linked("test-renamed-secret"));
+    assert!(rows.linked("test-renamed-old"));
+    assert!(rows.linked("test-plain-secret"));
+    assert!(!rows.linked("test-plain-old"));
+
+    let without = crate::root::linked::build_secrets(&[renamed::door], &[], &[])
+        .expect("a door with no former row links");
+    assert!(!without.linked("test-renamed-old"));
+}
+
+#[test]
+fn a_former_name_another_linked_secret_answers_to_is_a_claim_conflict() {
+    let former = [former_row(
+        "secret",
+        "",
+        clashing::door,
+        clashing::MACRO_DOOR.former_names(),
+    )];
+    let refused = crate::root::linked::build_secrets(&[clashing::door, plain::door], &[], &former)
+        .expect_err("two secret doors answering to one word");
+    assert!(
+        refused.contains("claim conflict") && refused.contains("test-plain-secret"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn the_keyed_axes_read_their_former_words_by_registry_key() {
+    use busbar_kernel::preflight::{LinkedStore, LinkedStoreDoor, StoreRow};
+    let former = [
+        former_row("auth", "x-auth", renamed::door, &["x-auth-old"]),
+        former_row("store", "x-store", renamed::door, &["x-store-old"]),
+    ];
+    let words = |axis: &str, key: &str| crate::root::linked::words_of(&former, axis, key);
+    assert_eq!(words("auth", "x-auth"), ["x-auth-old"]);
+    assert_eq!(words("store", "x-store"), ["x-store-old"]);
+    assert!(words("store", "x-auth").is_empty());
+    assert!(words("auth", "x-store").is_empty());
+
+    let declared: LinkedStoreDoor = ("k", true, renamed::MACRO_DOOR, "c");
+    assert_eq!(StoreRow(declared).former_names(), ["test-renamed-old"]);
+    let bare: LinkedStore = ("k", true, renamed::door, "c");
+    assert!(StoreRow(bare).former_names().is_empty());
+}

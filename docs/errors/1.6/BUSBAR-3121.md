@@ -14,23 +14,23 @@ BUSBAR-3121: <detail>. See https://getbusbar.com/docs/1.6/errors/BUSBAR-3121
 
 ## What it means
 
-A secret is referenced in a way busbar cannot resolve safely: `none` where a credential is required, a reference form the setting does not accept, or module-level settings on a built-in secret module that takes none.
+A secret is referenced in a way busbar cannot resolve safely: `none` where a credential is required, a reference form the setting does not accept, a shorthand no admitted secret module declares, or module-level settings on a secret module linked into this build that takes none.
 
 ## How to fix it
 
-Reference the secret as `{ env: VAR }`, `{ file: /path }` or `{ module: <secret-module>, settings: {...} }`, as the message shows for the setting it names.
+Write the canonical `{ module: <secret module>, settings: {...} }` reference, or a shorthand an admitted secret module declares (`busbar --list-plugins` shows them).
 
 ## Example
 
 ```text
-secrets:
-  env: { prefix: BUSBAR_ }
+auth:
+  signing_key: { vault-path: signing }   # no admitted secret module declares `vault-path`
 ```
 
 Busbar reports:
 
 ```text
-BUSBAR-3121: secrets.env: the built-in 'env' secret module takes no module-level settings. See https://getbusbar.com/docs/1.6/errors/BUSBAR-3121
+BUSBAR-3121: auth.signing_key: `{vault-path: …}` is a secret shorthand, and no admitted secret module declares `vault-path`. Install a signed `kind: secret` module that declares `vault-path` into plugins.dir and admit it (plugins.enabled, plugins.trust), or write the canonical `{ module: <secret module>, settings: { … } }` reference. `busbar --list-plugins` shows what was admitted. See https://getbusbar.com/docs/1.6/errors/BUSBAR-3121
 ```
 
 ---

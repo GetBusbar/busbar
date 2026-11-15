@@ -351,12 +351,15 @@ pub(crate) fn registry_rows(
 
 #[must_use]
 pub(crate) fn linked_row(row: &LinkedRow) -> LinkedPlugin {
+    let former = crate::LINKED.former;
     match *row {
         LinkedRow::Store((key, ephemeral, door, canonical)) => {
             LinkedPlugin::store_named(canonical, key, door, ephemeral)
+                .with_former_names(super::linked::words_of(former, "store", key))
         }
         LinkedRow::Auth((key, canonical, door)) => {
             LinkedPlugin::auth_door_named(canonical, key, door)
+                .with_former_names(super::linked::words_of(former, "auth", key))
         }
     }
 }
@@ -1102,7 +1105,13 @@ pub(crate) fn dropped_from_config(
         eprintln!("busbar: {refusal}");
         crate::root::exit::exit(2);
     });
-    let scanned = scan_configured();
+    let scanned = scan_configured().unwrap_or_else(|refusal| {
+        let _ = START_REFUSAL.set(refusal);
+        None
+    });
+    if let Some(registry) = &scanned {
+        let _ = START_SKIPS.set(skip_lines(registry.skipped()));
+    }
     if scanned.is_none() && rows.is_empty() {
         return None;
     }
@@ -1138,22 +1147,87 @@ pub(crate) fn dropped_registry() -> Option<&'static crate::root::loader::PluginR
     REGISTRY.get()
 }
 
-fn scan_configured() -> Option<crate::root::loader::PluginRegistry> {
+/// Why process start's scan of `plugins.dir` admitted nothing. Process start never refuses on it
+/// (actions that read no configuration run as before); every reader that reads configuration
+/// refuses with it before its parse, so no read judges a document against the linked rows alone.
+static START_REFUSAL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// One line per `kind: secret | plane | auth` file the start scan did not admit, capped: a read
+/// that refuses appends them, so a skipped module's word, section or style names its file.
+static START_SKIPS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// The most skip lines a refusal carries; the rest are counted.
+const SKIP_LINES: usize = 16;
+
+fn skip_lines(skipped: &[crate::root::loader::SkippedPlugin]) -> Vec<String> {
+    let mut lines: Vec<String> = skipped
+        .iter()
+        .filter_map(crate::root::loader::SkippedPlugin::skip_line)
+        .collect();
+    if lines.len() > SKIP_LINES {
+        let more = lines.len() - SKIP_LINES;
+        lines.truncate(SKIP_LINES);
+        lines.push(format!("\u{2026} and {more} more (busbar --list-plugins)"));
+    }
+    lines
+}
+
+/// The refusal a configuration reader answers when process start's scan of `plugins.dir` failed:
+/// the scan's own error (an invalid archive, an invalid trust policy, a conflict), not the parse
+/// error it would otherwise cause.
+#[must_use]
+pub(crate) fn start_refusal() -> Option<String> {
+    START_REFUSAL.get().map(|refusal| {
+        with_skip_lines(format!(
+            "the plugins directory was refused at process start, before the configuration was \
+             read, so no dropped-in module's words, sections or styles are available: {refusal}"
+        ))
+    })
+}
+
+/// `refusal`, then one line per dropped-in secret, plane or auth file process start did not
+/// admit.
+#[must_use]
+pub(crate) fn with_skip_lines(mut refusal: String) -> String {
+    for line in START_SKIPS.get().map_or(&[][..], Vec::as_slice) {
+        refusal.push_str("\n  - ");
+        refusal.push_str(line);
+    }
+    refusal
+}
+
+/// Process start's scan of the configured `plugins.dir`. `Ok(None)`: no `plugins:` block, or
+/// `enabled: false`. Deferred to the reader, which reports them itself (`Ok(None)`): an unreadable
+/// file, an interpolation or YAML error, and a `plugins:` block that does not read as the current
+/// shape (a historical block is the startup upgrade's). Everything else refuses (`Err`): an
+/// invalid trust policy, an invalid archive, a conflict, a secret word two modules declare.
+fn scan_configured() -> Result<Option<crate::root::loader::PluginRegistry>, String> {
     let path = crate::root::cli::resolve_config_path(crate::root::cli::argv().config.as_deref());
-    let raw = std::fs::read_to_string(path).ok()?;
-    let text = busbar_kernel::config::interpolate_env_with(
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return Ok(None);
+    };
+    let Ok(text) = busbar_kernel::config::interpolate_env_with(
         &raw,
         busbar_kernel::config::EnvSubst::Lenient,
         &mut Vec::new(),
-    )
-    .ok()?;
+    ) else {
+        return Ok(None);
+    };
     use busbar_contract::yaml::ValueExt;
-    let doc: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(&text).ok()?;
-    let plugins = busbar_contract::yaml::from_value::<busbar_kernel::config::PluginsCfg>(
-        doc.get("plugins")?.clone(),
-    )
-    .ok()
-    .filter(|p| p.enabled)?;
+    let Ok(doc) = busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(&text) else {
+        return Ok(None);
+    };
+    let Some(block) = doc.get("plugins") else {
+        return Ok(None);
+    };
+    let Ok(plugins) =
+        busbar_contract::yaml::from_value::<busbar_kernel::config::PluginsCfg>(block.clone())
+    else {
+        return Ok(None);
+    };
+    if !plugins.enabled {
+        return Ok(None);
+    }
     let l = &plugins.logs;
     let words = (l.dir.as_deref(), l.level.as_deref(), &l.levels);
     if let Ok(logs) = crate::root::loader::dispatch::PluginLogConfig::from_words(
@@ -1168,11 +1242,10 @@ fn scan_configured() -> Option<crate::root::loader::PluginRegistry> {
     plugins.warn_invalid_floors();
     let data_dir = busbar_kernel::preflight::fleet_data_dir();
     let registry =
-        crate::root::boot::registry(Vec::new(), Some(&plugins), data_dir.as_deref(), &mut |_| {})
-            .ok()?;
-    admit_dropped_secrets(&registry).ok()?;
+        crate::root::boot::registry(Vec::new(), Some(&plugins), data_dir.as_deref(), &mut |_| {})?;
+    admit_dropped_secrets(&registry)?;
     let _ = BASE_BOOTSTRAP_PLUGINS.set(plugins);
-    Some(registry)
+    Ok(Some(registry))
 }
 
 pub(crate) fn discover_planes(
@@ -1183,6 +1256,18 @@ pub(crate) fn discover_planes(
         Some(registry) => registry.open_planes(linked.plane_doors),
         None => crate::root::loader::PluginRegistry::empty().open_planes(linked.plane_doors),
     };
+    let set = set.and_then(|mut set| {
+        let mut named = false;
+        for door in set.doors.iter_mut().take(linked.plane_doors.len()) {
+            let words = super::linked::words_of(linked.former, "plane", &door.name);
+            named |= !words.is_empty();
+            *door = door.clone().answering(words);
+        }
+        if named {
+            crate::root::loader::boot::one_owner(&set.doors)?;
+        }
+        Ok(set)
+    });
     let set = set.unwrap_or_else(|refusal| {
         eprintln!("busbar: {refusal}");
         crate::root::exit::exit(2);
@@ -1597,9 +1682,16 @@ impl BookPreparation {
         }
         // Recovery may wait for foreign writers' leases. Renew our actual writer
         // before any journal, keyset, price or recovery await can outlast its lease.
+        // The refresh runs until the drain retires the writer, not until the first
+        // shutdown signal: a drain may outlast the lease TTL (SHUTDOWN-HANG F4 "Lease").
+        // A preparation that fails still aborts the task on its way out.
         if let (Some(watch), Some(lease)) = (&self.lease_watch, self.node_lease.clone()) {
             self.node_lease_task = Some(tokio::spawn(super::measurements::maintenance(
-                crate::refresh_node_lease(lease, watch.stop.clone(), watch.failure.clone()),
+                crate::refresh_node_lease(
+                    lease,
+                    super::shutdown::retire_rx(),
+                    watch.failure.clone(),
+                ),
             )));
         }
         let node = self.taken.as_ref().expect("retained node result").id;
@@ -1750,6 +1842,10 @@ pub(crate) async fn book_with_lease_watch(
 #[cfg(test)]
 #[path = "tests/boot.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/start_scan_tests.rs"]
+mod start_scan_tests;
 
 #[cfg(test)]
 include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));

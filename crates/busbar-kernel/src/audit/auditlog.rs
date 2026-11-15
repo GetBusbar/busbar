@@ -840,6 +840,29 @@ pub fn emit_admin_hostless_now(action: &str, resource: &str, outcome: &str, prin
     emit_admin_hostless(ts, action, resource, outcome, principal);
 }
 
+/// `emit_admin_hostless_now` that reports the queue's answer (SHUTDOWN-HANG §5): a full queue or
+/// an entropy failure is returned to the caller, which keeps and names the refused record,
+/// instead of becoming an anonymous gap. Sync; takes only the queue's own lock.
+pub(crate) fn try_emit_admin_hostless_now(
+    action: &str,
+    resource: &str,
+    outcome: &str,
+    principal: &str,
+) -> RecordStoreResult<()> {
+    let (suffix, _) = admin_suffix(
+        busbar_kernel::store::now(),
+        action,
+        resource,
+        outcome,
+        principal,
+    );
+    drain_pending_audit();
+    let pending = pending_audit(ADMIN_LOG, suffix, EventOrigin::Mutation)?;
+    PENDING_AUDIT.try_enqueue(pending)?;
+    drain_pending_audit();
+    Ok(())
+}
+
 /// Return success only after this event was accepted and its native append confirmed.
 pub(crate) async fn emit_admin_hostless_confirmed(
     action: &str,

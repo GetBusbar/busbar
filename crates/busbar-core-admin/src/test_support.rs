@@ -48,6 +48,7 @@ pub fn err_kind_of(e: &AdminError) -> Option<ErrKind> {
 
         AdminError::Unavailable(_) => None,
         AdminError::UnpricedClass { .. } => Some(ErrKind::UnpricedClass),
+        AdminError::PluginText { .. } => Some(ErrKind::Validation),
     }
 }
 

@@ -232,7 +232,7 @@ pub struct Egress {
 
     pub telemetry: Arc<dyn Telemetry>,
 
-    pub pools: HashMap<String, Pool>,
+    pub pools: foldhash::HashMap<String, Pool>,
 
     pub routes: HashMap<DestinationId, MemberRoute>,
 
