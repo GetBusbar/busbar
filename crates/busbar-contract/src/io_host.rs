@@ -28,7 +28,10 @@ impl IoRefusal {
 pub type IoResult<T> = Result<T, IoRefusal>;
 
 /// A program to spawn, as a carrier states it: borrowed for the call.
-#[derive(Debug, Clone, Copy)]
+///
+/// `Debug` names the program and says only the length of each argument and environment value: an
+/// argument or a value routinely carries a credential, and none may reach a log line.
+#[derive(Clone, Copy)]
 pub struct Spawn<'a> {
     /// Its absolute path.
     pub program: &'a str,
@@ -36,6 +39,42 @@ pub struct Spawn<'a> {
     pub args: &'a [&'a str],
     /// Its whole environment.
     pub env: &'a [(&'a str, &'a str)],
+}
+
+/// Argument lengths, as `Debug` may say them.
+struct ArgLengths<'a>(&'a [&'a str]);
+
+impl std::fmt::Debug for ArgLengths<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(self.0.iter().map(|a| format_args!("<{} bytes>", a.len())))
+            .finish()
+    }
+}
+
+/// An environment as `Debug` may say it: every name, with the length of its value beside it.
+struct EnvLengths<'a>(&'a [(&'a str, &'a str)]);
+
+impl std::fmt::Debug for EnvLengths<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(
+                self.0
+                    .iter()
+                    .map(|(name, value)| format_args!("{name}=<{} bytes>", value.len())),
+            )
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for Spawn<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Spawn")
+            .field("program", &self.program)
+            .field("args", &ArgLengths(self.args))
+            .field("env", &EnvLengths(self.env))
+            .finish()
+    }
 }
 
 /// What `io.ends` answers of a handle ([`IoHost::ends`]).
