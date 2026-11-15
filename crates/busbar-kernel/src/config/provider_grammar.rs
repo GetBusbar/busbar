@@ -100,8 +100,8 @@ impl<'de> Visitor<'de> for Word<'_> {
             // The YAML reader's own refusal of a derived enum's unknown variant, word for word,
             // so a descriptor-driven key refuses as the derived grammar it replaced did.
             return Err(serde::de::Error::custom(format!(
-                "unknown variant `{word}`, expected one of {}",
-                self.0.join(", ")
+                "unknown variant `{word}`, expected {}",
+                one_of(self.0.iter().map(String::as_str))
             )));
         }
         variant.unit_variant()?;
@@ -137,13 +137,8 @@ impl<'de> DeserializeSeed<'de> for FieldName<'_> {
                 if self.0.deny_unknown && !self.0.keys.iter().any(|key| key.name == name) {
                     // The YAML reader's own refusal of a derived struct's unknown field.
                     return Err(E::custom(format!(
-                        "unknown field `{name}`, expected one of {}",
-                        self.0
-                            .keys
-                            .iter()
-                            .map(|key| key.name.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
+                        "unknown field `{name}`, expected {}",
+                        one_of(self.0.keys.iter().map(|key| key.name.as_str()))
                     )));
                 }
                 Ok(name.to_string())
@@ -296,5 +291,17 @@ mod actual_plane_legacy_grammar {
             .unwrap(),
             Value::Null
         );
+    }
+}
+
+/// The expected names as serde's derived refusals word them (1.5.5's spelling): "`a`",
+/// "`a` or `b`", or "one of `a`, `b`, `c`".
+fn one_of<'a>(names: impl Iterator<Item = &'a str>) -> String {
+    let quoted: Vec<String> = names.map(|name| format!("`{name}`")).collect();
+    match quoted.as_slice() {
+        [] => "nothing".to_string(),
+        [one] => one.clone(),
+        [a, b] => format!("{a} or {b}"),
+        all => format!("one of {}", all.join(", ")),
     }
 }
