@@ -52,21 +52,12 @@ impl ManifestFacts {
                 });
             }
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a load-time Statement refusal"
-        )]
-        let facts = read(rendering)
-            .map_err(|e| LoadError::Rendering(format!("byte {} is not {}", e.at, e.what)))?;
+        let facts = read(rendering).map_err(|e| crate::cold::dispatch::load::unreadable(&e))?;
         crate::settings_schema::statement_schema(&facts.settings_schema)
             .map_err(LoadError::Rendering)?;
         let kind = facts.kind;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a load-time Statement refusal"
-        )]
         let kind = KindCode::from_raw(kind)
-            .ok_or_else(|| LoadError::Rendering(format!("it names kind {kind}")))?;
+            .ok_or_else(|| crate::cold::dispatch::load::unknown_kind(kind))?;
         Ok(Self {
             mechanism_version: facts.mechanism_version,
             kind,
@@ -95,12 +86,8 @@ impl LinkedRow {
         let door = door.into().door;
         let validated = validate::<K>(door)?;
         // SAFETY: typed validation checked every Statement list and its lifetime.
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a load-time Statement refusal"
-        )]
         let statement = unsafe { render(&validated.statement) }
-            .map_err(|e| LoadError::Rendering(e.to_string()))?;
+            .map_err(crate::cold::dispatch::load::unrendered)?;
         Ok(Self { statement, door })
     }
 
@@ -281,12 +268,7 @@ pub fn rendering_of_raw(door_fn: RawDoorFn) -> Result<Vec<u8>, LoadError> {
     let st = statement(&door)?;
     // SAFETY: `statement` ran `check_statement`: every list is its stated count of `'static`
     // entries.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a load-time Statement refusal"
-    )]
-    let rendering = unsafe { render(&st) }.map_err(|e| LoadError::Rendering(e.to_string()));
-    rendering
+    unsafe { render(&st) }.map_err(crate::cold::dispatch::load::unrendered)
 }
 
 /// THE ENTRY: `door_fn` called on a permanent FFI worker ([`crate::ffi_thread`]), for every kind and
@@ -839,11 +821,7 @@ fn admit_library<K: Kind>(lib: Lib, stated: &[u8]) -> Result<AdmittedImage<K>, L
         // plain fn pointer, kept valid by `Lib` for as long as any handle to the instance lives.
         unsafe { l.get::<RawDoorFn>(DOOR_SYMBOL).map(|s| *s) }
     };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a load-time library refusal"
-    )]
-    let door = door.map_err(|e| LoadError::NoDoor(e.to_string()))?;
+    let door = door.map_err(|e| crate::cold::dispatch::load::no_door(&e))?;
     Ok(AdmittedImage {
         validated: admitted::<K>(door, stated)?,
         lib: Some(lib),
@@ -867,13 +845,14 @@ impl AdmittedImage<super::kinds::hook::Hook> {
     pub(crate) fn routes(
         &self,
     ) -> Result<Vec<busbar_contract::abi::mechanism::route::Route>, LoadError> {
-        // busbar:expect(bp::clone_alloc, reason = "boot: a hook's routes are read once, at admission")
         Ok(self
             .validated
             .context
             .as_deref()
             .and_then(|context| context.downcast_ref::<super::kinds::hook::HookContext>())
-            .map_or_else(Vec::new, |context| context.routes.clone()))
+            .map_or_else(Vec::new, |context| {
+                crate::cold::dispatch::load::routes(&context.routes)
+            }))
     }
 }
 
@@ -953,26 +932,14 @@ fn admitted<K: Kind>(door: RawDoorFn, stated: &[u8]) -> Result<Validated, LoadEr
     {
         // The complete rendering comparison above authenticates both the common list and
         // the validated legacy plane tail. One raw class has exactly one reporting owner.
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a load-time Statement refusal"
-        )]
-        let common = read(stated)
-            .map_err(|e| LoadError::Rendering(format!("byte {} is not {}", e.at, e.what)))?;
+        let common = read(stated).map_err(|e| crate::cold::dispatch::load::unreadable(&e))?;
         if let Some(class) = common.measurement_classes.iter().find(|class| {
             plane
                 .served
                 .billable_classes
                 .contains(&class.class.as_str())
         }) {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "boot: a load-time Statement refusal"
-            )]
-            return Err(LoadError::BadStatement(format!(
-                "measurement class '{}' is also declared by the legacy plane billing tail",
-                class.class
-            )));
+            return Err(crate::cold::dispatch::load::billed_twice(&class.class));
         }
     }
     Ok(v)
@@ -1046,12 +1013,8 @@ pub(crate) fn validate_door<K: Kind>(p: *const Door) -> Result<Validated, LoadEr
     let context = K::context(&statement).map_err(LoadError::KindTail)?;
     // SAFETY: statement_with_layout checked every bounded declaration. Retain the exact bytes
     // now: bind must not reread mutable native pointers after authentication.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a load-time Statement refusal"
-    )]
     let rendering =
-        unsafe { render(&statement) }.map_err(|e| LoadError::Rendering(e.to_string()))?;
+        unsafe { render(&statement) }.map_err(crate::cold::dispatch::load::unrendered)?;
     Ok(Validated {
         rendering,
         kind,
@@ -1113,28 +1076,16 @@ fn table<K: Kind>(
         .cast::<u8>()
         .wrapping_add(FIRST_SLOT)
         .cast::<Option<Op>>();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a door's op table is read once, at admission"
-    )]
-    let entries = (0..slots)
-        .map(|i| {
-            // SAFETY: `size` equals the host's table, which holds `slots` contiguous slots here.
-            match unsafe { first.add(i as usize).read_unaligned() } {
-                Some(op) => Ok((op, true)),
+    // A door's op table is read once, at admission.
+    crate::cold::dispatch::load::op_table(slots, |i| {
+        // SAFETY: `size` equals the host's table, which holds `slots` contiguous slots here.
+        match unsafe { first.add(i as usize).read_unaligned() } {
+            Some(op) => Ok((op, true)),
 
-                None if K::optional_slot(i) || by_statement(i) => Ok((absent as Op, false)),
-                None => Err(LoadError::NullSlot(i)),
-            }
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let (slots, operations): (Vec<_>, Vec<_>) = entries.into_iter().unzip();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a door's op table is read once, at admission"
-    )]
-    let table = (slots.into_boxed_slice(), operations.into_boxed_slice());
-    Ok(table)
+            None if K::optional_slot(i) || by_statement(i) => Ok((absent as Op, false)),
+            None => Err(LoadError::NullSlot(i)),
+        }
+    })
 }
 
 pub(crate) fn statement(door: &DoorParts) -> Result<Statement, LoadError> {
@@ -1178,12 +1129,7 @@ fn statement_with_layout(
     // `STATEMENT_LIST_MAX` and a misaligned list before any entry is read, so the walk below never
     // reads past the plugin's own data.
     // SAFETY: a door's Statement is `'static` plugin data; every list is checked before it is read.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a load-time Statement refusal"
-    )]
-    unsafe { check_statement(&st) }
-        .map_err(|f| LoadError::BadStatement(format!("{} breaks {:?}", f.field, f.rule)))?;
+    unsafe { check_statement(&st) }.map_err(crate::cold::dispatch::load::statement_fault)?;
     kind_layout(door, &st, expected_layout)?;
     // SAFETY: as for `reference_fields`: the blob holds its stated length (a NULL one reads as none).
     let ext = unsafe { super::plugin::blob_bytes(st.extensions) };
@@ -1200,30 +1146,13 @@ fn statement_with_layout(
         // SAFETY: `families` holds `families_len` `'static` entries, at most STATEMENT_LIST_MAX.
         let fam: MetricFamily = unsafe { st.families.add(i).read_unaligned() };
         if fam.kind > FAMILY_HISTOGRAM {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "boot: a load-time Statement refusal"
-            )]
-            return Err(LoadError::BadStatement(format!(
-                "family {i} has kind {}",
-                fam.kind
-            )));
+            return Err(crate::cold::dispatch::load::family_kind(i, fam.kind));
         }
         if fam.label_keys_len > 0 && fam.label_keys.is_null() {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "boot: a load-time Statement refusal"
-            )]
-            return Err(LoadError::BadStatement(format!(
-                "family {i}'s label keys are NULL"
-            )));
+            return Err(crate::cold::dispatch::load::family_label_keys(i));
         }
         if str_is_bad(fam.name) {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "boot: a load-time Statement refusal"
-            )]
-            return Err(LoadError::BadStatement(format!("family {i} has no name")));
+            return Err(crate::cold::dispatch::load::family_name(i));
         }
     }
     kind_tail(&st)?;
@@ -1239,30 +1168,16 @@ pub(crate) fn reference_fields(st: &Statement) -> Result<Vec<String>, LoadError>
     if reference.is_empty() {
         return Ok(reference);
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the secret-ref keys are read once, at admission"
-    )]
-    let secret: Vec<String> = (0..st.secret_refs_len)
-        .filter_map(|i| {
+    // The secret-ref keys are read once, at admission.
+    let secret =
+        crate::cold::dispatch::load::secret_keys((0..st.secret_refs_len).filter_map(|i| {
             // SAFETY: `check_statement` bounded the list; it holds `secret_refs_len` `'static`
             // strings.
             let key = unsafe { st.secret_refs.add(i).read_unaligned() };
-            super::plugin::str_bytes(key).map(|k| String::from_utf8_lossy(k).into_owned())
-        })
-        .collect();
+            super::plugin::str_bytes(key)
+        }));
     match busbar_contract::secret_fields::contradiction(&secret, &reference) {
-        Some(path) => {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "boot: a load-time Statement refusal"
-            )]
-            let refusal = format!(
-                "extensions.reference_fields names '{path}', which secret_refs also names: a \
-                 settings field is secret or reference-capable, never both"
-            );
-            Err(LoadError::BadStatement(refusal))
-        }
+        Some(path) => Err(crate::cold::dispatch::load::secret_and_reference(&path)),
         None => Ok(reference),
     }
 }
@@ -1279,13 +1194,7 @@ fn kind_layout(
     if door.layout == host {
         return Ok(());
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a load-time Statement refusal"
-    )]
-    let plugin = super::plugin::str_bytes(st.name)
-        .map(|b| String::from_utf8_lossy(b).into_owned())
-        .unwrap_or_default();
+    let plugin = crate::cold::dispatch::load::plugin_name(st.name);
     Err(LoadError::KindLayout {
         plugin,
         kind,
@@ -1306,14 +1215,7 @@ pub(crate) fn kind_tail(st: &Statement) -> Result<(), LoadError> {
     // SAFETY: a non-NULL kind tail is `'static` plugin data leading with a `KindTailHead`.
     let tail = unsafe { st.kind_tail.read_unaligned() };
     if (tail.size as usize) < size_of::<KindTailHead>() {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a load-time Statement refusal"
-        )]
-        return Err(LoadError::KindTail(format!(
-            "its head states {} bytes, less than the head itself",
-            tail.size
-        )));
+        return Err(crate::cold::dispatch::load::short_tail_head(tail.size));
     }
     if st.kind == KindCode::Plane as u32 {
         return plane_layout(st, tail.size);
@@ -1333,13 +1235,7 @@ pub(crate) fn kind_tail(st: &Statement) -> Result<(), LoadError> {
     };
     let host = size_of::<FramePiece>() as u32;
     if stated != host {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a load-time Statement refusal"
-        )]
-        let plugin = super::plugin::str_bytes(st.name)
-            .map(|b| String::from_utf8_lossy(b).into_owned())
-            .unwrap_or_default();
+        let plugin = crate::cold::dispatch::load::plugin_name(st.name);
         return Err(LoadError::FramePieceSize {
             plugin,
             stated,
@@ -1347,24 +1243,11 @@ pub(crate) fn kind_tail(st: &Statement) -> Result<(), LoadError> {
         });
     }
     if (tail.size as usize) < size_of::<TransportTail>() {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a load-time Statement refusal"
-        )]
-        return Err(LoadError::KindTail(format!(
-            "a transport tail states {} bytes, less than its claim rows",
-            tail.size
-        )));
+        return Err(crate::cold::dispatch::load::short_transport_tail(tail.size));
     }
     // SAFETY: a transport's kind tail is a `'static` `TransportTail` of the size it states.
     let t = unsafe { st.kind_tail.cast::<TransportTail>().read_unaligned() };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a load-time Statement refusal"
-    )]
-    let rows = check_claim_rows(st.claims_len, &t)
-        .map_err(|f| LoadError::KindTail(format!("{} breaks {:?}", f.field, f.rule)));
-    rows
+    check_claim_rows(st.claims_len, &t).map_err(crate::cold::dispatch::load::claim_rows_fault)
 }
 
 fn plane_layout(st: &Statement, size: u32) -> Result<(), LoadError> {
@@ -1378,13 +1261,7 @@ fn plane_layout(st: &Statement, size: u32) -> Result<(), LoadError> {
     if stated == ANSWER_LAYOUT {
         return Ok(());
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a load-time Statement refusal"
-    )]
-    let plugin = super::plugin::str_bytes(st.name)
-        .map(|b| String::from_utf8_lossy(b).into_owned())
-        .unwrap_or_default();
+    let plugin = crate::cold::dispatch::load::plugin_name(st.name);
     Err(LoadError::PlaneLayout {
         plugin,
         stated,
