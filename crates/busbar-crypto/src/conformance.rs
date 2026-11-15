@@ -419,6 +419,201 @@ pub fn legacy_algs() {
     }
 }
 
+/// The algorithms MIN-3's host crypto table adds (IF §5.2, package H0b): HMAC-SHA384 (RFC 4231),
+/// AES-CTR (SP 800-38A F.5.1/F.5.5; FIPS 197 C.3 and appendix B as one block), ECDSA P-256 and
+/// P-384 over a point and an SPKI (RFC 6979 A.2.5/A.2.6), RSA over an SPKI, and Ed25519 from
+/// PKCS#8 and SPKI (the RFC 8410 encodings of RFC 8032 test 1).
+pub fn host_algs() {
+    // HMAC-SHA384: RFC 4231 test case 1, and test case 2 (a 4-byte key) where short keys are taken.
+    assert_eq!(
+        hmac_sha384(&[0x0b; 20], b"Hi There").unwrap(),
+        a::<48>("afd03944d84895626b0825f4ab46907f15f9dadbe4101ec682aa034c7cebc59cfaea9ea9076ede7f4af152e8b2fa9cb6")
+    );
+    let jefe = hmac_sha384(b"Jefe", b"what do ya want for nothing?");
+    if supports(alg::HMAC_KEY_SHORT) {
+        assert_eq!(
+            jefe.unwrap(),
+            a::<48>("af45d2e376484031617f78d2b58a6b1b9c7ef464f5a01b47e42ec3736322445e8e2240ca5e69e2c78b3239ecfab21649")
+        );
+    } else {
+        assert!(refused(&jefe, "HMAC"));
+    }
+
+    // AES-CTR: four blocks under AES-128 and AES-256, back again, and a partial final block.
+    let pt = h(concat!(
+        "6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e51",
+        "30c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710"
+    ));
+    let ctr = a::<16>("f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff");
+    for (key, want) in [
+        (
+            h("2b7e151628aed2a6abf7158809cf4f3c"),
+            h(concat!(
+                "874d6191b620e3261bef6864990db6ce9806f66b7970fdff8617187bb9fffdff",
+                "5ae4df3edbd5d35e5b4f09020db03eab1e031dda2fbe03d1792170a0f3009cee"
+            )),
+        ),
+        (
+            h("603deb1015ca71be2b73aef0857d77811f352c073b6108d72d9810a30914dff4"),
+            h(concat!(
+                "601ec313775789a5b7a7f504bbf3d228f443e3ca4d62b59aca84e990cacaf5c5",
+                "2b0930daa23de94ce87017ba2d84988ddfc9c58db67aada613c2dd08457941a6"
+            )),
+        ),
+    ] {
+        let mut out = vec![0_u8; pt.len()];
+        aes_ctr::apply(&key, &ctr, &pt, &mut out).unwrap();
+        assert_eq!(out, want);
+        let mut back = vec![0_u8; pt.len()];
+        aes_ctr::apply(&key, &ctr, &out, &mut back).unwrap();
+        assert_eq!(back, pt);
+        let mut part = [0_u8; 20];
+        aes_ctr::apply(&key, &ctr, &pt[..20], &mut part).unwrap();
+        assert_eq!(part[..], want[..20]);
+    }
+    // One zero block under counter x is E_k(x): the single AES-256 block SRTP's KDF needs (#173),
+    // FIPS 197 C.3; and AES-128 (appendix B), equal to `aes_block_encrypt`.
+    let mut block = [0_u8; 16];
+    aes_ctr::apply(
+        &h("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"),
+        &a("00112233445566778899aabbccddeeff"),
+        &[0; 16],
+        &mut block,
+    )
+    .unwrap();
+    assert_eq!(block, a::<16>("8ea2b7ca516745bfeafc49904b496089"));
+    aes_ctr::apply(
+        &h("2b7e151628aed2a6abf7158809cf4f3c"),
+        &a("3243f6a8885a308d313198a2e0370734"),
+        &[0; 16],
+        &mut block,
+    )
+    .unwrap();
+    assert_eq!(block, a::<16>("3925841d02dc09fbdc118597196a0b32"));
+    // AES-192 is not offered, and the output is exactly as long as the input.
+    assert!(matches!(
+        aes_ctr::apply(&[0; 24], &ctr, &[0; 16], &mut block),
+        Err(Error::Invalid(_))
+    ));
+    assert!(matches!(
+        aes_ctr::apply(&[0; 16], &ctr, &[0; 15], &mut block),
+        Err(Error::Invalid(_))
+    ));
+
+    // ECDSA, RFC 6979 A.2.5 (P-256, SHA-256) and A.2.6 (P-384, SHA-384), message "sample".
+    let p256 = h(concat!(
+        "04",
+        "60fed4ba255a9d31c961eb74c6356d68c049b8923b61fa6ce669622e60f29fb6",
+        "7903fe1008b8bc99a41ae9e95628bc64f2f1b20c2d7e9f5177a3c294d4462299"
+    ));
+    let mut p256_spki = h("3059301306072a8648ce3d020106082a8648ce3d030107034200");
+    p256_spki.extend_from_slice(&p256);
+    let p256_sig = h(concat!(
+        "efd48b2aacb6a8fd1140dd9cd45e81d69d2c877b56aaf991c34d0ea84eaf3716",
+        "f7cb1c942d657c41d436c7a1b6e29f65f3e900dbb9aff4064dc4ab2f843acda8"
+    ));
+    let p384 = h(concat!(
+        "04",
+        "ec3a4e415b4e19a4568618029f427fa5da9a8bc4ae92e02e06aae5286b300c64",
+        "def8f0ea9055866064a254515480bc13",
+        "8015d9b72d7d57244ea8ef9ac0c621896708a59367f9dfb9f54ca84b3f1c9db1",
+        "288b231c3ae0d4fe7344fd2533264720"
+    ));
+    let mut p384_spki = h("3076301006072a8648ce3d020106052b81040022036200");
+    p384_spki.extend_from_slice(&p384);
+    let p384_sig = h(concat!(
+        "94edbb92a5ecb8aad4736e56c691916b3f88140666ce9fa73d64c4ea95ad133c",
+        "81a648152e44acf96e36dd1e80fabe46",
+        "99ef4aeb15f178cea1fe40db2603138f130e740a19624526203b6351d0a3a94f",
+        "a329c145786e679e7b82c71a38628ac8"
+    ));
+    ecdsa_p256::verify_fixed(&p256, b"sample", &p256_sig).unwrap();
+    ecdsa_p256::verify_fixed_spki(&p256_spki, b"sample", &p256_sig).unwrap();
+    assert_eq!(
+        ecdsa_p256::verify_fixed_spki(&p256_spki, b"test", &p256_sig),
+        Err(Error::Mismatch)
+    );
+    ecdsa_p384::verify_fixed(&p384, b"sample", &p384_sig).unwrap();
+    ecdsa_p384::verify_fixed_spki(&p384_spki, b"sample", &p384_sig).unwrap();
+    assert_eq!(
+        ecdsa_p384::verify_fixed(&p384, b"test", &p384_sig),
+        Err(Error::Mismatch)
+    );
+    assert_eq!(
+        ecdsa_p384::verify_fixed_spki(&p384_spki, b"test", &p384_sig),
+        Err(Error::Mismatch)
+    );
+    // An SPKI form takes only an SPKI of its own curve: a bare point or the other curve is Invalid.
+    for r in [
+        ecdsa_p256::verify_fixed_spki(&p256, b"sample", &p256_sig),
+        ecdsa_p256::verify_fixed_spki(&p384_spki, b"sample", &p256_sig),
+        ecdsa_p384::verify_fixed_spki(&p384, b"sample", &p384_sig),
+        ecdsa_p384::verify_fixed_spki(&p256_spki, b"sample", &p384_sig),
+    ] {
+        assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
+    }
+
+    // RSA over an SPKI: the OpenSSL-made signatures of `signatures` verify under the key's
+    // SubjectPublicKeyInfo; its PKCS#1 `RSAPublicKey` is not an SPKI.
+    let spki = include_bytes!("../fixtures/rsa2048.spki.der");
+    let pkcs1_sig = include_bytes!("../fixtures/rsa_pkcs1.sig");
+    rsa::verify_spki(rsa::Scheme::Pkcs1Sha256, spki, MSG, pkcs1_sig).unwrap();
+    rsa::verify_spki(
+        rsa::Scheme::PssSha256,
+        spki,
+        MSG,
+        include_bytes!("../fixtures/rsa_pss.sig"),
+    )
+    .unwrap();
+    assert_eq!(
+        rsa::verify_spki(rsa::Scheme::Pkcs1Sha256, spki, b"other", pkcs1_sig),
+        Err(Error::Mismatch)
+    );
+    let pkcs1 = rsa::SigningKey::from_pkcs8(include_bytes!("../fixtures/rsa2048.pk8.der"))
+        .unwrap()
+        .public_key();
+    assert!(matches!(
+        rsa::verify_spki(rsa::Scheme::Pkcs1Sha256, &pkcs1, MSG, pkcs1_sig),
+        Err(Error::Invalid(_))
+    ));
+
+    // Ed25519 from PKCS#8 and from an SPKI: RFC 8032 test 1 in its RFC 8410 encodings.
+    let sk = ed25519::SigningKey::from_pkcs8(&h(concat!(
+        "302e020100300506032b657004220420",
+        "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+    )))
+    .unwrap();
+    assert_eq!(
+        *sk.seed(),
+        a::<32>("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
+    );
+    let sig = sk.sign(b"");
+    assert_eq!(
+        sig,
+        a::<64>("e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b")
+    );
+    let vk = ed25519::VerifyingKey::from_spki(&h(concat!(
+        "302a300506032b6570032100",
+        "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+    )))
+    .unwrap();
+    assert_eq!(vk, sk.verifying_key());
+    vk.verify_strict(b"", &sig).unwrap();
+    // The bare key and a P-256 SPKI are not Ed25519 SPKIs; a P-256 PKCS#8 is not an Ed25519 key.
+    for r in [
+        ed25519::VerifyingKey::from_spki(&h(
+            "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        )),
+        ed25519::VerifyingKey::from_spki(&p256_spki),
+    ] {
+        assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
+    }
+    assert!(matches!(
+        ed25519::SigningKey::from_pkcs8(include_bytes!("../fixtures/ec.pk8.der")),
+        Err(Error::Invalid(_))
+    ));
+}
+
 /// A full TLS 1.3 handshake through `tls::*` (the only way to get a config).
 #[cfg(feature = "tls")]
 pub fn tls_handshake() {
@@ -484,6 +679,7 @@ pub fn all() {
     aead();
     signatures();
     legacy_algs();
+    host_algs();
     #[cfg(feature = "tls")]
     tls_handshake();
 }

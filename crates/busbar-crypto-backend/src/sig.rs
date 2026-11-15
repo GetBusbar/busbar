@@ -47,6 +47,15 @@ pub mod ed25519 {
             Ok(Self { pair, seed: *seed })
         }
 
+        /// The key in the PKCS#8 (RFC 8410, v1 or v2) DER `pkcs8`.
+        pub fn from_pkcs8(pkcs8: &[u8]) -> Result<Self, Error> {
+            let _ = pkcs8;
+            Err(Error::Refused {
+                alg: "Ed25519 PKCS#8",
+                reason: "not provided yet",
+            })
+        }
+
         /// The 32-byte seed, borrowed: no copy leaves the key (it is wiped when the key drops).
         #[must_use]
         pub fn seed(&self) -> &[u8; 32] {
@@ -85,6 +94,16 @@ pub mod ed25519 {
                     "Ed25519 public key is not a canonical curve point",
                 ))
             }
+        }
+
+        /// The key in the DER `SubjectPublicKeyInfo` `spki` (RFC 8410): `Err(Invalid)` for
+        /// anything else, the bare 32-byte key included.
+        pub fn from_spki(spki: &[u8]) -> Result<Self, Error> {
+            let _ = spki;
+            Err(Error::Refused {
+                alg: "Ed25519 SPKI",
+                reason: "not provided yet",
+            })
         }
 
         /// The encoded key.
@@ -197,6 +216,41 @@ pub mod ecdsa_p256 {
             .verify(msg, sig)
             .map_err(|_| Error::Mismatch)
     }
+
+    /// Verify a fixed `r || s` signature under the P-256 DER `SubjectPublicKeyInfo` `spki`:
+    /// `Err(Invalid)` for a key that is not one (a bare point, another curve).
+    pub fn verify_fixed_spki(spki: &[u8], msg: &[u8], sig: &[u8]) -> Result<(), Error> {
+        let _ = (spki, msg, sig);
+        Err(Error::Refused {
+            alg: "ECDSA P-256 SPKI",
+            reason: "not provided yet",
+        })
+    }
+}
+
+/// ECDSA over P-384 with SHA-384 (FIPS 186-5), verification only: SEC 1 uncompressed public keys
+/// (97 bytes) or a DER `SubjectPublicKeyInfo`; signatures fixed `r || s` (96 bytes).
+pub mod ecdsa_p384 {
+    use crate::Error;
+
+    /// Verify a fixed `r || s` signature under the SEC 1 public key `pk`.
+    pub fn verify_fixed(pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<(), Error> {
+        let _ = (pk, msg, sig);
+        Err(Error::Refused {
+            alg: "ECDSA P-384",
+            reason: "not provided yet",
+        })
+    }
+
+    /// Verify a fixed `r || s` signature under the P-384 DER `SubjectPublicKeyInfo` `spki`:
+    /// `Err(Invalid)` for a key that is not one (a bare point, another curve).
+    pub fn verify_fixed_spki(spki: &[u8], msg: &[u8], sig: &[u8]) -> Result<(), Error> {
+        let _ = (spki, msg, sig);
+        Err(Error::Refused {
+            alg: "ECDSA P-384 SPKI",
+            reason: "not provided yet",
+        })
+    }
 }
 
 /// RSA signatures (RFC 8017): PKCS#1 v1.5 and PSS verification for 2048..=8192-bit keys, and
@@ -242,6 +296,16 @@ pub mod rsa {
         UnparsedPublicKey::new(params(scheme), pk)
             .verify(msg, sig)
             .map_err(|_| Error::Mismatch)
+    }
+
+    /// Verify `sig` over `msg` under the RSA DER `SubjectPublicKeyInfo` `spki`: `Err(Invalid)` for
+    /// a key that is not one (a PKCS#1 `RSAPublicKey` included).
+    pub fn verify_spki(scheme: Scheme, spki: &[u8], msg: &[u8], sig: &[u8]) -> Result<(), Error> {
+        let _ = (scheme, spki, msg, sig);
+        Err(Error::Refused {
+            alg: "RSA SPKI",
+            reason: "not provided yet",
+        })
     }
 
     /// Verify `sig` over `msg` under the key with big-endian modulus `n` and exponent `e`.

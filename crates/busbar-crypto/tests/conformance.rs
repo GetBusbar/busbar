@@ -46,6 +46,11 @@ fn legacy_known_answers() {
 }
 
 #[test]
+fn host_alg_table_known_answers() {
+    c::host_algs();
+}
+
+#[test]
 fn tls_handshake_through_the_facade() {
     c::tls_handshake();
 }

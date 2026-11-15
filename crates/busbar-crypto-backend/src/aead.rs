@@ -120,3 +120,19 @@ pub fn aes_block_encrypt(key: &[u8; 16], block: &[u8; 16]) -> Result<[u8; 16], E
         .map_err(|_| Error::Invalid("AES-128 block"))?;
     Ok(out)
 }
+
+/// AES-CTR (NIST SP 800-38A §6.5) under a 16- or 32-byte key, with a 128-bit big-endian counter
+/// block: SRTP's AES-CM, and (one block of zeros under counter `x`) the single AES block `E_k(x)`.
+pub mod aes_ctr {
+    use crate::Error;
+
+    /// `input` encrypted (or decrypted: CTR is its own inverse) under `key` from the counter block
+    /// `iv`, into `out`, which must be exactly as long as `input`.
+    pub fn apply(key: &[u8], iv: &[u8; 16], input: &[u8], out: &mut [u8]) -> Result<(), Error> {
+        let _ = (key, iv, input, out);
+        Err(Error::Refused {
+            alg: "AES-CTR",
+            reason: "not provided yet",
+        })
+    }
+}

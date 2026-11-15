@@ -294,6 +294,12 @@ pub fn hmac_sha256(key: &[u8], msg: &[u8]) -> Result<[u8; 32], Error> {
     b::hmac_sha256(key, msg).map_err(map)
 }
 
+/// HMAC-SHA384 of `msg` under `key`. A backend may refuse short keys.
+#[inline]
+pub fn hmac_sha384(key: &[u8], msg: &[u8]) -> Result<[u8; 48], Error> {
+    b::hmac_sha384(key, msg).map_err(map)
+}
+
 /// HMAC-SHA512 of `msg` under `key`.
 #[inline]
 pub fn hmac_sha512(key: &[u8], msg: &[u8]) -> Result<[u8; 64], Error> {
@@ -434,6 +440,20 @@ pub fn aes_block_encrypt(key: &[u8; 16], block: &[u8; 16]) -> Result<[u8; 16], E
     b::aes_block_encrypt(key, block).map_err(map)
 }
 
+/// AES-CTR (NIST SP 800-38A) under a 16- or 32-byte key, with a 128-bit big-endian counter block
+/// (SRTP's AES-CM). One block of zeros under counter `x` gives the single AES block `E_k(x)`.
+pub mod aes_ctr {
+    use super::{map, Error};
+    use busbar_crypto_backend as b;
+
+    /// `input` encrypted (or decrypted: CTR is its own inverse) under `key` from the counter block
+    /// `iv`, into `out`, which must be exactly as long as `input`: `Err(Invalid)` otherwise, or for
+    /// a key that is not 16 or 32 bytes.
+    pub fn apply(key: &[u8], iv: &[u8; 16], input: &[u8], out: &mut [u8]) -> Result<(), Error> {
+        b::aes_ctr::apply(key, iv, input, out).map_err(map)
+    }
+}
+
 // ---- Signatures and key agreement ---------------------------------------------------------------
 
 /// Ed25519 (RFC 8032) with `verify_strict` semantics.
@@ -454,6 +474,13 @@ pub mod ed25519 {
         /// The key whose RFC 8032 seed is `seed`.
         pub fn from_seed(seed: &[u8; 32]) -> Result<Self, Error> {
             b::ed25519::SigningKey::from_seed(seed)
+                .map(Self)
+                .map_err(map)
+        }
+
+        /// The key in the PKCS#8 (RFC 8410, v1 or v2) DER `pkcs8`.
+        pub fn from_pkcs8(pkcs8: &[u8]) -> Result<Self, Error> {
+            b::ed25519::SigningKey::from_pkcs8(pkcs8)
                 .map(Self)
                 .map_err(map)
         }
@@ -485,6 +512,14 @@ pub mod ed25519 {
         /// The key encoded as `bytes`.
         pub fn from_bytes(bytes: &[u8; 32]) -> Result<Self, Error> {
             b::ed25519::VerifyingKey::from_bytes(bytes)
+                .map(Self)
+                .map_err(map)
+        }
+
+        /// The key in the DER `SubjectPublicKeyInfo` `spki` (RFC 8410): `Err(Invalid)` for anything
+        /// else, the bare 32-byte key included.
+        pub fn from_spki(spki: &[u8]) -> Result<Self, Error> {
+            b::ed25519::VerifyingKey::from_spki(spki)
                 .map(Self)
                 .map_err(map)
         }
@@ -570,6 +605,12 @@ pub mod ecdsa_p256 {
         b::ecdsa_p256::verify_asn1(pk, msg, sig).map_err(map)
     }
 
+    /// Verify a fixed `r || s` signature under the P-256 DER `SubjectPublicKeyInfo` `spki` (either
+    /// S form): `Err(Invalid)` for a key that is not one (a bare point, another curve).
+    pub fn verify_fixed_spki(spki: &[u8], msg: &[u8], sig: &[u8]) -> Result<(), Error> {
+        b::ecdsa_p256::verify_fixed_spki(spki, msg, sig).map_err(map)
+    }
+
     /// Whether the fixed signature's `s` is at most n/2.
     #[must_use]
     pub fn is_low_s(sig: &[u8; 64]) -> bool {
@@ -590,6 +631,24 @@ pub mod ecdsa_p256 {
     }
 }
 
+/// ECDSA P-384 with SHA-384, verification only: SEC 1 uncompressed public keys (97 bytes) or a
+/// DER `SubjectPublicKeyInfo`, fixed `r || s` signatures (96 bytes).
+pub mod ecdsa_p384 {
+    use super::{map, Error};
+    use busbar_crypto_backend as b;
+
+    /// Verify a fixed `r || s` signature under the SEC 1 key `pk`.
+    pub fn verify_fixed(pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<(), Error> {
+        b::ecdsa_p384::verify_fixed(pk, msg, sig).map_err(map)
+    }
+
+    /// Verify a fixed `r || s` signature under the P-384 DER `SubjectPublicKeyInfo` `spki`:
+    /// `Err(Invalid)` for a key that is not one (a bare point, another curve).
+    pub fn verify_fixed_spki(spki: &[u8], msg: &[u8], sig: &[u8]) -> Result<(), Error> {
+        b::ecdsa_p384::verify_fixed_spki(spki, msg, sig).map_err(map)
+    }
+}
+
 /// RSA signatures (RFC 8017).
 pub mod rsa {
     use super::{map, Error};
@@ -600,6 +659,12 @@ pub mod rsa {
     /// Verify `sig` over `msg` under the PKCS#1 `RSAPublicKey` DER `pk`.
     pub fn verify(scheme: Scheme, pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<(), Error> {
         b::rsa::verify(scheme, pk, msg, sig).map_err(map)
+    }
+
+    /// Verify `sig` over `msg` under the RSA DER `SubjectPublicKeyInfo` `spki`: `Err(Invalid)` for
+    /// a key that is not one (a PKCS#1 `RSAPublicKey` included).
+    pub fn verify_spki(scheme: Scheme, spki: &[u8], msg: &[u8], sig: &[u8]) -> Result<(), Error> {
+        b::rsa::verify_spki(scheme, spki, msg, sig).map_err(map)
     }
 
     /// Verify `sig` over `msg` under the key with big-endian modulus `n` and exponent `e`.

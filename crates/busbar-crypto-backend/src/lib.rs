@@ -28,14 +28,14 @@ pub mod testing;
 #[cfg(feature = "tls")]
 mod tls;
 
-pub use aead::{aes_block_encrypt, Aes128Gcm, Aes256Gcm};
+pub use aead::{aes_block_encrypt, aes_ctr, Aes128Gcm, Aes256Gcm};
 #[cfg(feature = "tls")]
 pub use dtls::{dtls_provider, dtls_self_signed, DtlsCert};
 pub use ecdh::ecdh_p256;
 pub use hash::{sha256, sha384, sha512, Sha256State};
-pub use mac::{ct_eq, hmac_sha256, hmac_sha256_verify, hmac_sha512, HmacSha256Key};
+pub use mac::{ct_eq, hmac_sha256, hmac_sha256_verify, hmac_sha384, hmac_sha512, HmacSha256Key};
 pub use rand::{fill, hkdf_sha256, pbkdf2_hmac_sha256, u64};
-pub use sig::{ecdsa_p256, ed25519, rsa};
+pub use sig::{ecdsa_p256, ecdsa_p384, ed25519, rsa};
 #[cfg(feature = "tls")]
 pub use tls::{
     approve_client_config, approve_server_config, ca_used_as_end_entity, ticketer, tls_provider,
