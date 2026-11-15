@@ -79,8 +79,11 @@ impl Fixture {
             &directory,
             &[(LANE, PROVIDER)],
         );
-        let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-            .expect("the product deployment parses");
+        let deploy = busbar_kernel::config::deploy_from_deserializer(
+            document,
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("the product deployment parses");
         let config = busbar_kernel::config::resolve(&deploy, &provider_defs)
             .expect("the product deployment resolves");
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);

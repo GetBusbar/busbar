@@ -18,13 +18,15 @@ fn an_absent_block_resolves_to_no_authorization_server() {
     );
 
     crate::testkit::install_test_seam();
-    let deploy: busbar_kernel::config::DeployCfg =
-        busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+    let deploy: busbar_kernel::config::DeployCfg = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
             "providers": {},
             "models": {},
             "oauth_as": { "issuer": ISSUER },
-        }))
-        .expect("a deploy config carrying `oauth_as:` parses");
+        }),
+        &busbar_kernel::config::Grammar::empty(),
+    )
+    .expect("a deploy config carrying `oauth_as:` parses");
     let resolved = busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
         .expect("a config carrying a well-formed `oauth_as:` resolves");
     let checked = resolved

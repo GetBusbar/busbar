@@ -144,8 +144,11 @@ async fn actual_export_dispatch_resolves_the_live_table_on_the_same_listener() {
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": {"file": operator_token},
     });
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the product deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);

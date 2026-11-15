@@ -847,6 +847,32 @@ impl SecretRows {
         Ok(secrets)
     }
 
+    /// The secret shorthand the linked rows and `candidates` declare together, judged exactly as
+    /// [`Self::judge_dropped`] judges them (one owner per word, name and alias). Pure: the live
+    /// dropped-in set, its checkers and the axis are untouched. A read's grammar comes from here;
+    /// only admission ([`Self::admit_dropped`]) puts a set on the axis.
+    pub fn grammar_of(
+        &self,
+        candidates: impl IntoIterator<Item = Candidate>,
+    ) -> Result<busbar_contract::secret_ref::Sugars, String> {
+        let secrets = self.judge_dropped(candidates)?;
+        crate::boot::sugars_of(&self.with_linked(&secrets))
+    }
+
+    /// A read-scoped secret axis over the linked rows and `candidates`, which were judged but never
+    /// admitted ([`SecretView`]). Its checkers are its own and are dropped with it.
+    #[must_use]
+    pub fn view(&self, candidates: impl IntoIterator<Item = Candidate>) -> SecretView<'_> {
+        SecretView {
+            rows: self,
+            dropped: candidates
+                .into_iter()
+                .filter(|c| c.kind == KindCode::Secret)
+                .collect(),
+            checkers: Mutex::default(),
+        }
+    }
+
     pub fn set_dropped(&self, candidates: impl IntoIterator<Item = Candidate>) {
         let retired = {
             let mut dropped = self.dropped.write().unwrap_or_else(PoisonError::into_inner);
@@ -982,6 +1008,104 @@ impl SecretAxis for SecretRows {
                 .lend_references(&spec.keys, &spec.sugars, module, resolve)?;
         let bytes = remaining.encode().map_err(|error| encode_refused(&error))?;
         Ok(Arc::new(spec.open(bytes.expose(seal), &secrets)?))
+    }
+}
+
+/// A read-scoped secret axis: the linked rows plus a dropped-in set a read judged and never
+/// admitted (`--validate`'s view of what process start judged). It answers and checks references
+/// to those modules, loading each dropped module's checker at most once into its own cache, and
+/// opens no dropped-in instance. The live axis and its checker cache are untouched.
+pub struct SecretView<'a> {
+    rows: &'a SecretRows,
+    dropped: Vec<Candidate>,
+    checkers: Mutex<std::collections::BTreeMap<usize, Arc<Plugin<Secret>>>>,
+}
+
+impl std::fmt::Debug for SecretView<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecretView")
+            .field("rows", self.rows)
+            .field("dropped", &CandidateNames(&self.dropped))
+            .finish_non_exhaustive()
+    }
+}
+
+impl SecretView<'_> {
+    fn dropped_answering(&self, module: &str) -> Option<(usize, &Candidate)> {
+        if self.rows.answers_linked(module) {
+            return None;
+        }
+        self.dropped
+            .iter()
+            .enumerate()
+            .find(|(_, c)| c.answers(module))
+    }
+
+    fn checker(
+        &self,
+        at: usize,
+        c: &Candidate,
+        module: &str,
+    ) -> Result<Arc<Plugin<Secret>>, String> {
+        let mut held = self.checkers.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(plugin) = held.get(&at) {
+            return Ok(Arc::clone(plugin));
+        }
+        let plugin = Arc::new(self.rows.load(c, &format!("{}.check", label(module)))?);
+        held.insert(at, Arc::clone(&plugin));
+        Ok(plugin)
+    }
+}
+
+impl SecretAxis for SecretView<'_> {
+    fn sugars(&self) -> busbar_contract::secret_ref::Sugars {
+        crate::boot::sugars_of(&self.rows.with_linked(&self.dropped)).unwrap_or_default()
+    }
+
+    fn answers(&self, module: &str) -> bool {
+        self.rows.answers_linked(module) || self.dropped_answering(module).is_some()
+    }
+
+    fn check(
+        &self,
+        module: &str,
+        settings: &busbar_contract::plugin_settings::Settings,
+    ) -> Result<(), Vec<String>> {
+        let Some((at, c)) = self.dropped_answering(module) else {
+            return if self.rows.answers_linked(module) {
+                SecretAxis::check(self.rows, module, settings)
+            } else {
+                Ok(())
+            };
+        };
+        let plugin = self.checker(at, c, module).map_err(|e| vec![e])?;
+        let held = settings.encode().map_err(|_| unencodable_settings())?;
+        let dispatcher = (self.rows.dispatcher)();
+        let seal = dispatcher.seal().ok_or_else(unsealed_check)?;
+        check(&plugin, held.expose(seal))
+    }
+
+    fn linked(&self, module: &str) -> bool {
+        self.rows.answers_linked(module)
+    }
+
+    fn shared(&self, module: &str) -> Result<Arc<dyn SecretCalls>, String> {
+        self.rows.shared(module)
+    }
+
+    fn open(
+        &self,
+        module: &str,
+        settings: Option<&busbar_contract::plugin_settings::Settings>,
+        resolve: &dyn Fn(&SecretRef) -> Result<SecretValue<Vec<u8>>, String>,
+    ) -> Result<Arc<dyn SecretCalls>, String> {
+        if self.rows.answers_linked(module) {
+            return self.rows.open(module, settings, resolve);
+        }
+        Err(format!(
+            "secret module '{module}' was judged by this read but not admitted: a read-scoped \
+             view opens no dropped-in module"
+        ))
     }
 }
 

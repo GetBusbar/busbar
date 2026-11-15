@@ -248,12 +248,15 @@ async fn a_rejected_configs_limits_do_not_govern_later_connections() {
         .find(|store| store.1)
         .expect("the distribution links its real ephemeral product store")
         .0;
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {},
-        "models": {},
-        "store": { "module": store_module },
-        "auth": { "chain": [], "admin_auth": [] },
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {},
+            "models": {},
+            "store": { "module": store_module },
+            "auth": { "chain": [], "admin_auth": [] },
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the production deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the production deployment resolves");
