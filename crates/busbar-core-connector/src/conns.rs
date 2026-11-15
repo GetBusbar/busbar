@@ -315,6 +315,15 @@ fn pended_verdict(v: Verdict) -> ConnError {
     }
 }
 
+/// WHAT A MINTED DIAL THAT DID NOT BEGIN ANSWERS THE CONNECTION'S CALLER: a certificate that would not mint is
+/// the host's fault; a refused dial is a refusal.
+fn dial_begin_error(failure: &datagram::DialBegin) -> ConnError {
+    match failure {
+        datagram::DialBegin::Mint(_) => ConnError::Fault,
+        datagram::DialBegin::Dial(_) => ConnError::Refused,
+    }
+}
+
 /// THE REFUSAL TEXTS (host-only, [`NeedRefusal`]): static, naming no hop (the renderer names it)
 /// and only keys the operator can set.
 mod refusal_text {
@@ -3747,17 +3756,15 @@ impl Connector {
         )
         .and_then(udp::ReadyPort::open)
         .map_err(|_| ConnError::Fault)?;
-        let cert = Arc::new(dtls::SessionCert::mint().map_err(|_| ConnError::Fault)?);
         let judged_class = guard::judged_class(egress_class, declared_target.is_some());
-        let (framing, began) = datagram::DatagramFraming::dial(
+        let (framing, began) = datagram::DatagramFraming::dial_minted(
             Arc::clone(door),
-            cert,
             port.local_addr(),
             &pairing.opening(),
             Arc::clone(&self.judge),
             judged_class,
         )
-        .map_err(|_| ConnError::Refused)?;
+        .map_err(|failure| dial_begin_error(&failure))?;
         let description = began
             .pieces
             .iter()
@@ -4762,6 +4769,10 @@ pub(crate) mod callback_waker;
 #[cfg(test)]
 #[path = "tests/rest_callback_tests.rs"]
 mod rest_callback_tests;
+
+#[cfg(test)]
+#[path = "tests/dial_begin_error_tests.rs"]
+mod dial_begin_error_tests;
 
 #[cfg(test)]
 #[path = "tests/settled_dial_error_tests.rs"]

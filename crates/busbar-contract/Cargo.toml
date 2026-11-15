@@ -24,6 +24,12 @@ busbar-crypto = { path = "../busbar-crypto" }
 time = { workspace = true, features = ["formatting"] }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }
+# The JSON facade (`json`): sonic-rs, numbers exact (`arbitrary_precision`, workspace row).
+sonic-rs = { workspace = true }
+# `schema` only: `json::SchemaCheck` (tooling and tests; the engine's normal graph keeps none).
+jsonschema = { workspace = true, optional = true }
+# `axum` only: `json::Body`, the JSON responder.
+axum-core = { workspace = true, optional = true }
 serde-saphyr = { workspace = true }
 ciborium = { workspace = true }
 serde_path_to_error = { workspace = true }
@@ -56,6 +62,12 @@ quote = { workspace = true }
 syn = { workspace = true }
 
 [features]
+# `json::SchemaCheck`: JSON Schema over bytes. Tooling (plugin-loader `pack`) and dev edges only.
+schema = ["dep:jsonschema"]
+
+# `json::Body`: a JSON answer over axum (axum's own `Json` is serde_json's; its `json` stays off).
+axum = ["dep:axum-core"]
+
 # Test-only; named only in [dev-dependencies], absent from release builds.
 test-seal = ["test-support"]
 

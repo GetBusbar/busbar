@@ -76,6 +76,15 @@ pub(crate) fn fault(why: impl Into<String>) -> Refused {
 /// Explicit terminal reason when a configured pairing cannot retain its next checked batch.
 pub const LINE_MEMORY_EXHAUSTED: &str = "the configured datagram LINE memory limit is exhausted";
 
+/// Why a minted dial did not begin: the certificate would not mint (a host fault), or the dial itself was refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DialBegin {
+    /// The association's certificate would not mint.
+    Mint(Refused),
+    /// The dial was refused after the certificate minted.
+    Dial(Refused),
+}
+
 fn needs_credit(error: &Refused) -> bool {
     error.error == LINE_MEMORY_EXHAUSTED
 }
@@ -794,6 +803,21 @@ impl DatagramFraming {
     ) -> Result<(Self, Yielded), Refused> {
         let cert = SessionCert::mint().map_err(|e| crate::cold::datagram::minting_fault(&e))?;
         Self::accept(door, Arc::new(cert), local)
+    }
+
+    /// Begin a DIALLING association on `door` under a certificate minted for it alone: as [`Self::dial`],
+    /// with the certificate minted here. A minting failure is [`DialBegin::Mint`]; any refusal of the dial itself is
+    /// [`DialBegin::Dial`].
+    pub fn dial_minted(
+        door: Arc<dyn FramerDoor>,
+        local: SocketAddr,
+        opening: &[(String, Vec<u8>)],
+        judge: Arc<dyn DialJudge>,
+        class: u32,
+    ) -> Result<(Self, Yielded), DialBegin> {
+        let cert = SessionCert::mint()
+            .map_err(|e| DialBegin::Mint(crate::cold::datagram::minting_fault(&e)))?;
+        Self::dial(door, Arc::new(cert), local, opening, judge, class).map_err(DialBegin::Dial)
     }
 
     /// Begin a DIALLING association on `door`: as [`Self::accept`], with the `opening` fields the
