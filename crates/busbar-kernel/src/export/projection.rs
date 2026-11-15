@@ -35,7 +35,6 @@
 //! 3. a `fields:` list that omits a **pinned** field, or names a field this release does not
 //!    produce.
 
-use crate::diagnostics::coded;
 use busbar_contract::abi::export::{ExportField, ExportStream};
 
 pub(crate) const PRODUCED_STREAMS: &[ExportStream] = &[
@@ -88,7 +87,7 @@ pub(crate) struct Projection {
 }
 
 impl Projection {
-    fn from_parts(streams: &[ExportStream], fields: &[ExportField]) -> Projection {
+    pub(crate) fn from_parts(streams: &[ExportStream], fields: &[ExportField]) -> Projection {
         let mut p = Projection::default();
         for s in streams {
             p.streams |= 1u16 << stream_bit(*s);
@@ -206,14 +205,14 @@ pub(crate) const SPAN_MEMBER: &str = "span";
 /// A record member, in the order a record lays its members out (by name, as a JSON object map
 /// orders its keys).
 #[derive(Clone, Copy)]
-enum Member {
+pub(crate) enum Member {
     /// A field, with its bit (its index in [`ExportField::ALL`]).
     Field(ExportField, u32),
     Span,
 }
 
 impl Member {
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Member::Field(field, _) => field.as_token(),
             Member::Span => SPAN_MEMBER,
@@ -221,17 +220,17 @@ impl Member {
     }
 }
 
-const FIELDS: usize = ExportField::ALL.len();
+pub(crate) const FIELDS: usize = ExportField::ALL.len();
 
-/// Every member, by name: built once.
-static MEMBER_ORDER: std::sync::LazyLock<[Member; FIELDS + 1]> = std::sync::LazyLock::new(|| {
-    let mut order = [Member::Span; FIELDS + 1];
-    for (bit, (slot, field)) in order.iter_mut().zip(ExportField::ALL).enumerate() {
-        *slot = Member::Field(*field, bit as u32);
-    }
-    order.sort_by_key(|member| member.name());
-    order
-});
+/// Every member, by name, and each member's rank in that order (indexed by field bit, the span
+/// member last): built once, off the request path.
+static MEMBER_ORDER: std::sync::LazyLock<([Member; FIELDS + 1], [u8; FIELDS + 1])> =
+    std::sync::LazyLock::new(crate::off_path::export::member_order);
+
+/// The rank bit a member holds in a record's present-member mask.
+fn rank_bit(index: usize) -> u128 {
+    1u128 << MEMBER_ORDER.1[index]
+}
 
 /// The members a rendered record carries, named in record order.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -263,7 +262,7 @@ impl Iterator for MemberNames {
     type Item = &'static str;
 
     fn next(&mut self) -> Option<&'static str> {
-        while let Some(member) = MEMBER_ORDER.get(self.at).copied() {
+        while let Some(member) = MEMBER_ORDER.0.get(self.at).copied() {
             self.at += 1;
             if self.held.holds(member) {
                 return Some(member.name());
@@ -354,6 +353,9 @@ pub(crate) struct ProjectedRecord<'a> {
     stream: ExportStream,
     values: [Option<FieldValue<'a>>; FIELDS],
     span: Option<&'a [u8]>,
+    /// The members written so far, as their rank bits in name order: kept up to date on each
+    /// write, so finishing walks only the members the record holds.
+    present: u128,
 }
 
 impl<'a> ProjectedRecord<'a> {
@@ -363,6 +365,7 @@ impl<'a> ProjectedRecord<'a> {
             stream,
             values: [None; FIELDS],
             span: None,
+            present: 0,
         }
     }
 
@@ -373,6 +376,7 @@ impl<'a> ProjectedRecord<'a> {
     ) -> &mut Self {
         if self.projection.grants(self.stream, field) {
             self.values[field.bit() as usize] = Some(value.into());
+            self.present |= rank_bit(field.bit() as usize);
         }
         self
     }
@@ -380,6 +384,7 @@ impl<'a> ProjectedRecord<'a> {
     /// Carry a full span record (already one JSON object) as the `span` member.
     pub(crate) fn span(&mut self, record: &'a [u8]) -> &mut Self {
         self.span = Some(record);
+        self.present |= rank_bit(FIELDS);
         self
     }
 
@@ -388,8 +393,11 @@ impl<'a> ProjectedRecord<'a> {
         let mut out = JsonOut(Vec::with_capacity(size));
         let mut members = Members::default();
         out.byte(b'{');
-        for member in MEMBER_ORDER.iter() {
-            match *member {
+        let mut present = self.present;
+        while present != 0 {
+            let rank = present.trailing_zeros() as usize;
+            present &= present - 1;
+            match MEMBER_ORDER.0[rank] {
                 Member::Field(field, bit) => {
                     let Some(value) = self.values[bit as usize] else {
                         continue;
@@ -422,375 +430,8 @@ impl<'a> ProjectedRecord<'a> {
     }
 }
 
-pub(crate) fn resolve_projection(
-    name: &str,
-    module: &str,
-    module_carries: Option<&[ExportStream]>,
-    stream_tokens: Option<&[String]>,
-    fields: Option<&[String]>,
-    durable: bool,
-    errors: &mut Vec<String>,
-) -> Projection {
-    let before = errors.len();
-
-    if durable {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: an export instance refused at config load"
-        )]
-        errors.push(
-            coded::config_export_invalid(format!(
-            "export.{name}.durable: `true` is NOT YET IMPLEMENTED in this release — core does not \
-             spool this sink's records, so accepting it would promise a completeness guarantee \
-             nothing delivers. The key is reserved and the spool arrives in a later release; set \
-             `durable: false` (or omit it) meanwhile."
-        ))
-            .into(),
-        );
-    }
-
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the subscribed streams resolve once, at config load"
-    )]
-    let subscribed: Vec<ExportStream> = match stream_tokens {
-        None => module_carries.unwrap_or(PRODUCED_STREAMS).to_vec(),
-        Some([]) => {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: an export instance refused at config load"
-            )]
-            errors.push(
-                coded::config_export_invalid(format!(
-                "export.{name}.streams: is EMPTY — a sink that subscribes to no stream receives \
-                 nothing at all. Omit the key to take the module's own streams ({}), or name the \
-                 streams you want.",
-                tokens(module_carries.unwrap_or(&[]))
-            ))
-                .into(),
-            );
-            Vec::new()
-        }
-        Some(list) => {
-            // busbar:expect(bp::fresh_buffer, reason = "config: the subscribed streams resolve once, at config load")
-            let mut out = Vec::new();
-            for tok in list {
-                let Some(stream) = ExportStream::from_token(tok) else {
-                    if tok == "audit" {
-                        #[expect(
-                            clippy::disallowed_methods,
-                            reason = "config: an export instance refused at config load"
-                        )]
-                        errors.push(
-                            coded::config_export_invalid(format!(
-                            "export.{name}.streams: `audit` is NOT a stream — it was a use case, \
-                             not a data type. An auditor is a SINK whose projection includes the \
-                             right streams (e.g. `streams: [logs, identity, decisions, events, \
-                             costs]`), which is strictly more expressive. The streams are: {}.",
-                            ExportStream::vocabulary()
-                        ))
-                            .into(),
-                        );
-                    } else {
-                        #[expect(
-                            clippy::disallowed_methods,
-                            reason = "config: an export instance refused at config load"
-                        )]
-                        errors.push(
-                            coded::config_export_invalid(format!(
-                            "export.{name}.streams: unknown stream `{tok}`; the streams are: {}.",
-                            ExportStream::vocabulary()
-                        ))
-                            .into(),
-                        );
-                    }
-                    continue;
-                };
-                if !stream_produced(stream) {
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "config: an export instance refused at config load"
-                    )]
-                    errors.push(
-                        coded::config_export_invalid(format!(
-                        "export.{name}.streams: `{}` HAS NO PRODUCER in this release — nothing \
-                         generates those records yet, so subscribing would deliver nothing while \
-                         reporting success. It arrives in a later release. The streams this \
-                         release produces are: {}.",
-                        stream.as_token(),
-                        tokens(PRODUCED_STREAMS)
-                    ))
-                        .into(),
-                    );
-                    continue;
-                }
-                if let Some(carried) = module_carries {
-                    if !carried.contains(&stream) {
-                        #[expect(
-                            clippy::disallowed_methods,
-                            reason = "config: an export instance refused at config load"
-                        )]
-                        errors.push(
-                            coded::config_export_invalid(format!(
-                                "export.{name}.streams: `module: {module}` cannot carry the `{}` \
-                             stream (it carries: {}), so this subscription would deliver nothing. \
-                             Point a different module at this stream, or drop it from `streams:`.",
-                                stream.as_token(),
-                                tokens(carried)
-                            ))
-                            .into(),
-                        );
-                        continue;
-                    }
-                }
-                if out.contains(&stream) {
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "config: an export instance refused at config load"
-                    )]
-                    errors.push(
-                        coded::config_export_invalid(format!(
-                            "export.{name}.streams: `{}` is listed twice.",
-                            stream.as_token()
-                        ))
-                        .into(),
-                    );
-                    continue;
-                }
-                out.push(stream);
-            }
-            out
-        }
-    };
-
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the granted fields resolve once, at config load"
-    )]
-    let granted: Vec<ExportField> = match fields {
-        None => subscribed
-            .iter()
-            .flat_map(|s| match s {
-                ExportStream::Traces => s.default_fields(),
-                other => produced_fields(*other),
-            })
-            .copied()
-            .collect(),
-        Some(list) => resolve_fields_override(name, list, &subscribed, errors),
-    };
-
-    if errors.len() != before {
-        return Projection::default();
-    }
-    Projection::from_parts(&subscribed, &granted)
-}
-
-fn resolve_fields_override(
-    name: &str,
-    list: &[String],
-    subscribed: &[ExportStream],
-    errors: &mut Vec<String>,
-) -> Vec<ExportField> {
-    if list.is_empty() {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: an export instance refused at config load"
-        )]
-        errors.push(coded::config_export_invalid(format!(
-            "export.{name}.fields: is EMPTY — `fields:` is an EXHAUSTIVE OVERRIDE, so an empty list \
-             means a record with no fields at all. Omit the key to take each subscribed stream's \
-             default fields."
-        )).into());
-        return Vec::new();
-    }
-
-    let mut blocked = false;
-    for s in subscribed {
-        if s.default_fields().is_empty() {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: an export instance refused at config load"
-            )]
-            errors.push(
-                coded::config_export_invalid(format!(
-                "export.{name}.fields: the `{}` stream has no per-record fields to project (its \
-                 unit is the documented metric catalog — families, not record fields), so \
-                 `fields:` cannot apply to it.",
-                s.as_token()
-            ))
-                .into(),
-            );
-            blocked = true;
-            continue;
-        }
-        let produced = produced_fields(*s);
-        if let Some(missing) = s
-            .pinned_fields()
-            .iter()
-            .find(|p| !produced.contains(p))
-            .copied()
-        {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: an export instance refused at config load"
-            )]
-            errors.push(
-                coded::config_export_invalid(format!(
-                "export.{name}.fields: the `{}` stream cannot be projected with `fields:` in this \
-                 release — its PINNED field `{}` (which `fields:` may never omit, because it is \
-                 what makes the records joinable) HAS NO PRODUCER yet and arrives in a later \
-                 release. Omit `fields:` to receive the stream's produced default set.",
-                s.as_token(),
-                missing.as_token()
-            ))
-                .into(),
-            );
-            blocked = true;
-        }
-    }
-
-    // busbar:expect(bp::fresh_buffer, reason = "config: the granted fields resolve once, at config load")
-    let mut granted: Vec<ExportField> = Vec::new();
-    for tok in list {
-        let Some(field) = ExportField::from_token(tok) else {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: an export instance refused at config load"
-            )]
-            errors.push(
-                coded::config_export_invalid(format!(
-                "export.{name}.fields: unknown field `{tok}`. The fields of the subscribed streams \
-                 are: {}.",
-                subscribed_field_tokens(subscribed)
-            ))
-                .into(),
-            );
-            continue;
-        };
-        if !subscribed
-            .iter()
-            .any(|s| s.default_fields().contains(&field))
-        {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: an export instance refused at config load"
-            )]
-            errors.push(
-                coded::config_export_invalid(format!(
-                "export.{name}.fields: `{tok}` is not a field of any subscribed stream ({}), so it \
-                 would never arrive. The fields of the subscribed streams are: {}.",
-                tokens(subscribed),
-                subscribed_field_tokens(subscribed)
-            ))
-                .into(),
-            );
-            continue;
-        }
-        if !blocked
-            && !subscribed
-                .iter()
-                .any(|s| produced_fields(*s).contains(&field))
-        {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: an export instance refused at config load"
-            )]
-            errors.push(coded::config_export_invalid(format!(
-                "export.{name}.fields: `{tok}` HAS NO PRODUCER in this release — it is a documented \
-                 field of a subscribed stream but nothing fills it in yet, so asking for it \
-                 explicitly would leave a permanently-absent key. It arrives in a later release."
-            )).into());
-            continue;
-        }
-        if granted.contains(&field) {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: an export instance refused at config load"
-            )]
-            errors.push(
-                coded::config_export_invalid(format!(
-                    "export.{name}.fields: `{tok}` is listed twice."
-                ))
-                .into(),
-            );
-            continue;
-        }
-        granted.push(field);
-    }
-
-    if !blocked {
-        for s in subscribed {
-            for pinned in s.pinned_fields() {
-                if !granted.contains(pinned) {
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "config: an export instance refused at config load"
-                    )]
-                    errors.push(
-                        coded::config_export_invalid(format!(
-                        "export.{name}.fields: omits `{}`, which is PINNED on the `{}` stream. \
-                         `fields:` bounds what a sink is DISCLOSED, but it must not break the \
-                         records' STRUCTURE: {} Add `{}` to `fields:`, or omit `fields:` to take \
-                         the stream's defaults.",
-                        pinned.as_token(),
-                        s.as_token(),
-                        pinned_reason(*pinned),
-                        pinned.as_token()
-                    ))
-                        .into(),
-                    );
-                }
-            }
-        }
-    }
-    granted
-}
-
-fn pinned_reason(field: ExportField) -> &'static str {
-    match field {
-        ExportField::CorrelationId => {
-            "one request is split across several streams, and `correlation_id` is the join key that \
-             reassembles them — without it the records are unjoinable."
-        }
-        ExportField::PrevHash => {
-            "it is the link in the event hash chain — without it the chain cannot be verified."
-        }
-        ExportField::Seq => "it is the event's position in the chain.",
-        ExportField::Ts => "it is when the event happened, and part of what the chain hashes.",
-        ExportField::TraceId | ExportField::SpanId => {
-            "it is the span tree's own identity — without it a span cannot be placed in a trace."
-        }
-        _ => "it is structural to the stream's records.",
-    }
-}
-
-/// Tokens separated by ` | `, written straight into the message they appear in.
-struct Joined<I>(I);
-
-impl<I: Iterator<Item = &'static str> + Clone> std::fmt::Display for Joined<I> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for (i, token) in self.0.clone().enumerate() {
-            if i > 0 {
-                f.write_str(" | ")?;
-            }
-            f.write_str(token)?;
-        }
-        Ok(())
-    }
-}
-
-fn tokens(streams: &[ExportStream]) -> impl std::fmt::Display + '_ {
-    Joined(streams.iter().map(|s| s.as_token()))
-}
-
-fn subscribed_field_tokens(subscribed: &[ExportStream]) -> impl std::fmt::Display + '_ {
-    Joined(
-        ExportField::ALL
-            .iter()
-            .filter(|f| subscribed.iter().any(|s| s.default_fields().contains(f)))
-            .map(|f| f.as_token()),
-    )
-}
+/// The projection grammar's config-time resolution, with its refusals: built off the request path.
+pub(crate) use crate::off_path::export::resolve_projection;
 
 #[cfg(test)]
 #[path = "tests/projection_tests.rs"]

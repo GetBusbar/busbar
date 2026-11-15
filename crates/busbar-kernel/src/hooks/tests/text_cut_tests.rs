@@ -6,12 +6,15 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// Every counted `busbar_plugin_text_cut_total{plugin,field}` value, by its (plugin, field).
+type Counters = Arc<Mutex<HashMap<(String, String), Arc<AtomicU64>>>>;
+
 /// What a run under [`probe`] logged and counted: the formatted tracing lines and every
 /// `busbar_plugin_text_cut_total{plugin,field}` value.
 #[derive(Clone, Default)]
 pub(crate) struct Probe {
     log: Arc<Mutex<Vec<u8>>>,
-    counters: Arc<Mutex<HashMap<(String, String), Arc<AtomicU64>>>>,
+    counters: Counters,
 }
 
 impl std::io::Write for Probe {
