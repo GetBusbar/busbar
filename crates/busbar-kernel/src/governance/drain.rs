@@ -95,10 +95,14 @@ impl DrainClock {
     /// Resolves when the clock is armed, at once if it already is.
     pub async fn armed(&self) -> Instant {
         let mut rx = self.deadline.subscribe();
-        match rx.wait_for(Option::is_some).await {
-            Ok(at) => (*at).unwrap_or_else(Instant::now),
+        let armed = match rx.wait_for(Option::is_some).await {
+            Ok(at) => Some((*at).unwrap_or_else(Instant::now)),
+            Err(_) => None,
+        };
+        match armed {
+            Some(at) => at,
             // The sender lives in `self`, so this is unreachable while `self` is borrowed.
-            Err(_) => std::future::pending().await,
+            None => std::future::pending().await,
         }
     }
 
