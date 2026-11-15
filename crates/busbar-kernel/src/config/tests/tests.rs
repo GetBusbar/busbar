@@ -1686,7 +1686,7 @@ fn test_secret_ref_malformed_shapes_rejected() {
         fixture_authored("unadmitted: private-descriptor").expect_err("unknown shorthand refuses");
     let msg = err.to_string();
     assert!(
-        msg.contains("not declared") && msg.contains("unadmitted"),
+        msg.contains("is a secret shorthand") && msg.contains("unadmitted"),
         "{msg}"
     );
     let err = fixture_authored("lookup: ''").expect_err("empty shorthand refuses");

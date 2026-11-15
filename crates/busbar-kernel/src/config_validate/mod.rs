@@ -1018,8 +1018,8 @@ fn judge_with_plugins(
             errors.push(coded::config_auth_chain_invalid("auth.signing_key is required for signed-token auth (auth.chain names the \
                  built-in `keys` verifier), but none is set - and busbar no longer auto-generates \
                  one. Generate a key with `busbar --generate-signing-key`, then set auth.signing_key \
-                 to a secret reference for it ({file: /path} or {env: VAR} - a SHARED secret across \
-                 nodes for a fleet)."
+                 to a secret reference for it (a shorthand an admitted secret module declares, or \
+                 `{ module: \u{2026}, settings: \u{2026} }`; a SHARED secret across nodes for a fleet)."
                     ).into());
         }
 

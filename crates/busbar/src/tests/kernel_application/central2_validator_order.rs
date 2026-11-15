@@ -182,7 +182,10 @@ fn one_validator_refuses_in_one_order() {
     cfg.secrets.clear();
     match check(&cfg, &busbar_kernel::config_validate::no_root_rules, false) {
         Err(busbar_kernel::config_validate::Refusal::Plugins(e)) => assert!(
-            e.contains("references secret module 'typo-ref', which is not a built-in"),
+            e.contains(
+                "references secret module 'typo-ref', but no admitted `kind: secret` module is \
+                 named or aliased 'typo-ref'"
+            ),
             "the reference is refused: {e}"
         ),
         other => panic!("refused by the registry half: {other:?}"),

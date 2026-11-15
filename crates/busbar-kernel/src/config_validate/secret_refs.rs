@@ -94,11 +94,9 @@ fn reference_module_row(
             module, p.key, p.kind
         )),
         None => Err(format!(
-            "{what} references secret module '{}', which is not a built-in (`env` | `file`) \
-                 and no loadable `kind: secret` plugin is named or aliased '{}'. Fix the \
-                 spelling, install/trust the plugin (see --list-plugins), or use a built-in, \
-                 e.g.:\n\n    {what}: {{ env: MY_SECRET_VAR }}\n",
-            module, module
+            "{what} references secret module '{module}', but no admitted `kind: secret` module \
+             is named or aliased '{module}'. Fix the spelling, or install a signed secret module \
+             that declares it and admit it (`busbar --list-plugins`)."
         )),
     }
 }
