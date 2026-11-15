@@ -63,3 +63,7 @@ pub(crate) fn gate_rejected(
 pub(crate) fn door_member(name: &'static str) -> String {
     name.to_owned()
 }
+// Sections as submodules (cold/<section>.rs), so the slices that fill them do not collide.
+pub(crate) mod auth;
+pub(crate) mod governance;
+pub(crate) mod host;

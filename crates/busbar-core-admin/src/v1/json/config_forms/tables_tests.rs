@@ -149,4 +149,8 @@ fn pool_table_preserves_shorthand_reserved_keys_and_custom_serde() {
             json!({"p":{"members":[]}}),
         ],
     );
+    // The empty section decodes to no registrations and no reserved keys.
+    let PoolsInput(section) = serde_json::from_value(json!({})).unwrap();
+    assert!(section.entries.is_empty());
+    assert!(section.hooks.is_empty());
 }

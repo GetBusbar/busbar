@@ -77,7 +77,7 @@ pub fn issuer() {
     let _ = idp();
 }
 
-pub fn cert_pem() -> &'static str {
+fn cert_pem() -> &'static str {
     &idp().2
 }
 

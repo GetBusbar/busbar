@@ -820,12 +820,10 @@ fn describe_body_error_renders_every_serde_form() {
 
     #[derive(Debug, serde::Deserialize)]
     #[serde(deny_unknown_fields)]
-    #[allow(dead_code)]
     struct Need {
         a: u64,
     }
-    #[derive(Debug, serde::Deserialize)]
-    #[allow(dead_code)]
+    #[derive(Debug, PartialEq, serde::Deserialize)]
     enum Mode {
         Own,
         Passthrough,
@@ -833,6 +831,16 @@ fn describe_body_error_renders_every_serde_form() {
     let long = "k".repeat(100);
     let over_cap = "k".repeat(65);
     let at_cap = "k".repeat(64);
+    // The well-formed bodies decode: the shapes the error forms below are rendered against.
+    assert_eq!(serde_json::from_slice::<Need>(br#"{"a":7}"#).unwrap().a, 7);
+    assert_eq!(
+        serde_json::from_slice::<Mode>(br#""Own""#).unwrap(),
+        Mode::Own
+    );
+    assert_eq!(
+        serde_json::from_slice::<Mode>(br#""Passthrough""#).unwrap(),
+        Mode::Passthrough
+    );
 
     // Kept verbatim, with the position: missing field, duplicate field, short unknown field,
     // invalid length, syntax and EOF.

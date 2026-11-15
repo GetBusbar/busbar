@@ -59,10 +59,6 @@ fn collect_public_url_errors(url: &str, blocked: &[String], errors: &mut Vec<Str
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::disallowed_methods,
-    reason = "unit tests of validate_public_url itself"
-)]
 mod tests {
     use super::*;
 

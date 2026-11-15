@@ -49,7 +49,7 @@ fn remember_native_images(registry: &PluginRegistry, plugins: &PluginsCfg) {
     remembered.extend(fresh);
 }
 
-pub fn install_native_load_guard() -> Result<(), &'static str> {
+pub(crate) fn install_native_load_guard() -> Result<(), &'static str> {
     super::loader::install_native_load_guard(authorize_native_image)
 }
 
@@ -89,7 +89,7 @@ fn authorize_native_image(bytes: &[u8], display: &str) -> Result<(), String> {
 
 /// Only the native prepared session may supply a checkpoint-bound recovery backend.
 /// A recovery target must already contain the confirmed current-format manifest.
-pub async fn admit_prepared_store(
+pub(crate) async fn admit_prepared_store(
     prepared: &busbar_migrations::RecoveryPending,
 ) -> Result<busbar_kernel::persistence::startup::Startup, String> {
     if let Some(recovery) = &prepared.recovery {
@@ -194,7 +194,7 @@ struct PluginFloorAuthority {
 
 static PLUGIN_FLOOR: std::sync::OnceLock<PluginFloorAuthority> = std::sync::OnceLock::new();
 
-pub async fn bind_plugin_floor(
+pub(crate) async fn bind_plugin_floor(
     core: Arc<busbar_kernel::persistence::facade::CoreStore>,
 ) -> Result<(), String> {
     let owner = busbar_kernel::persistence::plugin_floor::PluginFloor::new(core)?;
@@ -261,7 +261,7 @@ async fn hold_plugin_floor(rows: &dyn PluginRows, plugins: &PluginsCfg) -> Resul
     Ok(())
 }
 
-pub async fn admit_recovered_plugins(plugins: &PluginsCfg) -> Result<(), String> {
+pub(crate) async fn admit_recovered_plugins(plugins: &PluginsCfg) -> Result<(), String> {
     if let Some(registry) = REGISTRY.get() {
         hold_plugin_floor(registry, plugins).await?;
     }
@@ -302,7 +302,7 @@ fn registry_with_floor(
     Ok(registry)
 }
 
-pub fn admit_secrets<'a>(
+pub(crate) fn admit_secrets<'a>(
     rows: &'a Arc<dyn PluginRows>,
     plugins: &'a PluginsCfg,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
@@ -319,7 +319,7 @@ pub(crate) fn admit_dropped_secrets(registry: &PluginRegistry) -> Result<(), Str
     super::linked::secret_rows().admit_dropped(discovered(registry, |kind| kind == "secret")?)
 }
 
-pub fn registry_rows(
+pub(crate) fn registry_rows(
     i: RegistryIn<'_>,
     note: &mut dyn FnMut(BuildNote<'_>),
 ) -> Result<Arc<dyn PluginRows>, String> {
@@ -350,7 +350,7 @@ pub fn registry_rows(
 }
 
 #[must_use]
-pub fn linked_row(row: &LinkedRow) -> LinkedPlugin {
+pub(crate) fn linked_row(row: &LinkedRow) -> LinkedPlugin {
     match *row {
         LinkedRow::Store((key, ephemeral, door, canonical)) => {
             LinkedPlugin::store_named(canonical, key, door, ephemeral)
@@ -362,7 +362,7 @@ pub fn linked_row(row: &LinkedRow) -> LinkedPlugin {
 }
 
 #[must_use]
-pub fn linked_registry() -> PluginRegistry {
+pub(crate) fn linked_registry() -> PluginRegistry {
     let mut linked: Vec<_> = busbar_kernel::preflight::linked_rows()
         .iter()
         .map(linked_row)
@@ -408,7 +408,7 @@ pub fn trust_policy(
 pub const HARNESS_FIRST_PARTY_KEY_ENV: &str = "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY";
 
 #[cfg(feature = "test-harness")]
-pub fn harness_first_party_key(
+pub(crate) fn harness_first_party_key(
     raw: Option<&str>,
 ) -> Result<Option<super::loader::sign::VerifyingKey>, String> {
     match raw.map(str::trim).filter(|s| !s.is_empty()) {
@@ -419,7 +419,7 @@ pub fn harness_first_party_key(
     }
 }
 
-pub fn plugins_fetch(
+pub(crate) fn plugins_fetch(
     dir: &std::path::Path,
     targets: &[FetchTarget],
     fatal_on_miss: bool,
@@ -468,7 +468,7 @@ pub fn document(path: &std::path::Path) -> Option<Document> {
     Document::parse(text).ok()
 }
 
-pub fn validate_dealt<'s>(
+pub(crate) fn validate_dealt<'s>(
     doc: &Document,
     seats: impl IntoIterator<Item = (&'s str, Seat<'s>)>,
     mut validate: impl FnMut(&'s str, &[u8]) -> Result<(), String>,
@@ -593,7 +593,7 @@ pub fn configured_listener_needs(
     Ok(listeners)
 }
 
-pub fn configured_root_binds(
+pub(crate) fn configured_root_binds(
     cfg: &busbar_kernel::config::RootCfg,
 ) -> Result<Vec<InboundBind>, String> {
     let authoring_seal = busbar_kernel::seal::acquire();
@@ -616,7 +616,7 @@ pub fn configured_root_binds(
     Ok(binds)
 }
 
-pub fn candidate_listener_needs(
+pub(crate) fn candidate_listener_needs(
     app: &busbar_kernel::state::App,
     sections: &std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
     root: Vec<InboundBind>,
@@ -694,7 +694,7 @@ fn listener_projection(
     )
 }
 
-pub fn listener_needs(
+pub(crate) fn listener_needs(
     doc: &serde_json::Value,
     candidates: &[Candidate],
     selected: &[Selected],
@@ -1024,7 +1024,7 @@ pub struct RootListens<'a> {
     pub admin_listen: &'a str,
 }
 
-pub fn root_binds(
+pub(crate) fn root_binds(
     doc: &serde_json::Value,
     root: &RootListens<'_>,
 ) -> Result<Vec<InboundBind>, String> {
@@ -1095,7 +1095,7 @@ pub fn stages(
     })
 }
 
-pub fn dropped_from_config(
+pub(crate) fn dropped_from_config(
     linked: &Linked,
 ) -> Option<&'static crate::root::loader::PluginRegistry> {
     let rows = linked_exports(linked.export_doors).unwrap_or_else(|refusal| {
@@ -1134,7 +1134,7 @@ pub(crate) fn authorize_early_plugin(name: &str) -> Result<(), String> {
     )
 }
 
-pub fn dropped_registry() -> Option<&'static crate::root::loader::PluginRegistry> {
+pub(crate) fn dropped_registry() -> Option<&'static crate::root::loader::PluginRegistry> {
     REGISTRY.get()
 }
 
@@ -1175,7 +1175,10 @@ fn scan_configured() -> Option<crate::root::loader::PluginRegistry> {
     Some(registry)
 }
 
-pub fn discover_planes(linked: &Linked, dropped: Option<&crate::root::loader::PluginRegistry>) {
+pub(crate) fn discover_planes(
+    linked: &Linked,
+    dropped: Option<&crate::root::loader::PluginRegistry>,
+) {
     let set = match dropped {
         Some(registry) => registry.open_planes(linked.plane_doors),
         None => crate::root::loader::PluginRegistry::empty().open_planes(linked.plane_doors),
@@ -1188,7 +1191,7 @@ pub fn discover_planes(linked: &Linked, dropped: Option<&crate::root::loader::Pl
 }
 
 #[must_use]
-pub fn unbound_sections() -> Vec<&'static str> {
+pub(crate) fn unbound_sections() -> Vec<&'static str> {
     let bound = door_planes();
     DOOR_CANDIDATES
         .get()
@@ -1206,7 +1209,7 @@ pub fn unbound_sections() -> Vec<&'static str> {
 
 static PROVIDER_URLS: std::sync::RwLock<Vec<String>> = std::sync::RwLock::new(Vec::new());
 
-pub fn note_provider_urls(urls: impl IntoIterator<Item = String>) {
+pub(crate) fn note_provider_urls(urls: impl IntoIterator<Item = String>) {
     let next = urls.into_iter().collect();
     let previous = std::mem::replace(
         &mut *PROVIDER_URLS.write().unwrap_or_else(|p| p.into_inner()),
@@ -1234,7 +1237,7 @@ pub(crate) fn transport_uses_for(path: &std::path::Path, urls: &[String]) -> Use
     uses
 }
 
-pub fn check_bootstrap_transports(plugins: &PluginsCfg) -> Result<(), String> {
+pub(crate) fn check_bootstrap_transports(plugins: &PluginsCfg) -> Result<(), String> {
     let Some(registry) = REGISTRY.get() else {
         return Ok(());
     };
@@ -1264,7 +1267,7 @@ pub type DoorPlane = std::sync::Arc<
     crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::plane::Plane>,
 >;
 
-pub fn load_door_planes<'s>(sections: impl IntoIterator<Item = &'s str>) {
+pub(crate) fn load_door_planes<'s>(sections: impl IntoIterator<Item = &'s str>) {
     let doors = DOOR_CANDIDATES.get().map_or(&[][..], Vec::as_slice);
     let uses = Uses {
         roots: sections.into_iter().map(str::to_string).collect(),
@@ -1340,11 +1343,11 @@ pub(crate) fn follow_plugin_logs(
     }
 }
 
-pub fn door_planes() -> &'static [(String, DoorPlane)] {
+pub(crate) fn door_planes() -> &'static [(String, DoorPlane)] {
     DOOR_PLANES.get().map_or(&[], Vec::as_slice)
 }
 
-pub fn dropped_transports(
+pub(crate) fn dropped_transports(
     settings: &busbar_contract::transport::TransportSettings,
 ) -> crate::root::registry::Dropped {
     if let Some(opened) = WIRES.lock().unwrap_or_else(|p| p.into_inner()).clone() {
@@ -1421,7 +1424,7 @@ fn publish_transport_inventory(
 }
 
 #[cfg(test)]
-pub async fn compose_book(
+pub(crate) async fn compose_book(
     journal: Arc<busbar_kernel::persistence::journal::RuntimeJournal>,
     identity: &busbar_kernel::persistence::boot_identity::BootIdentity,
     node: u64,
@@ -1731,7 +1734,7 @@ pub async fn book(
 
 /// Start the existing lease watcher before boot recovery, then transfer that
 /// exact task alongside the book into the retained serving candidate.
-pub async fn book_with_lease_watch(
+pub(crate) async fn book_with_lease_watch(
     app: &busbar_kernel::state::App,
     store: &str,
     stop: tokio::sync::watch::Receiver<bool>,
@@ -1757,7 +1760,7 @@ mod bootstrap_pin_tests;
 
 /// Select the exact admitted transport claim and run its pre-open, pure LOCATE operation.
 /// This path uses an isolated dispatcher with no connection needs and never opens an instance.
-pub fn locate_provider_destination(
+pub(crate) fn locate_provider_destination(
     rows: &Arc<dyn PluginRows>,
     target: &str,
 ) -> Result<busbar_kernel::config_validate::ProviderDestination, String> {
@@ -1858,7 +1861,7 @@ fn locate_provider_destination_with(
 
 /// Resolve only compiled core schemas or the attested instance's exact historical
 /// raw-record framing. An unscoped unknown schema is never guessed into a namespace.
-pub fn bootstrap_witness(
+pub(crate) fn bootstrap_witness(
     instance: &str,
     schema: &str,
     key: &[u8],

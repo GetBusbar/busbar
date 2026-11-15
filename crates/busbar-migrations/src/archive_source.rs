@@ -420,7 +420,7 @@ impl<R: Read + Seek + Send> ArchiveSource<R> {
     }
     /// Stream a complete logical group using one explicitly bounded wiping row.
     /// No whole-group payload count/byte cap is imposed; the metadata index remains bounded.
-    pub fn visit_group_rows(
+    fn visit_group_rows(
         &self,
         family: [u8; 16],
         key: &Secret<Vec<u8>>,
