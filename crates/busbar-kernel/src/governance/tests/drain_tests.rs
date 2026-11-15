@@ -176,15 +176,21 @@ fn money_stop_and_passes_are_observable() {
 fn exit_codes_follow_the_custody_lists() {
     let mut custody = SpendCustody::default();
     assert_eq!(custody.exit_code(), 75);
-    custody.custody_only.push(item("running_unit", "x".into()));
+    custody
+        .custody_only
+        .push(item("running_unit", format_args!("x")));
     assert_eq!(
         custody.exit_code(),
         75,
         "running units never change the code"
     );
-    custody.in_doubt.push(item("budget_flight", "y".into()));
+    custody
+        .in_doubt
+        .push(item("budget_flight", format_args!("y")));
     assert_eq!(custody.exit_code(), 70);
     let mut unpersisted = SpendCustody::default();
-    unpersisted.unpersisted.push(item("metering", "z".into()));
+    unpersisted
+        .unpersisted
+        .push(item("metering", format_args!("z")));
     assert_eq!(unpersisted.exit_code(), 70);
 }

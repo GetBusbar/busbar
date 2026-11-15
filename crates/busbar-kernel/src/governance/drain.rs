@@ -96,7 +96,7 @@ impl DrainClock {
     pub async fn armed(&self) -> Instant {
         let mut rx = self.deadline.subscribe();
         let armed = match rx.wait_for(Option::is_some).await {
-            Ok(at) => Some((*at).unwrap_or_else(Instant::now)),
+            Ok(at) => *at,
             Err(_) => None,
         };
         match armed {
@@ -323,8 +323,24 @@ impl SpendCustody {
     }
 }
 
-fn item(kind: &'static str, detail: String) -> CustodyItem {
-    CustodyItem { kind, detail }
+/// One item, its detail written once into its own buffer (a cold exit path).
+fn item(kind: &'static str, detail: std::fmt::Arguments<'_>) -> CustodyItem {
+    use std::fmt::Write as _;
+    let mut text = String::new();
+    let _ = text.write_fmt(detail);
+    CustodyItem { kind, detail: text }
+}
+
+/// A persisted revision, or `none`.
+struct Revision(Option<u64>);
+
+impl std::fmt::Display for Revision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(n) => write!(f, "{n}"),
+            None => f.write_str("none"),
+        }
+    }
 }
 
 impl GovState {
@@ -341,28 +357,34 @@ impl GovState {
     pub fn spend_custody(&self) -> SpendCustody {
         let mut out = SpendCustody::default();
         for unit in self.unit_checkpoint_states() {
-            let detail = format!(
-                "checkpoint={} revision={} persisted={} principal={} group={}",
-                hex::encode(unit.id),
-                unit.revision,
-                unit.persisted
-                    .map_or_else(|| "none".to_string(), |p| p.to_string()),
-                unit.principal,
-                unit.group,
-            );
-            if !unit.ended {
-                out.custody_only.push(item("running_unit", detail));
+            let id = hex::encode(unit.id);
+            let kind = if !unit.ended {
+                "running_unit"
             } else if unit.persisted != Some(unit.revision) {
-                out.unpersisted.push(item("terminal_unit", detail));
+                "terminal_unit"
             } else {
-                out.custody_only
-                    .push(item("terminal_unit_persisted", detail));
+                "terminal_unit_persisted"
+            };
+            let entry = item(
+                kind,
+                format_args!(
+                    "checkpoint={id} revision={} persisted={} principal={} group={}",
+                    unit.revision,
+                    Revision(unit.persisted),
+                    unit.principal,
+                    unit.group,
+                ),
+            );
+            if kind == "terminal_unit" {
+                out.unpersisted.push(entry);
+            } else {
+                out.custody_only.push(entry);
             }
         }
         if self.unit_checkpoints_flushing() {
             out.in_doubt.push(item(
                 "unit_flush",
-                "a unit checkpoint flush is running".into(),
+                format_args!("a unit checkpoint flush is running"),
             ));
         }
         for index in 0..super::GOV_SHARDS {
@@ -376,7 +398,7 @@ impl GovState {
                 {
                     out.unpersisted.push(item(
                         "budget_cell",
-                        format!(
+                        format_args!(
                             "bucket={bucket} window={} dirty={} flushing={} correction={} rolled={}",
                             cell.window_start,
                             cell.dirty,
@@ -396,12 +418,14 @@ impl GovState {
         {
             out.in_doubt.push(item(
                 "budget_flight",
-                format!("bucket={bucket} window={window}"),
+                format_args!("bucket={bucket} window={window}"),
             ));
         }
         if self.budget_flush_runner.is_running() {
-            out.in_doubt
-                .push(item("budget_flush", "a budget flush is running".into()));
+            out.in_doubt.push(item(
+                "budget_flush",
+                format_args!("a budget flush is running"),
+            ));
         }
         let metering = &self.pending_metering;
         for shard in metering.shards.iter() {
@@ -409,7 +433,7 @@ impl GovState {
                 if !counts.is_zero() {
                     out.unpersisted.push(item(
                         "metering",
-                        format!(
+                        format_args!(
                             "group={}@{} key={} model={} requests={}",
                             key.5, key.1, key.0, key.2, counts.requests
                         ),
@@ -425,37 +449,43 @@ impl GovState {
         if flights != 0 {
             out.in_doubt.push(item(
                 "metering_flight",
-                format!("{flights} metering write(s) unconfirmed"),
+                format_args!("{flights} metering write(s) unconfirmed"),
             ));
         }
         if metering.flush_runner.is_running() {
-            out.in_doubt
-                .push(item("metering_flush", "a metering flush is running".into()));
+            out.in_doubt.push(item(
+                "metering_flush",
+                format_args!("a metering flush is running"),
+            ));
         }
-        let corrections: Vec<(String, super::state::ledger_adjust::PendingCorrection)> = self
+        // Judged on copies taken under the lock, so the judgement runs without it.
+        let mut corrections: Vec<(String, super::state::ledger_adjust::PendingCorrection)> =
+            Vec::new();
+        for (key, correction) in self
             .corrections
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
+        {
+            corrections.push((key.clone(), correction.clone()));
+        }
         for (key, correction) in corrections {
             if correction.has_unsettled_persistence() {
                 out.unpersisted
-                    .push(item("correction", format!("correction={key}")));
+                    .push(item("correction", format_args!("correction={key}")));
             }
         }
         let (staged, selected) = self.recovery_custody_counts();
         if staged != 0 {
             out.in_doubt.push(item(
                 "recovery_staged",
-                format!("{staged} recovery original(s) staged and unconfirmed"),
+                format_args!("{staged} recovery original(s) staged and unconfirmed"),
             ));
         }
         if selected != 0 {
             out.custody_only.push(item(
                 "recovery_selected",
-                format!("{selected} recovery operation(s) selected, not yet settled"),
+                format_args!("{selected} recovery operation(s) selected, not yet settled"),
             ));
         }
         if self.has_unsettled_ticket_operations()
@@ -467,7 +497,7 @@ impl GovState {
         {
             out.custody_only.push(item(
                 "tickets",
-                "ticket operations or bucket deletions remain".into(),
+                format_args!("ticket operations or bucket deletions remain"),
             ));
         }
         out
