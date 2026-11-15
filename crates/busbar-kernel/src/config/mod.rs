@@ -26,7 +26,7 @@ mod authored_routing;
 pub mod document_patch;
 pub mod named_map;
 pub mod operator_file;
-pub use operator_file::OperatorFileDefs;
+pub use operator_file::{operator_file_policy, OperatorFileDefs};
 pub mod readback;
 
 pub mod parse;
