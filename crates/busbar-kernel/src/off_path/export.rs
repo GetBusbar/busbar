@@ -500,7 +500,17 @@ pub(crate) fn probe(
         }
     };
     let streams = streams.map(|b| declared_streams(&b));
-    Some((streams, problems, recorder))
+    Some((streams, problems, honoured(module, recorder)))
+}
+
+/// The host recorder backs busbar's own `/metrics`, so only a FIRST-PARTY row (linked, or dropped in
+/// signed by the release key) may request it. A third party's recorder declaration is not honoured:
+/// its instance is an ordinary `metrics` subscriber and never the scrape sink (#65).
+fn honoured(
+    module: &str,
+    recorder: Option<busbar_contract::export_calls::RecorderRequirements>,
+) -> Option<busbar_contract::export_calls::RecorderRequirements> {
+    recorder.filter(|_| axis().is_some_and(|axis| axis.first_party(module)))
 }
 
 pub(crate) fn sink_settings(
@@ -677,7 +687,8 @@ pub fn requires_restart(name: &str, def: Option<&crate::config::ExportDefCfg>) -
     match (sink, def) {
         (Some(sink), Some(def)) => match probe(name, def.module.trim(), &def.settings) {
             Some((_, errors, recorder)) => {
-                !errors.is_empty() || recorder != sink.sink.recorder_requirements()
+                !errors.is_empty()
+                    || recorder != honoured(&sink.module, sink.sink.recorder_requirements())
             }
             None => true,
         },
@@ -749,7 +760,7 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
         );
         let expected_recorder = if p.scrape { cfg.recorder } else { None };
         let opened_recorder = if projection.wants_stream(ExportStream::Metrics) {
-            sink.recorder_requirements()
+            honoured(module, sink.recorder_requirements())
         } else {
             None
         };
