@@ -122,7 +122,7 @@ fn secret_ref_typo_module_still_fails_at_preflight() {
     assert!(
         err.contains("providers.acme.api_key")
             && err.contains("vaultt")
-            && err.contains("no loadable"),
+            && err.contains("no admitted `kind: secret` module"),
         "the error must name the ref and the unknown module: {err}"
     );
 }

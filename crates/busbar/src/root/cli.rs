@@ -321,6 +321,13 @@ fn ordinary_cli_flags() -> Option<i32> {
             Some(EXIT_SUCCESS)
         }
         Some(OPTION_METADATA_BLOCKLIST) => {
+            if let Some(refusal) = crate::root::boot::start_refusal() {
+                eprintln!(
+                    "[error] {}",
+                    diagnostics::CLI_VALIDATE_CONFIG_INVALID.coded(refusal)
+                );
+                return Some(EXIT_FAILURE);
+            }
             let mut entries = config_validate::metadata_enforced_entries();
             let config_path = resolve_config_path(argv.config.as_deref());
             if let Ok(raw) = std::fs::read_to_string(&config_path) {
@@ -460,13 +467,16 @@ pub(crate) fn validate_judged(
     providers_override: Option<&std::path::Path>,
     ignore_overlay: bool,
 ) -> Result<Validated, ValidateRefusal> {
+    if let Some(refusal) = crate::root::boot::start_refusal() {
+        return Err(ValidateRefusal::Load(refusal));
+    }
     let mut loaded = load_config_from_disk(
         config_path,
         providers_override,
         ignore_overlay,
         config::EnvSubst::Lenient,
     )
-    .map_err(ValidateRefusal::Load)?;
+    .map_err(|e| ValidateRefusal::Load(crate::root::boot::with_skip_lines(e)))?;
     let unset_env_vars = loaded.unset_env_vars.clone();
 
     if let Some(doc) = loaded.overlay_doc.as_ref() {
@@ -648,6 +658,9 @@ fn list_plugins_command() -> i32 {
         }
     };
     plugins_cfg.warn_invalid_floors();
+    if let Some(refusal) = crate::root::boot::start_refusal() {
+        println!("process start: {refusal}");
+    }
     let policy = match crate::root::boot::trust_policy(&plugins_cfg, env!("CARGO_PKG_VERSION")) {
         Ok(p) => p,
         Err(e) => {

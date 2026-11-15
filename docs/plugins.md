@@ -194,11 +194,14 @@ cargo build --release -p my-store-plugin --target aarch64-unknown-linux-gnu
 ## Secret plugins (`kind: secret`)
 
 Every secret value in the config (provider `api_key`, `auth.signing_key`, the admin token, each
-TLS `cert`/`key`/`client_ca`) is a secret **reference**, not a literal. The two built-in reference
-forms (`{ env: VAR }` and `{ file: /path }`) need no plugin. A `kind: secret` plugin adds a third
-form, `{ module: <secret-plugin>, settings: {...} }`, so a reference resolves from an external
-secrets backend (a vault, a cloud secret manager) through the same signed-plugin trust pipeline.
-This is the plugin you reach for when key material must never sit in an env var or an on-disk file.
+TLS `cert`/`key`/`client_ca`) is a secret **reference**, not a literal. Core declares no secret
+source of its own: every reference resolves through an admitted `kind: secret` plugin, whether it
+reads an environment variable, a file, a vault or a cloud secret manager. A reference is written in
+one of two forms: the canonical `{ module: <secret-plugin>, settings: {...} }`, or a shorthand
+(such as `{ env: VAR }` or `{ file: /path }`) that an admitted `kind: secret` plugin declares. A
+shorthand no admitted plugin declares is refused, naming the word. `busbar --list-plugins` shows
+which plugins were admitted. Secret plugins go through the same signed-plugin trust pipeline as
+every other kind.
 
 A secret plugin implements the secret kind's typed lifecycle and `resolve`/`check` slots under
 `busbar_contract::abi`. Per-reference settings describe the requested secret; instance settings
@@ -641,8 +644,9 @@ get code executed, and a compromised or replayed plugin must not load.
    hostile plugin cannot force an unbounded allocation).
 8. **Pre-flight checks are shared; boot checks the effective runtime configuration.**
    `busbar --validate` reads the selected config and provider catalog, checks consistency and
-   trust policy, scans locally available plugin artifacts, plans their selection, and resolves
-   built-in `env:` / `file:` secret references. Authorized native grammar/check callbacks may run;
+   trust policy, scans locally available plugin artifacts, plans their selection, resolves the
+   secret references whose secret plugin is linked into the build, and checks the others against
+   the admitted secret plugins. Authorized native grammar/check callbacks may run;
    dropped callbacks require the exact operator archive pin described above. It does not download plugins, open a Store,
    recover its admin config overlay, or prove plugin `open`/readiness or backend reachability.
    Boot recovers the overlay from the base Store (unless config is locked or `--ignore-overlay` skips

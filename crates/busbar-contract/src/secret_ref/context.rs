@@ -348,6 +348,31 @@ impl<'de, A: VariantAccess<'de>> VariantAccess<'de> for Wrapped<'_, A> {
 /// serde_json's exact-number transport key (`arbitrary_precision`).
 pub(super) const JSON_NUMBER_TOKEN: &str = "$serde_json::private::Number";
 
+/// The fixed class marker an undeclared-shorthand refusal starts with (BUSBAR-3121). The operator's
+/// word is echoed escaped and with this marker removed, so no key in a document can forge the class.
+pub const UNDECLARED_MARKER: &str = "BUSBAR-3121\u{b7}undeclared:";
+
+/// The longest echo of an undeclared word, in characters, after escaping.
+const ECHOED_WORD_CHARS: usize = 64;
+
+/// The refusal for a one-entry reference map whose key no admitted secret module declares. A
+/// shorthand is a secret module's word, never core's: the text names the word, says it is a secret
+/// shorthand and what must be installed and admitted for it, and names no plugin.
+fn undeclared(word: &str) -> String {
+    let mut shown = word.escape_debug().to_string();
+    while shown.contains(UNDECLARED_MARKER) {
+        shown = shown.replace(UNDECLARED_MARKER, "");
+    }
+    let shown: String = shown.chars().take(ECHOED_WORD_CHARS).collect();
+    format!(
+        "{UNDECLARED_MARKER} `{{{shown}: \u{2026}}}` is a secret shorthand, and no admitted secret \
+         module declares `{shown}`. Install a signed `kind: secret` module that declares `{shown}` \
+         into plugins.dir and admit it (plugins.enabled, plugins.trust), or write the canonical \
+         `{{ module: <secret module>, settings: {{ \u{2026} }} }}` reference. `busbar \
+         --list-plugins` shows what was admitted."
+    )
+}
+
 struct Reference<'a, V> {
     inner: V,
     sugars: &'a Sugars,
@@ -422,9 +447,10 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for Reference<'_, V> {
         let object = held.0.as_object().expect("reference map");
         if !object.contains_key("module") && !object.contains_key("template") && object.len() == 1 {
             let (word, value) = object.iter().next().expect("one entry");
-            let sugar = self.sugars.get(word).ok_or_else(|| de::Error::custom(format!(
-                "secret source shorthand `{word}` is not declared by an admitted owner; use its canonical module/settings reference"
-            )))?;
+            let sugar = self
+                .sugars
+                .get(word)
+                .ok_or_else(|| de::Error::custom(undeclared(word)))?;
             let value = value.as_str().filter(|s| !s.trim().is_empty()).ok_or_else(||
                 de::Error::custom("a declared secret shorthand requires a non-empty text value (value not echoed)"))?;
             let reference = sugar.reference(value);
@@ -498,7 +524,7 @@ mod tests {
         let error = deserialize::<SecretRef, _>(&mut raw, &Sugars::default())
             .unwrap_err()
             .to_string();
-        assert!(error.contains("not declared"));
+        assert!(error.contains("no admitted secret module declares `cabinet`"));
         assert!(!error.contains("not-echoed"));
         let mut sugars = declared("cabinet", "first", "entry");
         assert!(sugars
@@ -526,7 +552,10 @@ mod tests {
         let Err(alone) = serde_json::from_str::<Inner>(r#"{"cabinet":"item"}"#) else {
             panic!("an inner context with no owners refuses on its own");
         };
-        assert!(alone.to_string().contains("not declared"), "{alone}");
+        assert!(
+            alone.to_string().contains("is a secret shorthand"),
+            "{alone}"
+        );
     }
 
     /// No scalar literal at a secret-reference position is ever echoed: every one is refused with

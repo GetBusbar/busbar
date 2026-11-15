@@ -176,6 +176,9 @@ mod config_store_overlay;
 #[path = "admin_application/config_transactions.rs"]
 mod config_transactions;
 
+#[path = "admin_application/apply_audit_tests.rs"]
+mod apply_audit_tests;
+
 #[path = "admin_application/custody_idempotency.rs"]
 mod custody_idempotency;
 
