@@ -10,7 +10,6 @@ use busbar_contract::crypto::testing::rcgen;
 
 use busbar_core_connector::{carrier, compose, framer, hostio};
 
-#[allow(unsafe_code)]
 #[path = "../src/tests/support.rs"]
 mod support;
 
