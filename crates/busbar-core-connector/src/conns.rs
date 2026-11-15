@@ -3790,7 +3790,7 @@ impl Connector {
             declared,
             why,
         )?;
-        let dialled = dialled::Dialled::new(framing, port, pairing, due).begun(began)?;
+        let dialled = dialled::Dialled::new(framing, port, pairing, due).begun(began, now)?;
         Ok(held.dialling(dialled))
     }
 
