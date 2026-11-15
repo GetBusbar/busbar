@@ -72,6 +72,8 @@ fn every_patch_mirrors_every_field_of_its_section() {
         proxy_resolution: _,
         trusted_proxies: _,
         forwarded_header: _,
+        shutdown: _,
+        governance: _,
     } = crate::config::AdvancedCfg::default();
     let _ = AdvancedPatch {
         rate_sweep_interval: Some(rate_sweep_interval),

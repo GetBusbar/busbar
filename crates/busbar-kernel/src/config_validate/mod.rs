@@ -1199,6 +1199,9 @@ fn validate_limits_with(
     use crate::config::{REQUEST_BODY_MAX_BYTES_CEIL, REQUEST_BODY_MAX_BYTES_FLOOR};
 
     validate_limit_ceilings(limits, errors);
+    if let Err(refusals) = limits.drain_settings() {
+        errors.extend(refusals);
+    }
 
     if limits.upstream_request_timeout_secs < 1 {
         errors.push(coded::config_setting_out_of_range("limits.upstream_request_timeout_secs must be >= 1 (0 would time out every upstream call \
@@ -1336,6 +1339,9 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
 
         upstream_http1_only: _,
         upstream_h2_prior_knowledge: _,
+
+        drain_timeout: _,
+        max_pending_checkpoints: _,
     } = limits;
     let secs = [
         (
