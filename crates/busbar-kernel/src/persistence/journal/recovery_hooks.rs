@@ -442,17 +442,6 @@ impl<'a> StoreJournal<'a> {
             .await
     }
 
-    pub(crate) async fn select_verified_with(
-        &self,
-        proof: &VerifiedHead,
-        records: &[Record],
-        selection: Selection,
-        guards: &[Predicate],
-    ) -> Result<WriteResult> {
-        self.change_selection_at(proof, records, None, selection, false, guards)
-            .await
-    }
-
     /// (Production removes through `RuntimeJournal::change_live`; this replaying form stays for
     /// the journal tests.)
     /// Preserve a domain's exact selected-row deletion after audit confirmation;

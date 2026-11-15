@@ -14,10 +14,10 @@ use busbar_contract::crypto::HmacSha256Key;
 use unicode_normalization::UnicodeNormalization;
 
 /// The HKDF label of the account key.
-pub const ACCOUNT_LABEL: &[u8] = b"busbar login-attempts v1";
+const ACCOUNT_LABEL: &[u8] = b"busbar login-attempts v1";
 
 /// The HKDF label of the login-state cookie's MAC key.
-pub const STATE_LABEL: &[u8] = b"busbar login-state v1";
+const STATE_LABEL: &[u8] = b"busbar login-state v1";
 
 /// How many hex characters of the account HMAC name a record (128 bits).
 const FINGERPRINT_HEX: usize = 32;
@@ -42,11 +42,11 @@ impl AccountKeyer {
     }
 
     /// The fingerprint of the account a submitted identifier names: 32 lowercase hex characters of
-    /// the HMAC over its normalised form ([`normalise_account`]).
+    /// the HMAC over its normalised form ([`with_normalised_account`]).
     #[must_use]
     pub fn fingerprint(&self, submitted: &str) -> String {
-        let normalised = normalise_account(submitted);
-        let tag = self.0.sign(normalised.as_bytes());
+        let tag =
+            with_normalised_account(submitted, |normalised| self.0.sign(normalised.as_bytes()));
         let mut hex = hex::encode(tag);
         hex.truncate(FINGERPRINT_HEX);
         hex
@@ -74,8 +74,8 @@ impl StateKey {
 
     /// The tag over `payload`.
     #[must_use]
-    pub fn sign(&self, payload: &[u8]) -> Vec<u8> {
-        self.0.sign(payload).to_vec()
+    pub fn sign(&self, payload: &[u8]) -> [u8; 32] {
+        self.0.sign(payload)
     }
 
     /// Whether `tag` is the tag over `payload` (constant time).
@@ -90,32 +90,61 @@ impl StateKey {
 /// prefix and one `@suffix` stripped. `Alice`, `ＡＬＩＣＥ`, `CORP\alice`, `alice@corp.example` and
 /// `al\u{200B}ice` are one account. Over-merging (`CORP\alice` with `EMEA\alice`) only makes that
 /// bucket stricter, inside busbar; it is accepted and documented.
-#[must_use]
-pub fn normalise_account(raw: &str) -> String {
-    let folded = nfkc_casefold(raw);
-    let collapsed = folded.split_whitespace().collect::<Vec<_>>().join(" ");
+///
+/// `f` is handed the normalised form, spelled in this thread's two reused scratch buffers.
+pub(crate) fn with_normalised_account<R>(raw: &str, f: impl FnOnce(&str) -> R) -> R {
+    thread_local! {
+        static SCRATCH: std::cell::RefCell<(String, String)> =
+            const { std::cell::RefCell::new((String::new(), String::new())) };
+    }
+    SCRATCH.with_borrow_mut(|(first, second)| f(normalise_into(raw, first, second)))
+}
+
+/// The normalised form of `raw` as an owned string (tests).
+#[cfg(test)]
+pub(crate) fn normalise_account(raw: &str) -> String {
+    with_normalised_account(raw, |n| {
+        let mut owned = String::with_capacity(n.len());
+        owned.push_str(n);
+        owned
+    })
+}
+
+/// [`with_normalised_account`]'s steps over two scratch buffers, cleared here: the answer borrows
+/// `second`.
+fn normalise_into<'s>(raw: &str, first: &mut String, second: &'s mut String) -> &'s str {
+    nfkc_casefold(raw, first, second);
+    // `first` holds NFKC_Casefold(raw); collapse its whitespace into `second`.
+    second.clear();
+    for (i, word) in first.split_whitespace().enumerate() {
+        if i > 0 {
+            second.push(' ');
+        }
+        second.push_str(word);
+    }
+    let collapsed = second.as_str();
     let without_domain = match collapsed.split_once('\\') {
         Some((_, rest)) => rest,
-        None => collapsed.as_str(),
+        None => collapsed,
     };
     let account = match without_domain.rsplit_once('@') {
         Some((name, _)) => name,
         None => without_domain,
     };
-    account.trim().to_string()
+    account.trim()
 }
 
-/// `NFKC_Casefold` (UAX #44): drop default-ignorable code points, NFKC, full case fold, NFKC.
-fn nfkc_casefold(raw: &str) -> String {
-    let kept: String = raw.chars().filter(|c| !is_default_ignorable(*c)).collect();
-    let mut folded = String::with_capacity(kept.len());
-    for c in kept.nfkc() {
-        full_case_fold(c, &mut folded);
+/// `NFKC_Casefold` (UAX #44) of `raw` into `out`: drop default-ignorable code points, NFKC, full
+/// case fold, NFKC. `scratch` holds the fold between the two passes.
+fn nfkc_casefold(raw: &str, out: &mut String, scratch: &mut String) {
+    out.clear();
+    out.extend(raw.chars().filter(|c| !is_default_ignorable(*c)));
+    scratch.clear();
+    for c in out.nfkc() {
+        full_case_fold(c, scratch);
     }
-    folded
-        .nfkc()
-        .filter(|c| !is_default_ignorable(*c))
-        .collect()
+    out.clear();
+    out.extend(scratch.nfkc().filter(|c| !is_default_ignorable(*c)));
 }
 
 /// Full case folding (`CaseFolding.txt` status C + F): lower-casing, except where the fold differs

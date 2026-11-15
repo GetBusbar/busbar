@@ -80,9 +80,11 @@ fn answer(calls: &dyn SecretCalls) -> String {
     .unwrap()
 }
 
+type CodeRecord = (u16, tracing::Level, Vec<(&'static str, String)>);
+
 #[derive(Default)]
 struct Captured {
-    codes: Mutex<Vec<(u16, tracing::Level, Vec<(&'static str, String)>)>>,
+    codes: Mutex<Vec<CodeRecord>>,
     infos: AtomicUsize,
     audits: Mutex<Vec<(String, String, &'static str)>>,
 }

@@ -10,6 +10,8 @@ use busbar_contract::auth_calls::{
     AuthCalls, Replay, Strip, Verified, VerifyAnswer, VerifyRequest,
 };
 
+use crate::off_path::operator::config_text;
+
 /// A linked auth row: the key configuration names it by (and the auth catalog, `/info` and every
 pub type LinkedAuth = (&'static str, &'static str, AuthDoor);
 /// The door a linked auth row is opened through (`abi::auth`, one dispatcher).
@@ -29,17 +31,11 @@ pub struct OperatorWords {
 
 /// The auth rows this build LINKS (the composition root's, or a test binary's) and the operator
 /// credential's words, with the rows' names listed once at install so a reader borrows them.
-static LINKED: std::sync::OnceLock<(&[LinkedAuth], OperatorWords, Vec<&'static str>)> =
+pub(crate) static LINKED: std::sync::OnceLock<(&[LinkedAuth], OperatorWords, Vec<&'static str>)> =
     std::sync::OnceLock::new();
 
-/// Install this build's linked auth rows and the operator credential's words.
-pub fn install_linked(rows: &'static [LinkedAuth], words: OperatorWords) {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the linked auth rows' names are listed once, when the build installs its rows"
-    )]
-    let _ = LINKED.get_or_init(|| (rows, words, rows.iter().map(|r| r.0).collect()));
-}
+// Installed once, when the build starts: off the request path.
+pub use crate::off_path::operator::install_linked;
 
 #[cfg(any(test, feature = "test-support"))]
 static TEST_WORDS: std::sync::OnceLock<OperatorWords> = std::sync::OnceLock::new();
@@ -162,18 +158,6 @@ pub fn migrated_token(op: &str) -> String {
     config_text(format_args!(
         "governance.admin_token -> auth.admin_auth: [ {op}: {{ token: <secret-ref> }} ]"
     ))
-}
-
-/// The one place the operator credential's refusal and migration text is spelled into a `String`:
-/// configuration checking and migration, at boot or on an admin edit, never a request.
-#[cold]
-fn config_text(text: std::fmt::Arguments<'_>) -> String {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the operator credential's refusal and migration text is spelled once, when configuration is checked or migrated"
-    )]
-    let spelled = std::fmt::format(text);
-    spelled
 }
 
 /// What the operator credential answered one request: a verdict — identified, a bad credential
@@ -306,15 +290,11 @@ pub struct Operator {
 }
 
 impl Operator {
-    /// The operator credential of the operator provider `op`, answering for `op` referenced bare,
-    pub fn new(op: &str) -> Self {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the operator provider's name is copied once, when the admin chain is built"
-        )]
-        let names = std::iter::once(op.to_owned()).collect();
+    /// An operator credential from its parts, as building the admin chain made them (see
+    /// `Operator::new` and `Operator::open`, which run once, when the admin chain is built).
+    pub(crate) fn from_parts(cred: OperatorCredential, names: foldhash::HashSet<String>) -> Self {
         Self {
-            cred: OperatorCredential::Unanswered,
+            cred,
             names,
             carriers: Vec::new(),
         }
@@ -328,34 +308,6 @@ impl Operator {
         is_op: &dyn Fn(&str) -> bool,
     ) -> bool {
         module.map_or(name == op, is_op)
-    }
-
-    /// The operator credential of `op`, opened as [`OperatorCredential::open`] opens it, answering for
-    pub fn open<'a>(
-        op: &str,
-        defs: impl Iterator<Item = (&'a str, &'a str)> + Clone,
-        is_op: &dyn Fn(&str) -> bool,
-        answered: bool,
-        digest: Option<String>,
-        open: impl FnOnce(String) -> Result<Arc<dyn AuthCalls>, String>,
-    ) -> Result<Self, String> {
-        let lookup = defs.clone();
-        let module_of = |name: &str| lookup.clone().find(|d| d.0 == name).map(|d| d.1);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the provider names backed by the operator credential are copied once, when the admin chain is built"
-        )]
-        let names = std::iter::once(op)
-            .chain(defs.map(|d| d.0))
-            .filter(|name| Self::backed(op, name, module_of(name), is_op))
-            .map(str::to_owned)
-            .collect();
-        let cred = OperatorCredential::open(answered, digest, open)?;
-        Ok(Self {
-            cred,
-            names,
-            carriers: Vec::new(),
-        })
     }
 
     /// This operator credential, its row stating `carriers` (its Statement's carrier marks, in

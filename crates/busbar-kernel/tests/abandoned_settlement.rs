@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-mod common;
+mod common {
+    pub mod never;
+    pub mod principal;
+    pub mod test_door;
+    pub mod units;
+}
 
 use std::future::Future;
 use std::sync::atomic::AtomicBool;
@@ -13,7 +18,10 @@ use busbar_kernel::inflight::{arrival_hold, Enter, InFlight};
 use busbar_kernel::slice::ConcurrencyGauge;
 use busbar_kernel::teller::{run_unit, run_unit_async, AccrualMeter, Ended, Evidence, Kernel, Run};
 
-use common::{ctx, principal, NeverRoutes, TestDoor, TestUnits};
+use common::never::NeverRoutes;
+use common::principal::principal;
+use common::test_door::TestDoor;
+use common::units::{ctx, TestUnits};
 
 type Figures = (usize, u64);
 
@@ -37,7 +45,7 @@ fn one_unit(went_away: bool) -> Figures {
             reported: Some(900),
             ..Evidence::default()
         },
-        ..TestUnits::default()
+        ..TestUnits::passing()
     };
     let table = InFlight::new(4);
     let key = UnitKey::new(1);
@@ -71,6 +79,7 @@ fn one_unit(went_away: bool) -> Figures {
         let route = NeverRoutes {
             units: &units,
             dropped: &dropped,
+            abandoned: Default::default(),
         };
         let unit = ctx(1);
         {
@@ -79,7 +88,7 @@ fn one_unit(went_away: bool) -> Figures {
             assert!(running.as_mut().poll(&mut cx).is_pending());
         }
 
-        let handed: Vec<Ended> = std::mem::take(&mut *units.abandoned.lock().unwrap());
+        let handed: Vec<Ended> = std::mem::take(&mut *route.abandoned.lock().unwrap());
         for ended in handed {
             post(&mut books, ended);
         }

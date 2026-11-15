@@ -102,11 +102,7 @@ impl RequestCtx {
     /// Mark a pool as routed through, for the spill loop guard.
     pub fn mark_pool_visited(&mut self, pool: &str) {
         if !self.visited_pools.contains(pool) {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a pool is marked visited only when the walk exhausts it or spills from it"
-            )]
-            self.visited_pools.insert(pool.to_string());
+            self.visited_pools.insert(crate::cold::visited_pool(pool));
         }
     }
 
