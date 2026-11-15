@@ -1091,3 +1091,31 @@ async fn the_stop_flag_during_a_close_records_it_once_and_leaves_the_rest() {
         assert_eq!(records_for(&records, *writer), 1, "one record each");
     }
 }
+
+/// #258 (2): a writer that rolled its execution epoch once (`retired_through = 1`,
+/// `admitted_through = 2`) and then died never retired: its row still has a live epoch. "Never
+/// retired" is a property of the row's window, not of the dataset's writer epoch, so F5 closes it
+/// and offers its `shutdown.drain_incomplete` record exactly once.
+#[tokio::test]
+async fn a_writer_that_rolled_its_epoch_and_died_is_recorded_as_never_retired() {
+    let store = Store::new();
+    let fence = PredecessorFence::new(attach(&store, OWN).await, "f5-host").unwrap();
+    let writer = writer_id();
+    store.open_writer(writer, 100_000, "host-rolled", 61);
+    let rolled = control::Writer {
+        retired_through: 1,
+        admitted_through: 2,
+    };
+    store.put(control_address(writer), rolled.encode().unwrap().to_vec());
+    store.now.store(1_000, Ordering::SeqCst);
+    let (_stop_tx, stop) = stop_flag();
+    let pass = fence.run(stop).await;
+    assert_eq!(pass.closed, 1, "{pass:?}");
+    assert_eq!(store.control(writer), Some(CLOSED));
+    assert!(store.lease(writer).is_none());
+    assert!(
+        fence.retirements.take_closed_open(EPOCH, writer),
+        "an open writer's close"
+    );
+    assert_offered_once(writer);
+}
