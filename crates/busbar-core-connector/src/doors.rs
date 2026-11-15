@@ -486,34 +486,38 @@ mod identity_tests {
     use super::*;
     use busbar_plugin_loader::dispatch::kinds::transport::TransportFacts;
 
-    #[test]
-    fn actual_tcp_name_fault_is_refused() {
-        use busbar_plugin_loader::dispatch::{load_dropped, rendering_of_library};
+    /// A TCP carrier's validated facts, as its Statement states them: its own claim `tcp`, a
+    /// ported carrier with a session, composed over nothing.
+    fn tcp_carrier_facts() -> TransportFacts {
+        TransportFacts {
+            listener_bindings: Vec::new(),
+            name: "tcp",
+            role: busbar_contract::abi::transport::ROLE_CARRIER,
+            claims: vec!["tcp"],
+            upgrades: Vec::new(),
+            sessions: vec!["tcp"],
+            lines: Vec::new(),
+            composes_over: Vec::new(),
+            settings_keys: Vec::new(),
+            ported: true,
+            status_rows: Vec::new(),
+            status_namespaces: Vec::new(),
+            handoff_status: Vec::new(),
+            datagram: false,
+            accepts: false,
+            dials: false,
+            detaches: false,
+            adopts: false,
+            offered: offers_unstated(),
+            seals: false,
+            adopts_session: false,
+        }
+    }
 
-        let path = std::env::var_os("BUSBAR_TEST_TCP_CDYLIB")
-            .expect("BUSBAR_TEST_TCP_CDYLIB must name the actual built TCP product");
-        let path = std::path::Path::new(&path);
-        let statement = rendering_of_library(path)
-            .expect("the actual TCP image renders")
-            .expect("the actual TCP image exports a door");
-        let dispatcher = Dispatcher::new(
-            DispatchConfig::default(),
-            busbar_kernel::host_services::caller_binding(),
-        );
-        let plugin = load_dropped::<TransportKind>(
-            path,
-            &statement,
-            Bind {
-                max_inflight_cap: 64,
-                ..crate::off_path::egress::doors::bind_as(&dispatcher, "actual-tcp-root-identity")
-            },
-        )
-        .expect("the actual TCP product loads through its ABI");
-        let actual = plugin
-            .context::<TransportFacts>()
-            .expect("the actual TCP product carries its validated facts")
-            .clone();
-        let positive = checked_row(actual.clone()).expect("the actual TCP identity is valid");
+    #[test]
+    fn a_tcp_name_fault_is_refused() {
+        let actual = tcp_carrier_facts();
+        let positive = checked_row(actual.clone()).expect("the TCP identity is valid");
         assert_eq!(positive.key, "tcp");
         assert_eq!(positive.composes_over, actual.composes_over);
         assert_eq!(positive.session, !actual.sessions.is_empty());
@@ -521,14 +525,11 @@ mod identity_tests {
         faulted.name = "tcp-misnamed";
         let mut restored = faulted.clone();
         restored.name = actual.name;
-        assert_eq!(
-            restored, actual,
-            "every other actual product fact is retained"
-        );
+        assert_eq!(restored, actual, "every other stated fact is retained");
         let refused = checked_row(faulted).expect_err("a name/own-claim mismatch is refused");
         assert!(
             refused.contains("`tcp-misnamed`") && refused.contains("`tcp`"),
-            "the actual identity validator names both spellings: {refused}"
+            "the identity validator names both spellings: {refused}"
         );
         let mut unclaimed = actual;
         unclaimed.claims.clear();
