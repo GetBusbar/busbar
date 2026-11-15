@@ -217,7 +217,7 @@ fn egress_over(conns: Arc<dyn PollConns>, port: u16) -> Egress {
         clock: Arc::new(Wall),
         journal: Arc::new(Quiet),
         telemetry: Arc::new(Quiet),
-        pools: HashMap::from([(
+        pools: foldhash::HashMap::from_iter([(
             POOL.to_owned(),
             Pool {
                 name: POOL.to_owned(),
