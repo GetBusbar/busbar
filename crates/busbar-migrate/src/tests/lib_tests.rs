@@ -210,3 +210,160 @@ fn the_rewritten_config_keeps_the_source_mode() {
         assert_eq!(backup_mode, mode, "config.yaml.1.5.5");
     }
 }
+
+/// (q) two gateways race on one directory: both plan the same 1.5.5 file; A's write holds the lock
+/// (paused inside its re-run's strict parse) while B waits on it. A stamps; B, holding the lock
+/// after it, re-reads the stamp and answers StampedByPeer (the seam then re-executes onto it).
+/// config.yaml is stamped once and the backup holds the 1.5.5 bytes.
+#[test]
+fn two_gateways_race_and_the_second_finds_the_peer_stamp() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let scratch = Scratch::new();
+    let path = scratch.deployment(CONFIG_1_5_5);
+    let facts = facts();
+    let inputs = Inputs::new(&path, &facts, &accept);
+    let (plan_a, plan_b) = (plan(&inputs).unwrap(), plan(&inputs).unwrap());
+    let (inside, paused) = mpsc::channel::<()>();
+    let (resume, go) = mpsc::channel::<()>();
+    std::thread::scope(|scope| {
+        let plan_a = &plan_a;
+        let a = scope.spawn(move || {
+            let pause = |_: &str, _: Option<&str>| -> Result<(), String> {
+                inside.send(()).expect("A reports it holds the lock");
+                go.recv().expect("A is resumed");
+                Ok(())
+            };
+            write(plan_a, &pause)
+        });
+        paused.recv().expect("A holds the lock, paused");
+        let b = scope.spawn(|| write(&plan_b, &accept));
+        std::thread::sleep(Duration::from_millis(600));
+        assert!(!b.is_finished(), "B waits on the lock while A holds it");
+        resume.send(()).expect("resume A");
+        assert_eq!(a.join().expect("A"), Ok(Written::Stamped));
+        assert_eq!(b.join().expect("B"), Ok(Written::StampedByPeer));
+    });
+    let stamped = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(stamped, patch::stamp(CONFIG_1_5_5, CONFIG_FORMAT).unwrap());
+    assert_eq!(stamped.matches("config_version").count(), 1);
+    assert_eq!(
+        std::fs::read_to_string(backup_path(&path)).unwrap(),
+        CONFIG_1_5_5
+    );
+    assert_eq!(
+        scratch.names(),
+        [
+            "busbar-overlay.json",
+            "config.yaml",
+            "config.yaml.1.5.5",
+            "config.yaml.busbar-lock",
+            "providers.yaml"
+        ]
+    );
+}
+
+/// §3 step 2: the boot reads the planned config.yaml in place of the file, and only that file.
+#[test]
+fn the_plan_holds_the_planned_config_for_its_own_path_only() {
+    let scratch = Scratch::new();
+    let path = scratch.deployment(CONFIG_1_5_5);
+    let plan = plan(&Inputs::new(&path, &facts(), &accept)).unwrap();
+    assert_eq!(plan.held(&path), Some(plan.planned()));
+    assert_eq!(read_version(plan.held(&path).unwrap()), Ok(CONFIG_FORMAT));
+    assert_eq!(plan.held(&scratch.dir().join("providers.yaml")), None);
+    assert_eq!(plan.held(&backup_path(&path)), None);
+}
+
+/// (sz2) in this crate: `plan` and `write` each count one entry, and nothing else is entered.
+#[test]
+fn plan_and_write_are_entered_once_each() {
+    let scratch = Scratch::new();
+    let path = scratch.deployment(CONFIG_1_5_5);
+    let before = counted::entries();
+    let plan = plan(&Inputs::new(&path, &facts(), &accept)).unwrap();
+    assert_eq!(write(&plan, &accept), Ok(Written::Stamped));
+    let after = counted::entries();
+    assert_eq!(after.plan - before.plan, 1);
+    assert_eq!(after.write - before.write, 1);
+    assert_eq!(after.probe, before.probe);
+    assert_eq!(after.write_back, before.write_back);
+    assert_eq!(after.other, before.other);
+}
+
+/// The stamped document a 1.6.0 config.yaml is, as 5W finds it.
+const STAMPED: &str = "\
+config_version: 1
+# production gateway
+listen: 0.0.0.0:8080
+store:
+  module: sqlite
+  settings: {path: /var/lib/busbar/busbar.db}   # 1.5.5 key
+";
+
+/// A settled bag as the plugin's open returned it, filed by the patch writer: here one span.
+fn settle(text: &str) -> Result<String, Refusal> {
+    Ok(text.replacen(
+        "{path: /var/lib/busbar/busbar.db}   # 1.5.5 key",
+        "{db_path: /var/lib/busbar/busbar.db}   # 1.5.5 key",
+        1,
+    ))
+}
+
+/// 5W: the settled bag is written back in place, under the lock, keeping config.yaml's mode; the
+/// stamp is unchanged and no backup is made.
+#[test]
+fn a_settled_bag_is_written_back_on_a_stamped_boot() {
+    let scratch = Scratch::new();
+    let path = scratch.config(STAMPED);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+    let seen = digest(STAMPED);
+    assert_eq!(write_back(&path, &seen, &settle), Ok(WroteBack::Written));
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        settle(STAMPED).unwrap()
+    );
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(mode, 0o640);
+    assert_eq!(scratch.names(), ["config.yaml", "config.yaml.busbar-lock"]);
+}
+
+/// 5W: config.yaml changed since step 1 read it (an operator edit): nothing is written.
+#[test]
+fn a_write_back_onto_changed_bytes_writes_nothing() {
+    let scratch = Scratch::new();
+    let path = scratch.config(STAMPED);
+    let seen = digest(STAMPED);
+    let edited = format!("{STAMPED}groups: {{}}\n");
+    std::fs::write(&path, &edited).unwrap();
+    assert_eq!(write_back(&path, &seen, &settle), Ok(WroteBack::Changed));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
+}
+
+/// 5W: equal bytes are not written (the file is the same inode).
+#[test]
+fn an_unchanged_write_back_writes_nothing() {
+    use std::os::unix::fs::MetadataExt;
+    let scratch = Scratch::new();
+    let path = scratch.config(STAMPED);
+    let inode = std::fs::metadata(&path).unwrap().ino();
+    let same = |text: &str| -> Result<String, Refusal> { Ok(text.to_owned()) };
+    assert_eq!(
+        write_back(&path, &digest(STAMPED), &same),
+        Ok(WroteBack::Unchanged)
+    );
+    assert_eq!(std::fs::metadata(&path).unwrap().ino(), inode);
+}
+
+/// 5W never drops or changes the stamp: such an edit is refused and nothing is written.
+#[test]
+fn a_write_back_that_loses_the_stamp_is_refused() {
+    let scratch = Scratch::new();
+    let path = scratch.config(STAMPED);
+    let unstamp =
+        |text: &str| -> Result<String, Refusal> { Ok(text.replacen("config_version: 1\n", "", 1)) };
+    let refused = write_back(&path, &digest(STAMPED), &unstamp).unwrap_err();
+    assert_eq!(refused.word(), "CONFIG");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), STAMPED);
+}

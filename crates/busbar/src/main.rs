@@ -1404,6 +1404,37 @@ async fn run(
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     };
+    // Migrate-on-boot step 5 (MIGRATE-ON-BOOT r42 §3): every instance has opened, and nothing
+    // serves or produces yet. An upgraded config.yaml is written in place now. The boot then closes
+    // every instance it owns (the App and each instance it opened, the core store and its
+    // admission, the node book and its lease task, the startup upgrade's holders), so no instance's
+    // descriptor reaches the new image, and re-executes onto the stamped file. A stamped boot
+    // passes straight through, with every owner kept as before.
+    if let Some(written) = root::migrate::finish()
+        .await
+        .unwrap_or_else(|error| die(error))
+    {
+        let owners = (
+            ready,
+            continuation,
+            upgrade,
+            publication,
+            completion,
+            prepared,
+            _boot_store_binding,
+        );
+        die(root::migrate::restart(
+            written,
+            owners,
+            |owners| {
+                if let Some(task) = owners.0.node_lease_task.as_ref() {
+                    task.abort();
+                }
+                drop(owners);
+            },
+            root::migrate::reexec,
+        ));
+    }
     let root::startup_upgrade::continuation::ReadyCandidate {
         startup: store_admission,
         app,
@@ -1626,9 +1657,6 @@ async fn run(
         )));
     }
 
-    // Migrate-on-boot step 5: every instance has opened; an upgraded config.yaml is written in
-    // place now, before any listener serves, and the process re-executes onto it.
-    root::migrate::finish().unwrap_or_else(|error| die(error));
     let _ = root::inbound::install(root::doors::dispatcher());
     if listener_plan.has_root_listener() {
         let app = app_handle.load();

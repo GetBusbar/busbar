@@ -40,6 +40,16 @@ pub fn exit(code: i32) -> ! {
     std::process::exit(code);
 }
 
+/// Before the migrate-on-boot seam re-executes this process onto the upgraded config.yaml
+/// (MIGRATE-ON-BOOT r42 §3 step 5): an exec leaves this image on purpose, so an armed first start
+/// is handed over exactly as [`exit`] hands it over, and the new image takes over at once instead
+/// of waiting out the stall window.
+pub(crate) fn hand_over_before_exec() {
+    if let Some(first_start) = FIRST_START.get() {
+        hand_over(first_start);
+    }
+}
+
 /// The first statement of `run`: until the listener's own handler owns signals, SIGTERM, SIGINT
 /// and a console close exit through [`exit`] (status 143), so an armed owner hands over. Send on
 /// the returned handoff (or drop it) once the listener's handler is installed.

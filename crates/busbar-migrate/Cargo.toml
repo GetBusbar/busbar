@@ -23,3 +23,9 @@ zeroize = { workspace = true }
 
 [lints]
 workspace = true
+
+# `counted`: the test-build call counter (MIGRATE-ON-BOOT §9 C1 (sz2)). The gateway's tests turn it
+# on through their dev-dependency to assert that a stamped boot enters no function of this crate
+# and an unstamped one plans and writes once. Off in every shipped build.
+[features]
+counted = []
