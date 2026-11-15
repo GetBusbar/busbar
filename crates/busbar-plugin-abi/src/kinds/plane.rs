@@ -815,6 +815,59 @@ pub mod plane {
         pub verdict: u32,
     }
 
+    // W1-A10: `kind!` (W1-A4) writes `impl Pod` for each struct of its `pods {}` block (records.rs `Pod` note).
+    // Until this block is a `kind!` invocation they are written out here, one per pod, so the encoders and
+    // decoders of plugin-loader `encode/plane.rs` (IF §8.8) can read and write them; the conversion drops them.
+    impl crate::records::Pod for Respond {}
+    impl crate::records::Pod for Forward {}
+    impl crate::records::Pod for RouteRec {}
+    impl crate::records::Pod for RouteHeaderRec {}
+    impl crate::records::Pod for UpCarrier {}
+    impl crate::records::Pod for UpNew {}
+    impl crate::records::Pod for MsgRec {}
+    impl crate::records::Pod for ExMsg {}
+    impl crate::records::Pod for LookupRec {}
+    impl crate::records::Pod for ChainState {}
+    impl crate::records::Pod for LookupHit {}
+    impl crate::records::Pod for StoreRec {}
+    impl crate::records::Pod for PushRec {}
+    impl crate::records::Pod for WakeAt {}
+    impl crate::records::Pod for RefusalRec {}
+    impl crate::records::Pod for UsageRec {}
+    impl crate::records::Pod for UsageClassRec {}
+    impl crate::records::Pod for DaFamilyRec {}
+    impl crate::records::Pod for AttemptRec {}
+    impl crate::records::Pod for AuditRec {}
+    impl crate::records::Pod for ObsScopeRec {}
+    impl crate::records::Pod for ObsScopeAns {}
+    impl crate::records::Pod for ObserveRec {}
+    impl crate::records::Pod for ObsReceipt {}
+    impl crate::records::Pod for EntitleRec {}
+    impl crate::records::Pod for EntitleAns {}
+    impl crate::records::Pod for RendezvousRec {}
+    impl crate::records::Pod for MintRec {}
+    impl crate::records::Pod for MintedRec {}
+    impl crate::records::Pod for SignRec {}
+    impl crate::records::Pod for SignedRec {}
+    impl crate::records::Pod for ConnectRec {}
+    impl crate::records::Pod for ConnectAns {}
+    impl crate::records::Pod for DetachRec {}
+    impl crate::records::Pod for SignalRec {}
+    impl crate::records::Pod for CommitRec {}
+    impl crate::records::Pod for CommittedRec {}
+    impl crate::records::Pod for SightRec {}
+    impl crate::records::Pod for TrustRec {}
+    impl crate::records::Pod for TrustAns {}
+    impl crate::records::Pod for TrustItemState {}
+    impl crate::records::Pod for ChanRec {}
+    impl crate::records::Pod for ChanAttach {}
+    impl crate::records::Pod for DemuxRec {}
+    impl crate::records::Pod for EmitRec {}
+    impl crate::records::Pod for WorkRec {}
+    impl crate::records::Pod for WorkAns {}
+    impl crate::records::Pod for JudgeRec {}
+    impl crate::records::Pod for JudgeAns {}
+
     pub mod tag {
         /// to client: RESPOND (head; followed by PAIR* headers), BODY* (byte stream) or MSG* (framed), END.
         pub const RESPOND: u16 = 0x0100;
