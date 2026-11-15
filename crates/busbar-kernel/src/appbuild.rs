@@ -125,6 +125,21 @@ pub struct LoadedConfig {
     pub operator_reference: config::OperatorFileDefs,
 }
 
+impl LoadedConfig {
+    /// A disk rebuild's candidate (`POST /config/reload`, `POST /plugins/reload`,
+    /// `POST /plugins/rollback`): the overlay's root applied to config.yaml's deploy, then resolved.
+    /// The caller merges the overlay's named maps after it records the base names.
+    #[cold]
+    #[inline(never)]
+    pub fn disk_candidate(&mut self) -> Result<config::RootCfg, String> {
+        if let Some(doc) = self.overlay_doc.as_ref() {
+            config::overlay::apply_root_to_deploy(&mut self.deploy, doc);
+        }
+        config::resolve(&self.deploy, &self.defs)
+            .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))
+    }
+}
+
 #[cold]
 #[inline(never)]
 pub fn load_config_from_disk(
