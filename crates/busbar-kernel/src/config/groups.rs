@@ -612,7 +612,9 @@ impl<'de> Deserialize<'de> for LimitCfg {
             }
         }
 
-        deserializer.deserialize_map(LimitVisitor)
+        // `deserialize_any`, not `deserialize_map`: a non-map value reaches the visitor, whose refusal
+        // names the limit grammar (1.5.5's expecting line), not the YAML library's own wording.
+        deserializer.deserialize_any(LimitVisitor)
     }
 }
 
