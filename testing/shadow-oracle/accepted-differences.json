@@ -6794,6 +6794,47 @@
         "status": 401
       },
       "rationale": "Owner signed 2026-11-13 (design self-mint-holds, P1-P4): no self-serve sign-in or Refresh undoes an administrator's action on a self-serve key, and revoked is terminal. CELLS (1.5.5 golden -> 1.6.0 candidate): auth.lifecycle|self-serve-disable-then-login (200, same key, the pre-disable token answers 200 again -> 403 BUSBAR-4043 'an administrator disabled it', the pre-disable token answers 401); |self-serve-revoke-then-login (200 with a dead token -> 403 BUSBAR-4043 'an administrator revoked it'); |self-serve-rotate-then-refresh (the pre-rotate token answers 200 again -> 200 at a new key_id, the pre-rotate token answers 401); |self-serve-regroup-then-login (group moved back to user:<sub> -> the admin's group kept); |self-serve-second-provider (200, provider A's key -> 403 BUSBAR-4043 'it was issued through a different sign-in provider'). BYTES MOVED: status and body of the post-action login, the old token's status and the key readback only. The control cell auth.lifecycle|self-serve-delete-then-login (delete is the reset) is NOT forgiven: it must replay identical. expected_cells is 0 until the cells are recorded from the published 1.5.5 binary (the 1.5.5-era auth-oidc v1.0.6 fetches its JWKS over HTTPS only, which the capture mock serves only for its MCP cells; the Rust cells in crates/busbar-kernel/src/auth/tests/self_keys_tests.rs and governance/tests/tests.rs are the record until then). The Rust 1.5.5-parity cells a_login_after_an_admin_disable_mints_as_1_5_5_minted and a_second_provider_asserting_the_same_subject_is_handed_its_key_as_1_5_5_did are removed under the same signature."
+      },
+      {
+      "id": "D316-3 GET /v1/models/<model> retrieves a model instead of 405",
+      "kind": "breaking",
+      "changelog": "**`GET /v1/models/<model>` retrieves a model.** 1.5.5 answered every `GET /v1/models/<model>` with 405, although OpenAI clients call it to look a model up. It now answers the OpenAI model object (the same object `GET /v1/models` lists) for a model in the caller's visible catalog, and a 404 `model_not_found` that names nothing hidden for any other name. `GET /v1/models` is unchanged.",
+      "by": "owner (Matthew Jackson), decision 316 (3) 2026-11-14",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-11-14",
+        "ruling": "owner decision 316 (3) 2026-11-14: serve GET /v1/models/<id>; the 1.5.5 405 was a bug that 1.6.0 fixes"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^ops\\.scrape\\|v1modelsid\\|retrieve$",
+      "expected_cells": 1,
+      "classes": [
+        "status",
+        "body",
+        "headers"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "ops.scrape|v1modelsid|retrieve",
+            "status": 200
+          },
+          {
+            "cell": "ops.scrape|v1modelsid|retrieve",
+            "pointer": "/object",
+            "equals": "model"
+          },
+          {
+            "cell": "ops.scrape|v1modelsid|retrieve",
+            "pointer": "/id",
+            "equals": "m-openai-chat"
+          }
+        ]
+      },
+      "rationale": "Owner decision 316 (3), 2026-11-14: serve GET /v1/models/<id>; the 1.5.5 405 was a bug that 1.6.0 fixes. CELL: ops.scrape|v1modelsid|retrieve (GET /v1/models/m-openai-chat on the data listener). BYTES MOVED (golden -> candidate): status 405 -> 200; body, the method-not-allowed error -> the OpenAI model object GET /v1/models already lists for that name; headers, content-length. The route is a busbar-plane-llm catalog claim; a name outside the caller-visible catalog answers 404 model_not_found. REGISTERED `breaking`, NOT `improvement`, only because the differ accepts the `status` class on no other kind; in substance an improvement, presented under Improvements. SCOPE: exactly this one cell."
     }
   ]
 }
