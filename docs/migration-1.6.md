@@ -124,8 +124,8 @@ does not. With `config.yaml` at the default `/etc/busbar/config.yaml` nothing ch
 mounted it elsewhere, set `BUSBAR_PROVIDERS` for the first boot or put `providers.yaml` beside it.
 
 `BUSBAR_CONFIG_OVERLAY` selects old file-overlay migration input only; serving never reads it.
-The old `config.overlay` file/boolean field is refused by `--validate` (the current reader); serving
-normalizes it at startup. One-time migration removes that field while preserving `config.locked`;
+The old `config.overlay` file/boolean field is refused by `--validate` (the current reader), which
+names it as retired and gives the migration commands; serving normalizes it at startup. One-time migration removes that field while preserving `config.locked`;
 use `locked: true` to keep an immutable/GitOps deployment. 1.6 runtime configuration is persisted
 through Store. Follow the [overlay import instructions](migration-overlay-1.6.md) before serving
 old state: serving refuses to start while the overlay file 1.5.5 would have read still holds
@@ -186,6 +186,13 @@ needs to allow for the longer one.
 Hook configuration and admin writes use one canonical spelling. Convert existing configuration
 once and update clients that submit or read retired fields.
 
+- **`config.overlay` is retired.** 1.6.0 keeps admin-API config changes in the configured Store,
+  not in an overlay file, so `config:` accepts only `locked`. `busbar --migrate-config` and the
+  first 1.6.0 boot remove `overlay: false` and `overlay: { file: <path> }` and keep
+  `config.locked`. Import the old file into the Store once with
+  `busbar --config <new-config.yaml> --migrate-overlay <old-config.yaml>`
+  ([overlay import](migration-overlay-1.6.md)). Where the selector is still present and nothing
+  migrates it (`--validate`, a reload), it is refused with that instruction.
 - **Hook `plugin:` → `module:`.** Current configuration and `POST`/`PUT /api/v1/admin/hooks`
   bodies require `module:`. `busbar --migrate-config` rewrites old YAML; explicit legacy overlay
   import converts the old persisted field before committing it to the Store.
