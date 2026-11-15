@@ -2860,3 +2860,28 @@ fn configure_reads_each_number_token_as_the_typed_parser_reads_it() {
     );
     closed::<OpenIntegers>(p);
 }
+
+/// A hook declared through `hook_door!` reports the `former_names` it names.
+mod named {
+    use crate::abi::sdk::hook::{Hook, HookOpen};
+    struct Quiet;
+    impl Hook for Quiet {}
+    struct Open;
+    impl HookOpen for Open {
+        fn open(_: &str) -> Result<Box<dyn Hook>, String> {
+            Ok(Box::new(Quiet))
+        }
+    }
+    crate::hook_door! {
+        open: Open,
+        statement: crate::abi::sdk::hook::statement_with_tail(
+            crate::abi::sdk::door::statement("quiet-hook", "1.0.0", 64),
+            &crate::abi::sdk::hook::tail(crate::abi::hook::CLASS_GATE, 0, 0),
+        ),
+        former_names: &["quiet-hook-1-5-5"],
+    }
+    #[test]
+    fn hook_door_declares_former_names() {
+        assert_eq!(MACRO_DOOR.former_names(), &["quiet-hook-1-5-5"]);
+    }
+}
