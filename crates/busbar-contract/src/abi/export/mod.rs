@@ -215,6 +215,10 @@ pub enum ExportStream {
     Prompts = 7,
     /// Response content. Highest sensitivity.
     Completions = 8,
+    /// Request and response content as chunked lines, one stream (IF r33 section 49). Highest
+    /// sensitivity. 7 and 8 stay reserved for `prompts` and `completions`, which are never produced.
+    /// No producer exists in 1.6.0, so a `content` subscription is refused at config load.
+    Content = 9,
 }
 
 impl ExportStream {
@@ -229,6 +233,7 @@ impl ExportStream {
         ExportStream::Identity,
         ExportStream::Prompts,
         ExportStream::Completions,
+        ExportStream::Content,
     ];
 
     /// The stable snake_case wire/config token for this stream — the SAME spelling serde emits.
@@ -244,6 +249,7 @@ impl ExportStream {
             ExportStream::Identity => "identity",
             ExportStream::Prompts => "prompts",
             ExportStream::Completions => "completions",
+            ExportStream::Content => "content",
         }
     }
 
@@ -338,6 +344,13 @@ impl ExportStream {
                 F::Content,
                 F::FinishReason,
             ],
+            ExportStream::Content => &[
+                F::CorrelationId,
+                F::Ts,
+                F::DeploymentId,
+                F::NodeId,
+                F::ContentRef,
+            ],
         }
     }
 
@@ -357,6 +370,8 @@ impl ExportStream {
             ExportStream::Traces => &[F::TraceId, F::SpanId],
 
             ExportStream::Events => &[F::Seq, F::Ts, F::PrevHash],
+
+            ExportStream::Content => &[F::CorrelationId, F::DeploymentId, F::NodeId],
         }
     }
 }
@@ -453,6 +468,12 @@ pub enum ExportField {
     Content,
     /// The completion finish reason.
     FinishReason,
+    /// The deployment the line came from.
+    DeploymentId,
+    /// The node the line came from.
+    NodeId,
+    /// The read-time reference to the content a line carries.
+    ContentRef,
 }
 
 impl ExportField {
@@ -498,6 +519,9 @@ impl ExportField {
         ExportField::Messages,
         ExportField::Content,
         ExportField::FinishReason,
+        ExportField::DeploymentId,
+        ExportField::NodeId,
+        ExportField::ContentRef,
     ];
 
     /// The stable snake_case wire/config token for this field — the SAME spelling serde emits, and
@@ -543,6 +567,9 @@ impl ExportField {
             ExportField::Messages => "messages",
             ExportField::Content => "content",
             ExportField::FinishReason => "finish_reason",
+            ExportField::DeploymentId => "deployment_id",
+            ExportField::NodeId => "node_id",
+            ExportField::ContentRef => "content_ref",
         }
     }
 

@@ -316,7 +316,7 @@ impl LoadedPersistence {
             let frame = retained.frame();
             let done = self
                 .dispatcher
-                .submit_lent(
+                .submit_watched(
                     &self.plugin,
                     ticket,
                     R::SLOT,
@@ -324,6 +324,7 @@ impl LoadedPersistence {
                     DeadlineClass::Call,
                     until,
                     retained.clone() as Lent,
+                    DEADLINE,
                 )
                 .await;
             let _lease = AnswerLease::new(&self.plugin, done.lease);

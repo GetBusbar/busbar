@@ -33,6 +33,11 @@ fn one_reading_maps_to_one_instant_however_often_and_whenever() {
 fn an_elapsed_nonzero_deadline_is_due_at_a_now_captured_after_it_was_read() {
     let reading = now_ns();
     assert_ne!(reading, 0, "zero is reserved for no deadline");
+    a_reading_never_maps_after_a_now_captured_later(reading);
+}
+
+/// The `now` is captured here, after `reading` was read by the caller.
+fn a_reading_never_maps_after_a_now_captured_later(reading: u64) {
     let now = Instant::now();
     std::thread::sleep(Duration::from_millis(2));
     assert!(

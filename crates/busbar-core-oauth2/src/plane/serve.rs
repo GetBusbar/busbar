@@ -68,7 +68,8 @@ impl Registrations {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let index = self.base.elapsed().as_secs() / REGISTRATION_WINDOW.as_secs();
+        let index =
+            busbar_kernel::store::monotonic_ns() / 1_000_000_000 / REGISTRATION_WINDOW.as_secs();
         if w.index != index {
             w.index = index;
             w.admitted = 0;
@@ -134,7 +135,7 @@ impl AsPlane {
             &presented.proof,
             &presented.method,
             &htu,
-            std::time::SystemTime::now(),
+            crate::shared::now_time(),
         ) else {
             return false;
         };

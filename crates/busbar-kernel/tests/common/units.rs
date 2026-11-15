@@ -4,6 +4,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use busbar_contract::caps::Frame as Encoded;
 use busbar_contract::caps::{
     Admission, Admit, Admittance, Approve, Arrival, Audit, Authenticate, Consumption, Decode,
     Encode, Grant, Hold, HoldCell, Meter, MeterClassId, OriginKind, Outcome, Pass, PrincipalId,
@@ -118,8 +119,8 @@ pub fn audit_facts() -> busbar_contract::caps::AuditFacts {
     }
 }
 
-pub fn encoded_frame() -> busbar_contract::caps::Frame {
-    busbar_contract::caps::Frame {
+pub fn encoded_frame() -> Encoded {
+    Encoded {
         direction: busbar_contract::Direction::Outbound,
         stream: busbar_contract::StreamId(0),
         bytes: busbar_contract::SlabBytes::new(std::sync::Arc::from(&b""[..])),

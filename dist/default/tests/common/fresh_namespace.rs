@@ -214,7 +214,7 @@ pub async fn admit_in_process(directory: &Path) -> Owner {
         .expect("actual Store statement reads")
         .expect("actual Store states its door");
     let dispatcher = Arc::new(busbar_plugin_loader::dispatch::Dispatcher::new(
-        harness_dispatch(),
+        busbar_plugin_loader::dispatch::DispatchConfig::default(),
         busbar_contract::services::test_caller_binding(),
     ));
     let axis = busbar_plugin_loader::store_v4::DoorPersistenceAxis {
@@ -279,24 +279,6 @@ pub async fn admit_in_process(directory: &Path) -> Owner {
         axis,
         startup,
         store,
-    }
-}
-
-/// The witness writer's dispatcher, with the same widened watch budgets as the product's
-/// test-harness dispatcher (`root::dispatch::harness_budgets`): a durable SQLite commit in an
-/// unoptimized fixture can outlive the shipped 1 s call budget while sibling fixtures contend.
-fn harness_dispatch() -> busbar_plugin_loader::dispatch::DispatchConfig {
-    const CROSSING: Duration = Duration::from_secs(30);
-    let shipped = busbar_plugin_loader::dispatch::Budgets::default();
-    busbar_plugin_loader::dispatch::DispatchConfig {
-        budgets: busbar_plugin_loader::dispatch::Budgets {
-            call: CROSSING.max(shipped.call),
-            stream: CROSSING.max(shipped.stream),
-            connection: CROSSING.max(shipped.connection),
-            write_behind: CROSSING.max(shipped.write_behind),
-            lifecycle: shipped.lifecycle,
-        },
-        ..busbar_plugin_loader::dispatch::DispatchConfig::default()
     }
 }
 

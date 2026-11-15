@@ -101,12 +101,9 @@ impl GuardJudge {
         ) {
             return Err(DEST_NO_HOST);
         }
-        let located = busbar_kernel::config_validate::ProviderDestination {
-            authority: target.authority.to_owned(),
-            secure: target.secure,
-            name: None,
-        };
-        located.host().map_err(|_| DEST_NO_HOST)?;
+        if !authority_locates_host(target.authority, target.secure) {
+            return Err(DEST_NO_HOST);
+        }
         // Preserve the original spelling until the guard has applied its obfuscated-address rule.
         let (raw_host, raw_port) = target.authority.rsplit_once(':').ok_or(DEST_NO_HOST)?;
         let host = raw_host.trim_start_matches('[').trim_end_matches(']');
@@ -212,6 +209,25 @@ fn split(dest: &str) -> Result<(Cow<'_, str>, u16, bool), u64> {
 thread_local! {
     /// The calling thread's reused authority buffer ([`with_scratch`]).
     static SCRATCH: Cell<String> = const { Cell::new(String::new()) };
+    /// The calling thread's reused authority text for the kernel's independent host reading
+    /// ([`authority_locates_host`]).
+    static LOCATED: Cell<String> = const { Cell::new(String::new()) };
+}
+
+/// Whether the kernel's independent reading of `authority` finds a host: the text is copied into
+/// the thread's reused buffer, which the reading borrows and which is kept for the next call.
+fn authority_locates_host(authority: &str, secure: bool) -> bool {
+    let mut text = LOCATED.take();
+    text.clear();
+    text.push_str(authority);
+    let located = busbar_kernel::config_validate::ProviderDestination {
+        authority: text,
+        secure,
+        name: None,
+    };
+    let found = located.host().is_ok();
+    LOCATED.set(located.authority);
+    found
 }
 
 /// `f` over the calling thread's reused text buffer, handed over empty. A re-entrant call gets a

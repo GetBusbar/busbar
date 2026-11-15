@@ -921,7 +921,7 @@ pub(crate) async fn compose_planes_over(
                 owned.as_slice(),
             ] {
                 hash.update(&(bytes.len() as u64).to_be_bytes());
-                hash.update(&bytes[..]);
+                hash.update(bytes);
             }
             hash.update(&(dialects.len() as u64).to_be_bytes());
             for dialect in dialects {
@@ -931,7 +931,7 @@ pub(crate) async fn compose_planes_over(
                     dialect.error_map.as_deref().unwrap_or_default(),
                 ] {
                     hash.update(&(bytes.len() as u64).to_be_bytes());
-                    hash.update(&bytes[..]);
+                    hash.update(bytes);
                 }
                 hash.update(&[u8::from(dialect.error_map.is_some())]);
             }
@@ -1242,8 +1242,7 @@ pub(crate) fn fold_catalog_routes(
     let mut models = Pairs::new();
     models.insert_key(model, Value::Map(folded));
     map.insert_key(models_key, Value::Map(models));
-    let tail = (routes, Some(model.to_string()));
-    tail
+    (routes, Some(model.to_string()))
 }
 
 pub(crate) fn routes_of(
@@ -1647,8 +1646,7 @@ pub(crate) fn open(
     if called.outcome != AbiOutcome::Ready {
         return Err(called.open_failure(plugin.name()));
     }
-    let tail = snapshot.ok_or_else(|| "its snapshot did not pass the host's checks".to_string());
-    tail
+    snapshot.ok_or_else(|| "its snapshot did not pass the host's checks".to_string())
 }
 
 pub(crate) fn arrival_entries(served: &Served) -> Vec<Arc<EntrySpans>> {
@@ -1823,11 +1821,9 @@ impl ListenerPlan {
                 }
             }
         }
-        let tail = self
-            .claim_doors
+        self.claim_doors
             .set(served.claim_doors.clone())
-            .map_err(|_| "physical claim doors were already installed".to_string());
-        tail
+            .map_err(|_| "physical claim doors were already installed".to_string())
     }
 
     #[cfg(test)]
@@ -2854,14 +2850,19 @@ pub(crate) fn upgrade_carriers(
     transports: &[crate::root::linked::LinkedTransport],
     dropped: &[crate::root::registry::DroppedDoor],
 ) -> Vec<&'static str> {
-    let tail = transport_rows(transports, dropped)
+    transport_rows(transports, dropped)
         .into_iter()
         .flat_map(|r| r.upgrades)
-        .collect();
-    tail
+        .collect()
 }
 
 pub(crate) type TransportOffer = (&'static str, busbar_contract::abi::auth::AuthPoints);
+
+/// One store and the (id, version, expiry) tickets observed through it in a batch.
+type StoreTickets = (
+    Arc<busbar_kernel::persistence::facade::CoreStore>,
+    Vec<(Arc<str>, u64, u64)>,
+);
 
 pub(crate) struct TransportRow {
     pub(crate) claims: Vec<&'static str>,
@@ -2889,8 +2890,7 @@ pub(crate) fn transport_rows(
         under: d.composes_over.first().copied(),
         offered: d.offered,
     });
-    let tail = linked.chain(dropped).collect();
-    tail
+    linked.chain(dropped).collect()
 }
 
 #[must_use]
@@ -3718,10 +3718,7 @@ impl TicketCustody {
             return;
         }
         // One batched observation per store.
-        let mut by_store: Vec<(
-            Arc<busbar_kernel::persistence::facade::CoreStore>,
-            Vec<(Arc<str>, u64, u64)>,
-        )> = Vec::new();
+        let mut by_store: Vec<StoreTickets> = Vec::new();
         for (id, version, expiry, store) in snapshots {
             match by_store
                 .iter_mut()

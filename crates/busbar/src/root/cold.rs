@@ -171,7 +171,7 @@ impl crate::root::plane_node::Node {
     pub(crate) fn sweep_marked(&self, now: crate::root::plane_node::Arrived) -> usize {
         let mut swept = 0;
         for slot in self.inflight.snapshot() {
-            if self.sweep_slot(slot, now) {
+            if self.sweep_slot(&slot, now) {
                 swept += 1;
             }
         }
