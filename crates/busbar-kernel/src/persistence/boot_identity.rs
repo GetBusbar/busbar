@@ -58,6 +58,102 @@ struct RetireState {
 pub struct WriterRetirements {
     gate: tokio::sync::Mutex<()>,
     state: Mutex<RetireState>,
+    #[cfg(test)]
+    hooks: RetireHooks,
+}
+
+/// Test-only: one held step. `reached` is notified when the step is reached; `release` lets it go.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct TestHold {
+    pub(crate) reached: tokio::sync::Notify,
+    pub(crate) release: tokio::sync::Notify,
+}
+
+#[cfg(test)]
+impl TestHold {
+    pub(crate) async fn pass(&self) {
+        self.reached.notify_one();
+        self.release.notified().await;
+    }
+}
+
+/// Test-only: what one `settle` retry answered (SHUTDOWN-HANG 8.15).
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SettleAnswer {
+    Decided,
+    NoEffect,
+    Busy,
+    Unresolved,
+    /// The retry was refused (`UnknownOperation`: another driver collected the decision).
+    Unknown,
+    /// After `Unknown`, `gate` was free: the entry was removed as lost.
+    Lost,
+}
+
+#[cfg(test)]
+impl SettleAnswer {
+    fn of(result: &super::commit::SubmitResult) -> Self {
+        use super::commit::SubmitResult as R;
+        match result {
+            R::Decided(_) => Self::Decided,
+            R::NoEffect(_) => Self::NoEffect,
+            R::Busy => Self::Busy,
+            R::Uncertain | R::Reconcile => Self::Unresolved,
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct RetireHooks {
+    decision: Mutex<Option<Arc<TestHold>>>,
+    settle: Mutex<Vec<SettleAnswer>>,
+}
+
+#[cfg(test)]
+impl WriterRetirements {
+    /// Holds the next `retire_after` whose submit returns, after the CoreStore's decision and
+    /// before `take_decided`.
+    pub(crate) fn hold_decision(&self, hold: Arc<TestHold>) {
+        *self
+            .hooks
+            .decision
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(hold);
+    }
+
+    fn armed_decision(&self) -> Option<Arc<TestHold>> {
+        self.hooks
+            .decision
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+    }
+
+    async fn decision_reached(&self) {
+        if let Some(hold) = self.armed_decision() {
+            hold.pass().await;
+        }
+    }
+
+    fn note(&self, answer: SettleAnswer) {
+        self.hooks
+            .settle
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(answer);
+    }
+
+    /// Every `settle` retry answer so far, in order.
+    pub(crate) fn settle_answers(&self) -> Vec<SettleAnswer> {
+        self.hooks
+            .settle
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
 }
 impl WriterRetirements {
     fn state(&self) -> std::sync::MutexGuard<'_, RetireState> {
@@ -263,6 +359,8 @@ impl WriterRetirements {
                 return Err(error(cause));
             }
         };
+        #[cfg(test)]
+        self.decision_reached().await;
         match submission.result {
             SubmitResult::Decided(decision) => {
                 self.take_decided(target, matches!(*decision, native::Decision::Applied(_)));
@@ -343,17 +441,27 @@ impl WriterRetirements {
                     .retry(PendingId(candidate.candidate().id.operation))
                     .await
                 {
-                    Ok(submission) => match submission.result {
-                        SubmitResult::Decided(decision) => self.take_decided(
-                            target,
-                            matches!(*decision, native::Decision::Applied(_)),
-                        ),
-                        SubmitResult::NoEffect(_) => self.take_decided(target, false),
-                        SubmitResult::Uncertain | SubmitResult::Busy | SubmitResult::Reconcile => {}
-                    },
+                    Ok(submission) => {
+                        #[cfg(test)]
+                        self.note(SettleAnswer::of(&submission.result));
+                        match submission.result {
+                            SubmitResult::Decided(decision) => self.take_decided(
+                                target,
+                                matches!(*decision, native::Decision::Applied(_)),
+                            ),
+                            SubmitResult::NoEffect(_) => self.take_decided(target, false),
+                            SubmitResult::Uncertain
+                            | SubmitResult::Busy
+                            | SubmitResult::Reconcile => {}
+                        }
+                    }
                     Err(_) => {
+                        #[cfg(test)]
+                        self.note(SettleAnswer::Unknown);
                         // Decided by another driver. If none is in flight, nobody holds it.
                         if let Ok(_free) = self.gate.try_lock() {
+                            #[cfg(test)]
+                            self.note(SettleAnswer::Lost);
                             let lost = self.state().pending.remove(&target);
                             if let Some((_, Some(seen))) = lost {
                                 undrained_records().lost(&seen);
@@ -1444,3 +1552,11 @@ impl NodeLease {
 #[cfg(test)]
 #[path = "tests/boot_identity_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/expired_writers_tests.rs"]
+mod expired_writers_tests;
+
+#[cfg(test)]
+#[path = "tests/fence_settle_tests.rs"]
+mod fence_settle_tests;

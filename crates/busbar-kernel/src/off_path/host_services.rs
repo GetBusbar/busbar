@@ -50,6 +50,23 @@ pub(crate) fn live_planes(
     registered.clone()
 }
 
+/// SHUTDOWN-HANG F4 `open_at_exit`: every unit still open in the live planes' money seams, read
+/// once at exit. A money seam two drivers share is walked once.
+pub(crate) fn open_unit_evidence(
+    drivers: Vec<Weak<crate::plane_driver::PlaneDriver>>,
+) -> Vec<crate::plane_driver::OpenUnitEvidence> {
+    let mut walked: Vec<Arc<crate::plane_driver::PlaneDriver>> = Vec::new();
+    let mut out = Vec::new();
+    for driver in drivers.into_iter().filter_map(|driver| driver.upgrade()) {
+        if walked.iter().any(|seen| seen.shares_money_with(&driver)) {
+            continue;
+        }
+        driver.open_unit_evidence(&mut out);
+        walked.push(driver);
+    }
+    out
+}
+
 /// The flusher's tick schedule: its first tick one interval after it starts.
 pub(crate) fn flush_ticks(every: Duration) -> tokio::time::Interval {
     tokio::time::interval_at(tokio::time::Instant::now() + every, every)

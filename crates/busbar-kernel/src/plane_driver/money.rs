@@ -1242,6 +1242,27 @@ pub(super) fn reported(units: &[UnitCount]) -> Vec<(u32, Count)> {
 }
 
 impl MoneySeam for PlaneMoney {
+    /// SHUTDOWN-HANG F4: every open unit of the 16 shards, read once at exit. Each entry shares
+    /// the unit's money facts and, for a governed unit, a clone of its grant.
+    fn open_units(&self, out: &mut Vec<super::OpenUnitEvidence>) {
+        for shard in &self.units {
+            let all = locked(shard);
+            for (key, open) in all.iter() {
+                let mut reported = Vec::with_capacity(open.last.len());
+                reported.extend_from_slice(&open.last);
+                out.push(super::OpenUnitEvidence {
+                    unit: *key,
+                    checkpoint: open.checkpoint_id,
+                    money: Arc::clone(&open.money),
+                    reported,
+                    ledgered: open.ledgered,
+                    finished: open.finished,
+                    grant: open.grant.clone(),
+                });
+            }
+        }
+    }
+
     fn checkpoint(&self, ctx: &UnitCtx, units: &[UnitCount]) -> Checkpoint {
         let mut all = self.shard(ctx.key);
         let Some(open) = all.get_mut(&ctx.key) else {
