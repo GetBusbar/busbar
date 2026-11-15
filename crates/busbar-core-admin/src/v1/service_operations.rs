@@ -1311,49 +1311,7 @@ impl AdminService {
         let Some(gov) = self.app.governance.clone() else {
             return Ok(empty());
         };
-        type UsageFetchError = (&'static str, busbar_kernel::governance::RecordStoreError);
-        let fetched: Result<(FetchedUsage<Count>, Vec<ObservationRecord>), UsageFetchError> =
-            async {
-                let rows = gov
-                    .metering_for_async(bucket)
-                    .await
-                    .map_err(|e| ("usage.metering", e))?;
-                let names = gov
-                    .all_keys_async()
-                    .await
-                    .map_err(|e| ("usage.keys", e))?
-                    .into_iter()
-                    .map(|k| (k.id, k.name))
-                    .collect();
-                let adjustments = gov
-                    .usage_adjustments_exact_async(bucket)
-                    .await
-                    .map_err(|e| ("usage.adjustments", e))?;
-                let core = gov
-                    .core_store_handle()
-                    .map_err(|e| ("usage.observations", e))?;
-                let observations =
-                    if busbar_kernel::persistence::observations::ObservationStore::supports(&core) {
-                        let store =
-                            busbar_kernel::persistence::observations::ObservationStore::open(core)
-                                .map_err(|e| {
-                                    (
-                                        "usage.observations",
-                                        busbar_kernel::governance::RecordStoreError(e.to_string()),
-                                    )
-                                })?;
-                        store.dated_records_for_day(bucket).await.map_err(|e| {
-                            (
-                                "usage.observations",
-                                busbar_kernel::governance::RecordStoreError(e.to_string()),
-                            )
-                        })?
-                    } else {
-                        Vec::new()
-                    };
-                Ok(((rows, names, adjustments), observations))
-            }
-            .await;
+        let fetched = fetch_usage_day(&gov, bucket).await;
         let cost = self.app.cost.clone();
         let ((rows, names, adjustments), observations) = fetched.map_err(|(operation, error)| {
             diag_error!(ADMIN_STORE_OPERATION_FAILED, operation, error = %error, "admin store operation failed");
@@ -1369,6 +1327,33 @@ impl AdminService {
             (rows, names, adjustments),
             observations,
         )
+    }
+
+    /// `GET /usage` in range mode: every UTC day `spec.from..=spec.to`, priced and grouped. The
+    /// caller has already bounded the range. Reads only: nothing is written.
+    pub(crate) async fn get_usage_series(
+        &self,
+        spec: &SeriesSpec,
+    ) -> Result<crate::v1::contract::UsageSeries, AdminError> {
+        let now = busbar_kernel::store::now();
+        let history = self.rate_history.clone().or_else(dated_rate_history);
+        let snapshot = match spec.as_of {
+            None => None,
+            Some(key) => Some(validated_snapshot(history.as_deref(), key)?),
+        };
+        let mut days = Vec::new();
+        if let Some(gov) = self.app.governance.clone() {
+            let mut bucket = spec.from;
+            while bucket <= spec.to {
+                let fetched = fetch_usage_day(&gov, bucket).await.map_err(|(operation, error)| {
+                    diag_error!(ADMIN_STORE_OPERATION_FAILED, operation, error = %error, "admin store operation failed");
+                    AdminError::Internal
+                })?;
+                days.push((bucket, fetched));
+                bucket += METERING_DAY;
+            }
+        }
+        project_usage_series(self.app.cost.clone(), history, snapshot, now, days, spec)
     }
 
     pub(crate) async fn get_auth(&self) -> Result<AuthView, AdminError> {
@@ -1413,6 +1398,53 @@ type FetchedUsage<T = i128> = (
     std::collections::HashMap<String, String>,
     Vec<busbar_kernel::governance::UsageAdjustment<T>>,
 );
+
+type UsageFetchError = (&'static str, busbar_kernel::governance::RecordStoreError);
+
+/// Everything one UTC-day bucket contributes to a usage read: metering rows, key names,
+/// adjustments, and dated observation records.
+async fn fetch_usage_day(
+    gov: &busbar_kernel::governance::GovState,
+    bucket: u64,
+) -> Result<(FetchedUsage<Count>, Vec<ObservationRecord>), UsageFetchError> {
+    let rows = gov
+        .metering_for_async(bucket)
+        .await
+        .map_err(|e| ("usage.metering", e))?;
+    let names = gov
+        .all_keys_async()
+        .await
+        .map_err(|e| ("usage.keys", e))?
+        .into_iter()
+        .map(|k| (k.id, k.name))
+        .collect();
+    let adjustments = gov
+        .usage_adjustments_exact_async(bucket)
+        .await
+        .map_err(|e| ("usage.adjustments", e))?;
+    let core = gov
+        .core_store_handle()
+        .map_err(|e| ("usage.observations", e))?;
+    let observations =
+        if busbar_kernel::persistence::observations::ObservationStore::supports(&core) {
+            let store = busbar_kernel::persistence::observations::ObservationStore::open(core)
+                .map_err(|e| {
+                    (
+                        "usage.observations",
+                        busbar_kernel::governance::RecordStoreError(e.to_string()),
+                    )
+                })?;
+            store.dated_records_for_day(bucket).await.map_err(|e| {
+                (
+                    "usage.observations",
+                    busbar_kernel::governance::RecordStoreError(e.to_string()),
+                )
+            })?
+        } else {
+            Vec::new()
+        };
+    Ok(((rows, names, adjustments), observations))
+}
 
 #[cfg(test)]
 pub(super) fn project_usage_rows(
@@ -1480,78 +1512,9 @@ pub(super) fn project_usage_rows_with_observations(
     let mut by_key: std::collections::BTreeMap<String, UsageRollup> =
         std::collections::BTreeMap::new();
     for r in &rows {
-        let lane = row_lane(&r.model, &r.provider);
-        let mut row = UsageRollup {
-            usage: UsageBreakdown {
-                tokens_input: Count::from_micros(r.tokens_input),
-                tokens_output: Count::from_micros(r.tokens_output),
-                tokens_cache_read: Count::from_micros(r.tokens_cache_read),
-                tokens_cache_creation: Count::from_micros(r.tokens_cache_write),
-                requests: r.requests,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let at = row_priced_at_ms(window.start, r.priced_from_ms);
-        let resolved = view
-            .as_ref()
-            .map(|v| row_card(v, r, at))
-            .transpose()
-            .map_err(|e| usage_refusal("usage.price", &e))?;
-        if let Some((card_seq, _)) = resolved {
-            priced_by = priced_by.max(Some(card_seq));
-        }
-        let classes: std::collections::BTreeMap<String, Count> = r
-            .usage_units
-            .iter()
-            .map(|(class, n)| (class.clone(), Count::from_micros(*n)))
-            .collect();
-        let price = |usage: &UsageBreakdown,
-                     classes: &std::collections::BTreeMap<String, Count>| {
-            let metered = metered_row(&cost, &lane, usage, classes);
-            match resolved {
-                Some((seq, card)) => metered.exact_at_card_seq(seq, card),
-                None => metered.exact_at_card(cost.card()),
-            }
-            .map_err(|e| usage_refusal("usage.price", &e))
-        };
-        row.exact = price(&row.usage, &classes)?;
-        for (class, count) in &classes {
-            if !busbar_contract::records::RESERVED_UNITS.contains(&class.as_str()) {
-                let one = std::collections::BTreeMap::from([(class.clone(), *count)]);
-                row.class_exact
-                    .insert(class.clone(), price(&UsageBreakdown::default(), &one)?);
-                row.usage.classes.insert(
-                    class.clone(),
-                    ClassUsage {
-                        count: *count,
-                        cost: 0,
-                    },
-                );
-            }
-        }
-        // Price the disjoint stored classes first. Reserved usage columns are reporting
-        // views only; their declared descendants must not be charged again as parent usage.
-        let mut raw = classes.clone();
-        for (class, count) in [
-            (busbar_contract::records::UNIT_INPUT, row.usage.tokens_input),
-            (
-                busbar_contract::records::UNIT_OUTPUT,
-                row.usage.tokens_output,
-            ),
-            (
-                busbar_contract::records::UNIT_CACHE_READ,
-                row.usage.tokens_cache_read,
-            ),
-            (
-                busbar_contract::records::UNIT_CACHE_WRITE,
-                row.usage.tokens_cache_creation,
-            ),
-        ] {
-            // Named planes carry all raw classes in usage_units; fallback lanes use columns.
-            raw.entry(class.to_string()).or_insert(count);
-        }
-        project_reserved_counts(&lane, &raw, &mut row.usage)?;
+        let priced_row = price_metering_row(&cost, view.as_ref(), window.start, r, false)?;
+        priced_by = priced_by.max(priced_row.card);
+        let row = priced_row.rollup;
         for aggregate in [
             &mut total,
             by_model
@@ -1653,6 +1616,365 @@ pub(super) fn project_usage_rows_with_observations(
         by_key_truncated,
         others,
         observations,
+    })
+}
+
+/// A `/usage` series dimension. Declaration order is the sort and output order of a row's fields.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum UsageDim {
+    Bucket,
+    Key,
+    Group,
+    Model,
+    Provider,
+    Kind,
+    Instance,
+}
+
+impl UsageDim {
+    pub(crate) fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "bucket" => Self::Bucket,
+            "key" => Self::Key,
+            "group" => Self::Group,
+            "model" => Self::Model,
+            "provider" => Self::Provider,
+            "kind" => Self::Kind,
+            "instance" => Self::Instance,
+            _ => return None,
+        })
+    }
+}
+
+/// One range read: UTC-day bucket starts `from..=to`, the dimensions to group by (sorted, unique),
+/// the row filters, and an optional rate-card snapshot.
+pub(crate) struct SeriesSpec {
+    pub(crate) from: u64,
+    pub(crate) to: u64,
+    pub(crate) group_by: Vec<UsageDim>,
+    pub(crate) filters: Vec<(UsageDim, String)>,
+    pub(crate) as_of: Option<busbar_kernel::cost::EntryKey>,
+}
+
+/// The engine kind of every instance a metering row can name: a plane.
+const SERIES_INSTANCE_KIND: &str = "plane";
+
+/// The instance a metering row belongs to, derived at read from its plane-qualified `provider`
+/// by the rule `metering_lane` prices with: a non-fallback plane key names its own plane, and
+/// every other row belongs to the fallback (pools) plane. The accrual key is not touched.
+fn row_instance(provider: &str) -> String {
+    use busbar_kernel::plane_driver::registry::{plane_decl_for, plane_decls};
+    match plane_decl_for(provider) {
+        Some(decl) if !decl.fallback => decl.key.to_string(),
+        _ => plane_decls()
+            .iter()
+            .find(|decl| decl.fallback)
+            .map_or("pools", |decl| decl.key)
+            .to_string(),
+    }
+}
+
+#[derive(Clone)]
+struct DimValues {
+    key: String,
+    group: String,
+    model: String,
+    provider: String,
+    instance: String,
+}
+
+impl DimValues {
+    fn of(key: &str, group: &str, model: &str, provider: &str, instance: String) -> Self {
+        Self {
+            key: key.to_string(),
+            group: group.to_string(),
+            model: model.to_string(),
+            provider: provider.to_string(),
+            instance,
+        }
+    }
+
+    fn admitted(&self, filters: &[(UsageDim, String)]) -> bool {
+        filters.iter().all(|(dim, want)| match dim {
+            UsageDim::Bucket => true,
+            UsageDim::Key => &self.key == want,
+            UsageDim::Group => &self.group == want,
+            UsageDim::Model => &self.model == want,
+            UsageDim::Provider => &self.provider == want,
+            UsageDim::Kind => want == SERIES_INSTANCE_KIND,
+            UsageDim::Instance => &self.instance == want,
+        })
+    }
+}
+
+struct SeriesCell {
+    bucket: u64,
+    dims: DimValues,
+    rollup: UsageRollup,
+    priced: bool,
+}
+
+fn fold_series(
+    cells: &mut std::collections::BTreeMap<String, SeriesCell>,
+    spec: &SeriesSpec,
+    bucket: u64,
+    dims: &DimValues,
+    row: &UsageRollup,
+    priced: bool,
+) -> Result<(), AdminError> {
+    let sort = spec
+        .group_by
+        .iter()
+        .map(|dim| match dim {
+            UsageDim::Bucket => format!("{bucket:020}"),
+            UsageDim::Key => dims.key.clone(),
+            UsageDim::Group => dims.group.clone(),
+            UsageDim::Model => dims.model.clone(),
+            UsageDim::Provider => dims.provider.clone(),
+            UsageDim::Kind => SERIES_INSTANCE_KIND.to_string(),
+            UsageDim::Instance => dims.instance.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join("\u{1f}");
+    let cell = cells.entry(sort).or_insert_with(|| SeriesCell {
+        bucket,
+        dims: dims.clone(),
+        rollup: UsageRollup::default(),
+        priced: true,
+    });
+    cell.rollup.add(row)?;
+    cell.priced &= priced;
+    Ok(())
+}
+
+/// The whole range, priced row by row exactly as the single-day read prices, then summed per
+/// requested dimension tuple. An unpriced lane or class makes its cell `priced: false` with a null
+/// spend; it never refuses the read.
+pub(super) fn project_usage_series(
+    cost: Arc<busbar_kernel::cost::CostModel>,
+    history: Option<Arc<busbar_kernel::cost::History>>,
+    snapshot: Option<busbar_kernel::cost::EntryKey>,
+    now: u64,
+    days: Vec<(u64, (FetchedUsage<Count>, Vec<ObservationRecord>))>,
+    spec: &SeriesSpec,
+) -> Result<crate::v1::contract::UsageSeries, AdminError> {
+    use crate::v1::contract::{SeriesUsage, UsageSeries, UsageSeriesRow};
+    let view = history.as_deref().map(|h| match snapshot {
+        Some(at) => h.snapshot(at),
+        None => h.current(),
+    });
+    let mut priced_by = None;
+    let mut cells = std::collections::BTreeMap::new();
+    for (bucket, ((mut rows, _names, adjustments), records)) in days {
+        if let Err(why) = super::fold_adjustments_exact(&mut rows, &adjustments) {
+            diag_error!(
+                ADMIN_STORE_OPERATION_FAILED,
+                operation = "usage.adjustments",
+                error = %why,
+                "admin store operation failed"
+            );
+            return Err(AdminError::Internal);
+        }
+        for r in &rows {
+            let dims = DimValues::of(
+                &r.key_id,
+                &r.key_group_at_use,
+                &r.model,
+                &r.provider,
+                row_instance(&r.provider),
+            );
+            if !dims.admitted(&spec.filters) {
+                continue;
+            }
+            let priced = price_metering_row(&cost, view.as_ref(), bucket, r, true)?;
+            priced_by = priced_by.max(priced.card);
+            fold_series(
+                &mut cells,
+                spec,
+                bucket,
+                &dims,
+                &priced.rollup,
+                priced.priced,
+            )?;
+        }
+        for record in records
+            .into_iter()
+            .filter(|r| bucket <= r.rate_time && r.rate_time < bucket + METERING_DAY)
+        {
+            let (row, _raw) = observation_rollup(&record)?;
+            let dims = DimValues::of(
+                &record.principal,
+                &record.group,
+                observation_subject(&record.rated_subject),
+                &record.destination,
+                record.instance.clone(),
+            );
+            if dims.admitted(&spec.filters) {
+                fold_series(&mut cells, spec, bucket, &dims, &row, true)?;
+            }
+        }
+    }
+    let has = |dim| spec.group_by.contains(&dim);
+    let items = cells
+        .into_iter()
+        .map(|(sort, cell)| {
+            Ok(UsageSeriesRow {
+                bucket_start: has(UsageDim::Bucket).then_some(cell.bucket),
+                key: has(UsageDim::Key).then(|| cell.dims.key.clone()),
+                group: has(UsageDim::Group).then(|| cell.dims.group.clone()),
+                model: has(UsageDim::Model).then(|| cell.dims.model.clone()),
+                provider: has(UsageDim::Provider).then(|| cell.dims.provider.clone()),
+                kind: has(UsageDim::Kind).then(|| SERIES_INSTANCE_KIND.to_string()),
+                instance: has(UsageDim::Instance).then(|| cell.dims.instance.clone()),
+                usage: SeriesUsage::of(cell.rollup.project()?, cell.priced),
+                sort,
+            })
+        })
+        .collect::<Result<Vec<_>, AdminError>>()?;
+    Ok(UsageSeries {
+        currency: (),
+        as_of: now,
+        rate_card_version: priced_by.map(|key: busbar_kernel::cost::EntryKey| key.hex()),
+        items,
+        next_cursor: None,
+    })
+}
+
+/// `YYYY-MM-DD` (UTC) to the epoch second of that day's start. Strict: four-digit year, two-digit
+/// month and day, a real calendar day.
+pub(crate) fn parse_utc_day(text: &str) -> Option<u64> {
+    let b = text.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+        return None;
+    }
+    let num = |s: &str| {
+        s.bytes()
+            .all(|c| c.is_ascii_digit())
+            .then(|| s.parse::<i64>().ok())
+            .flatten()
+    };
+    let (y, m, d) = (num(&text[0..4])?, num(&text[5..7])?, num(&text[8..10])?);
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let month_days = match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return None,
+    };
+    if d < 1 || d > month_days {
+        return None;
+    }
+    // Days from civil (Hinnant): the proleptic Gregorian day number relative to 1970-01-01.
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    u64::try_from(days).ok()?.checked_mul(METERING_DAY)
+}
+
+const METERING_DAY: u64 = busbar_kernel::governance::METERING_BUCKET_SECS;
+
+/// One metering row, priced: its rollup, the history entry that priced it, and whether every class
+/// priced. `lenient` (range reads, V9) turns an unpriced lane or class into `priced == false` with
+/// zero spend instead of a refusal.
+struct PricedRow {
+    rollup: UsageRollup,
+    card: Option<busbar_kernel::cost::EntryKey>,
+    priced: bool,
+}
+
+fn price_metering_row(
+    cost: &busbar_kernel::cost::CostModel,
+    view: Option<&busbar_kernel::cost::HistoryView<'_>>,
+    window_start: u64,
+    r: &busbar_kernel::governance::MeteringRow,
+    lenient: bool,
+) -> Result<PricedRow, AdminError> {
+    let lane = row_lane(&r.model, &r.provider);
+    let mut row = UsageRollup {
+        usage: UsageBreakdown {
+            tokens_input: Count::from_micros(r.tokens_input),
+            tokens_output: Count::from_micros(r.tokens_output),
+            tokens_cache_read: Count::from_micros(r.tokens_cache_read),
+            tokens_cache_creation: Count::from_micros(r.tokens_cache_write),
+            requests: r.requests,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let at = row_priced_at_ms(window_start, r.priced_from_ms);
+    let resolved = view
+        .map(|v| row_card(v, r, at))
+        .transpose()
+        .map_err(|e| usage_refusal("usage.price", &e))?;
+    let mut priced = true;
+    let classes: std::collections::BTreeMap<String, Count> = r
+        .usage_units
+        .iter()
+        .map(|(class, n)| (class.clone(), Count::from_micros(*n)))
+        .collect();
+    let mut price = |usage: &UsageBreakdown,
+                     classes: &std::collections::BTreeMap<String, Count>| {
+        let metered = metered_row(cost, &lane, usage, classes);
+        match match resolved {
+            Some((seq, card)) => metered.exact_at_card_seq(seq, card),
+            None => metered.exact_at_card(cost.card()),
+        } {
+            Ok(exact) => Ok(exact),
+            Err(
+                busbar_kernel::cost::MoneyError::ClassUnpriced { .. }
+                | busbar_kernel::cost::MoneyError::LaneUnpriced { .. },
+            ) if lenient => {
+                priced = false;
+                Ok(0)
+            }
+            Err(e) => Err(usage_refusal("usage.price", &e)),
+        }
+    };
+    row.exact = price(&row.usage, &classes)?;
+    for (class, count) in &classes {
+        if !busbar_contract::records::RESERVED_UNITS.contains(&class.as_str()) {
+            let one = std::collections::BTreeMap::from([(class.clone(), *count)]);
+            row.class_exact
+                .insert(class.clone(), price(&UsageBreakdown::default(), &one)?);
+            row.usage.classes.insert(
+                class.clone(),
+                ClassUsage {
+                    count: *count,
+                    cost: 0,
+                },
+            );
+        }
+    }
+    // Price the disjoint stored classes first. Reserved usage columns are reporting
+    // views only; their declared descendants must not be charged again as parent usage.
+    let mut raw = classes.clone();
+    for (class, count) in [
+        (busbar_contract::records::UNIT_INPUT, row.usage.tokens_input),
+        (
+            busbar_contract::records::UNIT_OUTPUT,
+            row.usage.tokens_output,
+        ),
+        (
+            busbar_contract::records::UNIT_CACHE_READ,
+            row.usage.tokens_cache_read,
+        ),
+        (
+            busbar_contract::records::UNIT_CACHE_WRITE,
+            row.usage.tokens_cache_creation,
+        ),
+    ] {
+        // Named planes carry all raw classes in usage_units; fallback lanes use columns.
+        raw.entry(class.to_string()).or_insert(count);
+    }
+    project_reserved_counts(&lane, &raw, &mut row.usage)?;
+    Ok(PricedRow {
+        rollup: row,
+        card: resolved.map(|(seq, _)| seq),
+        priced,
     })
 }
 
