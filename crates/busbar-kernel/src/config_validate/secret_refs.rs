@@ -462,6 +462,16 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
         ),
     ),
     (
+        "Lent",
+        SecretBearing::NotInResolvedConfig(
+            "the host's HELD upstream credential of one plane member (`busbar` \
+             `door_steps::Lent`): a runtime CARRIER built from the member registration's \
+             `upstream_credential.secret` when the member opens, resolved there (an unresolvable \
+             one refuses the open, naming the member) and again on its refresh lease; it is never \
+             part of `RootCfg`.",
+        ),
+    ),
+    (
         "ProviderDeploy",
         SecretBearing::NotInResolvedConfig(
             "the DESERIALIZE-side provider entry (providers.yaml). `resolve` lowers it into \
