@@ -272,6 +272,12 @@ fn a_malformed_rsa_static_client_is_refused_at_boot() {
     refused(mixed, "one client, one algorithm");
 }
 
+/// The kernel codes every section refusal with BUSBAR-3129 (config-section-invalid) around this crate's
+/// own text, so the expected refusal is this crate's text in that code's rendering.
+fn section_refusal(text: impl std::fmt::Display) -> String {
+    busbar_kernel::diagnostics::coded::config_section_invalid(text).into()
+}
+
 fn resolve_block(block: serde_json::Value) -> Result<busbar_kernel::config::RootCfg, Vec<String>> {
     crate::testkit::install_test_seam();
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
@@ -289,10 +295,12 @@ fn an_invalid_block_is_refused_at_resolve_with_this_crates_text() {
         .expect_err("a trailing slash must refuse the whole config");
     assert_eq!(
         refused,
-        vec![AsCfgError::IssuerHasTrailingSlash("https://gw.example.com/".into()).to_string()]
+        vec![section_refusal(AsCfgError::IssuerHasTrailingSlash(
+            "https://gw.example.com/".into()
+        ))]
     );
     let refused = resolve_block(serde_json::json!({ "issuer": "" })).expect_err("empty issuer");
-    assert_eq!(refused, vec![AsCfgError::MissingIssuer.to_string()]);
+    assert_eq!(refused, vec![section_refusal(AsCfgError::MissingIssuer)]);
 }
 
 #[test]
@@ -304,7 +312,7 @@ fn an_unknown_key_in_the_block_is_refused_at_resolve() {
     .expect_err("deny_unknown_fields must hold in the owner's parse");
     assert_eq!(refused.len(), 1);
     assert!(
-        refused[0].starts_with("oauth_as: ") && refused[0].contains("not_a_key"),
+        refused[0].starts_with("BUSBAR-3129: oauth_as: ") && refused[0].contains("not_a_key"),
         "{refused:?}"
     );
 }
@@ -320,7 +328,9 @@ fn the_signing_key_reference_is_listed_for_the_kernel_to_resolve() {
     .expect_err("an undeclared shorthand is refused");
     assert_eq!(
         refused,
-        ["oauth_as: unknown reference member: shorthand requires an admitted source declaration (value not echoed)"]
+        [section_refusal(
+            "oauth_as: unknown reference member: shorthand requires an admitted source declaration (value not echoed)"
+        )]
     );
 
     let resolved = resolve_block(serde_json::json!({

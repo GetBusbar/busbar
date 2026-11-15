@@ -564,6 +564,9 @@ fn a_framed_dial_rides_a_connect_tunnel_through_the_proxy() {
             Some("Basic dTpw".to_string()),
             "",
         )));
+        // A name only the proxy resolves is CONNECTed by name only under `proxy_resolution: proxy`;
+        // the default (`local`) refuses a name that does not resolve here.
+        c.set_proxy_by_address(false);
         c.declare_over(OWNER, NeedId(0), "bytes").expect("declares");
         let id = c
             .open(
@@ -597,6 +600,8 @@ fn a_proxy_refusing_the_tunnel_refuses_the_exchange() {
         let (port, seen) =
             scripted_proxy(b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n").await;
         let c = proxying(Some(test_config("127.0.0.1", port, None, "")));
+        // As above: `upstream.test` resolves only at the proxy (`proxy_resolution: proxy`).
+        c.set_proxy_by_address(false);
         c.declare_over(OWNER, NeedId(0), "bytes").expect("declares");
         let id = c
             .open(

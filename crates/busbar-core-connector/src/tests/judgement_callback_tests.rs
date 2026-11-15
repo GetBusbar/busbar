@@ -197,7 +197,9 @@ fn completing_a_later_replay_drops_the_earlier_public_waker_outside_guards() {
                 request.push(byte[0]);
                 assert!(request.len() <= 8192, "CONNECT request stayed bounded");
             }
-            assert!(request.starts_with(b"CONNECT far.test:80 HTTP/1.1\r\n"));
+            // `advanced.proxy_resolution: local` (the default): the CONNECT names the address the
+            // judgement answered for `far.test:80`.
+            assert!(request.starts_with(b"CONNECT 127.0.0.1:80 HTTP/1.1\r\n"));
             socket
                 .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 .await
@@ -377,9 +379,11 @@ fn refusal_connector(
         )
         .proxying(proxy),
     );
+    // The default class: a framed operator-infrastructure need declared without `target_from` is
+    // the retired shape BUSBAR-6017 refuses at declaration, and these needs name no config target.
     let spec = ReadNeed {
         direction: DIRECTION_OUTBOUND,
-        egress_class: EGRESS_OPERATOR_INFRASTRUCTURE,
+        egress_class: busbar_contract::abi::host::conn::connector::EGRESS_DEFAULT,
         transport: "frames".to_owned(),
         auth: String::new(),
         target_from: String::new(),
@@ -451,6 +455,9 @@ fn a_refusal_names_the_hop_that_failed() {
         Default::default(),
         proxy(),
     );
+    // `far.test` resolves only at the proxy: `proxy_resolution: proxy` (the default, `local`,
+    // refuses a target that does not resolve here before the proxy hop is reached).
+    a.set_proxy_by_address(false);
     let id = open(&a).expect("the proxy's judgement pends");
     read_until_failed(&a, id);
     let why = a.conn_refusal(OWNER, id).expect("the reason is held");
@@ -473,6 +480,7 @@ fn a_refusal_names_the_hop_that_failed() {
         Default::default(),
         proxy(),
     );
+    b.set_proxy_by_address(false);
     assert!(open(&b).is_err());
     assert_eq!(
         b.refusal(OWNER, NeedId(0)).as_ref().map(shown).as_deref(),

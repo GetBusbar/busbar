@@ -54,7 +54,7 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
 use busbar_contract::abi::host::conn::connector::{
-    DIRECTION_OUTBOUND, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
+    DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
 };
 use busbar_contract::abi::host::service::{DEST_NO_ADDRESSES, DEST_UNRESOLVABLE};
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
@@ -270,6 +270,15 @@ impl DialJudge for LiteralsOnly {
 /// THE SCHEME RULE OF A NEED'S EGRESS CLASS (`abi::host::conn::connector`, `EGRESS_*`), held
 fn scheme_admits(egress_class: u32, secure: bool) -> bool {
     egress_class != EGRESS_OPEN_WEB || secure
+}
+
+///
+/// WHETHER A CARRIER'S CLEARTEXT WINDOW ([`compose::Connection::hold_clear_window`]) may stand in
+/// for the plaintext rule in `egress_class`: never in `loopback-allowed`, whose ABI contract
+/// (`EGRESS_LOOPBACK_ALLOWED`) is a secure connection or plaintext to loopback, so a carrier
+/// there off loopback is refused at its dial unless an exact plaintext entry admits it.
+fn carrier_window_admits(egress_class: u32) -> bool {
+    egress_class != EGRESS_LOOPBACK_ALLOWED
 }
 
 ///
@@ -1427,10 +1436,11 @@ impl Connector {
             && !self.plaintext_admitted(planned.authority())
     }
 
-    /// Whether plaintext is admitted for `planned` beyond loopback: a carrier (held to its
-    /// cleartext window instead) or an exact plaintext entry.
-    fn plain_admitted(&self, planned: &Planned) -> bool {
-        !planned.framed() || self.plaintext_admitted(planned.authority())
+    /// Whether plaintext is admitted for `planned` in `egress_class` beyond loopback: a carrier
+    /// (held to its cleartext window instead, [`carrier_window_admits`]) or an exact plaintext entry.
+    fn plain_admitted(&self, planned: &Planned, egress_class: u32) -> bool {
+        (!planned.framed() && carrier_window_admits(egress_class))
+            || self.plaintext_admitted(planned.authority())
     }
 
     /// The host I/O this connector's carriers are served from.
@@ -1914,7 +1924,7 @@ impl Connector {
                     if class_admits(
                         egress_class,
                         located.secure,
-                        door.facts().role == ROLE_CARRIER
+                        (door.facts().role == ROLE_CARRIER && carrier_window_admits(egress_class))
                             || self.plaintext_admitted(&located.authority),
                         &[],
                         &located.authority,
@@ -2285,7 +2295,10 @@ impl Connector {
         };
         let secure = j.planned.as_ref().is_some_and(Planned::secure);
         let target = j.planned.as_ref().map_or("", |p| p.authority());
-        let plain = j.planned.as_ref().is_some_and(|p| self.plain_admitted(p));
+        let plain = j
+            .planned
+            .as_ref()
+            .is_some_and(|p| self.plain_admitted(p, j.egress_class));
         if let Some(p) = j.proxied.as_mut() {
             if !p.target_judged {
                 let delegated = !self.proxy_by_address.load(Ordering::Relaxed);
@@ -2596,7 +2609,7 @@ impl Connector {
                     if !class_admits(
                         egress_class,
                         planned.secure(),
-                        self.plain_admitted(&planned),
+                        self.plain_admitted(&planned, egress_class),
                         &[],
                         planned.authority(),
                         at,
@@ -2668,7 +2681,7 @@ impl Connector {
                 if !class_admits(
                     egress_class,
                     planned.secure(),
-                    self.plain_admitted(&planned),
+                    self.plain_admitted(&planned, egress_class),
                     within,
                     planned.authority(),
                     addr,
