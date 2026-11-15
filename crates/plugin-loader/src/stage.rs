@@ -19,10 +19,56 @@ pub(crate) fn dlopen_on_worker(path: &std::ffi::OsStr) -> Result<Library, String
         crate::ffi_thread::debug_assert_permanent("dlopen");
         unsafe { Library::new(path) }
     }) {
-        Ok(r) => r.map_err(|e| e.to_string()),
+        Ok(r) => r.map_err(|e| loader_error(&e)),
 
         Err(_) => Err("the library's initializer panicked while loading".to_string()),
     }
+}
+
+/// A libloading error as the loader reported it. libloading's `Display` for `DlOpen`/`DlSym` is
+/// only the label ("dlopen failed"); the `dlerror` text (e.g. "version `GLIBC_2.38' not found") is
+/// the error's `source`, so the whole chain is joined, then made safe by [`loader_reason`].
+pub(crate) fn loader_error(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut text = e.to_string();
+    let mut next = e.source();
+    while let Some(cause) = next {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        next = cause.source();
+    }
+    loader_reason(&text)
+}
+
+/// The most characters of a dynamic loader's reason a refusal carries.
+const LOADER_REASON_CHARS: usize = 512;
+
+/// A dynamic loader's error text (`dlerror`, e.g. "version `GLIBC_2.38' not found"), made safe to
+/// log: every control character, line separator and bidirectional control is escaped so it is one
+/// line (the text embeds the library's path, which an operator-placed file name can craft), and it
+/// is cut to [`LOADER_REASON_CHARS`] characters with an ellipsis.
+pub(crate) fn loader_reason(text: &str) -> String {
+    let mut out = String::new();
+    for (count, c) in text.chars().enumerate() {
+        if count == LOADER_REASON_CHARS {
+            out.push('\u{2026}');
+            break;
+        }
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            c if c.is_control()
+                || matches!(
+                    c,
+                    '\u{2028}' | '\u{2029}' | '\u{200E}' | '\u{200F}'
+                        | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+                ) =>
+            {
+                out.push_str(&format!("\\u{{{:x}}}", u32::from(c)));
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Unload `lib` on the permanent plugin thread, so its finalizers never run on a caller thread
