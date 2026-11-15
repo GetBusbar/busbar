@@ -374,7 +374,7 @@ impl Node {
     /// forgotten (`true`); any other slot is left as it is.
     pub(in crate::root) fn sweep_slot(
         &self,
-        slot: Arc<busbar_kernel::inflight::UnitSlot>,
+        slot: &Arc<busbar_kernel::inflight::UnitSlot>,
         now: Arrived,
     ) -> bool {
         if !slot.is_marked() {
@@ -390,7 +390,7 @@ impl Node {
             return false;
         };
         let verdict = busbar_kernel::tick::sweep(
-            &slot,
+            slot,
             busbar_contract::caps::StepName::Route,
             now.ms(),
             busbar_kernel::Millis::MAX,
@@ -399,7 +399,7 @@ impl Node {
 
         let settled = busbar_kernel::tick::sweep_settle(
             &self.kernel,
-            &slot,
+            slot,
             verdict,
             &Evidence::default(),
             &self.canary,

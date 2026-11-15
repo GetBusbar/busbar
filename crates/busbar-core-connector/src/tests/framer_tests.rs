@@ -174,7 +174,7 @@ fn sdk_sink_keeps_deferred_final_reason_with_its_first_piece_after_an_interim() 
         .collect::<VecDeque<_>>(),
     );
     let mut buffers = Buffers::new(1, 24, 4);
-    buffers.status_namespace = Some(Arc::from("test-numbering"));
+    buffers.status_namespace = Some("test-numbering".into());
     let mut yielded = Yielded::default();
     for call in 0..2 {
         let out = sink::fill(
@@ -1419,7 +1419,7 @@ fn a_resumed_ingest_preserves_its_stream_writable_signal() {
 
 fn reasoned_head_buffers(rows: &[(u64, u16, bool, &[u8])]) -> (Buffers, FramerOut) {
     let mut buffers = Buffers::default();
-    buffers.status_namespace = Some(Arc::from("test-numbering"));
+    buffers.status_namespace = Some("test-numbering".into());
     buffers.frame.clear();
     buffers.pieces.clear();
     buffers.heads.clear();

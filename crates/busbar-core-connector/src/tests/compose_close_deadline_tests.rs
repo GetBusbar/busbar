@@ -154,50 +154,58 @@ fn through(
 fn the_overall_open_deadline_survives_connect_and_the_tls_transition() {
     worker().block_on(async {
         for answer_connect in [false, true] {
-            let (_, client) = tls_pair();
-            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let proxy = listener.local_addr().unwrap();
-            let (stop, stopping) = tokio::sync::oneshot::channel();
-            let (seen, observed) = tokio::sync::oneshot::channel();
-            let mut peers = tokio::task::JoinSet::new();
-            peers.spawn(async move {
-                let (mut socket, _) = listener.accept().await.unwrap();
-                read_connect(&mut socket).await;
-                if answer_connect {
-                    socket.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await.unwrap();
-
-                    let mut tls = [0; 5];
-                    socket.read_exact(&mut tls).await.unwrap();
-                    assert_eq!(tls[0], 22, "the TLS handshake follows CONNECT");
-                }
-                seen.send(()).unwrap();
-                let _ = stopping.await;
-            });
-            let timeout = Duration::from_millis(300);
-            let start = Instant::now();
-            let (mut c, door) = through(proxy, timeout, client);
-            let answer = tokio::time::timeout(Duration::from_secs(3), next(&mut c))
-                .await
-                .expect("the caller's short bound is not replaced by CONNECT's ten seconds");
-            assert_eq!(answer, Err(Failure::Timeout));
-            assert!(start.elapsed() >= timeout, "not before the caller's bound");
-            tokio::time::timeout(Duration::from_secs(5), observed)
-                .await
-                .expect("the peer observed the tested protocol stage")
-                .unwrap();
-            assert_eq!(door.count("begin"), 0, "no framing before TLS finishes");
-            assert_eq!(
-                c.cause(),
-                Some(&ConnCause {
-                    stage: CAUSE_DEADLINE,
-                    text: String::new(),
-                    outbound: false,
-                })
-            );
-            stop.send(()).unwrap();
-            peers.join_next().await.unwrap().unwrap();
+            connect_keeps_the_open_deadline(answer_connect).await;
         }
     });
+}
+
+/// One round of the test above: the short overall open deadline against one peer.
+async fn connect_keeps_the_open_deadline(answer_connect: bool) {
+    let (_, client) = tls_pair();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy = listener.local_addr().unwrap();
+    let (stop, stopping) = tokio::sync::oneshot::channel();
+    let (seen, observed) = tokio::sync::oneshot::channel();
+    let mut peers = tokio::task::JoinSet::new();
+    peers.spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        read_connect(&mut socket).await;
+        if answer_connect {
+            socket.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await.unwrap();
+
+            let mut tls = [0; 5];
+            socket.read_exact(&mut tls).await.unwrap();
+            assert_eq!(tls[0], 22, "the TLS handshake follows CONNECT");
+        }
+        seen.send(()).unwrap();
+        let _ = stopping.await;
+    });
+    let timeout = Duration::from_millis(300);
+    let start = Instant::now();
+    let (mut c, door) = through(proxy, timeout, client);
+    let answer = tokio::time::timeout(Duration::from_secs(3), next(&mut c))
+        .await
+        .expect("the caller's short bound is not replaced by CONNECT's ten seconds");
+    assert_eq!(answer, Err(Failure::Timeout));
+    assert!(
+        crate::support::since(start) >= timeout,
+        "not before the caller's bound"
+    );
+    tokio::time::timeout(Duration::from_secs(5), observed)
+        .await
+        .expect("the peer observed the tested protocol stage")
+        .unwrap();
+    assert_eq!(door.count("begin"), 0, "no framing before TLS finishes");
+    assert_eq!(
+        c.cause(),
+        Some(&ConnCause {
+            stage: CAUSE_DEADLINE,
+            text: String::new(),
+            outbound: false,
+        })
+    );
+    stop.send(()).unwrap();
+    peers.join_next().await.unwrap().unwrap();
 }
 
 /// A completed CONNECT no longer owns a timer. A real TLS handshake begun after its ten-second

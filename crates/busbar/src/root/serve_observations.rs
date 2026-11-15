@@ -4,7 +4,7 @@
 use super::*;
 
 /// Carries only root-owned policy, selected after normal member authorization.
-pub(super) struct UnitBinding<'a> {
+pub(crate) struct UnitBinding<'a> {
     pub served: &'a ServedPlane,
     pub live: &'a DoorLive,
     pub unit: busbar_contract::UnitKey,
