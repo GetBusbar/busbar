@@ -31,7 +31,7 @@ impl PersistenceBackend for Backend {
             dataset: DatasetId([2; 16]),
             atomic_domain: [3; 16],
             clock_authority: [4; 16],
-            physical_version: 1,
+            physical_version: busbar_contract::abi::sdk::store::v4::slot::PHYSICAL_VERSION,
             durability: Durability::Local,
         }
     }

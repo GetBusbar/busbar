@@ -575,8 +575,11 @@ impl RootHost {
         &self,
     ) -> Result<Option<(PathBuf, busbar_contract::secure::SecureString)>, String> {
         if let Some(documents) = &self.startup {
-            if let Some(source) = documents.original_provider()? {
-                return Ok(Some(source));
+            match documents.original_provider()? {
+                Some((path, Some(raw))) => return Ok(Some((path, raw))),
+                // The retained default catalog is absent, as a NotFound read below reports it.
+                Some((_, None)) => return Ok(None),
+                None => {}
             }
         }
         let (_, path) = self.catalog_path();
