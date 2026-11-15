@@ -763,6 +763,7 @@ fn cancelling_before_the_door_retires_the_borrowed_facts_and_sweeps_once() {
         None,
         DoorUnit::op_class(),
         None,
+        None,
     ));
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
     assert!(run.as_mut().poll(&mut cx).is_pending());
@@ -816,6 +817,7 @@ async fn drive_door(
             history,
             None,
             DoorUnit::op_class(),
+            None,
             None,
         )
         .await;

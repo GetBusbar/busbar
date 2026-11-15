@@ -23,8 +23,9 @@ use busbar_kernel::teller::{AccrualMeter, Ended, Evidence, RouteAwait, UnitCtx, 
 use busbar_kernel::teller::{RouteLeg, Screen};
 use busbar_kernel::Registration;
 use busbar_kernel_audit::{
-    AuditInputs, Controls, FinishClass as RecordFinish, HookApplied, OpClassId as RecordOpClass,
-    OutcomeFacts, Subject, Usage as RecordUsage, UsageLine as RecordLine, What,
+    Attempt, AttemptOutcome, AuditInputs, Controls, FinishClass as RecordFinish, HookApplied,
+    OpClassId as RecordOpClass, OutcomeFacts, Subject, Usage as RecordUsage,
+    UsageLine as RecordLine, What, ATTEMPT_SLOTS,
 };
 
 #[cfg(test)]
@@ -555,6 +556,7 @@ impl Node {
         parent: Option<&Parent>,
         audit_kind: OpClassId,
         admission: Option<&busbar_kernel::inbound::RequestAdmission>,
+        timing: Option<Timing<'_>>,
     ) -> Option<Outcome> {
         self.sweep(arrived);
         if self.journal_refusal().is_some() {
@@ -639,6 +641,11 @@ impl Node {
             Ended::AlreadySettled => None,
         };
 
+        // Both readings precede the seal: the total is the unit's last frame handed over, and
+        // the first write already happened inside the unit (§9).
+        if let Some(timing) = timing {
+            post.measured(key, timing.read());
+        }
         let seal = post.take(key).and_then(|open| {
             open.sealing
                 .into_seal(key, self.kernel.origin(origin), parent.map(|p| p.key))
@@ -1715,6 +1722,13 @@ impl NodeEndPost {
         }
     }
 
+    /// The drive's readings of the unit, taken before it seals (§9).
+    pub(crate) fn measured(&self, key: UnitKey, measured: Measured) {
+        if let Some(open) = self.lock(key).get_mut(&key) {
+            open.sealing.ran.measured = measured;
+        }
+    }
+
     pub(crate) fn reported(&self, key: UnitKey, report: Option<Reported>) {
         if let Some(open) = self.lock(key).get_mut(&key) {
             open.sealing.report = report.map(Report::of);
@@ -1751,11 +1765,18 @@ impl busbar_kernel_egress::ports::Journal for NodeEndPost {
     ) -> Result<(), busbar_kernel_egress::ports::DurabilityUnavailable> {
         self.lock(record.unit)
             .get_mut(&record.unit)
-            .map(|open| open.sealing.ran.dialled = record.lane)
+            .map(|open| {
+                open.sealing.ran.dialled = record.lane;
+                open.sealing.ran.dial(record.lane);
+            })
             .ok_or(busbar_kernel_egress::ports::DurabilityUnavailable)
     }
 
-    fn abandoned(&self, _record: &busbar_kernel_egress::ports::Dispatched) {}
+    fn abandoned(&self, record: &busbar_kernel_egress::ports::Dispatched) {
+        if let Some(open) = self.lock(record.unit).get_mut(&record.unit) {
+            open.sealing.ran.cancel_latest();
+        }
+    }
 }
 
 impl busbar_kernel::plane_driver::HookJournal for NodeEndPost {
@@ -1900,6 +1921,119 @@ struct Ran {
     /// Every hook its hook stage reported running, in the order they ran (THE DESIGN §1: "hooks
     /// applied"): empty for a unit no hook ran for.
     hooks: Vec<HookApplied>,
+    /// What the drive measured at the unit's end (ADMIN-API-1.6 §9): copies, no allocation.
+    measured: Measured,
+    /// The first dials of the unit's walks, in the order they were made (§9).
+    walked: [Option<Walked>; ATTEMPT_SLOTS],
+    /// Every dial made, including those beyond the slots.
+    walked_total: u32,
+}
+
+/// The drive's clock and the caller it reads the unit's first write and status from (§9).
+pub(crate) struct Timing<'a> {
+    /// When the drive began the unit.
+    pub(crate) started: std::time::Instant,
+    /// The caller the unit wrote its reply through.
+    pub(crate) caller: &'a (dyn crate::root::serve::Stated + Sync),
+}
+
+impl Timing<'_> {
+    /// Read the unit's three measurements: one monotonic read, and atomic loads.
+    fn read(&self) -> Measured {
+        let total = u64::try_from(self.started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let first_ns = self.caller.first_write_ns();
+        Measured {
+            status: self
+                .caller
+                .stated()
+                .and_then(|s| u16::try_from(s).ok())
+                .unwrap_or(0),
+            ttft_us: if first_ns == 0 {
+                0
+            } else {
+                (first_ns / 1_000).max(1)
+            },
+            total_us: total.max(1),
+        }
+    }
+}
+
+/// The three readings the drive takes of a unit before it seals: all `0` when not measured.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub(crate) struct Measured {
+    /// The status the caller was answered with.
+    pub(crate) status: u16,
+    /// Microseconds to the first body write.
+    pub(crate) ttft_us: u64,
+    /// Microseconds until the last frame was handed over.
+    pub(crate) total_us: u64,
+}
+
+/// One dial of an egress walk, as the journal port saw it: copies only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Walked {
+    lane: Option<LaneId>,
+    cancelled: bool,
+}
+
+impl Ran {
+    /// A dial is about to be made: the first [`ATTEMPT_SLOTS`] are kept, the rest only counted.
+    fn dial(&mut self, lane: Option<LaneId>) {
+        if let Some(slot) = self.walked.get_mut(self.walked_total as usize) {
+            *slot = Some(Walked {
+                lane,
+                cancelled: false,
+            });
+        }
+        self.walked_total = self.walked_total.saturating_add(1);
+    }
+
+    /// The latest dial never produced an answer.
+    fn cancel_latest(&mut self) {
+        let latest = (self.walked_total as usize).checked_sub(1);
+        if let Some(Some(walked)) = latest.and_then(|i| self.walked.get_mut(i)) {
+            walked.cancelled = true;
+        }
+    }
+
+    /// The attempts a `v7` record seals, given how the unit ended: every dial but the last moved
+    /// on, and the last answered when the unit completed and failed when it did not.
+    fn attempts(&self, outcome: Outcome) -> ([Option<Attempt>; ATTEMPT_SLOTS], u32) {
+        let mut out: [Option<Attempt>; ATTEMPT_SLOTS] = Default::default();
+        let total = self.walked_total as usize;
+        for (i, (slot, walked)) in out.iter_mut().zip(&self.walked).enumerate() {
+            let Some(walked) = walked else { break };
+            let last = i + 1 == total;
+            let (kind, reason) = if walked.cancelled {
+                (AttemptOutcome::Cancelled, "")
+            } else if !last {
+                (AttemptOutcome::Failover, "")
+            } else if outcome.is_completed() {
+                (AttemptOutcome::Ok, "")
+            } else {
+                (AttemptOutcome::Failed, attempt_reason(outcome))
+            };
+            *slot = Some(Attempt {
+                outcome: kind,
+                target: walked
+                    .lane
+                    .map(|l| l.as_str().to_owned())
+                    .unwrap_or_default(),
+                reason: reason.to_owned(),
+                us: 0,
+            });
+        }
+        (out, self.walked_total)
+    }
+}
+
+/// The reason text an unfinished unit's last attempt carries.
+fn attempt_reason(outcome: Outcome) -> &'static str {
+    match outcome {
+        Outcome::Refused(_, reason) | Outcome::Failed(_, reason) => reason.as_str(),
+        Outcome::TimedOut(_) => "timed_out",
+        Outcome::Completed | Outcome::Aborted(_) => "",
+    }
 }
 
 /// A unit's record-to-be while it runs: what the node saw ([`Ran`]), and its audit door's facts and
@@ -2163,6 +2297,8 @@ impl Sealing {
         attribution: String,
     ) -> Result<StagedAudit, busbar_contract::caps::DurabilityLost> {
         let Sealing { seal, ran } = self;
+        let (attempts, attempts_total) = ran.attempts(outcome);
+        let measured = ran.measured;
         let refused = matches!(outcome, Outcome::Refused(..));
 
         let hook_failed = ran.hooks.iter().any(|hook| hook.failed);
@@ -2209,6 +2345,11 @@ impl Sealing {
                 wall_ms: arrived.ms(),
                 attribution,
                 boot_nonce: busbar_kernel::snapshot::boot_nonce(),
+                status: measured.status,
+                ttft_us: measured.ttft_us,
+                total_us: measured.total_us,
+                attempts,
+                attempts_total,
                 ..busbar_kernel_audit::UnitFacts::default()
             },
         };

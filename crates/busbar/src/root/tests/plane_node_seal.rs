@@ -232,6 +232,7 @@ async fn a_borrowed_unit_seals_its_verified_destination() {
             None,
             OpClassId::new("seal"),
             None,
+            None,
         )
         .await;
     assert!(outcome.is_some(), "the table took the unit and it ended");
@@ -666,6 +667,7 @@ async fn sealed_after(
             None,
             OpClassId::new("seal"),
             None,
+            None,
         )
         .await;
     assert!(outcome.is_some(), "the table took the unit and it ended");
@@ -775,6 +777,7 @@ async fn sealed_under(
             history(arrived.ms()),
             None,
             OpClassId::new("seal"),
+            None,
             None,
         )
         .await;
