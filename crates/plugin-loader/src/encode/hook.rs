@@ -1,34 +1,158 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Hook request encoders and describe decoders (IF §8.8). W0-ABI stub: frozen signatures, `todo!()` bodies;
-//! A8 fills it.
+//! Hook request encoders and describe decoders (IF §8.8).
 
-use busbar_plugin_abi::records::{Full, RecErr, Records, Writer};
+use busbar_plugin_abi::kinds::hook::hook::{
+    self as abi, B_HAS_SPEND, BudgetRec, COST_UNPRICED, CostTermRec, Points, tag,
+};
+use busbar_plugin_abi::records::{Full, RecErr, Records, Reply, Writer, tag as gtag};
 
-use crate::ports::hook::HookView;
+use crate::ports::FactRef;
+use crate::ports::hook::{BudgetIn, CandidateIn, CostTermIn, HookView};
+
+/// The most D_WORD items one describe answer may carry.
+const MAX_WORDS: usize = 8;
+/// The longest strategy word, in bytes.
+const MAX_WORD_LEN: usize = 32;
+
+/// The D_POINTS mask bit of a decision point.
+const fn point_bit(point: u32) -> u32 {
+    1 << point
+}
+
+/// `[a-z][a-z0-9_-]{0,31}`.
+fn word_ok(w: &str) -> bool {
+    let b = w.as_bytes();
+    b.len() <= MAX_WORD_LEN
+        && b.first().is_some_and(u8::is_ascii_lowercase)
+        && b.iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'_' | b'-'))
+}
 
 /// Round 12: every D_WORD item of one describe answer (validated: word grammar, at most 8, POINT_ROUTE declared).
 pub fn decode_words(describe: Records<'_>) -> Result<Vec<Box<str>>, RecErr> {
-    let _ = describe;
-    todo!()
+    let mut words: Vec<Box<str>> = Vec::new();
+    let mut route = false;
+    for rec in describe {
+        let rec = rec?;
+        match rec.tag {
+            tag::D_POINTS => {
+                let p: Points = rec.pod()?;
+                route |= p.mask & point_bit(abi::POINT_ROUTE) != 0;
+            }
+            tag::D_WORD => {
+                let w = rec.text()?;
+                if words.len() == MAX_WORDS || !word_ok(w) {
+                    return Err(RecErr::Size);
+                }
+                words.push(w.into());
+            }
+            _ => {}
+        }
+    }
+    if !words.is_empty() && !route {
+        return Err(RecErr::Size);
+    }
+    Ok(words)
 }
 
 /// The view core builds once per decision point: signals, candidates, and the optional parts.
+/// Order: FACT/FACT_TEXT, CANDIDATE*, BUDGET*, CONVERSATION, BODY, ID_*.
 pub fn encode_view(w: &mut impl Writer, v: &HookView<'_>) -> Result<(), Full> {
-    let _ = (w, v);
-    todo!()
+    for (key, fact) in v.signals {
+        match *fact {
+            FactRef::U(n) => w.put_fact(*key, n)?,
+            FactRef::Text(s) => w.put_fact_text(*key, s)?,
+        }
+    }
+    for c in v.candidates {
+        candidate(w, c)?;
+    }
+    for b in v.budgets {
+        budget(w, b)?;
+    }
+    if let Some(c) = v.conversation {
+        w.put(gtag::CONVERSATION, c)?;
+    }
+    if let Some(b) = v.body {
+        w.put(tag::BODY, b)?;
+    }
+    if let Some(ids) = v.identity {
+        // Core-built ID_SUBJECT, ID_GROUP*, ID_CLAIM* records, copied record for record. A malformed
+        // tail is core's own bug; it ends the copy rather than putting half a record on the wire.
+        for rec in Records::new(ids) {
+            let Ok(rec) = rec else { break };
+            w.put(rec.tag, rec.body)?;
+        }
+    }
+    Ok(())
+}
+
+fn candidate(w: &mut impl Writer, c: &CandidateIn<'_>) -> Result<(), Full> {
+    // The tail is nested records after the Pod: a Pod head cannot ride `put_nested`.
+    let mut tail = Reply::new();
+    tail.put_text(tag::C_MODEL, c.model)?;
+    tail.put_text(tag::C_PROVIDER, c.provider)?;
+    if let Some(t) = c.tier {
+        tail.put_text(tag::C_TIER, t)?;
+    }
+    for t in c.tags {
+        tail.put_text(tag::C_TAG, t)?;
+    }
+    for t in c.cost_terms {
+        cost_term(&mut tail, t)?;
+    }
+    w.put_pod_tail(tag::CANDIDATE, &c.rec, tail.as_bytes())
+}
+
+fn cost_term(w: &mut impl Writer, t: &CostTermIn<'_>) -> Result<(), Full> {
+    let rec = CostTermRec {
+        price_per_unit: t.price_per_unit.unwrap_or(f64::NAN),
+        expected_units: t.expected_units,
+        flags: if t.price_per_unit.is_none() {
+            COST_UNPRICED
+        } else {
+            0
+        },
+        _r: 0,
+    };
+    w.put_pod_tail(tag::C_COST_TERM, &rec, t.class.as_bytes())
+}
+
+fn budget(w: &mut impl Writer, b: &BudgetIn<'_>) -> Result<(), Full> {
+    let rec = BudgetRec {
+        remaining_micros: b.remaining_micros,
+        spend_micros_at_current_rate: b.spend_micros_at_current_rate.unwrap_or(0),
+        window_start_s: b.window_start_s,
+        flags: if b.spend_micros_at_current_rate.is_some() {
+            B_HAS_SPEND
+        } else {
+            0
+        },
+        _r: 0,
+    };
+    let mut tail = Reply::new();
+    tail.put_text(tag::B_ID, b.id)?;
+    tail.put_text(tag::B_PERIOD, b.period)?;
+    if let Some(g) = b.group {
+        tail.put_text(tag::B_GROUP, g)?;
+    }
+    if let Some(p) = b.pool {
+        tail.put_text(tag::B_POOL, p)?;
+    }
+    w.put_pod_tail(tag::BUDGET, &rec, tail.as_bytes())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ports::hook::{BudgetIn, CandidateIn, CostTermIn};
     use crate::ports::FactRef;
+    use crate::ports::hook::{BudgetIn, CandidateIn, CostTermIn};
     use busbar_plugin_abi::kinds::hook::hook::{
-        self as abi, tag, BudgetRec, CandidateRec, CostTermRec, Points,
+        self as abi, BudgetRec, CandidateRec, CostTermRec, Points, tag,
     };
-    use busbar_plugin_abi::records::{tag as gtag, Reply};
+    use busbar_plugin_abi::records::{Reply, tag as gtag};
 
     fn describe(points: Option<u32>, words: &[&str]) -> Reply {
         let mut r = Reply::new();
@@ -82,10 +206,7 @@ mod tests {
         let ok = "a".repeat(32);
         for bad in ["", "Cheap", "1x", "-x", "a b", "a.b", long.as_str()] {
             let d = describe(Some(route_mask()), &[bad]);
-            assert!(
-                decode_words(Records::new(d.as_bytes())).is_err(),
-                "{bad:?}"
-            );
+            assert!(decode_words(Records::new(d.as_bytes())).is_err(), "{bad:?}");
         }
         let d = describe(Some(route_mask()), &[ok.as_str()]);
         assert!(decode_words(Records::new(d.as_bytes())).is_ok());
@@ -206,7 +327,9 @@ mod tests {
                 tag::BODY
             ]
         );
-        let all = Records::new(w.as_bytes()).map(|r| r.unwrap()).collect::<Vec<_>>();
+        let all = Records::new(w.as_bytes())
+            .map(|r| r.unwrap())
+            .collect::<Vec<_>>();
         let (rec0, tail0) = all[2].pod_tail::<CandidateRec>().unwrap();
         assert_eq!(rec0.index, 0);
         assert_eq!(rec0.flags, abi::C_HAS_LATENCY | abi::C_HAS_COST);
@@ -229,7 +352,10 @@ mod tests {
         assert_eq!(inner[2].1, b"gold");
         let nested0 = Records::new(tail0).collect::<Result<Vec<_>, _>>().unwrap();
         let (t0, c0) = nested0[5].pod_tail::<CostTermRec>().unwrap();
-        assert_eq!((t0.price_per_unit, t0.expected_units, t0.flags), (0.5, 10.0, 0));
+        assert_eq!(
+            (t0.price_per_unit, t0.expected_units, t0.flags),
+            (0.5, 10.0, 0)
+        );
         assert_eq!(c0, b"input");
         let (t1, c1) = nested0[6].pod_tail::<CostTermRec>().unwrap();
         assert!(t1.price_per_unit.is_nan());
@@ -242,7 +368,12 @@ mod tests {
         // Budgets.
         let (b1, bt1) = all[4].pod_tail::<BudgetRec>().unwrap();
         assert_eq!(
-            (b1.remaining_micros, b1.spend_micros_at_current_rate, b1.window_start_s, b1.flags),
+            (
+                b1.remaining_micros,
+                b1.spend_micros_at_current_rate,
+                b1.window_start_s,
+                b1.flags
+            ),
             (100, 30, 1234, abi::B_HAS_SPEND)
         );
         let t: Vec<u16> = recs(bt1).iter().map(|r| r.0).collect();
