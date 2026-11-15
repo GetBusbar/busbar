@@ -81,6 +81,7 @@ pub(crate) fn operator_words() -> busbar_kernel_identity::operator::OperatorWord
     busbar_kernel_identity::operator::OperatorWords {
         provider: operator_auth_module(),
         principal_id: ADMIN_PRINCIPAL_ID,
+        ..Default::default()
     }
 }
 

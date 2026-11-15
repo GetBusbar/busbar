@@ -409,6 +409,34 @@ pub trait AuthCalls: Send + Sync {
     }
 }
 
+/// One admitted `kind: auth` row whose Statement states the operator credential fact
+/// (`FACT_OPERATOR` with its `operator_principal`), as process start and every build read it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperatorClaim {
+    /// The row's config key (its manifest alias), as `answers` matches it.
+    pub provider: String,
+    /// The plugin's canonical name: the key claims are de-duplicated on.
+    pub canonical: String,
+    /// The stated operator principal (never empty: the Statement decoder refuses an empty one).
+    pub principal: String,
+    /// Whether the row is first-party: linked, or verified against a busbar release key.
+    pub first_party: bool,
+    /// The row's version, for the audit row only; never part of a judged comparison.
+    pub version: String,
+    /// The row's signer (publisher or key label), for the audit row only.
+    pub signer: String,
+}
+
+/// Every operator claim among the admitted auth rows, and every auth row whose Statement does not
+/// read (`(row, error)`): such a row cannot be judged as or against the operator, so it is refused.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OperatorClaims {
+    /// The rows stating the operator fact, de-duplicated on [`OperatorClaim::canonical`].
+    pub claims: Vec<OperatorClaim>,
+    /// The auth rows whose Statement did not decode, with the decoder's error.
+    pub unreadable: Vec<(String, String)>,
+}
+
 /// THE AUTH AXIS, as the composition root hands it to the kernel (the shape of the export kind's
 pub trait AuthAxis: Send + Sync {
     /// The config keys of the auth rows this build LINKS, in registration order.
@@ -422,6 +450,26 @@ pub trait AuthAxis: Send + Sync {
 
     /// THE OPERATOR CREDENTIAL'S ROW: the auth row whose Statement states
     fn operator(&self) -> Option<(String, String)>;
+
+    /// Every admitted auth row whose Statement states the operator credential fact, and every row
+    /// whose Statement does not read (OPERATOR-FROM-ADMITTED-AUTH §3.2).
+    fn operator_claims(&self) -> OperatorClaims {
+        OperatorClaims {
+            claims: self
+                .operator()
+                .map(|(provider, principal)| OperatorClaim {
+                    canonical: provider.clone(),
+                    provider,
+                    principal,
+                    first_party: true,
+                    version: String::new(),
+                    signer: String::new(),
+                })
+                .into_iter()
+                .collect(),
+            unreadable: Vec::new(),
+        }
+    }
 
     /// OPEN one instance of `module` over `settings` (the provider's settings, one JSON document,
     fn open(

@@ -16,6 +16,7 @@ fn explicit_metadata_keeps_auth_unanswered_until_a_linked_root_overrides_it() {
     let metadata = OperatorWords {
         provider: "fixture-operator",
         principal_id: "fixture-principal",
+        ..OperatorWords::default()
     };
     operator::install_test_words(metadata);
     assert_eq!(operator::words(), metadata);
@@ -26,6 +27,7 @@ fn explicit_metadata_keeps_auth_unanswered_until_a_linked_root_overrides_it() {
     let actual = OperatorWords {
         provider: "linked-operator",
         principal_id: "linked-principal",
+        ..OperatorWords::default()
     };
     static ROWS: &[LinkedAuth] = &[("linked-operator", "linked-canonical", unopened_door)];
     operator::install_linked(ROWS, actual);
