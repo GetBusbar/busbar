@@ -1695,6 +1695,12 @@ impl BookPreparation {
             )));
         }
         let node = self.taken.as_ref().expect("retained node result").id;
+        let deployment_id = self.identity.keep_deployment_id().await?;
+        busbar_kernel::persistence::boot_identity::publish_live(
+            self.identity.clone(),
+            node,
+            deployment_id,
+        );
         self.phase = BookPhase::OpenJournal;
         self.journal = Some(
             RuntimeJournal::open(

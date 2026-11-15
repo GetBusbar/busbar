@@ -16,6 +16,9 @@ pub const INSTANCE: &str = "busbar.boot";
 pub const NODE_SCHEMA: &str = "busbar.node.v1";
 pub const KEYSET_SCHEMA: &str = "busbar.keyset.v1";
 const KEYSET_KEY: &[u8] = b"deployment";
+/// The keep-once deployment identity row (ADMIN-API-1.6 4.1): not the secret keyset row.
+pub const DEPLOYMENT_SCHEMA: &str = "busbar.deployment.v1";
+const DEPLOYMENT_KEY: &[u8] = b"id";
 const ASSIGNMENT_MAGIC: &[u8; 8] = b"BBNODE01";
 const ID_ATTEMPTS: usize = 16;
 const JOURNAL_INVENTORY_PREFIX: &[u8] = b"journal:";
@@ -484,6 +487,14 @@ fn archive_key(host: &str, id: u64) -> Vec<u8> {
 fn id_key(id: u64) -> Vec<u8> {
     [b"id:".as_slice(), &id.to_be_bytes()].concat()
 }
+/// The start time (unix ms) of the node `id`, written once with its assignment.
+fn born_key(id: u64) -> Vec<u8> {
+    [b"born:".as_slice(), &id.to_be_bytes()].concat()
+}
+/// The time (unix ms) the node `id` released its lease: written once, on a clean stop.
+fn stop_key(id: u64) -> Vec<u8> {
+    [b"stop:".as_slice(), &id.to_be_bytes()].concat()
+}
 fn random<const N: usize>() -> Result<[u8; N], String> {
     let mut bytes = [0; N];
     busbar_contract::crypto::fill(&mut bytes).map_err(error)?;
@@ -561,7 +572,10 @@ pub struct BootIdentity {
 impl BootIdentity {
     pub fn new(core: Arc<CoreStore>) -> Result<Self, String> {
         Ok(Self {
-            records: BootRecords::new(core.clone(), &[NODE_SCHEMA, KEYSET_SCHEMA])?,
+            records: BootRecords::new(
+                core.clone(),
+                &[NODE_SCHEMA, KEYSET_SCHEMA, DEPLOYMENT_SCHEMA],
+            )?,
             core,
             holder: random()?,
         })
@@ -695,6 +709,7 @@ impl BootIdentity {
             let reservation = id_key(id);
             let mut predicates = vec![predicate(NODE_SCHEMA, reservation.clone(), None)];
             let mut mutations = vec![put(NODE_SCHEMA, reservation, assignment.clone())];
+            mutations.push(put(NODE_SCHEMA, born_key(id), now.to_be_bytes().to_vec()));
             predicates.push(predicate(NODE_SCHEMA, writer_key.clone(), writer_lease));
             mutations.push(put(
                 NODE_SCHEMA,
@@ -797,6 +812,187 @@ impl BootIdentity {
             .await?
             .ok_or_else(|| "deployment keyset was not kept".into())
     }
+
+    /// The deployment identity (`dep_` + 32 hex): the same 16 random bytes for the life of the
+    /// store. Kept once, by the first process that asks, in its own row (not the secret keyset
+    /// row), so every node and every restart reads the one value.
+    pub async fn keep_deployment_id(&self) -> Result<String, String> {
+        let _gate = self.records.gate.lock().await;
+        self.records.resume().await?;
+        loop {
+            if let Some(held) = self
+                .records
+                .records
+                .get(DEPLOYMENT_SCHEMA, DEPLOYMENT_KEY)
+                .await
+                .map_err(error)?
+            {
+                let bytes = held.expose(&crate::seal::lend());
+                return match <[u8; 16]>::try_from(bytes.as_slice()) {
+                    Ok(id) => Ok(format!("dep_{}", hex::encode(id))),
+                    Err(_) => Err("malformed deployment identity row".into()),
+                };
+            }
+            let id: [u8; 16] = random()?;
+            self.records
+                .decide(
+                    vec![predicate(DEPLOYMENT_SCHEMA, DEPLOYMENT_KEY.into(), None)],
+                    vec![put(DEPLOYMENT_SCHEMA, DEPLOYMENT_KEY.into(), id.to_vec())],
+                )
+                .await?;
+        }
+    }
+
+    /// Every node the store holds a lease row for, lowest id first: the `/info.nodes` read.
+    /// `live`: its lease is unexpired by the store's clock; `lost`: it expired without release;
+    /// `stopped`: it was released, or its writer's lease row was closed. `writer` marks the node
+    /// this store's current writer authority runs; every other node is a `replica`.
+    pub async fn nodes(&self) -> Result<Vec<NodeRow>, String> {
+        use std::collections::BTreeMap;
+        let now_ms = self.now_ms().await?;
+        let own = self.core.authority().map_err(error)?;
+        let mut assignments: Vec<(bool, String, Assignment)> = Vec::new();
+        let mut host_leases: BTreeMap<String, LeaseRow> = BTreeMap::new();
+        let mut writer_leases: BTreeMap<(u64, [u8; 16]), LeaseRow> = BTreeMap::new();
+        let mut born: BTreeMap<u64, u64> = BTreeMap::new();
+        let mut stopped: BTreeMap<u64, u64> = BTreeMap::new();
+        let mut cursor = None;
+        loop {
+            let page = {
+                let _gate = self.records.gate.lock().await;
+                self.records.resume().await?;
+                self.records
+                    .records
+                    .page(NODE_SCHEMA, b"", cursor.as_ref())
+                    .await
+                    .map_err(error)?
+            };
+            for (key, value) in page.rows {
+                let bytes = value.expose(&crate::seal::lend());
+                if let Some(rest) = key.strip_prefix(b"host:") {
+                    if bytes.len() != 40 {
+                        // A 1.5.5-shaped node id names no writer and holds no lease.
+                        continue;
+                    }
+                    let primary = !rest.contains(&0);
+                    let host = rest.split(|b| *b == 0).next().unwrap_or_default();
+                    let host = String::from_utf8_lossy(host).into_owned();
+                    assignments.push((primary, host, Assignment::parse(bytes)?));
+                } else if let Some(host) = key.strip_prefix(b"lease:") {
+                    let host = String::from_utf8_lossy(host).into_owned();
+                    host_leases.insert(host, LeaseRow::parse(bytes)?);
+                } else if let Some(rest) = key.strip_prefix(b"writer:") {
+                    if rest.len() == 24 {
+                        let epoch = u64::from_be_bytes(rest[..8].try_into().map_err(error)?);
+                        let writer: [u8; 16] = rest[8..].try_into().map_err(error)?;
+                        writer_leases.insert((epoch, writer), LeaseRow::parse(bytes)?);
+                    }
+                } else if let Some(id) = key.strip_prefix(b"stop:") {
+                    if let (Ok(id), Ok(at)) = (
+                        <[u8; 8]>::try_from(id),
+                        <[u8; 8]>::try_from(bytes.as_slice()),
+                    ) {
+                        stopped.insert(u64::from_be_bytes(id), u64::from_be_bytes(at));
+                    }
+                } else if let Some(id) = key.strip_prefix(b"born:") {
+                    if let (Ok(id), Ok(at)) = (
+                        <[u8; 8]>::try_from(id),
+                        <[u8; 8]>::try_from(bytes.as_slice()),
+                    ) {
+                        born.insert(u64::from_be_bytes(id), u64::from_be_bytes(at));
+                    }
+                }
+            }
+            match page.next {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        let mut nodes = Vec::new();
+        for (primary, host, assignment) in assignments {
+            let lease = if primary {
+                host_leases.get(&host)
+            } else {
+                writer_leases.get(&(assignment.epoch, assignment.writer))
+            };
+            let expires_ms = lease.map_or(0, |row| row.expires_ms);
+            let released_ms = stopped.get(&assignment.id).copied();
+            let state = if released_ms.is_some() || expires_ms == 0 {
+                "stopped"
+            } else if expires_ms > now_ms {
+                "live"
+            } else {
+                "lost"
+            };
+            let last_seen_ms = if let Some(released) = released_ms {
+                released
+            } else if expires_ms == 0 {
+                born.get(&assignment.id).copied().unwrap_or(0)
+            } else {
+                expires_ms.saturating_sub(LEASE_TTL_MS)
+            };
+            let started_ms = born.get(&assignment.id).copied().unwrap_or(last_seen_ms);
+            let runs_here = assignment.epoch == own.writer_epoch && assignment.writer == own.writer;
+            nodes.push((
+                assignment.id,
+                NodeRow {
+                    node_id: format!("node_{:016x}", assignment.id),
+                    started_at: started_ms / 1_000,
+                    last_seen_at: last_seen_ms.max(started_ms) / 1_000,
+                    state,
+                    role: if runs_here && state == "live" {
+                        "writer"
+                    } else {
+                        "replica"
+                    },
+                },
+            ));
+        }
+        nodes.sort_by_key(|(id, _)| *id);
+        nodes.dedup_by_key(|(id, _)| *id);
+        Ok(nodes.into_iter().map(|(_, row)| row).collect())
+    }
+}
+
+/// One node of `/info.nodes`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NodeRow {
+    pub node_id: String,
+    pub started_at: u64,
+    pub last_seen_at: u64,
+    pub state: &'static str,
+    pub role: &'static str,
+}
+
+/// This process's identity as the admin surface serves it: published once at boot.
+pub struct LiveIdentity {
+    owner: Arc<BootIdentity>,
+    node: u64,
+    deployment_id: String,
+}
+impl LiveIdentity {
+    pub fn node_id(&self) -> String {
+        format!("node_{:016x}", self.node)
+    }
+    pub fn deployment_id(&self) -> &str {
+        &self.deployment_id
+    }
+    pub async fn nodes(&self) -> Result<Vec<NodeRow>, String> {
+        self.owner.nodes().await
+    }
+}
+static LIVE: std::sync::OnceLock<LiveIdentity> = std::sync::OnceLock::new();
+/// Publishes this process's node and deployment identity (boot, once).
+pub fn publish_live(owner: Arc<BootIdentity>, node: u64, deployment_id: String) {
+    let _ = LIVE.set(LiveIdentity {
+        owner,
+        node,
+        deployment_id,
+    });
+}
+/// The published identity, `None` before boot has taken a node.
+pub fn live() -> Option<&'static LiveIdentity> {
+    LIVE.get()
 }
 
 /// A scanned writer lease: its target, key, exact bytes and expiry.
@@ -1185,6 +1381,7 @@ impl NodeLease {
                 return Ok(false);
             };
             let writer_row = LeaseRow::parse(writer_bytes.expose(&crate::seal::lend()))?;
+            let stopped_ms = if release { owner.now_ms().await? } else { 0 };
             let expires_ms = if release {
                 0
             } else {
@@ -1210,6 +1407,13 @@ impl NodeLease {
                     }
                     .bytes(),
                 ));
+                if release {
+                    mutations.push(put(
+                        NODE_SCHEMA,
+                        stop_key(self.id),
+                        stopped_ms.to_be_bytes().to_vec(),
+                    ));
+                }
             }
             if !release {
                 mutations.push(put(

@@ -109,6 +109,24 @@ impl AdminService {
             .filter_map(|i| view.lane_view(i).map(|l| l.provider.to_string()))
             .collect();
 
+        let live = busbar_kernel::persistence::boot_identity::live();
+        let nodes = match live {
+            Some(live) => live
+                .nodes()
+                .await
+                .map_err(|_| AdminError::Internal)?
+                .into_iter()
+                .map(|n| NodeView {
+                    node_id: n.node_id,
+                    started_at: n.started_at,
+                    last_seen_at: n.last_seen_at,
+                    state: n.state.into(),
+                    role: n.role.into(),
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+
         Ok(InfoView {
             version: env!("CARGO_PKG_VERSION"),
             build: BuildInfo {
@@ -128,6 +146,9 @@ impl AdminService {
             config_persistence: self.app.overlay_path.is_some(),
             config_version: self.app.config_version,
             overlay_ignored: busbar_kernel::appbuild::booted_with_ignore_overlay(),
+            deployment_id: live.map(|l| l.deployment_id().to_string()),
+            node_id: live.map(|l| l.node_id()),
+            nodes,
         })
     }
 
