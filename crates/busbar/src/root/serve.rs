@@ -2350,6 +2350,9 @@ impl DataRoutes {
         let app_for_metrics = Arc::clone(&app);
         let node = self.post.node();
         let unit = admission.map_or_else(|| node.mint(), |admission| admission.unit_key());
+        if let Some(id) = node.unit_id(unit) {
+            caller.minted(id);
+        }
         let arrived = node.arrived();
         let measurement_scope = match super::measurements::RequestScope::new(
             &served.money,
@@ -2553,7 +2556,7 @@ pub(crate) fn report_of(
     facts: &DoorFacts,
 ) -> Option<crate::root::linked::node::Reported> {
     // The meter gate's fold, carried (SP-M1): re-folded only when the counts moved since.
-    let (lane, fold) = money.usage(unit)?;
+    let (lane, attribution, fold) = money.attributed_usage(unit)?;
     let mut usage_units: BTreeMap<String, busbar_contract::Count> = BTreeMap::new();
     let mut fee = 0u32;
     for (class, sum) in fold.by_class() {
@@ -2580,6 +2583,7 @@ pub(crate) fn report_of(
         busbar_contract::billing::ExactUsage { usage_units },
         fee,
         lane,
+        attribution,
     ))
 }
 
@@ -3056,9 +3060,17 @@ pub(crate) struct IngressCaller {
     pub(crate) stated: std::sync::atomic::AtomicU32,
     /// The arrival's body, until a session's caller leg has read it.
     pub(crate) arrived: Mutex<Option<Bytes>>,
+    /// The unit's node-qualified id, once the drive minted the unit: the reply's `X-Request-Id`.
+    pub(crate) unit_id: Arc<Mutex<Option<HeaderValue>>>,
 }
 
 pub(crate) type Head = (u32, HeadFields);
+
+/// The data plane's response header naming the unit (ADMIN-API-1.6 §3.4).
+pub(crate) const X_REQUEST_ID: &str = "x-request-id";
+
+/// Room for a unit id: `node_` + 16 hex, `.`, 32 hex, `.`, at most 20 decimal digits.
+const UNIT_ID_LEN: usize = 5 + 16 + 1 + 32 + 1 + 20;
 
 /// The handler's end of an [`IngressCaller`]: the reply, once the unit states its head.
 #[derive(Debug)]
@@ -3067,6 +3079,23 @@ pub(crate) struct IngressReply {
     pub(crate) body: mpsc::Receiver<Bytes>,
     /// The answer's trailers, where a framer renders a close after its body.
     pub(crate) trailers: Option<oneshot::Receiver<axum::http::HeaderMap>>,
+    /// Shared with the caller: the unit id the reply is stamped with.
+    pub(crate) unit_id: Arc<Mutex<Option<HeaderValue>>>,
+}
+
+/// Stamp `response` with the unit's id, replacing any `x-request-id` a plane forwarded from
+/// upstream: core's id is the one a client joins records and content by.
+fn stamp_unit_id(mut response: Response, unit_id: &Mutex<Option<HeaderValue>>) -> Response {
+    let minted = unit_id
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some(id) = minted {
+        response
+            .headers_mut()
+            .insert(HeaderName::from_static(X_REQUEST_ID), id);
+    }
+    response
 }
 
 impl IngressCaller {
@@ -3079,11 +3108,13 @@ impl IngressCaller {
     pub(crate) fn arriving(body: Bytes) -> (Self, IngressReply) {
         let (head_tx, head) = oneshot::channel();
         let (body_tx, reply_body) = mpsc::channel(1);
+        let unit_id = Arc::new(Mutex::new(None));
         let caller = IngressCaller {
             head: Mutex::new(Some(head_tx)),
             body: body_tx,
             stated: std::sync::atomic::AtomicU32::new(0),
             arrived: Mutex::new(Some(body)),
+            unit_id: Arc::clone(&unit_id),
         };
         (
             caller,
@@ -3091,6 +3122,7 @@ impl IngressCaller {
                 head,
                 body: reply_body,
                 trailers: None,
+                unit_id,
             },
         )
     }
@@ -3105,11 +3137,27 @@ pub(crate) trait Stated {
     fn stated(&self) -> Option<u32>;
 
     fn ended(&self, _outcome: Option<busbar_contract::caps::Outcome>) {}
+
+    /// The drive minted the unit this caller is answered for: `id` is its node-qualified id.
+    fn minted(&self, _id: busbar_kernel_audit::UnitId) {}
 }
 
 impl Stated for IngressCaller {
     fn stated(&self) -> Option<u32> {
         IngressCaller::stated(self)
+    }
+
+    fn minted(&self, id: busbar_kernel_audit::UnitId) {
+        // One allocation: the id is formatted once and the header takes the string's bytes.
+        let mut text = String::with_capacity(UNIT_ID_LEN);
+        if std::fmt::Write::write_fmt(&mut text, format_args!("{id}")).is_ok() {
+            if let Ok(value) = HeaderValue::try_from(text) {
+                *self
+                    .unit_id
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(value);
+            }
+        }
     }
 }
 
@@ -3257,7 +3305,18 @@ impl IngressReply {
         self.answer_with_collection(unit, unrendered).await
     }
 
+    /// Every answer, whole, streamed or refused, leaves stamped with the unit's id.
     async fn answer_with_collection(
+        self,
+        unit: DrivenUnit,
+        unrendered: impl FnOnce(Option<Rendered>) -> Response,
+    ) -> Response {
+        let unit_id = Arc::clone(&self.unit_id);
+        let response = self.answer_unstamped(unit, unrendered).await;
+        stamp_unit_id(response, &unit_id)
+    }
+
+    async fn answer_unstamped(
         self,
         mut unit: DrivenUnit,
         unrendered: impl FnOnce(Option<Rendered>) -> Response,
@@ -3266,6 +3325,7 @@ impl IngressReply {
             mut head,
             body,
             mut trailers,
+            ..
         } = self;
         let first = tokio::select! {
             biased;

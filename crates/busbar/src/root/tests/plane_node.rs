@@ -763,6 +763,7 @@ fn report_of(output: u64) -> Report {
         },
         fee_count: 0,
         lane: "lane".to_string(),
+        attribution: String::new(),
     }
 }
 
@@ -1938,6 +1939,7 @@ fn split_report(input: u64, output: u64, fee_count: u32) -> Report {
         usage: busbar_contract::billing::ExactUsage { usage_units: units },
         fee_count,
         lane: "lane".to_string(),
+        attribution: String::new(),
     }
 }
 
@@ -2678,6 +2680,7 @@ fn rerank_report(units: u64) -> Report {
         },
         fee_count: 1,
         lane: "lane".to_string(),
+        attribution: String::new(),
     }
 }
 
@@ -3834,7 +3837,7 @@ async fn the_tap_reports_the_end_a_status_line_cannot() {
             relayed,
             "{label}: the caller has exactly what was relayed before the end: {text}"
         );
-        let (usage, _fee_count, lane) = reached
+        let (usage, _fee_count, lane, _attribution) = reached
             .reported
             .unwrap_or_else(|| panic!("{label}: the tap reported nothing at all"));
         assert_eq!(
