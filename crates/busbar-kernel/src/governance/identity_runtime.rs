@@ -332,6 +332,8 @@ impl GovState {
         let generation = generate_binding_generation().store()?;
         let mut key = before.clone();
         key.generation_hash = binding_marker(id, &generation);
+        key.rotated_at = Some(crate::store::now());
+        key.rotation_count = key.rotation_count.saturating_add(1);
         let commit = self
             .core
             .identity()

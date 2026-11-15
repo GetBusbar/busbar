@@ -1229,12 +1229,15 @@ fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
         .build()
         .expect("the native store runtime");
     let store = runtime.block_on(actual_store());
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "store": {"module": module},
-        "auth": {"chain": [], "admin_auth": []},
-        "providers": {},
-        "models": {},
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "store": {"module": module},
+            "auth": {"chain": [], "admin_auth": []},
+            "providers": {},
+            "models": {},
+        }),
+        &live_grammar(),
+    )
     .expect("the admin-route deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the admin-route deployment resolves");
@@ -1924,4 +1927,15 @@ async fn a_session_is_refused_while_its_money_is_unstated() {
         );
         assert_eq!(caller.heard(), "", "{way:?}");
     }
+}
+
+/// The words the live secret axis declares: the grammar these fixtures read a document under.
+fn live_grammar() -> busbar_kernel::config::Grammar {
+    busbar_kernel::config::Grammar::new(
+        busbar_kernel::config::secret::live_axis()
+            .map(busbar_contract::secret::SecretAxis::sugars)
+            .unwrap_or_default(),
+        Default::default(),
+        Vec::new(),
+    )
 }

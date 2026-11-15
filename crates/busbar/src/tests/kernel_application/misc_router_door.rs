@@ -68,7 +68,8 @@ async fn data_router(doors: Vec<PlaneRouteSpec>) -> Router {
         "module": operator, "token": {"file": operator_token},
     });
     let deploy =
-        kernel::config::deploy_from_deserializer(document).expect("the product deployment parses");
+        kernel::config::deploy_from_deserializer(document, &crate::root::boot::axis_test_grammar())
+            .expect("the product deployment parses");
     let config = kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);

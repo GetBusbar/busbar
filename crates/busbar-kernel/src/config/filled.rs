@@ -213,7 +213,7 @@ fn reference_to(
 }
 
 pub fn plane_bound(prefix: &[&str], value: serde_json::Value) -> Result<serde_json::Value, String> {
-    plane_bound_with_sources(prefix, value, &super::secret::sugars())
+    plane_bound_with_sources(prefix, value, &super::secret::admitted_sugars())
 }
 
 fn plane_bound_with_sources(

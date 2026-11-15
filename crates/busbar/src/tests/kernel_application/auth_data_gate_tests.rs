@@ -51,7 +51,7 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
+    }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
@@ -222,7 +222,7 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
+    }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
@@ -352,7 +352,7 @@ async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
+    }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
@@ -463,7 +463,7 @@ async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
+    }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
@@ -599,7 +599,7 @@ async fn test_admin_prefix_is_boundary_safe() {
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
+    }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
@@ -733,7 +733,7 @@ async fn test_unauthorized_body_carries_no_busbar_vocabulary_on_the_live_stack()
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
+    }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");

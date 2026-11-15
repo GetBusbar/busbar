@@ -1133,7 +1133,9 @@ hook_op!(
 );
 
 /// The hook door under its old name, kept one release so plugins re-pin at leisure:
-/// [`export_plugin!`](crate::export_plugin)'s `hook` arm.
+/// [`export_plugin!`](crate::export_plugin)'s `hook` arm. An optional trailing
+/// `former_names: &["old-name"]` is forwarded: the names an earlier release answered to, so a
+/// config naming one still resolves.
 ///
 /// ```
 /// use busbar_contract::abi::sdk::hook::{Hook, HookOpen};
@@ -1156,8 +1158,8 @@ hook_op!(
 /// ```
 #[macro_export]
 macro_rules! hook_door {
-    (open: $open:ty, statement: $statement:expr $(,)?) => {
-        $crate::export_plugin! { hook: $open, statement: $statement }
+    (open: $open:ty, statement: $statement:expr $(, former_names: $former:expr)? $(,)?) => {
+        $crate::export_plugin! { hook: $open, statement: $statement $(, former_names: $former)? }
     };
 }
 

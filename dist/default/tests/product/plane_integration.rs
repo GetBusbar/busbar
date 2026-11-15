@@ -71,7 +71,9 @@ fn resolved(sections: &str) -> RootCfg {
          providers:\n  acme: {{ api_key: none }}\n\
          models:\n  m: {{ provider: acme }}\n{sections}"
     );
-    let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("the document parses");
+    let deploy =
+        busbar_kernel::config::deploy_from_yaml_str(&yaml, &crate::root::boot::axis_test_grammar())
+            .expect("the document parses");
     let mut defs = std::collections::HashMap::new();
     defs.insert(
         "acme".to_string(),

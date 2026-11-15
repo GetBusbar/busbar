@@ -33,13 +33,16 @@ async fn base_store_bootstrap_and_effective_build_share_the_same_opened_store() 
         settings.is_object(),
         "the actual store settings are an object"
     );
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {},
-        "models": {},
-        "auth": { "chain": [], "admin_auth": [] },
-        "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {},
+            "models": {},
+            "auth": { "chain": [], "admin_auth": [] },
+            "store": { "module": module, "settings": settings },
+            "advanced": { "allow_destinations": ["127.0.0.1"] },
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
@@ -117,13 +120,16 @@ async fn a_cross_node_sibling_update_and_intervening_get_cannot_authorize_a_stal
         settings.is_object(),
         "the actual store settings are an object"
     );
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {},
-        "models": {},
-        "auth": { "chain": [], "admin_auth": [] },
-        "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {},
+            "models": {},
+            "auth": { "chain": [], "admin_auth": [] },
+            "store": { "module": module, "settings": settings },
+            "advanced": { "allow_destinations": ["127.0.0.1"] },
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
@@ -246,13 +252,16 @@ async fn bootstrap_opens_the_anchor_before_requiring_modules_whose_pins_it_must_
         settings.is_object(),
         "the actual store settings are an object"
     );
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {},
-        "models": {},
-        "auth": { "chain": [], "admin_auth": [] },
-        "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {},
+            "models": {},
+            "auth": { "chain": [], "admin_auth": [] },
+            "store": { "module": module, "settings": settings },
+            "advanced": { "allow_destinations": ["127.0.0.1"] },
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
@@ -286,7 +295,8 @@ async fn bootstrap_opens_the_anchor_before_requiring_modules_whose_pins_it_must_
                 unset_env_vars: &[],
                 root: &|_| Ok(()),
                 fetch: None,
-                resolve_builtins: false
+                resolve_builtins: false,
+                secret_axis: busbar_kernel::config::secret::live_axis(),
             }
         )
         .is_err(),
@@ -325,13 +335,16 @@ async fn root_recovery_can_run_before_hydration_without_changing_standalone_buil
             settings.is_object(),
             "the actual store settings are an object"
         );
-        let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-            "providers": {},
-            "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
-            "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
-        }))
+        let deploy = busbar_kernel::config::deploy_from_deserializer(
+            serde_json::json!({
+                "providers": {},
+                "models": {},
+                "auth": { "chain": [], "admin_auth": [] },
+                "store": { "module": module, "settings": settings },
+                "advanced": { "allow_destinations": ["127.0.0.1"] },
+            }),
+            &crate::root::boot::axis_test_grammar(),
+        )
         .expect("the product deployment parses");
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the product deployment resolves");

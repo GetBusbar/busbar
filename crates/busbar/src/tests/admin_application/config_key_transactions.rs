@@ -51,8 +51,11 @@ async fn slow_store_read_does_not_stall_the_executor() {
     let signing_path = directory.join("transaction-signing.key");
     std::fs::write(&signing_path, [7_u8; 32]).unwrap();
     document["auth"]["signing_key"] = serde_json::json!({"file": signing_path});
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
-        .expect("the product deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document.clone(),
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
@@ -172,8 +175,11 @@ async fn cap_is_read_from_the_post_lock_snapshot() {
     let signing_path = directory.join("transaction-signing.key");
     std::fs::write(&signing_path, [7_u8; 32]).unwrap();
     document["auth"]["signing_key"] = serde_json::json!({"file": signing_path});
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
-        .expect("the product deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document.clone(),
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
@@ -346,8 +352,11 @@ async fn concurrent_mints_never_bind_a_deleted_group() {
         let signing_path = directory.join("transaction-signing.key");
         std::fs::write(&signing_path, [7_u8; 32]).unwrap();
         document["auth"]["signing_key"] = serde_json::json!({"file": signing_path});
-        let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
-            .expect("the product deployment parses");
+        let deploy = busbar_kernel::config::deploy_from_deserializer(
+            document.clone(),
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("the product deployment parses");
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the product deployment resolves");
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
@@ -438,8 +447,11 @@ async fn concurrent_mints_never_bind_a_deleted_group() {
         let signing_path = directory.join("transaction-signing.key");
         std::fs::write(&signing_path, [7_u8; 32]).unwrap();
         document["auth"]["signing_key"] = serde_json::json!({"file": signing_path});
-        let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
-            .expect("the product deployment parses");
+        let deploy = busbar_kernel::config::deploy_from_deserializer(
+            document.clone(),
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("the product deployment parses");
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the product deployment resolves");
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
@@ -577,8 +589,11 @@ async fn concurrent_rebinds_never_bind_a_deleted_group() {
     let signing_path = directory.join("transaction-signing.key");
     std::fs::write(&signing_path, [7_u8; 32]).unwrap();
     document["auth"]["signing_key"] = serde_json::json!({"file": signing_path});
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
-        .expect("the product deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document.clone(),
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);

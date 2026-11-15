@@ -106,7 +106,7 @@ impl Sha256State {
 /// Not a link hash.
 pub mod link {
     /// The recipe.
-    pub const RECIPE: &str = "busbar.audit.digest.v7-sha256";
+    pub const RECIPE: &str = "busbar.audit.link.v1";
 
     /// Not a hasher.
     #[derive(Clone, Debug, Default)]

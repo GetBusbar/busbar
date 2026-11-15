@@ -211,7 +211,7 @@ pub(crate) fn resolve_settings(
             owner: plugin,
             secrets: declared,
             references: reference,
-            sources: &sugars(),
+            sources: &admitted_sugars(),
         },
         resolver,
         scope,
@@ -231,7 +231,7 @@ pub(crate) fn resolve_export_settings(
             owner: plugin,
             secrets: declared,
             references: reference,
-            sources: &sugars(),
+            sources: &admitted_sugars(),
         },
         resolver,
         scope,
@@ -291,11 +291,22 @@ pub(crate) fn axis() -> Option<&'static dyn busbar_contract::secret::SecretAxis>
     crate::preflight::root_rows().secret_axis
 }
 
+/// The live secret axis, for a check that judges references against what admission published
+/// (a build): [`crate::config_validate::Check::secret_axis`].
+#[must_use]
+pub fn live_axis() -> Option<&'static dyn busbar_contract::secret::SecretAxis> {
+    axis()
+}
+
 pub(crate) fn is_linked_secret(module: &str) -> bool {
     axis().is_some_and(|a| a.linked(module))
 }
 
-pub(crate) fn sugars() -> busbar_contract::secret_ref::Sugars {
+/// The shorthand the LIVE secret axis declares: the set the last admission published. Only for a
+/// reader past admission (request-path opens, readback of the serving generation, settings a
+/// build resolves after `admit_secrets`), never to parse a document: a read parses under its own
+/// grammar ([`super::grammar::grammar_for`]), whatever the axis holds.
+pub(crate) fn admitted_sugars() -> busbar_contract::secret_ref::Sugars {
     axis().map(|a| a.sugars()).unwrap_or_default()
 }
 

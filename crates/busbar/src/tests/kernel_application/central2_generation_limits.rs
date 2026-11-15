@@ -63,13 +63,16 @@ async fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
         settings.is_object(),
         "the actual store settings are an object"
     );
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {},
-        "models": {},
-        "auth": { "chain": [], "admin_auth": [] },
-        "store": { "module": module.clone(), "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {},
+            "models": {},
+            "auth": { "chain": [], "admin_auth": [] },
+            "store": { "module": module.clone(), "settings": settings },
+            "advanced": { "allow_destinations": ["127.0.0.1"] },
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the product deployment parses");
     let resolve = || {
         busbar_kernel::config::resolve(&deploy, &Default::default())

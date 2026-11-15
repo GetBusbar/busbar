@@ -52,8 +52,11 @@ async fn split_admin_listener_no_double_exposure() {
     });
     document["models"] = serde_json::json!({ "test-model": { "provider": "test-provider" } });
     document["pools"] = serde_json::json!({ "pa": { "members": [{ "model": "test-model" }] } });
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &definitions)
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())

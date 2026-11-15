@@ -610,13 +610,16 @@ async fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_comm
     crate::register_protocols();
     crate::register_planes();
     crate::register_diagnostics();
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {},
-        "models": {},
-        "auth": { "chain": [], "admin_auth": [] },
-        "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {},
+            "models": {},
+            "auth": { "chain": [], "admin_auth": [] },
+            "store": { "module": module, "settings": settings },
+            "advanced": { "allow_destinations": ["127.0.0.1"] },
+        }),
+        &crate::root::boot::axis_test_grammar(),
+    )
     .expect("the actual product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual product deployment resolves");
