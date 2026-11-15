@@ -4,7 +4,7 @@
 use busbar_kernel::{config, config_validate, diagnostics};
 use busbar_kernel::{load_config_from_disk, DEFAULT_CONFIG_PATH, ENV_CONFIG};
 
-use crate::{build_info_line, ignore_overlay_requested};
+use crate::build_info_line;
 
 const EXIT_SUCCESS: i32 = 0;
 const EXIT_FAILURE: i32 = 1;
@@ -507,9 +507,10 @@ pub(crate) fn validate_config_command() -> i32 {
     for w in crate::root::config_migrate::ignored_launch_env(|n| std::env::var_os(n)) {
         eprintln!("{w}");
     }
-    let providers_override = providers_override();
-    let config_path = std::path::PathBuf::from(resolve_config_path(config_path_flag().as_deref()));
-    let ignore_overlay = ignore_overlay_requested(std::env::args());
+    let argv = argv();
+    let providers_override = argv.providers.as_deref().map(std::path::PathBuf::from);
+    let config_path = std::path::PathBuf::from(resolve_config_path(argv.config.as_deref()));
+    let ignore_overlay = argv.ignore_overlay;
 
     let Validated {
         cfg,
