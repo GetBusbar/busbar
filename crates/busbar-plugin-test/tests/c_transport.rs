@@ -64,6 +64,7 @@ fn check_with(
     accept: Accept,
 ) -> Result<Vec<DeclaredEndpoint>, OpenError> {
     let spec = InstanceSpec {
+        purpose: busbar_plugin_loader::instance::OpenPurpose::Canonical,
         identity: h.identity(),
         name,
         config_json: config,

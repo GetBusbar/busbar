@@ -135,7 +135,7 @@ fn lossy(bytes: &[u8]) -> String {
 
 fn refused_case(harness: &Harness, bag: &[u8], code: u32) {
     let before = harness.records();
-    let answer = harness.open("migrate", bag);
+    let answer = harness.open_converting("migrate", bag);
     let Err(error) = answer else {
         panic!("migrate: the bag opened; the expected answer is REFUSED {code}");
     };
@@ -162,7 +162,7 @@ fn settled_case(
     config: Option<&[u8]>,
     core_cfg: &[(u32, &str, &[u8])],
 ) -> Vec<u8> {
-    let port = match harness.open("migrate", bag) {
+    let port = match harness.open_converting("migrate", bag) {
         Ok(port) => port,
         Err(error) => panic!("migrate: the older bag did not open: {error:?}"),
     };
@@ -176,7 +176,7 @@ fn settled_case(
                 json("the expected config", want),
                 "migrate: the settled CONFIG differs from the expected canonical settings"
             );
-            got.config_json.clone()
+            got.config_json.to_vec()
         }
         (Some(want), None) => panic!(
             "migrate: open answered no CONFIG; expected the converted settings {}",
@@ -188,9 +188,9 @@ fn settled_case(
                 json("the bag", bag),
                 "migrate: the bag is canonical, yet open settled a different CONFIG"
             );
-            got.config_json.clone()
+            got.config_json.to_vec()
         }
-        (None, None) => bag.to_vec(),
+        (None, None) => panic!("migrate: conversion requires CONFIG even for an unchanged bag"),
     };
 
     let mut got: Vec<(u32, String, String)> = settled

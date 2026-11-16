@@ -12,6 +12,7 @@ use std::task::{Context, Poll};
 
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::conn::{ConnError, ConnId, Conns, Piece, PollConns, Ticket};
+use busbar_contract::json::{json, JsonValueTrait as _};
 use busbar_contract::transport::trust::Anchors;
 use busbar_contract::transport::ConnFacts;
 use busbar_kernel::channels::carrier::Wires;
@@ -22,7 +23,6 @@ use busbar_plugin_abi::plane::CARRIER_STDIO;
 use busbar_plugin_abi::records::Records;
 use busbar_ports::plane::{PlaneIn, PlaneOut, PlaneSession, RouteInfo, TargetIn, UsageClass};
 use busbar_ports::{CallCx, PortError};
-use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use super::*;
@@ -242,7 +242,7 @@ fn upstreams() -> Arc<ConfiguredUpstreams> {
 
 fn shared(table: Option<ConnTable>) -> SeatShared {
     SeatShared {
-        upstreams: upstreams(),
+        upstreams: BTreeMap::from([("mcp".to_owned(), upstreams())]),
         signals: SignalRegistry::new(),
         secrets: Arc::new(Fixed),
         kernel: Arc::new(Kernel::new()),
@@ -341,7 +341,11 @@ async fn a_seat_with_configured_upstreams_is_composed_with_its_walk_and_its_carr
         "one need per network upstream, on the seat's own owner"
     );
     let anchored = table.anchored.lock().unwrap().clone();
-    assert_eq!(anchored.len(), 1, "only the pinned upstream seals anchors");
+    assert_eq!(
+        anchored.len(),
+        2,
+        "each member seals its own trust and private-reach policy"
+    );
     assert_eq!(anchored[0].0, NeedId(0));
     assert!(anchored[0]
         .2
@@ -354,6 +358,28 @@ async fn a_seat_with_configured_upstreams_is_composed_with_its_walk_and_its_carr
     assert!(session.map.of(0).is_some_and(|def| def.command.is_some()));
     session.map.point("ghost");
     assert!(session.map.of(0).is_none());
+}
+
+#[test]
+fn each_registration_carries_only_its_own_private_reach_into_the_seat() {
+    let split = busbar_kernel::upstreams::declared(
+        "p",
+        &json!({"members": {
+            "allowed": {"url":"https://shared.internal", "allow_private":true},
+            "denied": {"url":"https://shared.internal"}
+        }}),
+        &["/members/*"],
+        &busbar_kernel::plugin_config::upstream_anchor,
+    )
+    .unwrap();
+    let pool = SeatPool::of("p", &split.definitions).unwrap();
+    for member in &pool.members {
+        let route = &pool.routes[&member.destination];
+        assert_eq!(
+            route.anchors.private_reach,
+            member.upstream.as_ref() == "allowed"
+        );
+    }
 }
 
 #[tokio::test]
@@ -376,6 +402,7 @@ async fn a_seat_with_no_connection_table_still_gets_its_carrier_and_walks_nothin
 
 fn stdio(argv: &[&str]) -> UpstreamDef {
     UpstreamDef {
+        allow_private: false,
         name: "files".into(),
         url: None,
         command: Some(StdioCommand {

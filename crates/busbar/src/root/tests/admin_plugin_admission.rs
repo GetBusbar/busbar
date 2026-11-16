@@ -172,7 +172,7 @@ async fn serve_admission_with_inputs(
             "providers": {}, "models": {},
             "auth": {"chain": [], "admin_auth": [busbar_kernel::config::operator_provider()]},
             "store": {"module": module, "settings": settings},
-            "advanced": {"allow_destinations": ["127.0.0.1"]}
+            "advanced": {}
         }),
         &crate::root::boot::axis_test_grammar(),
     )

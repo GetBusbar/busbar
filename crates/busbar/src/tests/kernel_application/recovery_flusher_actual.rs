@@ -306,7 +306,7 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing } },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": {"file": operator_token},

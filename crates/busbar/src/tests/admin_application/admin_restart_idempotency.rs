@@ -163,7 +163,7 @@ async fn application(
         "providers": {}, "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] }, "identity-providers": {},
+        "advanced": {  }, "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },

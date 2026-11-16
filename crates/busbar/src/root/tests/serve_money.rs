@@ -150,7 +150,7 @@ async fn governed_full(
         crate::register_planes();
         crate::register_diagnostics();
         let initial = busbar_kernel::config::deploy_from_yaml_str(
-            "providers: {}\nmodels: {}\nadvanced:\n  allow_destinations: [127.0.0.1]\n",
+            "providers: {}\nmodels: {}\n",
             &crate::root::boot::axis_test_grammar(),
         )
         .expect("the loopback deployment parses");
@@ -271,7 +271,7 @@ async fn governed_full(
             "auth": {"chain": if keys_chain { vec!["keys"] } else { vec![] }, "admin_auth": [],
                 "signing_key": {"file": signing_file}},
             "store": {"module": store_module, "settings": settings},
-            "advanced": {"allow_destinations": ["127.0.0.1"]}
+            "advanced": {}
         }),
         &crate::root::boot::axis_test_grammar(),
     )

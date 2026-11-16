@@ -486,7 +486,7 @@ fn a_refusal_names_the_hop_that_failed() {
         b.refusal(OWNER, NeedId(0)).as_ref().map(shown).as_deref(),
         Some(
             "busbar refused the egress proxy: the destination guard refuses an internal or \
-             loopback address (list it in advanced.allow_destinations to allow it)"
+             loopback address (enable allow_private on its upstream registration to allow it)"
         )
     );
 

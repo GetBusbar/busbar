@@ -225,6 +225,7 @@ pub(crate) fn rig(plugin: &'static Plugin, on_release: fn()) -> (Registry<YieldN
 /// The spec of instance `name` of `identity` with `config`, no limits, no public URL, no caller upstreams.
 pub(crate) fn spec<'a>(identity: &'a str, name: &'a str, config: &'a [u8]) -> InstanceSpec<'a> {
     InstanceSpec {
+        purpose: busbar_plugin_loader::instance::OpenPurpose::Canonical,
         identity,
         name,
         config_json: config,

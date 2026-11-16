@@ -143,7 +143,7 @@ async fn boot_hooks_run(sections: &[&'static str]) -> (usize, usize) {
             "providers": {}, "models": {},
             "auth": {"chain": [], "admin_auth": []},
             "store": {"module": module, "settings": settings},
-            "advanced": {"allow_destinations": ["127.0.0.1"]}
+            "advanced": {}
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -315,7 +315,7 @@ async fn only_a_configured_plane_builds_its_slot() {
                 "providers": {}, "models": {},
                 "auth": {"chain": [], "admin_auth": []},
                 "store": {"module": module, "settings": settings},
-                "advanced": {"allow_destinations": ["127.0.0.1"]}
+                "advanced": {}
             }),
             &crate::root::boot::axis_test_grammar(),
         )

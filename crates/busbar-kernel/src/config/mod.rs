@@ -1050,13 +1050,6 @@ pub struct DeployCfg {
     /// secret plugin opens with `{}`. Mirrors `store.settings` for the store plugin.
     #[serde(default)]
     pub secrets: std::collections::BTreeMap<String, SecretModuleCfg>,
-    /// The top-level `upstreams:` section (IF §12.1, §12.18; 1.6.0, additive): upstream name → entry (`url:` or
-    /// `command:`, optional `tls:`, `auth:`, `upstream_credentials:`). Kept as written; [`min3::parse_min3`]
-    /// parses each entry's binding keys and [`crate::upstreams::ConfiguredUpstreams::from_config`] types the
-    /// entries, at load (refusals) and at boot (the table every plane seat reads). A 1.5.x plane's `migrate`
-    /// writes its members here (CORE_CFG(UPSTREAM)). Absent = no upstream.
-    #[serde(default)]
-    pub upstreams: Option<serde_json::Map<String, serde_json::Value>>,
     /// Internal tuning knobs (the `advanced:` block).
     #[serde(default)]
     pub advanced: AdvancedCfg,
@@ -2140,7 +2133,6 @@ pub fn resolve(
             allow_all_metadata: security.allow_all_metadata,
             guard: Destinations {
                 block_private_addresses: deploy.advanced.block_private_addresses,
-                allow: deploy.advanced.allow_destinations.clone(),
                 ..Destinations::default()
             },
             outbound_tls: deploy.advanced.tls.clone(),
@@ -2188,13 +2180,6 @@ fn resolve_min3(deploy: &DeployCfg, errors: &mut Vec<String>) -> min3::Min3Confi
         }
     };
     if let Err(refused) = min3::check_upstream_credentials(&parsed) {
-        errors.extend(refused.into_iter().map(code));
-    }
-    if let Err(refused) = crate::upstreams::ConfiguredUpstreams::from_config(
-        &parsed.upstream_section,
-        &parsed.upstreams,
-        &crate::plugin_config::upstream_anchor,
-    ) {
         errors.extend(refused.into_iter().map(code));
     }
     parsed
@@ -2341,13 +2326,6 @@ impl std::fmt::Debug for DeployCfg {
             .field("declared_raw", &self.declared_raw)
             .field("store", &self.store)
             .field("secrets", &self.secrets)
-            .field(
-                "upstreams",
-                &self
-                    .upstreams
-                    .as_ref()
-                    .map(|section| section.keys().collect::<Vec<_>>()),
-            )
             .field("advanced", &self.advanced)
             .field("export", &self.export)
             .field("declared", &self.declared)

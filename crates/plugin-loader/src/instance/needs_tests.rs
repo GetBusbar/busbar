@@ -84,6 +84,7 @@ fn registry(ids: Arc<crate::process::InstanceIds>, slots: Arc<SlotTable>) -> Reg
 
 fn spec(name: &str) -> InstanceSpec<'_> {
     InstanceSpec {
+        purpose: OpenPurpose::Canonical,
         identity: "test-secret",
         name,
         config_json: b"{}",
