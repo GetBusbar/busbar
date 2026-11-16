@@ -204,6 +204,41 @@ impl crate::AuditChain {
 }
 
 impl NotaryKeyRecord {
+    /// Check only a stamp's signature and certificate binding at their original WAL positions.
+    /// This is NOT coverage or continued authority: callers must additionally validate the
+    /// endpoint, chain walk and complete supersession context. A retained certificate copy uses
+    /// its original WAL position, never the base row's position.
+    pub fn verify_stamp_signature(
+        &self,
+        expected_node: u64,
+        certificate_node_seq: u64,
+        stamp_node_seq: u64,
+        stamp: &crate::Stamp,
+        bootstrap: &PublicKey,
+    ) -> Result<(), crypto::Error> {
+        if self.node != expected_node
+            || stamp.node != expected_node
+            || stamp.sealer != expected_node
+            || !matches!(stamp.kind, crate::StampKind::Live | crate::StampKind::Final)
+            || certificate_node_seq == 0
+            || stamp.key_cert != certificate_node_seq
+            || stamp_node_seq <= certificate_node_seq
+            || stamp.to < self.seq
+            || stamp.from == 0
+            || stamp.from > stamp.to
+            || stamp.key_id != self.certificate.key_id
+            || stamp.sig_alg != self.certificate.sig_alg
+        {
+            return Err(crypto::Error::Invalid("stamp key not certified"));
+        }
+        self.verify(bootstrap)?;
+        crypto::verify(
+            &self.certificate.key()?,
+            &stamp.preimage(),
+            &stamp.signature,
+        )
+    }
+
     /// Recompute the record fingerprint with the independently versioned certificate payload.
     #[must_use]
     pub fn recompute_fingerprint(&self) -> Fingerprint {
