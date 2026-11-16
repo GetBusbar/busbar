@@ -6,7 +6,9 @@ use busbar_kernel::persistence::boot_identity::BootIdentity;
 
 use busbar_contract::caps::{DurableWrite, Grant, StepName};
 use busbar_kernel::registry::{bootstrap, BootstrapVerdict};
-use busbar_kernel_audit::{AuditSigningKey, AuditVerifyingKey};
+use busbar_kernel_audit::{
+    AuditSigningKey, AuditVerifyingKey, BootstrapGrant, LiveSigner, NotaryGrant,
+};
 use busbar_kernel_wal::{BodyReader, BodyWriter, Entry, RecordClass};
 
 use crate::root::durability::Durability;
@@ -128,6 +130,7 @@ async fn sealed_fingerprint(durability: &Durability) -> Result<Option<[u8; 32]>,
     }
 }
 
+#[cfg(test)]
 fn sign_with(durability: &mut Durability, key: AuditSigningKey) {
     durability.record = std::mem::take(&mut durability.record).signing_with(key);
 }
@@ -149,14 +152,15 @@ fn journal_failure(
 
 /// Bind only to the configured native identity owner. Pending original journal
 /// runs are resolved before reading Bootstrap, so a cancelled or unknown first
-/// bind never stages a replacement Bootstrap on retry.
-pub async fn bind(
+/// bind never stages a replacement Bootstrap on retry. Returns the deployment key
+/// itself; the callers below decide what the book keeps of it.
+async fn bind_key(
     durability: &mut Durability,
     identity: &BootIdentity,
     _token: &Grant<DurableWrite>,
     at: StepName,
     now: u64,
-) -> Result<KeysetSource, KeysetError> {
+) -> Result<(KeysetSource, AuditSigningKey), KeysetError> {
     durability
         .journal
         .flush()
@@ -176,13 +180,10 @@ pub async fn bind(
         .transpose()?;
     let ours = held.as_ref().map(fingerprint_of_signer);
     match bootstrap(prior, ours) {
-        BootstrapVerdict::AlreadyOurs => {
-            sign_with(
-                durability,
-                held.expect("AlreadyOurs is answered only for a key the store holds"),
-            );
-            Ok(KeysetSource::Stored)
-        }
+        BootstrapVerdict::AlreadyOurs => Ok((
+            KeysetSource::Stored,
+            held.expect("AlreadyOurs is answered only for a key the store holds"),
+        )),
         BootstrapVerdict::KeysetMissing => Err(KeysetError::StoreMissing {
             fingerprint: prior.expect("KeysetMissing is answered only over a sealed Bootstrap"),
         }),
@@ -216,10 +217,75 @@ pub async fn bind(
                 .confirm(&original)
                 .await
                 .map_err(|error| journal_failure(error, at))?;
-            sign_with(durability, key);
-            Ok(KeysetSource::Stored)
+            Ok((KeysetSource::Stored, key))
         }
     }
+}
+
+/// WHAT BINDING THE KEYSET HANDS THE BOOT (SEALING-FIX §5.3 layer 1): the caller-ref material
+/// derived from the key before the split, and the key's whole signing power as its two grants.
+/// The book keeps only the public half (`AuditChain::bound_to`); nothing on the request path can
+/// reach a grant.
+pub(crate) struct BoundKey {
+    /// `derived_secret(CALLER_REF_MATERIAL)`, for governance's deployment caller ref.
+    pub(crate) caller_ref: [u8; 32],
+    /// The live notary's grant.
+    pub(crate) notary: NotaryGrant,
+    /// The Bootstrap signer's grant.
+    pub(crate) bootstrap: BootstrapGrant,
+}
+
+impl std::fmt::Debug for BoundKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BoundKey")
+            .field("notary", &self.notary)
+            .field("bootstrap", &self.bootstrap)
+            .finish_non_exhaustive()
+    }
+}
+
+/// BIND THE DEPLOYMENT KEYSET AND SPLIT THE KEY (production): the book is bound to the public
+/// half, and the key is consumed into the notary's and the Bootstrap signer's grants, after the
+/// crypto backend approved the signer (a refusal stops boot).
+pub(crate) async fn bind_split(
+    durability: &mut Durability,
+    identity: &BootIdentity,
+    token: &Grant<DurableWrite>,
+    at: StepName,
+    now: u64,
+) -> Result<(KeysetSource, BoundKey), KeysetError> {
+    let (source, key) = bind_key(durability, identity, token, at, now).await?;
+    let public = AuditVerifyingKey::from_hex(&key.public_key_hex())
+        .map_err(|_| KeysetError::Store("the deployment key's public half is invalid".into()))?;
+    let caller_ref = key.derived_secret(CALLER_REF_MATERIAL);
+    let (notary, bootstrap) = key
+        .into_grants(LiveSigner::SameAsBootstrap)
+        .map_err(|e| KeysetError::Store(e.to_string()))?;
+    durability.record = std::mem::take(&mut durability.record).bound_to(public);
+    Ok((
+        source,
+        BoundKey {
+            caller_ref,
+            notary,
+            bootstrap,
+        },
+    ))
+}
+
+/// Bind the keyset as a LEGACY-SIGNING book (test builds only, SEALING-FIX §3.2 "The legacy
+/// builder"): the fixtures that read per-line signatures keep them. Production binds through
+/// `bind_split`.
+#[cfg(test)]
+pub async fn bind(
+    durability: &mut Durability,
+    identity: &BootIdentity,
+    token: &Grant<DurableWrite>,
+    at: StepName,
+    now: u64,
+) -> Result<KeysetSource, KeysetError> {
+    let (source, key) = bind_key(durability, identity, token, at, now).await?;
+    sign_with(durability, key);
+    Ok(source)
 }
 
 #[cfg(test)]
