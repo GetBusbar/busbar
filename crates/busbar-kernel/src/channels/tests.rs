@@ -30,7 +30,7 @@ fn a_child_that_exits_at_once_backs_off_then_trips_on_the_fifth_end() {
     let mut r = Respawn::new();
     assert_eq!(r.next(t0), Spawn::Now, "the first attach spawns at once");
     let mut at = t0;
-    for (n, wait) in [100u64, 200, 400, 800].into_iter().enumerate() {
+    for (n, wait) in [100u32, 200, 400, 800].into_iter().enumerate() {
         assert!(!r.ended(at), "end {} does not trip", n + 1);
         assert_eq!(r.next(at), Spawn::After(wait * MS));
         assert_eq!(r.next(at + (wait / 2) * MS), Spawn::After((wait / 2) * MS));

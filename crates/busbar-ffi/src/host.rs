@@ -658,6 +658,17 @@ impl<K: Kind> Drop for Session<K> {
 #[derive(Default)]
 pub struct ChainBufs(Vec<Vec<u8>>);
 
+impl Drop for ChainBufs {
+    /// I11: an argument buffer can hold a credential (the host copies its request in), so each is zeroed before
+    /// it is freed, the way the pooled buffers are.
+    fn drop(&mut self) {
+        for buf in &mut self.0 {
+            buf.fill(0);
+            core::hint::black_box(&*buf);
+        }
+    }
+}
+
 impl ChainBufs {
     pub fn new() -> Self {
         ChainBufs(Vec::new())
