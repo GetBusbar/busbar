@@ -93,10 +93,6 @@ fn every_limit_metric_serde_round_trips() {
         match m {
             LimitMetric::Requests => "requests",
             LimitMetric::Tokens => "tokens",
-            LimitMetric::TokensInput => "tokens_input",
-            LimitMetric::TokensOutput => "tokens_output",
-            LimitMetric::TokensCacheRead => "tokens_cache_read",
-            LimitMetric::TokensCacheWrite => "tokens_cache_write",
             LimitMetric::Budget => "budget",
             LimitMetric::Concurrent => "concurrent",
         }
@@ -104,10 +100,6 @@ fn every_limit_metric_serde_round_trips() {
     let all = [
         LimitMetric::Requests,
         LimitMetric::Tokens,
-        LimitMetric::TokensInput,
-        LimitMetric::TokensOutput,
-        LimitMetric::TokensCacheRead,
-        LimitMetric::TokensCacheWrite,
         LimitMetric::Budget,
         LimitMetric::Concurrent,
     ];
@@ -164,92 +156,6 @@ fn limit_pool_and_downgrade_to_wire_shape_is_byte_identical_to_pre_generalizatio
         back, l,
         "round-trip must be byte-for-byte behaviorally exact"
     );
-}
-
-#[test]
-fn budget_modes_parse_default_and_round_trip() {
-    let bare: LimitCfg =
-        busbar_contract::yaml::from_str("{ budget: 5000, per: month }").expect("parses");
-    assert_eq!((bare.admission, bare.on_exhaustion), (None, None));
-    assert_eq!(AdmissionMode::governing([&bare]), AdmissionMode::Exact);
-    assert_eq!(
-        ExhaustionMode::governing([&bare]),
-        ExhaustionMode::FinishUnit
-    );
-
-    let set: LimitCfg = busbar_contract::yaml::from_str(
-        "{ budget: 5000, per: month, admission: estimate, on_exhaustion: cut-stream }",
-    )
-    .expect("the budget modes parse");
-    assert_eq!(set.admission, Some(AdmissionMode::Estimate));
-    assert_eq!(set.on_exhaustion, Some(ExhaustionMode::CutStream));
-    assert_eq!(
-        AdmissionMode::governing([&bare, &set]),
-        AdmissionMode::Estimate
-    );
-    assert_eq!(
-        ExhaustionMode::governing([&bare, &set]),
-        ExhaustionMode::CutStream,
-        "any governing cut-stream cuts"
-    );
-    let out = busbar_contract::yaml::to_string(&set).expect("serializes");
-    assert!(out.contains("admission: estimate"), "{out}");
-    assert!(out.contains("on_exhaustion: cut-stream"), "{out}");
-    let back: LimitCfg = busbar_contract::yaml::from_str(&out).expect("reparses");
-    assert_eq!(back, set);
-
-    let spelled: LimitCfg = busbar_contract::yaml::from_str(
-        "{ budget: 1, per: day, admission: exact, on_exhaustion: finish-unit }",
-    )
-    .expect("the defaults may be spelled out");
-    assert_eq!(spelled.admission, Some(AdmissionMode::Exact));
-    assert_eq!(spelled.on_exhaustion, Some(ExhaustionMode::FinishUnit));
-}
-
-#[test]
-fn budget_modes_refuse_on_a_non_budget_limit_and_an_unknown_mode() {
-    for (limit, key) in [
-        (
-            "{ requests: 10, per: minute, admission: estimate }",
-            "admission",
-        ),
-        (
-            "{ tokens: 10, per: day, on_exhaustion: cut-stream }",
-            "on_exhaustion",
-        ),
-    ] {
-        let err = busbar_contract::yaml::from_str::<LimitCfg>(limit)
-            .expect_err("a non-budget limit refuses a budget mode")
-            .to_string();
-        assert!(
-            err.contains(&format!("`{key}` is a BUDGET behavior")),
-            "{err}"
-        );
-    }
-    assert!(busbar_contract::yaml::from_str::<LimitCfg>(
-        "{ budget: 1, per: day, on_exhaustion: cut }"
-    )
-    .is_err());
-    assert!(busbar_contract::yaml::from_str::<LimitCfg>(
-        "{ budget: 1, per: day, admission: guess }"
-    )
-    .is_err());
-    assert!(busbar_contract::yaml::from_str::<LimitCfg>(
-        "{ budget: 1, per: day, admission: exact, admission: estimate }"
-    )
-    .is_err());
-}
-
-#[test]
-fn downgrade_and_cut_stream_coexist_on_one_limit() {
-    let l: LimitCfg = busbar_contract::yaml::from_str(
-        "{ budget: 5000, per: month, pool: frontier, on_exhaust: downgrade, downgrade_to: value, \
-           on_exhaustion: cut-stream }",
-    )
-    .expect("downgrade at admission and cut-stream mid-stream are two moments, not a conflict");
-    assert_eq!(l.on_exhaust, Some(OnExhaust::Downgrade));
-    assert_eq!(l.downgrade_to, Some(ScopeRef::pool("value")));
-    assert_eq!(l.on_exhaustion, Some(ExhaustionMode::CutStream));
 }
 
 fn tree() -> BTreeMap<String, GroupCfg> {

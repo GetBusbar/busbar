@@ -7,7 +7,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K7"]
+#[ignore = "owner: W1-K7 (blocked: W1-K7 rest (the binder's resolution and the kernel validate path for this arm are not on dev; OUTSTANDING 'K7-rest' is dispatched separately))"]
 fn ref_path_bindings() {
     todo!("owner: W1-K7 (C-REF-PATH)")
 }

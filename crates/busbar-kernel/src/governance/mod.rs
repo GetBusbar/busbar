@@ -430,6 +430,7 @@ impl BudgetCell {
         token_total(self.models.iter().map(|m| &m.cur))
     }
 
+    #[cfg(test)]
     fn total_tier(&self, unit: &str) -> Count {
         Count::total(
             self.models

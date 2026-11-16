@@ -8,13 +8,13 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-L9"]
+#[ignore = "owner: W1-L9 (blocked: W1-C1C remainder: the connector still drives framers over the old FramerDoor/Framing (compose.rs, framer.rs), not E_REFUSE/E_CLOSE; OUTSTANDING A6)"]
 fn e_refuse_before_and_after_the_head() {
     todo!("owner: W1-L9 (C-TRANSPORT-REFUSE)")
 }
 
 #[test]
-#[ignore = "owner: W1-K8A"]
+#[ignore = "owner: W1-K8A (blocked: W1-C1C remainder: the connector still drives framers over the old FramerDoor/Framing (compose.rs, framer.rs), not E_REFUSE/E_CLOSE; OUTSTANDING A6)"]
 fn pre_101_refusals_on_an_upgrade_route() {
     todo!("owner: W1-K8A (C-TRANSPORT-REFUSE)")
 }

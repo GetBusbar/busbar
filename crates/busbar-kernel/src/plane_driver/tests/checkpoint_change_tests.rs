@@ -39,8 +39,6 @@ fn card_cost(budget_cents: Option<u64>) -> Arc<CostModel> {
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
-                admission: None,
-                on_exhaustion: None,
             }]
         })
         .unwrap_or_default();

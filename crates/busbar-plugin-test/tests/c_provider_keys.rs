@@ -7,7 +7,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K7"]
+#[ignore = "blocked: the section 8.6 provider-key rule is enforced at boot in the busbar bin crate (K7 with L8); unreachable from busbar-plugin-test"]
 fn provider_key_rule() {
     todo!("owner: W1-K7 (C-PROVIDER-KEYS)")
 }
