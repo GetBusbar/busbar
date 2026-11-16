@@ -81,9 +81,17 @@ fn settled_records(mut recs: Records<'_>) -> Result<Option<SettledOut<'_>>, RecE
 
 pub(crate) fn for_purpose<'a>(
     recs: Records<'a>,
-    _purpose: crate::instance::OpenPurpose,
+    purpose: crate::instance::OpenPurpose,
 ) -> Result<Option<SettledOut<'a>>, RecErr> {
-    settled_records(recs)
+    use crate::instance::OpenPurpose;
+    let out = settled_records(recs)?;
+    match (&out, purpose) {
+        (None, OpenPurpose::ConvertUnstamped) => Err(RecErr::Truncated),
+        (Some(out), OpenPurpose::Canonical) if !out.core_cfg.rest().is_empty() => {
+            Err(RecErr::Unknown(tag::CORE_CFG))
+        }
+        _ => Ok(out),
+    }
 }
 
 #[cfg(test)]

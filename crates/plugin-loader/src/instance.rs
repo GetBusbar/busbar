@@ -117,6 +117,7 @@ pub enum OpenPurpose {
 }
 
 pub struct InstanceSpec<'a> {
+    pub purpose: OpenPurpose,
     pub identity: &'a str,
     pub name: &'a str,
     pub config_json: &'a [u8],
@@ -869,6 +870,7 @@ impl<N: Needs> Registry<N> {
                     error: None,
                 })?;
             let spec = InstanceSpec {
+                purpose: OpenPurpose::Canonical,
                 identity: &stored.identity,
                 name: &name,
                 config_json: &merged,
@@ -1100,7 +1102,7 @@ pub enum BootPhase {
 /// `core_cfg` fragments are filed by `config::file_core_cfg` into core's own sections (§12.10); `config_json`
 /// replaces the bag. Taken once by the write-back (`take_settled`); core stores no version with it.
 pub struct Settled {
-    pub config_json: Vec<u8>,
+    pub config_json: busbar_contract::secure::SecureVec,
     pub core_cfg: Vec<CoreCfg>,
 }
 
@@ -1108,7 +1110,7 @@ pub struct Settled {
 pub struct CoreCfg {
     pub section: u32,
     pub name: Box<str>,
-    pub value_json: Vec<u8>,
+    pub value_json: busbar_contract::secure::SecureVec,
 }
 
 #[derive(Clone)]

@@ -857,6 +857,7 @@ impl Harness {
         config: &'a [u8],
     ) -> InstanceSpec<'a> {
         InstanceSpec {
+            purpose: busbar_plugin_loader::instance::OpenPurpose::Canonical,
             identity: module,
             name,
             config_json: config,
@@ -925,6 +926,35 @@ impl Harness {
             KindCode::Plane => self.open_plane(name, config).map(OpenedPort::Plane),
             KindCode::Transport => self.open_transport(name, config).map(OpenedPort::Transport),
         }
+    }
+
+    /// Open an unstamped legacy bag; CONFIG is required even when its contents are unchanged.
+    pub fn open_converting(&self, name: &str, config: &[u8]) -> Result<OpenedPort, OpenError> {
+        let mut spec = self.spec(name, config);
+        spec.purpose = busbar_plugin_loader::instance::OpenPurpose::ConvertUnstamped;
+        self.noted(self.block_on(async {
+            match self.kind {
+                KindCode::Store => self.registry.open_store(&spec).await.map(OpenedPort::Store),
+                KindCode::Secret => self
+                    .registry
+                    .open_secret(&spec)
+                    .await
+                    .map(OpenedPort::Secret),
+                KindCode::Auth => self.registry.open_auth(&spec).await.map(OpenedPort::Auth),
+                KindCode::Hook => self.registry.open_hook(&spec).await.map(OpenedPort::Hook),
+                KindCode::Export => self
+                    .registry
+                    .open_export(&spec)
+                    .await
+                    .map(OpenedPort::Export),
+                KindCode::Plane => self.registry.open_plane(&spec).await.map(OpenedPort::Plane),
+                KindCode::Transport => self
+                    .registry
+                    .open_transport(&spec)
+                    .await
+                    .map(OpenedPort::Transport),
+            }
+        }))
     }
 
     /// A store needs `registry().set_store_seal(..)` first (the kernel's seal factory).

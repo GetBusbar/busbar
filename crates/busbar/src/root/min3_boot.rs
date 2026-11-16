@@ -1067,6 +1067,7 @@ pub(crate) async fn run(
             (
                 one.kind,
                 InstanceSpec {
+                    purpose: busbar_plugin_loader::instance::OpenPurpose::Canonical,
                     identity: &one.identity,
                     name: &one.name,
                     config_json: &one.config,

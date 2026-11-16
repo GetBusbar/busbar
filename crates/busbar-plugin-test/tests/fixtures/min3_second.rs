@@ -749,6 +749,7 @@ pub fn registry<N: Needs>(
 /// The spec of instance `name` of the image `module` names, with `config` and no limits.
 pub fn spec<'a>(module: &'a str, name: &'a str, config: &'a [u8]) -> InstanceSpec<'a> {
     InstanceSpec {
+        purpose: busbar_plugin_loader::instance::OpenPurpose::Canonical,
         identity: module,
         name,
         config_json: config,
