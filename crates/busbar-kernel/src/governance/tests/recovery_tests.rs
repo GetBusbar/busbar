@@ -1344,7 +1344,6 @@ async fn admin_resume_can_advance_a_captured_prerequisite_without_wedging_its_fl
 #[tokio::test]
 async fn reused_host_flushes_fresh_refund_only_after_exact_foreign_settled_subtree_proof() {
     use super::super::{GovState, VirtualKey};
-    let now = crate::store::now();
     for mode in 0..5 {
         let store = crate::real_store::core().await;
         let sink = Arc::new(Journal::default());
@@ -1494,7 +1493,9 @@ async fn reused_host_flushes_fresh_refund_only_after_exact_foreign_settled_subtr
             .unwrap();
         gov.attach_recovery_sink(sink.clone()).await.unwrap();
         let cost = crate::cost::CostModel::flat(0);
-        gov.hydrate_budgets_async(&cost, now).await.unwrap();
+        gov.hydrate_budgets_async(&cost, crate::store::now())
+            .await
+            .unwrap();
         assert!(gov.recovery_event(child.operation_id).is_none());
         if let Some(candidate) = unselected {
             assert!(
@@ -1528,7 +1529,7 @@ async fn reused_host_flushes_fresh_refund_only_after_exact_foreign_settled_subtr
             .await
             .unwrap()
             .billable_requests;
-        let grant = gov.try_admit(&cost, &key, "", now).unwrap();
+        let grant = gov.try_admit(&cost, &key, "", crate::store::now()).unwrap();
         gov.flush_budgets().await;
         assert_eq!(
             store

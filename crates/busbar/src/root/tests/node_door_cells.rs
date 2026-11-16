@@ -730,7 +730,7 @@ async fn serve_rerank(
 
     let spend = rig
         .gov
-        .usage_for_async(&rig.app.cost, &rig.key.id, at / 1_000)
+        .usage_for_async(&rig.app.cost, &rig.key.id, now())
         .await
         .map(|usage| usage.expect("the key exists").spend_cents)
         .map_err(|refusal| format!("{refusal:?}"));
@@ -743,7 +743,7 @@ async fn serve_rerank(
                 &rig.key.id,
                 busbar_kernel::governance::budget_window(
                     busbar_kernel::governance::WINDOW_TOTAL,
-                    at / 1_000,
+                    now(),
                 ),
             )
             .await

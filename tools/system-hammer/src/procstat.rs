@@ -25,9 +25,8 @@ pub fn read(pid: u32) -> Option<Reading> {
     let f: Vec<&str> = rest.split_whitespace().collect();
     // rest[0] is field 3 (state); utime is field 14, stime 15, num_threads 20, rss 24 (pages).
     let num = |i: usize| f.get(i - 3).and_then(|v| v.parse::<u64>().ok());
-    // SAFETY: sysconf is always safe to call.
-    let tck = unsafe { libc::sysconf(libc::_SC_CLK_TCK) }.max(1) as u64;
-    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) }.max(1) as u64;
+    let tck = rustix::param::clock_ticks_per_second().max(1);
+    let page = (rustix::param::page_size() as u64).max(1);
     Some(Reading {
         cpu_ns: (num(14)? + num(15)?) * 1_000_000_000 / tck,
         rss: num(24)? * page,
@@ -35,47 +34,31 @@ pub fn read(pid: u32) -> Option<Reading> {
     })
 }
 
+/// macOS: `ps` reports the process's CPU time (`[[hh:]mm:]ss.ff`), resident size (KiB) and, per
+/// thread, one line under `-M`. It makes no Mach calls, so this tool needs no foreign code at all; `ps`
+/// has a 10 ms CPU-time resolution, which a load report tolerates.
 #[cfg(target_os = "macos")]
 pub fn read(pid: u32) -> Option<Reading> {
-    let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
-    let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
-    // SAFETY: `info` is a properly sized, writable proc_taskinfo.
-    let got = unsafe {
-        libc::proc_pidinfo(
-            pid as libc::c_int,
-            libc::PROC_PIDTASKINFO,
-            0,
-            (&mut info as *mut libc::proc_taskinfo).cast(),
-            size,
-        )
+    let ps = |args: &[&str]| -> Option<String> {
+        let out = std::process::Command::new("ps").args(args).output().ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
     };
-    if got != size {
-        return None;
+    let pid = pid.to_string();
+    let fields = ps(&["-o", "rss=,time=", "-p", &pid])?;
+    let mut fields = fields.split_whitespace();
+    let rss_kib: u64 = fields.next()?.parse().ok()?;
+    let mut seconds = 0.0_f64;
+    for part in fields.next()?.split(':') {
+        seconds = seconds * 60.0 + part.parse::<f64>().ok()?;
     }
-    let ticks = info.pti_total_user + info.pti_total_system;
+    let threads = ps(&["-M", "-p", &pid]).map_or(0, |t| t.lines().count().saturating_sub(1) as u64);
     Some(Reading {
-        cpu_ns: mach_ticks_to_ns(ticks),
-        rss: info.pti_resident_size,
-        threads: info.pti_threadnum as u64,
+        cpu_ns: (seconds * 1e9) as u64,
+        rss: rss_kib * 1024,
+        threads,
     })
-}
-
-#[cfg(target_os = "macos")]
-fn mach_ticks_to_ns(ticks: u64) -> u64 {
-    // proc_taskinfo reports CPU time in Mach absolute-time units (1 ns on Intel, 125/3 ns on
-    // Apple silicon).
-    #[repr(C)]
-    struct Timebase {
-        numer: u32,
-        denom: u32,
-    }
-    extern "C" {
-        fn mach_timebase_info(info: *mut Timebase) -> libc::c_int;
-    }
-    let mut tb = Timebase { numer: 1, denom: 1 };
-    // SAFETY: writes one Timebase.
-    unsafe { mach_timebase_info(&mut tb) };
-    (u128::from(ticks) * u128::from(tb.numer) / u128::from(tb.denom.max(1))) as u64
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -156,11 +139,7 @@ pub fn listens_on(_pid: u32, _port: u16) -> Result<bool, String> {
 
 /// CPU time of this process (the hammer: driver plus mocks), nanoseconds.
 pub fn self_cpu_ns() -> u64 {
-    let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
-    // SAFETY: writes one rusage.
-    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut ru) };
-    let tv = |t: libc::timeval| t.tv_sec as u64 * 1_000_000_000 + t.tv_usec as u64 * 1_000;
-    tv(ru.ru_utime) + tv(ru.ru_stime)
+    read(std::process::id()).map_or(0, |reading| reading.cpu_ns)
 }
 
 /// A background sampler: one RSS reading every `every`, timestamped from `origin`.

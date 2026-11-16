@@ -232,8 +232,7 @@ async fn a_correction_cut_and_its_custody_restore_leave_no_unnamed_lane_row() {
     journal
         .fail_after_write
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    let mut delta = BTreeMap::new();
-    delta.insert(busbar_contract::records::UNIT_INPUT.to_owned(), -60);
+    let delta = BTreeMap::from([(busbar_contract::records::UNIT_INPUT.into(), -60)]);
     let adjustment = crate::governance::Adjustment {
         key_id: &key.id,
         pool: "",

@@ -19,3 +19,36 @@ fn a_clients_accept_encoding_never_goes_upstream() {
     strip_re_derived(&mut head);
     assert_eq!(head, vec![(b"x-trace".to_vec(), b"t1".to_vec())]);
 }
+
+/// IF §13 round 23: the framer writes its own protocol handshake lines (`upgrade`, `connection`,
+/// `sec-websocket-key`, `sec-websocket-version`, a closed list) after auth `outbound`, so the head a
+/// plane hands the kernel loses all four, compared ASCII case-insensitively: no auth style ever sees or
+/// signs them and the wire never carries two of one. Catches a handshake line leaking past the strip.
+#[test]
+fn the_framers_handshake_lines_never_go_upstream() {
+    for name in [
+        "upgrade",
+        "Connection",
+        "sec-websocket-key",
+        "Sec-WebSocket-Version",
+    ] {
+        assert!(re_derived(name, std::iter::empty()), "{name}");
+    }
+    assert!(!re_derived("sec-websocket-protocol", std::iter::empty()));
+
+    let mut head = vec![
+        (
+            b"Sec-WebSocket-Key".to_vec(),
+            b"dGhlIHNhbXBsZSBub25jZQ==".to_vec(),
+        ),
+        (b"sec-websocket-version".to_vec(), b"13".to_vec()),
+        (b"upgrade".to_vec(), b"websocket".to_vec()),
+        (b"connection".to_vec(), b"upgrade".to_vec()),
+        (b"sec-websocket-protocol".to_vec(), b"chat".to_vec()),
+    ];
+    strip_re_derived(&mut head);
+    assert_eq!(
+        head,
+        vec![(b"sec-websocket-protocol".to_vec(), b"chat".to_vec())]
+    );
+}

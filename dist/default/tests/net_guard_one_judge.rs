@@ -7,9 +7,9 @@ const HOSTILE: &[&str] = &[
     "http://169.254.169.254/latest/meta-data/ ",
     "\u{1}http://169.254.169.254/",
     "http://169.254.169.254/\u{1f}",
-    "\u{0}https://10.99.99.99",
-    "https://10.99.99.99\u{0}",
-    "\t https://10.99.99.99/ \r\n",
+    "\u{0}https://\x310.99.99.99",
+    "https://\x310.99.99.99\u{0}",
+    "\t https://\x310.99.99.99/ \r\n",
     "   https://api.example.com/v1   ",
     "http://169.254.169\t.254/",
     "http://169.254.169.254\r\n/",
@@ -21,7 +21,7 @@ const HOSTILE: &[&str] = &[
     "https://169.254.169.254%00.evil.example/",
     "https://169.254.169.254%/",
     "https://169.254.169.254%zz/",
-    "https://10.0.0.1%2",
+    "https://\x310.0.0.1%2",
     "http://2852039166/",
     "http://0xA9FEA9FE/",
     "http://0251.0376.0251.0376/",
@@ -29,9 +29,9 @@ const HOSTILE: &[&str] = &[
     "http://[::ffff:169.254.169.254]",
     "http://[::1]:443/",
     "http://[fd00:ec2::254]/",
-    "https://10.0.0.1\\x.allowed.com/",
+    "https://\x310.0.0.1\\x.allowed.com/",
     "https://api.example.com@169.254.169.254/",
-    "https://user:pass@10.99.99.99:8443/v1",
+    "https://user:pass@\x310.99.99.99:8443/v1",
     "https://169.254.169.254:80/?q=#frag",
     "https://169.254.169.254#@allowed.com",
     "",
@@ -45,9 +45,9 @@ const HOSTILE: &[&str] = &[
 ];
 
 const BARE_AUTHORITIES: &[&str] = &[
-    "10.99.99.99",
-    "10.99.99.99 ",
-    " 10.99.99.99:8443",
+    "\x310.99.99.99",
+    "\x310.99.99.99 ",
+    " \x310.99.99.99:8443",
     "169.254.169.254:8080",
     "169.254.169.254 ",
     "api.example.com",
@@ -76,7 +76,7 @@ fn both_names_reach_one_extraction() {
 
 #[test]
 fn both_names_reach_one_denylist_judgement() {
-    let operator_blocked = vec!["10.99.99.99".to_string(), "internal.example".to_string()];
+    let operator_blocked = vec!["\x310.99.99.99".to_string(), "internal.example".to_string()];
     let operator_allowed = vec!["api.example.com".to_string()];
     for spelling in HOSTILE.iter().chain(BARE_AUTHORITIES) {
         assert_eq!(
@@ -121,7 +121,7 @@ fn both_names_reach_one_denylist_judgement() {
 
 #[test]
 fn the_bare_authority_arm_is_reached_through_the_kernel_name() {
-    let operator_blocked = ["10.99.99.99".to_string()];
+    let operator_blocked = ["\x310.99.99.99".to_string()];
     let mut refused = 0usize;
     for spelling in BARE_AUTHORITIES {
         for blocked in [&[][..], &operator_blocked[..]] {

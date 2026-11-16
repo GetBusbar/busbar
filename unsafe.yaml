@@ -1,0 +1,405 @@
+# The unsafe register (UNSAFE-MIN r3.1 §4.6, owner directives of 2026-11-15). Owner-approved: CODEOWNERS.
+# Read by crates/busbar-kernel/tests/arch/escapes.rs through the YAML facade (busbar_contract::yaml).
+# CI fails on any drift between this file and the code, in either direction.
+#
+# busbar-ffi is for the plugin boundary ONLY. It is never a place where any unsafe can be parked: a
+# non-plugin need (allocators, ACLs, AsyncFd, OS calls) uses a safe crate or goes to the owner.
+version: 2
+ffi:
+  # The one crate that may hold `unsafe`. It does not move.
+  path: crates/busbar-ffi
+  # Every `unsafe` token in the crate (tests and doc code included) plus every allow/expect(unsafe_code).
+  # Measured by W1-U0; it never rises (against the merge base and origin/dev) and only falls.
+  total: 101
+  # The only files the crate may hold, each with its own pinned count: no file is added, and unsafe
+  # cannot move between files without the owner's approval of this file.
+  files:
+    src/lib.rs: { tokens: 0, reason: "the root: deny(unsafe_code) and the three unsafe lints; no unsafe" }
+    src/raw.rs: { tokens: 9, reason: "the three non-empty view reads, the Out write view, the RawLent read, the view-argument read, the ChainBytes read and Send for ChainBytes; its allow" }
+    src/header.rs: { tokens: 3, reason: "Sync for Plugin and export!'s #[unsafe(no_mangle)]; its allow" }
+    src/vt.rs: { tokens: 10, reason: "the nine instance-taking entry fn-pointer aliases (EntryFn0-5, ResumeFn, CancelFn, CloseFn); its allow" }
+    src/shim.rs: { tokens: 47, reason: "enter (def and block); each of the 21 instance shims' def and enter block; the session and resume slot lookups; close's drop; its allow" }
+    src/slots.rs: { tokens: 12, reason: "the slot write, get_mut (def and body), the slot take, Sync for Slots, tie (the chain-future lifetime erasure), drop_inst (def and two blocks), the C-CLOSE-PARKED test's two blocks; its allow" }
+    src/host.rs: { tokens: 11, reason: "one call block per entry arity (invoke0-5), the resume, cancel and close calls, Arena::lend's append; its allow" }
+    src/image.rs: { tokens: 7, reason: "Library::new, Library::get, the opened and admitted header views, the stamp view, the vt::<K> cast; its allow" }
+    tests/loom_slots.rs: { tokens: 2, reason: "C-SLOT-STALE: the two get_mut checks under loom" }
+  # Exactly these dependencies, each with its role: always, host (optional, feature `host`), or the cfg.
+  dependencies:
+    zerocopy: always
+    libloading: host
+    object: host
+    loom: cfg(loom)
+  # The only manifests that may depend on busbar-ffi, each with how it may: `forwards host` (a feature
+  # enables busbar-ffi/host), `host`, or `no host`. Plugin crates (outside this repo) never enable host.
+  dependents:
+    crates/busbar-plugin-abi/Cargo.toml: forwards host
+    crates/plugin-loader/Cargo.toml: host
+    crates/busbar-plugin-test/Cargo.toml: no host
+# E1: every other tracked .rs file holding an escape token (unsafe, a linker identifier, an extern block,
+# an allow/expect/warn of unsafe_code, an OUT_DIR include, a build.rs writing .rs), with its exact count
+# and the package that deletes it. Rows are never added or raised; the whole map is deleted at the end
+# of wave 3 (taken from the `git ls-files` walk at W1-U0).
+interim:
+  crates/busbar-contract/src/abi/auth/mod.rs: { tokens: 14, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/export/mod.rs: { tokens: 8, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/export/validate.rs: { tokens: 2, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/hook/mod.rs: { tokens: 10, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/host/conn/mod.rs: { tokens: 32, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/host/hook.rs: { tokens: 20, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/host/service.rs: { tokens: 92, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/measurement.rs: { tokens: 5, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/mechanism/call.rs: { tokens: 9, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/mechanism/check.rs: { tokens: 19, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/mechanism/decl.rs: { tokens: 6, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/mechanism/door.rs: { tokens: 9, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/mechanism/rendering/mod.rs: { tokens: 13, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/mechanism/rendering/tail.rs: { tokens: 24, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/mod.rs: { tokens: 12, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/plane/check.rs: { tokens: 10, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/plane/mod.rs: { tokens: 23, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/auth_door.rs: { tokens: 7, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/auth_outbound.rs: { tokens: 2, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/capture.rs: { tokens: 4, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/conn.rs: { tokens: 14, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/cred/form_body.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/cred/protected_json.rs: { tokens: 2, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/cred/settings.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/door.rs: { tokens: 61, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/exchange.rs: { tokens: 4, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/generation.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/hook.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/io.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/lent.rs: { tokens: 29, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/life.rs: { tokens: 4, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/migrate.rs: { tokens: 5, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/out.rs: { tokens: 34, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/plane_life.rs: { tokens: 2, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/plane/conditional.rs: { tokens: 10, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/publish.rs: { tokens: 4, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/registration.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/safe.rs: { tokens: 27, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/secret_bytes.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/services.rs: { tokens: 24, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/store/tests/loader_wire_contracts.rs: { tokens: 6, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/store/v4/bootstrap_door.rs: { tokens: 15, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/store/v4/decode.rs: { tokens: 26, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/store/v4/door.rs: { tokens: 11, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/store/v4/mod.rs: { tokens: 4, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/store/v4/tests/decode_tests.rs: { tokens: 21, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/store/v4/tests/door_tests.rs: { tokens: 6, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/store/v4/tests/marshal_tests.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/test_support/chip.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/test_support/cpu.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/test_support/loans.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/test_support/mod.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/test_support/mutant.rs: { tokens: 21, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/test_support/restated_transport.rs: { tokens: 4, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/test_support/sink.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/test_support/watch.rs: { tokens: 14, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/auth_door_tests.rs: { tokens: 25, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/auth_kit_tests.rs: { tokens: 5, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/auth_outbound_tests.rs: { tokens: 26, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/capture_retention_tests.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/conditional_custody_tests.rs: { tokens: 2, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/conn_tests.rs: { tokens: 26, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/cred_json_tests.rs: { tokens: 4, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/cred_record_tests.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/cred_tests.rs: { tokens: 2, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/door_tests.rs: { tokens: 87, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/exchange_tests.rs: { tokens: 12, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/expand_tests.rs: { tokens: 35, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/export_tests.rs: { tokens: 17, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/form_body_wipe_tests.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/hook_deadline_tests.rs: { tokens: 16, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/hook_tests.rs: { tokens: 33, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/inspection_tests.rs: { tokens: 4, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/io_tests.rs: { tokens: 9, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/lent_tests.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/life_tests.rs: { tokens: 8, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/migrate_tests.rs: { tokens: 6, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/out_tests.rs: { tokens: 7, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/plane_inspection_leases_tests.rs: { tokens: 5, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/plane_life_tests.rs: { tokens: 9, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/plane_tests.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/publish_tests.rs: { tokens: 11, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/safe_tests.rs: { tokens: 10, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/secret_tests.rs: { tokens: 6, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/services_tests.rs: { tokens: 55, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/store_conditional_tests.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/store_wire_kept_tests.rs: { tokens: 19, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/store_wire_output_wipe_tests.rs: { tokens: 11, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/store_wire_sealed_tests.rs: { tokens: 23, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/test_support_tests.rs: { tokens: 52, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/transport_sink_tests.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/transport_tests.rs: { tokens: 12, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/url_tests.rs: { tokens: 2, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/wipe_tests.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/wipe.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/secret/mod.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/shared.rs: { tokens: 5, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/store/v4.rs: { tokens: 10, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/tests/abi_conn_close_tests.rs: { tokens: 8, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/tests/abi_conn_retention_tests.rs: { tokens: 6, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/tests/conn_lowering_tests.rs: { tokens: 18, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/tests/export_validate_tests.rs: { tokens: 9, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/tests/hook_validate_tests.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/tests/host_hook_tests.rs: { tokens: 7, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/tests/host_service_tests.rs: { tokens: 94, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/tests/lib_tests.rs: { tokens: 5, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/tests/mechanism_check_tests.rs: { tokens: 16, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/tests/plane_check_tests.rs: { tokens: 34, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/tests/rendering_tests.rs: { tokens: 8, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/tests/secret_holder_tests.rs: { tokens: 4, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/tests/secret_validate_tests.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/tests/transport_check_tests.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/tests/transport_datagram_tests.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/transport/check.rs: { tokens: 15, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/transport/mod.rs: { tokens: 24, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/lib.rs: { tokens: 1, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
+  crates/busbar-contract/src/persistence/archive.rs: { tokens: 1, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
+  crates/busbar-contract/src/persistence/archive/spool.rs: { tokens: 8, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
+  crates/busbar-contract/src/plugin_settings/owned.rs: { tokens: 3, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
+  crates/busbar-contract/src/tests/allocation_observer_tests.rs: { tokens: 4, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
+  crates/busbar-contract/src/tests/allocation_observer.rs: { tokens: 18, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
+  crates/busbar-contract/src/tests/sse_frames_tests.rs: { tokens: 3, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
+  crates/busbar-contract/src/tests/wipe_support.rs: { tokens: 4, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
+  crates/busbar-contract/tests/abi_versions.rs: { tokens: 1, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
+  crates/busbar-contract/tests/auth_answer_validators.rs: { tokens: 1, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
+  crates/busbar-contract/tests/common_measurements.rs: { tokens: 9, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
+  crates/busbar-contract/tests/exchange_request_wipe.rs: { tokens: 6, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
+  crates/busbar-contract/tests/fixtures/sdk_door_plugin.rs: { tokens: 5, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
+  crates/busbar-contract/tests/invoke_request_wipe.rs: { tokens: 6, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
+  crates/busbar-contract/tests/json_scanner.rs: { tokens: 1, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
+  crates/busbar-contract/tests/owned_auth_and_service_wipe.rs: { tokens: 6, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
+  crates/busbar-contract/tests/plane_class_parents.rs: { tokens: 3, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
+  crates/busbar-contract/tests/plane_streaming_media.rs: { tokens: 4, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
+  crates/busbar-contract/tests/protocol_producer_custody.rs: { tokens: 11, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
+  crates/busbar-contract/tests/sdk_door_cdylib.rs: { tokens: 8, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
+  crates/busbar-contract/tests/sdk_hyper.rs: { tokens: 11, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
+  crates/busbar-contract/tests/signing_gate_reader.rs: { tokens: 1, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
+  crates/busbar-contract/tests/verify_request_wipe.rs: { tokens: 6, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
+  crates/busbar-contract/tests/zero_declarations.rs: { tokens: 1, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
+  crates/busbar-core-admin/build.rs: { tokens: 1, by: "W3 (generated admin code)" }
+  crates/busbar-core-admin/src/v1/json/handlers.rs: { tokens: 1, by: "W3 (generated admin code)" }
+  crates/busbar-core-connector/src/child_job.rs: { tokens: 17, by: "W1-C1C, then PLATFORMS OQ-5" }
+  crates/busbar-core-connector/src/conns.rs: { tokens: 5, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/datagram.rs: { tokens: 1, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/framed_stream.rs: { tokens: 1, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/io/unix.rs: { tokens: 2, by: "W1-U1 (typed tokio sockets; QB)" }
+  crates/busbar-core-connector/src/test_support_adoption.rs: { tokens: 3, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/tests/callback_waker.rs: { tokens: 9, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/tests/compose_absorb_fail_tests.rs: { tokens: 1, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/tests/compose_receive_tests.rs: { tokens: 2, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/tests/compose_sensitive_tests.rs: { tokens: 2, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/tests/compose_tests.rs: { tokens: 2, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/tests/compose_tls_accept_tests.rs: { tokens: 2, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/tests/connector_tests.rs: { tokens: 1, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/tests/datagram_finish_tests.rs: { tokens: 3, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/tests/datagram_tests.rs: { tokens: 7, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/tests/datagram_turn_tests.rs: { tokens: 2, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/tests/dialled_read_wake_tests.rs: { tokens: 5, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/tests/dialled_tests.rs: { tokens: 4, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/tests/fanout_wake_tests.rs: { tokens: 9, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/tests/fanout_waker_tests.rs: { tokens: 1, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/tests/framed_stream_tests.rs: { tokens: 5, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/tests/framer_loan_tests.rs: { tokens: 2, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/tests/framer_more_tests.rs: { tokens: 7, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/tests/framer_tests.rs: { tokens: 2, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/tests/framer_wire_tests.rs: { tokens: 6, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/tests/listen_tests.rs: { tokens: 2, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/tests/name_dial_tests.rs: { tokens: 1, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/tests/pool_prepared_seal_tests.rs: { tokens: 2, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/tests/support_lib.rs: { tokens: 9, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/tests/support.rs: { tokens: 17, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-kernel/src/persistence/slot_seal.rs: { tokens: 2, by: "W3-D-CONTRACT (boot OnceLock seals)" }
+  crates/busbar-kernel/src/plane_driver/serve.rs: { tokens: 1, by: "W3-D-BINARY" }
+  crates/busbar-kernel/src/plane_driver/tests/far_end_tests.rs: { tokens: 2, by: "W3-D-BINARY" }
+  crates/busbar-kernel/src/plane_driver/tests/probe_unit_tests.rs: { tokens: 3, by: "W3-D-BINARY" }
+  crates/busbar-kernel/src/plane_driver/tests/retirement_tests.rs: { tokens: 1, by: "W3-D-BINARY" }
+  crates/busbar-kernel/src/plane_driver/tests/route_tests.rs: { tokens: 2, by: "W3-D-BINARY" }
+  crates/busbar-kernel/src/plane_driver/tests/serve_tests.rs: { tokens: 7, by: "W3-D-BINARY" }
+  crates/busbar-kernel/src/seal.rs: { tokens: 2, by: "W3-D-CONTRACT (boot OnceLock seals)" }
+  crates/busbar-kernel/src/tests/host_disk_export_tests.rs: { tokens: 14, by: "W1-U1 (§4.3, §4.4)" }
+  crates/busbar-kernel/tests/host_projection_wipe.rs: { tokens: 6, by: "W1-U1 (§4.3, §4.4)" }
+  crates/busbar-kernel/tests/support/plane_driver_actual.rs: { tokens: 34, by: "W3-D-BINARY" }
+  crates/busbar-kernel/tests/support/plane_driver_completion_retirement.rs: { tokens: 9, by: "W3-D-BINARY" }
+  crates/busbar-kernel/tests/support/plane_driver_session_input_cases.rs: { tokens: 1, by: "W3-D-BINARY" }
+  crates/busbar-kernel/tests/support/plane_driver_unbilled_cases.rs: { tokens: 7, by: "W3-D-BINARY" }
+  crates/busbar-migrations/src/seal.rs: { tokens: 2, by: "W3-D-MIGRATIONS" }
+  crates/busbar/build.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/busbar/src/main.rs: { tokens: 2, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/busbar/src/root/boot.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/busbar/src/root/migration_table.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/busbar/src/root/mod.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/busbar/src/root/serve_datagram.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/busbar/src/root/serve.rs: { tokens: 2, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/busbar/src/root/tests/boot.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/busbar/src/root/tests/config_migrate.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/busbar/src/root/tests/door_steps.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/busbar/src/root/tests/inbound.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/busbar/src/root/tests/linked_auth.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/busbar/src/root/tests/linked_door_root.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/busbar/src/root/tests/linked_protocols.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/busbar/src/root/tests/listener_framed_tests.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/busbar/src/root/tests/listener_plan.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/busbar/src/root/tests/migration_table.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/busbar/src/root/tests/node_door_rig.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/busbar/src/root/tests/secret_source.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/busbar/src/root/tests/serve_datagram.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/busbar/src/root/tests/serve_money.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/busbar/src/root/tests/test_plugins.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/busbar/src/tests/distribution.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/busbar/src/tests/generated_escapes.rs: { tokens: 2, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/plugin-loader/src/auth_door.rs: { tokens: 11, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/auth_login.rs: { tokens: 5, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/answer.rs: { tokens: 3, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/auth_outbound.rs: { tokens: 3, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/completion_retirement_boundary_tests.rs: { tokens: 5, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/completion_retirement.rs: { tokens: 6, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/completion_store.rs: { tokens: 1, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/conditional_tests.rs: { tokens: 82, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/conditional.rs: { tokens: 11, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/conn_services.rs: { tokens: 48, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/inspection_tests.rs: { tokens: 58, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/inspection.rs: { tokens: 6, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/io_slots.rs: { tokens: 20, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/kinds/auth.rs: { tokens: 17, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/kinds/export.rs: { tokens: 16, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/kinds/hook.rs: { tokens: 13, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/kinds/plane.rs: { tokens: 53, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/kinds/secret.rs: { tokens: 4, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/kinds/store_v4.rs: { tokens: 10, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/kinds/transport.rs: { tokens: 45, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/lifecycle.rs: { tokens: 3, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/load.rs: { tokens: 30, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/measurement_tests.rs: { tokens: 24, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/measurement.rs: { tokens: 3, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/migrate.rs: { tokens: 6, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/mod.rs: { tokens: 17, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/observation.rs: { tokens: 10, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/plugin.rs: { tokens: 105, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/services.rs: { tokens: 71, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/snapshot.rs: { tokens: 18, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/tests/auth_outbound_tests.rs: { tokens: 1, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/tests/framing_loan_tests.rs: { tokens: 8, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/tests/ordinary_auth_custody.rs: { tokens: 1, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/tests/snapshot_tests.rs: { tokens: 2, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/validate.rs: { tokens: 6, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/worker_lease_tests.rs: { tokens: 29, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/worker_unit_cancel_tests.rs: { tokens: 11, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/worker_unit_cancel.rs: { tokens: 4, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/worker.rs: { tokens: 4, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/durable_documents.rs: { tokens: 25, by: "PLATFORMS P6 (OQ-5, OQ-6)" }
+  crates/plugin-loader/src/export_door.rs: { tokens: 1, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/ffi_thread.rs: { tokens: 5, by: "W1-L1 / W1-L2" }
+  crates/plugin-loader/src/hook_door.rs: { tokens: 9, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/migration_secrets.rs: { tokens: 21, by: "PLATFORMS P6 (OQ-5, OQ-6)" }
+  crates/plugin-loader/src/stage.rs: { tokens: 10, by: "W1-L1 / W1-L2" }
+  crates/plugin-loader/src/store_v4.rs: { tokens: 13, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/store_v4/prepared.rs: { tokens: 5, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/auth_axis_tests.rs: { tokens: 2, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/auth_carriers_tests.rs: { tokens: 17, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/auth_door_tests.rs: { tokens: 1, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/auth_generation_tests.rs: { tokens: 2, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/auth_header_boundary_tests.rs: { tokens: 6, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/auth_instance_carriers_old_api_tests.rs: { tokens: 5, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/boot_tests.rs: { tokens: 19, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/confined_kind_ops_tests.rs: { tokens: 2, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/conformance_auth_unjudged_tests.rs: { tokens: 5, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/conformance_export_unjudged_tests.rs: { tokens: 7, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/conformance_ready_after_no_ticket_tests.rs: { tokens: 1, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/conn_prepared_tests.rs: { tokens: 1, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/conn_services_tests.rs: { tokens: 39, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/dispatch_kind_auth_tests.rs: { tokens: 1, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/dispatch_kind_hook_tests.rs: { tokens: 6, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/dispatch_kind_plane_tests.rs: { tokens: 4, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/dispatch_kind_secret_export_tests.rs: { tokens: 1, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/dispatch_kind_transport_tests.rs: { tokens: 2, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/dispatch_tests.rs: { tokens: 64, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/door_both_ways.rs: { tokens: 4, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/envelope_array_tests.rs: { tokens: 3, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/export_conformance_tests.rs: { tokens: 4, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/export_door_tests.rs: { tokens: 11, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/export_refresh_tests.rs: { tokens: 12, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/head_snapshot_tests.rs: { tokens: 2, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/hook_door_conformance_tests.rs: { tokens: 1, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/hook_door_tests.rs: { tokens: 18, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/hook_route_metadata_tests.rs: { tokens: 1, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/host_services_tests.rs: { tokens: 111, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/io_slots_tests.rs: { tokens: 6, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/kind_boundary_loaded_tests.rs: { tokens: 3, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/lifecycle_worker_tests.rs: { tokens: 4, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/migrate_door_tests.rs: { tokens: 2, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/needs_restated.rs: { tokens: 2, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/neutral_kind_rename_tests.rs: { tokens: 3, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/neutral_plane_identity_tests.rs: { tokens: 1, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/open_reason_tests.rs: { tokens: 2, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/ordinary_auth_short.rs: { tokens: 10, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/ordinary_connector_bounds.rs: { tokens: 4, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/ordinary_declared_metadata.rs: { tokens: 16, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/ordinary_load_negatives.rs: { tokens: 8, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/ordinary_plane_ack_drive.rs: { tokens: 20, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/ordinary_plane_fault_outputs.rs: { tokens: 6, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/ordinary_plane_lending.rs: { tokens: 12, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/ordinary_plane_lifecycle.rs: { tokens: 9, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/ordinary_plane_sessions_actual.rs: { tokens: 12, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/ordinary_suite_dispatch_tests.rs: { tokens: 9, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/ordinary_suite_hook_ticket_tests.rs: { tokens: 6, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/pack_tests.rs: { tokens: 2, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/plane_probe_tests.rs: { tokens: 19, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/plugin_log_tests.rs: { tokens: 1, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/ready_tests.rs: { tokens: 2, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/sdk_registration_tests.rs: { tokens: 18, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/sign_tests.rs: { tokens: 6, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/stage_tests.rs: { tokens: 6, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/store_prepared_tests.rs: { tokens: 3, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/store_v4_tests.rs: { tokens: 11, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/transport_answer_lease_tests.rs: { tokens: 6, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/transport_receive_tests.rs: { tokens: 7, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/tests/fixtures/dispatch_test_plugin.rs: { tokens: 28, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/tests/fixtures/hook_door_plugin.rs: { tokens: 1, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/tests/fixtures/log_witness_plugin.rs: { tokens: 15, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/tests/fixtures/neutral_frame_door.rs: { tokens: 24, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/tests/fixtures/neutral_plane_plugin.rs: { tokens: 4, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/tests/streaming_media.rs: { tokens: 5, by: "W2 / W3 (old dispatch and doors)" }
+  dist/default/tests/canary/abi.rs: { tokens: 2, by: "W1-L1" }
+  dist/default/tests/canary/recorder.rs: { tokens: 40, by: "W1-L1" }
+  dist/default/tests/cli_validate.rs: { tokens: 1, by: "W1-U1" }
+  dist/default/tests/config_migrate_cross_plane.rs: { tokens: 1, by: "W3-D-BINARY" }
+  dist/default/tests/door_ready_alloc.rs: { tokens: 19, by: "W3-D-BINARY" }
+  dist/default/tests/export_otlp_delivers_spans.rs: { tokens: 1, by: "W3-D-BINARY" }
+  dist/default/tests/fixtures/plane_driver_test_plane.rs: { tokens: 34, by: "W3-D-BINARY" }
+  dist/default/tests/hook_parity_driver/main.rs: { tokens: 2, by: "W3-D-BINARY" }
+  dist/default/tests/linked_export_sinks_boot_as_their_own_kind.rs: { tokens: 1, by: "W3-D-BINARY" }
+  dist/default/tests/linked/mod.rs: { tokens: 2, by: "W3-D-BINARY" }
+  dist/default/tests/otlp_span_records.rs: { tokens: 1, by: "W3-D-BINARY" }
+  dist/default/tests/plane_blackbox.rs: { tokens: 1, by: "W3-D-BINARY" }
+  dist/default/tests/product/money_one_function_equivalence.rs: { tokens: 1, by: "W3-D-BINARY" }
+  dist/default/tests/traces_stream_both_doors.rs: { tokens: 1, by: "W3-D-BINARY" }
+  dist/default/tests/transport_composed_over_consistency.rs: { tokens: 2, by: "W3-D-BINARY" }
+  dist/default/tests/transport_dropped_in_serves.rs: { tokens: 1, by: "W3-D-BINARY" }
+  dist/default/tests/upgrade_1_5_5_env_secret_fields.rs: { tokens: 1, by: "W3-D-BINARY" }
+  tools/plugin-bench/src/alloc.rs: { tokens: 9, by: "W3-D-CONTRACT (deleted)" }
+  tools/plugin-bench/src/auth.rs: { tokens: 2, by: "W3-D-CONTRACT (deleted)" }
+  tools/plugin-bench/src/export.rs: { tokens: 2, by: "W3-D-CONTRACT (deleted)" }
+  tools/plugin-bench/src/frames.rs: { tokens: 4, by: "W3-D-CONTRACT (deleted)" }
+  tools/plugin-bench/src/hook.rs: { tokens: 2, by: "W3-D-CONTRACT (deleted)" }
+  tools/plugin-bench/src/plane.rs: { tokens: 4, by: "W3-D-CONTRACT (deleted)" }
+  tools/plugin-bench/src/secret.rs: { tokens: 2, by: "W3-D-CONTRACT (deleted)" }
+  tools/plugin-bench/src/stats.rs: { tokens: 7, by: "W3-D-CONTRACT (deleted)" }
+  tools/plugin-bench/src/store.rs: { tokens: 5, by: "W3-D-CONTRACT (deleted)" }
+  tools/plugin-bench/src/transport.rs: { tokens: 3, by: "W3-D-CONTRACT (deleted)" }
+# E2: package roots that do not yet carry both #![forbid(unsafe_code)] and
+# #![doc(test(attr(forbid(unsafe_code))))]. Rows are never added.
+interim_roots:
+  crates/busbar-contract/src/lib.rs: { by: "W3 (its crate holds interim rows)" }
+  crates/busbar-core-admin/src/lib.rs: { by: "W3 (its crate holds interim rows)" }
+  crates/busbar-core-connector/src/lib.rs: { by: "W3 (its crate holds interim rows)" }
+  crates/busbar-kernel-ledger/src/lib.rs: { by: "W3 (its crate holds interim rows)" }
+  crates/busbar-kernel/src/lib.rs: { by: "W3 (its crate holds interim rows)" }
+  crates/busbar-migrations/src/lib.rs: { by: "W3 (its crate holds interim rows)" }
+  crates/busbar/src/main.rs: { by: "W3 (its crate holds interim rows)" }
+  crates/plugin-loader/src/lib.rs: { by: "W3 (its crate holds interim rows)" }
+  crates/plugin-loader/src/pack.rs: { by: "W3 (its crate holds interim rows)" }
+  tools/plugin-bench/src/lib.rs: { by: "W3 (its crate holds interim rows)" }
+  tools/plugin-bench/src/main.rs: { by: "W3 (its crate holds interim rows)" }

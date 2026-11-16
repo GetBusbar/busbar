@@ -104,7 +104,7 @@ fn one_declared_dial_bound(declared: u64, dial: u64, request: u64, expected: u64
             dial,
         )
         .unwrap();
-    let after = before + crate::support::since(before);
+    let after = before + before.elapsed();
     let held = c.slab.get(OWNER, id).unwrap().1;
     let at = held.dial_due.lock().unwrap().as_ref().unwrap().at;
     assert!(at >= before + Duration::from_millis(expected));

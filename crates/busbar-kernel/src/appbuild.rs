@@ -16,6 +16,9 @@ use busbar_kernel::plane_driver::route_input::{
     LaneInput, OnExhaustedInput, PoolInput, PoolMemberInput,
 };
 
+/// The MIN-3 boot: one generic walk over `Registry::boot_plan` (IF §11.2, §12.10 item 4).
+pub mod boot_walk;
+
 pub const ENV_CONFIG: &str = "BUSBAR_CONFIG";
 
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/busbar/config.yaml";
@@ -2569,6 +2572,14 @@ async fn build_app_native(
     app.config_pending_restart = prior
         .map(|app| app.config_pending_restart.clone())
         .unwrap_or_default();
+    if let Some(prior) = prior {
+        app.config_generation = Arc::clone(&prior.config_generation);
+    }
+    app.require_if_match = cfg
+        .auth
+        .as_ref()
+        .and_then(|a| a.policy.require_if_match)
+        .unwrap_or(false);
     Ok((
         app,
         rotate_gov_credentials,
@@ -2616,3 +2627,7 @@ fn accepted_operator(auth: &config::AuthCfg, operator: &crate::auth::Operator) {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "tests/boot_walk_tests.rs"]
+mod boot_walk_tests;

@@ -27,7 +27,7 @@ fn key_info(k: &SigningKey) -> String {
 fn entry(root_key: Option<String>, root: bool) -> TrustEntry {
     TrustEntry {
         pin: Some(DeclaredPin {
-            mechanism: "signature-root".to_owned(),
+            mechanism: "signature-root".into(),
             root,
             peer_key: false,
             key: root_key,
@@ -43,7 +43,7 @@ fn entry(root_key: Option<String>, root: bool) -> TrustEntry {
 
 fn caller(instance: &str) -> Caller {
     Caller::for_test(
-        instance.into(),
+        Arc::from(instance),
         busbar_contract::abi::mechanism::KindCode::Plane,
     )
 }

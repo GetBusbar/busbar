@@ -79,9 +79,6 @@ use crate::abi::sdk::lent::HostBuf;
 use crate::abi::sdk::life::{Leases, Refusal};
 use crate::abi::sdk::publish::{Generations, Publish};
 
-/// The former FIFO size, retained as a source-compatible constant. Answers are now retained by
-pub const KEPT_RING: usize = 4096;
-
 /// A reply's full identity. Unticketed replies belong to the actual crossing thread, not a
 /// worker that submitted work to that thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

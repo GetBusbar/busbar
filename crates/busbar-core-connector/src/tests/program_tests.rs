@@ -200,12 +200,10 @@ async fn read(
     id: ConnId,
     buf: &mut [u8],
 ) -> Result<busbar_contract::conn::Piece, ConnError> {
-    // At most 2000 polls (about 10 s), counted rather than read off the clock.
-    let mut polls = 0_u32;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
         match c.read(OWNER, id, 7, buf) {
-            Err(ConnError::Pending) if polls < 2000 => {
-                polls += 1;
+            Err(ConnError::Pending) if std::time::Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
             other => return other,
@@ -274,10 +272,8 @@ fn gone(pid: &str) -> bool {
 }
 
 async fn until_gone(pid: &str) -> bool {
-    // At most 250 polls (about 5 s), counted rather than read off the clock.
-    let mut polls = 0_u32;
-    while !gone(pid) && polls < 250 {
-        polls += 1;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !gone(pid) && std::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     gone(pid)
@@ -706,7 +702,7 @@ fn a_leases_bound_runs_past_its_head_to_the_programs_answer() {
         declare(&c, &[("mute", sh("cat >/dev/null", &[]))]).unwrap();
         let before = std::time::Instant::now();
         let id = open_bounded(&c, "mute");
-        let after = before + crate::support::since(before);
+        let after = std::time::Instant::now();
 
         let at = due(&c, id).expect("the open is bounded");
         assert!(
@@ -714,7 +710,11 @@ fn a_leases_bound_runs_past_its_head_to_the_programs_answer() {
             "the bound is the open's timeout_ms from the open"
         );
 
-        set_due(&c, id, after + Duration::from_secs(3600));
+        set_due(
+            &c,
+            id,
+            std::time::Instant::now() + Duration::from_secs(3600),
+        );
         assert_eq!(generation(&c, id).await, 1, "the head is served at once");
         assert!(due(&c, id).is_some(), "the head does not spend the bound");
         let mut buf = [0_u8; 64];
@@ -724,7 +724,7 @@ fn a_leases_bound_runs_past_its_head_to_the_programs_answer() {
             "short of the bound, the mute program's answer pends"
         );
 
-        set_due(&c, id, after);
+        set_due(&c, id, std::time::Instant::now());
         assert_eq!(c.read(OWNER, id, 7, &mut buf), Err(ConnError::Timeout));
         c.close(OWNER, id).unwrap();
     });
@@ -734,13 +734,16 @@ fn a_leases_bound_runs_past_its_head_to_the_programs_answer() {
 #[test]
 fn a_leases_bound_below_the_answer_is_a_timeout_and_the_answer_spends_it() {
     worker().block_on(async {
-        let now = std::time::Instant::now();
         let c = connector();
         declare(&c, &[("echo", sh(ECHO_PID, &[]))]).unwrap();
         let mut buf = [0_u8; 64];
 
         let id = open_bounded(&c, "echo");
-        set_due(&c, id, now + Duration::from_secs(3600));
+        set_due(
+            &c,
+            id,
+            std::time::Instant::now() + Duration::from_secs(3600),
+        );
         assert_eq!(generation(&c, id).await, 1);
         let piece = read(&c, id, &mut buf).await.expect("the answer");
         assert_eq!(piece.kind, PieceKind::Body);
@@ -748,9 +751,13 @@ fn a_leases_bound_below_the_answer_is_a_timeout_and_the_answer_spends_it() {
         c.close(OWNER, id).unwrap();
 
         let id = open_bounded(&c, "echo");
-        set_due(&c, id, now + Duration::from_secs(3600));
+        set_due(
+            &c,
+            id,
+            std::time::Instant::now() + Duration::from_secs(3600),
+        );
         generation(&c, id).await;
-        set_due(&c, id, now);
+        set_due(&c, id, std::time::Instant::now());
         assert_eq!(
             c.read(OWNER, id, 7, &mut buf),
             Err(ConnError::Timeout),
@@ -765,7 +772,7 @@ async fn drain(c: &Connector, id: ConnId, bound: Duration) -> usize {
     let mut buf = vec![0_u8; 64 * 1024];
     let mut read = 0;
     let started = std::time::Instant::now();
-    while crate::support::since(started) < bound {
+    while started.elapsed() < bound {
         match c.read(OWNER, id, 7, &mut buf) {
             Ok(p) if p.kind == PieceKind::Body => read += p.len,
             Ok(_) => {}

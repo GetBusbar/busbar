@@ -188,6 +188,164 @@ pub struct Controls {
     pub children: Vec<UnitKey>,
 }
 
+/// How one attempt of a unit at a target ended (recipe `v7` frames it; ADMIN-API-1.6 §9 fills it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttemptOutcome {
+    /// The target answered.
+    Ok,
+    /// The target failed and the unit moved to the next one.
+    Failover,
+    /// The target failed and the unit ended there.
+    Failed,
+    /// The attempt was cancelled.
+    Cancelled,
+}
+
+impl AttemptOutcome {
+    /// Every outcome, in tag order.
+    pub const ALL: [AttemptOutcome; 4] = [
+        AttemptOutcome::Ok,
+        AttemptOutcome::Failover,
+        AttemptOutcome::Failed,
+        AttemptOutcome::Cancelled,
+    ];
+
+    /// The frozen text the digest, the journal and the read carry.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AttemptOutcome::Ok => "ok",
+            AttemptOutcome::Failover => "failover",
+            AttemptOutcome::Failed => "failed",
+            AttemptOutcome::Cancelled => "cancelled",
+        }
+    }
+
+    /// The outcome [`AttemptOutcome::as_str`] spells `tag`, if any.
+    #[must_use]
+    pub fn from_tag(tag: &str) -> Option<Self> {
+        AttemptOutcome::ALL.into_iter().find(|o| o.as_str() == tag)
+    }
+}
+
+/// One attempt slot of a `v7` record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attempt {
+    /// How it ended.
+    pub outcome: AttemptOutcome,
+    /// The lane it was made at.
+    pub target: String,
+    /// The reason it did not answer, empty when it did.
+    pub reason: String,
+    /// Its duration in microseconds, 0 when not measured.
+    pub us: u64,
+}
+
+/// How many attempts a `v7` record holds inline; `attempts_total` counts beyond them.
+pub const ATTEMPT_SLOTS: usize = 4;
+
+/// WHAT RECIPE `v7` ADDS (ADMIN-API-1.6 §3.2): the facts `/records` serves history-stably.
+///
+/// Every field is a copy or one short text, so a seal stays one allocation over `v6` (the
+/// attribution). A record sealed before `v7` decodes with the default, and a read tells the two
+/// apart by [`AuditRecord::recipe`], never by these values.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UnitFacts {
+    /// The arrival, in milliseconds since the epoch (the reading `wall` is the seconds of).
+    pub wall_ms: u64,
+    /// `group`, `pool` and `provider` of the unit's metering, joined by U+001F, each empty when
+    /// absent. Built once per unit from the entry metering keys on.
+    pub attribution: String,
+    /// The process boot nonce: 16 random bytes per process, all zero when the RNG fill failed.
+    pub boot_nonce: [u8; 16],
+    /// The HTTP status the unit answered with, 0 for none (§9).
+    pub status: u16,
+    /// Microseconds to the first body write, 0 when not measured (§9).
+    pub ttft_us: u64,
+    /// Microseconds until the last frame was handed over, 0 when not measured (§9).
+    pub total_us: u64,
+    /// The first [`ATTEMPT_SLOTS`] attempts, filled from the front (§9).
+    pub attempts: [Option<Attempt>; ATTEMPT_SLOTS],
+    /// How many attempts were made in all, including those beyond the slots.
+    pub attempts_total: u32,
+}
+
+/// The separator inside [`UnitFacts::attribution`].
+pub const ATTRIBUTION_SEP: char = '\u{1f}';
+
+impl UnitFacts {
+    /// The facts of a unit that arrived at `wall_ms`, with nothing else known.
+    #[must_use]
+    pub fn at(wall_ms: u64) -> Self {
+        UnitFacts {
+            wall_ms,
+            ..UnitFacts::default()
+        }
+    }
+
+    /// The sealed `(group, pool, provider)`, each `None` when empty.
+    #[must_use]
+    pub fn attributed(&self) -> [Option<&str>; 3] {
+        let mut parts = self.attribution.splitn(3, ATTRIBUTION_SEP);
+        let mut next = || parts.next().filter(|s| !s.is_empty());
+        [next(), next(), next()]
+    }
+
+    /// The attempts filled from the front.
+    pub fn attempts_used(&self) -> impl Iterator<Item = &Attempt> {
+        self.attempts.iter().map_while(Option::as_ref)
+    }
+}
+
+/// Join `group`, `pool` and `provider` into the one sealed attribution text.
+#[must_use]
+pub fn attribution(group: &str, pool: &str, provider: &str) -> String {
+    let mut out = String::with_capacity(group.len() + pool.len() + provider.len() + 2);
+    out.push_str(group);
+    out.push(ATTRIBUTION_SEP);
+    out.push_str(pool);
+    out.push(ATTRIBUTION_SEP);
+    out.push_str(provider);
+    out
+}
+
+/// THE NODE-QUALIFIED UNIT ID (ADMIN-API-1.6 §3.4, C5): `node_<16 hex>.<32 hex>.<unit key>`.
+///
+/// A `UnitKey` restarts at 1 on every boot of every node, so the key alone is no join id. This
+/// one string is `UnitRecord.unit`, the `{unit}` of `content_ref` and the data plane's
+/// `X-Request-Id`: one formatter, so the three cannot drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnitId {
+    node: u64,
+    boot_nonce: [u8; 16],
+    unit_key: u64,
+}
+
+impl UnitId {
+    /// The id of `unit_key` sealed by `node` in the process whose boot nonce is `boot_nonce`;
+    /// `None` when the nonce is all zero (the RNG fill failed, so no id is unique).
+    #[must_use]
+    pub fn of(node: u64, boot_nonce: [u8; 16], unit_key: u64) -> Option<Self> {
+        (boot_nonce != [0; 16]).then_some(UnitId {
+            node,
+            boot_nonce,
+            unit_key,
+        })
+    }
+}
+
+impl std::fmt::Display for UnitId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "node_{:016x}.{}.{}",
+            self.node,
+            HexBytes(&self.boot_nonce),
+            self.unit_key
+        )
+    }
+}
+
 /// One audit record: the same shape for every caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuditRecord {
@@ -216,6 +374,8 @@ pub struct AuditRecord {
     pub controls: Controls,
     /// The digest of the correlation label, never the label itself.
     pub correlation_hash: Option<String>,
+    /// What recipe `v7` adds; the default on a record sealed before it.
+    pub unit: UnitFacts,
     /// WHERE this record sits in the chain, counting from one.
     ///
     /// The link alone says a record's neighbour is the one it names; it cannot say that the record
@@ -226,7 +386,7 @@ pub struct AuditRecord {
     /// The preceding record's digest.
     pub prev_hash: String,
     /// WHICH RECIPE this record was sealed under, and so the rules its digest is recomputed by
-    /// Every record this build seals is [`crate::recipe::Recipe::V5`]; a record sealed
+    /// Every record this build seals is [`crate::recipe::Recipe::V7`]; a record sealed
     /// under `v2` keeps verifying by `v2`'s rules.
     pub recipe: crate::recipe::Recipe,
     /// This record's own digest.
@@ -273,6 +433,20 @@ pub struct AuditInputs {
     pub controls: Controls,
     /// The correlation label, which is HASHED on the way in and never stored.
     pub correlation_label: Option<String>,
+    /// What recipe `v7` adds.
+    pub unit: UnitFacts,
+}
+
+impl AuditRecord {
+    /// The node-qualified unit id ([`UnitId`]): `None` before `v7`, which sealed no boot nonce,
+    /// and when the sealing process had none.
+    #[must_use]
+    pub fn unit_id(&self) -> Option<UnitId> {
+        if !matches!(self.recipe, crate::recipe::Recipe::V7) {
+            return None;
+        }
+        UnitId::of(self.node, self.unit.boot_nonce, self.what.unit_key.get())
+    }
 }
 
 mod sealed {
@@ -527,16 +701,9 @@ impl AuditChain {
         _token: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
         stage: impl FnOnce(&AuditRecord) -> Result<T, E>,
     ) -> Result<(AuditRecord, T), E> {
-        let recipe = if inputs
-            .usage
-            .lines
-            .iter()
-            .any(|line| line.quantity.whole_u64().is_err())
-        {
-            crate::recipe::Recipe::V6
-        } else {
-            crate::recipe::Recipe::V5
-        };
+        // One recipe for every new seal: v7 frames every quantity as exact decimal text, whole
+        // or fractional, so there is no choice left to make (ADMIN-API-1.6 §3.2).
+        let recipe = crate::recipe::Recipe::V7;
         let mut record = AuditRecord {
             subject: inputs.subject,
             what: inputs.what,
@@ -552,6 +719,7 @@ impl AuditChain {
                 .correlation_label
                 .as_deref()
                 .map(|label| crate::digest::sha256_hex(label.as_bytes())),
+            unit: inputs.unit,
             seq: self.next_seq,
             prev_hash: std::mem::take(&mut self.tail_hash),
             recipe,

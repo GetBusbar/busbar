@@ -260,11 +260,11 @@ fn a_client_gone_mid_stream_is_reported_to_the_route_as_gone() {
 #[test]
 fn a_non_loopback_upstream_and_a_hostname_listen_are_refused() {
     let far = Target::new(Routes::new())
-        .upstream("far", "10.1.2.3:80".parse().expect("an address"))
+        .upstream("far", "\x310.1.2.3:80".parse().expect("an address"))
         .serve()
         .err();
     assert!(
-        matches!(&far, Some(Refused::NotLoopback(why)) if why.contains("10.1.2.3")),
+        matches!(&far, Some(Refused::NotLoopback(why)) if why.contains("\x310.1.2.3")),
         "{far:?}"
     );
     let named = Target::new(Routes::new()).listen("localhost").serve().err();

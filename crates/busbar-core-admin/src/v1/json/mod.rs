@@ -47,6 +47,8 @@ impl AdminTransport for JsonV1 {
         #[cfg_attr(not(test), allow(clippy::let_and_return))]
         let router = Router::new()
             .route("/info", get(info))
+            .route("/operations/{key}", get(generation::get_operation))
+            .route("/whoami", get(whoami::get))
             .route("/pools", get(list_pools))
             .route("/pools/{name}", get(get_pool))
             .route("/models", get(list_models))
@@ -60,6 +62,11 @@ impl AdminTransport for JsonV1 {
             .route("/hooks/{name}/settings", patch(patch_hook_settings))
             .route("/hooks/{name}/schema", get(hook_schema))
             .route("/hooks/{name}/status", get(hook_status))
+            .route(
+                "/hooks/{name}/attachments/{target}",
+                axum::routing::put(hook_attachments::put_attachment)
+                    .delete(hook_attachments::delete_attachment),
+            )
             .merge(named_map::routes());
 
         let router = mount_plane_admin_routes(router);
@@ -120,6 +127,8 @@ impl AdminTransport for JsonV1 {
             .route("/signing-key/rotate", post(crate::keys::rotate_signing_key))
             .fallback(plane_serve_or_not_found)
             .method_not_allowed_fallback(|| async { err_json(&AdminError::MethodNotAllowed) });
+
+        let router = router.layer(axum::middleware::from_fn(generation::preconditions));
 
         #[cfg(test)]
         let router = router.layer(axum::middleware::from_fn(record_declared_error));
@@ -387,19 +396,6 @@ fn respond<T: Serialize>(status: StatusCode, result: Result<T, AdminError>) -> R
     }
 }
 
-#[allow(clippy::result_large_err)]
-fn cursor_offset(q: &std::collections::HashMap<String, String>) -> Result<usize, Response> {
-    match q.get("cursor") {
-        None => Ok(0),
-        Some(c) => crate::v1::contract::decode_offset_cursor(c).ok_or_else(|| {
-            err_json_cond(
-                &AdminError::Validation("invalid pagination cursor".into()),
-                Cond::MalformedCursor,
-            )
-        }),
-    }
-}
-
 fn base_owned(kind: &str, name: &str) -> AdminError {
     AdminError::Conflict(format!(
         "{kind} `{name}` is defined in the base config file; edit config.yaml (the API cannot \
@@ -577,29 +573,6 @@ fn render_unexpected(unexpected: &str) -> String {
     VALUES_NOT_ECHOED.to_string()
 }
 
-fn page_window(
-    q: &std::collections::HashMap<String, String>,
-    default: usize,
-) -> Result<(usize, usize), Box<Response>> {
-    let limit = q
-        .get("limit")
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(default)
-        .clamp(1, crate::v1::contract::LIST_LIMIT_MAX);
-    Ok((cursor_offset(q).map_err(Box::new)?, limit))
-}
-
-fn page_cursor<T>(items: &mut Vec<T>, start: usize, limit: usize) -> Option<String> {
-    if items.len() > limit {
-        items.truncate(limit);
-        Some(crate::v1::contract::encode_offset_cursor(
-            start.saturating_add(limit),
-        ))
-    } else {
-        None
-    }
-}
-
 #[allow(clippy::result_large_err)]
 fn if_match_version(headers: &axum::http::HeaderMap) -> Result<Option<u64>, Response> {
     let Some(raw) = headers.get(axum::http::header::IF_MATCH) else {
@@ -646,12 +619,18 @@ pub use plane_input_schemas::install_plane_input_schemas;
 mod config_forms;
 #[cfg(feature = "openapi-schema")]
 mod contract_metadata;
+pub(crate) mod cursor;
+mod generation;
+mod hook_attachments;
+pub(crate) use hook_attachments::attachments_of;
 mod handlers;
 pub(crate) mod metrics;
 #[cfg(feature = "openapi-schema")]
 mod replay_metadata;
 mod settings_edit;
+mod whoami;
 pub(crate) use handlers::*;
+pub(crate) use whoami::who_of as whoami_of;
 
 mod kernel_verbs;
 
@@ -675,5 +654,13 @@ mod envelope_reasons;
 #[path = "tests/operator_file_policy_tests.rs"]
 mod operator_file_policy_tests;
 
+#[cfg(test)]
+#[path = "tests/hook_attachment_tests.rs"]
+mod hook_attachment_tests;
+
 #[cfg(feature = "test-support")]
 pub use handlers::credential_flush_response_for_test;
+
+#[cfg(test)]
+#[path = "tests/admin_grant_tests.rs"]
+mod admin_grant_tests;

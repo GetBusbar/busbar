@@ -1665,3 +1665,23 @@ type Host = crate::abi::sdk::conn::Host<FixtureKind>;
 type Services = crate::abi::sdk::services::Services<FixtureKind>;
 
 type FixtureKind = crate::plugin::markers::SecretKind;
+
+#[test]
+fn the_scrape_rows_round_trip_all_zero() {
+    use crate::abi::export::{ScrapeFamily, ScrapeLabel, ScrapeSample};
+    let label: ScrapeLabel = zeroed();
+    assert!(label.key.ptr.is_null() && label.value.ptr.is_null());
+    assert_eq!((label.key.len, label.value.len), (0, 0));
+    let sample = ScrapeSample::default();
+    assert!(sample.name.ptr.is_null() && sample.value.ptr.is_null() && sample.labels.is_null());
+    assert_eq!(sample.labels_len, 0);
+    let family = ScrapeFamily::default();
+    assert!(family.name.ptr.is_null() && family.help.ptr.is_null() && family.unit.ptr.is_null());
+    assert!(family.samples.is_null());
+    assert_eq!(
+        (family.kind, family._reserved, family.samples_len),
+        (0, [0; 7], 0)
+    );
+    let families: [ScrapeFamily; 2] = zeroed();
+    assert!(families.iter().all(|f| f.samples_len == 0));
+}

@@ -257,8 +257,7 @@ async fn rotation_reseals_a_row_under_the_new_key_and_it_still_authenticates() {
     let rotated = node(store.clone(), 2, Some(1)).await;
     assert_eq!(read(&rotated, &public_id), (secret.clone(), true));
 
-    let at = now();
-    let pass = rotated.rewrap_credentials_async(at).await.unwrap();
+    let pass = rotated.rewrap_credentials_async(now()).await.unwrap();
     assert_eq!((pass.resealed, pass.pending), (1, 0), "{pass:?}");
     let after = row(&store).await;
     assert_eq!(kid_of(&after.secret), keys(2, None).kid());
@@ -271,7 +270,7 @@ async fn rotation_reseals_a_row_under_the_new_key_and_it_still_authenticates() {
         (secret, true)
     );
 
-    let again = rotated.rewrap_credentials_async(at).await.unwrap();
+    let again = rotated.rewrap_credentials_async(now()).await.unwrap();
     assert_eq!((again.resealed, again.pending), (0, 0), "{again:?}");
 }
 
@@ -282,10 +281,12 @@ async fn two_nodes_rotating_together_reseal_a_row_once() {
     let x = node(store.clone(), 2, Some(1)).await;
     let y = node(store.clone(), 2, Some(1)).await;
 
-    let at = now();
     let candidates = store.identity().list_credentials_since(0).await.unwrap();
-    let first = x.rewrap_rows_async(candidates.clone(), at).await.unwrap();
-    let second = y.rewrap_rows_async(candidates, at).await.unwrap();
+    let first = x
+        .rewrap_rows_async(candidates.clone(), now())
+        .await
+        .unwrap();
+    let second = y.rewrap_rows_async(candidates, now()).await.unwrap();
     assert_eq!(first.resealed + second.resealed, 1, "{first:?} {second:?}");
     assert_eq!(kid_of(&row(&store).await.secret), keys(2, None).kid());
     assert_eq!(read(&y, &public_id), (secret, true));
@@ -382,8 +383,7 @@ mod immutable_store {
             .unwrap();
         rotated.set_at_rest_keys(Some(keys(2, Some(1))));
         assert_eq!(read(&rotated, &public_id), (secret.clone(), true));
-        let at = now();
-        let pass = rotated.rewrap_credentials_async(at).await.unwrap();
+        let pass = rotated.rewrap_credentials_async(now()).await.unwrap();
         assert_eq!((pass.resealed, pass.pending), (1, 0), "{pass:?}");
         let after = row(&backing).await;
         assert_eq!(kid_of(&after.secret), keys(2, None).kid());
@@ -400,7 +400,7 @@ mod immutable_store {
         retired.set_at_rest_keys(Some(keys(2, None)));
         assert_eq!(read(&retired, &public_id), (secret, true));
         assert!(store.identity().put_credential(&forbidden).await.is_err());
-        let again = retired.rewrap_credentials_async(at).await.unwrap();
+        let again = retired.rewrap_credentials_async(now()).await.unwrap();
         assert_eq!((again.resealed, again.pending), (0, 0), "{again:?}");
         assert_eq!(row(&backing).await.meta.revision, after.meta.revision);
     }

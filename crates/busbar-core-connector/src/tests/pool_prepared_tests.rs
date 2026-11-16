@@ -120,10 +120,8 @@ async fn facts(c: &Connector, conn: ConnId) -> ConnFacts {
 async fn answer(c: &Connector, conn: ConnId) -> (Vec<u8>, bool, Option<ConnError>) {
     let mut buf = [0_u8; 64];
     let mut got = Vec::new();
-    // At most 2500 polls (about 5 s), counted rather than read off the clock.
-    let mut polls = 0_u32;
-    while polls < 2500 {
-        polls += 1;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
         match c.read(OWNER, conn, TICKET, &mut buf) {
             Ok(p) if p.kind == PieceKind::Completion => {
                 return (got, p.stream != StreamId(0), None);

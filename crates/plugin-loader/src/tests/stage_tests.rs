@@ -642,9 +642,7 @@ fn a_refused_open_carries_the_loaders_reason() {
     let root = private_root("dlerror-reason");
     let bad = root.join("plain.so");
     not_a_shared_object(&bad);
-    let error = dlopen_on_worker(bad.as_os_str())
-        .err()
-        .expect("text is not a library");
+    let error = dlopen_on_worker(bad.as_os_str()).expect_err("text is not a library");
     assert!(
         error.contains("ELF") || error.contains("too short"),
         "the loader's own reason must reach the operator: {error}"
@@ -658,9 +656,7 @@ fn a_refused_opens_text_is_one_bounded_line() {
     let root = private_root("dlerror-forge");
     let forged = root.join("x\n[ERROR] forged line\r\u{202e}.so");
     not_a_shared_object(&forged);
-    let error = dlopen_on_worker(forged.as_os_str())
-        .err()
-        .expect("text is not a library");
+    let error = dlopen_on_worker(forged.as_os_str()).expect_err("text is not a library");
     assert!(
         !error.chars().any(|c| c.is_control() || c == '\u{202e}'),
         "a crafted path must not forge a log line: {error:?}"
@@ -673,9 +669,7 @@ fn a_refused_opens_text_is_one_bounded_line() {
         .join("d".repeat(200))
         .join("x.so");
     not_a_shared_object(&long);
-    let error = dlopen_on_worker(long.as_os_str())
-        .err()
-        .expect("text is not a library");
+    let error = dlopen_on_worker(long.as_os_str()).expect_err("text is not a library");
     assert!(
         error.chars().count() <= 513,
         "the text is bounded, not {} chars",
@@ -694,9 +688,7 @@ fn a_refused_open_is_more_than_the_bare_label() {
     let root = private_root("dlerror-label");
     let bad = root.join("plain.so");
     not_a_shared_object(&bad);
-    let error = dlopen_on_worker(bad.as_os_str())
-        .err()
-        .expect("text is not a library");
+    let error = dlopen_on_worker(bad.as_os_str()).expect_err("text is not a library");
     assert_ne!(error, "dlopen failed", "the loader's text was dropped");
     assert!(
         error.starts_with("dlopen failed: ") && error.len() > "dlopen failed: ".len() + 8,

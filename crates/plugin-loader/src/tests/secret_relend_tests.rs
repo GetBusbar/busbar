@@ -231,11 +231,8 @@ async fn a_secret_instance_is_ticked_on_its_schedule() {
             &source.resolve(),
         )
         .expect("it opens");
-    // At most 2000 polls 5 ms apart: a wait of no less than 10 s.
-    for _ in 0..2000 {
-        if witness::TICKED.load(Ordering::SeqCst) >= before + 3 {
-            break;
-        }
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    while witness::TICKED.load(Ordering::SeqCst) < before + 3 && std::time::Instant::now() < until {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     assert!(

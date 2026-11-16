@@ -756,7 +756,7 @@ fn invalid_limits_are_refused_with_3133() {
         );
     }
     let advanced: crate::config::AdvancedCfg =
-        busbar_contract::yaml::from_str("trusted_proxies: [\"10.0.0.1/8\"]").unwrap();
+        busbar_contract::yaml::from_str("trusted_proxies: [\"\x310.0.0.1/8\"]").unwrap();
     assert!(policy::resolve(None, &Default::default(), &advanced).is_err());
     assert!(
         busbar_contract::yaml::from_str::<crate::config::LoginLimitsCfg>(

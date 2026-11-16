@@ -2251,6 +2251,7 @@ fn a_sealed_chain() -> SealedChain {
                     ..Controls::default()
                 },
                 correlation_label: None,
+                unit: busbar_kernel_audit::UnitFacts::default(),
             },
             &token,
         ));
@@ -3640,6 +3641,7 @@ async fn a_signed_record_verifies_against_the_served_audit_keys() {
         },
         controls: Controls::default(),
         correlation_label: None,
+        unit: busbar_kernel_audit::UnitFacts::default(),
     };
     let audit_token = an_audit_pass();
     let served_keys = async |units: crate::root::kernel::ProductionUnits| -> Vec<String> {
