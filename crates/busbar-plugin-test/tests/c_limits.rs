@@ -32,7 +32,7 @@ fn limits(timeout_ms: u32, max_inflight: u32) -> InstanceLimits {
 }
 
 #[test]
-#[ignore = "owner: W1-K7"]
+#[ignore = "covered: busbar-kernel config/tests/min3_tests.rs (limits_parse_every_key, limits_bounds_refuse_naming_the_key, limits_has_no_plaintext_key); per-plugin migrate-key fixtures need the plugin repos"]
 fn limits_config_arms() {
     todo!("owner: W1-K7 (C-LIMITS)")
 }
@@ -97,7 +97,7 @@ async fn timeout_ms_and_max_inflight_at_port_call_sites() {
 }
 
 #[test]
-#[ignore = "owner: W1-C1A"]
+#[ignore = "blocked: the dial is busbar-core-connector need.rs (budget(.., limits.connect_timeout_ms)), not a dev-dependency of this crate; needs a black-holed dial fixture (W1-C1A)"]
 fn connect_timeout_ms_at_the_dial() {
-    todo!("owner: W1-C1A (C-LIMITS)")
+    todo!("blocked: the dial is busbar-core-connector need.rs (budget(.., limits.connect_timeout_ms)), not a dev-dependency of this crate; needs a black-holed dial fixture (W1-C1A) (C-LIMITS)")
 }
