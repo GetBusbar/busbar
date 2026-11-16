@@ -1008,3 +1008,26 @@ fn a_clock_before_the_epoch_reads_as_the_far_future_so_expiry_fails_closed() {
         5
     );
 }
+
+/// SERDE-JSON-EXIT r2 (DEP-3, ARC-6): release trust reads its documents through
+/// `busbar_contract::json` and writes the canonical form with olpc-cjson's sonic-rs formatter, so
+/// neither file of the module names serde_json. The same bytes stay signed: every canonical-form
+/// and signature test above runs unchanged on the new reader and writer.
+#[test]
+fn release_trust_names_no_serde_json() {
+    for (file, text) in [
+        (
+            "release_trust/mod.rs",
+            include_str!("../release_trust/mod.rs"),
+        ),
+        (
+            "release_trust/wire.rs",
+            include_str!("../release_trust/wire.rs"),
+        ),
+    ] {
+        assert!(
+            !text.contains("serde_json"),
+            "{file} names serde_json; JSON goes through busbar_contract::json (DEP-3)"
+        );
+    }
+}
