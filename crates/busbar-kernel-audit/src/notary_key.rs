@@ -104,6 +104,104 @@ pub struct NotaryKeyRecord {
     pub certificate: NotaryKeyCertificate,
 }
 
+/// A certificate signed for a snapshotted position, not staged into a journal yet.
+#[derive(Debug)]
+pub struct PreparedNotaryKey {
+    node: u64,
+    seq: u64,
+    prev_link: Fingerprint,
+    certificate: NotaryKeyCertificate,
+}
+
+/// A certificate linked over the current chain tail. Advance only after its journal stage
+/// succeeds, while still holding the same durability lock.
+#[derive(Debug)]
+pub struct LinkedNotaryKey {
+    record: NotaryKeyRecord,
+}
+
+impl LinkedNotaryKey {
+    /// The linked certificate, including its computed fingerprint.
+    #[must_use]
+    pub fn record(&self) -> &NotaryKeyRecord {
+        &self.record
+    }
+
+    /// Move the certificate out after staging and advancing.
+    #[must_use]
+    pub fn into_record(self) -> NotaryKeyRecord {
+        self.record
+    }
+}
+
+impl crate::AuditChain {
+    /// Prepare a signed certificate before the durability lock. The signer must have signed
+    /// exactly these position fields. Linking rechecks them against the live chain.
+    #[must_use]
+    pub fn prepare_notary_key(
+        node: u64,
+        seq: u64,
+        prev_link: Fingerprint,
+        certificate: NotaryKeyCertificate,
+    ) -> PreparedNotaryKey {
+        PreparedNotaryKey {
+            node,
+            seq,
+            prev_link,
+            certificate,
+        }
+    }
+
+    /// Link a certificate without changing the chain. A changed tail or position requires a
+    /// new Bootstrap signature; it is never repaired by relabelling the certificate.
+    pub fn link_notary_key(
+        &self,
+        prepared: PreparedNotaryKey,
+        linked_ms: u64,
+        _token: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
+    ) -> Result<LinkedNotaryKey, crypto::Error> {
+        if prepared.node == 0
+            || prepared.node != self.node()
+            || prepared.seq != self.next_seq
+            || self.next_seq == u64::MAX
+            || Some(prepared.prev_link) != Fingerprint::from_hex(&self.tail_hash)
+        {
+            return Err(crypto::Error::Invalid("notary signing position changed"));
+        }
+        let mut record = NotaryKeyRecord {
+            node: prepared.node,
+            seq: prepared.seq,
+            linked_ms,
+            prev_link: prepared.prev_link,
+            fingerprint: Fingerprint::ZERO,
+            certificate: prepared.certificate,
+        };
+        record.fingerprint = record.recompute_fingerprint();
+        Ok(LinkedNotaryKey { record })
+    }
+
+    /// Advance past a successfully staged certificate. Stale or repeated advancement refuses
+    /// rather than creating a chain hole; it must share the staging lock with linking.
+    pub fn advance_notary_key(&mut self, linked: &LinkedNotaryKey) -> Result<(), crypto::Error> {
+        let record = linked.record();
+        let next = self
+            .next_seq
+            .checked_add(1)
+            .ok_or(crypto::Error::Invalid("notary chain sequence overflow"))?;
+        if record.node != self.node()
+            || record.seq != self.next_seq
+            || Some(record.prev_link) != Fingerprint::from_hex(&self.tail_hash)
+        {
+            return Err(crypto::Error::Invalid("notary signing position changed"));
+        }
+        self.tail_hash = record.fingerprint.to_string();
+        self.next_seq = next;
+        self.sealed = self.sealed.saturating_add(1);
+        self.heads.observe_notary_key(record);
+        Ok(())
+    }
+}
+
 impl NotaryKeyRecord {
     /// Recompute the record fingerprint with the independently versioned certificate payload.
     #[must_use]

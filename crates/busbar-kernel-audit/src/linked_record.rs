@@ -109,6 +109,30 @@ pub fn verify_linked_window(records: &[AuditLinkedRecord]) -> Result<(), String>
     walk(records, false)
 }
 
+impl AuditChain {
+    /// Resume the chain tail from a checked mixed window. This checks digest/link continuity;
+    /// callers establish Bootstrap/stamp authority separately before trusting the history.
+    pub fn resume_linked(records: &[AuditLinkedRecord]) -> Result<Self, String> {
+        verify_linked_window(records)?;
+        let mut chain = Self::new();
+        for record in records {
+            match record {
+                AuditLinkedRecord::Unit(record) => chain.heads.observe(record),
+                AuditLinkedRecord::NotaryKey(record) => chain.heads.observe_notary_key(record),
+            }
+        }
+        if let Some(last) = records.last() {
+            chain = chain.sealing_as(last.node());
+            chain.tail_hash = last.fingerprint()?.to_string();
+            chain.next_seq = last
+                .chain_seq()
+                .checked_add(1)
+                .ok_or_else(|| "an audit chain sequence overflowed".to_string())?;
+        }
+        Ok(chain)
+    }
+}
+
 fn walk(records: &[AuditLinkedRecord], genesis: bool) -> Result<(), String> {
     let Some(first) = records.first() else {
         return Ok(());
