@@ -62,6 +62,7 @@ struct Double {
     calls: Mutex<Sender<Call>>,
     /// When set, the next `deliver` holds the pump until the test sends on it.
     gate: Mutex<Option<Receiver<()>>>,
+    pending: bool,
     rendered: Mutex<
         Vec<(
             u32,
@@ -86,6 +87,7 @@ impl Double {
             script: Mutex::new(VecDeque::new()),
             calls: Mutex::new(tx),
             gate: Mutex::new(None),
+            pending: false,
             rendered: Mutex::new(Vec::new()),
         });
         (d, rx)
@@ -139,7 +141,11 @@ impl ExportPort for Double {
         if let Some(g) = gate {
             let _ = g.recv_timeout(WAIT);
         }
-        Box::pin(async move { answer })
+        if self.pending {
+            Box::pin(futures::future::pending())
+        } else {
+            Box::pin(async move { answer })
+        }
     }
     fn custody_ceiling(&self) -> Option<u32> {
         self.ceiling
@@ -370,6 +376,7 @@ fn facts_and_ceiling_are_read_through_the_port() {
         script: Mutex::new(VecDeque::new()),
         calls: Mutex::new(tx),
         gate: Mutex::new(None),
+        pending: false,
         rendered: Mutex::new(Vec::new()),
     });
     let door = open(port, Arc::new(Disk::default()));
@@ -446,4 +453,81 @@ fn a_terminal_limit_failure_is_not_reoffered() {
     );
     assert_eq!(door.dropped(), 1);
     assert_eq!(door.delivered(), 0);
+}
+
+#[test]
+fn draining_rejects_new_lines_and_finishes_the_accepted_queue() {
+    let (port, rx) = Double::new(&[x::STREAM_LOGS]);
+    let (release, gate) = channel();
+    *port.gate.lock().unwrap() = Some(gate);
+    let door = open(port, Arc::new(Disk::default()));
+    send(&door, x::STREAM_LOGS, "first");
+    let _ = next(&rx);
+    send(&door, x::STREAM_LOGS, "queued");
+    let deadline = std::time::Instant::now() + WAIT;
+    door.begin_drain(deadline);
+    assert_eq!(
+        door.deliver(x::STREAM_LOGS as u8, b"late".to_vec(), Box::new(())),
+        Queued::Shed
+    );
+    release.send(()).unwrap();
+    let report = door.stop_until(deadline);
+    assert!(report.worker_stopped);
+    assert_eq!((report.queued, report.in_flight, report.dropped), (0, 0, 0));
+    assert_eq!(door.delivered(), 2);
+    assert_eq!(next(&rx).lines, vec![b"queued".to_vec()]);
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn stop_cancels_a_pending_call_without_an_unbounded_join() {
+    struct Released(Sender<()>);
+    impl Drop for Released {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+    let (mut port, calls) = Double::new(&[x::STREAM_LOGS]);
+    Arc::get_mut(&mut port).unwrap().pending = true;
+    let door = open(port, Arc::new(Disk::default()));
+    let (released, custody) = channel();
+    assert_eq!(
+        door.deliver(
+            x::STREAM_LOGS as u8,
+            b"held".to_vec(),
+            Box::new(Released(released))
+        ),
+        Queued::Queued
+    );
+    let _ = next(&calls);
+    let began = std::time::Instant::now();
+    let _ = door.stop_until(began + Duration::from_millis(20));
+    assert!(
+        began.elapsed() < WAIT,
+        "shutdown is bounded even when deliver stays pending"
+    );
+    custody
+        .recv_timeout(WAIT)
+        .expect("cancellation releases custody");
+    let report = door.stop_until(std::time::Instant::now() + WAIT);
+    assert_eq!(report.dropped, 1);
+    assert_eq!(door.delivered(), 0);
+    assert!(calls.try_recv().is_err(), "no offer after cancellation");
+}
+
+#[test]
+fn a_later_stop_request_cannot_extend_the_first_deadline() {
+    let (mut port, calls) = Double::new(&[x::STREAM_LOGS]);
+    Arc::get_mut(&mut port).unwrap().pending = true;
+    let door = open(port, Arc::new(Disk::default()));
+    send(&door, x::STREAM_LOGS, "held");
+    let _ = next(&calls);
+    let first = std::time::Instant::now();
+    door.begin_drain(first);
+    let report = door.stop_until(first + WAIT);
+    assert!(first.elapsed() < Duration::from_secs(1));
+    assert!(
+        !report.clean(),
+        "deadline loss must not look like a clean drain"
+    );
 }
