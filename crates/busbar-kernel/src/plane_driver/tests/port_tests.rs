@@ -1,0 +1,118 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! IF §12.23, C-LINE-CARRIER: what core does with one line's `PlaneOut` items and with the end of a carrier.
+//! The plane itself is exercised by the image arms; these run the part core owns.
+
+use std::sync::{Arc, Mutex};
+
+use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::services::{Caller, Incarnation};
+use busbar_plugin_abi::records::{tag as g, Records, U64Rec};
+use busbar_plugin_loader::ports::plane::PlaneOut;
+
+use super::{carrier_end_arg, LineAnswer};
+use crate::channels::line_carriers::{CarrierSink, LineCarriers};
+
+fn owner(name: &str) -> Incarnation {
+    Caller::for_test(Arc::from(name), KindCode::Plane)
+        .incarnation()
+        .clone()
+}
+
+fn recording() -> (CarrierSink, Arc<Mutex<Vec<Vec<u8>>>>) {
+    let seen: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+    let into = Arc::clone(&seen);
+    let sink: CarrierSink = Arc::new(move |b: &[u8]| {
+        into.lock().unwrap().push(b.to_vec());
+        true
+    });
+    (sink, seen)
+}
+
+#[test]
+fn body_pieces_are_one_line_and_respond_and_head_are_not_written() {
+    let carriers = LineCarriers::new();
+    let me = owner("mcp");
+    let mut answer = LineAnswer::default();
+    for item in [
+        PlaneOut::Respond { status: 200 },
+        PlaneOut::Header("content-type", b"application/json"),
+        PlaneOut::Body(b"{\"a\":"),
+        PlaneOut::Body(b"1}"),
+        PlaneOut::End,
+        PlaneOut::Finish,
+    ] {
+        answer.take(item, &carriers, &me);
+    }
+    assert_eq!(answer.into_line().unwrap(), b"{\"a\":1}".to_vec());
+}
+
+#[test]
+fn an_answer_with_no_body_writes_no_line() {
+    let carriers = LineCarriers::new();
+    let me = owner("mcp");
+    let mut answer = LineAnswer::default();
+    answer.take(PlaneOut::Respond { status: 202 }, &carriers, &me);
+    answer.take(PlaneOut::End, &carriers, &me);
+    assert!(answer.into_line().unwrap().is_empty());
+}
+
+#[test]
+fn an_emit_goes_to_its_carrier_at_once_not_into_the_response_line() {
+    let carriers = LineCarriers::new();
+    let me = owner("mcp");
+    let (sink, seen) = recording();
+    let id = carriers.open(&me, Arc::from("anon"), sink).get();
+    let mut answer = LineAnswer::default();
+    answer.take(
+        PlaneOut::Emit {
+            carrier: id,
+            bytes: b"{\"ask\":1}",
+        },
+        &carriers,
+        &me,
+    );
+    assert_eq!(*seen.lock().unwrap(), vec![b"{\"ask\":1}".to_vec()]);
+    answer.take(PlaneOut::Body(b"{\"r\":1}"), &carriers, &me);
+    assert_eq!(answer.into_line().unwrap(), b"{\"r\":1}".to_vec());
+    assert_eq!(carriers.dropped(), 0);
+}
+
+#[test]
+fn an_emit_to_a_carrier_another_instance_owns_is_dropped_and_counted() {
+    let carriers = LineCarriers::new();
+    let (sink, seen) = recording();
+    let id = carriers.open(&owner("other"), Arc::from("anon"), sink).get();
+    let mut answer = LineAnswer::default();
+    answer.take(
+        PlaneOut::Emit {
+            carrier: id,
+            bytes: b"x",
+        },
+        &carriers,
+        &owner("mcp"),
+    );
+    assert!(seen.lock().unwrap().is_empty());
+    assert_eq!(carriers.dropped(), 1);
+    assert!(answer.into_line().unwrap().is_empty());
+}
+
+#[test]
+fn an_intent_this_slice_does_not_drive_refuses_the_line() {
+    let carriers = LineCarriers::new();
+    let me = owner("mcp");
+    let mut answer = LineAnswer::default();
+    answer.take(PlaneOut::Forward { stream: false }, &carriers, &me);
+    assert!(answer.into_line().is_err());
+}
+
+#[test]
+fn the_carrier_end_argument_is_one_u64_record_holding_the_id() {
+    let arg = carrier_end_arg(42);
+    let mut recs = Records::new(&arg);
+    let rec = recs.next().unwrap().unwrap();
+    assert_eq!(rec.tag, g::TEXT);
+    assert_eq!(rec.pod::<U64Rec>().unwrap().value, 42);
+    assert!(recs.next().is_none());
+}
