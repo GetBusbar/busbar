@@ -56,6 +56,18 @@ pub enum Trust {
     },
 }
 
+/// Cryptographic facts retained from the successful admission attempt. Declared publisher
+/// names and unverified signature text never populate this proof.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Verification {
+    /// Canonical key id of the embedded root that authenticated the keys document.
+    pub root: Option<String>,
+    /// Canonical key ids of the actual satisfying artifact signers.
+    pub signers: Vec<String>,
+    /// Authenticated keys-document version, absent for configured bare signatures.
+    pub keys_version: Option<u64>,
+}
+
 /// One admitted row, as its signed manifest states it (a linked row states what a release-signed
 /// tarball of it would).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,6 +131,11 @@ pub trait PluginRows: Send + Sync + std::fmt::Debug {
 
     /// SHA-256 of the exact admitted archive from which the retained native image was read.
     fn archive_sha256(&self, _name_or_alias: &str) -> Option<String> {
+        None
+    }
+
+    /// Retained proof of the admission of this loaded generation; does not re-admit disk bytes.
+    fn verification(&self, _name_or_alias: &str) -> Option<Verification> {
         None
     }
 
