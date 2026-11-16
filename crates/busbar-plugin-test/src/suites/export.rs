@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 
 use busbar_plugin_abi::host_side::caller::CallStack;
 use busbar_plugin_abi::plugin::Plugin;
-use busbar_plugin_loader::ports::export::{Delivered, ExportPort, FamilyIn};
-use busbar_plugin_loader::ports::{CallCx, PortError};
+use busbar_ports::export::{Delivered, ExportPort, FamilyIn};
+use busbar_ports::{CallCx, PortError};
 
 use super::harness::Harness;
 use crate::fake_needs::FakeNeeds;

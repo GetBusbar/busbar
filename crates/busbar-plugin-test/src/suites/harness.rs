@@ -34,18 +34,18 @@ use busbar_plugin_abi::plugin::__rt::LinkedPlugin;
 use busbar_plugin_abi::plugin::Plugin;
 use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::admit::{admit_header, admit_linked, Admitted};
-use busbar_plugin_loader::binder::{BindError, ConfigBinder, DestDef, TrustAnchor};
 use busbar_plugin_loader::instance::{
     Ceilings, DeclaredEndpoint, InstanceSpec, OpenError, OpenedPort, PluginCode, Registry, Settled,
 };
-use busbar_plugin_loader::ports::auth::AuthPort;
-use busbar_plugin_loader::ports::export::ExportPort;
-use busbar_plugin_loader::ports::hook::HookPort;
-use busbar_plugin_loader::ports::plane::PlanePort;
-use busbar_plugin_loader::ports::secret::SecretPort;
-use busbar_plugin_loader::ports::store::StoreHandle;
-use busbar_plugin_loader::ports::transport::TransportPort;
 use busbar_plugin_loader::refusal::{Refusal, RefusalCode};
+use busbar_ports::auth::AuthPort;
+use busbar_ports::binder::{BindError, ConfigBinder, DestDef, TrustAnchor};
+use busbar_ports::export::ExportPort;
+use busbar_ports::hook::HookPort;
+use busbar_ports::plane::PlanePort;
+use busbar_ports::secret::SecretPort;
+use busbar_ports::store::StoreHandle;
+use busbar_ports::transport::TransportPort;
 use tracing::field::{Field, Visit};
 use tracing::{span, Event, Metadata, Subscriber};
 

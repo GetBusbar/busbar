@@ -924,7 +924,13 @@ fn added(
             let ruled = admitted
                 .get(&format!("{file} {name}"))
                 .is_some_and(|ruling| !ruling.trim().is_empty());
-            if !ruled && !before.get(file).is_some_and(|old| old.contains(name)) {
+            let moved = before.values().filter(|names| names.contains(name)).count() == 1
+                && now.values().filter(|names| names.contains(name)).count() == 1
+                && before.iter().any(|(old_file, names)| {
+                    names.contains(name)
+                        && !now.get(old_file).is_some_and(|names| names.contains(name))
+                });
+            if !ruled && !moved && !before.get(file).is_some_and(|old| old.contains(name)) {
                 failures.push(format!(
                     "one impl: {file} {name} was added to {list}; entries can only be removed"
                 ));
@@ -939,7 +945,10 @@ fn one_impl_trait_move_needs_no_admission() {
     let now = BTreeMap::from([("new/auth.rs".into(), BTreeSet::from(["AuthPort".into()]))]);
     let mut failures = Vec::new();
     added(&now, &before, &BTreeMap::new(), "traits", &mut failures);
-    assert!(failures.is_empty(), "a trait move is not a new trait: {failures:?}");
+    assert!(
+        failures.is_empty(),
+        "a trait move is not a new trait: {failures:?}"
+    );
 }
 
 #[test]

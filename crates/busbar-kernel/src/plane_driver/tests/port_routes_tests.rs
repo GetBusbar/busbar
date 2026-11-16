@@ -12,10 +12,10 @@ use busbar_plugin_abi::plane::{
     AUTH_TICKET, ROUTE_ADMIN, ROUTE_CATALOG, ROUTE_LINE, ROUTE_RECOVERY, ROUTE_UPGRADE,
     RQ_RECOVERY,
 };
-use busbar_plugin_loader::ports::plane::{
+use busbar_ports::plane::{
     PlaneIn, PlaneOut, PlanePort, PlaneSession, RouteInfo, TargetIn, UsageClass,
 };
-use busbar_plugin_loader::ports::{CallCx, PortError};
+use busbar_ports::{CallCx, PortError};
 
 use super::{admin_catalog, admin_hydrate, plan, recovery_request, RouteRefused};
 

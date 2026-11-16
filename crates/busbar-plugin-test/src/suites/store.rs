@@ -44,7 +44,7 @@ mod cases {
     use busbar_contract::Secret;
     use busbar_plugin_abi::plugin::Plugin;
     use busbar_plugin_abi::types::KindCode;
-    use busbar_plugin_loader::ports::store::StoreHandle;
+    use busbar_ports::store::StoreHandle;
 
     use super::super::harness::Harness;
     use crate::fake_needs::FakeNeeds;

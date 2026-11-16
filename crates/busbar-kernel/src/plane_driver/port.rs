@@ -18,8 +18,8 @@ use busbar_plugin_abi::host_side::needs::Needs;
 use busbar_plugin_abi::plane::{ADMIN_CARRIER_END, ADMIN_TICK};
 use busbar_plugin_abi::records::{tag as g, Reply, U64Rec, Writer};
 use busbar_plugin_loader::instance::{InstanceSpec, OpenError, Registry};
-use busbar_plugin_loader::ports::plane::{PlaneIn, PlanePort};
-use busbar_plugin_loader::ports::{CallCx, PortError};
+use busbar_ports::plane::{PlaneIn, PlanePort};
+use busbar_ports::{CallCx, PortError};
 
 use crate::channels::line_carriers::{CarrierSink, LineCarriers};
 use crate::host_services::{KernelServices, RecoveryWork};
