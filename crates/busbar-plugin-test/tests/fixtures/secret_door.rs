@@ -32,7 +32,7 @@ pub const PENDS: &[u8] = b"pend";
 pub const NOTES: &[u8] = b"note";
 
 /// The fixture's one declared diagnostic id.
-static DIAGS: [AbiStr; 1] = [abi_str("fixture-note")];
+const DIAGS: [AbiStr; 1] = [abi_str("fixture-note")];
 
 /// The first secret OPEN, or the last REFRESH that lent any, was lent.
 pub struct Lends(Mutex<Vec<u8>>);

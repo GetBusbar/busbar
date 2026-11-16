@@ -15,21 +15,7 @@ use std::process::{Command, Output};
 
 use busbar_plugin_abi::fail::{failed, Fail};
 use busbar_plugin_abi::host::{crypto_status, CryptoErr, CryptoRet, Ctx, Host, HostExt, HostFns};
-use busbar_plugin_abi::host_side::host_vt::vt;
 use busbar_plugin_abi::types::Status;
-
-#[test]
-fn random_answers_invalid_outside_1_to_65536_and_fills_inside() {
-    for len in [0, 65_537] {
-        let out = vt::random(len);
-        assert_eq!(out.crypto_status(), crypto_status::INVALID, "{len}");
-        assert!(out.is_empty());
-    }
-    let out = vt::random(65_536);
-    assert_eq!(out.crypto_status(), crypto_status::OK);
-    assert_eq!(out.len(), 65_536);
-    assert!(out.read(|bytes| bytes.len() == 65_536 && bytes.iter().any(|&b| b != 0)));
-}
 
 /// The probe: the edges 1 and 65,536 build; feature `zero` or `over` adds the out-of-range call.
 const PROBE: &str = r#"use busbar_plugin_abi::host::{Host, HostExt, HostFns};

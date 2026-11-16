@@ -734,7 +734,8 @@ fn a_short_answer_regrows_its_buffer_before_the_one_re_call() {
     let mut grown = None;
     let pending = pending.regrow(|i| grown = Some(i.secret_buf(64)));
     let key = grown.expect("regrow ran its closure");
-    match pending.resume(&mut t) {
+    let called = pending.resume(&mut t);
+    match called {
         Called::Ready(a) => {
             assert_eq!(a.outcome(), Outcome::Ready, "{:?}", a.error());
             let len = a.get(|o| o.secret.len);
