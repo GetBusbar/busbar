@@ -7,7 +7,9 @@
 //! W1-T1 adds the MIN-3 conformance harness (ABI-MIN3-INTERFACE §14): [`FakeNeeds`] and [`ConnScript`], the
 //! kind [`suites`], the C-ERRORS check ([`errors`]), and `tests/<case>.rs`, one file per live §14 case.
 #![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]
 
+pub mod canary_scan;
 pub mod errors;
 pub mod fake_needs;
 pub mod services;

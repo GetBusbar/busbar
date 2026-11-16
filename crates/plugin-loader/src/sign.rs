@@ -971,6 +971,9 @@ pub fn public_key_from_hex(s: &str) -> Result<VerifyingKey, String> {
         .as_slice()
         .try_into()
         .map_err(|_| format!("public key must be 32 bytes, got {}", bytes.len()))?;
+    // A pinned key with no point on the curve is refused when it loads (boot, `--validate`), not
+    // first at a verify (QE); `from_bytes` alone no longer checks the point (Q9b).
+    ed25519::validate_public_key(&arr).map_err(|e| format!("invalid ed25519 public key: {e}"))?;
     let key =
         VerifyingKey::from_bytes(&arr).map_err(|e| format!("invalid ed25519 public key: {e}"))?;
     if key.is_weak() {

@@ -139,10 +139,15 @@ syn = { version = "2", features = ["full", "visit", "parsing", "printing"] }
 time = { version = "0.3.49", default-features = false }
 # No `xattr`: the loader unpacks in memory.
 tar = { version = "0.4", default-features = false }
-# Called directly (busbar-kernel `mallctl`); default features off adds nothing tikv-jemallocator
-# does not already turn on.
-tikv-jemalloc-sys = { version = "0.6", default-features = false }
+# Test-only (dev-dependencies of busbar-kernel and busbar): the per-thread allocation counters through the
+# upstream safe wrapper (UNSAFE-MIN QJ). `stats` makes jemalloc keep them. Its `paste` dependency is a
+# recorded cargo-deny exception (RUSTSEC-2024-0436), dev graph only.
+tikv-jemalloc-ctl = { version = "=0.6.1", default-features = false, features = ["stats"] }
 tikv-jemallocator = "0.6"
+# Test-only allocation counters (UNSAFE-MIN §4.4): `StatsAlloc<Jemalloc>` counts allocations, deallocations
+# and reallocations process-wide; its own `unsafe impl` is the dependency's (cargo-vet exemption). The
+# `nightly` feature only makes `StatsAlloc::new` a `const fn`, which a `#[global_allocator]` static needs.
+stats_alloc = { version = "0.1.10", features = ["nightly"] }
 # No feature floor: each member picks its own slice.
 tokio = "1"
 tokio-util = { version = "0.7", default-features = false, features = ["compat"] }
