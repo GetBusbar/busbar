@@ -13,7 +13,6 @@
 </p>
 
 <p align="center">
-<a href="https://securityscorecards.dev/viewer/?uri=github.com/GetBusbar/busbar"><img src="https://api.securityscorecards.dev/projects/github.com/GetBusbar/busbar/badge" alt="OpenSSF Scorecard"></a>
 <a href="https://www.bestpractices.dev/projects/14739"><img src="https://www.bestpractices.dev/projects/14739/badge" alt="OpenSSF Best Practices"></a>
 <a href="https://github.com/GetBusbar/busbar/releases"><img src="https://img.shields.io/github/v/release/GetBusbar/busbar?include_prereleases" alt="Release"></a>
 <a href="https://hub.docker.com/r/getbusbar/busbar"><img src="https://img.shields.io/docker/image-size/getbusbar/busbar?sort=semver&label=image" alt="Image size"></a>

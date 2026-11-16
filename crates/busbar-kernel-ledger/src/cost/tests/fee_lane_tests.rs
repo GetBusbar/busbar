@@ -15,21 +15,17 @@ const LANE: &str = "lane-p";
 /// A composed card: a flat card (fee 5), plane `p` with a PRESENT card (one lane, `calls` priced)
 fn card() -> RateCard {
     use std::collections::BTreeMap;
-    let flat = [(
+    let flat = BTreeMap::from([(
         "lane-flat".to_string(),
         TierRates {
             input: Some(1_000),
             ..TierRates::default()
         },
-    )]
-    .into_iter()
-    .collect::<BTreeMap<_, _>>();
-    let planes = [(
+    )]);
+    let planes = BTreeMap::from([(
         "p".to_string(),
         BTreeMap::from([(LANE.to_string(), TierRates::default())]),
-    )]
-    .into_iter()
-    .collect::<BTreeMap<_, _>>();
+    )]);
     let map = compose_plane_cards(Some(&flat), &planes).expect("a composed map");
     RateCard::from_config(Some(map.iter().map(|(lane, t)| (lane.as_str(), *t))), 5)
         .with_unit_rates([(

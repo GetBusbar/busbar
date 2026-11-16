@@ -157,22 +157,18 @@ fn sdk_sink_keeps_deferred_final_reason_with_its_first_piece_after_an_interim() 
             bytes.drain(..at);
         }
     }
-    let mut owed = OwedHeads(
-        [
-            Piece {
-                status: Some(103),
-                head: Some(HeadWords::reason(b"Hint".to_vec())),
-                ..Piece::fields(7, b"x-hint: yes\r\n".to_vec())
-            },
-            Piece {
-                status: Some(200),
-                head: Some(HeadWords::reason(b"OK".to_vec())),
-                ..Piece::fields(7, b"long-name: v\r\n".to_vec())
-            },
-        ]
-        .into_iter()
-        .collect::<VecDeque<_>>(),
-    );
+    let mut owed = OwedHeads(VecDeque::from([
+        Piece {
+            status: Some(103),
+            head: Some(HeadWords::reason(b"Hint".to_vec())),
+            ..Piece::fields(7, b"x-hint: yes\r\n".to_vec())
+        },
+        Piece {
+            status: Some(200),
+            head: Some(HeadWords::reason(b"OK".to_vec())),
+            ..Piece::fields(7, b"long-name: v\r\n".to_vec())
+        },
+    ]));
     let mut buffers = Buffers::new(1, 24, 4);
     buffers.status_namespace = Some("test-numbering".into());
     let mut yielded = Yielded::default();
@@ -648,7 +644,7 @@ fn a_ticketed_begin_whose_auth_pends_resumes_on_the_wake_with_one_auth_call() {
     let door = Arc::new(AuthDoor {
         facts: DoorFacts {
             dials: true,
-            name: "framer".to_owned(),
+            name: "framer".into(),
             claims: vec!["t"],
             role: busbar_contract::abi::transport::ROLE_FRAMER,
             composes_over: Vec::new(),
@@ -812,7 +808,7 @@ impl MuxDoor {
             yield_writable: false,
             facts: DoorFacts {
                 dials: true,
-                name: "mux".to_owned(),
+                name: "mux".into(),
                 claims: vec!["mux"],
                 role: busbar_contract::abi::transport::ROLE_FRAMER,
                 composes_over: Vec::new(),

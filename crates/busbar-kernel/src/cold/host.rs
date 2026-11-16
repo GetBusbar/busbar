@@ -243,6 +243,24 @@ pub(crate) fn telemetry_breaker_trip_first(pool_label: &str, lane_label: &str) {
     );
 }
 
+/// The first `busbar_unit_refusals_total` for `(instance, reason)`: register its counter and keep
+/// the handle.
+#[cold]
+pub(crate) fn telemetry_unit_refusal_first(instance: &str, reason: &str) {
+    let counter = metrics::counter!(
+        crate::snapshot::UNIT_REFUSALS_TOTAL,
+        "reason" => reason.to_owned(),
+        "instance" => instance.to_owned()
+    );
+    counter.increment(1);
+    telemetry_keep_counter(
+        &crate::telemetry::UNBANKED_UNIT_REFUSALS,
+        instance,
+        reason,
+        counter,
+    );
+}
+
 /// The first unbanked failover for `(pool, reason)`: register its counter and keep the handle.
 #[cold]
 pub(crate) fn telemetry_failover_first(pool_label: &str, reason: &'static str) {

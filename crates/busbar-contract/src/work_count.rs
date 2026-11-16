@@ -5,16 +5,15 @@
 //!
 //! A deterministic count of work, not a timing. The host bumps one counter at each boundary it
 //! owns: [`Work::Crossing`] where the loader calls into a plugin, [`Work::StoreRoundTrip`] where
-//! the loader submits one request to the store plugin. `Counting` wraps the global allocator so
-//! the gate can count heap allocations too.
+//! the loader submits one request to the store plugin. The heap allocations are read from the test binary's own
+//! `#[global_allocator]` (a `stats_alloc::StatsAlloc` over jemalloc), which it names through
+//! [`count_allocations_through`].
 //!
-//! Test support only: the counters, `Tally` and `Counting` exist only when this crate is built
+//! Test support only: the counters and `Tally` exist only when this crate is built
 //! with `test-support`, which only `[dev-dependencies]` enable and no shipping build does. [`Work`]
 //! and [`tally`] stay in every build so the host's boundaries can name the work they do; without
 //! the feature [`tally`] is an empty inline function.
 
-#[cfg(feature = "test-support")]
-use std::alloc::{GlobalAlloc, Layout};
 #[cfg(feature = "test-support")]
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -36,7 +35,14 @@ static STORE_ROUND_TRIPS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "test-support")]
 static CLOCK_READS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "test-support")]
-static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
+static ALLOCATION_SOURCE: std::sync::OnceLock<fn() -> u64> = std::sync::OnceLock::new();
+
+/// Name how to read the heap-allocation count of this test binary's global allocator (allocations plus
+/// reallocations, process-wide). The first call wins; until one is made `Tally::allocations` reads 0.
+#[cfg(feature = "test-support")]
+pub fn count_allocations_through(read: fn() -> u64) {
+    let _ = ALLOCATION_SOURCE.set(read);
+}
 
 /// Count one unit of `work`. A no-op unless built with `test-support`.
 #[inline]
@@ -58,7 +64,7 @@ pub fn tally(work: Work) {
 #[cfg(feature = "test-support")]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Tally {
-    /// Heap allocations (`alloc`, `alloc_zeroed`, `realloc`) through [`Counting`].
+    /// Heap allocations (`alloc`, `alloc_zeroed`, `realloc`) by the reader [`count_allocations_through`] names.
     pub allocations: u64,
     /// Calls from the loader into a plugin.
     pub crossings: u64,
@@ -73,7 +79,7 @@ impl Tally {
     /// The counters now.
     pub fn now() -> Self {
         Self {
-            allocations: ALLOCATIONS.load(Ordering::Relaxed),
+            allocations: ALLOCATION_SOURCE.get().map_or(0, |read| read()),
             crossings: CROSSINGS.load(Ordering::Relaxed),
             store_round_trips: STORE_ROUND_TRIPS.load(Ordering::Relaxed),
             clock_reads: CLOCK_READS.load(Ordering::Relaxed),
@@ -90,43 +96,5 @@ impl Tally {
                 .wrapping_sub(earlier.store_round_trips),
             clock_reads: self.clock_reads.wrapping_sub(earlier.clock_reads),
         }
-    }
-}
-
-/// A global allocator that counts every allocation, then forwards to `A`.
-#[cfg(feature = "test-support")]
-#[derive(Debug)]
-pub struct Counting<A>(pub A);
-
-// SAFETY: every method forwards verbatim to `A`, a sound `GlobalAlloc`. The only added work is a
-// relaxed increment of a static atomic, which neither allocates nor touches the memory handed out.
-#[cfg(feature = "test-support")]
-#[allow(unsafe_code)]
-unsafe impl<A: GlobalAlloc> GlobalAlloc for Counting<A> {
-    #[inline]
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        // SAFETY: forwarded as given.
-        unsafe { self.0.alloc(layout) }
-    }
-
-    #[inline]
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        // SAFETY: forwarded as given.
-        unsafe { self.0.alloc_zeroed(layout) }
-    }
-
-    #[inline]
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // SAFETY: forwarded as given.
-        unsafe { self.0.dealloc(ptr, layout) }
-    }
-
-    #[inline]
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        // SAFETY: forwarded as given.
-        unsafe { self.0.realloc(ptr, layout, new_size) }
     }
 }

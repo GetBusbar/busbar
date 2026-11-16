@@ -7,15 +7,10 @@
 
 use busbar_plugin_abi as abi;
 
+/// Frozen paths still defined in this crate.
 #[test]
 fn the_frozen_types_exist_under_their_frozen_paths() {
     let names = [
-        core::any::type_name::<abi::types::Bytes<'static>>(),
-        core::any::type_name::<abi::types::Str<'static>>(),
-        core::any::type_name::<abi::types::Slice<'static, abi::types::Pair<'static>>>(),
-        core::any::type_name::<abi::types::RawOut>(),
-        core::any::type_name::<abi::types::Status>(),
-        core::any::type_name::<abi::types::KindCode>(),
         core::any::type_name::<abi::records::RecHead>(),
         core::any::type_name::<abi::records::EndpointRec>(),
         core::any::type_name::<abi::records::FailRec>(),
@@ -23,14 +18,10 @@ fn the_frozen_types_exist_under_their_frozen_paths() {
         core::any::type_name::<abi::records::Out<'static>>(),
         core::any::type_name::<abi::records::Reply>(),
         core::any::type_name::<abi::fail::Fail>(),
-        core::any::type_name::<abi::plugin::Plugin>(),
         core::any::type_name::<abi::plugin::Endpoints<'static>>(),
         core::any::type_name::<abi::plugin::Describe<'static>>(),
         core::any::type_name::<abi::stamp::Stamp>(),
         core::any::type_name::<abi::versions::EngineVersion>(),
-        core::any::type_name::<abi::need::ChainBytes>(),
-        core::any::type_name::<abi::host::Host>(),
-        core::any::type_name::<abi::host::DeploymentId>(),
         core::any::type_name::<abi::export::CustodyRec>(),
         core::any::type_name::<abi::export::DeliveryRec>(),
     ];
@@ -39,6 +30,25 @@ fn the_frozen_types_exist_under_their_frozen_paths() {
             .iter()
             .all(|name| name.starts_with("busbar_plugin_abi::"))
     );
+}
+
+/// Frozen paths that busbar-ffi now defines (UNSAFE-MIN r3.1) and this crate re-exports: each resolves under its
+/// frozen path, and the type behind it is busbar-ffi's, so there is one definition on both sides of the boundary.
+#[test]
+fn the_boundary_types_resolve_under_their_frozen_paths_to_busbar_ffi() {
+    let names = [
+        core::any::type_name::<abi::types::Bytes<'static>>(),
+        core::any::type_name::<abi::types::Str<'static>>(),
+        core::any::type_name::<abi::types::Slice<'static, abi::types::Pair<'static>>>(),
+        core::any::type_name::<abi::types::RawOut>(),
+        core::any::type_name::<abi::types::Status>(),
+        core::any::type_name::<abi::types::KindCode>(),
+        core::any::type_name::<abi::plugin::Plugin>(),
+        core::any::type_name::<abi::need::ChainBytes>(),
+        core::any::type_name::<abi::host::Host>(),
+        core::any::type_name::<abi::host::DeploymentId>(),
+    ];
+    assert!(names.iter().all(|name| name.starts_with("busbar_ffi::")));
 }
 
 #[test]
@@ -56,7 +66,7 @@ fn the_kind_numbers_and_abi_versions_are_frozen() {
         assert_eq!(kind as u32, raw);
         assert_eq!(abi::types::KindCode::from_raw(raw), Some(kind));
         assert_eq!(kind.word(), word);
-        assert_eq!(kind.abi(), version);
+        assert_eq!(abi::versions::abi_of(kind), version);
     }
     assert_eq!(abi::types::KindCode::from_raw(0), None);
     assert_eq!(abi::types::KindCode::from_raw(8), None);
@@ -70,7 +80,7 @@ fn the_kind_numbers_and_abi_versions_are_frozen() {
         (abi::transport::KIND, abi::transport::ABI),
     ];
     for (kind, version) in modules {
-        assert_eq!(kind.abi(), version);
+        assert_eq!(abi::versions::abi_of(kind), version);
     }
 }
 

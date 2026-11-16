@@ -281,7 +281,7 @@ fn staged_over(
         },
     );
     let stage = SessionStage::new(
-        instance.into(),
+        Arc::from(instance),
         tokio::runtime::Handle::current(),
         Some(binder),
         (scope, None, "d0".to_string()),
@@ -586,7 +586,7 @@ async fn the_stage_refuses_every_unit_it_does_not_hold() {
     s.units().ended(3);
     assert!(s.units().stage(3).is_none());
     let late = SessionStage::new(
-        "other".into(),
+        Arc::from("other"),
         tokio::runtime::Handle::current(),
         None,
         (RoutedScope::default(), None, String::new()),
@@ -659,7 +659,7 @@ async fn a_session_on_a_later_dialect_binds_its_hooks_in_that_dialect() {
         },
     );
     let stage = SessionStage::new(
-        "inst".into(),
+        Arc::from("inst"),
         tokio::runtime::Handle::current(),
         Some(Arc::clone(&binder) as Arc<dyn HookBinder>),
         (

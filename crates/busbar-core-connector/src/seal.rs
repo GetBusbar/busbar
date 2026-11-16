@@ -102,15 +102,22 @@ impl Seals {
         }
 
         target.reserve(pairs.iter().map(|pair| pair.len().saturating_add(1)).sum());
-        let fragment = target
+        // A fragment stays where it is while the pairs are appended after it; one in-place rotation
+        // puts it back at the end, so no copy of it is allocated. The query state is read from the
+        // part before the fragment, then follows what is appended.
+        let end = target
             .iter()
             .position(|b| *b == b'#')
-            .map(|at| target.split_off(at));
+            .unwrap_or(target.len());
+        let fragment = target.len() - end;
+        let mut query = target[..end].contains(&b'?');
+        let mut last = target[..end].last().copied();
         for pair in &pairs {
             let at = pair.iter().position(|b| *b == b'=').ok_or(SEAL_BROKEN)?;
-            if !target.contains(&b'?') {
+            if !query {
                 target.push(b'?');
-            } else if !matches!(target.last(), Some(b'?' | b'&')) {
+                query = true;
+            } else if !matches!(last, Some(b'?' | b'&')) {
                 target.push(b'&');
             }
             target.extend_from_slice(&pair[..=at]);
@@ -126,10 +133,9 @@ impl Seals {
             } else {
                 target.extend_from_slice(value);
             }
+            last = target.last().copied();
         }
-        if let Some(fragment) = fragment {
-            target.extend_from_slice(&fragment);
-        }
+        target[end..].rotate_left(fragment);
         Ok(true)
     }
 

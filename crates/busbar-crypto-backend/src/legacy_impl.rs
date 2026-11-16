@@ -1,37 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Legacy algorithms for protocol use only, over AWS-LC: MD5 (Postgres md5 authentication), SHA-1
-//! and HMAC-SHA1 (webhook signatures), RSA-OAEP with SHA-1 (MySQL RSA password exchange).
+//! Legacy algorithms for protocol use only: MD5 (Postgres md5 authentication; the pure-Rust `md-5`
+//! crate), and over AWS-LC SHA-1 and HMAC-SHA1 (webhook signatures) and RSA-OAEP with SHA-1 (MySQL RSA
+//! password exchange).
 
 use aws_lc_rs::rsa::{OaepPublicEncryptingKey, PublicEncryptingKey, OAEP_SHA1_MGF1SHA1};
 use aws_lc_rs::{digest, hmac};
 
 use crate::Error;
 
-/// MD5 (RFC 1321) of `data`. aws-lc-rs has no MD5, so this is AWS-LC's `EVP_Digest` with
-/// `EVP_md5()` directly (the `universal` bindings have no `MD5` function).
-#[allow(unsafe_code)]
+/// MD5 (RFC 1321) of `data`, by the pure-Rust `md-5` crate (UNSAFE-MIN Q9a). It runs only in the
+/// Postgres connect handshake, once per connection, never per request. The crate's `zeroize` feature
+/// wipes the hasher state on drop.
 pub fn md5(data: &[u8]) -> Result<[u8; 16], Error> {
+    use md5::Digest;
     let mut out = [0_u8; 16];
-    let mut written: core::ffi::c_uint = 0;
-    aws_lc_sys::init();
-    // SAFETY: `data` is a live slice of `data.len()` bytes; `out` has room for MD5's 16-byte
-    // digest; `EVP_md5()` returns a static descriptor; a null ENGINE is the documented default.
-    // EVP_Digest keeps no pointer past the call and cleanses its stack context.
-    let ok = unsafe {
-        aws_lc_sys::EVP_Digest(
-            data.as_ptr().cast(),
-            data.len(),
-            out.as_mut_ptr(),
-            &mut written,
-            aws_lc_sys::EVP_md5(),
-            core::ptr::null_mut(),
-        )
-    };
-    if ok != 1 || written != 16 {
-        return Err(Error::Invalid("MD5"));
-    }
+    out.copy_from_slice(md5::Md5::digest(data).as_slice());
     Ok(out)
 }
 

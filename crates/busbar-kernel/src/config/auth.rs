@@ -378,6 +378,9 @@ pub struct AuthPolicyCfg {
     /// may hold on one node. Absent ⇒ 256. A key over it is refused 429 with `Retry-After`; other
     /// keys are unaffected. At least 1 (enforced at validate, fail boot).
     pub max_outstanding_tickets_per_key: Option<u32>,
+    /// ADMIN-API-1.6 6.2: when `true`, a guarded config mutation without `If-Match` is refused 428
+    /// (`invalid_request` / `if_match_required`). Absent or `false` ⇒ a missing `If-Match` is accepted.
+    pub require_if_match: Option<bool>,
 }
 
 /// Per-provider browser-login parameters (`identity-providers.<name>.browser_login:`). PRESENCE of
@@ -727,10 +730,23 @@ pub fn is_builtin_identity_module(module: &str) -> bool {
 
 pub use busbar_contract::DEFAULT_MAX_ADMIN_SCOPE;
 
+/// The effective admin chain when `auth.admin_auth` is absent (ADMIN-API r5 section 2.1):
+/// `[<operator>, keys]`, the operator word read from the admitted row and never spelled here. With
+/// no operator row it is `[keys]`: a closed chain in which only a key carrying an `admin` grant is
+/// admitted, and with no operator no `full` principal can mint one. Never `[]` (open) and never
+/// the empty word.
 pub fn default_admin_auth_names() -> Vec<String> {
-    vec![operator_provider().to_string()]
+    let operator = operator_provider();
+    (!operator.is_empty())
+        .then(|| operator.to_string())
+        .into_iter()
+        .chain([KEYS_MODULE.to_string()])
+        .collect()
 }
 
 pub fn default_admin_auth() -> Vec<AuthChainEntry> {
-    vec![AuthChainEntry::bare(operator_provider())]
+    default_admin_auth_names()
+        .into_iter()
+        .map(AuthChainEntry::bare)
+        .collect()
 }

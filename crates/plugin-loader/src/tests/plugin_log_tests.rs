@@ -57,7 +57,7 @@ pub(crate) fn config(dir: &Path, level: LogLevel) -> PluginLogConfig {
 
 fn bind(sink: Arc<dyn EnvelopeSink>) -> Bind {
     Bind {
-        instance: crate::cold::dispatch::load::instance_name("the-instance"),
+        instance: Arc::from("the-instance"),
         max_inflight_cap: 4,
         sink,
         dispatcher: Adopter::unwatched(),
@@ -603,7 +603,7 @@ fn two_sinks_of_one_file_rotate_it_once_and_never_write_an_archive() {
         s.flush();
     }
     let live = dir.join("export.shared.log");
-    let archive = |i: u32| dir.join(format!("export.shared.log.{i}"));
+    let archive = |i: u32| PathBuf::from(format!("{}.{i}", live.display()));
     let files: Vec<String> = [archive(3), archive(2), archive(1), live.clone()]
         .iter()
         .map(|p| std::fs::read_to_string(p).unwrap_or_default())

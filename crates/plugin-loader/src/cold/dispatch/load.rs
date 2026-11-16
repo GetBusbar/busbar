@@ -406,13 +406,3 @@ pub(crate) fn rotation_failed(failed: &[crate::host::FailedStep], limit: u64) ->
         failed.join(", ")
     )
 }
-
-// ---------------------------------------------------------------------------------------------
-// Test binds.
-
-/// A test instance's namespace, taken once when the instance is bound.
-#[cfg(test)]
-#[cold]
-pub(crate) fn instance_name(name: &str) -> std::sync::Arc<str> {
-    std::sync::Arc::from(name)
-}

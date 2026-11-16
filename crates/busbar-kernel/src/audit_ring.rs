@@ -11,7 +11,7 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct AuditEntry {
-    /// Monotonic sequence number (1-based), unique within a process lifetime.
+    /// Monotonic sequence number (1-based). It continues across restart: the chain is one durable log.
     pub seq: u64,
     /// Unix seconds when the mutation was attempted.
     pub ts: u64,
@@ -93,7 +93,8 @@ pub struct AuditPage {
     pub retained_from: Option<String>,
     pub retained_to: Option<String>,
     pub retention_limit: String,
-    /// `live_offset`: concurrent appends/evictions may duplicate or skip rows across pages.
+    /// `live_offset` (legacy): concurrent appends/evictions may duplicate or skip rows across pages.
+    /// `keyset`: a page resumes strictly after the last `seq`, so no row is duplicated or skipped.
     pub semantics: String,
     /// Always false: this live filtered inventory does not prove complete audit coverage.
     pub complete: bool,

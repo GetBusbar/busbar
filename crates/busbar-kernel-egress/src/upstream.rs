@@ -29,8 +29,27 @@ pub const ERR_NET_CONNECT: &str = "connect";
 /// `err_type` recorded when the upstream did not answer within the attempt's deadline.
 pub const ERR_NET_TIMEOUT: &str = "timeout";
 
-/// The fields the upstream connection derives for itself, beyond HTTP's hop-by-hop set.
-pub(crate) const RE_DERIVED: &[&str] = &["host", "content-length", "accept-encoding"];
+/// The fields the upstream connection derives for itself, lower-case: busbar's own (`host`,
+/// `content-length`, `accept-encoding`), HTTP's hop-by-hop set (RFC 9110 §7.6.1 and the proxy
+/// pair), and the framer's own protocol handshake lines (IF §13 round 23: `upgrade`, `connection`,
+/// `sec-websocket-key`, `sec-websocket-version`, a closed list), which the framer writes after auth
+/// `outbound`, so no auth style sees or signs them and the wire never carries two of one.
+pub(crate) const RE_DERIVED: &[&str] = &[
+    "host",
+    "content-length",
+    "accept-encoding",
+    "connection",
+    "keep-alive",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "sec-websocket-key",
+    "sec-websocket-version",
+];
 
 /// The content coding busbar asks a provider for. 1.6.0 has one choice, `Identity` (as 1.5.5):
 /// busbar sends no `accept-encoding`, so it never spends CPU or latency decoding what it reads to
@@ -71,14 +90,15 @@ pub(crate) const CONTROL_PREFIX: &str = "x-busbar-";
 /// Whether the client field `name` is a per-connection mechanic the upstream request re-derives: a
 #[must_use]
 pub fn re_derived<'a>(name: &str, nominated: impl IntoIterator<Item = &'a [u8]>) -> bool {
-    use busbar_contract::abi::transport::fields::{hop_by_hop, HOP_BY_HOP};
-    // Both lists are lower-case, so a case-blind match is the lower-cased name's exact one; the
-    // nominated names are already compared case-blind.
+    // The list is lower-case, so a case-blind match is the lower-cased name's exact one; a name a
+    // `connection` field nominates is hop-by-hop for this head too, compared case-blind.
     RE_DERIVED
         .iter()
-        .chain(HOP_BY_HOP)
         .any(|known| known.eq_ignore_ascii_case(name))
-        || hop_by_hop(name, nominated)
+        || nominated.into_iter().any(|list| {
+            list.split(|b| *b == b',')
+                .any(|n| n.trim_ascii().eq_ignore_ascii_case(name.as_bytes()))
+        })
 }
 
 /// Drop from the head a plane hands the kernel what the host drops from a client's:
