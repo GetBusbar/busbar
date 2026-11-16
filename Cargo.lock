@@ -661,6 +661,7 @@ dependencies = [
  "busbar-crypto",
  "busbar-ffi",
  "hex",
+ "hyper",
  "percent-encoding",
  "zerocopy",
  "zeroize",
