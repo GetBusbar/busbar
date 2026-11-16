@@ -4,6 +4,7 @@
 //! Explicit creation of a real durable namespace for subprocess protocol fixtures.
 //! A Memory Store cannot carry a cold CLI baseline into the later stdio process.
 
+use busbar_contract::json::{self, JsonValueTrait};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::Arc;
@@ -56,7 +57,7 @@ pub fn stage(directory: &Path) {
             .open(&database)
             .expect("the fixture exclusively creates its new database before any Store open"),
     );
-    let creation = serde_json::json!({
+    let creation = json::json!({
         "database": database,
         "creation": "exclusive create_new before first Store open",
         "fixture": directory,
@@ -67,7 +68,7 @@ pub fn stage(directory: &Path) {
     });
     std::fs::write(
         directory.join(CREATION_FILE),
-        serde_json::to_vec(&creation).expect("creation provenance serializes"),
+        json::to_vec(&creation).expect("creation provenance serializes"),
     )
     .expect("retain genuine namespace creation provenance");
     std::fs::write(
@@ -153,7 +154,7 @@ fn command_output(mut command: Command) -> Output {
     }
 }
 
-fn run(command: &Command, input: &Path, action: &str, directory: &Path) -> serde_json::Value {
+fn run(command: &Command, input: &Path, action: &str, directory: &Path) -> json::Value {
     let mut child = clone_command(command);
     child
         .args([
@@ -182,7 +183,7 @@ fn run(command: &Command, input: &Path, action: &str, directory: &Path) -> serde
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-    serde_json::from_slice(&output.stdout).expect("actual principal CLI report is JSON")
+    json::parse_value(&output.stdout).expect("actual principal CLI report is JSON")
 }
 
 /// A writer admitted in this process on the fixture's actual durable Store: the Store opened
@@ -202,7 +203,7 @@ pub struct Owner {
 pub async fn admit_in_process(directory: &Path) -> Owner {
     use busbar_contract::persistence::axis::{PersistenceAxis as _, StoreDoor};
     let creation = std::fs::read(directory.join(CREATION_FILE)).expect("creation provenance reads");
-    let provenance: serde_json::Value = serde_json::from_slice(&creation).unwrap();
+    let provenance = json::parse_value(&creation).unwrap();
     let library = PathBuf::from(
         provenance["library"]
             .as_str()
@@ -284,7 +285,7 @@ pub async fn admit_in_process(directory: &Path) -> Owner {
 
 /// Initialize only the namespace this fixture just created, then prove the actual durable head.
 /// No provider identity, grants or baseline bytes are fabricated by the fixture.
-pub fn initialize(directory: &Path, command: &Command) -> Result<serde_json::Value, String> {
+pub fn initialize(directory: &Path, command: &Command) -> Result<json::Value, String> {
     let before = run(command, Path::new("-"), "inspect", directory);
     if !before["principal_receipt_head_sha256"].is_null() {
         return Err("a retained namespace cannot be presented as freshly created".into());
@@ -340,7 +341,7 @@ pub fn initialize(directory: &Path, command: &Command) -> Result<serde_json::Val
             axis
         });
     drop(axis);
-    let receipt = serde_json::json!({
+    let receipt = json::json!({
         "version": 2,
         "witness_binding": {"instance": "busbar.fixture.principal-creation", "private": true,
                             "source_scope": "unscoped"},
@@ -358,11 +359,11 @@ pub fn initialize(directory: &Path, command: &Command) -> Result<serde_json::Val
         "reason": "exclusive new database file; no application senders started; actual creation witness committed before real cold initialization",
     });
     let receipt_path = directory.join("principal-fresh.json");
-    std::fs::write(&receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+    std::fs::write(&receipt_path, json::to_vec(&receipt).unwrap()).unwrap();
     run(command, &receipt_path, "initialize-fresh", directory);
     let after = run(command, Path::new("-"), "inspect", directory);
     assert!(
-        after["principal_receipt_head_sha256"].is_string(),
+        after["principal_receipt_head_sha256"].is_str(),
         "real initialized head survives a separate CLI process"
     );
     assert_eq!(after["store_config_sha256"], before["store_config_sha256"]);
