@@ -44,7 +44,7 @@ impl PlaneJudge {
     /// `DEST_UNRESOLVABLE`. Never fails.
     pub async fn judge(&self, dest: &str, class: u32, flags: u32, deadline: Instant) -> u32 {
         let Some(judge) = &self.judge else {
-            tracing::warn!("plane_judge_unavailable: no destination judge is installed");
+            warn_unavailable();
             return DEST_INTERNAL;
         };
         if dest.len() > MAX_DESTINATION {

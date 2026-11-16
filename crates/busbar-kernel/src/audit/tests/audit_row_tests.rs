@@ -39,7 +39,8 @@ fn scheme3_row_round_trips_through_its_suffix() {
 #[test]
 fn scheme3_digests_every_field() {
     let base = row_suffix(10, &full_row());
-    let edits: Vec<(&str, Box<dyn Fn(&mut AuditRowInput)>)> = vec![
+    type Edit = (&'static str, Box<dyn Fn(&mut AuditRowInput)>);
+    let edits: Vec<Edit> = vec![
         ("action", Box::new(|r| r.action.push('x'))),
         ("resource", Box::new(|r| r.resource.push('x'))),
         ("outcome", Box::new(|r| r.outcome = "rejected".into())),

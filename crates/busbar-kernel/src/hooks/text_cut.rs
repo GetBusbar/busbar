@@ -112,16 +112,7 @@ pub fn cap_of(field: TextField) -> usize {
     }
 }
 
-/// A hook's `status` metrics, parsed (per admin status read or snapshot refresh) off the request
-/// path as 1.5.5 does, with every cut reported against hook `name`.
-pub fn parse_hook_status_metrics(
-    name: &str,
-    raw: &[serde_json::Value],
-) -> Vec<busbar_contract::hook_wire::reply::HookMetric> {
-    let (metrics, cuts) = busbar_contract::hook_wire::reply::parse_status_metrics_counted(raw);
-    report_cuts(name, &cuts, cap_of);
-    metrics
-}
+pub use crate::off_path::hooks::parse_hook_status_metrics;
 
 #[cfg(test)]
 #[path = "tests/text_cut_tests.rs"]

@@ -38,7 +38,7 @@ pub struct Net {
 
 impl Net {
     fn peer_ip(&self) -> Option<IpAddr> {
-        self.sock.get_ref().peer_ip()
+        socket::peer_ip(&self.sock.socket())
     }
 }
 
@@ -53,10 +53,9 @@ impl AsyncRead for Net {
             return Poll::Ready(Ok(()));
         }
         let want = dst.len();
-        let n = std::task::ready!(self.sock.poll_io_sized(Direction::Read, want, cx, |s| {
-            let mut r: &Sock = s;
-            r.read(&mut *dst)
-        }))?;
+        let n = std::task::ready!(self
+            .sock
+            .poll_io_sized(Direction::Read, want, cx, |mut s| s.read(&mut *dst)))?;
         buf.advance(n);
         Poll::Ready(Ok(()))
     }
@@ -72,10 +71,7 @@ impl AsyncWrite for Net {
             return Poll::Ready(Ok(0));
         }
         self.sock
-            .poll_io_sized(Direction::Write, buf.len(), cx, |s| {
-                let mut w: &Sock = s;
-                w.write(buf)
-            })
+            .poll_io_sized(Direction::Write, buf.len(), cx, |mut s| s.write(buf))
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -83,7 +79,7 @@ impl AsyncWrite for Net {
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        match self.sock.get_ref().shutdown(Shutdown::Write) {
+        match self.sock.socket().shutdown(Shutdown::Write) {
             Err(e) if e.kind() == io::ErrorKind::NotConnected => Poll::Ready(Ok(())),
             other => Poll::Ready(other),
         }
@@ -100,17 +96,17 @@ pub enum Stream {
 }
 
 impl Stream {
-    fn sock(&self) -> &Sock {
+    fn net(&self) -> &Net {
         match self {
-            Stream::Plain(n) => n.sock.get_ref(),
-            Stream::Tls(t) => t.get_ref().0.sock.get_ref(),
+            Stream::Plain(n) => n,
+            Stream::Tls(t) => &t.get_ref().0,
         }
     }
 
     /// Still good to hand out again: open, with nothing waiting to be read and no error.
     #[must_use]
     pub fn healthy(&self) -> bool {
-        self.sock().idle_and_open()
+        socket::idle_and_open(&self.net().sock.socket())
     }
 }
 

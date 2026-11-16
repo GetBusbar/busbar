@@ -250,7 +250,7 @@ fn retired_env_var_diagnostics_match_published_docs() {
 fn plane_judge_unavailable_is_a_registered_diagnostic() {
     assert_eq!(PLANE_JUDGE_UNAVAILABLE.code, 7108);
     assert_eq!(PLANE_JUDGE_UNAVAILABLE.slug, "plane-judge-unavailable");
-    assert!(!PLANE_JUDGE_UNAVAILABLE.retired);
+    assert!(!std::hint::black_box(PLANE_JUDGE_UNAVAILABLE.retired));
     assert!(
         REGISTRY.iter().any(|d| d.code == 7108),
         "the code is in the built-in registry, so its docs page is generated"

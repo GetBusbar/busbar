@@ -2847,16 +2847,39 @@ fn the_canonical_amend_payload_names_no_currency() {
         "the signed payload still names a currency: {text}"
     );
 
-    assert!(text.starts_with("busbar/amend-rate-history/v1\n"), "{text}");
+    assert!(text.starts_with("busbar/amend-rate-history/v2\n"), "{text}");
     for key in [
         "effective_from=",
         "effective_until=",
         "per_request_fee=",
-        "reason=",
+        "reason_sha256=",
         "rates=",
     ] {
         assert!(text.contains(key), "the payload dropped {key}: {text}");
     }
+}
+
+/// The amendment API keeps the reason's SHA-256, not its text (`kernel_verbs.rs`, openapi): the
+/// canonical payload stored in the policy journal carries the hash, never the operator's words.
+#[test]
+fn the_canonical_amend_payload_keeps_the_reason_hash_not_its_text() {
+    let reason = "vendor corrected the March price sheet";
+    let body = serde_json::json!({
+        "effective_from": 0,
+        "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
+        "reason": reason,
+    });
+    let payload = canonical_amend_payload(body.as_object().expect("an object"));
+    let text = String::from_utf8(payload).expect("the payload is text");
+    assert!(
+        !text.contains(reason),
+        "the signed payload carries the reason text: {text}"
+    );
+    let hash = hex::encode(busbar_contract::abi::sdk::digest::sha256(reason.as_bytes()));
+    assert!(
+        text.contains(&format!("reason_sha256=\"{hash}\"\n")),
+        "the signed payload names the reason by its SHA-256: {text}"
+    );
 }
 
 #[tokio::test]
@@ -3366,7 +3389,7 @@ async fn a_sealed_amendment_survives_a_restart_with_its_figures() {
     assert!(
         record
             .signed_payload
-            .starts_with(b"busbar/amend-rate-history/v1\n"),
+            .starts_with(b"busbar/amend-rate-history/v2\n"),
         "the record keeps the correction's canonical bytes"
     );
 }

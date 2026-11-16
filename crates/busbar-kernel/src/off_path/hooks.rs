@@ -1338,3 +1338,27 @@ where
     }
     out
 }
+
+/// A pool's resolved strategy binding, owning its word and instance name (`hooks::strategy`): built
+/// once per config load for each pool that names a strategy word, never per request.
+pub(crate) fn strategy_binding(
+    word: &str,
+    implicit: bool,
+) -> crate::hooks::strategy::StrategyBinding {
+    crate::hooks::strategy::StrategyBinding {
+        word: Box::from(word),
+        instance: Box::from(word),
+        implicit,
+    }
+}
+
+/// A hook's `status` metrics, parsed (per admin status read or snapshot refresh) off the request
+/// path as 1.5.5 does, with every cut reported against hook `name` (`hooks::text_cut`).
+pub fn parse_hook_status_metrics(
+    name: &str,
+    raw: &[serde_json::Value],
+) -> Vec<busbar_contract::hook_wire::reply::HookMetric> {
+    let (metrics, cuts) = busbar_contract::hook_wire::reply::parse_status_metrics_counted(raw);
+    crate::hooks::text_cut::report_cuts(name, &cuts, crate::hooks::text_cut::cap_of);
+    metrics
+}

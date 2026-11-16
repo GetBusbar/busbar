@@ -7,5 +7,6 @@
 //! request-path marker because it does not run per request; the request path only reads what it
 //! built.
 
+pub(crate) mod history;
 pub(crate) mod rate;
 pub(crate) mod usage;
