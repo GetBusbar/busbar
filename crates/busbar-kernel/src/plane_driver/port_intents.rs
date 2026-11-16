@@ -26,19 +26,21 @@ use busbar_plugin_abi::fail::failed::F_UNAVAILABLE;
 use busbar_plugin_abi::fail::refused::{R_DENIED, R_INVALID, R_RATE_LIMITED, R_UNSUPPORTED};
 use busbar_plugin_abi::host_side::caller::{CallStack, Caller, InstanceLimits};
 use busbar_plugin_abi::plane::{
-    FROM_CORE, LK_CALLER, LK_CHAIN, LK_PREFIX, P_CHANNEL, P_COMMITTED, P_ERROR, P_LOOKUP, P_SIGNAL,
-    P_STORE_FAILED, P_WORK,
+    DEST_INTERNAL, FROM_CORE, LK_CALLER, LK_CHAIN, LK_PREFIX, P_CHANNEL, P_COMMITTED, P_ENTITLE,
+    P_ERROR, P_JUDGED, P_LOOKUP, P_SIGNAL, P_STORE_FAILED, P_WORK,
 };
 use busbar_plugin_abi::records::{commit, tag, RecDelRec, RecPredRec, RecPutRec, Records, Reply};
 use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::encode::plane::{
-    encode_chain_state, encode_chan_attach, encode_committed, encode_lookup_hits, encode_refusal,
-    encode_work_answers,
+    encode_chain_state, encode_chan_attach, encode_committed, encode_entitle_answers,
+    encode_judged, encode_lookup_hits, encode_refusal, encode_work_answers,
 };
 use busbar_plugin_loader::ports::plane::WorkAnswer;
 use tokio::runtime::Handle;
 
+use super::plane_judge::PlaneJudge;
 use super::port_channels::{ChannelAttach, ChannelHost, Channels};
+use super::port_services::Services;
 use super::port_session::{Answer, Calls, Effects, SessionError, Task, Violation};
 use crate::channels::SessionSignals;
 use crate::hashing::Sha256;
@@ -88,6 +90,18 @@ pub enum Intent {
     Signal {
         flags: u32,
         key: Vec<u8>,
+    },
+    /// ENTITLE: does the verified principal hold `grant` (§12.11).
+    Entitle {
+        check: u32,
+        grant: String,
+    },
+    /// JUDGE: the destination guard on `dest` (§12.1); `class` <= 4 and `flags` are checked when the answer is read.
+    Judge {
+        check: u32,
+        class: u32,
+        flags: u32,
+        dest: String,
     },
     /// CHANNEL: attach `exchange` to a shared upstream channel (§12.19); `head` = the nested HTTP head records.
     Channel {
@@ -191,6 +205,15 @@ pub trait IntentHost: Send + Sync {
     fn push(&self, ttl_s: u64, recs: &[u8]) -> Result<(), RecordsDenied>;
     /// SIGNAL: every session of this instance detached under `key` (only `subject`'s when it is Some).
     fn signal(&self, key: &[u8], subject: Option<[u8; 32]>);
+    /// ENTITLE: does the verified principal (its ID_* `identity` records) hold `grant`? The default is no.
+    fn entitle(&self, _identity: &[u8], _grant: &str) -> bool {
+        false
+    }
+    /// JUDGE: the `DEST_*` verdict for `dest` (the answer the plane renders in its own protocol). The default is
+    /// the fail-closed `DEST_INTERNAL`.
+    fn judge(&self, _dest: &str, _class: u32, _flags: u32) -> u32 {
+        DEST_INTERNAL
+    }
 }
 
 /// The request's subject scope: SHA-256 of its ID_SUBJECT text (IF §12.5).
@@ -213,6 +236,13 @@ pub struct Resolver<'h> {
     host: &'h dyn IntentHost,
     subject: Option<[u8; 32]>,
     channels: Option<&'h dyn ChannelHost>,
+    principal: Option<Principal<'h>>,
+}
+
+/// The verified principal an intent runs as: its ID_SUBJECT text and the ID_* identity records it was admitted with.
+#[derive(Clone, Copy)]
+struct Principal<'h> {
+    identity: &'h [u8],
 }
 
 impl<'h> Resolver<'h> {
@@ -222,7 +252,18 @@ impl<'h> Resolver<'h> {
             host,
             subject,
             channels: None,
+            principal: None,
         }
+    }
+
+    /// The request's verified principal: its ID_SUBJECT text and the identity records it was admitted with. It sets
+    /// the subject scope as [`subject_scope`] does, and is what ENTITLE, MINT and CONNECT run as; without one they
+    /// are refused here and the host is never asked.
+    #[must_use]
+    pub fn with_principal(mut self, subject: &'h str, identity: &'h [u8]) -> Self {
+        self.subject = Some(subject_scope(subject));
+        self.principal = Some(Principal { identity });
+        self
     }
 
     /// CHANNEL intents attach through `channels`; without it every CHANNEL is a `P_ERROR`.
@@ -310,7 +351,10 @@ impl<'h> Resolver<'h> {
                         channel.ready(tail);
                     }
                 }
-                Intent::Lookup { .. } | Intent::Work { .. } => {}
+                Intent::Lookup { .. }
+                | Intent::Work { .. }
+                | Intent::Entitle { .. }
+                | Intent::Judge { .. } => {}
             }
         }
         let mut pieces = Vec::new();
@@ -343,6 +387,20 @@ impl<'h> Resolver<'h> {
             pieces.push(Piece {
                 exchange: 0,
                 flags: P_WORK,
+                bytes,
+            });
+        }
+        if let Some(bytes) = self.entitles(intents) {
+            pieces.push(Piece {
+                exchange: 0,
+                flags: P_ENTITLE,
+                bytes,
+            });
+        }
+        if let Some(bytes) = self.judges(intents) {
+            pieces.push(Piece {
+                exchange: 0,
+                flags: P_JUDGED,
                 bytes,
             });
         }
@@ -498,6 +556,52 @@ impl<'h> Resolver<'h> {
         any.then(|| reply.as_bytes().to_vec())
     }
 
+    /// The ENTITLE_ANS of every ENTITLE of the answer, in intent order; `None` when it has none. Without a
+    /// verified principal there is no grant set to ask: not granted, and the host is not asked.
+    fn entitles(&self, intents: &[Intent]) -> Option<Vec<u8>> {
+        let mut answers: Vec<(u32, bool)> = Vec::new();
+        for intent in intents {
+            let Intent::Entitle { check, grant } = intent else {
+                continue;
+            };
+            let granted = self
+                .principal
+                .is_some_and(|p| self.host.entitle(p.identity, grant));
+            answers.push((*check, granted));
+        }
+        if answers.is_empty() {
+            return None;
+        }
+        let mut reply = Reply::new();
+        let put = encode_entitle_answers(&mut reply, &answers);
+        debug_assert!(put.is_ok(), "ENTITLE_ANS records fit a Reply");
+        Some(reply.as_bytes().to_vec())
+    }
+
+    /// The JUDGE_ANS of every JUDGE of the answer, in intent order; `None` when it has none.
+    fn judges(&self, intents: &[Intent]) -> Option<Vec<u8>> {
+        let mut answers: Vec<(u32, u32)> = Vec::new();
+        for intent in intents {
+            let Intent::Judge {
+                check,
+                class,
+                flags,
+                dest,
+            } = intent
+            else {
+                continue;
+            };
+            answers.push((*check, self.host.judge(dest, *class, *flags)));
+        }
+        if answers.is_empty() {
+            return None;
+        }
+        let mut reply = Reply::new();
+        let put = encode_judged(&mut reply, &answers);
+        debug_assert!(put.is_ok(), "JUDGE_ANS records fit a Reply");
+        Some(reply.as_bytes().to_vec())
+    }
+
     /// The WORK_ANS of every WORK of the answer, in intent order; `None` when it has none.
     fn works(&self, intents: &[Intent]) -> Option<Vec<u8>> {
         let mut outcomes: Vec<(u32, WorkOutcome)> = Vec::new();
@@ -635,6 +739,7 @@ pub struct KernelIntents<R: PluginRecords> {
     push: Arc<dyn PushQueue>,
     signals: Arc<dyn SessionSignals>,
     work: Arc<dyn WorkDecider>,
+    services: Services,
     who: Namespace,
     rt: Handle,
 }
@@ -667,6 +772,7 @@ impl<R: PluginRecords> KernelIntents<R> {
             push,
             signals,
             work: Arc::new(NoWork),
+            services: Services::default(),
             who,
             rt,
         }
@@ -676,6 +782,13 @@ impl<R: PluginRecords> KernelIntents<R> {
     #[must_use]
     pub fn with_work(mut self, work: Arc<dyn WorkDecider>) -> Self {
         self.work = work;
+        self
+    }
+
+    /// The kernel services the grant intents run on (ENTITLE, JUDGE, ...); one not installed answers fail-closed.
+    #[must_use]
+    pub fn with_services(mut self, services: Services) -> Self {
+        self.services = services;
         self
     }
 }
@@ -786,6 +899,24 @@ impl<R: PluginRecords> IntentHost for KernelIntents<R> {
     fn signal(&self, key: &[u8], subject: Option<[u8; 32]>) {
         self.signals
             .signal(self.who.instance, key, subject, P_SIGNAL, key);
+    }
+
+    fn entitle(&self, identity: &[u8], grant: &str) -> bool {
+        self.services
+            .entitlements
+            .as_ref()
+            .is_some_and(|e| e.check(&self.who.caller(), identity, grant))
+    }
+
+    fn judge(&self, dest: &str, class: u32, flags: u32) -> u32 {
+        let who = self.who.caller();
+        let judge = self
+            .services
+            .judge
+            .clone()
+            .unwrap_or_else(PlaneJudge::unavailable);
+        self.rt
+            .block_on(judge.judge(dest, class, flags, who.deadline))
     }
 }
 

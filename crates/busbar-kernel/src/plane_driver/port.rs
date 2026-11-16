@@ -28,7 +28,7 @@ use super::port_auth::{
     admit, refuse, subject_identity, Admitted, Credentials, NoTickets, Principal, TicketDoor,
 };
 use super::port_channels::{decode_tick, TickOut};
-use super::port_intents::{subject_scope, IntentHost, Resolver};
+use super::port_intents::{IntentHost, Resolver};
 use super::port_money::write_audit;
 use super::port_money::PortMoney;
 use super::port_routes::{admin_catalog, admin_hydrate, plan, Mounted, PortRoutes};
@@ -567,7 +567,10 @@ fn serve_blocking(
         }
     };
     let req = build(admitted.auth, &admitted.identity, admitted.ticket_record());
-    let resolver = Resolver::new(intents, principal.as_deref().map(subject_scope));
+    let resolver = match principal.as_deref() {
+        Some(subject) => Resolver::new(intents, None).with_principal(subject, &admitted.identity),
+        None => Resolver::new(intents, None),
+    };
     let dialect = port.dialects().first().map_or("", |d| &**d);
     let (mut members, mut send) = match upstream {
         Some((members, send)) => (Some(members), Some(send)),

@@ -495,6 +495,84 @@ pub fn encode_judged(w: &mut impl Writer, answers: &[(u32, u32)]) -> Result<(), 
     Ok(())
 }
 
+/// One MINTED per MINT, in intent order: `status` 0 = minted (`ticket` = the client-facing text, opaque to the
+/// plane), else a generic REFUSED code (`ticket` is ignored and `expires_at_s` is 0).
+pub fn encode_minted(w: &mut impl Writer, answers: &[(u32, u32, u64, &str)]) -> Result<(), Full> {
+    for &(check, status, expires_at_s, ticket) in answers {
+        let ans = plane::MintedRec {
+            check,
+            status,
+            expires_at_s: if status == 0 { expires_at_s } else { 0 },
+        };
+        let text = if status == 0 { ticket } else { "" };
+        w.put_pod_tail(tag::MINTED, &ans, text.as_bytes())?;
+    }
+    Ok(())
+}
+
+/// One answer to a SIGN, as [`encode_signed`] writes it.
+pub enum SignedAnswer<'a> {
+    /// SIGN_JWS_COMPACT: the compact JWS is the tail.
+    Compact { check: u32, jws: &'a str },
+    /// SIGN_JWS_DETACHED: the tail is nested SG_PROTECTED + SG_SIGNATURE.
+    Detached {
+        check: u32,
+        protected: &'a str,
+        signature: &'a str,
+    },
+    /// A REFUSED code (generic, < 0x100); no tail.
+    Refused { check: u32, status: u32 },
+}
+
+/// One SIGNED per SIGN, in intent order.
+pub fn encode_signed(w: &mut impl Writer, answers: &[SignedAnswer<'_>]) -> Result<(), Full> {
+    for answer in answers {
+        match answer {
+            SignedAnswer::Compact { check, jws } => {
+                let ans = plane::SignedRec {
+                    check: *check,
+                    status: 0,
+                };
+                w.put_pod_tail(tag::SIGNED, &ans, jws.as_bytes())?;
+            }
+            SignedAnswer::Detached {
+                check,
+                protected,
+                signature,
+            } => {
+                let ans = plane::SignedRec {
+                    check: *check,
+                    status: 0,
+                };
+                let mut nested = Reply::new();
+                nested.put_text(tag::SG_PROTECTED, protected)?;
+                nested.put_text(tag::SG_SIGNATURE, signature)?;
+                w.put_pod_tail(tag::SIGNED, &ans, nested.as_bytes())?;
+            }
+            SignedAnswer::Refused { check, status } => {
+                let ans = plane::SignedRec {
+                    check: *check,
+                    status: *status,
+                };
+                w.put_pod(tag::SIGNED, &ans)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One CONNECT_ANS per CONNECT, in intent order: (check, CONN_* state, the URL for a BEGIN that is READY).
+pub fn encode_connect_answers(
+    w: &mut impl Writer,
+    answers: &[(u32, u32, Option<&str>)],
+) -> Result<(), Full> {
+    for &(check, state, url) in answers {
+        let ans = plane::ConnectAns { check, state };
+        w.put_pod_tail(tag::CONNECT_ANS, &ans, url.unwrap_or("").as_bytes())?;
+    }
+    Ok(())
+}
+
 /// P_OBSERVED: OBS_SCOPE_ANS (check, status, scope id) and OBS_RECEIPT (check, status, receipt), in intent order.
 pub fn encode_observed(w: &mut impl Writer, answers: &[ObservedAnswer<'_>]) -> Result<(), Full> {
     for answer in answers {
