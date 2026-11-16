@@ -592,7 +592,6 @@ mod tests {
     use super::transport::{self as t, tag};
     use crate::records::{Pod, Records, Reply, Writer};
     use crate::types::{Bytes, KindCode, Str};
-    use zerocopy::IntoBytes;
 
     /// Every transport tag, in table order.
     const TAGS: [u16; 26] = [
@@ -648,7 +647,7 @@ mod tests {
         assert_eq!(t::ALL, 0x7F);
         assert_eq!(t::KIND, KindCode::Transport);
         assert_eq!(t::ABI, crate::versions::TRANSPORT);
-        assert_eq!(t::KIND.abi(), t::ABI);
+        assert_eq!(crate::versions::abi_of(t::KIND), t::ABI);
     }
 
     /// E_REFUSE's arg is a status in bits 0..=15 plus E_REFUSE_HEAD_SENT, so the flag never touches a status.
