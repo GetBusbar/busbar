@@ -2458,11 +2458,6 @@ pub(crate) fn bootstrap_witness(
 pub(crate) async fn stored_format_refusal(
     backend: &dyn busbar_contract::persistence::PersistenceBackend,
 ) -> String {
-    // RED: the stored format is not classified yet.
-    if true {
-        let _ = backend;
-        return "Store format admission refused: UnsupportedFormat".to_owned();
-    }
     use busbar_kernel::persistence::startup::{classify, Format};
     let read = backend
         .read(std::sync::Arc::new(busbar_contract::persistence::Read {

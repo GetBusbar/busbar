@@ -437,11 +437,6 @@ pub(crate) fn run_blocking(
     config: &Path,
     stamped: bool,
 ) -> Result<Option<Report>, String> {
-    // RED: the records step is not run yet (C2 green runs 4b and 4a here).
-    if true {
-        let _ = (store, keys, config, stamped);
-        return Ok(None);
-    }
     if store
         .scan(IMPORT_NS, &[], 1)
         .map_err(|fail| format!("STORE: {}", fail.0))?
@@ -576,11 +571,6 @@ pub(crate) fn write_with_attempt(
     check: busbar_migrate::Check<'_>,
     config: &Path,
 ) -> Result<busbar_migrate::Written, busbar_migrate::Refusal> {
-    // RED: no attempt is recorded yet (C2 green records 5S, 5d and 5C).
-    if true {
-        let _ = (store, config);
-        return busbar_migrate::write_settled(plan, settled, check);
-    }
     let attempt = Attempt {
         store,
         config,
