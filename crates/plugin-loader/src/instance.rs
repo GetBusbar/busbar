@@ -1150,9 +1150,9 @@ impl Registry {
 
     /// `boot_plan` fed, as §11.2 says, with core's own sections the store boot needs (admin token, signing key,
     /// at-rest keys): `core_modules` is the `module` each of those references names (a configured secret
-    /// instance's name, its identity or a sugar word). Each that resolves to a configured secret instance opens
-    /// in 2a after the store's own, dependencies first; one that names no configured instance is skipped here
-    /// (core's own resolution refuses it when it reads the reference). Core is not an instance, so the frozen
+    /// instance's exact name, already bound under the read grammar). Each opens
+    /// in 2a after the store's own, dependencies first; a missing instance refuses before the walk.
+    /// Core is not an instance, so the frozen
     /// `boot_plan` signature has no place for them: this is its fed form and `boot_plan` is the `&[]` case.
     pub fn boot_plan_with_core(
         &self,
