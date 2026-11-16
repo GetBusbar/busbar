@@ -291,7 +291,7 @@ impl Fixture {
         self.seen
             .gov
             .attach_unit_checkpoint_sink(
-                crate::root::durability::unit_checkpoint_sink(&self.book.durability, journal)
+                crate::root::durability::unit_checkpoint_sink(&self.book.durability, journal, None)
                     .unwrap(),
             )
             .await
