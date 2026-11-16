@@ -34,75 +34,6 @@ pub(crate) async fn info(State(handle): State<Arc<AppHandle>>) -> Response {
     respond(StatusCode::OK, service(&handle).info().await)
 }
 
-pub(crate) async fn list_pools(
-    State(handle): State<Arc<AppHandle>>,
-    Query(q): Query<std::collections::HashMap<String, String>>,
-) -> Response {
-    let w = ok_or_respond!(boxed cursor::window(&q, "pools", "", crate::v1::contract::LIST_LIMIT_DEFAULT));
-    match q.get("detail").map(String::as_str) {
-        Some("true") => {
-            return respond(
-                StatusCode::OK,
-                cursor::paged(
-                    service(&handle).list_pools_detailed().await,
-                    &w,
-                    "pools",
-                    |p| p.name.clone(),
-                ),
-            )
-        }
-
-        Some(other) if other != "false" => {
-            return err_json(&AdminError::Validation(
-                "invalid `detail`: expected true|false".into(),
-            ))
-        }
-        _ => {}
-    }
-    respond(
-        StatusCode::OK,
-        cursor::paged(service(&handle).list_pools().await, &w, "pools", |p| {
-            p.name.clone()
-        }),
-    )
-}
-
-pub(crate) async fn get_pool(
-    State(handle): State<Arc<AppHandle>>,
-    Path(name): Path<String>,
-) -> Response {
-    respond(StatusCode::OK, service(&handle).get_pool(&name).await)
-}
-
-pub(crate) async fn list_models(
-    State(handle): State<Arc<AppHandle>>,
-    Query(q): Query<std::collections::HashMap<String, String>>,
-) -> Response {
-    let w = ok_or_respond!(boxed cursor::window(&q, "models", "", crate::v1::contract::LIST_LIMIT_DEFAULT));
-    respond(
-        StatusCode::OK,
-        cursor::paged(service(&handle).list_models().await, &w, "models", |m| {
-            m.model.clone()
-        }),
-    )
-}
-
-pub(crate) async fn list_providers(
-    State(handle): State<Arc<AppHandle>>,
-    Query(q): Query<std::collections::HashMap<String, String>>,
-) -> Response {
-    let w = ok_or_respond!(boxed cursor::window(&q, "providers", "", crate::v1::contract::LIST_LIMIT_DEFAULT));
-    respond(
-        StatusCode::OK,
-        cursor::paged(
-            service(&handle).list_providers().await,
-            &w,
-            "providers",
-            |p| p.upstream.clone(),
-        ),
-    )
-}
-
 pub(crate) async fn list_hooks(
     State(handle): State<Arc<AppHandle>>,
     Query(q): Query<std::collections::HashMap<String, String>>,
@@ -3508,12 +3439,6 @@ pub(crate) const V1_GET_PATHS: &[(&str, &str)] = &[
         "/info",
         "Version, compiled-in plugin proof, uptime, topology",
     ),
-    (
-        "/pools",
-        "Pool topology (members + weights). ?detail=true inlines live member status (one call, no N+1)",
-    ),
-    ("/models", "Model lanes + upstream providers"),
-    ("/providers", "Distinct providers + lane counts"),
     (PATH_HOOKS, "Hook registry (definitions)"),
     (
         PATH_GROUPS,
@@ -3777,22 +3702,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 RESPONSES_KEY: {
                     "204": {"description": "Removed"},
-                }
-            }
-        }),
-    );
-    paths.insert(
-        ap("/pools/{name}"),
-        json!({
-            "get": {
-                "summary": "Live per-member status of one pool (breaker/concurrency/latency)",
-                "security": [{"adminToken": []}],
-                "parameters": [{
-                    "name": "name", "in": "path", "required": true,
-                    "schema": {"type": "string"}
-                }],
-                RESPONSES_KEY: {
-                    "200": {"description": "OK"},
                 }
             }
         }),
@@ -4349,43 +4258,11 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             ],
         ),
         (
-            "/pools",
-            &[
-                (
-                    "detail",
-                    "`true` inlines each member's live status (same row shape as /pools/{name})",
-                    false,
-                ),
-                ("limit", "Page size (default 200, max 1000)", false),
-                (
-                    "cursor",
-                    "Opaque continuation cursor from `next_cursor`",
-                    false,
-                ),
-            ],
-        ),
-        (
             "/groups",
             PAGE_PARAMS,
         ),
         (
-            "/models",
-            PAGE_PARAMS,
-        ),
-        (
-            "/providers",
-            PAGE_PARAMS,
-        ),
-        (
             "/hooks",
-            PAGE_PARAMS,
-        ),
-        (
-            "/identity-providers",
-            PAGE_PARAMS,
-        ),
-        (
-            "/export",
             PAGE_PARAMS,
         ),
     ];
@@ -4440,7 +4317,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         .iter()
         .map(|(p, m)| ((*p).to_string(), *m))
         .collect();
-    for section in busbar_kernel::config::named_map::NamedMapSection::sections() {
+    for section in super::named_map::routed_sections() {
         let root = section.path_root();
         if_match_guarded.push((format!("{root}/{{name}}"), "put"));
         if_match_guarded.push((format!("{root}/{{name}}"), "delete"));
@@ -4563,15 +4440,11 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
 
     use crate::v1::contract::{
         AdminAuthView, AuthView, ConfigValidateView, EffectiveConfigView, GroupView,
-        HookHealthView, HookView, InfoView, ModelView, NamedDefView, Page, PluginInstallView,
-        PluginReloadView, PluginView, PoolDetailView, ProviderView, UsageView,
+        HookHealthView, HookView, InfoView, NamedDefView, Page, PluginInstallView,
+        PluginReloadView, PluginView, UsageView,
     };
 
     typed!("/info", "get", "200", InfoView);
-    typed!("/pools", "get", "200", sview::PoolListView);
-    typed!("/pools/{name}", "get", "200", PoolDetailView);
-    typed!("/models", "get", "200", Page<ModelView>);
-    typed!("/providers", "get", "200", Page<ProviderView>);
 
     typed!(PATH_HOOKS, "get", "200", Page<HookView>);
     typed!(PATH_HOOKS, "post", "201", HookView);
@@ -4820,7 +4693,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         })
     );
 
-    for section in busbar_kernel::config::named_map::NamedMapSection::sections() {
+    for section in super::named_map::routed_sections() {
         let root = section.path_root();
         let item = format!("{root}/{{name}}");
         let settings = format!("{root}/{{name}}/settings");
@@ -4844,13 +4717,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             super::named_map::settings_request_schema()
         );
     }
-
-    typed!(
-        "/export/{name}",
-        "delete",
-        "200",
-        super::named_map::PendingRestartRemovalView
-    );
 
     let mut schemas = gen.definitions().clone();
     schemas.insert(

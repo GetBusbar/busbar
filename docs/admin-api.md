@@ -32,7 +32,7 @@ A role may instead (or as well) be granted admin verbs ONE BY ONE with `verbs:` 
 
 | Class | Budget | Covers |
 |---|---|---|
-| config | 10/min | `POST /config/apply`, `PUT /config/settings`, `POST /config/reload`, `POST /config/rollback`, `PUT /admin-auth`, `DELETE /overlay/{section}`, `POST /plugins/reload`, `POST /plugins/rollback`, `POST /restart`, and the named-definition-map writes `PUT /identity-providers/{name}`, `PATCH /identity-providers/{name}/settings`, `DELETE /identity-providers/{name}`, `PUT /export/{name}`, `PATCH /export/{name}/settings`, `DELETE /export/{name}`, `PUT /tools/{name}`, `PATCH /tools/{name}/settings`, `DELETE /tools/{name}`, `PUT /agents/{name}`, `PATCH /agents/{name}/settings`, `DELETE /agents/{name}`, plus the MCP trust verb `POST /tools/{name}/connect` and the A2A trust verbs `POST /agents/{name}/connect` and `POST /agents/{name}/approve` (the blast-radius set: each rebuilds and swaps the whole App. The trust verb does not rebuild it, but it reaches an operator-named endpoint on the estate and replaces the recorded observation, which can demote a server, so it takes the same 10/min budget rather than the 6x-looser CRUD one; the A2A pair is the same shape: the preview reaches the registered agent's card endpoint, and the approval moves a registration into service) |
+| config | 10/min | `POST /config/apply`, `PUT /config/settings`, `POST /config/reload`, `POST /config/rollback`, `PUT /admin-auth`, `DELETE /overlay/{section}`, `POST /plugins/reload`, `POST /plugins/rollback`, `POST /restart`, and the named-definition-map writes `PUT /tools/{name}`, `PATCH /tools/{name}/settings`, `DELETE /tools/{name}`, `PUT /agents/{name}`, `PATCH /agents/{name}/settings`, `DELETE /agents/{name}`, plus the MCP trust verb `POST /tools/{name}/connect` and the A2A trust verbs `POST /agents/{name}/connect` and `POST /agents/{name}/approve` (the blast-radius set: each rebuilds and swaps the whole App. The trust verb does not rebuild it, but it reaches an operator-named endpoint on the estate and replaces the recorded observation, which can demote a server, so it takes the same 10/min budget rather than the 6x-looser CRUD one; the A2A pair is the same shape: the preview reaches the registered agent's card endpoint, and the approval moves a registration into service) |
 | CRUD | 60/min | every other mutation: hooks, keys, groups, cache flush, and the 1.6.0 mutating verbs (`adjust`, `ledger/amend-rate-history`, `ledger/recovery/list`, `ledger/recovery/resolve`, `plane-record-write`, `commit-upgrade`, `chain-break`, `store-restore`, `trust/approve`, `trust/revoke`), **and `/config/validate`** (a dry-run never contends with the config budget) |
 | plugin-inspect | 30/min | `POST /plugins/inspect` ONLY. It gets its own dedicated bucket, not the shared CRUD budget (decompressing + parsing an attacker-controlled archive is a heavier, mutation-like cost profile per call than an ordinary CRUD mutation, and a fleet-wide upgrade preview would otherwise burn the same 60/min an operator needs for real mutating work in that window) and not unmetered either, despite being `read-only` scope |
 
@@ -117,7 +117,7 @@ Every list endpoint speaks one envelope: `{ "items": [...], "next_cursor": "..."
 | `GET /config/versions` | 100 | 1000 |
 | `GET /groups` | 200 | 1000 |
 
-The topology reads (`/pools`, `/models`, `/providers`, `/hooks`, `/plugins`) return the same envelope in a single page (`next_cursor: null`). They are bounded by static config. `/groups` is cursor-paginated like `/keys`/`/audit`/`/config/versions` instead: `plan_mint_group` auto-provisions a leaf group per self-service key mint, so the group tree grows at runtime and is not safe to return unbounded.
+The topology reads (`/hooks`, `/plugins`) return the same envelope in a single page (`next_cursor: null`). They are bounded by static config. `/groups` is cursor-paginated like `/keys`/`/audit`/`/config/versions` instead: `plan_mint_group` auto-provisions a leaf group per self-service key mint, so the group tree grows at runtime and is not safe to return unbounded.
 
 Numeric limits on legacy keys/groups/audit/versions lists are clamped to 1–1000. Groups/audit/versions use their default for malformed values; keys refuses malformed values. These existing parser differences remain part of v1.
 
@@ -272,7 +272,10 @@ The 1.6.0 kernel verbs (each is served; every mutation is audited and spends the
 | --- | --- | --- | --- |
 | `verify` | `GET /api/v1/admin/verify` | `read-only` | Verify this node's ledger: every sealed checkpoint re-hashes to its body, no node sequence goes backwards, the book is measured against the last checkpoint, and postings reconcile with the previous release's rows. A failed verification is still `200`: `ok` is the answer and `findings` says why |
 | `get_telemetry` | `GET /api/v1/admin/telemetry` | `read-only` | Bounded snapshot of collected request-phase duration counts, sums and exclusive bins; no outbound connection |
-| `plane_facts` | `GET /api/v1/admin/plane-facts?plane=` | `read-only` | What a plane this node serves declares about itself (config sections, grant kinds, billable classes, record kinds, operation classes) |
+| `get_kinds` | `GET /api/v1/admin/kinds[?category=]` | `read-only` | What exists: every kind (the seven engine kinds, one per registered plane, and `core`), with its instance count. The ETag is `/info.kinds_revision` |
+| `get_kind_instances` | `GET /api/v1/admin/kinds/{kind}/instances` | `read-only` | What is running: a kind's instances, each with `plugin`, `state` and `etag` |
+| `get_kind_instance` | `GET /api/v1/admin/kinds/{kind}/instances/{id}` | `read-only` | Describe one instance: `config` (under the secret rule), `config_schema`, `state`, `state_schema`, `runtime` (for a plane, `runtime.plane.facts` is what the plane declares about itself), `health`, `links`, `views`, `actions` |
+| `get_kind_instance_view` | `GET /api/v1/admin/kinds/{kind}/instances/{id}/views/{view}` | `read-only` | One view's rows, positional in `fields` order (for example `core/routing` view `pools`: live per-member pool status) |
 | `plane_record_write` | `POST /api/v1/admin/plane-record-write` | `full` | Upsert one record, by `(kind, id)`, of a kind the named plane declares. `body` must be present and must not be JSON null; omission or null returns `400 invalid_request` (`body is required`). Honors `Idempotency-Key` |
 | `adjust` | `POST /api/v1/admin/adjust` | `full` | Correct a recorded unit's counts (below) |
 | `recovery_list` | `POST /api/v1/admin/ledger/recovery/list` | `full` | Inspect retained ledger operations whose landing outcome needs an operator verdict (below); observation only, spends the ordinary CRUD rate budget |
@@ -381,10 +384,7 @@ operation exists elsewhere.
 | Endpoint | Returns |
 |---|---|
 | `GET /info` | `version`, `build` (the **compiled-in plugin proof**: `auth_modules`, `hook_plugins`, the always-true `weighted_floor`), `uptime_seconds`, `started_at` (epoch of process start, the boot-epoch marker: `config_version` resets on restart, so a changed `started_at` reads as "new epoch", never "reverted"), `topology` (pool/model/provider counts), `config_persistence` (whether API changes survive restart), `config_version` (monotonic, +1 per apply, drift detection), `overlay_ignored` (present and `true` when the process was booted with `--ignore-overlay`; a later reload/apply re-merges the overlay) |
-| `GET /pools` | Every pool with its member models and SWRR weights. **`?detail=true`** inlines each member's live status (the same row shape as `/pools/{name}`): the whole topology-with-health in one call |
-| `GET /pools/{name}` | One pool's **live** per-member status: `usable` + `cooldown_remaining_seconds` (breaker), `available_concurrency`, `inflight`, `latency_ms` (EWMA), `ok`/`err` tallies, `dead`, and **`trip_count`** + `last_trip_at`, a monotonic Closed→Open trip counter, so alerting diffs the count instead of trying to catch a breaker episode live |
-| `GET /models` | Every model lane and its upstream provider |
-| `GET /providers` | Distinct providers and how many lanes route through each |
+| `GET /kinds/core/instances/routing` | Routing configuration (`config.models`, `config.providers`, `config.pools`); its view `pools` serves each pool member's **live** status: `usable` + `cooldown_remaining_seconds` (breaker), `available_concurrency`, `inflight`, `latency_ms` (EWMA), `ok`/`err` tallies, `dead`, and `trip_count` + `last_trip_at`. `/pools`, `/models` and `/providers` are removed in 1.6.0 (see the migration guide) |
 
 `GET /info` doubles as the **compliance-by-compilation proof**: `build.auth_modules`/`build.hook_plugins` reflect the actual binary. A build compiled with `--no-default-features` reports empty lists: a provable, not merely configured, smaller surface.
 
@@ -675,11 +675,13 @@ curl -s -H "x-admin-token: $TOK" http://localhost:8081/api/v1/admin/hooks/compre
 curl -s -X DELETE -H "x-admin-token: $TOK" http://localhost:8081/api/v1/admin/hooks/compress
 ```
 
-### Named-definition maps: `identity-providers`, `export`, `tools`, `agents`
+### Named-definition maps: `tools`, `agents`
 
-Each top-level named-definition map (`name -> {module, settings, ...}`) has the same five
-operations under its own root. `tools` and `agents` are plane operations (`x-busbar-plane`):
-mounted only on a node whose config carries that section.
+Each plane-owned named-definition map (`name -> {url, ...}`) has the same five operations under its
+own root. They are plane operations (`x-busbar-plane`): mounted only on a node whose config carries
+that section. The 1.5.5 `/identity-providers` and `/export` maps are removed in 1.6.0: read their
+instances at `/kinds/auth/instances` and `/kinds/export/instances`, and write their sections
+through `PUT /config/settings` and `POST /config/apply`.
 
 | Endpoint | Does |
 |---|---|
@@ -753,7 +755,7 @@ curl -s -X DELETE -H "x-admin-token: $TOK" \
 curl -s -H "x-admin-token: $TOK" http://localhost:8081/api/v1/admin/info
 
 # The whole topology with live health, in one call
-curl -s -H "x-admin-token: $TOK" 'http://localhost:8081/api/v1/admin/pools?detail=true'
+curl -s -H "x-admin-token: $TOK" http://localhost:8081/api/v1/admin/kinds/core/instances/routing/views/pools
 
 # Preview a config change without applying it
 curl -s -X POST -H "x-admin-token: $TOK" -H 'content-type: application/json' \

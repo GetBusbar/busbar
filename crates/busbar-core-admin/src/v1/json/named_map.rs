@@ -25,9 +25,12 @@ use busbar_kernel::state::{App, AppHandle};
 
 use super::settings_edit::SettingsEdit;
 
+/// The named-map CRUD paths: plane-owned sections only. `/identity-providers` and `/export` are
+/// removed in 1.6.0 (ADMIN-API-1.6 §0.2, CON-6): their instances read at
+/// `/kinds/{auth,export}/instances[/{name}]` and are written through the config document.
 pub(crate) fn routes() -> Router<Arc<AppHandle>> {
     let mut router = Router::new();
-    for section in NamedMapSection::sections() {
+    for section in routed_sections() {
         router = router.merge(
             Router::new()
                 .route(
@@ -46,6 +49,14 @@ pub(crate) fn routes() -> Router<Arc<AppHandle>> {
         );
     }
     router
+}
+
+/// The sections the named-map CRUD serves: the plane-owned ones.
+pub(crate) fn routed_sections() -> Vec<NamedMapSection> {
+    NamedMapSection::sections()
+        .into_iter()
+        .filter(|s| matches!(s, NamedMapSection::Plane(_)))
+        .collect()
 }
 
 fn item_path(section: NamedMapSection) -> String {
@@ -1079,7 +1090,7 @@ pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
 
     const OK: &str = "200";
     let mut out = Vec::new();
-    for section in NamedMapSection::sections() {
+    for section in routed_sections() {
         let key = section.key();
         let singular = section.singular();
         let mut removal = operation(

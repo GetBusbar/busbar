@@ -251,6 +251,10 @@ pub struct InfoView {
     /// Monotonic config version: `0` at boot, +1 per API config apply. Drift-detection: re-read and
     /// compare to tell whether the running config changed. Process-local (resets on restart).
     pub config_version: u64,
+    /// The `/kinds` ETag (ADMIN-API-1.6 §5.1): a digest over every (category, kind, instance,
+    /// image, instance config digest), kept once per generation. It moves whenever a kind or an
+    /// instance is added, removed or reconfigured.
+    pub kinds_revision: String,
     /// Present and `true` when this process was booted with `--ignore-overlay`; a later
     /// reload/apply re-merges the overlay.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -332,7 +336,7 @@ pub struct PoolMemberView {
     pub weight: u32,
 }
 
-/// The LIVE per-pool detail read (`GET /api/v1/admin/pools/{name}`), the reliability/capacity dashboard
+/// The LIVE per-pool detail (the `core/routing` view `pools`), the reliability/capacity dashboard
 /// data: each member's breaker state, concurrency headroom, in-flight
 /// count, latency EWMA, and success/error tallies, read from the SAME store signals the routing seam
 /// ranks on. No LLM content, no credentials.

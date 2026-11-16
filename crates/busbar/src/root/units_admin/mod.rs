@@ -691,10 +691,6 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 )
                 .await;
             }
-            KernelVerb::PlaneFacts => {
-                return bound::plane_facts_effect(&self.request.path, &*self.planes);
-            }
-
             KernelVerb::GetTrust => {
                 return bound::trust_list_effect(&self.trust);
             }
