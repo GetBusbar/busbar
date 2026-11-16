@@ -5124,7 +5124,6 @@ mod real_tcp_tests;
 
 #[cfg(test)]
 #[path = "tests/callback_waker.rs"]
-#[allow(unsafe_code)]
 pub(crate) mod callback_waker;
 
 #[cfg(test)]
