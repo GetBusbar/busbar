@@ -136,8 +136,7 @@ pub fn security_digest(view: &SecurityView<'_>) -> SecurityDigest {
         (
             "plugins.trust",
             json!({
-                "allow_unsigned": plugins.trust.allow_unsigned,
-                "allow_third_party": plugins.trust.allow_third_party,
+                "allow_untrusted": plugins.trust.allow_untrusted,
                 "publishers": plugins.publisher_keys(),
             }),
         ),

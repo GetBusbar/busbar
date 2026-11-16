@@ -280,7 +280,11 @@ async fn app() -> (
         .publishers
         .push(busbar_kernel::config::PluginPublisher {
             name: "third-party".into(),
-            public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
+            plugins: vec![module.clone()],
+            keys: vec![busbar_kernel::config::PluginPublisherKey {
+                public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
+                revoked: false,
+            }],
         });
     let mut observed = None;
     let fresh = crate::root::test_plugins::provision_fresh_application_store_with_backend(

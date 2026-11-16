@@ -991,6 +991,9 @@ async fn run(
             .as_ref()
             .map(|p| Duration::from_secs(p.retention_seconds)),
     );
+    // ADMIN-API-1.6 §3.5: what unit records keep of the end user and request headers, for the
+    // life of the process.
+    root::records_capture::configure(&deploy.records);
 
     let plugins_cfg = deploy.plugins.clone();
     root::measurements::maintenance(root::boot::admit_recovered_plugins(&plugins_cfg))
@@ -1941,7 +1944,7 @@ async fn refresh_node_lease(
 
 #[cfg(unix)]
 const ROOT_BIND_LIMITS: AcceptLimits = AcceptLimits {
-    max_conns: usize::MAX,
+    max_conns: busbar_core_connector::listen::DEFAULT_MAX_CONNS,
     handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
 };
 
@@ -2355,3 +2358,13 @@ mod dist_root_install;
 #[cfg(all(test, distribution_root))]
 #[path = "tests/distribution.rs"]
 mod distribution;
+
+#[cfg(all(test, unix))]
+#[test]
+fn root_listeners_keep_the_connector_connection_bound() {
+    assert_eq!(
+        ROOT_BIND_LIMITS.max_conns,
+        busbar_core_connector::listen::DEFAULT_MAX_CONNS,
+        "root data and admin binds must not disable connection admission"
+    );
+}

@@ -53,11 +53,16 @@ fn wide_open() -> TrustPolicy {
         binary_version: "1.6.0".into(),
         publishers: std::iter::once((
             "acme-allowlisted".to_string(),
-            allowlisted().verifying_key(),
+            crate::sign::PublisherTrust {
+                plugins: [NAME.to_string()].into_iter().collect(),
+                keys: vec![crate::sign::PublisherKey {
+                    key: allowlisted().verifying_key(),
+                    revoked: false,
+                }],
+            },
         ))
         .collect(),
-        allow_unsigned: true,
-        allow_third_party: true,
+        allow_untrusted: true,
         ..TrustPolicy::default()
     }
 }
@@ -110,7 +115,11 @@ fn a_software_backend_keeps_the_trust_policy_s_answer() {
     for (case, m) in not_busbar_s_release(&lib) {
         let registry = scan(case, &m, &lib, &wide_open());
         assert!(
-            registry.resolve(NAME).is_some() && registry.skipped().is_empty(),
+            if case == "claims-busbar-without-its-key" {
+                registry.resolve(NAME).is_none() && !registry.skipped().is_empty()
+            } else {
+                registry.resolve(NAME).is_some() && registry.skipped().is_empty()
+            },
             "{case}: a backend that admits external plugins leaves plugins.trust the whole \
              answer: {:?}",
             registry
@@ -133,7 +142,7 @@ fn a_fips_backend_refuses_every_drop_in_that_is_not_busbar_s_own_release() {
         assert!(
             registry.loadable().is_empty() && registry.resolve(NAME).is_none(),
             "{case}: a FIPS backend loads no plugin but busbar's own release, whatever \
-             allow_unsigned, allow_third_party and publishers say"
+             allow_untrusted, allow_untrusted and publishers say"
         );
         let skipped = registry.skipped();
         assert_eq!(skipped.len(), 1, "{case}: the refusal is a skip");

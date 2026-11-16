@@ -725,6 +725,9 @@ pub(crate) struct UnitState {
     screened: bool,
     /// The session open's request hooks passed, either at its opener or its route leg.
     open_hooks_ran: bool,
+    /// The node was told the unit's end user, or that its first projection stated none
+    /// (`records.user`, ADMIN-API-1.6 §3.5).
+    end_user_noted: bool,
     /// The body a request-stage rewrite left, kept for every attempt; `None` = the caller's own.
     body: Option<bytes::Bytes>,
     /// The unit's hooks and the shape of its effective request (no prompt text), once the request
@@ -1405,6 +1408,14 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
     fn decoded_op(&self, ctx: &UnitCtx) -> Result<OpClassId, Refusal> {
         self.driver.sweep();
         self.lock().unit = ctx.key.get();
+        // `records.labels` (ADMIN-API-1.6 §3.5): the node copies the allow-listed headers at
+        // Decode; one that keeps none returns at once.
+        if let Some(journal) = &self.driver.hook_journal {
+            journal.decoded_fields(
+                busbar_contract::UnitKey::new(ctx.key.get()),
+                &self.arrival.fields,
+            );
+        }
         let decoded = self.arrive(ctx.key.get());
         if !self.driver.authenticated_route
             && decoded

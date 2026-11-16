@@ -2295,11 +2295,10 @@ pub(crate) async fn reload_config(
             installed.record_version(&actor, "config.reload (from disk)");
             let mut body = json!({ "reloaded": true, "config_version": installed.config_version });
 
-            if let Some(note) =
-                super::named_map::restart_note(&[], &installed.planes_awaiting_restart)
-            {
-                body["reload_to_apply"] = json!(installed.planes_awaiting_restart);
-                body["note"] = json!(note);
+            let pending = super::config_document::configuration_and_restart(&installed).1;
+            if !pending.is_empty() {
+                body["reload_to_apply"] = json!(pending);
+                body["note"] = json!("configuration installed; reload_to_apply entries require a process restart before they take effect");
             }
             with_config_etag(ok_json(StatusCode::OK, &body), installed.config_version)
         }
@@ -2605,14 +2604,10 @@ pub(crate) async fn apply_config(
                          by updating config.yaml",
             });
 
-            if let Some(pending) =
-                super::named_map::restart_note(&[], &installed.planes_awaiting_restart)
-            {
-                body["reload_to_apply"] = json!(installed.planes_awaiting_restart);
-                body["note"] = json!(format!(
-                    "live until the next reload/restart returns to disk truth; persist by \
-                     updating config.yaml; {pending}"
-                ));
+            let pending = super::config_document::configuration_and_restart(&installed).1;
+            if !pending.is_empty() {
+                body["reload_to_apply"] = json!(pending);
+                body["note"] = json!("configuration installed; reload_to_apply entries require a process restart before they take effect. Persist by updating config.yaml before restarting; reload/restart returns to disk truth");
             }
             with_config_etag(ok_json(StatusCode::OK, &body), installed.config_version)
         }
@@ -3352,6 +3347,7 @@ pub(crate) async fn plugin_schema(
         );
         if let Some(row) = loadable.as_ref() {
             selection["configuration"] = loaded_plugin_configuration(&current, row);
+            selection["trust"] = json!(loaded_image_trust(&current, row));
         }
         return ok_json(StatusCode::OK, &selection);
     }
@@ -3361,7 +3357,7 @@ pub(crate) async fn plugin_schema(
         }
         return err_json(&AdminError::not_found(format!("plugin `{name}`")));
     };
-    let trust = verdict_trust(&loadable.trust);
+    let trust = loaded_image_trust(&current, &loadable);
     let (schema, schema_error) = manifest_schema(loadable.settings_schema.as_deref());
     ok_json(
         StatusCode::OK,
@@ -3433,10 +3429,10 @@ fn hook_schema_selection(
     restart_required_default: Option<bool>,
 ) -> serde_json::Value {
     if described.is_some() {
-        return json!({ "name": name, "schema": described, "schema_error": null, "trust": trust, "source": "describe", "kind": kind, "restart_required_default": restart_required_default });
+        return json!({ "name": name, "schema": described, "schema_error": null, "trust": crate::v1::contract::PluginTrustView::from_verification(false, if trust == "trusted" {"trusted"} else if trust == "rejected" {"rejected"} else {"unverified"}, &Default::default()), "source": "describe", "kind": kind, "restart_required_default": restart_required_default });
     }
     let (schema, schema_error) = manifest_schema(settings_schema);
-    json!({ "name": name, "schema": schema, "schema_error": schema_error, "trust": trust, "source": fallback_source, "kind": kind, "restart_required_default": restart_required_default })
+    json!({ "name": name, "schema": schema, "schema_error": schema_error, "trust": crate::v1::contract::PluginTrustView::from_verification(false, if trust == "trusted" {"trusted"} else if trust == "rejected" {"rejected"} else {"unverified"}, &Default::default()), "source": fallback_source, "kind": kind, "restart_required_default": restart_required_default })
 }
 
 #[cfg(test)]
@@ -5402,4 +5398,18 @@ mod archive_precondition_contract_tests {
                 .any(|p| p == field));
         }
     }
+}
+
+fn loaded_image_trust(
+    app: &busbar_kernel::state::App,
+    row: &busbar_contract::plugin_rows::Row,
+) -> crate::v1::contract::PluginTrustView {
+    crate::v1::contract::PluginTrustView::from_verification(
+        app.hook_env.registry.signature_present(&row.name),
+        verdict_trust(&row.trust),
+        &app.hook_env
+            .registry
+            .verification(&row.name)
+            .unwrap_or_default(),
+    )
 }

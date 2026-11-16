@@ -537,7 +537,7 @@ pub struct InstanceFacts {
     pub signing: Option<Signing>,
     /// Its trust entries, one per counterparty, as `trust::section` parsed them.
     pub trust: Vec<(String, TrustEntry)>,
-    /// The scope kinds its tail declares: `entitlement.check` answers only for these.
+    /// The scope kinds its tail declares: a scope check answers only for these.
     pub scope_kinds: Vec<String>,
     /// Its chained record kinds, as its tail declares them (`PlaneTail::record_chains`, each `kind`
     /// an index into [`InstanceFacts::record_kinds`]): a record write of one is APPENDED to its
@@ -1868,7 +1868,7 @@ impl KernelServices {
                         .get(caller.namespace().as_ref())
                         .is_some_and(|grant| grant.native_accepts(caller)));
         }
-        if target == busbar_contract::abi::host::service::ENTITLEMENT_STANDING {
+        if target == "standing:" {
             return self.stands(unit);
         }
         let Some((kind, name)) = target.split_once(':') else {
@@ -3165,14 +3165,6 @@ impl HostServices for KernelServices {
             }
         }));
         Ran::Later
-    }
-
-    fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored {
-        Stored::ready(if self.entitled(caller, unit, target) {
-            svc::ENTITLED
-        } else {
-            svc::NOT_ENTITLED
-        })
     }
 
     fn records_secret(&self, kind: &str, id: &str, _later: Later) -> Ran {

@@ -4,7 +4,7 @@
 //! The envelope reader, at the unit. The socket-level batteries of each protocol that reads an
 
 use super::*;
-use crate::json::{self, JsonValueTrait as _};
+use crate::json::{self, JsonContainerTrait as _, JsonValueTrait as _};
 
 #[test]
 fn exponent_shifts_preserve_sign_carry_borrow_and_unbounded_digits() {
