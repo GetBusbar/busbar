@@ -189,6 +189,7 @@ pub(crate) fn decode_described(
             "every REQUIRED method of the kind",
         ));
     }
+    crate::upstream_paths::validate(kind, &items)?;
     Ok(Described {
         kind,
         methods,

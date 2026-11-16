@@ -1049,6 +1049,17 @@ pub struct Described {
     pub error_codes_refused: Option<ErrorCodesRefused>,
 }
 
+impl Described {
+    /// Exact describe texts, in image order. Admission validates D_UPSTREAM_PATH before exposing it.
+    pub fn paths(&self, wanted: u16) -> impl Iterator<Item = &str> {
+        self.items.iter().filter_map(move |(tag, body)| {
+            (*tag == wanted)
+                .then(|| core::str::from_utf8(body).ok())
+                .flatten()
+        })
+    }
+}
+
 /// Round 34: the one schema for the WARN, the audit `data` and `image.admission.error_codes_refused`.
 /// `field` is always "errors"; `have` is template-built (never a plugin byte); `want` is the constant of `add`.
 #[derive(Clone, Debug, PartialEq, Eq)]

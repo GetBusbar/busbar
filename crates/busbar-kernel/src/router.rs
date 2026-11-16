@@ -1121,6 +1121,18 @@ pub fn build_admin_router_on_with_dispatch_layer(
             busbar_contract::abi::mechanism::route::RouteAuth::None,
             endpoints::healthz,
         )
+        .route(
+            crate::auth::LIVEZ_PATH,
+            busbar_contract::abi::mechanism::route::RouteMethod::Get,
+            busbar_contract::abi::mechanism::route::RouteAuth::None,
+            endpoints::livez,
+        )
+        .route(
+            crate::auth::READYZ_PATH,
+            busbar_contract::abi::mechanism::route::RouteMethod::Get,
+            busbar_contract::abi::mechanism::route::RouteAuth::None,
+            endpoints::readyz,
+        )
         .into_parts();
     let admin = crate::admin::seam::mount_admin(admin);
     let admin = crate::plugin_routes::mount_plugin_routes(admin, &plugin_routes, true);
