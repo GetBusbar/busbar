@@ -57,26 +57,13 @@ impl Tickets for Open {
     }
 }
 
-struct UnavailablePush;
-
-impl PushQueue for UnavailablePush {
-    fn enqueue<'a>(
-        &'a self,
-        _who: &'a LoaderCaller<'_>,
-        _ttl_s: u64,
-        _recs: &'a [u8],
-    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
-        Box::pin(async { Err(RecordsDenied::Unavailable) })
-    }
-}
-
-fn shared() -> Shared {
-    Shared::new(Records::default(), Arc::new(UnavailablePush))
+fn observations() -> ObsCustody {
+    ObsCustody::new(Arc::new(busbar_kernel::store::now_ms))
 }
 
 #[test]
 fn every_seat_is_given_the_services_the_boot_can_build_and_no_more() {
-    let services = plane_services(&shared(), Arc::new(Open), None);
+    let services = plane_services(&observations(), Arc::new(Open), None);
     assert!(
         services.judge.is_some(),
         "JUDGE answers, fail closed without a judge"
@@ -99,7 +86,7 @@ fn every_seat_is_given_the_services_the_boot_can_build_and_no_more() {
 
 #[tokio::test]
 async fn a_process_with_no_destination_judge_answers_internal_for_every_destination() {
-    let judge = plane_services(&shared(), Arc::new(ClosedTickets), None)
+    let judge = plane_services(&observations(), Arc::new(ClosedTickets), None)
         .judge
         .unwrap();
     let verdict = judge
@@ -110,7 +97,7 @@ async fn a_process_with_no_destination_judge_answers_internal_for_every_destinat
 
 #[test]
 fn tickets_are_shut_without_a_signing_key_and_open_with_one() {
-    let records = Records::default();
+    let records = BootstrapRecords;
     let shut = ticket_store(&records, None);
     assert!(
         !shut.is_ticket("bbt1.abc"),
@@ -122,7 +109,7 @@ fn tickets_are_shut_without_a_signing_key_and_open_with_one() {
         !keyed.is_ticket("Bearer-token"),
         "a credential that is not a ticket is never one"
     );
-    let services = plane_services(&shared(), Arc::new(Open), None);
+    let services = plane_services(&observations(), Arc::new(Open), None);
     let tickets = services.tickets.unwrap();
     assert!(tickets.is_ticket("bbt1.abc"));
     assert!(!tickets.is_ticket("Bearer-token"));

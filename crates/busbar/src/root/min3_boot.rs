@@ -3,15 +3,9 @@
 
 //! The boot's MIN-3 registry (ROOT-BOOT; ABI-MIN3-INTERFACE §11.2, §12.10 item 4, §13).
 //!
-//! The root builds one `Registry<HostNeeds<..>>` over the process's custody (`BootSecrets`), the guard, the config
-//! binder and the records and directory handles, admits the MIN-3 images the plugins directory holds, installs the
-//! kernel's sides (store seal, auth core, store opener, auth opener) and walks the boot plan (2a, 2b,
-//! `set_deployment`, re-check, 2c) before any listener serves. A plugin image that is not MIN-3 is not admitted
-//! here: the old path still serves it (the WBS's switch-overs, then the W3 deletions).
-//!
-//! Records and directory are built before the store (the store opens through the registry), so the Need handlers
-//! own late handles the walk fills at the deployment point, after the store opened and before the first 2c
-//! instance.
+//! Bootstrap Secret and Store opens use permanently restricted record and directory capabilities.
+//! After the deployment identity is established and rechecked, serving opens receive complete shared
+//! record and directory owners and the immutable prefix of successfully opened secret instances.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
@@ -26,7 +20,7 @@ use busbar_core_connector::need::{HostNeeds, NeedLimits};
 use busbar_kernel::channels::signals::SignalRegistry;
 use busbar_kernel::channels::SessionSignals;
 use busbar_kernel::config::{PluginsCfg, RootCfg};
-use busbar_kernel::directory::{KernelDirectory, LateDirectory, LogEvents};
+use busbar_kernel::directory::{KernelDirectory, LogEvents};
 use busbar_kernel::host_services::{DestJudge, KernelServices};
 use busbar_kernel::ingress::replay::StoreReplay;
 use busbar_kernel::ingress::signed_ingress::{RouteSecrets, StandardWebhooks};
@@ -45,7 +39,7 @@ use busbar_kernel::plane_grants::{
     SealedTickets, TicketAdmitted, TicketDenied, TicketMint, Tickets,
 };
 use busbar_kernel::plugin_config::{Binder, ConfigBinder};
-use busbar_kernel::plugin_records::{LateRecords, RecordsDenied, StoreRecords};
+use busbar_kernel::plugin_records::{PluginRecords, RecordsDenied, StoreRecords};
 use busbar_kernel::push::{PushQueue, StorePushQueue};
 use busbar_kernel::retry::Policy as RetryPolicyImpl;
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller as LoaderCaller};
@@ -60,10 +54,10 @@ use super::plane_seats::{compose as compose_seat, ConnTable, SeatShared, SpawnCu
 use super::port_mount::Ingress;
 use super::secret_custody::{BootCustody, BootSecrets};
 
-/// The records every Need handler, the replay guard and the plane driver share: filled once the store is open.
-pub(crate) type Records = LateRecords<Arc<StoreRecords>>;
-/// The directory the DIRECTORY Need reads: filled once the store is open.
-pub(crate) type Directory = LateDirectory<KernelDirectory>;
+/// The complete records owner shared by serving Needs, replay and plane drivers.
+pub(crate) type Records = Arc<StoreRecords>;
+/// The complete directory owner shared by serving DIRECTORY Needs.
+pub(crate) type Directory = Arc<KernelDirectory>;
 /// The Need handlers the registry runs every plugin under.
 pub(crate) type Needs = HostNeeds<BootCustody, Records, Directory>;
 type BootstrapNeeds = HostNeeds<BootCustody, BootstrapRecords, BootstrapDirectory>;
@@ -126,7 +120,10 @@ impl Tickets for ClosedTickets {
 /// The ticket store every plane seat is built with (IF §12.11): its host key is derived from core's
 /// `auth.signing_key`, which the walk resolves (the secret instances are open before any plane, step 2a) before
 /// the seat is built. Without a signing key, or when the key cannot be derived, the store is shut.
-fn ticket_store(records: &Records, signing: Option<&SecureVec>) -> Arc<dyn Tickets> {
+fn ticket_store<R: PluginRecords + Clone>(
+    records: &R,
+    signing: Option<&SecureVec>,
+) -> Arc<dyn Tickets> {
     let Some(signing) = signing else {
         tracing::info!("no auth.signing_key: plane tickets are not admitted");
         return Arc::new(ClosedTickets);
@@ -158,14 +155,14 @@ fn ticket_store(records: &Records, signing: Option<&SecureVec>) -> Arc<dyn Ticke
 /// SIGN, CONNECT, SIGHT/TRUST and RENDEZVOUS have no production owner at boot yet (no grant resolver, host signing
 /// key, caller-connection store, trust book or media carrier is built here), so each answers its fail-closed value.
 fn plane_services(
-    shared: &Shared,
+    observations: &ObsCustody,
     tickets: Arc<dyn Tickets>,
     judge: Option<Arc<dyn DestJudge>>,
 ) -> Services {
     Services {
         judge: Some(judge.map_or_else(PlaneJudge::unavailable, PlaneJudge::new)),
         tickets: Some(tickets),
-        observations: Some(Arc::new(shared.observations.clone())),
+        observations: Some(Arc::new(observations.clone())),
         ..Services::default()
     }
 }
@@ -587,8 +584,6 @@ struct Built {
     registry: Arc<MinRegistry>,
     sugars: Sugars,
     secrets: Arc<BootSecrets>,
-    records: Records,
-    directory: Directory,
     binder: Arc<dyn ConfigBinder>,
     guard: Guard,
 }
@@ -605,12 +600,17 @@ impl Built {
         ))
     }
 
-    fn needs_for(&self, prefix: Arc<BootSecrets>) -> Arc<Needs> {
+    fn needs_for(
+        &self,
+        prefix: Arc<BootSecrets>,
+        records: Records,
+        directory: Directory,
+    ) -> Arc<Needs> {
         Arc::new(HostNeeds::production(
             self.guard.clone(),
             BootCustody(prefix),
-            self.records.clone(),
-            self.directory.clone(),
+            records,
+            directory,
             Arc::clone(&self.binder),
             NeedLimits::default(),
         ))
@@ -628,8 +628,6 @@ fn build(
         Arc::new(Binder::new(Arc::new(sugars.clone()), ref_schemas(cfg)?));
     // The process's one secret kind, built over the binder and kept for the life of the process.
     let secrets = BootSecrets::empty(Arc::clone(&binder), Arc::clone(process.slots()));
-    let records = Records::default();
-    let directory = Directory::default();
     let registry = Registry::new(images, Arc::clone(&binder), Arc::clone(process.ids()));
 
     let registry = Arc::new(registry);
@@ -637,8 +635,6 @@ fn build(
         registry,
         sugars,
         secrets,
-        records,
-        directory,
         binder,
         guard,
     })
@@ -746,6 +742,7 @@ struct Steps<'r> {
     services: Option<Arc<KernelServices>>,
     seats: Mutex<Vec<PortSeat>>,
     shared: Arc<Shared>,
+    directory: Directory,
     /// `auth.signing_key`: the reference the ticket host key is derived from (IF §12.11).
     signing_key: Option<SecretRef>,
     /// The process's secret kind: the open secret instances and the custody that resolves through them.
@@ -765,7 +762,9 @@ impl Steps<'_> {
     async fn open_port(&self, index: u32) -> Result<OpenedPort, OpenError> {
         let prefix = self.prefix();
         let refs = prefix.refs();
-        let needs = self.built.needs_for(prefix);
+        let needs =
+            self.built
+                .needs_for(prefix, self.shared.records.clone(), self.directory.clone());
         RegistryBoot {
             registry: self.registry,
             needs: &needs,
@@ -796,7 +795,11 @@ impl Steps<'_> {
             slot: prepared.slot(),
         };
         let prefix = self.prefix();
-        let needs = self.built.needs_for(Arc::clone(&prefix));
+        let needs = self.built.needs_for(
+            Arc::clone(&prefix),
+            self.shared.records.clone(),
+            self.directory.clone(),
+        );
         let port = self
             .registry
             .open_plane_reserved(prepared, &needs, &prefix.refs())
@@ -875,7 +878,7 @@ impl Steps<'_> {
             rt.clone(),
         )
         .with_work(Arc::new(DurableDecider::new(work, recovers, rt)))
-        .with_services(plane_services(&self.shared, tickets, judge));
+        .with_services(plane_services(&self.shared.observations, tickets, judge));
         self.seats
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -1142,17 +1145,15 @@ pub(crate) async fn run(
         .as_ref()
         .and_then(Startup::store)
         .ok_or("S6 did not retain the admitted Store")?;
-    built
-        .records
-        .install(Arc::new(StoreRecords::new(Arc::clone(&core))));
+    let records = Arc::new(StoreRecords::new(Arc::clone(&core)));
     let (directory, _holds) =
         KernelDirectory::build(Arc::clone(&core), Arc::new(LogEvents), Vec::new()).await?;
-    built.directory.install(directory);
+    let directory = Arc::new(directory);
     let push = Arc::new(StorePushQueue::new(
         Arc::clone(&core),
         Arc::new(RetryPolicyImpl::default()),
     ));
-    let shared = Arc::new(Shared::new(built.records.clone(), push));
+    let shared = Arc::new(Shared::new(records.clone(), push));
     shared.work_store.install(core);
     let seat = SeatShared {
         upstreams: declared
@@ -1172,6 +1173,7 @@ pub(crate) async fn run(
         services,
         seats: Mutex::default(),
         shared: Arc::clone(&shared),
+        directory,
         signing_key: cfg.auth.as_ref().and_then(|auth| auth.signing_key.clone()),
         secrets: prefix,
         built: &built,
@@ -1325,7 +1327,7 @@ pub(crate) async fn run(
         deployment: walked.deployment,
         work_binder: shared.work_binder.clone(),
         work: Arc::clone(&shared.work),
-        records: built.records.clone(),
+        records,
         _probes: probes,
         startup: Mutex::new(
             startup
