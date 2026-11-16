@@ -21,6 +21,37 @@ use super::{
 
 const HOST: &str = "seal-host";
 
+/// SEALING-FIX test29: operational failures remain retryable, while identity/corrupt
+/// observations are refused immediately instead of being retried thirty times.
+#[tokio::test]
+async fn predecessor_failures_preserve_transient_and_permanent_classification() {
+    use super::RetireError;
+    use crate::persistence::facade::AccessError;
+    use busbar_contract::persistence::Failure;
+    assert!(matches!(
+        RetireError::from(AccessError::Overloaded),
+        RetireError::Transient(_)
+    ));
+    assert!(matches!(
+        RetireError::from(Failure::Unavailable),
+        RetireError::Transient(_)
+    ));
+    assert!(matches!(
+        RetireError::from(AccessError::Corrupt),
+        RetireError::Permanent(_)
+    ));
+    let store = Store::new();
+    let fence = PredecessorFence::new(attach(&store, OWN).await, HOST).unwrap();
+    let dead = writer_id();
+    dead_node(&store, dead, 77, 40_000, false);
+    assert!(matches!(
+        fence
+            .retire_predecessor(EPOCH + 1, dead, seen(dead, 77))
+            .await,
+        Err(RetireError::Permanent(_))
+    ));
+}
+
 fn assignment(id: u64, writer: [u8; 16]) -> Vec<u8> {
     Assignment {
         id,
