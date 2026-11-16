@@ -1588,7 +1588,7 @@ fn write_decisions_configs(dir: &Path, protocol: &str, decisions_yaml: &str) {
         });
     let decisions_yaml = if let Some(aliases) = aliases {
         let catalog: std::collections::BTreeMap<_, _> = aliases.into_iter().map(|alias| {
-            (alias, serde_json::json!({
+            (alias, busbar_contract::json::json!({
                 "description": "Busbar Decisions CLI validation fixture (not a provider model)",
                 "release_date": "2026-11-09",
             }))

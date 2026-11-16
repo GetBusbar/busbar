@@ -585,3 +585,70 @@ impl ExportDefCfg {
 }
 
 pub type ExportDefs = indexmap::IndexMap<String, ExportDefCfg>;
+
+/// The `audit.seal_every` default: one page stamp per millisecond (SEALING-FIX §3.4).
+pub const DEFAULT_AUDIT_SEAL_EVERY_MS: u64 = 1;
+
+/// The `audit:` block (SEALING-FIX r20 §3.4). BOOT-TIME. A 1.5.5 config does not set it.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AuditCfg {
+    /// How often the audit notary signs the newest audit line's fingerprint, in whole
+    /// milliseconds from 1 to 1000, written with no unit (`seal_every: 1`); default 1. One stamp
+    /// vouches for every line before it; a crash leaves at most about this long of lines
+    /// unstamped (each still durable and linked). Anything else (`0`, `1001`, `-1`, `"1ms"`,
+    /// `1.5`) refuses the config.
+    #[serde(default = "default_seal_every", deserialize_with = "seal_every_ms")]
+    pub seal_every: u64,
+}
+
+impl Default for AuditCfg {
+    fn default() -> Self {
+        AuditCfg {
+            seal_every: DEFAULT_AUDIT_SEAL_EVERY_MS,
+        }
+    }
+}
+
+fn default_seal_every() -> u64 {
+    DEFAULT_AUDIT_SEAL_EVERY_MS
+}
+
+/// `audit.seal_every`: a plain integer from 1 to 1000. Every other form is refused, explained.
+fn seal_every_ms<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+    struct Ms;
+    fn refused<E: serde::de::Error>(got: std::fmt::Arguments<'_>) -> E {
+        E::custom(format_args!(
+            "audit.seal_every must be a whole number of milliseconds from 1 to 1000 (got {got})"
+        ))
+    }
+    impl serde::de::Visitor<'_> for Ms {
+        type Value = u64;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a whole number of milliseconds from 1 to 1000")
+        }
+        fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<u64, E> {
+            if (1..=1000).contains(&v) {
+                Ok(v)
+            } else {
+                Err(refused(format_args!("{v}")))
+            }
+        }
+        fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<u64, E> {
+            match u64::try_from(v) {
+                Ok(v) => self.visit_u64(v),
+                Err(_) => Err(refused(format_args!("{v}"))),
+            }
+        }
+        fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<u64, E> {
+            Err(refused(format_args!("{v}")))
+        }
+        fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<u64, E> {
+            Err(refused(format_args!("{v:?}")))
+        }
+        fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<u64, E> {
+            Err(refused(format_args!("{v}")))
+        }
+    }
+    deserializer.deserialize_any(Ms)
+}

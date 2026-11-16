@@ -115,6 +115,20 @@ disallowed-methods = [
   # start over before the process ends; every exec will go through `root::exit::exec`.
   { path = "std::process::exit", reason = "exit through root::exit::exit so an unpublished first start is handed over (FIRST-START-TAKEOVER §2.7)" },
   { path = "std::os::unix::process::CommandExt::exec", reason = "exec through root::exit::exec (FIRST-START-TAKEOVER §2.9 (d))", allow-invalid = true },
+  # R24 no-sign-on-request-path (SEALING-FIX r20 §5.3 layer 2; LINT-RULES R24): the audit signing
+  # capabilities and the root submit path. Called only from the unmarked root/durability/signer.rs,
+  # keyset.rs and boot.rs, so these rows have zero hits in the marked request-path trees.
+  { path = "busbar_kernel_audit::Notary::sign_stamp", reason = "R24: audit pages are signed on the notary signer thread, never on the request path" },
+  { path = "busbar_kernel_audit::BootstrapSigner::sign_restart_page", reason = "R24: restart pages are signed on the Bootstrap signer thread, never on the request path" },
+  { path = "busbar_kernel_audit::BootstrapSigner::sign_break", reason = "R24: break notices are signed on the Bootstrap signer thread, never on the request path" },
+  { path = "busbar_kernel_audit::BootstrapSigner::sign_notary_cert", allow-invalid = true, reason = "R24: the notary key certificate is signed on the Bootstrap signer thread, never on the request path" },
+  { path = "busbar_kernel_audit::BootstrapSigner::sign_checkpoint", reason = "R24: checkpoint bodies are signed on the Bootstrap signer thread, never on the request path" },
+  { path = "busbar_kernel_audit::AuditSigningKey::into_grants", reason = "R24: the deployment key is split into its grants once, at boot (keyset::bind_split)" },
+  { path = "busbar::root::durability::signer::SignerHandle::submit", allow-invalid = true, reason = "R24: no request submits or awaits an audit signature" },
+  { path = "busbar::root::durability::signer::SignerHandle::submit_restart", allow-invalid = true, reason = "R24: no request submits or awaits an audit signature" },
+  { path = "busbar::root::durability::signer::SignerHandle::submit_break", allow-invalid = true, reason = "R24: no request submits or awaits an audit signature" },
+  { path = "busbar::root::durability::signer::SignerHandle::sign_checkpoints", allow-invalid = true, reason = "R24: no request submits or awaits an audit signature" },
+  { path = "busbar::root::durability::signer::spawn", allow-invalid = true, reason = "R24: the signer threads start once, at boot" },
 ]
 disallowed-types = [
   { path = "std::collections::HashMap", reason = "default SipHash hasher; use foldhash::HashMap (HashMapExt::new / ::default)" },
