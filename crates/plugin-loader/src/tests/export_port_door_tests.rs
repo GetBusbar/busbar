@@ -126,6 +126,18 @@ impl ExportPort for Double {
     fn custody_ceiling(&self) -> Option<u32> {
         self.ceiling
     }
+    fn pending_capacity(&self) -> Option<u64> {
+        None
+    }
+    fn confirm(&self, _cx: CallCx, _delivery: u64) -> BoxFut<'_, Result<Custody, PortError>> {
+        Box::pin(async {
+            Err(PortError::Refused {
+                code: busbar_plugin_abi::fail::refused::R_UNSUPPORTED,
+                text: "the double does not declare confirm".into(),
+                error: None,
+            })
+        })
+    }
     fn render(
         &self,
         scope: u32,

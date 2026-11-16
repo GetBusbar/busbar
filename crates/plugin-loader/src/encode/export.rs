@@ -160,6 +160,31 @@ pub fn decode_delivered<'o>(
     delivered(a.records(), confirm)
 }
 
+fn confirmed(recs: Records<'_>) -> Result<CustodyRec, RecErr> {
+    let mut found = None;
+    for next in recs {
+        let rec = next?;
+        match rec.tag {
+            tag::CUSTODY if found.is_none() => {
+                let value = rec.pod::<CustodyRec>()?;
+                if value.level > CUSTODY_INDEXED {
+                    return Err(RecErr::Size);
+                }
+                found = Some(value);
+            }
+            generic::METRIC => {}
+            tag::CUSTODY => return Err(RecErr::Size),
+            other => return Err(RecErr::Unknown(other)),
+        }
+    }
+    found.ok_or(RecErr::Truncated)
+}
+
+/// IF §8.5: a bytes-free confirm answers exactly one CUSTODY, including NONE.
+pub fn decode_confirmed(a: &Answer<'_>) -> Result<CustodyRec, RecErr> {
+    confirmed(a.records())
+}
+
 /// Round 33: D_DELIVERY's `pending_capacity` (None when absent), with §8.5's describe rules checked in the
 /// same pass as D_STREAMS and FB_SPAN_RECORDS: M_CONFIRM ⇔ D_DELIVERY, STREAM_CONTENT declared, no D_DEST_PATH,
 /// ≥ 1, at most one. In 1.6.0 L7 calls it for the validation only; the value is kept from 1.6.x.
