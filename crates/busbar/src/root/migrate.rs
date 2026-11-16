@@ -17,7 +17,8 @@
 //! [`finish`] is step 5: once every instance has opened, before anything serves, the plan is
 //! written in place; then the seam hands an armed first start over (its store still open), closes
 //! every instance the boot opened (an instance's descriptors, a plugin's included, must not reach
-//! the new image), and re-executes itself with the same argv and `BUSBAR_MIGRATED=1` onto the
+//! the new image), marks every descriptor >= 3 close-on-exec behind that (a plugin may have left
+//! one inheritable), and re-executes itself with the same argv and `BUSBAR_MIGRATED=1` onto the
 //! stamped file.
 
 use std::cell::RefCell;
@@ -422,8 +423,22 @@ pub(crate) fn reexec() -> String {
     )
 }
 
-/// Defence in depth behind closing every instance before the exec (not yet marked).
-fn close_on_exec_from_3() {}
+/// Defence in depth behind the primary rule [`restart`] keeps: every instance the boot opened (a
+/// plugin's descriptors included) is closed before the exec. A descriptor a plugin opened without
+/// close-on-exec and never closed would still reach the new image, so every descriptor >= 3 is
+/// marked close-on-exec here, just before it (0-2 stay the operator's stdio).
+///
+/// Linux >= 5.11 marks the whole range with one `close_range(CLOSE_RANGE_CLOEXEC)`. Elsewhere
+/// (macOS, an older kernel, a seccomp profile that denies `close_range`) it is an `fcntl` loop up
+/// to `min(max(sysconf(_SC_OPEN_MAX), 1024), 65536)`: there, a descriptor numbered 65536 or above
+/// is NOT covered. `allow_filesystem(false)` keeps close_fds 0.3.2 off its `/dev/fd` and
+/// `/proc/self/fd` walk, which is unsound (see its cargo-vet exemption).
+fn close_on_exec_from_3() {
+    #[cfg(unix)]
+    close_fds::CloseFdsBuilder::new()
+        .allow_filesystem(false)
+        .cloexecfrom(3);
+}
 
 #[cfg(test)]
 #[path = "tests/migrate_seam.rs"]

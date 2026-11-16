@@ -611,6 +611,7 @@ dependencies = [
  "busbar-transport-webrtc",
  "busbar-transport-ws",
  "bytes",
+ "close_fds",
  "core_affinity",
  "flate2",
  "foldhash 0.2.0",
@@ -1257,6 +1258,16 @@ checksum = "773f3b9af64447d2ce9850330c473515014aa235e6a783b02db81ff39e4a3dad"
 dependencies = [
  "crypto-common 0.1.7",
  "inout",
+]
+
+[[package]]
+name = "close_fds"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3bc416f33de9d59e79e57560f450d21ff8393adcf1cdfc3e6d8fb93d5f88a2ed"
+dependencies = [
+ "cfg-if",
+ "libc",
 ]
 
 [[package]]

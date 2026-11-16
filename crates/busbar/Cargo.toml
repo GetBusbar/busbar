@@ -70,6 +70,10 @@ socket2 = { workspace = true }
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true }
 
+# Close-on-exec before the migrate re-exec (root/migrate.rs).
+[target.'cfg(unix)'.dependencies]
+close_fds = { workspace = true }
+
 [features]
 test-harness = []
 

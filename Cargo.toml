@@ -47,6 +47,9 @@ axum = "0.8"
 axum-core = "0.5"
 base64 = "0.22"
 bytes = "1"
+# Step 5's re-exec marks every descriptor >= 3 close-on-exec (root/migrate.rs). Builder path only
+# (allow_filesystem(false)): 0.3.2's /dev/fd walk is unsound; see its cargo-vet exemption.
+close_fds = "=0.3.2"
 core_affinity = "0.8"
 crc32fast = "1"
 # The DTLS protocol engine only, no default features: its crypto provider is the backend's.
