@@ -113,7 +113,7 @@ fn hand_written_bad_fact_answers_fault() {
 }
 
 #[test]
-#[ignore = "owner: W1-L3"]
+#[ignore = "owner: W1-L3; blocked (re-checked on dev 2026-11-16): the store adapter port_error(a, inst) is private and needs a live Instance; row 1 (store.rs request todo!) is in flight"]
 fn store_adapter_maps_the_facts() {
     todo!("owner: W1-L3 (C-FAIL-FACTS)")
 }
@@ -232,26 +232,116 @@ fn auth_adapter_maps_the_facts() {
     );
 }
 
+/// The hook arm (W1-L6): FAILED carries the stated Retry-After and backend status, absent facts are None, and a
+/// REFUSED answer carries no fact.
 #[test]
-#[ignore = "owner: W1-L6"]
 fn hook_adapter_maps_the_facts() {
-    todo!("owner: W1-L6 (C-FAIL-FACTS)")
+    use busbar_plugin_abi::fail::failed;
+    use busbar_plugin_abi::host_side::scrub::Scrub;
+    use busbar_plugin_loader::adapters::hook::port_error;
+    use busbar_plugin_loader::ports::PortError;
+
+    let scrub = Scrub::new();
+    assert_eq!(
+        port_error(
+            &scrub,
+            true,
+            failed::F_UPSTREAM,
+            "the backend said 503",
+            Some(30),
+            Some(503),
+            None
+        ),
+        PortError::Failed {
+            code: failed::F_UPSTREAM,
+            text: "the backend said 503".into(),
+            retry_after_s: Some(30),
+            backend_status: Some(503),
+            error: None,
+        }
+    );
+    assert!(matches!(
+        port_error(&scrub, true, failed::F_TIMEOUT, "slow", None, None, None),
+        PortError::Failed {
+            retry_after_s: None,
+            backend_status: None,
+            ..
+        }
+    ));
+    assert!(matches!(
+        port_error(&scrub, false, 5, "no", Some(1), Some(1), None),
+        PortError::Refused { .. }
+    ));
 }
 
 #[test]
-#[ignore = "owner: W1-L7"]
+#[ignore = "owner: W1-L7; blocked (re-checked on dev 2026-11-16): the export adapter maps facts in a private method over a live ExportAdapter; no fixture image on dev"]
 fn export_adapter_maps_the_facts() {
     todo!("owner: W1-L7 (C-FAIL-FACTS)")
 }
 
+/// The plane admin arm (W1-L8): the one `port_error` builder fills the facts on FAILED only.
 #[test]
-#[ignore = "owner: W1-L8"]
 fn plane_admin_maps_the_facts() {
-    todo!("owner: W1-L8 (C-FAIL-FACTS)")
+    use busbar_plugin_abi::fail::failed;
+    use busbar_plugin_abi::host_side::scrub::Scrub;
+    use busbar_plugin_loader::adapters::plane::port_error;
+    use busbar_plugin_loader::ports::PortError;
+
+    let scrub = Scrub::new();
+    assert_eq!(
+        port_error(
+            &scrub,
+            true,
+            failed::F_UPSTREAM,
+            "the backend said 503",
+            (Some(30), Some(503)),
+            None
+        ),
+        PortError::Failed {
+            code: failed::F_UPSTREAM,
+            text: "the backend said 503".into(),
+            retry_after_s: Some(30),
+            backend_status: Some(503),
+            error: None,
+        }
+    );
+    assert!(matches!(
+        port_error(&scrub, true, failed::F_TIMEOUT, "slow", (None, None), None),
+        PortError::Failed {
+            retry_after_s: None,
+            backend_status: None,
+            ..
+        }
+    ));
+    assert!(matches!(
+        port_error(&scrub, false, 5, "no", (Some(1), Some(1)), None),
+        PortError::Refused { .. }
+    ));
 }
 
+/// The retry arm (W1-K3): a Failed answer stating `retry_after_s = 30` is never rescheduled sooner than 30 s,
+/// at the lowest jitter draw, on a store call and an export delivery.
 #[test]
-#[ignore = "owner: W1-K3"]
 fn retry_policy_honours_retry_after() {
-    todo!("owner: W1-K3 (C-FAIL-FACTS)")
+    use std::time::Duration;
+
+    use busbar_kernel::retry::{Policy, Retry, RetryPolicy, RetrySite};
+    use busbar_plugin_abi::fail::failed;
+    use busbar_plugin_loader::ports::PortError;
+
+    let err = PortError::Failed {
+        code: failed::F_UNAVAILABLE,
+        text: "down".into(),
+        retry_after_s: Some(30),
+        backend_status: Some(503),
+        error: None,
+    };
+    let policy = Policy::with_draw(|| 0.0);
+    for site in [RetrySite::StoreRead, RetrySite::ExportDeliver(1)] {
+        let Retry::After(wait) = policy.next(site, 1, &err) else {
+            panic!("a Failed call at {site:?} waits");
+        };
+        assert!(wait >= Duration::from_secs(30), "{site:?} waited {wait:?}");
+    }
 }

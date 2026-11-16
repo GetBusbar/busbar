@@ -340,10 +340,18 @@ mod c_zeroize_grow;
 mod c_zeroize_sync;
 #[path = "fu3-check-crypto-failed.rs"]
 mod fu3_check_crypto_failed;
+#[path = "fixtures/min3_endpoints.rs"]
+mod min3_endpoints;
 #[path = "fixtures/min3_export.rs"]
 mod min3_export;
+#[path = "fixtures/min3_export_fail.rs"]
+mod min3_export_fail;
+#[path = "fixtures/min3_second.rs"]
+mod min3_second;
 #[path = "fixtures/min3_secret.rs"]
 mod min3_secret;
+#[path = "fixtures/min3_store.rs"]
+mod min3_store;
 
 /// Every `tests/*.rs` is wired: a module of this binary or a `[[test]]` target of the manifest
 /// (`autotests = false`, so an unwired file would never run).
