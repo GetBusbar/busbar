@@ -142,6 +142,33 @@ pub fn bind_upstreams(
     operator: &[OperatorAuth<'_>],
     flags: &dyn Fn(&str, &str) -> u64,
 ) -> Result<Vec<UpstreamBinding>, Vec<String>> {
+    resolve_upstreams(None, upstreams, styles_of, operator, flags)
+}
+
+/// Resolve one plane instance's registration bindings. Implicit identities occupy a reserved internal
+/// namespace and encode both UTF-8 components by byte length; explicit operator bindings remain unchanged.
+pub fn bind_upstreams_for(
+    instance: &str,
+    upstreams: &[UpstreamView<'_>],
+    styles_of: &[(&str, Vec<&str>)],
+    operator: &[OperatorAuth<'_>],
+    flags: &dyn Fn(&str, &str) -> u64,
+) -> Result<Vec<UpstreamBinding>, Vec<String>> {
+    resolve_upstreams(Some(instance), upstreams, styles_of, operator, flags)
+}
+
+fn resolve_upstreams(
+    instance: Option<&str>,
+    upstreams: &[UpstreamView<'_>],
+    styles_of: &[(&str, Vec<&str>)],
+    operator: &[OperatorAuth<'_>],
+    flags: &dyn Fn(&str, &str) -> u64,
+) -> Result<Vec<UpstreamBinding>, Vec<String>> {
+    if instance.is_some() && operator.iter().any(|op| op.name.starts_with('\0')) {
+        return Err(vec![
+            "auth instance names beginning with NUL occupy a reserved internal namespace".into(),
+        ]);
+    }
     let mut refused = Vec::new();
     let mut out = Vec::new();
     for u in upstreams {
@@ -167,6 +194,11 @@ pub fn bind_upstreams(
         }
         let (instance, module, style, implicit, connect_callback): Resolved = match &cfg.form {
             UpstreamAuthForm::Instance(named) => {
+                if instance.is_some() && named.starts_with('\0') {
+                    refused.push("auth instance names beginning with NUL occupy a reserved internal namespace".into());
+                    continue;
+                }
+
                 let Some(op) = operator.iter().find(|o| o.name == &**named) else {
                     refused.push(format!(
                         "`upstreams.{}.auth` names `{named}`, which is not configured under `auth:`",
@@ -190,8 +222,19 @@ pub fn bind_upstreams(
                 let Some((kind, credential, settings)) = form_parts(form) else {
                     continue;
                 };
-                let name = implicit_name(u.name);
-                if operator.iter().any(|o| o.name == name) {
+                let name = match instance {
+                    Some(instance) => {
+                        let name = u.name;
+                        format!(
+                            "\0upstream:{}:{instance}{}:{name}",
+                            instance.len(),
+                            name.len()
+                        )
+                    }
+                    None => implicit_name(u.name),
+                };
+
+                if instance.is_none() && operator.iter().any(|o| o.name == name) {
                     refused.push(squat_text(&name, &format!("upstreams.{}", u.name)));
                     continue;
                 }
@@ -199,7 +242,13 @@ pub fn bind_upstreams(
                 let owner = match outbound_owner(styles_of, word) {
                     Ok(owner) => owner,
                     Err(why) => {
-                        refused.push(why.text(&format!("auth.{name}"), word));
+                        // Internal identity is never a display name (it includes the reserved NUL prefix).
+                        let display = match instance {
+                            Some(instance) => format!("{instance}/{}", u.name),
+                            None => name.clone(),
+                        };
+                        refused.push(why.text(&format!("auth.{display}"), word));
+
                         continue;
                     }
                 };
