@@ -986,3 +986,77 @@ fn every_feature_plugin_class_is_governed_by_the_one_allowlist() {
         );
     }
 }
+
+fn sock(s: &str) -> SocketAddr {
+    s.parse().unwrap()
+}
+
+/// IF 12.1, the node's own ports: a Need dial (`all_classes`) to the node's own listen port on
+/// loopback, the unspecified address or a bound address is refused in every class; any other port,
+/// and any other address, is not.
+#[test]
+fn a_need_dial_never_reaches_the_nodes_own_ports() {
+    let g = Guard::default();
+    g.publish_own(&[8080, 9090], &[ip("10.0.0.5")]);
+    for class in EVERY_CLASS {
+        for own in [
+            "127.0.0.1:8080",
+            "[::1]:9090",
+            "0.0.0.0:8080",
+            "10.0.0.5:9090",
+        ] {
+            assert_eq!(
+                verdict(g.not_the_node(class, sock(own), true)),
+                Some(DEST_INTERNAL),
+                "{own} in class {class}"
+            );
+        }
+        for other in ["127.0.0.1:8081", "10.0.0.6:8080", "93.184.216.34:8080"] {
+            assert_eq!(
+                g.not_the_node(class, sock(other), true),
+                Ok(()),
+                "{other} in class {class}"
+            );
+        }
+    }
+}
+
+/// Core's own upstream exchanges and push deliveries keep today's scope: the loopback-allowed
+/// class only.
+#[test]
+fn the_narrow_scope_judges_the_loopback_allowed_class_only() {
+    let g = Guard::default();
+    g.publish_own(&[8080], &[]);
+    let own = sock("127.0.0.1:8080");
+    assert_eq!(
+        verdict(g.not_the_node(EGRESS_LOOPBACK_ALLOWED, own, false)),
+        Some(DEST_INTERNAL)
+    );
+    for class in [EGRESS_DEFAULT, EGRESS_PROVIDER, EGRESS_OPEN_WEB] {
+        assert_eq!(g.not_the_node(class, own, false), Ok(()), "class {class}");
+    }
+}
+
+/// The published set is replaced whole and every clone reads the set in force now.
+#[test]
+fn a_republished_own_set_is_seen_by_every_clone() {
+    let g = Guard::default();
+    let clone = g.clone();
+    let own = sock("127.0.0.1:8080");
+    assert_eq!(
+        clone.not_the_node(C, own, true),
+        Ok(()),
+        "nothing published"
+    );
+    g.publish_own(&[8080], &[]);
+    assert_eq!(
+        verdict(clone.not_the_node(C, own, true)),
+        Some(DEST_INTERNAL)
+    );
+    g.publish_own(&[9000], &[]);
+    assert_eq!(
+        clone.not_the_node(C, own, true),
+        Ok(()),
+        "the old set is gone"
+    );
+}
