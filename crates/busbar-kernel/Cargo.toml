@@ -13,6 +13,8 @@ path = "src/lib.rs"
 
 [dependencies]
 foldhash = { workspace = true }
+# The channel respawn schedule (IF §12.19: 100 ms doubling from `backon::ExponentialBuilder`).
+backon = { workspace = true }
 # `schema`: the binder compiles each secret instance's D_REF_SCHEMA once (IF §12.7, plugin_config).
 busbar-contract = { path = "../busbar-contract", features = ["schema"] }
 busbar-kernel-egress = { path = "../busbar-kernel-egress" }
