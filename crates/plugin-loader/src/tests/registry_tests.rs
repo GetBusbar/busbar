@@ -1608,14 +1608,11 @@ fn a_skip_line_names_the_file_and_a_fixed_class() {
         skipped(
             "plane",
             "busbar-plane-decisions.tar.gz",
-            RejectKind::EgressGrant
+            RejectKind::Tampered
         )
         .skip_line()
         .as_deref(),
-        Some(
-            "\"busbar-plane-decisions.tar.gz\" (kind plane) was not admitted: provider egress \
-             refused: not first-party"
-        )
+        Some("\"busbar-plane-decisions.tar.gz\" (kind plane) was not admitted: tampered")
     );
     let line = skipped("secret", "s.tar.gz", RejectKind::Unsigned)
         .skip_line()
@@ -1698,7 +1695,7 @@ fn provider_intent_has_no_publisher_specific_admission_gate() {
 
     extern "C" fn provider_door() -> *const Door {
         static SLOT: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
-        static NEEDS: [Need; 1] = [Need {
+        const NEEDS: [Need; 1] = [Need {
             egress_class: EGRESS_PROVIDER,
             ..crate::needs_restated::need(abi_str("tcp"))
         }];
