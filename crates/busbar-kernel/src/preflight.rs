@@ -902,7 +902,7 @@ fn log_scanned_rows(
                 first_party,
                 "plugin validated"
             ),
-            busbar_contract::plugin_rows::Trust::Allowed { reason } => {
+            busbar_contract::plugin_rows::Trust::Allowed { reason, setting } => {
                 diag_warn!(
                     PLUGIN_LOADED_UNVERIFIED,
                     plugin = %p.name,
@@ -916,7 +916,7 @@ fn log_scanned_rows(
                     crate::audit::auditlog::PluginRefusal::Unverified,
                     "file",
                     &p.file,
-                    "unverified",
+                    setting,
                 );
             }
         }

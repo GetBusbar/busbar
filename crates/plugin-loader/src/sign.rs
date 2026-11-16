@@ -653,6 +653,18 @@ pub enum AllowReason {
     RetiredKey,
 }
 
+impl AllowReason {
+    /// The `plugins.trust` setting this admission rests on, as the audit record names it.
+    #[must_use]
+    pub const fn setting(self) -> &'static str {
+        match self {
+            Self::Unsigned => "allow_unsigned",
+            Self::ThirdParty => "allow_third_party",
+            Self::RetiredKey => "retired_key",
+        }
+    }
+}
+
 /// The resolved trust policy: the embedded first-party key, the allowlisted third-party publisher
 /// keys, the EXPLICIT opt-in flags, and the anti-downgrade floors. Built from `plugins.trust` +
 /// `plugins.min_versions` config (plus the embedded release key and the binary's own version).
