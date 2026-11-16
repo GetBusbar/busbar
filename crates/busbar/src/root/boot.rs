@@ -112,6 +112,7 @@ pub(crate) async fn admit_format(
         facade::Limits,
         startup::{Progress, Startup},
     };
+    let stored = backend.clone();
     let mut startup = Startup::new(
         backend,
         Limits {
@@ -128,11 +129,13 @@ pub(crate) async fn admit_format(
     .map_err(|error| format!("Store format admission refused: {error:?}"))?;
     let mut waits = 0u32;
     loop {
-        match startup
-            .advance()
-            .await
-            .map_err(|error| format!("Store format admission refused: {error:?}"))?
-        {
+        let advanced = match startup.advance().await {
+            Err(busbar_kernel::persistence::startup::Error::UnsupportedFormat) => {
+                return Err(stored_format_refusal(stored.as_ref()).await);
+            }
+            other => other,
+        };
+        match advanced.map_err(|error| format!("Store format admission refused: {error:?}"))? {
             Progress::Advanced => {}
             Progress::Admitted => return Ok(startup),
             Progress::Pending => {
@@ -2447,4 +2450,48 @@ pub(crate) fn bootstrap_witness(
         } if mapped == value => Ok(address),
         _ => Err("bootstrap witness requires an explicit supported exact-record binding"),
     }
+}
+
+/// Step 3's refusal of a manifest that is not current (MIGRATE-ON-BOOT r42 §3 3, §6a): admission
+/// classifies the stored format record and names the word, so a store a newer busbar wrote is
+/// refused NEWER, never relabelled. Nothing was written.
+pub(crate) async fn stored_format_refusal(
+    backend: &dyn busbar_contract::persistence::PersistenceBackend,
+) -> String {
+    // RED: the stored format is not classified yet.
+    if true {
+        let _ = backend;
+        return "Store format admission refused: UnsupportedFormat".to_owned();
+    }
+    use busbar_kernel::persistence::startup::{classify, Format};
+    let read = backend
+        .read(std::sync::Arc::new(busbar_contract::persistence::Read {
+            dataset: backend.info().dataset,
+            addresses: vec![busbar_kernel::persistence::import_target::target::manifest_address()],
+            time: None,
+        }))
+        .await;
+    let format = match read {
+        Ok(busbar_contract::persistence::ReadResult::Values { values, .. }) => {
+            values.into_iter().next().flatten().map(|bytes| {
+                classify(
+                    bytes.expose(&busbar_kernel::seal::lend()),
+                    busbar_migrate::records::has_step,
+                )
+            })
+        }
+        _ => None,
+    };
+    let word = match format {
+        Some(Format::Newer) => {
+            "NEWER: a newer busbar wrote or began migrating this store's records; run that version"
+        }
+        Some(Format::Unsupported) => {
+            "UNSUPPORTED: this store's records are not a format this busbar reads; upgrade through \
+             the release that last read it first"
+        }
+        Some(Format::Corrupt) => "CORRUPT: the store's format record disagrees with itself",
+        _ => "UNSUPPORTED: the store's format record is not this busbar's",
+    };
+    format!("Store format admission refused: {word}; nothing was written")
 }

@@ -1158,11 +1158,41 @@ async fn bootstrap_store_inputs(
         &generation_sugars(cfg),
     )?;
 
-    let _signer = resolve_signing_key(cfg.auth.as_ref(), &resolver)?;
+    let signer = resolve_signing_key(cfg.auth.as_ref(), &resolver)?;
     let at_rest = resolve_at_rest_keys(&cfg.credentials, &resolver);
     publish_bootstrap_at_rest(at_rest.as_ref().map(Option::is_some).map_err(Clone::clone));
-    let _at_rest = at_rest?;
+    publish_records_keys(RecordsKeys {
+        at_rest: at_rest?,
+        signer,
+    });
     Ok((registry, resolver))
+}
+
+/// What core's records step (MIGRATE-ON-BOOT r42 §3 4a, §6 (2) and (4)) seals and verifies with: the
+/// at-rest key and the token-signing key the latest store bootstrap resolved, with the secret instances
+/// the store boot opened (2a), before the store opened. Taken once, by the step; dropped after it.
+pub struct RecordsKeys {
+    /// `credentials.at_rest`, `None` when the block is absent.
+    pub at_rest: Option<crate::governance::at_rest::AtRestKeys>,
+    /// `auth.signing_key`, `None` when it is absent.
+    pub signer: Option<crate::governance::signing::TokenSigner>,
+}
+
+static BOOTSTRAP_RECORDS_KEYS: std::sync::Mutex<Option<RecordsKeys>> = std::sync::Mutex::new(None);
+
+fn publish_records_keys(keys: RecordsKeys) {
+    *BOOTSTRAP_RECORDS_KEYS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(keys);
+}
+
+/// The latest store bootstrap's [`RecordsKeys`], moved out: `None` before any bootstrap or once taken.
+#[must_use]
+pub fn take_bootstrap_records_keys() -> Option<RecordsKeys> {
+    BOOTSTRAP_RECORDS_KEYS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
 }
 
 /// What the latest store bootstrap resolved of `credentials.at_rest`, before the store opened:

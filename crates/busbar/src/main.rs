@@ -821,6 +821,12 @@ async fn run(
             .unwrap_or_else(|error| die(error));
         let anchor_store = store_admission.store().expect("confirmed Store admission");
         root::exit::arm(&anchor_store);
+        // Migrate-on-boot step 4 (MIGRATE-ON-BOOT r42 §3 4a, 4b): the 1.5.5 rows a store's data step
+        // left under IMPORT become native records under this admission, sealed and verified, before
+        // anything reads them. An empty IMPORT costs one one-row scan.
+        root::migrate::records(anchor_store.clone())
+            .await
+            .unwrap_or_else(|error| die(error));
         let root::startup_upgrade::publication::Preparation {
             mut publication,
             mut progress,
@@ -1357,7 +1363,7 @@ async fn run(
     // admission, the node book and its lease task, the startup upgrade's holders), so no instance's
     // descriptor reaches the new image, and re-executes onto the stamped file. A stamped boot
     // passes straight through, with every owner kept as before.
-    if let Some(written) = root::migrate::finish()
+    if let Some(written) = root::migrate::finish(Some(ready.core.clone()))
         .await
         .unwrap_or_else(|error| die(error))
     {

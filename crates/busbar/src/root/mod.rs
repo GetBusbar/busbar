@@ -193,6 +193,8 @@ pub(crate) mod loader;
 pub(crate) mod measurements;
 /// The migrate-on-boot seam: step 1 (the stamp) and step 5 (the write and re-exec).
 pub(crate) mod migrate;
+/// Migrate-on-boot steps 4 and 5S/5C: core's records step over the opened store.
+pub(crate) mod migrate_records;
 pub mod migration_secrets;
 /// The boot's MIN-3 registry: Need handlers, image admission, the boot walk (ROOT-BOOT).
 pub(crate) mod min3_boot;

@@ -540,6 +540,40 @@ pub fn write_settled(
     settled: &[Settled],
     check: Check<'_>,
 ) -> Result<Written, Refusal> {
+    write_attempted(plan, settled, check, None)
+}
+
+/// The store side of step 5 (§3 5, §A6 "Attempts"), which the seam implements over the opened store:
+/// 5S records the attempt once every read-only precondition of the write held and before its first
+/// write; 5d marks this directory's attempt just before the rename over config.yaml. Its refusal
+/// stops the write with nothing renamed.
+pub trait Attempted {
+    /// 5S: `digest` is the plan's ([`Plan::digest`]), `written_sha256` the SHA-256 of the stamped
+    /// document about to be written.
+    ///
+    /// # Errors
+    /// The store's refusal; nothing was written.
+    fn begin(&self, digest: [u8; 32], written_sha256: [u8; 32]) -> Result<(), Refusal>;
+    /// 5d, just before the rename: this directory names the attempt as its own.
+    ///
+    /// # Errors
+    /// The marker could not be written; config.yaml is not renamed.
+    fn before_rename(&self) -> Result<(), Refusal>;
+}
+
+/// [`write_settled`] with the store side of step 5: `attempted` begins (5S) after the re-run and the
+/// read-only preconditions and before 5a, and marks (5d) before the rename. `None` writes no attempt.
+///
+/// # Errors
+/// As [`write_settled`], and the attempt's refusal.
+#[cold]
+#[inline(never)]
+pub fn write_attempted(
+    plan: &Plan,
+    settled: &[Settled],
+    check: Check<'_>,
+    attempted: Option<&dyn Attempted>,
+) -> Result<Written, Refusal> {
     entered!(write);
     let _held = lock::Held::take(&plan.path)?;
     if let Some(selected) = &plan.overlay {
@@ -595,6 +629,12 @@ pub fn write_settled(
     if let Some(read) = &read {
         overlay::backup_absent_or_equal(read)?;
     }
+    if let Some(attempted) = attempted {
+        attempted.begin(
+            plan.digest,
+            busbar_contract::crypto::sha256_parts(&[again.text.as_bytes()]),
+        )?;
+    }
     write_secrets(applied.secrets())?;
     if let Some(planned) = &again.catalog {
         catalog::write(planned)?;
@@ -604,6 +644,12 @@ pub fn write_settled(
     if let Some(read) = &read {
         // 5c: before the stamp, so a 1.5.5 still writing the overlay is caught, never lost.
         if let Err(refusal) = overlay::guard(read) {
+            let _ = std::fs::remove_file(&fresh);
+            return Err(refusal);
+        }
+    }
+    if let Some(attempted) = attempted {
+        if let Err(refusal) = attempted.before_rename() {
             let _ = std::fs::remove_file(&fresh);
             return Err(refusal);
         }
