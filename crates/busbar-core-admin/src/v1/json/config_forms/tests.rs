@@ -197,7 +197,6 @@ fn openapi_publishes_separate_user_input_forms_with_local_references() {
         .as_bool()
         .unwrap());
     assert!(extension["schema"]["x-busbar-partial"].as_bool().unwrap());
-    assert!(document["paths"]["/api/v1/admin/telemetry"]["get"].is_object());
     assert!(extension["ownership"]["other_plane_sections"]
         .as_str()
         .unwrap()

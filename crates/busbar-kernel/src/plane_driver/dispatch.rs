@@ -292,12 +292,10 @@ impl PlaneDispatch {
     fn mounted(&self, path: &str) -> Option<&Mount> {
         let rest = path.strip_prefix('/')?;
         let segment = rest.split('/').next().unwrap_or(rest);
-        for mount in self.mounts.get(segment)? {
-            if path_is_under(path, &mount.path) {
-                return Some(mount);
-            }
-        }
-        None
+        self.mounts
+            .get(segment)?
+            .iter()
+            .find(|mount| path_is_under(path, &mount.path))
     }
 
     fn claims_of(&self, key: &str) -> &[Claim] {

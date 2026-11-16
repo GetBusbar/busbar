@@ -481,7 +481,7 @@ fn the_host_refuses_a_capacity_with_a_null_buffer() {
 }
 
 #[test]
-fn the_services_that_never_pend_are_exactly_the_stated_fourteen() {
+fn the_services_that_never_pend_are_exactly_the_stated_fifteen() {
     let never: Vec<u32> = (0..SERVICES).filter(|s| !may_pend(*s)).collect();
     assert_eq!(
         never,
@@ -499,7 +499,8 @@ fn the_services_that_never_pend_are_exactly_the_stated_fourteen() {
             op::SESSION_EMIT,
             op::UNIT_HAND_IN,
             op::UNIT_REFUSE,
-            op::TICKET_TAKE
+            op::TICKET_TAKE,
+            op::MIGRATE_ADMIT
         ]
     );
     assert!(
@@ -629,6 +630,7 @@ fn every_service_field_sits_at_its_op_index() {
             offset_of!(HostSlots, directory_delete),
             op::DIRECTORY_DELETE,
         ),
+        (offset_of!(HostSlots, migrate_admit), op::MIGRATE_ADMIT),
     ];
     for (i, (offset, op)) in table.iter().enumerate() {
         assert_eq!(*op as usize, i, "op constants run 0.. in table order");
@@ -1900,7 +1902,7 @@ fn the_directory_services_follow_hook_child_are_auth_only_and_may_pend() {
         op::DIRECTORY_DELETE,
     ];
     assert_eq!(ops, [37, 38, 39, 40, 41, 42, 43]);
-    assert_eq!(SERVICES, 44);
+    assert_eq!(SERVICES, 45, "migrate.admit follows the directory services");
     for o in ops {
         let policy = service(o).expect("a policy row");
         assert!(may_pend(o), "{} may pend", policy.name);
@@ -1913,4 +1915,28 @@ fn the_directory_services_follow_hook_child_are_auth_only_and_may_pend() {
             );
         }
     }
+}
+
+/// THE RECOVERABLE GATE'S SLOT (MIGRATE-ON-BOOT §4, r34): `migrate.admit` is appended after the
+/// directory services, the table's last slot. Only a store may name it, during its lifecycle (its
+/// `open` runs the data step), and it never pends: it answers at once from core's own config.
+#[test]
+fn migrate_admit_is_the_appended_last_slot_store_only_and_never_pends() {
+    use crate::abi::host::access::{service, Phase};
+    use crate::abi::mechanism::KindCode;
+    assert_eq!(op::MIGRATE_ADMIT, 44);
+    assert_eq!(SERVICES, 45);
+    assert!(!may_pend(op::MIGRATE_ADMIT));
+    let policy = service(op::MIGRATE_ADMIT).expect("a policy row");
+    assert_eq!(policy.name, "MIGRATE_ADMIT");
+    assert_eq!(policy.phase, Phase::Lifecycle);
+    for kind in KindCode::ALL {
+        assert_eq!(
+            policy.admits(kind),
+            kind == KindCode::Store,
+            "MIGRATE_ADMIT admits {kind:?}"
+        );
+    }
+    assert_eq!(core::mem::size_of::<MigrateAdmitIn>(), 32);
+    assert_eq!(core::mem::offset_of!(MigrateAdmitIn, recoverable), 24);
 }

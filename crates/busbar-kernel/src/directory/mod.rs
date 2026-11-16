@@ -84,6 +84,30 @@ impl HoldSet {
     }
 }
 
+#[cfg(test)]
+impl HoldSet {
+    /// A set holding `of`, for the request-side probe tests (`crate::holds`).
+    pub(crate) fn for_test(of: &[&str]) -> Arc<Self> {
+        let mut held = holds::empty();
+        for p in of {
+            held.insert((*p).into());
+        }
+        Arc::new(Self::new(held, 1))
+    }
+}
+
+#[cfg(test)]
+impl Holds {
+    pub(crate) fn for_test(by_inbound: Vec<(u64, Vec<Arc<HoldSet>>)>) -> Self {
+        Self {
+            by_inbound: by_inbound
+                .into_iter()
+                .map(|(id, sets)| (id, sets.into_boxed_slice()))
+                .collect(),
+        }
+    }
+}
+
 /// One provisioning instance as config load resolved it.
 pub struct ProvisioningInstance {
     /// The verified plugin stamp name of the instance's image.

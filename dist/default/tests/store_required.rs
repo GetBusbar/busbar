@@ -6,7 +6,7 @@
 //!
 //! 1. `busbar --validate` REFUSES a config with no `store:` block (exit 1), requiring the
 //!    configured Store module and settings.
-//! 2. `busbar --migrate-config` inserts `store: {module: memory}` and says so.
+//! 2. The migration inserts `store: {module: memory}` and says so.
 //! 3. The migrated config validates.
 
 mod common;
@@ -77,14 +77,9 @@ fn validate_refuses_a_config_without_a_store_block() {
 #[test]
 fn migrate_inserts_the_memory_store_and_the_result_validates() {
     let dir = workdir("migrate");
-    let out = Command::new(common::boot::exe())
-        .arg("--migrate-config")
-        .arg(FIXTURE)
-        .output()
-        .expect("run busbar --migrate-config");
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(out.status.code(), Some(0), "migrates; stderr:\n{stderr}");
+    let (stdout, stderr) = common::migration_rows::migrate(
+        &std::fs::read_to_string(FIXTURE).expect("the fixture reads"),
+    );
     use busbar_contract::yaml::{self, prelude::*};
     let doc: Value = yaml::from_str(&stdout).expect("YAML on stdout");
     let want: Value = yaml::from_str("module: memory").unwrap();

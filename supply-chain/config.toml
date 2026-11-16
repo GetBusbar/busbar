@@ -153,6 +153,11 @@ version = "0.2.2"
 criteria = "safe-to-deploy"
 notes = "busbar-contract's CBOR codec; the imported google audit of 0.2.2 is safe-to-run only, and it ships."
 
+[[exemptions.close_fds]]
+version = "0.3.2"
+criteria = "safe-to-deploy"
+notes = "CLOEXEC ruling (AGREED 2026-11-16T00:19Z, BLD-3/DEP-5 routine exemption, not a self-audit): no imported audit covers it and no maintained safe crate marks arbitrary descriptors close-on-exec. Unmaintained (last release 2021-06). Its DirFdIter (/dev/fd and /proc/self/fd walk) builds an out-of-bounds &dirent and is unsound; busbar calls only CloseFdsBuilder::new().allow_filesystem(false).cloexecfrom(3), which never constructs it (Linux >= 5.11: close_range CLOSE_RANGE_CLOEXEC; else an fcntl loop bounded at 65536). Defence in depth behind closing every plugin instance before the migrate re-exec."
+
 [[exemptions.const-oid]]
 version = "0.10.3"
 criteria = "safe-to-deploy"
@@ -172,6 +177,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.crossbeam-epoch]]
 version = "0.9.20"
+criteria = "safe-to-deploy"
+
+[[exemptions.crossbeam-queue]]
+version = "0.3.14"
 criteria = "safe-to-deploy"
 
 [[exemptions.crossbeam-utils]]
@@ -241,6 +250,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.faststr]]
 version = "0.2.34"
+criteria = "safe-to-deploy"
+
+[[exemptions.fiat-crypto]]
+version = "0.2.9"
 criteria = "safe-to-deploy"
 
 [[exemptions.filetime]]
@@ -620,6 +633,10 @@ criteria = "safe-to-deploy"
 version = "0.8.18"
 criteria = "safe-to-deploy"
 
+[[exemptions.rustc_version]]
+version = "0.4.1"
+criteria = "safe-to-deploy"
+
 [[exemptions.rustls]]
 version = "0.23.46"
 criteria = "safe-to-deploy"
@@ -650,6 +667,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.scopeguard]]
 version = "1.2.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.semver]]
+version = "1.0.28"
 criteria = "safe-to-deploy"
 
 [[exemptions.serde]]

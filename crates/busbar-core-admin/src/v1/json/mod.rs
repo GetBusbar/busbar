@@ -47,7 +47,6 @@ impl AdminTransport for JsonV1 {
         #[cfg_attr(not(test), allow(clippy::let_and_return))]
         let router = Router::new()
             .route("/info", get(info))
-            .route("/telemetry", get(telemetry::get))
             .route("/operations/{key}", get(generation::get_operation))
             .route("/whoami", get(whoami::get))
             .route("/pools", get(list_pools))
@@ -99,6 +98,7 @@ impl AdminTransport for JsonV1 {
             .route("/config", get(get_config))
             .route("/audit", get(get_audit))
             .route(PATH_CONFIG_VALIDATE, post(validate_config))
+            .route("/config/tree", get(config_tree::get))
             .route("/config/versions", get(list_config_versions))
             .route("/config/versions/{v}", get(get_config_version))
             .route("/config/diff", get(config_diff))
@@ -614,6 +614,7 @@ fn with_config_etag(mut resp: Response, version: u64) -> Response {
 }
 
 mod config_document;
+mod config_tree;
 mod plane_input_schemas;
 pub use plane_input_schemas::install_plane_input_schemas;
 #[cfg(feature = "openapi-schema")]
@@ -625,10 +626,10 @@ mod generation;
 mod hook_attachments;
 pub(crate) use hook_attachments::attachments_of;
 mod handlers;
+pub(crate) mod metrics;
 #[cfg(feature = "openapi-schema")]
 mod replay_metadata;
 mod settings_edit;
-pub(super) mod telemetry;
 mod whoami;
 pub(crate) use handlers::*;
 pub(crate) use whoami::who_of as whoami_of;
@@ -665,3 +666,7 @@ pub use handlers::credential_flush_response_for_test;
 #[cfg(test)]
 #[path = "tests/admin_grant_tests.rs"]
 mod admin_grant_tests;
+
+#[cfg(test)]
+#[path = "tests/audit_feed_tests.rs"]
+mod audit_feed_tests;

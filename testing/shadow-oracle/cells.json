@@ -7920,38 +7920,6 @@
       "why": "no credential -> 401 envelope"
     },
     {
-      "id": "admin.ops|GetTelemetry|ok",
-      "plane": "core",
-      "family": "admin.ops",
-      "driver": "http",
-      "outcome": "ok",
-      "request": {
-        "method": "GET",
-        "path": "/api/v1/admin/telemetry",
-        "headers": {},
-        "body": null,
-        "auth": "admin",
-        "listener": "admin"
-      },
-      "why": "200 bounded request-phase telemetry snapshot when collection is enabled; Cache-Control: no-store. Disabled or unavailable collection is an explicit 503, never a fabricated zero snapshot. Requires read-only admin scope."
-    },
-    {
-      "id": "admin.ops|GetTelemetry|unauth",
-      "plane": "core",
-      "family": "admin.ops",
-      "driver": "http",
-      "outcome": "ok",
-      "request": {
-        "method": "GET",
-        "path": "/api/v1/admin/telemetry",
-        "headers": {},
-        "body": null,
-        "auth": "none",
-        "listener": "admin"
-      },
-      "why": "no credential -> 401 envelope"
-    },
-    {
       "id": "admin.ops|GetToolsNameChanges|ok",
       "plane": "core",
       "family": "admin.ops",
@@ -17484,15 +17452,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v0.10.0_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v0.10.0_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -17520,15 +17485,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v0.11.0_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v0.11.0_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -17556,15 +17518,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v0.11.1_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v0.11.1_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -17592,15 +17551,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v0.12.0_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v0.12.0_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -17628,15 +17584,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v0.13.0_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v0.13.0_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -17664,15 +17617,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v0.14.0_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v0.14.0_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -17700,15 +17650,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v0.14.1_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v0.14.1_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -17736,15 +17683,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v0.15.0_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v0.15.0_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -17772,15 +17716,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v0.16.0_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v0.16.0_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -17808,15 +17749,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v0.16.1_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v0.16.1_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -17844,15 +17782,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v0.16.2_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v0.16.2_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -17880,15 +17815,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v0.17.0_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v0.17.0_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -17916,15 +17848,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v0.17.1_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v0.17.1_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -17952,15 +17881,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v0.17.2_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v0.17.2_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -17988,15 +17914,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v0.17.3_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v0.17.3_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18024,15 +17947,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v0.17.4_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v0.17.4_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18060,15 +17980,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v0.9.0_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v0.9.0_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18096,15 +18013,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v0.9.1_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v0.9.1_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18132,15 +18046,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.0.0_bench_latency_config.anthropic.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.0.0_bench_latency_config.anthropic.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18168,15 +18079,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.0.0_bench_latency_config.mock.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.0.0_bench_latency_config.mock.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18204,15 +18112,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.0.0_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.0.0_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18240,15 +18145,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.0.1_bench_latency_config.anthropic.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.0.1_bench_latency_config.anthropic.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18276,15 +18178,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.0.1_bench_latency_config.mock.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.0.1_bench_latency_config.mock.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18312,15 +18211,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.0.1_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.0.1_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18348,15 +18244,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.1.0_bench_latency_config.anthropic.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.1.0_bench_latency_config.anthropic.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18384,15 +18277,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.1.0_bench_latency_config.mock.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.1.0_bench_latency_config.mock.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18420,15 +18310,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.1.0_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.1.0_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18456,15 +18343,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.1.1_bench_latency_config.anthropic.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.1.1_bench_latency_config.anthropic.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18492,15 +18376,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.1.1_bench_latency_config.mock.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.1.1_bench_latency_config.mock.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18528,15 +18409,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.1.1_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.1.1_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18564,15 +18442,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.2.0_bench_latency_config.anthropic.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.2.0_bench_latency_config.anthropic.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18600,15 +18475,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.2.0_bench_latency_config.mock.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.2.0_bench_latency_config.mock.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18636,15 +18508,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.2.0_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.2.0_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18672,15 +18541,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.2.1_bench_latency_config.anthropic.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.2.1_bench_latency_config.anthropic.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18708,15 +18574,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.2.1_bench_latency_config.mock.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.2.1_bench_latency_config.mock.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18744,15 +18607,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.2.1_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.2.1_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18780,15 +18640,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.3.0_bench_latency_config.anthropic.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.3.0_bench_latency_config.anthropic.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18816,15 +18673,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.3.0_bench_latency_config.mock.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.3.0_bench_latency_config.mock.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18852,15 +18706,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.3.0_demo_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.3.0_demo_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18888,15 +18739,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.3.0_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.3.0_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18924,15 +18772,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.3.1_bench_latency_config.anthropic.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.3.1_bench_latency_config.anthropic.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18960,15 +18805,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.3.1_bench_latency_config.mock.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.3.1_bench_latency_config.mock.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -18996,15 +18838,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.3.1_demo_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.3.1_demo_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19032,15 +18871,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.3.1_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.3.1_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19068,15 +18904,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.3.2_bench_latency_config.anthropic.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.3.2_bench_latency_config.anthropic.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19104,15 +18937,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.3.2_bench_latency_config.mock.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.3.2_bench_latency_config.mock.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19140,15 +18970,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.3.2_demo_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.3.2_demo_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19176,15 +19003,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.3.2_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.3.2_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19212,15 +19036,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.3.3_bench_latency_config.anthropic.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.3.3_bench_latency_config.anthropic.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19248,15 +19069,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.3.3_bench_latency_config.mock.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.3.3_bench_latency_config.mock.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19284,15 +19102,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.3.3_examples_claude-code-bedrock_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.3.3_examples_claude-code-bedrock_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19320,15 +19135,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.3.3_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.3.3_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19356,15 +19168,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.4.0_bench_latency_config.anthropic.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.4.0_bench_latency_config.anthropic.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19392,15 +19201,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.4.0_bench_latency_config.mock.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.4.0_bench_latency_config.mock.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19428,15 +19234,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.4.0_examples_claude-code-bedrock_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.4.0_examples_claude-code-bedrock_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19464,15 +19267,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.4.0_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.4.0_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19500,15 +19300,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.4.1_bench_latency_config.anthropic.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.4.1_bench_latency_config.anthropic.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19536,15 +19333,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.4.1_bench_latency_config.mock.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.4.1_bench_latency_config.mock.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19572,15 +19366,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.4.1_examples_claude-code-bedrock_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.4.1_examples_claude-code-bedrock_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19608,15 +19399,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.4.1_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.4.1_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19644,15 +19432,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.5.0_docker_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.5.0_docker_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19680,15 +19465,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.5.0_examples_claude-code-bedrock_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.5.0_examples_claude-code-bedrock_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19716,15 +19498,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.5.0_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.5.0_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19752,15 +19531,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.5.1_docker_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.5.1_docker_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19788,15 +19564,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.5.1_examples_claude-code-bedrock_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.5.1_examples_claude-code-bedrock_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19824,15 +19597,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.5.1_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.5.1_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19860,15 +19630,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.5.2_docker_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.5.2_docker_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19896,15 +19663,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.5.2_examples_claude-code-bedrock_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.5.2_examples_claude-code-bedrock_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19932,15 +19696,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.5.2_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.5.2_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -19968,15 +19729,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.5.3_docker_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.5.3_docker_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -20004,15 +19762,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.5.3_examples_claude-code-bedrock_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.5.3_examples_claude-code-bedrock_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -20040,15 +19795,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.5.3_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.5.3_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -20076,15 +19828,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.5.4_docker_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.5.4_docker_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -20112,15 +19861,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.5.4_examples_claude-code-bedrock_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.5.4_examples_claude-code-bedrock_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -20148,15 +19894,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.5.4_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.5.4_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -20184,15 +19927,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.5.5_docker_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.5.5_docker_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -20220,15 +19960,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.5.5_examples_claude-code-bedrock_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.5.5_examples_claude-code-bedrock_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]
@@ -20256,15 +19993,12 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [
-          "--migrate-config",
-          "tests/migration-corpus/from-tags/v1.5.5_config.yaml"
-        ],
-        "mode": "cli",
-        "config": "none",
+        "args": [],
+        "mode": "boot",
+        "config": "corpus:tests/migration-corpus/from-tags/v1.5.5_config.yaml",
         "env": {}
       },
-      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "why": "first boot migrates the 1.5.5 config in place (config_version: 1, config.yaml.1.5.5 kept); the written config is the 1.5.5 to 1.6 output (AGREED.md QM1, owner 2026-11-15T21:01Z)",
       "bindings": [
         "PB-50"
       ]

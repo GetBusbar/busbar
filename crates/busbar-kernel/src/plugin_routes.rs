@@ -385,12 +385,20 @@ pub fn method_filter_of(m: RouteMethod) -> MethodFilter {
     }
 }
 
+/// The admin-listener paths core serves itself.
+const CORE_ADMIN_PATHS: [&str; 2] = ["/metrics", "/metrics/hooks"];
+
 pub fn mount_plugin_routes(
     mut router: axum::Router<Arc<crate::state::AppHandle>>,
     table: &PluginRouteTable,
     admin: bool,
 ) -> axum::Router<Arc<crate::state::AppHandle>> {
     for (path, methods) in table.mounts_for_plane(admin) {
+        // The admin listener serves its own `/metrics` and `/metrics/hooks` (core's encoder); a
+        // plugin route on either would collide with it.
+        if admin && CORE_ADMIN_PATHS.contains(&path.as_str()) {
+            continue;
+        }
         let mut mr: Option<MethodRouter<Arc<crate::state::AppHandle>>> = None;
         for m in methods {
             let filter = method_filter_of(m);

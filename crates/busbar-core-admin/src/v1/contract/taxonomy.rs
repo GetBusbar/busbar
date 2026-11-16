@@ -135,6 +135,8 @@ pub enum Cond {
     /// A plugin refused an op in its own words, or an instance open failed in the plugin
     /// (`plugin_rejected`); its text and condition word are in `details`.
     PluginRejected,
+    /// `telemetry.enabled: false` was set explicitly, so the metric registry is off.
+    TelemetryDisabled,
 }
 
 impl Cond {
@@ -188,6 +190,7 @@ impl Cond {
             Cond::Unpriced => "unpriced",
             Cond::RestartUnreachable => "restart_unreachable",
             Cond::PluginRejected => "plugin_rejected",
+            Cond::TelemetryDisabled => "telemetry_disabled",
         }
     }
 
@@ -281,6 +284,9 @@ impl Cond {
             }
             Cond::PluginRejected => {
                 "a plugin refused the request in its own words (its text and condition are in `details`)"
+            }
+            Cond::TelemetryDisabled => {
+                "the operator set telemetry.enabled: false, so the metric registry is off"
             }
         }
     }
@@ -522,6 +528,9 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
         (Get, "/groups") => de![Validation / MalformedCursor],
         (Get, "/audit") => de![Validation / MalformedCursor],
         (Get, "/config/versions") => de![Validation / MalformedCursor],
+        (Get, "/config/tree") => {
+            de![Validation / InvalidQueryValue, NotFound / UnknownResource]
+        }
         (Get, "/plugins/{file}/schema") => de![
             Validation / InvalidQueryValue,
             Validation / InvalidFilename,

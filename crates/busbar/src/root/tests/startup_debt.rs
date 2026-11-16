@@ -44,7 +44,7 @@ fn explain_debt_by_class() {
         detail.contains("\n  * hook 'h': the `signals:` declaration"),
         "{detail}"
     );
-    assert!(detail.contains("--migrate-config"), "{detail}");
+    assert!(detail.ends_with(", then boot again."), "{detail}");
 
     // (c) A config-class verdict on the unmigrated bytes does not replace a real decision.
     let config_class = ValidateRefusal::Check(Refusal::Config(vec![

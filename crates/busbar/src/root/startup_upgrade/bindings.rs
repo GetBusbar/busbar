@@ -217,9 +217,6 @@ impl Resolver {
         if let Ok(document) =
             busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(&input)
         {
-            if !config::current_format::detect_legacy_markers(&document).is_empty() {
-                return Err("retained deployment contains unsupported historical markers".into());
-            }
             let keys: Vec<&str> = document
                 .as_mapping()
                 .into_iter()
