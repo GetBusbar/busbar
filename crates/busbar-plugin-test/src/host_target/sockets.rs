@@ -853,3 +853,7 @@ fn event(s: &mut State, owner: Owner, slot: &Slot, outcome: SocketOutcome) {
         outcome,
     });
 }
+
+#[cfg(test)]
+#[path = "socket_session_tests.rs"]
+mod session_tests;
