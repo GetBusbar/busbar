@@ -2391,3 +2391,17 @@ mod hook_child_tests;
 
 #[path = "serve_ticket_custody.rs"]
 mod ticket_custody_tests;
+
+// IF §12.23 / C-LINE-CARRIER: a line arrival carries the carrier id as its own typed field, which only the host
+// line carrier sets; an arrival from any other door carries 0.
+#[tokio::test]
+async fn a_line_arrival_carries_its_carrier_id_in_the_typed_field() {
+    let _one = PUBLISHING.lock().await;
+    let mut g = governed("line-carrier-field", false).await;
+    let routes = session_custody_routes(&mut g, false);
+    let (_, external, _) = routes.arrived(0, 1, session_custody_request(&g, "/open"));
+    assert_eq!(external.carrier, 0, "a door arrival is no line");
+    let session = std::num::NonZeroU64::new(7).expect("non-zero");
+    let (_, line, _) = routes.arrived_on_line(0, 1, session_custody_request(&g, "/open"), session);
+    assert_eq!(line.carrier, 7);
+}

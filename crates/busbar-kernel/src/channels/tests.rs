@@ -183,3 +183,94 @@ fn a_signal_fans_out_to_at_most_max_fanout_sessions() {
         busbar_plugin_abi::plane::MAX_FANOUT
     );
 }
+
+// IF §12.23, C-LINE-CARRIER: the carrier table behind `PlaneOut::Emit`.
+mod line_carriers {
+    use std::sync::{Arc, Mutex};
+
+    use busbar_contract::abi::mechanism::KindCode;
+    use busbar_contract::services::{Caller, Incarnation};
+
+    use crate::channels::line_carriers::{CarrierSink, LineCarriers};
+
+    fn owner(name: &str) -> Incarnation {
+        Caller::for_test(Arc::from(name), KindCode::Plane)
+            .incarnation()
+            .clone()
+    }
+
+    fn recording() -> (CarrierSink, Arc<Mutex<Vec<Vec<u8>>>>) {
+        let seen: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+        let into = Arc::clone(&seen);
+        let sink: CarrierSink = Arc::new(move |b: &[u8]| {
+            into.lock().unwrap().push(b.to_vec());
+            true
+        });
+        (sink, seen)
+    }
+
+    #[test]
+    fn ids_are_non_zero_and_never_repeat() {
+        let carriers = LineCarriers::new();
+        let me = owner("mcp");
+        let (sink, _) = recording();
+        let a = carriers.open(&me, Arc::from("anon"), Arc::clone(&sink));
+        let b = carriers.open(&me, Arc::from("anon"), sink);
+        assert_ne!(a, b);
+        assert!(a.get() > 0 && b.get() > 0);
+    }
+
+    #[test]
+    fn an_emit_reaches_the_carrier_its_owner_holds() {
+        let carriers = LineCarriers::new();
+        let me = owner("mcp");
+        let (sink, seen) = recording();
+        let id = carriers.open(&me, Arc::from("key-1"), sink).get();
+        assert!(carriers.emit_from_plane(&me, id, b"{\"ping\":1}"));
+        assert_eq!(*seen.lock().unwrap(), vec![b"{\"ping\":1}".to_vec()]);
+        assert_eq!(carriers.dropped(), 0);
+        assert_eq!(carriers.emit(&me, id, b"x").as_deref(), Some("key-1"));
+    }
+
+    #[test]
+    fn another_instances_carrier_drops_the_emit_and_counts_it() {
+        let carriers = LineCarriers::new();
+        let (sink, seen) = recording();
+        let id = carriers.open(&owner("mcp"), Arc::from("anon"), sink).get();
+        assert!(!carriers.emit_from_plane(&owner("other"), id, b"x"));
+        assert!(
+            !carriers.emit_from_plane(&owner("mcp"), id, b"x"),
+            "a replacement with an equal name is another incarnation"
+        );
+        assert!(seen.lock().unwrap().is_empty());
+        assert_eq!(carriers.dropped(), 2);
+    }
+
+    #[test]
+    fn an_ended_or_unknown_carrier_drops_the_emit_and_counts_it() {
+        let carriers = LineCarriers::new();
+        let me = owner("mcp");
+        let (sink, seen) = recording();
+        let id = carriers.open(&me, Arc::from("anon"), sink).get();
+        assert!(carriers.is_open(&me, id));
+        assert!(carriers.end(id));
+        assert!(!carriers.end(id), "a carrier ends once");
+        assert!(!carriers.is_open(&me, id));
+        assert!(!carriers.emit_from_plane(&me, id, b"x"));
+        assert!(!carriers.emit_from_plane(&me, id + 1_000_000, b"x"));
+        assert!(seen.lock().unwrap().is_empty());
+        assert_eq!(carriers.dropped(), 2);
+    }
+
+    #[test]
+    fn a_writer_that_is_gone_ends_the_carrier() {
+        let carriers = LineCarriers::new();
+        let me = owner("mcp");
+        let id = carriers
+            .open(&me, Arc::from("anon"), Arc::new(|_: &[u8]| false))
+            .get();
+        assert!(!carriers.emit_from_plane(&me, id, b"x"));
+        assert!(!carriers.is_open(&me, id));
+        assert_eq!(carriers.dropped(), 1);
+    }
+}
