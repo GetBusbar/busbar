@@ -126,3 +126,169 @@ pub fn transport_verdict(accept: Accept, tls: u32, dest: &str) -> Verdict {
     let _ = (accept, tls, dest);
     Verdict::Verify
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Accept, Verdict, transport_verdict};
+    use crate::need::need_flag::{TLS_INBAND, TLS_MASK, TLS_MUTUAL, TLS_NONE, TLS_REQUIRED};
+
+    const VERIFIED_ONLY: Accept = Accept(0);
+    const PLAINTEXT: Accept = Accept(Accept::PLAINTEXT);
+    const UNVERIFIED: Accept = Accept(Accept::UNVERIFIED_TLS);
+    const BOTH: Accept = Accept(Accept::PLAINTEXT | Accept::UNVERIFIED_TLS);
+
+    /// TRANSPORT-SECURITY-POLICY §3 and §4: a TLS mode is verified unless the instance accepted
+    /// `unverified_tls`; TLS_NONE is refused unless it accepted `plaintext`; each accept bit admits
+    /// exactly what it names and neither implies the other.
+    #[test]
+    fn transport_verdict_truth_table() {
+        let dest = "db.internal:5432";
+        for tls in [TLS_REQUIRED, TLS_MUTUAL, TLS_INBAND] {
+            assert_eq!(
+                transport_verdict(VERIFIED_ONLY, tls, dest),
+                Verdict::Verify,
+                "{tls}"
+            );
+            assert_eq!(
+                transport_verdict(PLAINTEXT, tls, dest),
+                Verdict::Verify,
+                "{tls}"
+            );
+            assert_eq!(
+                transport_verdict(UNVERIFIED, tls, dest),
+                Verdict::WaiveVerify,
+                "{tls}"
+            );
+            assert_eq!(
+                transport_verdict(BOTH, tls, dest),
+                Verdict::WaiveVerify,
+                "{tls}"
+            );
+        }
+        assert_eq!(
+            transport_verdict(VERIFIED_ONLY, TLS_NONE, dest),
+            Verdict::Refuse
+        );
+        assert_eq!(
+            transport_verdict(UNVERIFIED, TLS_NONE, dest),
+            Verdict::Refuse
+        );
+        assert_eq!(transport_verdict(PLAINTEXT, TLS_NONE, dest), Verdict::Plain);
+        assert_eq!(transport_verdict(BOTH, TLS_NONE, dest), Verdict::Plain);
+    }
+
+    /// Policy §0 and §2: no loopback, `localhost` or unix-socket exemption. A unix socket carries no
+    /// TLS, so a TLS mode on a `unix:` dest is still plaintext.
+    #[test]
+    fn transport_verdict_has_no_loopback_or_unix_exemption() {
+        for dest in [
+            "127.0.0.1:5432",
+            "[::1]:5432",
+            "localhost:6379",
+            "unix:/run/postgresql/.s.PGSQL.5432",
+        ] {
+            assert_eq!(
+                transport_verdict(VERIFIED_ONLY, TLS_NONE, dest),
+                Verdict::Refuse,
+                "{dest}"
+            );
+            assert_eq!(
+                transport_verdict(UNVERIFIED, TLS_NONE, dest),
+                Verdict::Refuse,
+                "{dest}"
+            );
+            assert_eq!(
+                transport_verdict(PLAINTEXT, TLS_NONE, dest),
+                Verdict::Plain,
+                "{dest}"
+            );
+        }
+        let unix = "unix:/run/valkey.sock";
+        assert_eq!(
+            transport_verdict(VERIFIED_ONLY, TLS_REQUIRED, unix),
+            Verdict::Refuse
+        );
+        assert_eq!(
+            transport_verdict(UNVERIFIED, TLS_REQUIRED, unix),
+            Verdict::Refuse
+        );
+        assert_eq!(
+            transport_verdict(PLAINTEXT, TLS_REQUIRED, unix),
+            Verdict::Plain
+        );
+    }
+
+    /// Policy §2: a FETCH URL is judged by its scheme (`https://` = TLS, `http://` = none), whatever
+    /// the mode bits say, in any letter case.
+    #[test]
+    fn transport_verdict_judges_a_fetch_url_by_its_scheme() {
+        for url in [
+            "http://vault.internal:8200/v1/x",
+            "HTTP://127.0.0.1:4318/v1/traces",
+        ] {
+            for tls in [TLS_NONE, TLS_REQUIRED] {
+                assert_eq!(
+                    transport_verdict(VERIFIED_ONLY, tls, url),
+                    Verdict::Refuse,
+                    "{url}"
+                );
+                assert_eq!(
+                    transport_verdict(UNVERIFIED, tls, url),
+                    Verdict::Refuse,
+                    "{url}"
+                );
+                assert_eq!(
+                    transport_verdict(PLAINTEXT, tls, url),
+                    Verdict::Plain,
+                    "{url}"
+                );
+            }
+        }
+        for url in [
+            "https://vault.internal:8200/v1/x",
+            "HTTPS://collector:4318/",
+        ] {
+            for tls in [TLS_NONE, TLS_REQUIRED] {
+                assert_eq!(
+                    transport_verdict(VERIFIED_ONLY, tls, url),
+                    Verdict::Verify,
+                    "{url}"
+                );
+                assert_eq!(
+                    transport_verdict(PLAINTEXT, tls, url),
+                    Verdict::Verify,
+                    "{url}"
+                );
+                assert_eq!(
+                    transport_verdict(UNVERIFIED, tls, url),
+                    Verdict::WaiveVerify,
+                    "{url}"
+                );
+            }
+        }
+    }
+
+    /// Fail closed: a TLS mode the interface does not define is refused under any acceptance; bits
+    /// above the mode nibble (the egress class in 16..=19) do not change the mode.
+    #[test]
+    fn transport_verdict_refuses_an_undefined_tls_mode() {
+        for tls in TLS_INBAND + 1..=TLS_MASK {
+            for dest in ["db.internal:5432", "https://h/", "unix:/s"] {
+                assert_eq!(
+                    transport_verdict(BOTH, tls, dest),
+                    Verdict::Refuse,
+                    "{tls} {dest}"
+                );
+            }
+        }
+        let egress = 2 << 16;
+        assert_eq!(
+            transport_verdict(VERIFIED_ONLY, TLS_REQUIRED | egress, "h:1"),
+            Verdict::Verify
+        );
+        assert_eq!(
+            transport_verdict(VERIFIED_ONLY, TLS_NONE | egress, "h:1"),
+            Verdict::Refuse
+        );
+    }
+}
