@@ -318,6 +318,10 @@ mod product_pin_aliases;
 mod product_pin_former_names;
 
 #[cfg(test)]
+#[path = "tests/records_capture.rs"]
+mod records_capture_tests;
+
+#[cfg(test)]
 pub(crate) static PUBLISHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[cfg(test)]
