@@ -31,7 +31,7 @@ impl Durability {
         let entry = Entry::new(RecordClass::Transaction, body).at(linked_ms / 1_000, 0);
         let run = self
             .journal
-            .stage_run(&[entry])
+            .stage_audit_run(&[entry], linked.record().seq, linked.record().fingerprint.0)
             .map_err(|_| DurabilityLost::observed(token, StepName::Audit))?;
         self.record
             .advance_notary_key(&linked)
