@@ -105,11 +105,6 @@ async fn budget_plan_built_once() {
         "the unit's expected budget units are built once, at prepare_admission"
     );
     assert_eq!(
-        scope.count(Derive::Estimate),
-        1,
-        "the unit's estimate is computed once and the charge reads it"
-    );
-    assert_eq!(
         scope.count(Derive::ChainFor),
         1,
         "the key's budget chain is resolved once; the observation check, the charge and the \
@@ -145,11 +140,6 @@ async fn a_downgrade_rebuilds_the_budget_plan_for_its_new_route() {
         scope.count(Derive::BudgetUnits),
         1,
         "expected units do not depend on the route: built once and kept across the downgrade"
-    );
-    assert_eq!(
-        scope.count(Derive::Estimate),
-        2,
-        "the routed pool's estimate, then the downgrade pool's"
     );
     assert_eq!(
         scope.count(Derive::ChainFor),

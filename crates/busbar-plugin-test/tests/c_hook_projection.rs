@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K8C"]
+#[ignore = "blocked: the view builder (plugin-loader hook_door/port.rs C_HAS_* and S_STAGE* code) is private to HookDoor; encoding is unit-tested in plugin-loader encode/hook.rs; the hook-webrequest golden runs in its repo"]
 fn hook_views_round_trip_the_golden_decision() {
-    todo!("owner: W1-K8C (C-HOOK-PROJECTION)")
+    todo!("blocked: the view builder (plugin-loader hook_door/port.rs C_HAS_* and S_STAGE* code) is private to HookDoor; encoding is unit-tested in plugin-loader encode/hook.rs; the hook-webrequest golden runs in its repo (C-HOOK-PROJECTION)")
 }

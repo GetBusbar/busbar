@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K8A"]
+#[ignore = "owner: W1-K8A (blocked: W1-C1C remainder: the connector still drives framers over the old FramerDoor/Framing (compose.rs, framer.rs), not E_REFUSE/E_CLOSE; OUTSTANDING A6)"]
 fn close_reasons_core_arms() {
     todo!("owner: W1-K8A (C-TRANSPORT-CLOSE)")
 }

@@ -6,6 +6,7 @@
 
 mod common;
 
+use busbar_contract::json;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -279,7 +280,7 @@ fn pinned() -> String {
 struct DecodedExchange {
     status: String,
     headers: std::collections::BTreeMap<String, String>,
-    json: serde_json::Value,
+    json: json::Value,
 }
 
 fn decoded_exchange(wire: &str) -> Result<DecodedExchange, String> {
@@ -315,8 +316,8 @@ fn decoded_exchange(wire: &str) -> Result<DecodedExchange, String> {
         }
         _ => return Err("exactly one supported response framing is required".into()),
     };
-    let value = serde_json::from_slice(&decoded)
-        .map_err(|error| format!("invalid response JSON: {error}"))?;
+    let value =
+        json::parse_value(&decoded).map_err(|error| format!("invalid response JSON: {error}"))?;
     Ok(DecodedExchange {
         status,
         headers,

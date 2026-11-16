@@ -106,18 +106,18 @@ fn self_test_answers_rng_with_empty_out_and_no_fault() {
 /// Arms (a)-(c) through host_vt itself over the CRYPTO-SEAM stub backend (SelfTest from `fill_checked`, then from
 /// `hmac_sha256` and `ecdsa_p256` signing after N good calls), with `HOST_FAULTS[SELF_TEST]` moving (busbar#262).
 #[test]
-#[ignore = "owner: busbar#262 (host_vt over the stub backend)"]
+#[ignore = "owner: busbar#262 (host_vt over the stub backend); blocked (re-checked on dev 2026-11-16): host_vt over the stub crypto backend is not constructible from the facade on dev"]
 fn self_test_through_host_vt_on_the_stub_backend() {
     todo!("owner: busbar#262 (C-CRYPTO-SELFTEST)")
 }
 #[test]
-#[ignore = "owner: W1-L2"]
+#[ignore = "owner: W1-L2; blocked (re-checked on dev 2026-11-16): no test constructor for Registry<N> (Needs impl, ConfigBinder, Ceilings, a static Host) and no second-identity MIN-3 fixture image exist in busbar-plugin-test on dev"]
 fn one_crypto_self_test_failed_row_and_metric_within_a_tick() {
     todo!("owner: W1-L2 (C-CRYPTO-SELFTEST)")
 }
 
 #[test]
-#[ignore = "owner: W1-K8D"]
+#[ignore = "owner: W1-K8D; blocked (re-checked on dev 2026-11-16): the kernel admission path that reads error_codes_refused and the crypto self-test row is not on dev (OUTSTANDING row 5)"]
 fn self_test_reaches_each_port_as_failed_unavailable() {
     todo!("owner: W1-K8D (C-CRYPTO-SELFTEST)")
 }

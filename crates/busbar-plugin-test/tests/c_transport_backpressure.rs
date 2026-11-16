@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-C1C"]
+#[ignore = "owner: W1-C1C (blocked: W1-C1C remainder: the connector still drives framers over the old FramerDoor/Framing (compose.rs, framer.rs), not E_REFUSE/E_CLOSE; OUTSTANDING A6)"]
 fn backpressure_core_arms() {
     todo!("owner: W1-C1C (C-TRANSPORT-BACKPRESSURE)")
 }

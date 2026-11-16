@@ -151,13 +151,13 @@ fn the_macro_echo_and_the_settled_shim() {
 }
 
 #[test]
-#[ignore = "owner: W1-L2"]
+#[ignore = "blocked: no core-cfg conflict/secret round-trip/former-names driver reachable from this crate (loader migrate door only covers open shape); owner W1-L2"]
 fn core_cfg_conflicts_secret_round_trip_and_former_names_mismatch() {
     todo!("owner: W1-L2 (C-MIGRATE)")
 }
 
 #[test]
-#[ignore = "owner: W1-K9"]
+#[ignore = "blocked: write-back through boot is busbar root/migrate.rs (tests/migrate_seam.rs); busbar-plugin-test cannot depend on busbar; owner W1-K9"]
 fn the_settled_write_back_through_boot() {
     todo!("owner: W1-K9 (C-MIGRATE)")
 }

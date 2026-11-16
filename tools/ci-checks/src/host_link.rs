@@ -8,6 +8,7 @@
 use std::path::Path;
 use std::process::Command;
 
+use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
 use object::{Object, ObjectSection, ObjectSymbol};
 
 use super::Outcome;
@@ -110,7 +111,7 @@ pub(crate) fn run_cargo(dir: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 /// The workspace packages that build a `cdylib`, from `cargo metadata --no-deps`.
-pub(crate) fn cdylib_packages(metadata: &serde_json::Value) -> Vec<String> {
+pub(crate) fn cdylib_packages(metadata: &json::Value) -> Vec<String> {
     let mut out = Vec::new();
     for package in metadata["packages"].as_array().into_iter().flatten() {
         let ships = package["targets"]
@@ -144,8 +145,8 @@ pub(crate) fn no_host_link(args: &[String]) -> Outcome {
         dir,
         &["metadata", "--no-deps", "--format-version", "1", "--locked"],
     )?;
-    let metadata: serde_json::Value =
-        serde_json::from_str(&metadata).map_err(|error| format!("cargo metadata: {error}"))?;
+    let metadata: json::Value = json::parse_value(metadata.as_bytes())
+        .map_err(|error| format!("cargo metadata: {error}"))?;
     let mut findings = Vec::new();
     for package in cdylib_packages(&metadata) {
         let tree = run_cargo(

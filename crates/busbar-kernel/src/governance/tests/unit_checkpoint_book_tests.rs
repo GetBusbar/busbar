@@ -128,8 +128,6 @@ fn cost(groups: &[&str]) -> crate::cost::CostModel {
                         scope: None,
                         on_exhaust: None,
                         downgrade_to: None,
-                        admission: None,
-                        on_exhaustion: None,
                     }],
                     ..Default::default()
                 },
@@ -180,15 +178,12 @@ fn admit_while_book_held(
     cost: &crate::cost::CostModel,
     keys: &[&VirtualKey],
 ) -> Vec<Admit> {
-    let expected = std::collections::BTreeMap::new();
     let held = gov.hold_unit_checkpoint_book();
     std::thread::scope(|scope| {
         let (tx, rx) = mpsc::channel();
         scope.spawn(move || {
             for key in keys {
-                let answer = gov
-                    .try_admit_estimated_counts(cost, key, "", AT, &[], &expected)
-                    .map(drop);
+                let answer = gov.try_admit(cost, key, "", AT).map(drop);
                 let _ = tx.send(answer);
             }
         });
@@ -282,10 +277,7 @@ async fn recovered_index_matches_book_after_every_mutation() {
     let (gov, sink) = gov(vec![recovered(1, "group:A@total")]).await;
     let cost = cost(&["A", "B", "C", "D"]);
     let (a, b) = (key("A"), key("B"));
-    let admit = |key: &VirtualKey| {
-        gov.try_admit_estimated_counts(&cost, key, "", AT, &[], &Default::default())
-            .map(drop)
-    };
+    let admit = |key: &VirtualKey| gov.try_admit(&cost, key, "", AT).map(drop);
     assert_index_matches(&gov);
     assert_eq!(admit(&a), Err(budget_refusal("A")));
     assert_eq!(admit(&b), Ok(()));
@@ -333,9 +325,7 @@ async fn recovered_index_matches_book_after_every_mutation() {
         for _ in 0..4 {
             scope.spawn(|| loop {
                 let done = finished.load(Ordering::SeqCst);
-                let answer = gov
-                    .try_admit_estimated_counts(&cost, &d, "", AT, &[], &Default::default())
-                    .map(drop);
+                let answer = gov.try_admit(&cost, &d, "", AT).map(drop);
                 if done {
                     assert_eq!(answer, Err(budget_refusal("D")));
                     break;
@@ -384,10 +374,7 @@ async fn book_mutations_keep_derived_indexes_exact() {
     let (gov, _sink) = gov(Vec::new()).await;
     let cost = cost(&["A", "B", "C", "D"]);
     let c = key("C");
-    let admit = || {
-        gov.try_admit_estimated_counts(&cost, &c, "", AT, &[], &Default::default())
-            .map(drop)
-    };
+    let admit = || gov.try_admit(&cost, &c, "", AT).map(drop);
     let book = gov.unit_checkpoint_book();
     let blocked_c = recovered(10, "group:C@total");
 
@@ -470,8 +457,6 @@ fn chain_cost() -> crate::cost::CostModel {
             scope: None,
             on_exhaust: None,
             downgrade_to: None,
-            admission: None,
-            on_exhaustion: None,
         }],
         ..Default::default()
     };
@@ -496,17 +481,11 @@ async fn admission_visits(live: usize, recovered_unit: bool) -> u64 {
     stage_live(&gov, 1_000, live);
     let cost = chain_cost();
     let (a, b) = (key("A"), key("B"));
-    let expected = std::collections::BTreeMap::new();
     let before = gov.unit_checkpoint_visits();
-    assert_eq!(
-        gov.try_admit_estimated_counts(&cost, &b, "", AT, &[], &expected)
-            .map(drop),
-        Ok(())
-    );
+    assert_eq!(gov.try_admit(&cost, &b, "", AT).map(drop), Ok(()));
     if recovered_unit {
         assert_eq!(
-            gov.try_admit_estimated_counts(&cost, &a, "", AT, &[], &expected)
-                .map(drop),
+            gov.try_admit(&cost, &a, "", AT).map(drop),
             Err(budget_refusal("A"))
         );
     }

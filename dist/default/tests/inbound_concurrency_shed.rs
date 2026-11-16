@@ -6,6 +6,7 @@
 
 mod common;
 
+use busbar_contract::json;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -145,8 +146,8 @@ fn inbound_cap_sheds_the_excess_and_serves_the_admitted() {
             "the shed body is JSON"
         );
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&r.body).expect("valid refusal JSON"),
-            serde_json::from_str::<serde_json::Value>(SHED_BODY).unwrap(),
+            json::parse_value(r.body.as_bytes()).expect("valid refusal JSON"),
+            json::parse_value(SHED_BODY.as_bytes()).unwrap(),
             "the selected plane renders the complete native refusal envelope"
         );
     }

@@ -2,12 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 use crate::root::test_plugins as plugins;
 use std::sync::Arc;
-fn live_limits() -> (Option<String>, usize, usize) {
+fn live_limits() -> (Option<String>, usize) {
     std::thread::spawn(|| {
         (
             busbar_kernel::config::limits::installed().map(|l| format!("{l:?}")),
             busbar_kernel_egress::upstream::max_translate_body_bytes(),
-            busbar_kernel::hooks::hook_content_max_bytes(),
         )
     })
     .join()
@@ -19,7 +18,6 @@ fn tagged_limits(tag: u64) -> busbar_kernel::config::LimitsResolved {
     busbar_kernel::config::LimitsResolved {
         key_gauge_limit: 1_000 + n,
         request_body_max_bytes: (1 + n) * 1024 * 1024,
-        hook_content_max_bytes: 1_024 * (1 + n),
         upstream_error_body_max_bytes: 8_192 + n,
         default_probe_interval_secs: 20 + tag,
         default_probe_timeout_secs: 3 + tag,
@@ -122,11 +120,7 @@ async fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
     let before = live_limits();
     assert_eq!(
         before,
-        (
-            Some(format!("{running:?}")),
-            running.request_body_max_bytes,
-            running.hook_content_max_bytes
-        ),
+        (Some(format!("{running:?}")), running.request_body_max_bytes),
         "the live view reads the running generation's limits"
     );
     let mut refused = tagged_limits(2);
@@ -195,7 +189,6 @@ async fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
     let after = (
         Some(format!("{candidate:?}")),
         candidate.request_body_max_bytes,
-        candidate.hook_content_max_bytes,
     );
     assert_eq!(live_limits(), after, "the swapped-in generation's limits");
 

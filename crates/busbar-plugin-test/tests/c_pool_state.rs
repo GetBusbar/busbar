@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-C1A"]
+#[ignore = "blocked: pooled-conn ids go through busbar-core-connector, which is not a dependency of busbar-plugin-test; FakeNeeds minting is covered by fake_needs unit tests (W1-C1A)"]
 fn pooled_ids_through_the_connector() {
     todo!("owner: W1-C1A (C-POOL-STATE)")
 }
