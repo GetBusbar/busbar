@@ -113,7 +113,8 @@ pub struct InstanceSpec<'a> {
     pub identity: &'a str,
     pub name: &'a str,
     pub config_json: &'a [u8],
-    /// Round 8: parsed by the kernel from `limits` beside `module` (§12.22); `config_json` never contains it.
+    /// Round 8: core-owned limits, 0 = the kind default (there is no `limits` config key; the open's settled LIMITS
+    /// answer is applied in memory, §12.22); `config_json` never contains them.
     pub limits: InstanceLimits,
     /// Round 14: core's top-level `public_url` (None = unset), the same value for every instance. The registry
     /// writes it only at a D_PUBLIC_URL_PATH a plane image declared (§12.7 core values); every other kind ignores it.

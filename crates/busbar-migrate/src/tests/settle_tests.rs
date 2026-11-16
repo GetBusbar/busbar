@@ -86,32 +86,6 @@ fn an_answer_that_changes_nothing_writes_the_same_bytes() {
 }
 
 #[test]
-fn limits_fill_the_instance_and_an_operator_key_wins() {
-    let text = "config_version: 1\nstore: {module: m, limits: {timeout_ms: 1}}\n";
-    let frag = cfg(
-        section::LIMITS,
-        "",
-        r#"{"timeout_ms": 3000, "max_inflight": 8}"#,
-    );
-    let applied = apply(text, &[store(0, None, vec![frag])], false).unwrap();
-    let limits = tree(&applied).at("store").at("limits").clone();
-    assert_eq!(
-        limits.at("timeout_ms").as_u64(),
-        Some(1),
-        "the operator's key is never overwritten"
-    );
-    assert_eq!(limits.at("max_inflight").as_u64(), Some(8));
-    assert!(
-        applied
-            .report()
-            .iter()
-            .any(|line| line.contains("timeout_ms") && line.contains("operator")),
-        "{:?}",
-        applied.report()
-    );
-}
-
-#[test]
 fn limits_carry_an_empty_name_once_and_a_plaintext_key_is_not_a_mapping_target() {
     let named = cfg(section::LIMITS, "x", r#"{"timeout_ms": 1}"#);
     assert_eq!(
@@ -217,26 +191,6 @@ fn a_named_section_is_one_entry_when_two_instances_state_it_identically_else_ref
     )
     .unwrap_err();
     assert_eq!(clash.word(), "CONFIG");
-}
-
-#[test]
-fn trust_and_route_media_go_where_their_sections_say() {
-    let trust = cfg(section::TRUST_APPROVAL, "up1", r#"{"root": "r"}"#);
-    let media = cfg(section::ROUTE_MEDIA, "12", r#"{"inline": true}"#);
-    let applied = apply(STAMPED, &[store(0, None, vec![trust, media])], false).unwrap();
-    let tree = tree(&applied);
-    assert_eq!(
-        tree.at("trust").at("store").at("up1").at("root").as_str(),
-        Some("r")
-    );
-    assert_eq!(
-        tree.at("routes")
-            .at("12")
-            .at("media")
-            .at("inline")
-            .as_bool(),
-        Some(true)
-    );
 }
 
 /// C-LIFT: the slot's exact bytes become a planned 0600 secret file beside config.yaml and the slot a

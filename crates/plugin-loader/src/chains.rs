@@ -32,7 +32,7 @@ use busbar_plugin_abi::records::{
 use busbar_plugin_abi::types::{KindCode, Status};
 
 use crate::binder::{BindError, ConfigBinder};
-use crate::encode::settled::decode_settled;
+use crate::encode::settled::{decode_settled, settled_limits};
 use crate::instance::{
     BootPhase, CoreCfg, Described, ErrorBook, InstanceSpec, MetricInfo, OpenError, Registry,
     Settled, SlotLease, SlotRecord,
@@ -692,6 +692,7 @@ impl<N: Needs> Registry<N> {
             unbind,
             ..
         } = p;
+        let limits = settled_limits(s.limits, &answer.answer());
         let parts = InstanceParts {
             image,
             identity,
@@ -700,7 +701,7 @@ impl<N: Needs> Registry<N> {
             slot: lease.slot(),
             cell: Arc::clone(lease.cell()),
             epoch: lease.epoch(),
-            limits: s.limits,
+            limits,
             max_out: self.max_out_of(&described),
             methods: described.methods,
             facts: described.facts,

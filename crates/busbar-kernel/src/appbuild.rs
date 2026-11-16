@@ -1415,27 +1415,16 @@ async fn open_config_store(
 /// The store's configured instance name: its config section key.
 pub const STORE_INSTANCE: &str = "store";
 
-/// The `<section>.<name>.limits` and `.insecure_transport` the operator stated for an instance (IF §12.22,
-/// TRANSPORT-SECURITY-POLICY §4), as the registry takes them: every number 0 (the kind's default) when no `limits`
-/// is stated, `accept` empty (verified TLS only) when no `insecure_transport` is.
+/// The limits of an instance as the registry takes them: every number 0 (the kind's default; there is no `limits`
+/// key, and the plugin's settled LIMITS answer is applied in memory at its open), `accept` from the instance's
+/// `insecure_transport` (TRANSPORT-SECURITY-POLICY §4), empty (verified TLS only) when none is stated.
 pub fn instance_limits(
     cfg: &config::RootCfg,
     section: &str,
     name: &str,
 ) -> busbar_plugin_abi::host_side::caller::InstanceLimits {
     let key: (Box<str>, Box<str>) = (Box::from(section), Box::from(name));
-    let mut limits = cfg
-        .min3
-        .limits
-        .get(&key)
-        .map_or_else(Default::default, |limits| {
-            busbar_plugin_abi::host_side::caller::InstanceLimits {
-                timeout_ms: limits.timeout_ms,
-                connect_timeout_ms: limits.connect_timeout_ms,
-                max_inflight: limits.max_inflight,
-                ..Default::default()
-            }
-        });
+    let mut limits = busbar_plugin_abi::host_side::caller::InstanceLimits::default();
     // TRANSPORT-SECURITY-POLICY §4: the instance's `insecure_transport`, absent = verified TLS only.
     if let Some(accepted) = cfg.min3.insecure_transport.get(&key) {
         limits.accept = accepted.accept;

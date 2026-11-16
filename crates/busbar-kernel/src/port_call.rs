@@ -24,8 +24,6 @@ use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::ports::{CallCx, PortError};
 use tokio::sync::Semaphore;
 
-use crate::config::min3::InstanceLimitsCfg;
-
 /// One instance's operator limits at its port call sites.
 #[derive(Debug)]
 pub struct PortGate {
@@ -39,12 +37,6 @@ impl PortGate {
     #[must_use]
     pub fn new(limits: InstanceLimits) -> Self {
         Self::of(limits.timeout_ms, limits.max_inflight)
-    }
-
-    /// From `<kind>.<name>.limits` as K7 parsed it.
-    #[must_use]
-    pub fn from_cfg(cfg: &InstanceLimitsCfg) -> Self {
-        Self::of(cfg.timeout_ms, cfg.max_inflight)
     }
 
     fn of(timeout_ms: u32, max_inflight: u32) -> Self {

@@ -57,9 +57,6 @@ pub struct StoreCfg {
     /// The module's own opaque settings, passed through verbatim as its config JSON.
     #[serde(default)]
     pub settings: busbar_contract::plugin_settings::Settings,
-    /// `limits` beside `module` (IF §12.22), as written: parsed and stripped by [`super::min3::parse_min3`].
-    #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
-    pub limits: Option<busbar_contract::yaml::Value>,
     /// `insecure_transport` beside `module` (TRANSPORT-SECURITY-POLICY §4), as written: parsed
     /// and stripped by [`super::min3::parse_min3`].
     #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
@@ -76,14 +73,11 @@ impl StoreCfg {
             module: &'a String,
             settings: F0,
             #[serde(skip_serializing_if = "Option::is_none")]
-            limits: Option<&'a busbar_contract::yaml::Value>,
-            #[serde(skip_serializing_if = "Option::is_none")]
             insecure_transport: Option<&'a busbar_contract::yaml::Value>,
         }
         View {
             module: &self.module,
             settings: self.settings.authoring(seal),
-            limits: self.limits.as_ref(),
             insecure_transport: self.insecure_transport.as_ref(),
         }
     }
@@ -136,9 +130,6 @@ pub struct SecretModuleCfg {
     /// built-in env/file modules before it crosses the ABI.
     #[serde(default)]
     pub settings: busbar_contract::plugin_settings::Settings,
-    /// `limits` beside the settings (IF §12.22), as written: parsed and stripped by [`super::min3::parse_min3`].
-    #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
-    pub limits: Option<busbar_contract::yaml::Value>,
     /// `insecure_transport` beside the settings (TRANSPORT-SECURITY-POLICY §4), as written: parsed
     /// and stripped by [`super::min3::parse_min3`].
     #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
@@ -154,13 +145,10 @@ impl SecretModuleCfg {
         struct View<'a, F0: Serialize> {
             settings: F0,
             #[serde(skip_serializing_if = "Option::is_none")]
-            limits: Option<&'a busbar_contract::yaml::Value>,
-            #[serde(skip_serializing_if = "Option::is_none")]
             insecure_transport: Option<&'a busbar_contract::yaml::Value>,
         }
         View {
             settings: self.settings.authoring(seal),
-            limits: self.limits.as_ref(),
             insecure_transport: self.insecure_transport.as_ref(),
         }
     }
@@ -546,9 +534,6 @@ pub struct ExportDefCfg {
     /// typed per module by busbar-core's `resolve_export`, so a typo inside it still fails boot loudly.
     #[serde(default)]
     pub settings: busbar_contract::plugin_settings::Settings,
-    /// `limits` beside `module` (IF §12.22), as written: parsed and stripped by [`super::min3::parse_min3`].
-    #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
-    pub limits: Option<busbar_contract::yaml::Value>,
     /// `insecure_transport` beside `module` (TRANSPORT-SECURITY-POLICY §4), as written: parsed
     /// and stripped by [`super::min3::parse_min3`].
     #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
@@ -568,8 +553,6 @@ impl ExportDefCfg {
             durable: &'a bool,
             settings: F0,
             #[serde(skip_serializing_if = "Option::is_none")]
-            limits: Option<&'a busbar_contract::yaml::Value>,
-            #[serde(skip_serializing_if = "Option::is_none")]
             insecure_transport: Option<&'a busbar_contract::yaml::Value>,
         }
         View {
@@ -578,7 +561,6 @@ impl ExportDefCfg {
             fields: &self.fields,
             durable: &self.durable,
             settings: self.settings.authoring(seal),
-            limits: self.limits.as_ref(),
             insecure_transport: self.insecure_transport.as_ref(),
         }
     }

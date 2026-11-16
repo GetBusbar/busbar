@@ -601,3 +601,8 @@ receives identity-provider settings, not deployment credential references.
 The upgrade boot folds the 1.5.5 overlay file into config.yaml and keeps the file as
 `<overlay>.1.5.5` ([the 1.5.5 overlay file](#the-155-overlay-file)); there is no separate import
 step, and a stamped boot never reads an overlay file.
+
+## Removed pre-release keys
+
+- `<kind>.<name>.limits` (`timeout_ms`, `connect_timeout_ms`, `max_inflight`, `stream_stall_ms`) on `store`, `secrets`, `identity-providers`, `hooks` and `export` instances: removed; each instance runs at its kind's defaults, and an upgrading plugin's own settled answer is applied in memory at its open, clamped to 600,000 ms and 65,535 in flight, never written to config.yaml. Hooks keep `timeout_ms`. A config that sets it is refused as an unknown key.
+- `routes.<id>.auth_instances`, `routes.<id>.media` and `trust.<instance>.<name>` filings: removed; the upgrade no longer writes them. A route's auth chain is its derived default, media stays in `streams:`, and approvals stay in the plane's registrations. A config that sets them is refused as an unknown key.
