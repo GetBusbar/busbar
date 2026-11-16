@@ -79,3 +79,7 @@ pub use busbar_contract::{
 pub fn host() -> Host {
     Host::new(test_caller_binding())
 }
+
+#[cfg(all(test, feature = "target-sockets"))]
+#[path = "host_target/socket_tests.rs"]
+mod socket_tests;
