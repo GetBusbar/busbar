@@ -16,10 +16,6 @@ use busbar_plugin_abi::records::{RecErr, Records, Reply, Writer};
 
 use super::*;
 
-fn seal() {
-    let _ = install_seal(Box::new(busbar_contract::plugin::TestKernelSeal));
-}
-
 fn address(space: u8, key: &[u8]) -> Address {
     Address {
         namespace: [space; 16],
@@ -85,10 +81,9 @@ fn the_slot_namespace_is_the_one_the_store_kind_pins() {
 
 #[test]
 fn a_candidate_encodes_to_the_records_the_store_decodes() {
-    seal();
     let c = prepared();
     let mut w = Reply::new();
-    encode_candidate(&mut w, &c, &key()).unwrap();
+    encode_candidate(&mut w, &c, &key(), &busbar_contract::plugin::TestKernelSeal).unwrap();
     let got = decode_commit(Records::new(w.as_bytes())).unwrap();
     assert_eq!(got.head.slot, CommitSlot::Slotted { slot: 4, seq: 9 });
     assert_eq!(got.head.id.dataset, [1; 16]);

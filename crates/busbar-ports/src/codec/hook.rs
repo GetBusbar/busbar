@@ -8,8 +8,8 @@ use busbar_plugin_abi::kinds::hook::hook::{
 };
 use busbar_plugin_abi::records::{tag as gtag, Full, RecErr, Records, Reply, Writer};
 
-use crate::ports::hook::{BudgetIn, CandidateIn, CostTermIn, HookView};
-use crate::ports::FactRef;
+use crate::hook::{BudgetIn, CandidateIn, CostTermIn, HookView};
+use crate::FactRef;
 
 /// The most D_WORD items one describe answer may carry.
 const MAX_WORDS: usize = 8;
@@ -147,8 +147,8 @@ fn budget(w: &mut impl Writer, b: &BudgetIn<'_>) -> Result<(), Full> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ports::hook::{BudgetIn, CandidateIn, CostTermIn};
-    use crate::ports::FactRef;
+    use crate::hook::{BudgetIn, CandidateIn, CostTermIn};
+    use crate::FactRef;
     use busbar_plugin_abi::kinds::hook::hook::{
         self as abi, tag, BudgetRec, CandidateRec, CostTermRec, Points,
     };

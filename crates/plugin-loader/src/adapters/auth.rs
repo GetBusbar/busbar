@@ -26,13 +26,14 @@ use busbar_plugin_abi::records::{tag, FactRec, Full, RecErr, Records, Reply, Wri
 use busbar_plugin_abi::types::{Bytes, Pair, Slice, Status, Str};
 use tokio::sync::OnceCell;
 
-use crate::encode::auth as enc;
-use crate::instance::{ErrorBook, PluginCode};
-use crate::ports::auth::{
+use crate::instance::ErrorBook;
+use busbar_ports::auth::{
     decode_login_identity, decode_verify_ok, AuthIn, AuthPort, Identity, LoginAnswer, LoginIn,
     OutboundAnswer, ServeIn, ServeOut, UpstreamIn, Verdict, Verify, VerifyOk,
 };
-use crate::ports::{CallCx, PortError};
+use busbar_ports::codec::auth as enc;
+use busbar_ports::PluginCode;
+use busbar_ports::{CallCx, PortError};
 
 /// What the adapter asks core for while it settles a verify: the issued-credential lookup (IF §12.8
 /// `IssuedCredentials::lookup`) and the replay claim (§12.11 `ReplayGuard::claim`). The kernel implements it over

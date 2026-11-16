@@ -16,7 +16,7 @@ use busbar_contract::auth::LoginOutcome;
 use busbar_kernel::auth::login_facts::login_failure;
 use busbar_plugin_abi::auth::{BAD_CREDENTIAL, SECURITY_CHECK};
 use busbar_plugin_abi::fail::CallError;
-use busbar_plugin_loader::ports::PortError;
+use busbar_ports::PortError;
 
 fn failed(retry_after_s: Option<u64>) -> PortError {
     PortError::Failed {

@@ -10,8 +10,8 @@
 use busbar_contract::crypto::Sha256;
 use busbar_plugin_abi::auth::KEYS_STALE;
 use busbar_plugin_abi::types::Pair;
-use busbar_plugin_loader::ports::auth::{AuthIn, AuthPort, Identity, Verdict, Verify};
-use busbar_plugin_loader::ports::{CallCx, PortError};
+use busbar_ports::auth::{AuthIn, AuthPort, Identity, Verdict, Verify};
+use busbar_ports::{CallCx, PortError};
 
 use super::verdicts::{eligible, CredentialHash, VerdictCache, VerdictGet, VerdictKey};
 

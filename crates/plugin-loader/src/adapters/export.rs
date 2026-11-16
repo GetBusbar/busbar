@@ -34,12 +34,12 @@ use busbar_plugin_abi::records::Records;
 use busbar_plugin_abi::records::{tag as generic, RecErr};
 use busbar_plugin_abi::types::{KindCode, Status};
 
-use crate::encode::export::{
+use crate::instance::ErrorBook;
+use busbar_ports::codec::export::{
     decode_ceiling, decode_delivered, decode_delivery, encode_batch, encode_snapshot,
 };
-use crate::instance::ErrorBook;
-use crate::ports::export::{Custody, Delivered, ExportPort, FamilyIn, RecorderNeeds, ScopeInfo};
-use crate::ports::{CallCx, PortError};
+use busbar_ports::export::{Custody, Delivered, ExportPort, FamilyIn, RecorderNeeds, ScopeInfo};
+use busbar_ports::{CallCx, PortError};
 
 // Round 28/29/33: the ten STREAM_* numbers are pinned to core's `ExportStream` (the enum's one home is
 // `busbar_contract::export_stream`), so a renumbering on either side is a compile error here.

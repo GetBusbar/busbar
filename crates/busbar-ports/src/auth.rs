@@ -12,7 +12,7 @@ use busbar_plugin_abi::host_side::caller::BoxFut;
 use busbar_plugin_abi::records::{tag, FactRec, Full, Rec, RecErr, Records, Reply, U64Rec, Writer};
 use busbar_plugin_abi::types::Pair;
 
-use crate::ports::{CallCx, PortError};
+use crate::{CallCx, PortError};
 
 // W0-ABI: the IF types the secret bytes of `LoginAnswer` and `OutboundAnswer` as `zeroize::Zeroizing<Vec<u8>>`;
 // the workspace bans `Zeroizing` crate-wide (clippy-crate-wide/clippy.toml, owner 2026-11-14), so the stub uses
@@ -122,13 +122,13 @@ impl Identity {
 }
 
 /// The longest REPLAY claim key (§8.3 ReplayRec) and the ttl clamp core applies to it.
-pub(crate) const REPLAY_KEY_MAX: usize = 256;
-pub(crate) const REPLAY_TTL_S: core::ops::RangeInclusive<u64> = 1..=86_400;
+pub const REPLAY_KEY_MAX: usize = 256;
+pub const REPLAY_TTL_S: core::ops::RangeInclusive<u64> = 1..=86_400;
 
 /// What one OK verify / verify_io answer said (§8.3): an identity (with or without a REPLAY claim the adapter
 /// still has to win), or ISSUED_WANTED with the credential id core is asked to look up.
 #[derive(Debug)]
-pub(crate) enum VerifyOk {
+pub enum VerifyOk {
     Identity(Identity),
     IssuedWanted(Box<str>),
 }
@@ -138,7 +138,7 @@ pub(crate) enum VerifyOk {
 /// FACT(F_CACHE_S)?, FACT(F_EXPIRES_AT_S)?, REPLAY? in any order. ISSUED_WANTED stands alone. Generic METRIC
 /// records are skipped (they are decoded once, by `decode_metrics`). Every other shape is RecErr, which the
 /// adapter turns into a FAULT (BadRecords / UnknownTag).
-pub(crate) fn decode_verify_ok(records: Records<'_>) -> Result<VerifyOk, RecErr> {
+pub fn decode_verify_ok(records: Records<'_>) -> Result<VerifyOk, RecErr> {
     let mut w = Reply::new();
     let mut id_len: Option<usize> = None;
     let mut subject = false;
@@ -218,7 +218,7 @@ pub(crate) fn decode_verify_ok(records: Records<'_>) -> Result<VerifyOk, RecErr>
 }
 
 /// Decodes the identity of an OK login answer (ID_* only; no STRIP, FACT or REPLAY belongs there, §8.3).
-pub(crate) fn decode_login_identity(records: Records<'_>) -> Result<Identity, RecErr> {
+pub fn decode_login_identity(records: Records<'_>) -> Result<Identity, RecErr> {
     match decode_verify_ok(records)? {
         VerifyOk::Identity(id) if id.recs.len() == id.id_len as usize && id.replay.is_none() => {
             Ok(id)

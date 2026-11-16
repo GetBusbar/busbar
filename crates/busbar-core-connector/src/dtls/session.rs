@@ -31,10 +31,10 @@ use busbar_kernel::media::Lines;
 use busbar_kernel::plugin_records::RecordsDenied;
 use busbar_plugin_abi::kinds::transport::transport as wire;
 use busbar_plugin_abi::records::{tag, Records};
-use busbar_plugin_loader::ports::transport::{
+use busbar_ports::transport::{
     ConnIn, TransportEvent, TransportOut, TransportPort, TransportSession,
 };
-use busbar_plugin_loader::ports::PortError;
+use busbar_ports::PortError;
 use foldhash::HashMap;
 
 use super::{Association, Failure, IceCredentials, Role, SessionCert, SrtpKeying, Up, Verdict};

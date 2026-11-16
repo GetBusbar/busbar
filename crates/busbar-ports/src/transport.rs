@@ -6,7 +6,7 @@
 
 use busbar_plugin_abi::records::Records;
 
-use crate::ports::PortError;
+use crate::PortError;
 
 pub type TransportSession = busbar_plugin_abi::kinds::transport::transport::SessionHandle;
 

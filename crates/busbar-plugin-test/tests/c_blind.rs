@@ -10,9 +10,9 @@
 use std::time::{Duration, Instant};
 
 use busbar_plugin_abi::host_side::caller::CallStack;
-use busbar_plugin_loader::ports::{CallCx, PortError};
 use busbar_plugin_test::fake_needs::FakeNeeds;
 use busbar_plugin_test::suites::harness::Harness;
+use busbar_ports::{CallCx, PortError};
 
 use crate::min3_second::{self as fx, ALIAS, ALIAS_WORDS, PROBE, PROBE_FORMER};
 
@@ -144,7 +144,7 @@ fn no_stamp_name_reaches_a_deliver_batch_or_render_snapshot() {
 #[test]
 fn a_stamp_name_appears_only_inside_plugin_diag() {
     use busbar_kernel::plugin_text::PluginText;
-    use busbar_plugin_loader::instance::PluginCode;
+    use busbar_ports::PluginCode;
 
     let code = PluginCode {
         plugin: "acme-auth",
