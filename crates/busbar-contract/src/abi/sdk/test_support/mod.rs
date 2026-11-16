@@ -184,8 +184,10 @@ all_zero!(slot_out:
 // SAFETY (every row below, reviewed field by field): each is `#[repr(C)]` plain data whose fields
 // are integers, raw pointers, `Option<extern "C" fn>` (`None` is the all-zero niche), or another
 // struct of this list (`AbiStr`, `Blob`, `Span`, `Field`). `SignalEntry`'s `value` is a
-// `#[repr(C)]` union of integers, an `f64` and an `AbiStr`, every one valid at all-zero. No
-// `bool`, enum, reference, `NonNull` or non-`Option` function pointer appears in any of them.
+// `#[repr(C)]` union of integers, an `f64` and an `AbiStr`, every one valid at all-zero. The
+// scrape rows (`ScrapeLabel`, `ScrapeSample`, `ScrapeFamily`) are `AbiStr`s, raw pointers,
+// `usize`s, a `u8` and a `[u8; 7]`. No `bool`, enum, reference, `NonNull` or non-`Option`
+// function pointer appears in any of them.
 all_zero!(row:
     crate::abi::mechanism::call::AbiStr,
     crate::abi::mechanism::call::Blob,
@@ -196,6 +198,9 @@ all_zero!(row:
     crate::abi::export::CheckInstance,
     crate::abi::auth::StripName,
     crate::abi::auth::FieldSpan,
+    crate::abi::export::ScrapeLabel,
+    crate::abi::export::ScrapeSample,
+    crate::abi::export::ScrapeFamily,
     crate::abi::hook::SignalEntry,
     crate::abi::hook::MessageView,
     crate::abi::plane::OutField,
