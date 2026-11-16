@@ -29,7 +29,7 @@ use busbar_plugin_abi::host_side::needs::{
 };
 
 /// DRY_RUN never receives a serving capability or performs I/O.
-struct DeniedNeeds;
+pub(crate) struct DeniedNeeds;
 impl Needs for DeniedNeeds {
     async fn open(
         &self,
@@ -425,6 +425,12 @@ pub(crate) struct OwnedSpec {
 }
 
 impl OwnedSpec {
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+    pub(crate) fn identity(&self) -> &str {
+        &self.identity
+    }
     pub(crate) fn new(s: &InstanceSpec<'_>) -> Self {
         OwnedSpec {
             identity: s.identity.to_owned(),
@@ -560,6 +566,15 @@ impl Registry {
         s: &InstanceSpec<'_>,
         kind: KindCode,
     ) -> Result<Prepared, OpenError> {
+        self.prepare_with_id(s, kind, self.ids.next()?).await
+    }
+
+    async fn prepare_with_id(
+        &self,
+        s: &InstanceSpec<'_>,
+        kind: KindCode,
+        id: u64,
+    ) -> Result<Prepared, OpenError> {
         let entry = self.entry_of(s.identity).ok_or_else(|| {
             OpenError::Unknown(format!(
                 "{}: no admitted plugin answers to module {}",
@@ -587,7 +602,6 @@ impl Registry {
                 .filter_map(|(_, b)| core::str::from_utf8(b).ok())
                 .collect()
         };
-        let id = self.ids.next()?;
         let bound = self
             .binder
             .bind(
@@ -735,14 +749,29 @@ impl Registry {
     /// The generic open (§11.2): prepare, run the `open` chain under a leased slot, and on OK + INSTANCE build the
     /// `Instance` in the same poll (§10.4), keep the settled answer for the write-back (round 31) and tether the
     /// binding and the lease to the instance. A REFUSED or FAILED answer is the open's error.
-    pub(crate) async fn open_instance<K: Kind, N: Needs>(
+    pub(crate) async fn open_reserved_instance<K: Kind, N: Needs>(
         &self,
-        s: &InstanceSpec<'_>,
+        reserved: crate::instance::PreparedInstance,
         needs: &Arc<N>,
     ) -> Result<Opened, OpenError> {
-        let kind = K::CODE;
-        let p = self.prepare(s, kind).await?;
-        let lease = self.lease_for(s, &p, kind);
+        let crate::instance::PreparedInstance {
+            owner,
+            spec: owned,
+            id,
+            kind,
+            lease,
+        } = reserved;
+        let s = &owned.spec();
+        if kind != K::CODE {
+            return Err(plan_error("reserved instance has another kind".into()));
+        }
+        if !Arc::ptr_eq(&owner, &self.reservation_owner) || !Arc::ptr_eq(lease.table(), &self.slots)
+        {
+            return Err(plan_error(
+                "reserved instance belongs to another process".into(),
+            ));
+        }
+        let p = self.prepare_with_id(s, kind, id).await?;
         let finished = self.run_open::<K, N>(s, &p, &lease, 0, &**needs).await?;
         let Finished { answer, instance } = finished;
         let (status, scrub, errors) = (

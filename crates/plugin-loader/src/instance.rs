@@ -263,6 +263,20 @@ impl ImagesBuilder {
     }
 }
 impl Images {
+    pub fn identities(&self) -> impl Iterator<Item = &str> {
+        self.entries.iter().map(|entry| entry.identity.as_ref())
+    }
+    pub fn names(&self, identity: &str) -> Vec<&str> {
+        self.entries
+            .iter()
+            .find(|entry| entry.identity.as_ref() == identity)
+            .map(|entry| {
+                std::iter::once(entry.identity.as_ref())
+                    .chain(entry.former_names.iter().map(|name| name.as_ref()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
     /// Create an independent candidate sharing the admitted image leases, never mutating this snapshot.
     pub fn extend(&self) -> ImagesBuilder {
         ImagesBuilder {
@@ -418,6 +432,7 @@ impl Images {
 }
 
 pub struct Registry {
+    pub(crate) reservation_owner: Arc<()>,
     pub(crate) host: &'static Host,
     pub(crate) binder: Arc<dyn ConfigBinder>,
     pub(crate) ceilings: Ceilings,
@@ -463,6 +478,36 @@ struct Applied {
     public_url: Option<String>,
     caller_upstreams: Vec<Box<str>>,
     version: u64,
+}
+
+/// One non-reusable runtime identity and slot, reserved before building the directory.
+/// Its private fields prevent callers manufacturing instance authority.
+pub struct PreparedInstance {
+    pub(crate) owner: Arc<()>,
+    pub(crate) spec: OwnedSpec,
+    pub(crate) id: u64,
+    pub(crate) kind: KindCode,
+    pub(crate) lease: SlotLease,
+}
+impl PreparedInstance {
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+    pub fn slot(&self) -> u32 {
+        self.lease.slot()
+    }
+    pub fn kind(&self) -> KindCode {
+        self.kind
+    }
+    pub fn name(&self) -> &str {
+        self.spec.name()
+    }
+    pub fn identity(&self) -> &str {
+        self.spec.identity()
+    }
+    pub fn spec(&self) -> InstanceSpec<'_> {
+        self.spec.spec()
+    }
 }
 
 /// `config_json` is the operator's config for this instance as core holds it (secret references with their
@@ -517,6 +562,7 @@ impl Registry {
         ids: Arc<crate::process::InstanceIds>,
     ) -> Self {
         Registry {
+            reservation_owner: Arc::new(()),
             host: images.host,
             binder,
             ceilings: images.ceilings.clone(),
@@ -526,6 +572,35 @@ impl Registry {
             applied: Mutex::new(HashMap::new()),
             settled: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Reserve before S7; dropping a failed candidate never returns its process ID.
+    pub fn reserve(&self, spec: &InstanceSpec<'_>) -> Result<PreparedInstance, OpenError> {
+        let entry = self.entry_of(spec.identity).ok_or_else(|| {
+            OpenError::Unknown(format!(
+                "{}: no admitted plugin answers to module {}",
+                spec.name, spec.identity
+            ))
+        })?;
+        let id = self.ids.next()?;
+        let kind = entry.described.kind;
+        let lease = self.slots.alloc(
+            SlotRecord {
+                kind,
+                name: Arc::from(spec.name),
+                scrub: Arc::new(Scrub::new()),
+                errors: entry.errors,
+                undeclared_warned: AtomicBool::new(false),
+            },
+            &entry.ceilings,
+        );
+        Ok(PreparedInstance {
+            owner: Arc::clone(&self.reservation_owner),
+            spec: OwnedSpec::new(spec),
+            id,
+            kind,
+            lease,
+        })
     }
 
     /// The registry's slot table (the watchdog thread and the adapters' leases).
@@ -703,11 +778,25 @@ impl Registry {
         needs: &Arc<N>,
         seal: StoreSeal,
     ) -> BoxFut<'_, Result<StoreHandle, OpenError>> {
-        let owned = OwnedSpec::new(s);
+        match self.reserve(s) {
+            Ok(prepared) => self.open_store_reserved(prepared, needs, seal),
+            Err(error) => Box::pin(async move { Err(error) }),
+        }
+    }
+
+    pub fn open_store_reserved<N: Needs>(
+        &self,
+        prepared: PreparedInstance,
+        needs: &Arc<N>,
+        seal: StoreSeal,
+    ) -> BoxFut<'_, Result<StoreHandle, OpenError>> {
+        let owned = OwnedSpec::new(&prepared.spec());
         let needs = Arc::clone(needs);
         Box::pin(async move {
             let spec = owned.spec();
-            let opened = self.open_instance::<k::Store, N>(&spec, &needs).await?;
+            let opened = self
+                .open_reserved_instance::<k::Store, N>(prepared, &needs)
+                .await?;
             let proxy =
                 busbar_plugin_abi::store::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
             let adapter = crate::adapters::store::StoreAdapter::new(
@@ -728,11 +817,24 @@ impl Registry {
         s: &InstanceSpec<'_>,
         needs: &Arc<N>,
     ) -> BoxFut<'_, Result<Arc<dyn SecretPort>, OpenError>> {
-        let owned = OwnedSpec::new(s);
+        match self.reserve(s) {
+            Ok(prepared) => self.open_secret_reserved(prepared, needs),
+            Err(error) => Box::pin(async move { Err(error) }),
+        }
+    }
+
+    pub fn open_secret_reserved<N: Needs>(
+        &self,
+        prepared: PreparedInstance,
+        needs: &Arc<N>,
+    ) -> BoxFut<'_, Result<Arc<dyn SecretPort>, OpenError>> {
+        let owned = OwnedSpec::new(&prepared.spec());
         let needs = Arc::clone(needs);
         Box::pin(async move {
             let spec = owned.spec();
-            let opened = self.open_instance::<k::Secret, N>(&spec, &needs).await?;
+            let opened = self
+                .open_reserved_instance::<k::Secret, N>(prepared, &needs)
+                .await?;
             let proxy = busbar_plugin_abi::secret::Proxy::bind(opened.instance)
                 .ok_or_else(not_this_kind)?;
             self.remember(&spec, KindCode::Secret, &needs, None);
@@ -749,11 +851,24 @@ impl Registry {
         s: &InstanceSpec<'_>,
         needs: &Arc<N>,
     ) -> BoxFut<'_, Result<Arc<dyn AuthPort>, OpenError>> {
-        let owned = OwnedSpec::new(s);
+        match self.reserve(s) {
+            Ok(prepared) => self.open_auth_reserved(prepared, needs),
+            Err(error) => Box::pin(async move { Err(error) }),
+        }
+    }
+
+    pub fn open_auth_reserved<N: Needs>(
+        &self,
+        prepared: PreparedInstance,
+        needs: &Arc<N>,
+    ) -> BoxFut<'_, Result<Arc<dyn AuthPort>, OpenError>> {
+        let owned = OwnedSpec::new(&prepared.spec());
         let needs = Arc::clone(needs);
         Box::pin(async move {
             let spec = owned.spec();
-            let opened = self.open_instance::<k::Auth, N>(&spec, &needs).await?;
+            let opened = self
+                .open_reserved_instance::<k::Auth, N>(prepared, &needs)
+                .await?;
             let proxy =
                 busbar_plugin_abi::auth::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
             let frame = chains::frame(&opened.described.items);
@@ -779,11 +894,24 @@ impl Registry {
         s: &InstanceSpec<'_>,
         needs: &Arc<N>,
     ) -> BoxFut<'_, Result<Arc<dyn HookPort>, OpenError>> {
-        let owned = OwnedSpec::new(s);
+        match self.reserve(s) {
+            Ok(prepared) => self.open_hook_reserved(prepared, needs),
+            Err(error) => Box::pin(async move { Err(error) }),
+        }
+    }
+
+    pub fn open_hook_reserved<N: Needs>(
+        &self,
+        prepared: PreparedInstance,
+        needs: &Arc<N>,
+    ) -> BoxFut<'_, Result<Arc<dyn HookPort>, OpenError>> {
+        let owned = OwnedSpec::new(&prepared.spec());
         let needs = Arc::clone(needs);
         Box::pin(async move {
             let spec = owned.spec();
-            let opened = self.open_instance::<k::Hook, N>(&spec, &needs).await?;
+            let opened = self
+                .open_reserved_instance::<k::Hook, N>(prepared, &needs)
+                .await?;
             let proxy =
                 busbar_plugin_abi::hook::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
             let points = opened
@@ -813,11 +941,24 @@ impl Registry {
         s: &InstanceSpec<'_>,
         needs: &Arc<N>,
     ) -> BoxFut<'_, Result<Arc<dyn ExportPort>, OpenError>> {
-        let owned = OwnedSpec::new(s);
+        match self.reserve(s) {
+            Ok(prepared) => self.open_export_reserved(prepared, needs),
+            Err(error) => Box::pin(async move { Err(error) }),
+        }
+    }
+
+    pub fn open_export_reserved<N: Needs>(
+        &self,
+        prepared: PreparedInstance,
+        needs: &Arc<N>,
+    ) -> BoxFut<'_, Result<Arc<dyn ExportPort>, OpenError>> {
+        let owned = OwnedSpec::new(&prepared.spec());
         let needs = Arc::clone(needs);
         Box::pin(async move {
             let spec = owned.spec();
-            let opened = self.open_instance::<k::Export, N>(&spec, &needs).await?;
+            let opened = self
+                .open_reserved_instance::<k::Export, N>(prepared, &needs)
+                .await?;
             let proxy = busbar_plugin_abi::export::Proxy::bind(Arc::clone(&opened.instance))
                 .ok_or_else(not_this_kind)?;
             let frame = chains::frame(&opened.described.items);
@@ -849,11 +990,24 @@ impl Registry {
         s: &InstanceSpec<'_>,
         needs: &Arc<N>,
     ) -> BoxFut<'_, Result<Arc<dyn PlanePort>, OpenError>> {
-        let owned = OwnedSpec::new(s);
+        match self.reserve(s) {
+            Ok(prepared) => self.open_plane_reserved(prepared, needs),
+            Err(error) => Box::pin(async move { Err(error) }),
+        }
+    }
+
+    pub fn open_plane_reserved<N: Needs>(
+        &self,
+        prepared: PreparedInstance,
+        needs: &Arc<N>,
+    ) -> BoxFut<'_, Result<Arc<dyn PlanePort>, OpenError>> {
+        let owned = OwnedSpec::new(&prepared.spec());
         let needs = Arc::clone(needs);
         Box::pin(async move {
             let spec = owned.spec();
-            let opened = self.open_instance::<k::Plane, N>(&spec, &needs).await?;
+            let opened = self
+                .open_reserved_instance::<k::Plane, N>(prepared, &needs)
+                .await?;
             let proxy =
                 busbar_plugin_abi::plane::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
             let frame = chains::frame(&opened.described.items);
@@ -881,11 +1035,24 @@ impl Registry {
         s: &InstanceSpec<'_>,
         needs: &Arc<N>,
     ) -> BoxFut<'_, Result<Arc<dyn TransportPort>, OpenError>> {
-        let owned = OwnedSpec::new(s);
+        match self.reserve(s) {
+            Ok(prepared) => self.open_transport_reserved(prepared, needs),
+            Err(error) => Box::pin(async move { Err(error) }),
+        }
+    }
+
+    pub fn open_transport_reserved<N: Needs>(
+        &self,
+        prepared: PreparedInstance,
+        needs: &Arc<N>,
+    ) -> BoxFut<'_, Result<Arc<dyn TransportPort>, OpenError>> {
+        let owned = OwnedSpec::new(&prepared.spec());
         let needs = Arc::clone(needs);
         Box::pin(async move {
             let spec = owned.spec();
-            let opened = self.open_instance::<k::Transport, N>(&spec, &needs).await?;
+            let opened = self
+                .open_reserved_instance::<k::Transport, N>(prepared, &needs)
+                .await?;
             let proxy = busbar_plugin_abi::transport::Proxy::bind(opened.instance)
                 .ok_or_else(not_this_kind)?;
             let protocols: Box<[Box<str>]> = opened
@@ -1072,6 +1239,38 @@ impl Registry {
                 held.version = version;
             }
             Ok(Reconfigured::Opened(port))
+        })
+    }
+
+    /// Reopen the saved config under exactly the Needs retained by its last successful open.
+    /// Rotation does not consume a pushed configuration version (HOST §3.3 a).
+    /// Stores require a restart because replacing them requires rebuilding core state.
+    pub fn reopen(&self, kind: KindCode, name: &str) -> BoxFut<'_, Result<OpenedPort, OpenError>> {
+        let stored = self
+            .applied
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&(kind, Box::from(name)))
+            .cloned();
+        let name = name.to_owned();
+        Box::pin(async move {
+            if kind == KindCode::Store {
+                return Err(OpenError::Unknown(
+                    "store credential rotation requires a restart".into(),
+                ));
+            }
+            let stored = stored.ok_or_else(|| {
+                OpenError::Unknown(format!("{name}: no open {kind:?} instance by that name"))
+            })?;
+            let spec = InstanceSpec {
+                identity: &stored.identity,
+                name: &name,
+                config_json: &stored.config,
+                limits: stored.limits,
+                public_url: stored.public_url.as_deref(),
+                caller_upstreams: &stored.caller_upstreams,
+            };
+            stored.opener.open(self, OwnedSpec::new(&spec), kind).await
         })
     }
 
@@ -1785,6 +1984,9 @@ impl Drop for SlotLease {
 }
 
 impl SlotLease {
+    pub(crate) fn table(&self) -> &Arc<SlotTable> {
+        &self.table
+    }
     pub fn slot(&self) -> u32 {
         self.slot
     }
