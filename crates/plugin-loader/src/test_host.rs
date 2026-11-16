@@ -908,8 +908,7 @@ impl<In: InFrame + Pairs, Out: OutFrame> Pending<In, Out> {
         let (Some(loans), Some(frame)) = (self.loans.as_mut(), self.frame.as_mut()) else {
             unreachable!("a pending crossing holds its loans until it is spent")
         };
-        // RED (STH-ROWS D-8): the loans are not grown yet.
-        let _ = grow;
+        grow(&mut *loans);
         frame.input = loans.seal();
         self
     }
@@ -1133,12 +1132,11 @@ impl<'o, In, Out> Done<'o, In, Out> {
         Self {
             lane: Some(lane),
             out: settled.frame.map(|f| f.out),
-            // RED (STH-ROWS D-6): the settled answer is not read yet.
-            outcome: Outcome::Fault,
+            outcome: settled.outcome,
             error: settled.error,
             lease: settled.lease,
-            short: false,
-            disposition: None,
+            short: settled.short,
+            disposition: settled.disposition,
         }
     }
 

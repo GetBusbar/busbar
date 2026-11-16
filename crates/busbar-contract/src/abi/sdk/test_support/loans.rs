@@ -28,7 +28,7 @@ use crate::abi::hook::{
     PromptView as HookPromptView, RequestView as HookRequestView, SignalEntry as HookSignalEntry,
     SignalValue, SIGNAL_TAG_BOOL, SIGNAL_TAG_F64, SIGNAL_TAG_I64, SIGNAL_TAG_STR, SIGNAL_TAG_U64,
 };
-use crate::abi::mechanism::call::{AbiStr, Blob, Field, Span};
+use crate::abi::mechanism::call::{AbiStr, Blob, Field, Span, BLOB_SECRET};
 use crate::abi::mechanism::lifecycle::{OpenIn, ReadyIn, RefreshIn, ValidateIn};
 use crate::abi::plane::{
     ArriveIn, AuthenticatedRouteIn, CatalogIn, OnPieceIn, OutField, PlaneCancelIn, PlaneDriveIn,
@@ -130,8 +130,10 @@ impl<T> Loans<T> {
             size_of::<E>() * v.len(),
         );
         if field.is_some() {
-            // RED (STH-ROWS D-8): replaced storage is still freed at once.
-            self.kept.retain(|k| k.field != field);
+            for k in self.kept.iter_mut().filter(|k| k.field == field) {
+                k.field = None;
+                k.buf = None;
+            }
         }
         self.kept.push(Kept {
             field,
@@ -445,7 +447,7 @@ macro_rules! loan_fields {
             #[doc = concat!("Lends the payload `", stringify!($name), "` (format `fmt`), copied, flagged `BLOB_SECRET`.")]
             pub fn $name(self, b: impl AsRef<[u8]>, fmt: u32) -> &'a mut Loans<$ty> {
                 let s = self.0.own_text(b.as_ref());
-                self.0.input.$name = Blob { ptr: s.ptr, len: s.len, fmt, flags: 0 }; // RED: not flagged yet
+                self.0.input.$name = Blob { ptr: s.ptr, len: s.len, fmt, flags: BLOB_SECRET };
                 self.0
             }
         }
