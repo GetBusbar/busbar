@@ -430,6 +430,7 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "busbar-kernel-egress",
+ "busbar-plugin-abi",
  "busbar-plugin-loader",
  "crc32fast",
  "dimpl",
