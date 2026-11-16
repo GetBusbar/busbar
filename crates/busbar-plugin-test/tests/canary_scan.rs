@@ -57,3 +57,58 @@ fn assert_absent_fails_when_the_canary_remains() {
     proof.assert_absent("a held canary");
     drop(held);
 }
+
+#[test]
+fn a_text_secret_wiped_before_it_is_freed_is_absent() {
+    let proof = WipeProof::text();
+    {
+        let staging = proof.text_payload();
+        assert_eq!(staging.len(), PAYLOAD_LEN);
+        let copy = Zeroizing::new(String::clone(&staging));
+        drop(staging);
+        drop(copy);
+    }
+    proof.assert_absent("a wiped text copy");
+}
+
+#[test]
+fn a_text_secret_freed_without_a_wipe_is_found() {
+    let proof = WipeProof::text();
+    {
+        let staging = proof.text_payload();
+        let leaked = String::clone(&staging);
+        drop(staging);
+        drop(leaked);
+    }
+    let copies = proof.canary_copies("an unwiped text copy");
+    assert!(
+        copies >= 1,
+        "the scan missed an unwiped, dropped text canary"
+    );
+}
+
+#[test]
+#[should_panic(expected = "a text payload needs a proof made by WipeProof::text()")]
+fn a_byte_proof_refuses_a_text_payload() {
+    let proof = WipeProof::new();
+    let _ = proof.text_payload();
+}
+
+#[test]
+fn a_held_secret_passes_assert_held_and_its_wiped_drop_is_absent() {
+    let mut proof = WipeProof::new();
+    let held = proof.payload();
+    let owner = Zeroizing::new(held.to_vec());
+    drop(held);
+    proof.assert_held("a live owner");
+    drop(owner);
+    proof.assert_absent("the owner wiped on drop");
+}
+
+#[test]
+#[should_panic(expected = "the canary is not in memory while its owner should still hold it")]
+fn assert_held_fails_once_the_secret_is_wiped() {
+    let mut proof = WipeProof::new();
+    drop(proof.payload());
+    proof.assert_held("a wiped owner");
+}
