@@ -914,7 +914,7 @@ fn actual_operator_requests_keep_credentials_out_of_core_logs() {
             let config = busbar_kernel::config::resolve(&deploy, &Default::default())
                 .expect("the product deployment resolves");
             let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-            let anchor = crate::root::real_store::core_over(busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config, &busbar_kernel::preflight::Unopened).await.expect("the actual Store bootstraps its config authority")).await;
+            let anchor = crate::root::real_store::core_over(crate::root::boot::store::bootstrap_config_store(&config, &plugin_config, &crate::root::boot::store::Unopened).await.expect("the actual Store bootstraps its config authority")).await;
             let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
             .expect("the actual Store supports conditional config records");
             let rules = Arc::new(crate::root::door_steps::Rules::default())

@@ -108,10 +108,10 @@ async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_
                 .map_err(|error| error.to_string())?
         } else {
             crate::root::real_store::core_over(
-                busbar_kernel::appbuild::bootstrap_config_store(
+                crate::root::boot::store::bootstrap_config_store(
                     &config,
                     &plugin_config,
-                    &busbar_kernel::preflight::Unopened,
+                    &crate::root::boot::store::Unopened,
                 )
                 .await?,
             )

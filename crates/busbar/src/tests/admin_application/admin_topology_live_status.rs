@@ -122,10 +122,10 @@ async fn test_admin_v1_topology_reads_pools_models_providers() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
+    let anchor = crate::root::boot::store::bootstrap_config_store(
         &config,
         &plugin_config,
-        &busbar_kernel::preflight::Unopened,
+        &crate::root::boot::store::Unopened,
     )
     .await
     .expect("the actual Store opens the configuration authority");
@@ -247,10 +247,10 @@ async fn test_admin_v1_pool_detail_live_status() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
+    let anchor = crate::root::boot::store::bootstrap_config_store(
         &config,
         &plugin_config,
-        &busbar_kernel::preflight::Unopened,
+        &crate::root::boot::store::Unopened,
     )
     .await
     .expect("the actual Store opens the configuration authority");
@@ -379,10 +379,10 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
+    let anchor = crate::root::boot::store::bootstrap_config_store(
         &config,
         &plugin_config,
-        &busbar_kernel::preflight::Unopened,
+        &crate::root::boot::store::Unopened,
     )
     .await
     .expect("the actual Store opens the configuration authority");

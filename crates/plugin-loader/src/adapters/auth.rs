@@ -3,15 +3,11 @@
 
 //! The auth adapter: `AuthPort` over the auth kind's `Proxy` (IF §11.3, §8.3).
 //!
-//! Sync `verify` runs inline on the thread-local sync buffers and finishes without boxing. Everything that needs
-//! a second step boxes once: ISSUED_WANTED (the issued-credential lookup, then the same method again), REPLAY
-//! (the claim), KEYS_STALE (one single-flight, rate-limited `refresh`, then the same verify once more) and every
-//! `verify_io`. A request view never crosses an await (`abi::Pair` is not `Sync`): what a second step needs is
-//! copied into an owned snapshot of the encoded request before the box is built.
+//! Each verify invocation makes exactly one plugin call. Sync verification returns inline;
+//! verify_io snapshots its request before awaiting the plugin. The kernel owns lookup, refresh and replay.
 
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 
 use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::auth::{self as abi, tag as t, AuthReq, Proxy};
@@ -24,43 +20,20 @@ use busbar_plugin_abi::host_side::pool::{sync_bufs, Pool, PooledOut};
 use busbar_plugin_abi::host_side::scrub::{fail_text, Scrub};
 use busbar_plugin_abi::records::{tag, FactRec, Full, RecErr, Records, Reply, Writer};
 use busbar_plugin_abi::types::{Bytes, Pair, Slice, Status, Str};
-use tokio::sync::OnceCell;
 
 use crate::instance::ErrorBook;
 use busbar_ports::auth::{
-    decode_login_identity, decode_verify_ok, AuthIn, AuthPort, Identity, LoginAnswer, LoginIn,
-    OutboundAnswer, ServeIn, ServeOut, UpstreamIn, Verdict, Verify, VerifyOk,
+    decode_login_identity, decode_verify_ok, AuthIn, AuthPort, LoginAnswer, LoginIn,
+    OutboundAnswer, ServeIn, ServeOut, UpstreamIn, Verify, VerifyAnswer, VerifyOk,
 };
 use busbar_ports::codec::auth as enc;
 use busbar_ports::PluginCode;
 use busbar_ports::{CallCx, PortError};
 
-/// What the adapter asks core for while it settles a verify: the issued-credential lookup (IF §12.8
-/// `IssuedCredentials::lookup`) and the replay claim (§12.11 `ReplayGuard::claim`). The kernel implements it over
-/// those two traits (the kernel depends on the loader, never the reverse, so the adapter cannot name them).
-pub trait AuthCore: Send + Sync + 'static {
-    /// The issued credential `id` of `kind` for this auth instance, or empty when the id is unknown or the
-    /// instance is not granted the kind (same path and timing class, §12.8).
-    fn issued<'a>(
-        &'a self,
-        auth_instance: u64,
-        kind: &'a str,
-        id: &'a str,
-    ) -> BoxFut<'a, SecureVec>;
-    /// Some(true) = first sighting (admit); Some(false) = replay; None = the guard is unavailable (fail closed).
-    fn claim<'a>(
-        &'a self,
-        who: &'a Caller<'_>,
-        key: &'a [u8],
-        ttl_s: u64,
-    ) -> BoxFut<'a, Option<bool>>;
-}
-
 /// The auth port over one instance's proxy.
 pub struct AuthAdapter<N: Needs> {
     proxy: Proxy,
     needs: Arc<N>,
-    core: Arc<dyn AuthCore>,
     /// D_CRED_HEADER*, lowercase.
     cred_headers: Box<[Box<str>]>,
     /// D_ISSUED_KIND, if declared.
@@ -68,31 +41,25 @@ pub struct AuthAdapter<N: Needs> {
     errors: &'static ErrorBook,
     /// The undeclared-ERROR WARN latch (`ErrorBook::resolve`).
     undeclared: AtomicBool,
-    keys: KeyRefresh,
 }
 
 impl<N: Needs> AuthAdapter<N> {
     /// `describe` = the image's describe records (D_CRED_HEADER*, D_ISSUED_KIND?, D_ISSUED_SHAPE?);
-    /// `unknown_key_refresh` = `auth.unknown_key_refresh_s` (default 30 s, at least 5 s, §12.11).
     pub fn new(
         proxy: Proxy,
         needs: Arc<N>,
-        core: Arc<dyn AuthCore>,
         describe: Records<'_>,
         errors: &'static ErrorBook,
-        unknown_key_refresh: Duration,
     ) -> Result<Self, RecErr> {
         let cred_headers = decode_cred_headers(describe)?;
         let issued_kind = enc::decode_issued_shape(describe)?.map(|(kind, _)| kind);
         Ok(AuthAdapter {
             proxy,
             needs,
-            core,
             cred_headers,
             issued_kind,
             errors,
             undeclared: AtomicBool::new(false),
-            keys: KeyRefresh::new(unknown_key_refresh),
         })
     }
 
@@ -120,20 +87,18 @@ impl<N: Needs> AuthAdapter<N> {
     }
 
     /// One verify / verify_io answer, as what it asks of the adapter next.
-    fn said(&self, a: Result<Answer<'_>, CallError>) -> Result<Said, PortError> {
+    fn said(&self, a: Result<Answer<'_>, CallError>) -> Result<VerifyAnswer, PortError> {
         let a = a.map_err(PortError::Call)?;
         if a.status == Status::OK {
             return match decode_verify_ok(a.records()).map_err(fault)? {
-                VerifyOk::Identity(id) if id.replay().is_some() => Ok(Said::Replay(id)),
-                VerifyOk::Identity(id) => Ok(Said::Verdict(Verdict::Identity(id))),
-                VerifyOk::IssuedWanted(id) => Ok(Said::Wanted(id)),
+                VerifyOk::Identity(id) => Ok(VerifyAnswer::Identity(id)),
+                VerifyOk::IssuedWanted(id) => Ok(VerifyAnswer::IssuedWanted(id)),
             };
         }
         if a.status == Status::REFUSED {
             let (code, text) = a.fail().unwrap_or((0, ""));
             return match verify_refusal(code, text, &self.inst().scrub) {
-                Ok(Some(v)) => Ok(Said::Verdict(v)),
-                Ok(None) => Ok(Said::Stale),
+                Ok(v) => Ok(v),
                 Err(PortError::Refused { code, text, .. }) => Err(PortError::Refused {
                     code,
                     text,
@@ -146,14 +111,14 @@ impl<N: Needs> AuthAdapter<N> {
     }
 
     /// The sync verify, inline on the thread-local sync buffers (no pool, no box).
-    fn verify_sync(&self, req: &AuthReq<'_>) -> Result<Said, PortError> {
+    fn verify_sync(&self, req: &AuthReq<'_>) -> Result<VerifyAnswer, PortError> {
         sync_bufs(self.inst().max_out, |_args, out| {
             self.said(self.proxy.verify(out, req))
         })
     }
 
     /// One verify_io chain over an encoded request.
-    async fn verify_chain(&self, cx: CallCx, req: PooledOut) -> Result<Said, PortError> {
+    async fn verify_chain(&self, cx: CallCx, req: PooledOut) -> Result<VerifyAnswer, PortError> {
         let inst = self.inst();
         let mut drv = Driver::new(&*self.needs, caller(inst, cx));
         let owned = self
@@ -162,94 +127,6 @@ impl<N: Needs> AuthAdapter<N> {
             .await
             .map_err(PortError::Call)?;
         self.said(Ok(owned.answer()))
-    }
-
-    /// The same verify again, from the owned snapshot, with the looked-up credential when there is one.
-    async fn verify_again(
-        &self,
-        cx: CallCx,
-        snap: &Reply,
-        issued: Option<&[u8]>,
-    ) -> Result<Said, PortError> {
-        let inst = self.inst();
-        if inst.methods & abi::M_VERIFY != 0 {
-            let flags = if issued.is_some() {
-                abi::REQ_ISSUED_LOOKED_UP
-            } else {
-                0
-            };
-            return snapshot_view(snap, issued.unwrap_or_default(), flags, |view| {
-                self.verify_sync(view)
-            })
-            .map_err(fault)?;
-        }
-        let req = chain_req(inst.max_out, &Again { snap, issued })?;
-        self.verify_chain(cx, req).await
-    }
-
-    /// Runs the steps a first answer asked for until it is a verdict: at most one issued lookup, at most one
-    /// KEYS_STALE refresh, then the replay claim.
-    async fn settle(
-        &self,
-        cx: CallCx,
-        snap: Option<Reply>,
-        mut said: Said,
-    ) -> Result<Verdict, PortError> {
-        let mut issued: Option<SecureVec> = None;
-        let mut refreshed = false;
-        loop {
-            match said {
-                Said::Verdict(v) => return Ok(v),
-                Said::Replay(id) => return self.admit(cx, id).await,
-                Said::Wanted(id) => {
-                    let Some(kind) = self.issued_kind.as_deref().filter(|_| issued.is_none())
-                    else {
-                        return Err(fault(RecErr::Unknown(t::ISSUED_WANTED)));
-                    };
-                    issued = Some(self.core.issued(self.inst().id, kind, &id).await);
-                }
-                Said::Stale => {
-                    if refreshed || self.inst().methods & abi::M_REFRESH == 0 {
-                        return Ok(bad_credential());
-                    }
-                    refreshed = true;
-                    let Some(round) = self.keys.begin() else {
-                        return Ok(bad_credential());
-                    };
-                    round
-                        .get_or_init(|| async move { self.refresh(cx).await.map(drop) })
-                        .await
-                        .clone()?;
-                }
-            }
-            let Some(snap) = snap.as_ref() else {
-                return Err(fault(RecErr::Truncated));
-            };
-            said = self.verify_again(cx, snap, issued.as_deref()).await?;
-        }
-    }
-
-    /// Admits an identity that carried REPLAY only after core wins the claim (§12.11).
-    async fn admit(&self, cx: CallCx, id: Identity) -> Result<Verdict, PortError> {
-        let who = caller(self.inst(), cx);
-        let Some((key, ttl_s)) = id.replay() else {
-            return Ok(Verdict::Identity(id));
-        };
-        let won = self.core.claim(&who, key, ttl_s).await;
-        match won {
-            Some(true) => Ok(Verdict::Identity(id)),
-            Some(false) => Ok(Verdict::Rejected {
-                code: refused::R_REPLAYED,
-                text: Box::from("the request was already seen"),
-            }),
-            None => Err(PortError::Failed {
-                code: failed::F_UNAVAILABLE,
-                text: Box::from("the replay guard is unavailable"),
-                retry_after_s: None,
-                backend_status: None,
-                error: None,
-            }),
-        }
     }
 }
 
@@ -266,37 +143,30 @@ impl<N: Needs> AuthPort for AuthAdapter<N> {
         self.issued_kind.as_deref()
     }
 
-    fn verify<'a>(&'a self, cx: CallCx, req: &'a AuthIn<'a>) -> Verify<'a> {
+    fn verify<'a>(&'a self, cx: CallCx, req: &AuthIn<'_>, issued: Option<&[u8]>) -> Verify<'a> {
         let methods = self.inst().methods;
         if methods & abi::M_VERIFY != 0 {
-            let said = match self.verify_sync(&view(req, &[], 0)) {
-                Ok(Said::Verdict(v)) => return Verify::Done(Ok(v)),
-                Ok(said) => said,
-                Err(e) => return Verify::Done(Err(e)),
+            let flags = if issued.is_some() {
+                abi::REQ_ISSUED_LOOKED_UP
+            } else {
+                0
             };
-            let snap = match said {
-                Said::Replay(_) => None,
-                _ => match snapshot(req) {
-                    Ok(snap) => Some(snap),
-                    Err(e) => return Verify::Done(Err(e)),
-                },
-            };
-            return Verify::Io(Box::pin(self.settle(cx, snap, said)));
+            return Verify::Done(self.verify_sync(&view(req, issued.unwrap_or_default(), flags)));
         }
         if methods & abi::M_VERIFY_IO == 0 {
             return Verify::Done(Err(PortError::Call(CallError::NotDeclared)));
         }
-        let first = chain_req(self.inst().max_out, &Direct(req));
-        let again = self.issued_kind.is_some() || methods & abi::M_REFRESH != 0;
-        let snap = if again {
-            snapshot(req).map(Some)
-        } else {
-            Ok(None)
-        };
-        Verify::Io(Box::pin(async move {
-            let said = self.verify_chain(cx, first?).await?;
-            self.settle(cx, snap?, said).await
-        }))
+        let snap = snapshot(req);
+        let first = snap.and_then(|snap| {
+            chain_req(
+                self.inst().max_out,
+                &Again {
+                    snap: &snap,
+                    issued,
+                },
+            )
+        });
+        Verify::Io(Box::pin(async move { self.verify_chain(cx, first?).await }))
     }
 
     fn login<'a>(
@@ -428,17 +298,6 @@ impl<N: Needs> AuthPort for AuthAdapter<N> {
 
 /// What a verify answer asks for next.
 #[derive(Debug)]
-enum Said {
-    /// Final: an identity without REPLAY, NotMine or Rejected.
-    Verdict(Verdict),
-    /// An identity that carried REPLAY: admitted only after the claim.
-    Replay(Identity),
-    /// ISSUED_WANTED: look this id up, then call again.
-    Wanted(Box<str>),
-    /// REFUSED KEYS_STALE: refresh once, then call again.
-    Stale,
-}
-
 /// The caller of one call on this instance, borrowed from it (§10.3 round 14: plain stores, no refcount RMW).
 /// `chain` is overwritten by `Driver::new`; a sync call carries 0.
 fn caller(inst: &Instance, cx: CallCx) -> Caller<'_> {
@@ -484,6 +343,7 @@ fn snapshot(req: &AuthIn<'_>) -> Result<Reply, PortError> {
 
 /// Rebuilds the sync verify view from a snapshot and runs `f` on it. The view and its header array live only
 /// inside this call (they are not `Send`).
+#[cfg(test)]
 fn snapshot_view<R>(
     snap: &Reply,
     issued: &[u8],
@@ -756,21 +616,11 @@ fn unsupported(what: &'static str) -> PortError {
     }
 }
 
-fn bad_credential() -> Verdict {
-    Verdict::Rejected {
-        code: abi::BAD_CREDENTIAL,
-        text: Box::from("the credential names a key this instance does not hold"),
-    }
-}
-
-/// A REFUSED verify answer (§8.3): NOT_MINE is `Ok(Some(NotMine))`; KEYS_STALE is `Ok(None)` (refresh once, then
-/// verify again); R_UNSUPPORTED is `Err(PortError::Refused)`, never a verdict (C-CRYPTO-SELFTEST (f): a host
-/// crypto algorithm the module does not offer is not a credential judgement, so nothing caches it as one; the
-/// adapter adds the resolved ERROR); every other code is `Rejected` (`rejected`).
-pub fn verify_refusal(code: u32, text: &str, scrub: &Scrub) -> Result<Option<Verdict>, PortError> {
+/// Decodes the raw refusal. KEYS_STALE remains a host-policy input; unsupported is a port error.
+pub fn verify_refusal(code: u32, text: &str, scrub: &Scrub) -> Result<VerifyAnswer, PortError> {
     match code {
-        abi::NOT_MINE => Ok(Some(Verdict::NotMine)),
-        abi::KEYS_STALE => Ok(None),
+        abi::NOT_MINE => Ok(VerifyAnswer::NotMine),
+        abi::KEYS_STALE => Ok(VerifyAnswer::KeysStale),
         refused::R_UNSUPPORTED => Err(plugin_error(
             Status::REFUSED,
             code,
@@ -780,14 +630,14 @@ pub fn verify_refusal(code: u32, text: &str, scrub: &Scrub) -> Result<Option<Ver
             None,
             scrub,
         )),
-        _ => Ok(Some(rejected(code, text, scrub))),
+        _ => Ok(rejected(code, text, scrub)),
     }
 }
 
-/// `Verdict::Rejected` with the plugin's text scrubbed, then cut (§12.16, `scrub::fail_text`): one lock-free
+/// `VerifyAnswer::Refused` with the plugin's text scrubbed, then cut (§12.16, `scrub::fail_text`): one lock-free
 /// snapshot read and one scan, the B-SYNC REFUSED arm's whole text path.
-pub fn rejected(code: u32, text: &str, scrub: &Scrub) -> Verdict {
-    Verdict::Rejected {
+pub fn rejected(code: u32, text: &str, scrub: &Scrub) -> VerifyAnswer {
+    VerifyAnswer::Refused {
         code,
         text: Box::from(&*fail_text(scrub, text)),
     }
@@ -824,56 +674,17 @@ pub fn plugin_error(
     PortError::Call(CallError::Fault(FaultReason::BadStatus(status.0)))
 }
 
-/// One single-flight refresh round: every KEYS_STALE verify of the round awaits the same `refresh`.
-pub type KeyRound = Arc<OnceCell<Result<(), PortError>>>;
-
-/// KEYS_STALE handling (IF §12.11 core policy, owned by this adapter): per instance at most one `refresh` in
-/// flight (later KEYS_STALE verifies join it) and at most one started per `min_interval` (at least 5 s). A
-/// round whose leader is dropped is finished by the next joiner (`OnceCell::get_or_init`).
-pub struct KeyRefresh {
-    min_interval: Duration,
-    state: Mutex<KeyState>,
-}
-
-#[derive(Default)]
-struct KeyState {
-    last_started: Option<Instant>,
-    round: Option<KeyRound>,
-}
-
-impl KeyRefresh {
-    const FLOOR: Duration = Duration::from_secs(5);
-
-    pub fn new(min_interval: Duration) -> Self {
-        KeyRefresh {
-            min_interval: min_interval.max(Self::FLOOR),
-            state: Mutex::new(KeyState::default()),
-        }
-    }
-
-    /// Some(round) = join the refresh in flight or start one; None = declined by the rate limit.
-    pub fn begin(&self) -> Option<KeyRound> {
-        let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(round) = s.round.as_ref().filter(|r| !r.initialized()) {
-            return Some(Arc::clone(round));
-        }
-        let now = Instant::now();
-        if s.last_started
-            .is_some_and(|at| now.saturating_duration_since(at) < self.min_interval)
-        {
-            return None;
-        }
-        s.last_started = Some(now);
-        let round = KeyRound::default();
-        s.round = Some(Arc::clone(&round));
-        Some(round)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn keys_stale_is_a_raw_answer_without_a_refresh() {
+        assert!(matches!(
+            verify_refusal(abi::KEYS_STALE, "kid k9", &Scrub::new()),
+            Ok(crate::ports::auth::VerifyAnswer::KeysStale)
+        ));
+    }
 
     struct Marker;
     impl Encode for Marker {
@@ -1001,15 +812,15 @@ mod tests {
         let scrub = Scrub::new();
         assert!(matches!(
             verify_refusal(abi::NOT_MINE, "", &scrub),
-            Ok(Some(Verdict::NotMine))
+            Ok(VerifyAnswer::NotMine)
         ));
         assert!(matches!(
             verify_refusal(abi::KEYS_STALE, "kid", &scrub),
-            Ok(None)
+            Ok(VerifyAnswer::KeysStale)
         ));
         let text = "z".repeat(60);
         match verify_refusal(abi::BAD_CREDENTIAL, &text, &scrub) {
-            Ok(Some(Verdict::Rejected { code, text: got })) => {
+            Ok(VerifyAnswer::Refused { code, text: got }) => {
                 assert_eq!(code, abi::BAD_CREDENTIAL);
                 assert_eq!(*got, *text);
             }
@@ -1017,10 +828,10 @@ mod tests {
         }
         assert!(matches!(
             verify_refusal(abi::SECURITY_CHECK, "", &scrub),
-            Ok(Some(Verdict::Rejected {
+            Ok(VerifyAnswer::Refused {
                 code: abi::SECURITY_CHECK,
                 ..
-            }))
+            })
         ));
         // R_UNSUPPORTED is a port refusal, never a verdict (C-CRYPTO-SELFTEST (f)).
         assert_eq!(
@@ -1247,58 +1058,6 @@ mod tests {
                 10,
                 1_700_000_000
             )
-        );
-    }
-
-    // C-KEYS-STALE, adapter side: one refresh for a burst of KEYS_STALE verifies (100 concurrent share it),
-    // and a second refresh inside the interval is declined.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn keys_stale_refreshes_once_and_declines_inside_the_interval() {
-        let keys = Arc::new(KeyRefresh::new(Duration::from_secs(30)));
-        let runs = Arc::new(AtomicUsize::new(0));
-        let gate = Arc::new(tokio::sync::Semaphore::new(0));
-        let mut joined = tokio::task::JoinSet::new();
-        let rounds = Arc::new(AtomicUsize::new(0));
-        for _ in 0..100 {
-            let round = keys.begin().expect("joins the round in flight");
-            rounds.fetch_add(1, Ordering::SeqCst);
-            let (runs, gate) = (Arc::clone(&runs), Arc::clone(&gate));
-            joined.spawn(async move {
-                round
-                    .get_or_init(|| async move {
-                        runs.fetch_add(1, Ordering::SeqCst);
-                        let _permit = gate.acquire().await.expect("gate open");
-                        Ok(())
-                    })
-                    .await
-                    .clone()
-            });
-        }
-        assert_eq!(rounds.load(Ordering::SeqCst), 100);
-        gate.add_permits(1);
-        while let Some(done) = joined.join_next().await {
-            assert_eq!(done.expect("task"), Ok(()));
-        }
-        assert_eq!(
-            runs.load(Ordering::SeqCst),
-            1,
-            "one refresh for the whole burst"
-        );
-        assert!(
-            keys.begin().is_none(),
-            "a second refresh inside the interval is declined"
-        );
-    }
-
-    #[test]
-    fn the_refresh_interval_has_a_five_second_floor() {
-        assert_eq!(
-            KeyRefresh::new(Duration::from_secs(1)).min_interval,
-            Duration::from_secs(5)
-        );
-        assert_eq!(
-            KeyRefresh::new(Duration::from_secs(30)).min_interval,
-            Duration::from_secs(30)
         );
     }
 }

@@ -19,11 +19,6 @@ use busbar_kernel::plane_driver::route_input::{
     LaneInput, OnExhaustedInput, PoolInput, PoolMemberInput,
 };
 
-/// The registry's kernel sides, core's own secret references, and the one plan-and-walk entry.
-pub mod boot_registry;
-/// The MIN-3 boot: one generic walk over `Registry::boot_plan` (IF §11.2, §12.10 item 4).
-pub mod boot_walk;
-
 pub const ENV_CONFIG: &str = "BUSBAR_CONFIG";
 
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/busbar/config.yaml";
@@ -1080,17 +1075,6 @@ impl RootRules for AcceptAll {
     }
 }
 
-pub async fn bootstrap_config_store(
-    cfg: &config::RootCfg,
-    plugins: &config::PluginsCfg,
-    opener: &dyn crate::preflight::StoreOpener,
-    resolver: &config::secret::SecretResolver,
-) -> Result<busbar_contract::persistence::axis::OpenedBackend, String> {
-    // The root supplies its opened S5 view; this projection never opens secret instances.
-    bootstrap_store_inputs(cfg, plugins, resolver).await?;
-    open_config_store(cfg, opener).await
-}
-
 /// Inspect a configured Store before ordinary OPEN can initialize or select its dataset.
 /// Historical transformation is supplied by the composition root, not this projection.
 pub async fn prepare_config_store(
@@ -1109,7 +1093,7 @@ pub async fn prepare_config_store(
         .map_err(|_| format!("Store '{label}' native preparation refused"))
 }
 
-async fn bootstrap_store_inputs(
+pub async fn bootstrap_store_inputs(
     cfg: &config::RootCfg,
     plugins: &config::PluginsCfg,
     resolver: &config::secret::SecretResolver,
@@ -1255,7 +1239,14 @@ fn admitted_pin(
         return Ok(());
     };
     match admitted(rows).map_err(String::from)? {
-        Some(now) => config::grammar::pin(read, &now, used, config::grammar::Pin::Admission),
+        Some(now) => {
+            let now = if now.secret_binding_required() {
+                now.bind_secret_instances(&cfg.secrets)?
+            } else {
+                now
+            };
+            config::grammar::pin(read, &now, used, config::grammar::Pin::Admission)
+        }
         None => Ok(()),
     }
 }
@@ -1427,37 +1418,6 @@ pub fn validate_bootstrap_archive(
     Ok(())
 }
 
-/// The configured store, opened through the MIN-3 registry (W2-SW-STORE; IF §11.2 `Registry::open_store`).
-/// The bag goes in operator form (secret references with their `module`): the registry's binder binds it, the
-/// store converts an older shape inside its own `open` and the registry keeps the settled bag for the boot's
-/// write-back (`Registry::take_settled`, step 5 / 5W). The instance name is the section key, `store`.
-async fn open_config_store(
-    cfg: &config::RootCfg,
-    opener: &dyn crate::preflight::StoreOpener,
-) -> Result<busbar_contract::persistence::axis::OpenedBackend, String> {
-    let store = cfg.store.as_ref().ok_or_else(config::store_required)?;
-    let failed = |error: String| format!("store '{}' plugin load failed: {error}", store.module);
-    let config_json = store
-        .settings
-        .encode()
-        .map_err(|error| failed(error.to_string()))?
-        .into_exposed(&crate::seal::lend());
-    let spec = busbar_plugin_loader::instance::InstanceSpec {
-        purpose: busbar_plugin_loader::instance::OpenPurpose::Canonical,
-        identity: &store.module,
-        name: STORE_INSTANCE,
-        config_json: &config_json,
-        limits: instance_limits(cfg, STORE_INSTANCE, STORE_INSTANCE),
-        public_url: None,
-        caller_upstreams: &[],
-    };
-    opener
-        .open_store(&spec)
-        .await
-        .map(|handle| handle.backend)
-        .map_err(|error| failed(store_open_refusal(&error)))
-}
-
 /// The store's configured instance name: its config section key.
 pub const STORE_INSTANCE: &str = "store";
 
@@ -1487,19 +1447,6 @@ pub fn instance_limits(
         limits.accept = accepted.accept;
     }
     limits
-}
-
-/// Core's own words for a refused store open, with the code only (IF §12.16: the plugin's text is never
-/// interpolated into a core message).
-fn store_open_refusal(error: &busbar_plugin_loader::instance::OpenError) -> String {
-    use busbar_plugin_loader::instance::OpenError;
-    match error {
-        OpenError::Refused { refusal, .. } => format!("refused: {refusal}"),
-        OpenError::Config { code, .. } => format!("its settings were refused (code {code})"),
-        OpenError::Failed { code, .. } => format!("its open failed (code {code})"),
-        OpenError::Call(_) => "its open faulted".to_owned(),
-        OpenError::Unknown(what) => format!("unknown store open answer: {what}"),
-    }
 }
 
 fn config_store_inputs(
@@ -2818,7 +2765,3 @@ fn accepted_operator(auth: &config::AuthCfg, operator: &crate::auth::Operator) {
         );
     }
 }
-
-#[cfg(test)]
-#[path = "tests/boot_walk_tests.rs"]
-mod boot_walk_tests;

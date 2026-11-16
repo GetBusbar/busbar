@@ -21,7 +21,10 @@ use busbar_kernel::plugin_config::{Binder, ConfigBinder};
 /// A secret kind over the boot's own binder.
 fn secrets() -> BootSecrets {
     let binder: Arc<dyn ConfigBinder> = Arc::new(Binder::new(Arc::new(BootRefs)));
-    BootSecrets::new(binder)
+    BootSecrets::new(
+        binder,
+        Arc::new(busbar_plugin_loader::instance::SlotTable::new()),
+    )
 }
 
 /// One configured secret instance, as the kernel sees it through its port.
@@ -151,4 +154,26 @@ async fn a_module_that_is_not_open_is_refused_without_a_name() {
         "a closed instance serves nothing"
     );
     assert_eq!(env.seen().len(), 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn synchronous_config_resolution_progresses_on_the_owned_io_executor() {
+    use busbar_contract::secret::SecretResolve;
+    let io = crate::root::boot::process::ProcessIo::new().unwrap();
+    let secrets = Box::leak(Box::new(secrets()));
+    secrets.table().opened(
+        "configured-source",
+        SecretSource {
+            instance: 41,
+            port: Port::new("owned-source-material"),
+        },
+    );
+    let resolver = secrets.resolver(io.handle(), Default::default());
+    let held = resolver
+        .resolve(&source("configured-source", "{}"))
+        .unwrap();
+    assert_eq!(
+        held.expose(&busbar_kernel::seal::lend()),
+        b"owned-source-material"
+    );
 }

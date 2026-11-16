@@ -38,14 +38,48 @@ use crate::root::{durability::NodeBook, linked::Compose};
 
 /// The rules of the boot's configuration reads: the held plan in place of config.yaml (and of the planned
 /// providers catalog) on an unstamped boot, the file otherwise. The build judges the configuration itself.
-pub(crate) struct ConfigRules;
+pub(crate) struct ConfigRules {
+    pub(crate) process: Arc<busbar_plugin_loader::process::ProcessResources>,
+}
 
 impl RootRules for ConfigRules {
+    fn grammar(
+        &self,
+        input: &config::grammar::PhaseOneIn<'_>,
+    ) -> Result<config::Grammar, config::GrammarRefusal> {
+        crate::root::boot::phase_one(&self.process, input)
+    }
     fn check(&self, _: &RootCfg) -> Result<(), String> {
         Ok(())
     }
     fn held_document(&self, path: &Path) -> Option<SecureString> {
         crate::root::migrate::held(path)
+    }
+}
+
+/// Reads after the bootstrap Store opens must preserve the images and inputs that opened it.
+pub(crate) struct ProtectedRules {
+    pub(crate) reader: ConfigRules,
+    pub(crate) images: crate::root::boot::images::BootImages,
+    pub(crate) instances: Arc<crate::root::boot::inputs::BootInstances>,
+}
+
+impl RootRules for ProtectedRules {
+    fn grammar(
+        &self,
+        input: &config::grammar::PhaseOneIn<'_>,
+    ) -> Result<config::Grammar, config::GrammarRefusal> {
+        let candidate = crate::root::boot::images::prepare(&self.reader.process, input)?;
+        self.images.check(&candidate)?;
+        Ok(candidate.grammar)
+    }
+
+    fn check(&self, cfg: &RootCfg) -> Result<(), String> {
+        self.instances.check(cfg)
+    }
+
+    fn held_document(&self, path: &Path) -> Option<SecureString> {
+        self.reader.held_document(path)
     }
 }
 
@@ -57,6 +91,7 @@ pub(crate) fn store_bootstrap(deploy: &DeployCfg) -> Result<RootCfg, Vec<String>
 }
 
 pub(crate) struct Preparation {
+    pub secret_resolver: Arc<config::secret::SecretResolver>,
     pub startup: Startup,
     pub config: RootCfg,
     /// The semantic pass's one result when boot already judged `config` (the fresh-instance
@@ -153,6 +188,7 @@ pub(crate) async fn prepare(input: Preparation) -> Result<ReadyCandidate, Box<Pr
 
 async fn prepare_inner(input: Preparation) -> Result<ReadyCandidate, Box<PreparationFailure>> {
     let Preparation {
+        secret_resolver,
         startup,
         config,
         judged,
@@ -204,6 +240,7 @@ async fn prepare_inner(input: Preparation) -> Result<ReadyCandidate, Box<Prepara
     let store_module = store.module.clone();
     let (mut app, rotation, limits) =
         match Box::pin(appbuild::build_boot_app(appbuild::BootBuild {
+            secret_resolver,
             cfg: config,
             judged,
             plugins_cfg: plugins,

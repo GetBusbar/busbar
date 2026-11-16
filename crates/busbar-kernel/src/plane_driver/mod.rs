@@ -86,7 +86,8 @@ pub use hooks::{
 };
 pub use host::{
     engine_host, engine_host_from_handle, engine_host_value, live_host_factory, live_standing,
-    standing_over, CostHandle, EngineHost, EngineHostImpl, GovHandle, LiveHostFactory, MeterPin,
+    policy_standing, standing_over, CostHandle, EngineHost, EngineHostImpl, GovHandle,
+    LiveHostFactory, MeterPin,
 };
 pub use money::{
     EndPost, FeeRefund, MeasurementRequestGuard, MeasurementRequestState, ObservationPolicy,

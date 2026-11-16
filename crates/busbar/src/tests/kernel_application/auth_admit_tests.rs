@@ -49,10 +49,10 @@ async fn an_open_chain_admits_a_session_anonymous_and_ungoverned() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let anchor = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(
+        crate::root::boot::store::bootstrap_config_store(
             &config,
             &plugin_config,
-            &busbar_kernel::preflight::Unopened,
+            &crate::root::boot::store::Unopened,
         )
         .await
         .expect("actual native Store opens"),
@@ -146,10 +146,10 @@ async fn a_configured_chain_denies_a_session_with_no_credential() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let anchor = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(
+        crate::root::boot::store::bootstrap_config_store(
             &config,
             &plugin_config,
-            &busbar_kernel::preflight::Unopened,
+            &crate::root::boot::store::Unopened,
         )
         .await
         .expect("actual native Store opens"),

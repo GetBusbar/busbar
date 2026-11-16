@@ -80,10 +80,10 @@ async fn actual_inbound_refusals_preserve_builder_bytes_unit_retirement_and_real
     let native_config = config;
     let native_plugins = plugin_config;
     let native_core = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(
+        crate::root::boot::store::bootstrap_config_store(
             &native_config,
             &native_plugins,
-            &busbar_kernel::preflight::Unopened,
+            &crate::root::boot::store::Unopened,
         )
         .await
         .expect("actual Store opens for native startup"),

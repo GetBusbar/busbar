@@ -1014,7 +1014,7 @@ fn store_boot_refusal_transition_does_not_leak_the_store_module_refusal() {
 }
 
 #[test]
-fn prepare_config_store_refusal_goes_through_store_boot_refusal() {
+fn admitted_min3_store_refusal_goes_through_store_boot_refusal() {
     let source: String = include_str!("../main.rs")
         .chars()
         .filter(|c| !c.is_whitespace())
@@ -1026,7 +1026,7 @@ fn prepare_config_store_refusal_goes_through_store_boot_refusal() {
     assert_eq!(
         source.matches(call_site).count(),
         1,
-        "the prepare_config_store boot refusal must be printed through store_boot_refusal"
+        "the admitted MIN-3 store boot refusal must be printed through store_boot_refusal"
     );
     let false_prefix: String = concat!("base Store overlay ", "anchor")
         .chars()

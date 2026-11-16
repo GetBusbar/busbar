@@ -92,9 +92,7 @@ fn ignore_overlay_requested(mut args: impl Iterator<Item = String>) -> bool {
     args.any(|a| a == OPTION_IGNORE_OVERLAY)
 }
 
-/// The boot refusal for a `prepare_config_store` error. Under a principal transition only the
-/// context is printed; on an ordinary boot the inner error, which already names its own subject
-/// (`plugins.fetch failed: ...`, `store '<m>' settings: ...`), is printed.
+/// A store refusal preserves ordinary boot detail and redacts principal transitions.
 fn store_boot_refusal(transition: bool, error: String) -> String {
     if transition {
         "principal transition base Store opening refused".to_owned()
@@ -575,6 +573,10 @@ async fn run(
     catalogue: busbar_kernel::diagnostics::Catalogue,
     control_work: ControlWork,
 ) {
+    let process_io = root::boot::process::ProcessIo::new().unwrap_or_else(|error| die(error));
+    let plugin_process = std::sync::Arc::new(
+        busbar_plugin_loader::process::ProcessResources::new().unwrap_or_else(|error| die(error)),
+    );
     root::observe::install(catalogue);
     // Until the listener's own handler owns signals, SIGTERM/SIGINT exit through `root::exit`, so
     // an armed first-start owner hands over (FIRST-START-TAKEOVER §2.7).
@@ -615,7 +617,9 @@ async fn run(
     // Every configuration read of this boot runs under the boot's reader rules: an unstamped boot
     // reads the document the migrate seam planned at step 1 (held in memory until step 5 writes it),
     // every other boot reads the file. The gateway reads only current bytes.
-    let config_rules = root::boot_app::ConfigRules;
+    let config_rules = root::boot_app::ConfigRules {
+        process: std::sync::Arc::clone(&plugin_process),
+    };
     if let Some(refusal) = root::boot::start_refusal() {
         die(boot_error(
             "plugins directory refused at process start",
@@ -630,12 +634,17 @@ async fn run(
             error,
         ))
     });
-    let loaded = busbar_kernel::appbuild::load_config_from_disk_judged(
+    let raw = busbar_kernel::appbuild::read_config_documents(
         &config_path,
         providers_override.as_deref(),
         ignore_overlay,
         config::EnvSubst::Strict,
         &config_rules,
+        busbar_kernel::appbuild::DocumentPatchLoad {
+            patch: None,
+            providers_patch: None,
+            admission: None,
+        },
     )
     // The read's own grammar already appended its report (one line per file not admitted).
     .unwrap_or_else(|e| {
@@ -644,6 +653,15 @@ async fn run(
             e,
         ))
     });
+    let file_plugins = raw.plugins_block().unwrap_or_else(|error| die(error));
+    let file_images = root::boot::images::prepare(
+        &plugin_process,
+        &config::grammar::PhaseOneIn::of(&file_plugins),
+    )
+    .unwrap_or_else(|error| die(error.0));
+    let loaded = raw
+        .typed(&file_images.grammar)
+        .unwrap_or_else(|error| die(error));
     let LoadedConfig {
         deploy,
         defs,
@@ -680,6 +698,14 @@ async fn run(
             format!("base Store settings: {error}"),
         ))
     });
+    let boot_instances = Arc::new(root::boot::inputs::BootInstances::capture(&base_cfg));
+    let config_rules = root::boot_app::ProtectedRules {
+        reader: config_rules,
+        images: file_images
+            .protect(&base_cfg)
+            .unwrap_or_else(|error| die(error)),
+        instances: Arc::clone(&boot_instances),
+    };
     let guard_judge = root::connector::dest_judge(&base_cfg);
     let boot_guard = guard_judge.guard().clone();
     let dest = BootstrapDestJudge::new(guard_judge);
@@ -703,6 +729,7 @@ async fn run(
     // native Store/Transport call inherit it before the durable measurement runtime exists.
     let bootstrap = Box::pin(root::measurements::maintenance(async {
         let _connector = root::connector::boot(
+            process_io.handle(),
             LINKED_TRANSPORT_DOORS,
             &root::policy::client_settings(&base_cfg.limits),
             dest.clone(),
@@ -712,8 +739,10 @@ async fn run(
         // The MIN-3 registry boots here, before the Store opens and before any listener serves: images, the
         // kernel's sides, then 2a, 2b, the deployment point, 2c. Without a MIN-3 store image the old path boots.
         let walked = root::min3_boot::run(
+            &plugin_process,
+            process_io.handle(),
+            file_images,
             &base_cfg,
-            &deploy.plugins,
             boot_guard,
             late_services.kernel(),
         )
@@ -726,34 +755,8 @@ async fn run(
         let walk_admission = root::boot::walk_admission(walked, || {
             root::min3_boot::booted().and_then(|booted| booted.startup.lock().ok()?.take())
         })
-        .unwrap_or_else(|error| die(boot_error("MIN-3 store admission refused", error)));
-        // The old ABI store's prepared session is held with the boot's owners until serving (or the
-        // step-5 restart) so its native instance outlives the admission built over it.
-        let (old_store, store_admission) = match walk_admission {
-            Some(store_admission) => (None, store_admission),
-            None => {
-                let prepared_store =
-                    busbar_kernel::appbuild::prepare_config_store(&base_cfg, &deploy.plugins)
-                        .await
-                        .unwrap_or_else(|error| {
-                            die(store_boot_refusal(principal_transition.is_some(), error))
-                        });
-                let store_admission = root::boot::open_current_store(
-                    &prepared_store,
-                    busbar_contract::persistence::lifecycle::Bounds {
-                        items: 4096,
-                        bytes: u32::try_from(base_cfg.limits.migration_value_bytes)
-                            .unwrap_or_else(|_| {
-                                die("limits.migration_value_bytes exceeds native frame capacity")
-                            }),
-                    },
-                    &control_work.shutdown_rx,
-                )
-                .await
-                .unwrap_or_else(|error| die(error));
-                (Some(prepared_store), store_admission)
-            }
-        };
+        .unwrap_or_else(|error| die(store_boot_refusal(principal_transition.is_some(), error)));
+        let store_admission = walk_admission.unwrap_or_else(|| die("the configured store has no admitted MIN-3 instance"));
         let anchor_store = store_admission.store().expect("confirmed Store admission");
         root::exit::arm(&anchor_store);
         // Migrate-on-boot step 4 (MIGRATE-ON-BOOT r42 §3 4a, 4b): the 1.5.5 rows a store's data step
@@ -885,6 +888,7 @@ async fn run(
             if let Some(doc) = overlay_doc.as_ref() {
                 config::overlay::merge_into(&mut effective, doc.clone());
             }
+            boot_instances.check(&effective).unwrap_or_else(|error| die(error));
             // The one semantic judgement of this boot's effective configuration, made exactly as
             // construction makes it. A serving transition hands it to construction below.
             let judged = config_validate::judge_effective(&effective, &deploy.plugins)
@@ -926,7 +930,6 @@ async fn run(
         }
 
         Some((
-            old_store,
             store_admission,
             anchor_store,
             deploy,
@@ -943,7 +946,6 @@ async fn run(
     }))
     .await;
     let Some((
-        old_store,
         store_admission,
         anchor_store,
         deploy,
@@ -1040,6 +1042,9 @@ async fn run(
 
     let mut cfg =
         config::resolve(&deploy, &defs).unwrap_or_else(|errs| die_list("config errors", errs));
+    boot_instances
+        .check(&cfg)
+        .unwrap_or_else(|error| die(error));
     root::measurements::configure(&cfg.plugin_rate_cards)
         .unwrap_or_else(|error| die(format!("plugin measurement configuration: {error}")));
 
@@ -1075,6 +1080,9 @@ async fn run(
             (cfg, None)
         }
     };
+    boot_instances
+        .check(&cfg)
+        .unwrap_or_else(|error| die(error));
     // Boot is a disk read: the built App holds config.yaml's operator definitions as the reference.
     cfg.operator_file_defs = Some(operator_reference);
 
@@ -1122,7 +1130,10 @@ async fn run(
 
     let door_pools = root::serve::door_pools(&cfg.plane_pools);
 
-    let root_rules = Arc::new(root::door_steps::Rules::hearing(commit_guard));
+    let root_rules = Arc::new(root::door_steps::Rules::with_reader(
+        Some(commit_guard),
+        Arc::new(config_rules),
+    ));
 
     root_rules.hold_unloaded(root::door_steps::unloaded_doors());
     let listener_plan = Arc::new(root::serve::ListenerPlan::new(
@@ -1163,6 +1174,9 @@ async fn run(
 
     let _boot_store_binding = boot_store;
     let preparation = root::boot_app::Preparation {
+        secret_resolver: root::min3_boot::booted()
+            .map(|booted| std::sync::Arc::clone(&booted.resolver))
+            .unwrap_or_else(|| die("no complete MIN-3 secret generation was prepared")),
         startup: store_admission,
         config: cfg,
         judged,
@@ -1215,7 +1229,7 @@ async fn run(
         .await
         .unwrap_or_else(|error| die(error))
     {
-        let owners = (ready, boot_app, old_store, _boot_store_binding);
+        let owners = (ready, boot_app, _boot_store_binding);
         die(root::migrate::restart(
             written,
             owners,
@@ -1448,9 +1462,13 @@ async fn run(
     let _ = door_live_handle.set(std::sync::Arc::downgrade(&app_handle));
 
     if let Some(kernel) = late_services.kernel() {
-        kernel.attach_tickets(std::sync::Arc::new(root::serve::LiveTickets(
-            std::sync::Arc::downgrade(&app_handle),
-        )));
+        let app = app_handle.load();
+        if let Some(governance) = &app.governance {
+            kernel.attach_tickets(Arc::new(root::serve::GenerationTickets {
+                governance: Arc::clone(governance),
+                block_max_ttl_secs: app.mint_policy.block_max_ttl_secs,
+            }));
+        }
     }
 
     let _ = root::inbound::install(root::doors::dispatcher());

@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use busbar_plugin_abi::host_side::caller::BoxFut;
 use busbar_plugin_loader::instance::{BootPhase, BootPlan, OpenError};
 
-use super::boot_walk::{deployment_bytes, walk, BootRefused, BootSteps};
+use crate::root::boot::walk::{deployment_bytes, walk, BootRefused, BootSteps};
 
 const ID: [u8; 16] = *b"deployment-id-16";
 
@@ -268,4 +268,51 @@ fn deployment_bytes_reads_the_kept_identity() {
     assert!(deployment_bytes(&hex::encode(ID)).is_err());
     assert!(deployment_bytes("dep_00").is_err());
     assert!(deployment_bytes(&format!("dep_{}", "0".repeat(32))).is_err());
+}
+
+#[tokio::test]
+async fn bootstrap_handoff_opens_no_serving_instance_until_resumed() {
+    let steps = Recording::default();
+    let bootstrap = crate::root::boot::walk::bootstrap(&chained_plan(), &steps)
+        .await
+        .unwrap();
+    assert!(!steps.opened_before(3));
+    assert!(!steps.opened_before(4));
+    assert_eq!(
+        steps.events(),
+        vec![
+            Event::Open(0, None),
+            Event::Open(1, None),
+            Event::Open(2, None),
+            Event::Deployment(2),
+            Event::Publish(ID),
+            Event::Check(0, Some(ID)),
+            Event::Check(1, Some(ID)),
+            Event::Check(2, Some(ID)),
+        ]
+    );
+    let booted = bootstrap.finish(&steps).await.unwrap();
+    assert_eq!(booted.deployment, ID);
+    assert_eq!(booted.opened.len(), 5);
+    assert_eq!(
+        steps
+            .events()
+            .iter()
+            .filter(|event| matches!(event, Event::Deployment(_)))
+            .count(),
+        1
+    );
+    assert!(steps.opened_before(3));
+    assert!(steps.opened_before(4));
+}
+
+#[tokio::test]
+async fn failed_recheck_cannot_produce_a_bootstrap_handoff() {
+    let steps = Recording {
+        refuse_check: Some(1),
+        ..Recording::default()
+    };
+    let result = crate::root::boot::walk::bootstrap(&chained_plan(), &steps).await;
+    assert!(matches!(result, Err(BootRefused::Recheck { index: 1, .. })));
+    assert!(!steps.opened_before(3));
 }

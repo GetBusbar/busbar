@@ -108,10 +108,10 @@ pub(crate) async fn build_app(
         overlay.core_store_handle()?
     } else {
         core_over(
-            busbar_kernel::appbuild::bootstrap_config_store(
+            crate::root::boot::store::bootstrap_config_store(
                 &cfg,
                 &plugins,
-                &busbar_kernel::preflight::Unopened,
+                &crate::root::boot::store::Unopened,
             )
             .await?,
         )
