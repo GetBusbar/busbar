@@ -677,6 +677,7 @@ name = "busbar-plugin-test"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-kernel",
  "busbar-plugin-abi",
  "busbar-plugin-loader",
  "busbar-plugin-test",
