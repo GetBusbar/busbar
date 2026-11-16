@@ -2283,12 +2283,18 @@ impl BookPreparation {
             let key = key_hex
                 .as_deref()
                 .and_then(|hex| busbar_kernel_audit::AuditVerifyingKey::from_hex(hex).ok());
-            if let (Some(handle), Some(key)) = (audit.take_boot_handle(), key) {
-                let sealed = super::durability::restart_seal::seal_own_node(
-                    durability, &records, &handle, &key, &host,
-                )
-                .await;
-                tracing::debug!(node, ?sealed, "own-node restart seal");
+            if let Some(handle) = audit.take_boot_handle() {
+                let pending = if let Some(key) = key {
+                    let (sealed, pending) = super::durability::restart_seal::prepare_own_node(
+                        durability, &records, &handle, &key, &host,
+                    )
+                    .await;
+                    tracing::debug!(node, ?sealed, "own-node restart seal");
+                    pending
+                } else {
+                    None
+                };
+                audit.defer_boot(handle, pending);
             }
             drop(records);
             if let Some(key_hex) = key_hex {

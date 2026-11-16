@@ -15,7 +15,7 @@ use busbar_kernel_audit::{
 };
 use busbar_kernel_wal::{Entry, RecordClass};
 
-use super::{seal_own_node, OwnSeal};
+use super::{prepare_own_node, OwnSeal};
 use crate::root::durability::tests::{audit_inputs, audit_pass, token, NativeFixture};
 use crate::root::durability::{signer, Durability};
 
@@ -89,7 +89,9 @@ async fn retake(fixture: &NativeFixture) -> (Durability, OwnSeal) {
     let mut book = fixture.reopen().await;
     let records = book.take_boot_records();
     let signers = signers();
-    let sealed = seal_own_node(&mut book, &records, &signers.boot, &public(), HOST).await;
+    let (sealed, pending) =
+        prepare_own_node(&mut book, &records, &signers.boot, &public(), HOST).await;
+    assert!(pending.is_none());
     (book, sealed)
 }
 
