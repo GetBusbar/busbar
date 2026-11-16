@@ -128,10 +128,6 @@ pub struct ModelPools {
     pub(crate) meta: Arc<BTreeMap<String, Arc<MemberFactsByModel>>>,
 }
 
-/// The member facts by model, in the map type the kernel's far end takes them as.
-pub(crate) type MemberFactsByModel =
-    std::collections::HashMap<String, busbar_kernel::plane_driver::MemberFacts>;
-
 pub struct ModelServing {
     pub pools: ModelPools,
 
@@ -667,6 +663,7 @@ impl busbar_kernel_egress::ports::Telemetry for ModelTelemetry {
 }
 
 pub use crate::root::off_path::model_egress::compose;
+pub(crate) use crate::root::off_path::model_egress::MemberFactsByModel;
 
 #[cfg(test)]
 #[path = "tests/model_egress.rs"]
