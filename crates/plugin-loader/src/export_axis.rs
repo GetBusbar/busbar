@@ -337,12 +337,13 @@ impl<'r> ExportRows<'r> {
 /// (core-minted `delivery`, counted `attempt`), the image's FB_SPAN_RECORDS and custody ceiling read through
 /// L7, APPEND answers handed to `disk` (core's bound destinations, §12.21).
 pub async fn open_min3<N: busbar_plugin_abi::host_side::needs::Needs>(
-    registry: &crate::instance::Registry<N>,
+    registry: &crate::instance::Registry,
     spec: &crate::instance::InstanceSpec<'_>,
+    needs: &Arc<N>,
     disk: Arc<dyn export_door::port::DestAppend>,
 ) -> Result<Arc<export_door::port::PortDoor>, String> {
     use crate::instance::OpenError;
-    let port = registry.open_export(spec).await.map_err(|e| {
+    let port = registry.open_export(spec, needs).await.map_err(|e| {
         let why = match &e {
             OpenError::Refused { .. } => "refused".to_string(),
             OpenError::Config { code, .. } => format!("config refused, code {code}"),
