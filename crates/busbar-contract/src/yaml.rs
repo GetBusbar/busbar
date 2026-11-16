@@ -46,7 +46,7 @@ use serde::de::{DeserializeOwned, DeserializeSeed};
 use serde::Serialize;
 
 pub use ciborium::Value;
-pub use serde_saphyr::{Deserializer, Location};
+pub use serde_saphyr::{Deserializer, Location, Spanned};
 
 /// The key/value pairs of a [`Value::Map`], in document order: the tree's own mapping payload.
 pub type Pairs = Vec<(Value, Value)>;

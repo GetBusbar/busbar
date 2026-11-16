@@ -71,6 +71,16 @@ and start 1.6.0 again.
 
 Stop 1.6.0, restore your store backup and the `.1.5.5` config files, and start 1.5.5. Changes
 made while 1.6.0 was running are not carried back.
+
+Then put the 1.5.5 overlay file back (`<o>` is the overlay path the upgrade's log line named), in
+this order: if `<o>` is a directory holding `busbar-1.6-folded`, remove it (`rm -r <o>`); then
+move `<o>.busbar-folding` back to `<o>` if it exists, else move `<o>.1.5.5` back (when
+`<o>.busbar-folding` was the one moved, delete `<o>.1.5.5`: it is the same file). Any
+`<o>.busbar-p.*` may be deleted. The order matters: an upgrade interrupted while folding leaves
+the overlay at `<o>.busbar-folding`, maybe nowhere else, and no 1.5.5 reads that name, so 1.5.5
+would run without its groups, hooks, identity providers and root overrides, `root.store`
+included. If `<o>` is a regular file while `<o>.busbar-folding` exists, a 1.5.5 wrote it during
+the upgrade: stop it and decide which of the two files to keep before you start 1.5.5.
 <!-- TODO(migrate-design): the store unfence/rollback step (MIGRATE-ON-BOOT §10) and its command
 name; add here once decided. -->
 
@@ -116,7 +126,7 @@ Startup does not import them.
 | `BUSBAR_WORKER_THREADS` | `advanced.worker_threads` |
 | `BUSBAR_UPSTREAM_HTTP1_ONLY` | `advanced.upstream_http1_only` |
 | `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` | `advanced.upstream_h2_prior_knowledge` |
-| `BUSBAR_CONFIG_OVERLAY` | none; the overlay is imported into the store (below) |
+| `BUSBAR_CONFIG_OVERLAY` | none; the upgrade boot reads it once, to find the overlay it folds ([below](#the-155-overlay-file)) |
 
 `BUSBAR_CONFIG`, secret `{ env: NAME }` references, `RUST_LOG`, `TOKIO_WORKER_THREADS` and the
 `--providers` flag are unchanged.
@@ -126,29 +136,46 @@ does not. With `config.yaml` at the default `/etc/busbar/config.yaml` nothing ch
 mounted it elsewhere, set `providers_file:`, pass `--providers`, or put `providers.yaml` beside it.
 Keep the old `BUSBAR_PROVIDERS` value only for the explicit migration command.
 
-`BUSBAR_CONFIG_OVERLAY` selects old file-overlay migration input only; serving never reads it.
-The old `config.overlay` file/boolean field is refused by `--validate` (the current reader), which
-names it as retired and gives the migration commands; serving normalizes it at startup. One-time migration removes that field while preserving `config.locked`;
-use `locked: true` to keep an immutable/GitOps deployment. 1.6 runtime configuration is persisted
-through Store. Follow the [overlay import instructions](migration-overlay-1.6.md) before serving
-old state: serving refuses to start while the overlay file 1.5.5 would have read still holds
-settings this Store has not imported (BUSBAR-3027; that guide lists the remedy for each Store
-state). Selectors and `BUSBAR_CONFIG_OVERLAY` that hold nothing get a warning (BUSBAR-3028).
 `BUSBAR_CONFIG`, explicit secret `{ env: NAME }` references, `RUST_LOG` and the
 `TOKIO_WORKER_THREADS` fallback are unchanged. Preserve existing signing-key material and Store
 records when upgrading 1.5.5: existing signed keys do not need to be reminted merely for this upgrade.
 
-In 1.6.0, changes made through the admin API are stored in the store, not in an overlay file. The
-explicit migration command imports your 1.5.5 overlay file (`config.overlay.file`, else `BUSBAR_CONFIG_OVERLAY`,
-else `busbar-overlay.json` beside the old config) into the store once. Run it before serving; startup refuses unimported legacy state:
+### The 1.5.5 overlay file
 
-- hooks, wiring, groups, root controls, named definitions and plugin floors are kept;
-- if the overlay chose the store, that choice is written into `config.yaml`;
-- with `config.locked: true` the overlay is ignored, as it was in 1.5.5 (`locked` itself is kept);
-- the import needs a durable store; an overlay with the memory store is refused;
-- an unknown or invalid overlay is refused, never partly imported;
-- the old file is not read again after import.
-The original files remain unchanged; the import and digest receipt commit atomically. See [overlay import](migration-overlay-1.6.md).
+1.5.5 kept what you changed through its admin API (groups, hooks and global hooks, identity
+providers, exporters, `root` overrides including `root.store`, deletions and plugin rollback pins)
+in an overlay file beside config.yaml. The upgrade boot folds that file into `config.yaml`, for
+every store including the default one, and from then on 1.6.0 keeps admin-API changes in the
+configured store:
+
+- The file is the one 1.5.5 used: `config.overlay.file` (relative to config.yaml's directory),
+  else `BUSBAR_CONFIG_OVERLAY` (only while `config.overlay` is unset), else `busbar-overlay.json`
+  beside config.yaml. With `config.locked: true` there is none. A mutable config with
+  `config.overlay: false`, `true` or `{ file: null }` stops the upgrade with 1.5.5's own message,
+  because 1.5.5 did not boot it either.
+- An overlay 1.5.5 could not write (a read-only file, or a path it could not create) was never read
+  by 1.5.5 and is not folded; the file is left untouched.
+- The upgrade logs one line naming the overlay: its absolute path, how it was selected, and
+  `folded`, `absent` or `not writable, not folded` (the last two also at WARN). Read it before you
+  go on: 1.6.0 checks the overlay only on this one upgrade boot. Once config.yaml is stamped, no
+  boot reads `BUSBAR_CONFIG_OVERLAY` or the overlay path again, so an `absent` line means nothing
+  that overlay held is served (groups, hooks, identity providers, exporters, and `root.store`,
+  which 1.5.5 applied before opening the store: 1.6.0 would use the base config's store instead).
+  If the line is wrong, roll config.yaml back ([Rolling back](#rolling-back)) and upgrade again in
+  the deployment's own environment.
+- Each overlay hook becomes a 1.6.0 hook definition in `hooks:`, its global list becomes
+  `pools.hooks:`, and its deletions remove the name from `hooks:`, `pools.hooks:` and every pool's
+  `hooks:`. A `default: true` hook that ordered pools in 1.5.5 stops the upgrade (1.6.0 has no
+  default-hook flag; the message says what to change on 1.5.5); otherwise the flag is dropped and
+  listed. Plugin rollback pins are dropped and listed: 1.6.0 cannot load a 1.5.x artifact.
+- An overlay that does not parse, a value in it containing `${`, or a name both files define stops
+  the upgrade, and nothing is written. So does `--ignore-overlay` while an overlay waits to be
+  folded.
+- The overlay file is kept, byte for byte, as `<overlay>.1.5.5`, and the overlay path becomes a
+  directory holding `busbar-1.6-folded`. Keep it: it makes a forgotten 1.5.5 instance fail loudly
+  (its admin-API writes fail) instead of writing a file 1.6.0 never reads. Delete it only once no
+  1.5.5 can run against this directory. A 1.5.5 that writes the overlay during the upgrade is
+  caught (LIVE_WRITER) and nothing it wrote is lost.
 
 ### Credentials moved to files
 
@@ -190,14 +217,14 @@ Hook configuration and admin writes use one canonical spelling. Convert existing
 once and update clients that submit or read retired fields.
 
 - **`config.overlay` is retired.** 1.6.0 keeps admin-API config changes in the configured Store,
-  not in an overlay file, so `config:` accepts only `locked`. `busbar --migrate-config` removes `overlay: false` and `overlay: { file: <path> }` and keep
-  `config.locked`. Import the old file into the Store once with
-  `busbar --config <new-config.yaml> --migrate-overlay <old-config.yaml>`
-  ([overlay import](migration-overlay-1.6.md)). Where the selector is still present and nothing
-  migrates it (`--validate`, a reload), it is refused with that instruction.
+  not in an overlay file, so `config:` accepts only `locked`. The upgrade boot folds the 1.5.5
+  overlay file into config.yaml ([the 1.5.5 overlay file](#the-155-overlay-file); see also the
+  [overlay upgrade](migration-overlay-1.6.md)), removes `overlay: false` and
+  `overlay: { file: <path> }`, and keeps `config.locked`. A stamped config that still carries the
+  selector is refused by the strict parse (`unknown field`).
 - **Hook `plugin:` → `module:`.** Current configuration and `POST`/`PUT /api/v1/admin/hooks`
-  bodies require `module:`. `busbar --migrate-config` rewrites old YAML; explicit legacy overlay
-  import converts the old persisted field before committing it to the Store.
+  bodies require `module:`. The first boot rewrites old YAML and converts the hooks of a 1.5.5
+  overlay as it folds them, on the same boot.
 - **Hook `at: <stage>` → `phase: [<stage>]`.** Current configuration and admin writes require the
   phase list. One-shot YAML and overlay migration preserve the selected stage and an existing
   non-empty phase list. For example, replace `at: response` with `phase: [response]`. An omitted
@@ -213,7 +240,7 @@ once and update clients that submit or read retired fields.
 - **`tools.<server>.allow_private` and `agents.<agent>.allow_private` → `advanced.allow_destinations`.**
   One setting governs every outbound connection busbar and its plugins make; the per-registration
   switch is retired and a configuration that still sets it is refused (BUSBAR-3135), naming the
-  registration. `busbar --migrate-config` removes the key and lists exactly the hosts that
+  registration. the first-boot migration removes the key and lists exactly the hosts that
   registration dials (its `url`, and a token endpoint it names), never a wildcard or a network:
 
   ```yaml
@@ -239,7 +266,7 @@ once and update clients that submit or read retired fields.
 - **`security.allow_metadata_hosts`, `security.allow_all_metadata` and
   `providers.<p>.allow_metadata_hosts` are retired.** Cloud metadata is refused for every outbound
   connection, in every egress class, and no configuration admits it; a configuration that still
-  carves an exception is refused at startup (BUSBAR-3136). `busbar --migrate-config` removes the keys
+  carves an exception is refused at startup (BUSBAR-3136). the first-boot migration removes the keys
   and names each removed entry (BUSBAR-3411). `security.blocked_metadata_hosts` stays and still
   extends the denylist. An `advanced.allow_destinations` entry that names a cloud-metadata host or
   address is refused too (BUSBAR-3134). A workload that needs cloud credentials uses
@@ -276,6 +303,67 @@ health-probed.
 - An identity provider whose discovery or key URL redirects to a private address fails sign-in.
   Point the issuer at the address it finally serves from.
 - A third-party plugin built for 1.5.5 needs a 1.6.0 build from its author.
+
+### Transport security
+
+1.6.0 connects only over verified TLS, and nothing is exempt: not loopback, not unix sockets. The
+upgrade rewrites none of this. A security posture is not a format step, and accepting an exception
+needs a human reason, so every shape below that refuses at boot refuses with the exact line to add
+(BUSBAR-3160 for a plaintext endpoint, BUSBAR-3161 for a certificate busbar cannot verify). The
+line goes under the instance's block in the file as read, and it is carried through the upgrade
+byte for byte, in config.yaml and in a 1.5.5 overlay file alike:
+
+```yaml
+insecure_transport: { accept: plaintext, reason: "<why this is acceptable>" }
+```
+
+A 1.5.5 busbar refuses a file holding that key, so add it only once every 1.5.5 instance on the
+configuration has stopped. Each refusal below becomes a boot after the edit in the last column.
+
+| 1.5.5 shape | 1.6.0 | Your edit |
+|---|---|---|
+| store `memory` or `sqlite`; secret `env` or `file`; export `file` or `prometheus`; any instance that dials nothing | boots | none |
+| store postgres `sslmode=verify-full` or `verify-ca` | boots when the server chains to the bundled roots | otherwise its CA under `advanced.tls.trust_anchors`, or pin its key |
+| store postgres `sslmode=require` | now verified (1.5.5 only encrypted); BUSBAR-3161 on a private or self-signed certificate | the CA, a pin, or `accept: unverified_tls` |
+| store postgres `sslmode=disable` (any host, loopback included) | BUSBAR-3160 | TLS on the server, or `accept: plaintext` |
+| store postgres, no `sslmode` | TLS is requested; a server without TLS fails at open | TLS on the server, or `sslmode=disable` plus `accept: plaintext` |
+| store postgres `sslmode=prefer` or `allow` | BUSBAR-3142 | `require`, or `disable` plus `accept: plaintext` |
+| store postgres on a unix-socket host | BUSBAR-3160 | `accept: plaintext`, or TCP with TLS |
+| store valkey `rediss://` or `valkeys://` | verified | the CA if private, or a pin |
+| store valkey `rediss://...#insecure` | BUSBAR-3143 | drop `#insecure`; the CA, a pin, or `accept: unverified_tls` |
+| store valkey `redis://`, `valkey://`, `unix://`, `redis+unix://`, `valkey+unix://` | BUSBAR-3160 | `rediss://`, or `accept: plaintext` |
+| store mysql over TCP, `ssl-mode` absent, `REQUIRED` or `VERIFY_*` | verified; a server without TLS fails at open | TLS on the server, the CA, or `ssl-mode=DISABLED` plus `accept: plaintext` |
+| store mysql `ssl-mode=DISABLED`, or `?socket=` | BUSBAR-3160 | TLS, or `accept: plaintext` |
+| store mysql `ssl-mode=PREFERRED` | refused at check | `REQUIRED`, or `DISABLED` plus `accept: plaintext` |
+| auth ldap `ldaps://`, or `ldap://` with `start_tls: true` | verified (with its `ca_cert_pem`) | the CA if it fails |
+| auth ldap `ldap://` without STARTTLS (any host, loopback included) | BUSBAR-3160 | `start_tls: true` or `ldaps://`, or `accept: plaintext` |
+| auth ldap `allow_insecure_transport: true` | the key is dropped (BUSBAR-3417), not converted; then as the row above | as above |
+| auth ldap `allow_insecure_transport: false` | the key is dropped; no other effect | none |
+| auth ldap `start_tls: true` to a server that refuses STARTTLS | refused at open with the line to add | TLS on the directory, or plain `ldap://` plus `accept: plaintext` |
+| secret vault `addr: https://...` | verified (with its `ca_cert_pem`) | the CA if it fails |
+| secret vault `addr: http://...` (dev mode `http://127.0.0.1:8200` included) | BUSBAR-3160 | TLS on Vault, or `accept: plaintext` |
+| export otlp `url: http://` (a loopback collector too); hook webrequest `url: http://` | BUSBAR-3160 | `https://`, or `accept: plaintext` |
+| export webhook, auth oidc, github or oauth, plane mcp or a2a with `https://` | verified | the CA or a pin if private |
+| any of those with an `http://` URL 1.5.5 admitted (an issuer, GHES, or plane-mcp member on `http://`) | BUSBAR-3160 | `https://`, or `accept: plaintext` |
+| auth github `api_base`, `token_base`, `authorize_base`, or auth oidc issuer, `authorization_endpoint`, `token_endpoint` on `http://` | BUSBAR-3160, or "use https" where the destination guard refuses the host | `https://`, or `accept: plaintext` |
+| transport instance dials (`ws://`, gRPC h2c or `http://`, plain tcp) | BUSBAR-3160 naming the transport instance | `wss://`, `https://`, TLS, or `accept: plaintext` on that instance |
+| transport instance dial over TLS to a private or self-signed server | BUSBAR-3161 | the CA, a pin, or `accept: unverified_tls` |
+
+### Plugin error codes
+
+Pre-release 1.6.0 builds printed plugin error codes as `BUSBAR-NNNN`. They are now
+`BUSBAR-<plugin>-NNNN` with the same number; no released build or log carries the old form. A
+pre-release plugin image whose signed `declares.json` still has `diagnostics` is refused until it
+is rebuilt and re-signed. Core's own codes keep the `BUSBAR-NNNN` form.
+
+### Private provider hosts are allowed for you
+
+1.5.5 dialled a private or loopback provider with no allowlist, and 1.6.0 refuses one unless
+`advanced.allow_destinations` names it. The upgrade adds `base_url` and `token_url` hosts of the
+providers your models use (and of every provider your own `providers:` section defines) when every
+address the host answers at upgrade time is private or loopback and none is cloud metadata. One
+line per decision is printed. A host that is public, mixed, unresolvable or cloud metadata is not
+added: add the first three by hand if they are yours; cloud metadata is never admitted.
 
 ---
 
@@ -334,7 +422,7 @@ path; other omitted tiers are `0`, as in 1.5.5) and these open units, which have
 | `audio_ms` | a transcription's reported duration, in whole milliseconds |
 | `guardrail_*` (nine) | the Bedrock guardrail policy units, one unit per policy type |
 
-If you migrate by hand instead of running `--migrate-config`: delete `cache_write_utok: 0` from a
+If you migrate by hand instead of letting the first boot do it: delete `cache_write_utok: 0` from a
 1.5.5 entry. 1.6.0 removes it and logs a WARN at boot, and cache writes bill at `input_utok`. A
 config reload that adds it is refused with the reason. YAML cannot yet make cache writes free; use
 the admin API.
@@ -433,7 +521,7 @@ the 1.5.5 keys above to the 1.6 key.
 
 ## Quick checklist
 
-- [ ] Run `busbar --migrate-config config.yaml > config-1.6.yaml` and read what it printed: every
+- [ ] Back up `config.yaml`, start 1.6.0 on it once and read what the boot reported: every
       change it made, the WARNINGs (the `role_bindings."*"` entries that keep 1.5.5's access) and the
       TODOs.
 - [ ] Act on the TODOs. A provider `api_key` that does not resolve: fix the reference, or — for an
@@ -453,9 +541,8 @@ the 1.5.5 keys above to the 1.6 key.
       expect its spend to rise to what it actually used.
 - [ ] Convert retired environment overrides using the migration command with the old environment,
       then remove those variables from launchers; serving uses the resulting configuration.
-- [ ] Hooks spelled `plugin:` or `at:` in config.yaml: run `busbar --migrate-config` once
-      and explicitly import old persisted overlays before serving. Ordinary Store reads do not
-      rewrite retired fields.
+- [ ] Hooks spelled `plugin:` or `at:` in config.yaml: the first boot rewrites them, and folds
+      an old overlay file on the same boot. Ordinary Store reads do not rewrite retired fields.
 - [ ] If a dashboard or reconciliation relied on `GET /admin/usage` totals recalculating after a
       rate-card edit: they no longer do (a card prices only what follows it). Post an
       `amend-rate-history` correction for booked usage, and pass `?as_of=<history_seq>` to read money
@@ -485,4 +572,6 @@ receives identity-provider settings, not deployment credential references.
 
 ## Released 1.5.5 persistent configuration
 
-Run the explicit [file-overlay import](migration-overlay-1.6.md) after configuration migration and before first startup. The original files remain unchanged, the effective Store selection is captured in the new YAML, and the overlay plus digest receipt commit atomically. Current startup never applies the old file or its retired environment selector; it refuses to start while that file still holds settings the Store has not imported (BUSBAR-3027).
+The upgrade boot folds the 1.5.5 overlay file into config.yaml and keeps the file as
+`<overlay>.1.5.5` ([the 1.5.5 overlay file](#the-155-overlay-file)); there is no separate import
+step, and a stamped boot never reads an overlay file.

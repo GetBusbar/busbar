@@ -4,7 +4,7 @@
 //! A plugin migrates its own settings through the door's optional `migrate` entry
 //! (`abi::mechanism::lifecycle`, MIGRATE), once for every kind.
 //!
-//! `busbar --migrate-config` migrates core's own keys and nothing inside a plugin's settings
+//! The boot's migration migrates core's own keys and nothing inside a plugin's settings
 //! section. For each configured plugin it loads the plugin's current build and calls this entry with
 //! the section as the operator wrote it and the busbar version the configuration came from. The
 //! plugin answers the new section, one report line per change (what changed and why), and the needs
@@ -577,6 +577,9 @@ unsafe fn lent<'a>(p: *const u8, len: usize) -> &'a [u8] {
 }
 
 /// Read a door's answer into host custody without exposing the owner's settings.
+/// Cold, and pinned so the migrate-size job finds it (MIGRATE-ON-BOOT §7 †).
+#[cold]
+#[inline(never)]
 pub fn read_answer(outcome: Outcome, answer: &[u8]) -> Result<MigrationAnswer, String> {
     match outcome {
         Outcome::Ready => serde_json::from_slice(answer)

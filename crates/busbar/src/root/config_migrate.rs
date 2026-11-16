@@ -13,6 +13,7 @@ use crate::root::loader::PluginRegistry;
 
 #[path = "migrate_environment.rs"]
 mod environment;
+#[cfg(test)]
 pub(super) use environment::capture as capture_environment;
 pub(crate) use environment::ignored_launch_env;
 

@@ -911,6 +911,9 @@ pub(crate) fn host_slots(kind: busbar_contract::abi::mechanism::KindCode) -> &'s
             directory_delete: busbar_contract::abi::host::access::service(op::DIRECTORY_DELETE)
                 .filter(|p| p.admits(kind))
                 .map(|_| directory_delete as svc::ServiceFn),
+            migrate_admit: busbar_contract::abi::host::access::service(op::MIGRATE_ADMIT)
+                .filter(|p| p.admits(kind))
+                .map(|_| migrate_admit as svc::ServiceFn),
         })
     });
     &tables[kind as usize - 1]
@@ -964,6 +967,7 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
     directory_create: Some(directory_create),
     directory_apply: Some(directory_apply),
     directory_delete: Some(directory_delete),
+    migrate_admit: Some(migrate_admit),
 };
 
 pub(crate) fn new_op(wake: &'static super::ticket::InstanceWake, ticket: Ticket) {
@@ -2780,6 +2784,39 @@ extern "C" fn need_admit(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
             }
         },
     )
+}
+
+/// The frame of `migrate.admit`: no route and no provider (the store opens before the host
+/// services are bound), only the calling instance and the lifecycle op it is inside, which the
+/// boot's verdict judges (`super::migrate::admit_verdict`).
+fn admitting(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+    service: u32,
+    in_size: usize,
+    body: impl FnOnce(
+        Option<&'static super::ticket::InstanceWake>,
+        Option<u32>,
+        ServiceHead,
+    ) -> Answered,
+) -> RawOutcome {
+    framed(input, out, service, in_size, |head| {
+        body(
+            super::handle::resolve(ctx),
+            super::access::operation(),
+            head,
+        )
+    })
+}
+
+service! {
+    migrate_admit, admitting, op::MIGRATE_ADMIT, svc::MigrateAdmitIn, |wake, operation, _, i| {
+        match super::migrate::admit_verdict(wake, operation, i.recoverable) {
+            Ok(()) => Answered::bare(Outcome::Ready, ""),
+            Err(text) => Answered::bare(Outcome::Refused, text),
+        }
+    }
 }
 
 #[cfg(test)]

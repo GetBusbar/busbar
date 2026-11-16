@@ -39,6 +39,7 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 busbar-plugin-abi = { path = "../busbar-plugin-abi", features = ["host"] }
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
 busbar-migrations = { path = "../busbar-migrations" }
+busbar-migrate = { path = "../busbar-migrate" }
 busbar-contract = { path = "../busbar-contract" }
 busbar-kernel-identity = { path = "../busbar-kernel-identity" }
 busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
@@ -70,6 +71,10 @@ socket2 = { workspace = true }
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true }
 
+# Close-on-exec before the migrate re-exec (root/migrate.rs).
+[target.'cfg(unix)'.dependencies]
+close_fds = { workspace = true }
+
 [features]
 test-harness = []
 
@@ -80,6 +85,8 @@ serde_json = { workspace = true }
 tracing-subscriber = { workspace = true }
 busbar-core-admin = { path = "../busbar-core-admin", default-features = false, features = ["test-support"] }
 busbar-contract = { path = "../busbar-contract", features = ["tls", "stage-probe", "test-seal"] }
+# The seam's tests count busbar_migrate's entries (MIGRATE-ON-BOOT §9 C1 (sz2)).
+busbar-migrate = { path = "../busbar-migrate", features = ["counted"] }
 proc-macro2 = { workspace = true }
 syn = { workspace = true }
 # External fixtures used by this source when the distribution runs its unit tests.

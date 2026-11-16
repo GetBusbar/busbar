@@ -70,7 +70,7 @@ Releases up to 1.5.5 were tagged without a signature.
 
 ## The release index
 
-`busbar --migrate-config` reads `plugin-index.json` to rewrite a 1.5.5 configuration's
+the first-boot migration reads `plugin-index.json` to rewrite a 1.5.5 configuration's
 `plugins.fetch` pins and to find the release of a plugin built for this core. Each release publishes
 it as an asset of its own GitHub Release, the URL the binary fetches by default:
 
