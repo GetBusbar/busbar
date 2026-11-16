@@ -14,7 +14,7 @@ No auth required. Returns `200 OK` (body: `ok`) if any lane is usable: meaning a
 
 Use as a Kubernetes readiness and liveness probe. The check is side-effect-free: it never steals a HalfOpen recovery probe slot.
 
-A `503` from `/healthz` means all lanes are either tripped/cooling, hard-down, budget-exhausted, or permanently dead. Check `/stats` for details.
+A `503` from `/healthz` means all lanes are either tripped/cooling, hard-down, budget-exhausted, or permanently dead. Check `/stats` for details. If instead `/healthz` answers `503` with body `plugin dispatch halted; restart required`, the engine has latched a plugin-dispatch halt and only a restart clears it; that check runs before the lane check.
 
 ## /stats
 
@@ -25,7 +25,9 @@ Authorization: Bearer <client-token-or-virtual-key>
 
 Requires auth (client token or virtual key). Returns a JSON topology snapshot, scoped to the calling key's `allowed_pools`: a key with a non-empty `allowed_pools` list sees only its permitted pools and the lanes reachable through them.
 
-Per-lane fields in the response:
+The response is `{ "pools": {...}, "lanes": [...] }`. `pools` maps each visible pool name to the list of its members' model names; `lanes` is the array of per-lane records below.
+
+Per-lane fields:
 
 | Field | Meaning |
 |---|---|
@@ -58,44 +60,34 @@ GET /metrics
 Authorization: Bearer <client-token-or-virtual-key>
 ```
 
-Prometheus text exposition (`text/plain; version=0.0.4`). Goes through the same auth check as other routes, it is treated as an information-disclosure surface (it reveals pool structure, lane names, and failure rates). With no auth chain (`auth.chain: []`), the check admits unconditionally, so `/metrics` is effectively open. Restrict it at the network layer if that matters for your threat model.
+This section covers the **data-listener** `/metrics`, served by a `kind: export` module that serves Prometheus exposition (the admin-listener route is described next). Prometheus text exposition (`text/plain; version=0.0.4`). Goes through the same auth check as other routes, it is treated as an information-disclosure surface (it reveals pool structure, lane names, and failure rates). With no auth chain (`auth.chain: []`), the check admits unconditionally, so `/metrics` is effectively open. Restrict it at the network layer if that matters for your threat model.
+
+### The admin-listener `/metrics`
+
+The admin listener serves its own `GET /metrics` and `GET /metrics/hooks`, encoded by core rather than by an export instance (`/metrics/hooks` carries the hook-reported families). They authenticate with the **admin** credential (the `admin_auth:` chain; read-only scope is enough), not a client token or virtual key. The representation follows `Accept`: Prometheus text by default (also `text/plain`), `application/openmetrics-text` for OpenMetrics, or `application/json` for the same families as JSON. Responses carry `Cache-Control: no-store`.
+
+This route is governed by the in-process registry, `telemetry.enabled` (default `true`, independent of any `export:` instance), not by an export instance. With `telemetry.enabled: false` it answers `503 unavailable` with reason `telemetry_disabled`; before the recorder is installed it answers `503 unavailable`.
 
 ### Metrics are opt-in
 
-Metrics are **off unless you ask for them.** With no `module: prometheus` instance under `export:` busbar installs no recorder, records nothing on the request path, and does not mount `/metrics` or `/metrics/hooks` at all. A scrape of either gets the same 404 as any other unknown path. Opting in is one `export:` instance, and `buffer_seconds` is **required**:
+The data-listener scrape endpoint is **off unless you ask for it.** With no such export instance under `export:`, busbar does not mount `/metrics` or `/metrics/hooks` on the data listener at all, and a scrape of either there gets the same 404 as any other unknown path. (The in-process registry itself is governed by `telemetry.enabled`, and the admin listener serves its own `/metrics`; see above.) Opting in is one `export:` instance of a `kind: export` module that serves Prometheus exposition:
 
 ```yaml
-store: { module: memory }
 export:
   metrics:                      # the INSTANCE NAME, yours to choose
-    module: prometheus
-    settings:
-      buffer_seconds: 60        # REQUIRED: how many seconds of observations to retain
-      key_gauge_limit: 2000     # optional (default 2000)
+    module: <export-module>     # a kind: export module that serves Prometheus exposition
+    settings: {}                # the module's own settings; see the plugin's own documentation
 ```
 
-(1.5.3 retired the top-level `metrics:` block into this instance; at most ONE `prometheus` instance
-is allowed, since it owns the one well-known `/metrics` route.)
+At most ONE such instance is allowed, since it owns the one well-known `/metrics` route. The module's settings (including the retention window that bounds how many seconds of observations it buffers, and the cap on per-key gauge series per scrape) are documented by the plugin itself. The behavior to rely on regardless of module: quantile lines cover only the retained window, `_sum` and `_count` are cumulative, memory is bounded by the window rather than by uptime, and when per-key gauge series (e.g. `busbar_key_spend_cents{key="…"}`) exceed the engine cap, only the first keys in store-returned order are emitted and a warning is logged. Selection occurs before usage reads to bound scrape-path database work; it is not a ranking by spend. Aggregate totals are never affected.
 
-`buffer_seconds` is the retention window. Busbar folds buffered observations into their aggregate form on a timer and drops anything older, so:
-
-* **quantile lines** on `/metrics` (`busbar_request_duration_seconds{quantile="…"}`) cover the last `buffer_seconds`;
-* **`_sum` and `_count` are cumulative** and unaffected by the window, so totals and rates never lose anything;
-* **memory is bounded by the window, not by uptime.** Retention is one window's traffic, whether or not anything ever scrapes you.
-
-There is no default because the right value is a memory-for-fidelity trade only you can make: every second of buffer holds that second's raw observations in memory (at very high request rates, a few MB per second). Pick the window your dashboards actually query. `buffer_seconds: 0` is rejected at boot. It would retain nothing while still paying the recording cost; omit the whole instance instead.
-
-`key_gauge_limit` bounds the per-key gauge series (e.g. `busbar_key_spend_cents{key="…"}`) emitted on a single `/metrics` scrape. A fleet with many virtual keys can otherwise produce one time series per key. That is unbounded Prometheus cardinality that never shrinks back down. Busbar emits at most `key_gauge_limit` per-key series per scrape (highest-spend keys first) and logs a warning when it truncates; aggregate totals (`_sum`, `_count`) are never affected, only the per-key breakdown. Raise it if your dashboards need finer per-key visibility than the default gives at your key count; the trade is the same one `buffer_seconds` makes: more fidelity for more memory and scrape payload.
-
-Scraping is not required for correctness. A gateway with metrics enabled and nothing scraping it retains one `buffer_seconds` window and no more.
+Scraping is not required for correctness. A gateway with the instance configured and nothing scraping it retains one window and no more.
 
 ## Metrics to watch
 
-**The model plane keeps its original two request families; the mounted planes get their own.** On
-the model (LLM) plane `busbar_requests_total` and `busbar_request_duration_seconds` are exactly what
-they were in 1.5.5 — labelled `ingress_protocol`, `pool`, `outcome` (the counter) and
-`ingress_protocol`, `pool` (the histogram), with **no** `plane` label — so a pure-LLM deployment's
-`/metrics` output, and every 1.5.5 rule, alert and dashboard matching those series, is unchanged.
+**The model plane and the mounted planes have separate request families.** On
+the model (LLM) plane `busbar_requests_total` and `busbar_request_duration_seconds` are labelled `ingress_protocol`, `pool`, `outcome` (the counter) and
+`ingress_protocol`, `pool` (the histogram), with **no** `plane` label.
 The MCP and A2A planes emit a parallel pair, `busbar_plane_requests_total` and
 `busbar_plane_request_duration_seconds`, which add a `plane` label (`mcp`, `a2a`) so tool calls and
 agent tasks are compared with `sum by (plane)`. On those planes `pool` currently reads `unresolved`
@@ -118,31 +110,27 @@ A refusal issued before a plane's handler runs is counted too: a `401` on an aud
 endpoint appears as `busbar_plane_requests_total{plane="mcp",outcome="client_error"}`. That is
 deliberate, and it is the signal an operator most often has nothing else to see.
 
-> **Migration note (1.6.0):** 1.6.0 adds the MCP and A2A planes. To keep the model plane's metrics
-> byte-identical to 1.5.5, `busbar_requests_total` and `busbar_request_duration_seconds` remain
-> model-plane-only and did **not** gain a `plane` label. Per-plane request counts for MCP and A2A
-> live on the new `busbar_plane_requests_total` / `busbar_plane_request_duration_seconds` families.
+> **Note:** `busbar_requests_total` and `busbar_request_duration_seconds` are model-plane-only and have no `plane` label. Per-plane request counts for MCP and A2A
+> live on `busbar_plane_requests_total` / `busbar_plane_request_duration_seconds` families.
 > For one query spanning all three planes, sum the model and plane families together; their label
 > sets are identical apart from the `plane` label the new families add.
 
 | Metric | Type | Labels | What to watch for |
 |---|---|---|---|
-| `busbar_requests_total` | counter | `ingress_protocol`, `pool`, `outcome` | Model (LLM) plane only, unchanged from 1.5.5. `outcome=exhausted` rising → pools running out of healthy members. `outcome=error` → 5xx-class problems reaching the client; `outcome=client_error` → 4xx relayed to callers. |
+| `busbar_requests_total` | counter | `ingress_protocol`, `pool`, `outcome` | Model (LLM) plane only. `outcome=exhausted` rising → pools running out of healthy members. `outcome=error` → 5xx-class problems reaching the client; `outcome=client_error` → 4xx relayed to callers. |
 | `busbar_plane_requests_total` | counter | `plane`, `ingress_protocol`, `pool`, `outcome` | Mounted planes (`plane` is `mcp` / `a2a`). Same `outcome` vocabulary as the model counter. |
 | `busbar_upstream_attempts_total` | counter | `pool`, `lane` | Real upstream calls, re-counted per failover hop. Ratio to `busbar_requests_total` > 1 indicates failovers are happening. |
 | `busbar_upstream_failures_total` | counter | `pool`, `lane`, `disposition` | `disposition` is `transient_upstream`, `attempt_timeout`, `hard_down`, or `context_length`. `hard_down` requires intervention (auth/billing problem). |
 | `busbar_breaker_trips_total` | counter | `pool`, `lane` | One per Closed→Open trip (reopens don't count). A spike means a backend just went down. |
 | `busbar_failovers_total` | counter | `pool`, `reason` | `reason` is `timeout`, `connect`, `transient_upstream`, `attempt_timeout`, `hard_down`, or `context_length`. A high rate on one pool indicates a flapping member. |
 | `busbar_translations_total` | counter | `from`, `to` | Cross-protocol translation hops. Useful for auditing unexpected protocol conversion. |
-| `busbar_request_duration_seconds` | histogram | `ingress_protocol`, `pool` | Model (LLM) plane only, unchanged from 1.5.5. End-to-end latency including failover hops. |
+| `busbar_request_duration_seconds` | histogram | `ingress_protocol`, `pool` | Model (LLM) plane only. End-to-end latency including failover hops. |
 | `busbar_plane_request_duration_seconds` | histogram | `plane`, `ingress_protocol`, `pool` | Mounted planes (`plane` is `mcp` / `a2a`). End-to-end latency for tool calls and agent tasks. |
 | `busbar_key_spend_cents` | gauge | `key` + mint labels | Per-virtual-key DERIVED spend (abstract minor units, all-time attribution bucket), recomputed at scrape time from the ledger, each request priced at the card in force when it was served, plus the flat fee. |
 | `busbar_bucket_spend_cents` | gauge | `bucket`, `group`, `window` | Derived spend per (group, window) enforcement bucket (`bucket` = `group:<name>@<window>`). |
-| `busbar_bucket_budget_remaining_cents` | gauge | `bucket`, `group`, `window` | Budget cap minus derived spend, only for buckets with a `budget` limit. Use for burn-rate alerting. |
+| `busbar_bucket_budget_remaining_cents` | gauge | `bucket`, `group`, `window` | Budget cap minus derived spend, only for buckets with a `budget` limit. Use for burn-rate alerting: point Alertmanager at 80% burn, since Busbar ships the hard 100% stop only and alerts live outside the core. |
 | `busbar_key_tokens_total` | gauge | `key` + mint labels | Accumulated tokens consumed by each virtual key (all-time attribution bucket). |
 | `busbar_bucket_tokens` | gauge | `bucket`, `model`, `tier` (+ mint labels on key buckets) | Per-(bucket, model, tier) token counters for the bucket's current budget window, from the token ledger. `bucket` is a virtual-key id or `group:<name>`; `tier` ∈ `input`\|`output`\|`cache_read`\|`cache_write`. The raw material for any external per-model cost dashboard (multiply by your own catalog). |
-| `busbar_bucket_spend_cents` | gauge | `bucket` | Derived spend per BUDGET-GROUP bucket (each request priced at the card in force when it was served; the flat fee counts against key buckets) for its current window. |
-| `busbar_bucket_budget_remaining_cents` | gauge | `bucket` | Budget-group cap minus derived spend. The external-alerting hook: point Alertmanager at 80% burn - Busbar ships the hard 100% stop only, alerts live outside the core. |
 | `busbar_lane_state` | gauge | `pool`, `lane` | Circuit-breaker health of THIS pool's own breaker cell for the lane, never folded with another pool that shares the lane: `0` = Closed (healthy), or Open with its cooldown elapsed so the next request is the recovery probe; `1` = HalfOpen, a recovery probe is in flight on this pool's cell right now; `2` = tripped, this pool's cell is Open or cooling down (or the lane is hard-down). Emitted for every plane: MCP and A2A destinations report under their plane-qualified target or pool key as `pool` (for example `tool:<server>`, `agent:<pool>`) with the member position as `lane` (`0` for a single registered target), once a request has been sent to them. Side-effect-free at scrape time. |
 | `busbar_lane_available` | gauge | `pool`, `lane` | Unified availability from the shared `classify` taxonomy (the same one routing dispatches on): `1` = the lane would admit a request right now, `0` = unavailable for ANY reason (breaker Open, at-capacity, dead, budget, probe-in-flight). Pair with `busbar_lane_state` (breaker) and `busbar_lane_available_permits` (capacity) to see which axis is the cause. Replaces the former `busbar_lane_at_capacity`. Side-effect-free. |
 | `busbar_lane_recovery_hint_ms` | gauge | `pool`, `lane` | Honest lower bound (ms) on when an unavailable lane could next serve, from the same `recovery_hint_ms` that feeds `Retry-After`: breaker `until` for an Open lane, the at-capacity floor (2000ms) for a saturated one. `0` when available or the reason has no self-recovery (dead/budget). Side-effect-free. |
@@ -154,7 +142,7 @@ deliberate, and it is the signal an operator most often has nothing else to see.
 | `busbar_route_policy_rejections_total` | counter | `pool`, `policy`, `status` | Requests deliberately rejected by a routing hook's `reject` verb (a 4xx to the caller, no upstream dispatched). A guardrail saying no, not a failure. |
 | `busbar_billing_truncated_total` | counter | none | A same-protocol non-stream response whose billing-side buffer hit the translate-body cap before the terminal `usage` block, so tokens could not be parsed and the request billed zero. The client response is unaffected; only the billing side-channel was capped. Alert on a non-zero rate to catch an over-cap billing gap. |
 | `busbar_plugin_observations_dropped_total` | counter | none | Plugin back-channels (a plugin response's reported metrics and diagnostics) the host dropped because its bounded observer intake was full; plugin calls never wait for the observer. Absent until the first drop. A non-zero rate means plugin telemetry arrives faster than the host folds it. |
-| `busbar_plugin_text_cut_total` | counter | `plugin`, `field` | Over-cap values received in plugin and hook replies (counted at parse, including values in metrics later refused). The value kept is the first `cap` sanitised characters, byte-identical to 1.5.5. `field` is one of `reject_message`, `metric_help`, `metric_label`, `metric_unit`, `metric_label_value`, `diag_message`, `diag_field`; `plugin` is the configured hook instance name for a reject or a hook status read (an admin hook-status `GET` or a `/metrics/hooks` refresh, each of which counts again) and the plugin module name for a reported metric or diagnostic. The first cut per plugin and field logs BUSBAR-6013 once; later ones only count. |
+| `busbar_plugin_text_cut_total` | counter | `plugin`, `field` | Over-cap values received in plugin and hook replies (counted at parse, including values in metrics later refused). The value kept is the first `cap` sanitised characters. `field` is one of `reject_message`, `metric_help`, `metric_label`, `metric_unit`, `metric_label_value`, `diag_message`, `diag_field`; `plugin` is the configured hook instance name for a reject or a hook status read (an admin hook-status `GET` or a `/metrics/hooks` refresh, each of which counts again) and the plugin module name for a reported metric or diagnostic. The first cut per plugin and field logs BUSBAR-6013 once; later ones only count. |
 | `busbar_tap_notifications_dropped_total` | counter | none | A fire-and-forget tap notification dropped because the in-flight cap was reached (slow or unreachable tap endpoint). Global backpressure, not per-request. Alert on a non-zero rate. |
 | `busbar_hook_project_over_cap_total` | counter | `part` | A plane asked the host for more room to project a hooked request than the request it was given can need, so the host refused the projection instead of growing its buffers: `part` is `arena` (more than 8 times the body and rewrite, plus the configured arena), `messages` (more turns than the input can spell out) or `signals` (more signal entries than the catalog has ids). The request is refused (`400`, or the shared `500` when it carried a rewrite) and a warning names the sizes. Any non-zero value means a plane is misreporting what it needs. |
 | `busbar_audit_stage_failures_total` | counter | none | Terminal audit originals refused before native confirmation. The request fails or its stream terminates with an error; an upstream side effect may already have occurred. See BUSBAR-2051. |
@@ -168,11 +156,11 @@ deliberate, and it is the signal an operator most often has nothing else to see.
 
 The `pool` label is always a configured pool name or the sentinel `unresolved` (for routes that did not resolve to a pool). It is never a raw client-supplied model string, which would create unbounded label cardinality.
 
-Deeper observability rides the single `export:` surface (as of 1.5.3 the `observability:` block is gone): a `module: otlp` instance for traces and a `module: request-log-webhook` instance for per-request logs. Both are governed by the one destination guard, `advanced.block_private_addresses` / `advanced.allow_destinations` (see [configuration.md](configuration.md#advanced)): a private target is refused unless `allow_destinations` names it, a cloud-metadata target always; OTLP also allows plaintext `http://` to loopback for a local collector. Because `export:` is a NAMED map, several instances of one module are allowed: for example two request-log webhooks, one to your log store and one to a SIEM. See [configuration.md](configuration.md#export).
+Deeper observability rides the single `export:` surface: a `kind: export` module for traces and another for per-request logs, each an instance under `export:`. All export destinations are governed by the one destination guard: private-address targets are refused by default <!-- docs-truth: depends on !2676 (unmerged): advanced.block_private_addresses is deleted and the guard is fixed on --> and a cloud-metadata target is always refused. A registration that must reach a private address opts in per registration with `allow_private` <!-- docs-truth: depends on #302 (unmerged): per-registration allow_private returns, advanced.allow_destinations is deleted -->; there is no global allow list. A module may also permit plaintext `http://` to loopback for a local collector; see the plugin's own documentation. Because `export:` is a NAMED map, several instances of one module are allowed: for example two log-delivery instances, one to your log store and one to a SIEM. See [configuration.md](configuration.md#export).
 
 ## Response headers
 
-Every response header Busbar itself injects (as opposed to a header it relays or translates from an upstream) is an **opt-in toggle under `advanced.response_headers`, default OFF**. Each one is, in some form, an in-band tell that the request went through Busbar rather than talking to the backend directly, so none of them ship enabled out of the box, and an operator opts in per-header only when the tradeoff (a useful diagnostic vs. a fingerprintable observable) is one they've chosen to accept. Both toggles are **restart-to-apply**: each is baked into process-wide state at boot (router middleware composition for `server_timing`, a process-wide flag for `route_policy`), so a live `PUT /config/settings` stores the new value durably but it only takes effect after a restart (`POST /restart` or a supervisor restart). `reload_to_apply` flags `advanced.response_headers` when you change it live.
+Every response header Busbar injects that reveals the gateway (as opposed to a header it relays or translates from an upstream, or one the protocol requires) is an **opt-in toggle under `advanced.response_headers`, default OFF**. Each one is, in some form, an in-band tell that the request went through Busbar rather than talking to the backend directly, so none of them ship enabled out of the box, and an operator opts in per-header only when the tradeoff (a useful diagnostic vs. a fingerprintable observable) is one they've chosen to accept. Both toggles are **restart-to-apply**: each is baked into process-wide state at boot (router middleware composition for `server_timing`, a process-wide flag for `route_policy`), so a live `PUT /config/settings` stores the new value durably but it only takes effect after a restart (`POST /restart` or a supervisor restart). `reload_to_apply` flags `advanced.response_headers` when you change it live.
 
 ```yaml
 advanced:
@@ -185,6 +173,8 @@ advanced:
 |---|---|---|---|---|
 | `Server-Timing: busbar;dur=<ms>` | `advanced.response_headers.server_timing` | Busbar's OWN added latency (total request wall-clock minus the upstream round-trip), at millisecond precision per the W3C `Server-Timing` spec. | On every response, once enabled, including admin/health/early-error responses that never dispatched upstream (in which case the full request time is reported). | `false` |
 | `x-busbar-route-policy` / `x-busbar-route-target` | `advanced.response_headers.route_policy` | The name of the routing policy that chose the lane, and the chosen lane's model. Values are bounded, operator-defined strings (a fixed policy enumeration + a configured model name), never request-derived data. | Only when a non-default routing policy actually produced the order; a default `route: weighted` pool (or a policy that abstained and fell through to weighted round-robin) attaches nothing even when the toggle is on. | `false` |
+
+These two are the only fingerprinting headers. Headers that are part of an endpoint's own contract are not toggles: admin responses always carry `X-Request-Id` (it matches `error.request_id`) and `Cache-Control: no-store`, a `429` carries `Retry-After`, and a `401` carries `WWW-Authenticate: Bearer`.
 
 **Why default off.** Both headers are useful. `Server-Timing` is a standard latency probe DevTools and APM tooling already understand, and the route headers are handy when debugging which policy picked a lane. But Busbar is deliberately anti-fingerprinting: an unauthenticated client should not be able to tell it's talking to a gateway rather than the backend directly from response shape alone. `Server-Timing: busbar;dur=…` and `x-busbar-route-*` are both in-band Busbar tells observable on every response, so both stay invisible until an operator explicitly accepts that tradeoff.
 
@@ -208,7 +198,7 @@ pub const HOTPATH_LEVEL: tracing::Level = tracing::Level::DEBUG;
 Every hot, per-request span references this constant (or, where the macro's parser requires a
 bare identifier rather than a path, imports it and writes `level = HOTPATH_LEVEL`). Raising or
 lowering hot-path verbosity for the whole request path is a one-line change to that constant, never
-a per-call-site literal. The request path's spans, with 1.5.5's names and fields:
+a per-call-site literal. The request path's spans, with their names and fields:
 
 | Span | Fields | Opened by |
 |---|---|---|
@@ -219,37 +209,36 @@ a per-call-site literal. The request path's spans, with 1.5.5's names and fields
 | `forward` | `pool`, `ingress`, `op`, `request_id` | every dispatched unit, once it is admitted, beneath its entry span where it has one |
 | `forward_once` | `lane` | each dispatch of an exhaustion terminal (a fallback pool's member, the least-bad bypass, a queued slot), beneath `forward` |
 
-The entry is chosen as 1.5.5 chose it: head fields first (`authorization` with SigV4, then
+The entry is chosen by head fields first (`authorization` with SigV4, then
 `anthropic-version`, `anthropic-beta`, `x-goog-api-key`, `x-api-key`), then the path. A request read
 as Anthropic opens no entry span. The kernel names no dialect: each entry span's name and the
 request shape that opens it are data the plane states as entry-fact claims (`CLAIM_ENTRY`, with
 `PlaneSnapshot::arrival_spans`). The kernel builds one callsite per name when it binds the routes
 and opens the span around the arrival. `forward` and `forward_once` are the kernel's own. A field
 keeps the type tracing-opentelemetry 0.33 gave it: an `i64`, `bool` or `f64` field is typed, and a
-`u64` field (`lane`, `request_id`) is its text, as 1.5.5 wrote it.
+`u64` field (`lane`, `request_id`) is its text.
 
 `HOTPATH_LEVEL` is `DEBUG`, not the `tracing::Level::TRACE` variant, because it pairs with the
 OTHER half of the one-spot policy: `observability::log_levels()`, which builds the stderr and OTLP
-filters. Logs are always written to stderr, never stdout (as in 1.5.5), so stdout stays free for a
-plane serving its protocol there (`--mcp-stdio`). Stderr takes `RUST_LOG` (default `info`, so hot-path spans are off). OTLP floors at
-`DEBUG` unconditionally, specifically so pointing an `export:` `module: otlp` instance at a collector gets
+filters. Logs are always written to stderr, never stdout, so stdout stays free for a
+plane serving its protocol there (the MCP plane's `--mcp-stdio` flag, which the plane declares; see [mcp.md](mcp.md)). Stderr takes `RUST_LOG` (default `info`, so hot-path spans are off). OTLP floors at
+`DEBUG` unconditionally, specifically so pointing an OTLP-exporting `kind: export` instance at a collector gets
 the request-path spans without ALSO having to set `RUST_LOG=debug` and flood stderr with every debug
 line in the process. Both stay off at the default `RUST_LOG=info` filter either way. Set
-`RUST_LOG=debug` (or `RUST_LOG=busbar=debug`) to see hot-path spans on the console, or configure OTLP
+`RUST_LOG=debug` (or `RUST_LOG=busbar=debug`) to see hot-path spans on the console, or configure an OTLP-exporting export instance
 to get them exported without touching the console at all.
 
-**`RUST_LOG` grammar (1.6.0).** `observability::console_filter` reads it, once, at boot:
+**`RUST_LOG` grammar.** `observability::console_filter` reads it, once, at boot:
 
 | `RUST_LOG` | Console filter |
 |---|---|
 | unset, empty or blank | `info` for every target (unchanged) |
-| one level word: `error`, `warn`, `info`, `debug`, `trace` (any case), or `1`..`5` | that level for every target, exactly as 1.5.x read it |
-| `off` or `0` | nothing on the console (1.5.x silently read these as `info`) |
+| one level word: `error`, `warn`, `info`, `debug`, `trace` (any case), or `1`..`5` | that level for every target |
+| `off` or `0` | nothing on the console |
 | comma-separated `target=level` directives, optionally with one bare level | per-target levels by target prefix; the bare level (default `info`) covers every target no directive names, e.g. `busbar=debug,hyper=warn`, `warn,busbar::request=debug` |
 
 Anything else stops boot with `[error] BUSBAR-9007: RUST_LOG="…" is not a log filter: …` and exit
-status 1; it is never replaced by a default (1.5.x fell back to `info` silently, so the documented
-`RUST_LOG=busbar=debug` did nothing). A bare word that is not a level (`RUST_LOG=busbar`) is refused
+status 1; it is never replaced by a default. A bare word that is not a level (`RUST_LOG=busbar`) is refused
 rather than read as "this target at trace", because a misspelt level would otherwise switch every
 other target off. Span and field directives (`[forward]=debug`) are refused: the filter is a static
 per-target table, so every callsite's interest is decided once and cached. The filter stays on the
