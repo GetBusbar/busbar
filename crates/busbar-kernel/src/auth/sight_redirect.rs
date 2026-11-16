@@ -46,11 +46,7 @@ impl NotFollowed {
     /// Core's text, byte for byte (§12.14).
     #[must_use]
     pub fn text(&self) -> String {
-        format!(
-            "redirect from {} to {} not followed: busbar 1.6 follows only same-origin redirects when fetching an \
-             agent card; set `upstreams.{}.url` to the card's origin",
-            self.from, self.to, self.upstream
-        )
+        crate::cold::auth::sight::not_followed_text(&self.from, &self.to, &self.upstream)
     }
 }
 

@@ -378,10 +378,9 @@ impl Seek for SpoolReader {
 #[cfg(unix)]
 mod platform {
     use super::*;
-    use std::os::{
-        fd::{AsRawFd, FromRawFd},
-        unix::fs::{MetadataExt, OpenOptionsExt},
-    };
+    use rustix::fs::{AtFlags, Mode, OFlags};
+    use rustix::io::Errno;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     pub(super) fn create() -> io::Result<File> {
         let directory = std::env::temp_dir().canonicalize()?;
         let parent = std::fs::OpenOptions::new()
@@ -395,41 +394,25 @@ mod platform {
         for _ in 0..16 {
             let mut random = [0; 16];
             crate::crypto::fill(&mut random).map_err(|_| failed())?;
-            let name =
-                std::ffi::CString::new(format!("busbar-source-spool-{}", hex::encode(random)))
-                    .map_err(|_| failed())?;
-            // SAFETY: retained directory descriptor, terminated random basename,
-            // and flags stay live for this exclusive, non-inheritable creation.
-            let descriptor = unsafe {
-                libc::openat(
-                    parent.as_raw_fd(),
-                    name.as_ptr(),
-                    libc::O_RDWR
-                        | libc::O_CREAT
-                        | libc::O_EXCL
-                        | libc::O_NOFOLLOW
-                        | libc::O_CLOEXEC,
-                    0o600 as libc::c_uint,
-                )
+            let name = format!("busbar-source-spool-{}", hex::encode(random));
+            // Exclusive, non-inheritable creation relative to the retained directory descriptor.
+            let file = match rustix::fs::openat(
+                &parent,
+                name.as_str(),
+                OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::RUSR | Mode::WUSR,
+            ) {
+                Ok(descriptor) => File::from(descriptor),
+                Err(errno) if errno == Errno::EXIST => continue,
+                Err(errno) => return Err(errno.into()),
             };
-            if descriptor < 0 {
-                let error = io::Error::last_os_error();
-                if error.kind() == io::ErrorKind::AlreadyExists {
-                    continue;
-                }
-                return Err(error);
-            }
-            // SAFETY: successful openat returned this fresh, uniquely owned descriptor.
-            let file = unsafe { File::from_raw_fd(descriptor) };
             loop {
-                // SAFETY: this name was exclusively created relative to the retained
-                // directory descriptor; the file is still empty and owned here.
-                if unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) } == 0 {
-                    break;
-                }
-                let error = io::Error::last_os_error();
-                if error.kind() != io::ErrorKind::Interrupted {
-                    return Err(error);
+                // This name was exclusively created relative to the retained directory
+                // descriptor; the file is still empty and owned here.
+                match rustix::fs::unlinkat(&parent, name.as_str(), AtFlags::empty()) {
+                    Ok(()) => break,
+                    Err(errno) if errno == Errno::INTR => {}
+                    Err(errno) => return Err(errno.into()),
                 }
             }
             let metadata = file.metadata()?;

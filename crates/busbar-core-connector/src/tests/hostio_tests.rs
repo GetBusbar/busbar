@@ -668,7 +668,7 @@ fn a_retired_listener_stops_accepting_while_a_fork_copy_of_its_descriptor_is_ope
                 panic!("listen returned a different handle kind");
             };
 
-            let inherited = listener.get_ref().try_clone().unwrap();
+            let inherited = listener.socket().try_clone().unwrap();
             let original = std::sync::Arc::downgrade(&entry);
             drop(entry);
 

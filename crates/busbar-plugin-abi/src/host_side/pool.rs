@@ -21,7 +21,8 @@ use crossbeam_queue::ArrayQueue;
 use zerocopy::IntoBytes;
 
 use crate::records::{
-    FactRec, FactTextRec, Full, Nested, PairRec, Pod, RawWrite, Reply, Writer, put_parts, tag,
+    Full, Nested, Pod, RawWrite, Writer, put_fact_in, put_fact_text_in, put_metric_in,
+    put_nested_in, put_pair_in, put_parts,
 };
 
 /// The four class sizes (§10.1): 4 KiB, 64 KiB, 1 MiB, 16 MiB.
@@ -207,13 +208,6 @@ impl PooledOut {
             held.len = (held.len + n).min(held.high_water);
         }
     }
-
-    /// Appends whole records already framed (a scratch `Reply`'s bytes).
-    fn put_framed(&mut self, bytes: &[u8]) -> Result<(), Full> {
-        self.room(bytes.len())?;
-        self.append(bytes);
-        Ok(())
-    }
 }
 
 impl RawWrite for PooledOut {
@@ -275,8 +269,9 @@ impl RawWrite for PooledOut {
     }
 }
 
-/// Every write is a whole record (`put_parts`) or, for the two nested shapes, a scratch `Reply` copied in once
-/// (records.rs keeps its nested-record writer private to its own sinks; the scratch wipes itself on drop).
+/// Every write goes through records.rs's own sink helpers, in place: a whole record (`put_parts`), or a nested
+/// record opened, filled and back-patched in this buffer (`put_nested_in`, `put_metric_in`), with no scratch
+/// allocation on the §8.8 encoder path. A nested write that runs out of room is truncated, which zeroes it.
 impl Writer for PooledOut {
     fn put(&mut self, tag: u16, body: &[u8]) -> Result<(), Full> {
         put_parts(self, tag, &[body])
@@ -291,32 +286,23 @@ impl Writer for PooledOut {
         put_parts(self, tag, &[s.as_bytes()])
     }
     fn put_pair(&mut self, tag: u16, name: &str, value: &[u8]) -> Result<(), Full> {
-        let head = PairRec {
-            name_len: u32::try_from(name.len()).map_err(|_| Full)?,
-            _r: 0,
-        };
-        put_parts(self, tag, &[head.as_bytes(), name.as_bytes(), value])
+        put_pair_in(self, tag, name, value)
     }
     fn put_fact(&mut self, key: u32, value: u64) -> Result<(), Full> {
-        put_parts(self, tag::FACT, &[FactRec { key, _r: 0, value }.as_bytes()])
+        put_fact_in(self, key, value)
     }
     fn put_fact_text(&mut self, key: u32, value: &str) -> Result<(), Full> {
-        let head = FactTextRec { key, _r: 0 };
-        put_parts(self, tag::FACT_TEXT, &[head.as_bytes(), value.as_bytes()])
+        put_fact_text_in(self, key, value)
     }
     fn put_metric(&mut self, id: u32, op: u32, value: f64, labels: &[&str]) -> Result<(), Full> {
-        let mut scratch = Reply::new();
-        scratch.put_metric(id, op, value, labels)?;
-        self.put_framed(scratch.as_bytes())
+        put_metric_in(self, id, op, value, labels)
     }
     fn put_nested(
         &mut self,
         tag: u16,
         f: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
     ) -> Result<(), Full> {
-        let mut scratch = Reply::new();
-        scratch.put_nested(tag, f)?;
-        self.put_framed(scratch.as_bytes())
+        put_nested_in(self, tag, f)
     }
 }
 
@@ -711,6 +697,46 @@ mod tests {
             .and_then(Result::ok)
             .and_then(|rec| rec.pair().ok());
         assert_eq!(pair, Some(("name", &b"value"[..])));
+    }
+
+    #[test]
+    fn nested_writes_in_place_match_the_reply_encoding_and_a_full_one_leaves_nothing() {
+        let pool = pool(4);
+        let mut buf = pool.acquire(1 << 20);
+        let mut reply = crate::records::Reply::new();
+        buf.put_metric(3, 1, 2.5, &["a", "b"]).expect("metric");
+        reply.put_metric(3, 1, 2.5, &["a", "b"]).expect("metric");
+        buf.put_nested(tag::TEXT, |n| {
+            n.put(tag::TEXT, b"inner")?;
+            n.put_nested(tag::TEXT, |m| m.put_fact(7, 9))
+        })
+        .expect("nested");
+        reply
+            .put_nested(tag::TEXT, |n| {
+                n.put(tag::TEXT, b"inner")?;
+                n.put_nested(tag::TEXT, |m| m.put_fact(7, 9))
+            })
+            .expect("nested");
+        assert_eq!(
+            buf.bytes(),
+            reply.as_bytes(),
+            "the same records, byte for byte"
+        );
+
+        let mut small = pool.acquire(CLASSES[0]);
+        small.put(tag::TEXT, b"keep").expect("fits");
+        let keep = small.bytes().to_vec();
+        let full = small.put_nested(tag::TEXT, |n| n.put(tag::TEXT, &[0xA5u8; 8 << 10]));
+        assert!(full.is_err(), "max_out is 4 KiB");
+        assert_eq!(
+            small.bytes(),
+            keep.as_slice(),
+            "the half-written record is gone"
+        );
+        assert!(
+            all_zero(&small.whole()[keep.len()..]),
+            "and its bytes were zeroed"
+        );
     }
 
     #[test]

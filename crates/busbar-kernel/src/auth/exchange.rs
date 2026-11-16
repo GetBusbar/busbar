@@ -78,12 +78,7 @@ pub(crate) async fn exchange(
     } = &verdict
     {
         if crate::holds::held_now(module, &principal.id) {
-            crate::audit::auditlog::emit_admin_hostless_now(
-                "principal_held",
-                &format!("auth:{module}"),
-                busbar_contract::vocab::OUTCOME_REFUSED,
-                crate::audit::auditlog::PLUGIN_REFUSAL_PRINCIPAL,
-            );
+            crate::cold::auth::keys::exchange_principal_held(module);
             return held_refusal();
         }
     }

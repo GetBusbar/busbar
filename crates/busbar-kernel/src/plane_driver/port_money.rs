@@ -55,16 +55,20 @@ fn outcome_of(verdict: u32) -> Option<&'static str> {
     }
 }
 
+/// Why [`write_audit`] wrote nothing: the row's verdict or action is not one the chain takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowRefused;
+
 /// Writes one row to `sink` under `principal` (`None` = anonymous). Err when the verdict or action is not one the
 /// chain takes.
 pub fn write_audit(
     sink: &dyn AuditSink,
     row: &AuditRow,
     principal: Option<&str>,
-) -> Result<(), ()> {
-    let outcome = outcome_of(row.verdict).ok_or(())?;
+) -> Result<(), RowRefused> {
+    let outcome = outcome_of(row.verdict).ok_or(RowRefused)?;
     if row.action.is_empty() {
-        return Err(());
+        return Err(RowRefused);
     }
     let anonymous = PrincipalId::anonymous();
     sink.record(
@@ -275,7 +279,7 @@ impl PortMoney {
     }
 
     /// One AUDIT row, under the request's verified principal (`None` = anonymous).
-    pub fn audit(&self, row: &AuditRow, principal: Option<&str>) -> Result<(), ()> {
+    pub fn audit(&self, row: &AuditRow, principal: Option<&str>) -> Result<(), RowRefused> {
         write_audit(&*self.audit, row, principal)
     }
 }

@@ -260,12 +260,13 @@ impl Adoptions {
 
     /// Every adoption a framing's end retires: the ones headed to it and the one leaving it.
     pub(super) fn take_framing(&mut self, framing: u64) -> SmallVec<[PendingAdoption; 1]> {
-        let mut taken: SmallVec<[PendingAdoption; 1]> = self
-            .by_destination
-            .take(framing)
-            .into_iter()
-            .map(|(_, stage)| stage)
-            .collect();
+        let mut taken: SmallVec<[PendingAdoption; 1]> = SmallVec::new();
+        taken.extend(
+            self.by_destination
+                .take(framing)
+                .into_iter()
+                .map(|(_, stage)| stage),
+        );
         for stage in &taken {
             self.by_source.remove(&stage.source.leg);
         }
