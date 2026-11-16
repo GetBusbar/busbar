@@ -8,21 +8,21 @@
 //! `HookAnswer`. A REFUSED or FAILED answer becomes a `PortError` whose text went through `scrub::fail_text`
 //! (scrub, then cut: I14, C-SCRUB-CUT); a hook `MESSAGE` is operator text and takes the same path.
 
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use busbar_plugin_abi::fail::fact::{FACT_BACKEND_STATUS, FACT_RETRY_AFTER_S};
-use busbar_plugin_abi::fail::{CallError, FaultReason, failed};
+use busbar_plugin_abi::fail::{failed, CallError, FaultReason};
 use busbar_plugin_abi::host_side::answer::Answer;
 use busbar_plugin_abi::host_side::caller::Caller;
 use busbar_plugin_abi::host_side::driver::Driver;
 use busbar_plugin_abi::host_side::needs::Needs;
-use busbar_plugin_abi::host_side::pool::{Pool, sync_bufs};
-use busbar_plugin_abi::host_side::scrub::{Scrub, fail_text};
+use busbar_plugin_abi::host_side::pool::{sync_bufs, Pool};
+use busbar_plugin_abi::host_side::scrub::{fail_text, Scrub};
 use busbar_plugin_abi::kinds::hook::hook::{
-    M_ON_IO, Proxy, VERB_REJECT, VERB_REWRITE, Verdict as VerdictRec, tag,
+    tag, Proxy, Verdict as VerdictRec, M_ON_IO, VERB_REJECT, VERB_REWRITE,
 };
-use busbar_plugin_abi::records::{RecErr, Records, tag as gtag};
+use busbar_plugin_abi::records::{tag as gtag, RecErr, Records};
 use busbar_plugin_abi::types::Status;
 
 use crate::encode::hook::encode_view;
@@ -270,7 +270,7 @@ mod tests {
     use busbar_plugin_abi::fail::failed;
     use busbar_plugin_abi::fail::refused::R_POLICY;
     use busbar_plugin_abi::kinds::hook::hook::{
-        VERB_ABSTAIN, VERB_PREFER, VERB_REJECT, VERB_RESTRICT, tag,
+        tag, VERB_ABSTAIN, VERB_PREFER, VERB_REJECT, VERB_RESTRICT,
     };
     use busbar_plugin_abi::records::{Reply, Writer};
 

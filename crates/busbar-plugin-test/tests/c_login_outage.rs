@@ -41,20 +41,32 @@ fn login_failures_map_to_outage_security_check_and_declined() {
     for stated in [Some(120), Some(9_999), None] {
         assert_eq!(
             login_failure(&failed(stated)),
-            LoginOutcome::Outage { retry_after_secs: stated },
+            LoginOutcome::Outage {
+                retry_after_secs: stated
+            },
             "FAILED carries the provider's Retry-After as stated; the page clamps it"
         );
     }
     assert_eq!(
         login_failure(&PortError::Call(CallError::Deadline)),
-        LoginOutcome::Outage { retry_after_secs: None }
+        LoginOutcome::Outage {
+            retry_after_secs: None
+        }
     );
     assert_eq!(
         login_failure(&PortError::Call(CallError::Quarantined)),
-        LoginOutcome::Outage { retry_after_secs: None }
+        LoginOutcome::Outage {
+            retry_after_secs: None
+        }
     );
-    assert_eq!(login_failure(&refused(SECURITY_CHECK)), LoginOutcome::SecurityCheckFailed);
-    assert_eq!(login_failure(&refused(BAD_CREDENTIAL)), LoginOutcome::Reject);
+    assert_eq!(
+        login_failure(&refused(SECURITY_CHECK)),
+        LoginOutcome::SecurityCheckFailed
+    );
+    assert_eq!(
+        login_failure(&refused(BAD_CREDENTIAL)),
+        LoginOutcome::Reject
+    );
 }
 
 #[test]

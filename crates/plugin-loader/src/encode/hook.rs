@@ -4,12 +4,12 @@
 //! Hook request encoders and describe decoders (IF §8.8).
 
 use busbar_plugin_abi::kinds::hook::hook::{
-    self as abi, B_HAS_SPEND, BudgetRec, COST_UNPRICED, CostTermRec, Points, tag,
+    self as abi, tag, BudgetRec, CostTermRec, Points, B_HAS_SPEND, COST_UNPRICED,
 };
-use busbar_plugin_abi::records::{Full, RecErr, Records, Reply, Writer, tag as gtag};
+use busbar_plugin_abi::records::{tag as gtag, Full, RecErr, Records, Reply, Writer};
 
-use crate::ports::FactRef;
 use crate::ports::hook::{BudgetIn, CandidateIn, CostTermIn, HookView};
+use crate::ports::FactRef;
 
 /// The most D_WORD items one describe answer may carry.
 const MAX_WORDS: usize = 8;
@@ -147,12 +147,12 @@ fn budget(w: &mut impl Writer, b: &BudgetIn<'_>) -> Result<(), Full> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ports::FactRef;
     use crate::ports::hook::{BudgetIn, CandidateIn, CostTermIn};
+    use crate::ports::FactRef;
     use busbar_plugin_abi::kinds::hook::hook::{
-        self as abi, BudgetRec, CandidateRec, CostTermRec, Points, tag,
+        self as abi, tag, BudgetRec, CandidateRec, CostTermRec, Points,
     };
-    use busbar_plugin_abi::records::{Reply, tag as gtag};
+    use busbar_plugin_abi::records::{tag as gtag, Reply};
 
     fn describe(points: Option<u32>, words: &[&str]) -> Reply {
         let mut r = Reply::new();

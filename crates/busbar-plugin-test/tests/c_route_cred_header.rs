@@ -32,17 +32,34 @@ fn the_route_header_selects_its_readers_and_never_joins_the_data_chain() {
     let standard = headers(&["webhook-signature", "webhook-id", "webhook-timestamp"]);
     let key = headers(&["authorization"]);
     let configured = [
-        ConfiguredAuth { name: "key", cred_headers: &key },
-        ConfiguredAuth { name: "twilio", cred_headers: &twilio },
-        ConfiguredAuth { name: "standard-webhooks", cred_headers: &standard },
+        ConfiguredAuth {
+            name: "key",
+            cred_headers: &key,
+        },
+        ConfiguredAuth {
+            name: "twilio",
+            cred_headers: &twilio,
+        },
+        ConfiguredAuth {
+            name: "standard-webhooks",
+            cred_headers: &standard,
+        },
     ];
-    assert_eq!(effective_chain(twilio_route(None), &configured, &["key"]), Ok(vec!["twilio"]));
+    assert_eq!(
+        effective_chain(twilio_route(None), &configured, &["key"]),
+        Ok(vec!["twilio"])
+    );
     assert_eq!(
         effective_chain(twilio_route(None), &configured, &[]),
         Ok(vec!["twilio"]),
         "a config with no data chain still serves the twilio route"
     );
-    let realtime = RouteAuth { plane: "streaming", id: "realtime", cred_header: None, auth_instances: None };
+    let realtime = RouteAuth {
+        plane: "streaming",
+        id: "realtime",
+        cred_header: None,
+        auth_instances: None,
+    };
     assert_eq!(
         effective_chain(realtime, &configured, &["key"]),
         Ok(vec!["key"]),
@@ -54,10 +71,21 @@ fn the_route_header_selects_its_readers_and_never_joins_the_data_chain() {
 fn auth_instances_wins_and_names_only_configured_instances() {
     let twilio = headers(&["x-twilio-signature"]);
     let key = headers(&["authorization"]);
-    let configured =
-        [ConfiguredAuth { name: "key", cred_headers: &key }, ConfiguredAuth { name: "twilio", cred_headers: &twilio }];
+    let configured = [
+        ConfiguredAuth {
+            name: "key",
+            cred_headers: &key,
+        },
+        ConfiguredAuth {
+            name: "twilio",
+            cred_headers: &twilio,
+        },
+    ];
     let listed = headers(&["twilio"]);
-    assert_eq!(effective_chain(twilio_route(Some(listed.as_slice())), &configured, &["key"]), Ok(vec!["twilio"]));
+    assert_eq!(
+        effective_chain(twilio_route(Some(listed.as_slice())), &configured, &["key"]),
+        Ok(vec!["twilio"])
+    );
     let ordered = headers(&["twilio", "key"]);
     assert_eq!(
         effective_chain(twilio_route(Some(ordered.as_slice())), &configured, &[]),
@@ -67,14 +95,20 @@ fn auth_instances_wins_and_names_only_configured_instances() {
     let unknown = headers(&["twilio", "nobody"]);
     assert_eq!(
         effective_chain(twilio_route(Some(unknown.as_slice())), &configured, &[]),
-        Err("routes.twilio.auth_instances names 'nobody', which is not a configured auth instance".to_owned())
+        Err(
+            "routes.twilio.auth_instances names 'nobody', which is not a configured auth instance"
+                .to_owned()
+        )
     );
 }
 
 #[test]
 fn a_route_header_no_instance_reads_refuses_config() {
     let key = headers(&["authorization"]);
-    let configured = [ConfiguredAuth { name: "key", cred_headers: &key }];
+    let configured = [ConfiguredAuth {
+        name: "key",
+        cred_headers: &key,
+    }];
     assert_eq!(
         effective_chain(twilio_route(None), &configured, &["key"]),
         Err("route 'streaming/twilio' takes its credential in 'x-twilio-signature' and no configured auth \

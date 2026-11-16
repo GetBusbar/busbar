@@ -15,7 +15,10 @@ use busbar_kernel::auth::upstream_binding::{authority, framer_owned, upstream_he
 use busbar_plugin_abi::types::{Bytes, Pair, Str};
 
 fn pair<'a>(name: &'a str, value: &'a str) -> Pair<'a> {
-    Pair { name: Str::new(name), value: Bytes::new(value.as_bytes()) }
+    Pair {
+        name: Str::new(name),
+        value: Bytes::new(value.as_bytes()),
+    }
 }
 
 fn lines<'a>(head: &[Pair<'a>]) -> Vec<(&'a str, &'a [u8])> {
@@ -24,7 +27,10 @@ fn lines<'a>(head: &[Pair<'a>]) -> Vec<(&'a str, &'a [u8])> {
 
 #[test]
 fn client_defaults_and_head_order() {
-    let grpc = [pair("content-type", "application/grpc"), pair("te", "trailers")];
+    let grpc = [
+        pair("content-type", "application/grpc"),
+        pair("te", "trailers"),
+    ];
     let plane = [pair("x-request-id", "r1")];
     assert_eq!(
         lines(&upstream_head(&plane, &grpc)),
@@ -38,7 +44,10 @@ fn client_defaults_and_head_order() {
     let own = [pair("Content-Type", "application/grpc+proto")];
     assert_eq!(
         lines(&upstream_head(&own, &grpc)),
-        vec![("Content-Type", &b"application/grpc+proto"[..]), ("te", &b"trailers"[..])],
+        vec![
+            ("Content-Type", &b"application/grpc+proto"[..]),
+            ("te", &b"trailers"[..])
+        ],
         "a plane head that states its own content-type keeps it"
     );
 }
@@ -54,9 +63,17 @@ fn the_four_handshake_names_never_reach_outbound() {
     let defaults = [pair("sec-websocket-version", "13"), pair("accept", "*/*")];
     assert_eq!(
         lines(&upstream_head(&plane, &defaults)),
-        vec![("sec-websocket-protocol", &b"realtime"[..]), ("accept", &b"*/*"[..])]
+        vec![
+            ("sec-websocket-protocol", &b"realtime"[..]),
+            ("accept", &b"*/*"[..])
+        ]
     );
-    for name in ["upgrade", "CONNECTION", "sec-websocket-key", "Sec-WebSocket-Version"] {
+    for name in [
+        "upgrade",
+        "CONNECTION",
+        "sec-websocket-key",
+        "Sec-WebSocket-Version",
+    ] {
         assert!(framer_owned(name));
     }
     assert!(!framer_owned("sec-websocket-protocol"));
@@ -65,9 +82,15 @@ fn the_four_handshake_names_never_reach_outbound() {
 #[test]
 fn the_authority_elides_the_default_port() {
     let at = |u: &str| authority(&url::Url::parse(u).expect("url"));
-    assert_eq!(at("https://api.example:443/v1").as_deref(), Some("api.example"));
+    assert_eq!(
+        at("https://api.example:443/v1").as_deref(),
+        Some("api.example")
+    );
     assert_eq!(at("http://api.example:80/").as_deref(), Some("api.example"));
-    assert_eq!(at("https://api.example:8443/").as_deref(), Some("api.example:8443"));
+    assert_eq!(
+        at("https://api.example:8443/").as_deref(),
+        Some("api.example:8443")
+    );
     assert_eq!(at("http://[::1]:8080/").as_deref(), Some("[::1]:8080"));
 }
 

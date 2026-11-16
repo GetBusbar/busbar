@@ -18,7 +18,9 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
-use busbar_kernel::auth::chain_run::{credential_hash, run_chain, verify_cached, ChainEnd, ChainInstance};
+use busbar_kernel::auth::chain_run::{
+    credential_hash, run_chain, verify_cached, ChainEnd, ChainInstance,
+};
 use busbar_kernel::auth::verdicts::{VerdictPolicy, Verdicts};
 use busbar_plugin_abi::auth::{BAD_CREDENTIAL, FB_NEEDS_BODY};
 use busbar_plugin_abi::fail::refused::R_UNSUPPORTED;
@@ -101,7 +103,11 @@ impl AuthPort for Fake {
         }))
     }
 
-    fn login<'a>(&'a self, _cx: CallCx, _step: LoginIn<'a>) -> BoxFut<'a, Result<LoginAnswer, PortError>> {
+    fn login<'a>(
+        &'a self,
+        _cx: CallCx,
+        _step: LoginIn<'a>,
+    ) -> BoxFut<'a, Result<LoginAnswer, PortError>> {
         unsupported()
     }
 
@@ -117,7 +123,11 @@ impl AuthPort for Fake {
         unsupported()
     }
 
-    fn serve<'a>(&'a self, _cx: CallCx, _req: &'a ServeIn<'a>) -> BoxFut<'a, Result<ServeOut, PortError>> {
+    fn serve<'a>(
+        &'a self,
+        _cx: CallCx,
+        _req: &'a ServeIn<'a>,
+    ) -> BoxFut<'a, Result<ServeOut, PortError>> {
         unsupported()
     }
 }
@@ -185,8 +195,17 @@ async fn a_wrong_password_burst_of_64_makes_one_verify_and_64_rejections() {
     let headers = [pair("authorization", "Basic YWxpY2U6d3Jvbmc=")];
     let req = request(&headers);
     let instance = ChainInstance { id: 7, port: &port };
-    let outcomes = join_all((0..64).map(|_| verify_cached(&cache, instance, cx(), &req)).collect()).await;
-    assert_eq!(port.verifies(), 1, "one leader verifies; 63 followers share its outcome");
+    let outcomes = join_all(
+        (0..64)
+            .map(|_| verify_cached(&cache, instance, cx(), &req))
+            .collect(),
+    )
+    .await;
+    assert_eq!(
+        port.verifies(),
+        1,
+        "one leader verifies; 63 followers share its outcome"
+    );
     assert_eq!(outcomes.len(), 64);
     for outcome in outcomes {
         assert!(matches!(outcome, Ok(Verdict::Rejected { code, .. }) if code == BAD_CREDENTIAL));
@@ -203,12 +222,22 @@ async fn a_leader_dropped_mid_verify_hands_the_lead_to_the_first_follower_at_onc
     let mut leader = Box::pin(verify_cached(&cache, instance, cx(), &req));
     let mut follower = Box::pin(verify_cached(&cache, instance, cx(), &req));
     let mut noop = Context::from_waker(Waker::noop());
-    assert!(leader.as_mut().poll(&mut noop).is_pending(), "the leader is mid-verify");
-    assert!(follower.as_mut().poll(&mut noop).is_pending(), "the follower waits on the lead");
+    assert!(
+        leader.as_mut().poll(&mut noop).is_pending(),
+        "the leader is mid-verify"
+    );
+    assert!(
+        follower.as_mut().poll(&mut noop).is_pending(),
+        "the follower waits on the lead"
+    );
     drop(leader);
     let outcome = follower.await;
     assert!(matches!(outcome, Ok(Verdict::Rejected { .. })));
-    assert_eq!(port.verifies(), 2, "the follower led at once and verified; not after LEAD_MS");
+    assert_eq!(
+        port.verifies(),
+        2,
+        "the follower led at once and verified; not after LEAD_MS"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -219,7 +248,10 @@ async fn not_mine_is_never_cached() {
     let req = request(&headers);
     let instance = ChainInstance { id: 3, port: &port };
     for _ in 0..2 {
-        assert!(matches!(verify_cached(&cache, instance, cx(), &req).await, Ok(Verdict::NotMine)));
+        assert!(matches!(
+            verify_cached(&cache, instance, cx(), &req).await,
+            Ok(Verdict::NotMine)
+        ));
     }
     assert_eq!(port.verifies(), 2);
 }
@@ -231,8 +263,17 @@ async fn a_body_bound_instance_bypasses_the_cache_and_its_leads() {
     let headers = [pair("authorization", "Bearer signed")];
     let req = request(&headers);
     let instance = ChainInstance { id: 4, port: &port };
-    join_all((0..16).map(|_| verify_cached(&cache, instance, cx(), &req)).collect()).await;
-    assert_eq!(port.verifies(), 16, "rule 1: an FB_NEEDS_BODY instance verifies every request unshared");
+    join_all(
+        (0..16)
+            .map(|_| verify_cached(&cache, instance, cx(), &req))
+            .collect(),
+    )
+    .await;
+    assert_eq!(
+        port.verifies(),
+        16,
+        "rule 1: an FB_NEEDS_BODY instance verifies every request unshared"
+    );
     assert_eq!(cache.keys(4), 0);
 }
 
@@ -244,7 +285,11 @@ async fn two_instances_given_the_same_credential_never_share() {
     let req = request(&headers);
     let a = ChainInstance { id: 1, port: &port };
     let b = ChainInstance { id: 2, port: &port };
-    join_all(vec![verify_cached(&cache, a, cx(), &req), verify_cached(&cache, b, cx(), &req)]).await;
+    join_all(vec![
+        verify_cached(&cache, a, cx(), &req),
+        verify_cached(&cache, b, cx(), &req),
+    ])
+    .await;
     assert_eq!(port.verifies(), 2);
 }
 
@@ -257,33 +302,73 @@ async fn the_chain_moves_past_not_mine_and_stops_at_a_rejection() {
     let headers = [pair("authorization", "Bearer x")];
     let req = request(&headers);
     let chain = [
-        ChainInstance { id: 1, port: &first },
-        ChainInstance { id: 2, port: &second },
-        ChainInstance { id: 3, port: &third },
+        ChainInstance {
+            id: 1,
+            port: &first,
+        },
+        ChainInstance {
+            id: 2,
+            port: &second,
+        },
+        ChainInstance {
+            id: 3,
+            port: &third,
+        },
     ];
     let end = run_chain(&cache, &chain, cx(), &req).await;
     assert!(matches!(end, ChainEnd::Rejected { instance: 2, code, .. } if code == BAD_CREDENTIAL));
-    assert_eq!((first.verifies(), second.verifies(), third.verifies()), (1, 1, 0));
+    assert_eq!(
+        (first.verifies(), second.verifies(), third.verifies()),
+        (1, 1, 0)
+    );
     let none = run_chain(&cache, &chain[..1], cx(), &req).await;
-    assert!(matches!(none, ChainEnd::NoIdentity), "all NOT_MINE is R_AUTH_REQUIRED");
-    assert!(matches!(run_chain(&cache, &[], cx(), &req).await, ChainEnd::NoIdentity));
+    assert!(
+        matches!(none, ChainEnd::NoIdentity),
+        "all NOT_MINE is R_AUTH_REQUIRED"
+    );
+    assert!(matches!(
+        run_chain(&cache, &[], cx(), &req).await,
+        ChainEnd::NoIdentity
+    ));
 }
 
 #[test]
 fn the_key_reads_only_the_declared_credential_headers() {
     let declared: [Box<str>; 1] = ["authorization".into()];
     let base = credential_hash(&declared, &[pair("authorization", "Bearer a")]);
-    let noise = credential_hash(&declared, &[pair("accept", "*/*"), pair("authorization", "Bearer a")]);
+    let noise = credential_hash(
+        &declared,
+        &[pair("accept", "*/*"), pair("authorization", "Bearer a")],
+    );
     assert_eq!(base, noise, "an undeclared header does not change the key");
-    assert_ne!(base, credential_hash(&declared, &[pair("authorization", "Bearer b")]));
     assert_ne!(
         base,
-        credential_hash(&declared, &[pair("authorization", "Bearer a"), pair("authorization", "Bearer a")]),
+        credential_hash(&declared, &[pair("authorization", "Bearer b")])
+    );
+    assert_ne!(
+        base,
+        credential_hash(
+            &declared,
+            &[
+                pair("authorization", "Bearer a"),
+                pair("authorization", "Bearer a")
+            ]
+        ),
         "the value count is part of the key"
     );
-    assert_ne!(base, credential_hash(&declared, &[]), "no credential is its own key");
-    let split = credential_hash(&declared, &[pair("authorization", "ab"), pair("authorization", "c")]);
-    let joined = credential_hash(&declared, &[pair("authorization", "a"), pair("authorization", "bc")]);
+    assert_ne!(
+        base,
+        credential_hash(&declared, &[]),
+        "no credential is its own key"
+    );
+    let split = credential_hash(
+        &declared,
+        &[pair("authorization", "ab"), pair("authorization", "c")],
+    );
+    let joined = credential_hash(
+        &declared,
+        &[pair("authorization", "a"), pair("authorization", "bc")],
+    );
     assert_ne!(split, joined, "values are length-prefixed");
 }
 

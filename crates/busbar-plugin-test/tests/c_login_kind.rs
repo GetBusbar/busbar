@@ -14,34 +14,50 @@
 use busbar_contract::auth::LoginKind;
 use busbar_kernel::auth::login_facts::{login_kind, offers, LoginFactsInvalid};
 use busbar_plugin_abi::auth::{
-    FB_LOGIN_CREDENTIAL, FB_LOGIN_REDIRECT, FB_NEEDS_BODY, LOGIN_BEGIN, LOGIN_COMPLETE, LOGIN_CREDENTIAL,
+    FB_LOGIN_CREDENTIAL, FB_LOGIN_REDIRECT, FB_NEEDS_BODY, LOGIN_BEGIN, LOGIN_COMPLETE,
+    LOGIN_CREDENTIAL,
 };
 
 #[test]
 fn login_kind_from_facts() {
-    assert_eq!(login_kind(FB_LOGIN_REDIRECT, true), Ok(Some(LoginKind::Redirect)));
+    assert_eq!(
+        login_kind(FB_LOGIN_REDIRECT, true),
+        Ok(Some(LoginKind::Redirect))
+    );
     assert_eq!(
         login_kind(FB_LOGIN_CREDENTIAL | FB_NEEDS_BODY, true),
         Ok(Some(LoginKind::Credential)),
         "other fact bits do not change the kind"
     );
-    assert_eq!(login_kind(FB_NEEDS_BODY, false), Ok(None), "no login, no bit");
+    assert_eq!(
+        login_kind(FB_NEEDS_BODY, false),
+        Ok(None),
+        "no login, no bit"
+    );
     assert_eq!(
         login_kind(FB_LOGIN_REDIRECT | FB_LOGIN_CREDENTIAL, true),
         Err(LoginFactsInvalid::BothKinds)
     );
     assert_eq!(login_kind(0, true), Err(LoginFactsInvalid::NoKind));
     for bit in [FB_LOGIN_REDIRECT, FB_LOGIN_CREDENTIAL] {
-        assert_eq!(login_kind(bit, false), Err(LoginFactsInvalid::KindWithoutLogin));
+        assert_eq!(
+            login_kind(bit, false),
+            Err(LoginFactsInvalid::KindWithoutLogin)
+        );
     }
 }
 
 #[test]
 fn a_step_the_kind_does_not_offer_is_never_sent() {
-    assert!(offers(LoginKind::Redirect, LOGIN_BEGIN) && offers(LoginKind::Redirect, LOGIN_COMPLETE));
+    assert!(
+        offers(LoginKind::Redirect, LOGIN_BEGIN) && offers(LoginKind::Redirect, LOGIN_COMPLETE)
+    );
     assert!(!offers(LoginKind::Redirect, LOGIN_CREDENTIAL));
     assert!(offers(LoginKind::Credential, LOGIN_CREDENTIAL));
-    assert!(!offers(LoginKind::Credential, LOGIN_BEGIN) && !offers(LoginKind::Credential, LOGIN_COMPLETE));
+    assert!(
+        !offers(LoginKind::Credential, LOGIN_BEGIN)
+            && !offers(LoginKind::Credential, LOGIN_COMPLETE)
+    );
 }
 
 #[test]

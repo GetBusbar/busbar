@@ -11,7 +11,9 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 use busbar_kernel::auth::route_chain::{applied_class, effective_classes};
-use busbar_plugin_abi::plane::{AUTH_OPERATOR, AUTH_OPTIONAL, AUTH_PRINCIPAL, AUTH_PUBLIC, AUTH_TICKET};
+use busbar_plugin_abi::plane::{
+    AUTH_OPERATOR, AUTH_OPTIONAL, AUTH_PRINCIPAL, AUTH_PUBLIC, AUTH_TICKET,
+};
 
 const EITHER: u32 = AUTH_PRINCIPAL | AUTH_TICKET;
 
@@ -21,12 +23,35 @@ fn is_ticket(credential: &str) -> bool {
 
 #[test]
 fn the_default_set_and_per_request_classification() {
-    assert_eq!(effective_classes("calls", EITHER, None), Ok(EITHER), "a mask with both defaults to both");
-    assert_eq!(effective_classes("models", AUTH_PRINCIPAL | AUTH_OPTIONAL, None), Ok(AUTH_PRINCIPAL));
-    assert_eq!(effective_classes("health", AUTH_PUBLIC | AUTH_OPERATOR, None), Ok(AUTH_PUBLIC), "the lowest bit");
-    assert_eq!(applied_class(EITHER, Some("sk-live-key"), is_ticket), AUTH_PRINCIPAL, "(a) a key runs the chain");
-    assert_eq!(applied_class(EITHER, Some("ek_minted"), is_ticket), AUTH_TICKET, "(b) a ticket runs TICKET");
-    assert_eq!(applied_class(EITHER, None, is_ticket), AUTH_PRINCIPAL, "no credential: PRINCIPAL refuses it");
+    assert_eq!(
+        effective_classes("calls", EITHER, None),
+        Ok(EITHER),
+        "a mask with both defaults to both"
+    );
+    assert_eq!(
+        effective_classes("models", AUTH_PRINCIPAL | AUTH_OPTIONAL, None),
+        Ok(AUTH_PRINCIPAL)
+    );
+    assert_eq!(
+        effective_classes("health", AUTH_PUBLIC | AUTH_OPERATOR, None),
+        Ok(AUTH_PUBLIC),
+        "the lowest bit"
+    );
+    assert_eq!(
+        applied_class(EITHER, Some("sk-live-key"), is_ticket),
+        AUTH_PRINCIPAL,
+        "(a) a key runs the chain"
+    );
+    assert_eq!(
+        applied_class(EITHER, Some("ek_minted"), is_ticket),
+        AUTH_TICKET,
+        "(b) a ticket runs TICKET"
+    );
+    assert_eq!(
+        applied_class(EITHER, None, is_ticket),
+        AUTH_PRINCIPAL,
+        "no credential: PRINCIPAL refuses it"
+    );
     assert_eq!(
         applied_class(AUTH_PRINCIPAL, Some("ek_expired"), is_ticket),
         AUTH_PRINCIPAL,
@@ -36,13 +61,19 @@ fn the_default_set_and_per_request_classification() {
 
 #[test]
 fn routes_auth_narrows_the_set_and_refuses_a_class_the_route_does_not_offer() {
-    assert_eq!(effective_classes("calls", EITHER, Some(AUTH_PRINCIPAL)), Ok(AUTH_PRINCIPAL));
+    assert_eq!(
+        effective_classes("calls", EITHER, Some(AUTH_PRINCIPAL)),
+        Ok(AUTH_PRINCIPAL)
+    );
     assert_eq!(
         applied_class(AUTH_PRINCIPAL, Some("ek_minted"), is_ticket),
         AUTH_PRINCIPAL,
         "(e) with `principal` a ticket goes to the key chain, which refuses it"
     );
-    assert_eq!(effective_classes("calls", EITHER, Some(AUTH_TICKET)), Ok(AUTH_TICKET));
+    assert_eq!(
+        effective_classes("calls", EITHER, Some(AUTH_TICKET)),
+        Ok(AUTH_TICKET)
+    );
     assert_eq!(
         applied_class(AUTH_TICKET, Some("sk-live-key"), is_ticket),
         AUTH_TICKET,
@@ -54,7 +85,11 @@ fn routes_auth_narrows_the_set_and_refuses_a_class_the_route_does_not_offer() {
         Err("routes.models.auth names 'public', which route 'models' does not offer".to_owned())
     );
     assert_eq!(
-        effective_classes("models", AUTH_PRINCIPAL | AUTH_OPTIONAL, Some(AUTH_PRINCIPAL | AUTH_OPTIONAL)),
+        effective_classes(
+            "models",
+            AUTH_PRINCIPAL | AUTH_OPTIONAL,
+            Some(AUTH_PRINCIPAL | AUTH_OPTIONAL)
+        ),
         Err("routes.models.auth must be one class word or [principal, ticket]".to_owned())
     );
     assert!(effective_classes("bare", 0, None).is_err());
