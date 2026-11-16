@@ -40,15 +40,19 @@ use crate::guard::{judged_class, Resolve, SystemResolver};
 
 pub mod certs;
 pub mod commit;
+pub mod exchange;
 pub mod judge;
 pub mod key;
+pub mod net;
 pub mod policy;
 pub mod table;
+pub mod tlsconf;
 pub mod unix;
 
 use certs::{custody_err, CertDigests};
 use judge::{split_dest, split_url, Judge};
 use key::{NeedKey, NeedPool, Pooled, Tls};
+pub use net::ConnectorIo;
 use policy::{admit_fetch, admit_open, Admit, Reported};
 use table::{ConnTable, Held, PooledIds};
 use unix::{names_unix, unix_rules};
@@ -300,9 +304,9 @@ fn parts<'a>(tls: &TlsMode<'a>) -> Parts<'a> {
     }
 }
 
-/// The Need handlers. `C` custody, `R` records, `D` the kernel directory, `I` the I/O seam, `Z` the
-/// resolver.
-pub struct HostNeeds<C, R, D, I, Z = SystemResolver>
+/// The Need handlers. `C` custody, `R` records, `D` the kernel directory, `I` the I/O seam (the
+/// connector's own sockets, TLS and HTTP in production), `Z` the resolver (the system's).
+pub struct HostNeeds<C, R, D, I = ConnectorIo, Z = SystemResolver>
 where
     C: SecretCustody,
     R: PluginRecords,
@@ -327,6 +331,35 @@ where
 
 /// Idle conns kept per key.
 const POOL_PER_KEY: usize = 8;
+
+impl<C, R, D> HostNeeds<C, R, D>
+where
+    C: SecretCustody,
+    R: PluginRecords,
+    D: PluginDirectory,
+{
+    /// The production handlers, as the kernel boot builds them: the connector's own sockets, rustls
+    /// and hyper ([`ConnectorIo`]) under `guard` (the node's own ports published into it, IF 12.1)
+    /// and the system resolver.
+    pub fn production(
+        guard: crate::guard::Guard,
+        custody: C,
+        records: R,
+        directory: D,
+        binder: Arc<dyn ConfigBinder>,
+        limits: NeedLimits,
+    ) -> Self {
+        Self::new(
+            ConnectorIo::new(),
+            Judge::new(guard, SystemResolver),
+            custody,
+            records,
+            directory,
+            binder,
+            limits,
+        )
+    }
+}
 
 impl<C, R, D, I, Z> HostNeeds<C, R, D, I, Z>
 where
@@ -772,7 +805,12 @@ where
             waive: admit == Admit::Waived,
             trust,
             cert,
-            max_body: n.max_body.min(self.limits.max_fetch_body),
+            // 0 states no cap of its own: the core default.
+            max_body: if n.max_body == 0 {
+                self.limits.max_fetch_body
+            } else {
+                n.max_body.min(self.limits.max_fetch_body)
+            },
             max_headers: self.limits.max_fetch_headers,
             timeout,
         };
