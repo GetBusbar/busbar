@@ -87,6 +87,38 @@ struct Backend {
     /// `[1; 16]`: `true` advances the dataset root's writer epoch past it (its control row still
     /// admits it), `false` ends its control row's admission of execution epoch 3.
     fence_batch: Mutex<Option<bool>>,
+    /// One-shot: the same fence, just before the next recovery selection of any width applies.
+    fence_select: Mutex<Option<bool>>,
+    /// One-shot: the next commit that puts this row finds another candidate's value already
+    /// there (written first), and is a definite ConditionConflict with no effect.
+    steal_selection: Mutex<Option<(Address, Secret<Vec<u8>>)>>,
+}
+/// The control row that fences writer `[1; 16]`: `true` moves the dataset root's writer epoch past
+/// it (its control row still admits it), `false` ends its control row's admission of epoch 3.
+fn fence_row(root: bool) -> (Vec<u8>, Vec<u8>) {
+    if root {
+        (
+            control::DATASET_KEY.to_vec(),
+            control::Dataset {
+                id: DatasetId([1; 16]),
+                writer_epoch: 3,
+            }
+            .encode()
+            .unwrap()
+            .to_vec(),
+        )
+    } else {
+        (
+            control::writer_key([1; 16]).to_vec(),
+            control::Writer {
+                retired_through: 2,
+                admitted_through: 2,
+            }
+            .encode()
+            .unwrap()
+            .to_vec(),
+        )
+    }
 }
 impl Backend {
     fn read_rows(&self, request: &Read) -> ReadResult {
@@ -201,30 +233,28 @@ impl PersistenceBackend for Backend {
             let candidate = prepared.candidate();
             if selects_recovery_row(&prepared) && candidate.mutations.len() > 1 {
                 if let Some(root) = self.fence_batch.lock().unwrap().take() {
-                    let (key, value) = if root {
-                        (
-                            control::DATASET_KEY.to_vec(),
-                            control::Dataset {
-                                id: DatasetId([1; 16]),
-                                writer_epoch: 3,
-                            }
-                            .encode()
-                            .unwrap()
-                            .to_vec(),
-                        )
-                    } else {
-                        (
-                            control::writer_key([1; 16]).to_vec(),
-                            control::Writer {
-                                retired_through: 2,
-                                admitted_through: 2,
-                            }
-                            .encode()
-                            .unwrap()
-                            .to_vec(),
-                        )
-                    };
+                    let (key, value) = fence_row(root);
                     state.rows.insert(control_address(key), Secret::new(value));
+                }
+            }
+            if selects_recovery_row(&prepared) {
+                if let Some(root) = self.fence_select.lock().unwrap().take() {
+                    let (key, value) = fence_row(root);
+                    state.rows.insert(control_address(key), Secret::new(value));
+                }
+            }
+            {
+                let mut steal = self.steal_selection.lock().unwrap();
+                let stolen = steal.as_ref().is_some_and(|(target, _)| {
+                    candidate.mutations.iter().any(
+                        |mutation| matches!(mutation, Mutation::Put { address, .. } if address == target),
+                    )
+                });
+                if stolen {
+                    if let Some((target, value)) = steal.take() {
+                        state.rows.insert(target, value);
+                    }
+                    return Ok(Decision::ConditionConflict);
                 }
             }
             {
@@ -1559,9 +1589,14 @@ async fn cancel_parked_selection(
 /// WHO: the recovery owner re-driving a selection whose crossing was cancelled.
 /// DOES: the proof it selects against is retained before any native claim, so
 /// the re-drive presents the exact same attempt (same operation id, same head
-/// predicate) even after another append moved the head.
-/// WHY: re-proving against the moved head would change the claim digest for the
-/// same operation id and wedge it as an operation conflict.
+/// predicate) even after another append moved the head. (SHUTDOWN-HANG 8.4(c),
+/// owner ruling 2026-11-16 "Re-select, after authority check") That re-drive's
+/// condition conflict is a definitive no-effect: with our authority intact, the
+/// same staged original is re-selected once under current custody, and no second
+/// Reconciliation original is staged.
+/// WHY: re-proving against the moved head on the re-drive would change the claim
+/// digest for the same operation id and wedge it as an operation conflict; never
+/// re-selecting after a definitive no-effect left the operation retained for ever.
 #[tokio::test]
 async fn cancelled_recovery_selection_resumes_exact_attempt() {
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
@@ -1575,32 +1610,31 @@ async fn cancelled_recovery_selection_resumes_exact_attempt() {
         )
         .await
         .expect("a cancelled selection releases the journal's publication driver");
-        let refused = recovery.persist(&event).await.unwrap_err();
+        let staged = recovery.journal.next_seq();
+        let resolved = recovery.persist(&event).await;
+        assert!(resolved.is_ok(), "{resolved:?}");
         let selections = recovery_selections(&backend, 7);
-        assert_eq!(selections.len(), 2);
+        assert_eq!(selections.len(), 3, "the re-drive, then one re-select");
         assert_eq!(
             selections[1], selections[0],
             "the re-drive presents the exact retained attempt"
         );
-        // The cancelled crossing left the attempt uncertain; with the head
-        // moved the backend's condition conflict cannot resolve it.
-        let RecoveryError::Unavailable(why) = &refused else {
-            panic!("expected the retained-and-unconfirmed refusal, got {refused:?}");
-        };
-        assert!(
-            why.contains("recovery candidate remains retained and unconfirmed"),
-            "{why}"
-        );
-        assert!(!why.contains("Corrupt") && !why.contains("OperationConflict"));
-        let again = recovery.persist(&event).await.unwrap_err();
-        assert!(
-            matches!(&again, RecoveryError::Unavailable(why) if why.contains("recovery candidate remains retained and unconfirmed")),
-            "{again:?}"
+        assert_ne!(
+            selections[2].1, selections[0].1,
+            "the re-select pins the current head"
         );
         assert_eq!(
+            recovery.journal.next_seq(),
+            staged,
+            "the same staged original is re-selected: no second Reconciliation original"
+        );
+        assert!(recovery.state.lock().unwrap().pending.is_empty());
+        recovery.confirm_owned_checkpoint(&event).await.unwrap();
+        recovery.persist(&event).await.unwrap();
+        assert_eq!(
             recovery_selections(&backend, 7).len(),
-            2,
-            "a reconciling attempt is not resubmitted"
+            3,
+            "a selected original is verified, never selected again"
         );
     })
     .await
@@ -1985,4 +2019,398 @@ async fn recovery_batches_drain_during_concurrent_appends() {
     })
     .await
     .expect("no hang");
+}
+
+/// Selection candidates the backend received that put `operation`'s selected-head row.
+fn selections_of(backend: &Backend, operation: &[u8; 16]) -> usize {
+    let row = address(operation);
+    backend
+        .state
+        .lock()
+        .unwrap()
+        .sent
+        .iter()
+        .filter(|prepared| {
+            prepared.candidate().mutations.iter().any(
+                |mutation| matches!(mutation, Mutation::Put { address, .. } if *address == row),
+            )
+        })
+        .count()
+}
+
+/// Fence writer `[1; 16]` now (see [`fence_row`]).
+fn fence_writer(backend: &Backend, root: bool) {
+    let (key, value) = fence_row(root);
+    backend
+        .state
+        .lock()
+        .unwrap()
+        .rows
+        .insert(control_address(key), Secret::new(value));
+}
+
+/// WHO: the settlement flusher re-driving a recovery batch whose select crossed and was
+/// cancelled, after another append moved the node's head.
+/// DOES: (SHUTDOWN-HANG 8.4(c), F3.2, owner ruling 2026-11-16 "Re-select, after authority
+/// check") the re-drive presents the exact retained attempt; its condition conflict is a
+/// definitive no-effect, so with our authority intact every member's staged original is
+/// re-selected once, whole, against the current head. No second Reconciliation original.
+/// WHY: a batch that is never re-selected after a definitive no-effect retains its members for
+/// ever, and the single drivers they block (metering, raw recovery) can never stage them either.
+#[tokio::test]
+async fn an_in_doubt_recovery_batch_replayed_after_the_head_moved_is_reselected_whole() {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let backend = Arc::new(Backend::default());
+        let recovery = sink(Arc::new(attach_wide(backend.clone(), 1).await), 7).await;
+        let events: Vec<RecoveryEvent> = (1..=3u8).map(numbered_intent).collect();
+        backend.park_selection.store(true, Ordering::SeqCst);
+        tokio::select! {
+            result = recovery.persist_batch(&events) => {
+                panic!("the parked selection must not return: {result:?}")
+            }
+            _ = async {
+                while recovery_selections(&backend, 7).is_empty() {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            } => {}
+        }
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            live_append(&recovery.journal),
+        )
+        .await
+        .expect("a cancelled selection releases the journal's publication driver");
+        let staged = recovery.journal.next_seq();
+        for result in recovery.persist_batch(&events).await {
+            assert!(result.is_ok(), "{result:?}");
+        }
+        let selections = recovery_selections(&backend, 7);
+        assert_eq!(
+            selections.len(),
+            3,
+            "the re-drive, then one whole re-select"
+        );
+        assert_eq!(
+            selections[1], selections[0],
+            "the batch is re-driven with exactly its retained attempt"
+        );
+        assert_ne!(
+            selections[2].1, selections[0].1,
+            "the re-select pins the current head"
+        );
+        assert_eq!(
+            recovery.journal.next_seq(),
+            staged,
+            "one Reconciliation original per (operation, revision)"
+        );
+        for event in &events {
+            recovery.confirm_owned_checkpoint(event).await.unwrap();
+        }
+    })
+    .await
+    .expect("no hang");
+}
+
+/// WHO: the recovery owner re-driving a cancelled selection after this writer was fenced.
+/// DOES: (SHUTDOWN-HANG 8.4(c), F2.1(1), owner ruling 2026-11-16) the store answers the in-doubt
+/// re-drive fenced; our authority is read first and is lost, so it answers `Authority`, keeps
+/// the staged original for the successor, and every later drive repeats only the authority read:
+/// the attempt is never resubmitted and nothing is re-staged.
+/// WHY: a fenced writer re-selecting, or resubmitting, under lost authority races the successor
+/// that adopts the operation.
+#[tokio::test]
+async fn an_in_doubt_recovery_selection_under_lost_authority_is_never_resubmitted() {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let backend = Arc::new(Backend::default());
+        let recovery = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
+        let event = intent();
+        cancel_parked_selection(&backend, &recovery, &event).await;
+        fence_writer(&backend, false);
+        let staged = recovery.journal.next_seq();
+        for attempt in 0..2 {
+            let lost = recovery.persist(&event).await.unwrap_err().to_string();
+            assert!(lost.contains("Authority"), "attempt {attempt}: {lost}");
+        }
+        assert_eq!(
+            recovery_selections(&backend, 7).len(),
+            2,
+            "the in-doubt attempt is re-driven once, then never resubmitted"
+        );
+        assert_eq!(recovery.journal.next_seq(), staged, "nothing is re-staged");
+        assert!(recovery
+            .state
+            .lock()
+            .unwrap()
+            .pending
+            .contains_key(&event.operation_id));
+    })
+    .await
+    .expect("no hang");
+}
+
+/// WHO: the recovery owner selecting one operation when this writer was fenced just before the
+/// select (never in doubt): its control row no longer admits our execution epoch, or the dataset
+/// root's writer epoch moved past ours.
+/// DOES: (SHUTDOWN-HANG F2.1(1), F3.2 step 4 for a batch of one, owner ruling 2026-11-16) the
+/// no-effect is checked against our authority first, in one read, and answers `Authority`; the
+/// next drive repeats only that read, so the candidate is never resubmitted and its staged
+/// original is kept.
+/// WHY: a fenced send and a size refusal answer alike; a refusal read as benign resubmitted the
+/// candidate under lost authority on every tick.
+#[tokio::test]
+async fn a_fenced_writer_fails_a_single_recovery_selection_as_authority() {
+    for root in [false, true] {
+        let backend = Arc::new(Backend::default());
+        let recovery = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
+        let event = intent();
+        *backend.fence_select.lock().unwrap() = Some(root);
+        let lost = recovery.persist(&event).await.unwrap_err().to_string();
+        assert!(lost.contains("Authority"), "root moved {root}: {lost}");
+        let staged = recovery.journal.next_seq();
+        let again = recovery.persist(&event).await.unwrap_err().to_string();
+        assert!(again.contains("Authority"), "root moved {root}: {again}");
+        assert_eq!(
+            recovery_selections(&backend, 7).len(),
+            1,
+            "root moved {root}: never resubmitted"
+        );
+        assert_eq!(recovery.journal.next_seq(), staged, "root moved {root}");
+        assert!(
+            recovery
+                .state
+                .lock()
+                .unwrap()
+                .pending
+                .contains_key(&event.operation_id),
+            "root moved {root}: the staged original is kept"
+        );
+    }
+}
+
+/// WHO: the recovery owner whose selection lost to another candidate on the same row.
+/// DOES: (SHUTDOWN-HANG F2.1(2), 8.4(b)) the definite conflict is classified by one read of the
+/// selection row: neither our head nor our predecessor, so another candidate won; the entry is
+/// discarded and nothing is re-selected, whether the winner is another node's candidate or one
+/// this node's evidence cannot vouch for.
+/// WHY: proving the winner's ancestry as if it were ours turned a lost selection into an
+/// unrelated read error and kept a candidate that can never apply.
+#[tokio::test]
+async fn a_selection_won_by_another_candidate_is_discarded() {
+    for foreign in [true, false] {
+        let backend = Arc::new(Backend::default());
+        let recovery = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
+        let event = intent();
+        let winner = Head {
+            version: 1,
+            node: if foreign { 8 } else { 7 },
+            sequence: 999,
+            revision: 0,
+            event_digest: [7; 32],
+        };
+        *backend.steal_selection.lock().unwrap() = Some((
+            address(&event.operation_id),
+            Secret::new(serde_json::to_vec(&winner).unwrap()),
+        ));
+        let lost = recovery.persist(&event).await.unwrap_err();
+        assert!(
+            matches!(&lost, RecoveryError::Conflict(why) if why.contains("another recovery candidate won selection")),
+            "foreign {foreign}: {lost:?}"
+        );
+        assert!(
+            !recovery
+                .state
+                .lock()
+                .unwrap()
+                .pending
+                .contains_key(&event.operation_id),
+            "foreign {foreign}: the entry is discarded"
+        );
+        assert_eq!(
+            selections_of(&backend, &event.operation_id),
+            1,
+            "foreign {foreign}: never re-selected"
+        );
+    }
+}
+
+/// WHO: recovery custody after another writer took this node's journal owner row.
+/// DOES: (SHUTDOWN-HANG 8.4(a)) the next persist's lane-free custody read sees O changed and
+/// answers `Authority`; nothing is selected.
+/// WHY: a changed owner is lost authority, never a conflict to retry or a corruption to report.
+#[tokio::test]
+async fn a_changed_journal_owner_is_authority() {
+    let backend = Arc::new(Backend::default());
+    let recovery = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
+    let event = intent();
+    recovery.persist(&event).await.unwrap();
+    {
+        let owner = [
+            b"busbar.journal4\0".as_slice(),
+            &7u64.to_be_bytes(),
+            b"O",
+            &0u64.to_be_bytes(),
+        ]
+        .concat();
+        let mut state = backend.state.lock().unwrap();
+        let (at, value) = state
+            .rows
+            .iter()
+            .find(|(at, _)| at.key == owner)
+            .map(|(at, value)| (at.clone(), value.expose(&crate::seal::lend()).clone()))
+            .expect("the journal owner row");
+        let mut other = value;
+        let last = other.len() - 1;
+        other[last] ^= 0xff;
+        state.rows.insert(at, Secret::new(other));
+    }
+    let next = transition(&event, RecoveryState::Applied);
+    let lost = recovery.persist(&next).await.unwrap_err();
+    assert!(
+        matches!(&lost, RecoveryError::Unavailable(why) if why.contains("Authority")),
+        "{lost:?}"
+    );
+    assert_eq!(
+        selections_of(&backend, &event.operation_id),
+        1,
+        "nothing is selected under another owner"
+    );
+}
+
+/// WHO: recovery custody when its own append's reply is lost once (the store applied it).
+/// DOES: (SHUTDOWN-HANG 8.4(e)) the persist answers unresolved custody, never `Authority`; the
+/// next persist reuses the same staged original and selects it.
+/// WHY: an in-doubt own append is this owner's pending work, not lost authority.
+#[tokio::test]
+async fn an_uncertain_own_append_is_pending_never_authority() {
+    let backend = Arc::new(Backend::default());
+    let recovery = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
+    let event = intent();
+    let before = recovery.journal.next_seq();
+    backend.lose_reply.store(true, Ordering::SeqCst);
+    let first = recovery.persist(&event).await.unwrap_err();
+    assert!(
+        matches!(&first, RecoveryError::Unavailable(why) if !why.contains("Authority")),
+        "{first:?}"
+    );
+    recovery.persist(&event).await.unwrap();
+    assert_eq!(
+        recovery.journal.next_seq(),
+        before + 1,
+        "one Reconciliation original"
+    );
+    recovery.confirm_owned_checkpoint(&event).await.unwrap();
+}
+
+/// Parent `[6; 16]`'s Intent, its Applied checkpoint with one handoff, and child `[9; 16]`, whose
+/// origin is that checkpoint.
+fn origin_family() -> (RecoveryEvent, RecoveryEvent, RecoveryEvent) {
+    let mut child = intent();
+    child.operation_id = [9; 16];
+    child.body_fingerprint = [8; 32];
+    let template = serde_json::json!({"physical":[1,2,3]});
+    let mut parent = intent();
+    parent.operation_id = [6; 16];
+    parent.payload = b"{\"handoffs\":[]}".to_vec();
+    let mut checkpoint = transition(&parent, RecoveryState::Applied);
+    checkpoint.payload = serde_json::to_vec(&serde_json::json!({"handoffs":[{
+        "operation_id": child.operation_id,
+        "kind": child.kind,
+        "body_fingerprint": child.body_fingerprint,
+        "first_sent_at_ms": child.first_sent_at_ms,
+        "payload": serde_json::to_vec(&template).unwrap()
+    }]}))
+    .unwrap();
+    let mut physical = template;
+    physical["origin"] = serde_json::json!({
+        "operation_id": checkpoint.operation_id,
+        "event_fingerprint": checkpoint.fingerprint().unwrap()
+    });
+    child.payload = serde_json::to_vec(&physical).unwrap();
+    (parent, checkpoint, child)
+}
+
+/// Once `child`'s selection was sent, answer the next read of `parent`'s selection row as it
+/// is, then put `older` there: a later read of the same verification sees the parent moved.
+fn move_parent_after_child_selects(
+    backend: &Arc<Backend>,
+    child: [u8; 16],
+    parent: [u8; 16],
+    older: Secret<Vec<u8>>,
+) -> Arc<AtomicBool> {
+    let fired = Arc::new(AtomicBool::new(false));
+    let (child_row, parent_row) = (address(&child), address(&parent));
+    let (owner, done) = (backend.clone(), fired.clone());
+    *backend.read_hook.lock().unwrap() = Some(Arc::new(move |request: Arc<Read>| {
+        let (backend, done) = (owner.clone(), done.clone());
+        let selected = backend.state.lock().unwrap().sent.iter().any(|prepared| {
+            prepared.candidate().mutations.iter().any(
+                |mutation| matches!(mutation, Mutation::Put { address, .. } if *address == child_row),
+            )
+        });
+        let trigger = selected && request.addresses.contains(&parent_row);
+        if trigger {
+            backend.read_hook.lock().unwrap().take();
+        }
+        let (parent_row, older) = (parent_row.clone(), older.clone());
+        Box::pin(async move {
+            let answer = backend.read_rows(&request);
+            if trigger {
+                backend.state.lock().unwrap().rows.insert(parent_row, older);
+                done.store(true, Ordering::SeqCst);
+            }
+            Ok(answer)
+        })
+    }));
+    fired
+}
+
+/// WHO: recovery custody selecting a child whose origin parent moves after the child's
+/// pre-check, on this node (`foreign == false`) or on another node.
+/// DOES: (SHUTDOWN-HANG F2.1(3), 8.4(d), 8.4(f)) the CAS carries no guard on the parent, so the
+/// select applies; the kept post-write verification re-reads the parent and answers `Conflict`,
+/// and the child is never re-selected.
+/// WHY: re-selecting on a moved origin would hide that the child's authorization changed.
+#[tokio::test]
+async fn an_origin_parent_moved_after_the_pre_check_fails_the_post_write_verification() {
+    for foreign in [false, true] {
+        let backend = Arc::new(Backend::default());
+        let recovery = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
+        let parent_owner = if foreign {
+            Some(sink(Arc::new(attach(backend.clone(), 3).await), 9).await)
+        } else {
+            None
+        };
+        let origin = parent_owner.as_ref().unwrap_or(&recovery);
+        let (parent, checkpoint, child) = origin_family();
+        origin.persist(&parent).await.unwrap();
+        let older = backend
+            .state
+            .lock()
+            .unwrap()
+            .rows
+            .get(&address(&parent.operation_id))
+            .cloned()
+            .expect("the parent's Intent is selected");
+        origin.persist(&checkpoint).await.unwrap();
+        let fired = move_parent_after_child_selects(
+            &backend,
+            child.operation_id,
+            parent.operation_id,
+            older,
+        );
+        let refused = recovery.persist(&child).await.unwrap_err();
+        assert!(
+            fired.load(Ordering::SeqCst),
+            "foreign {foreign}: the parent never moved"
+        );
+        assert!(
+            matches!(&refused, RecoveryError::Conflict(_)),
+            "foreign {foreign}: {refused:?}"
+        );
+        assert_eq!(
+            selections_of(&backend, &child.operation_id),
+            1,
+            "foreign {foreign}: no re-select"
+        );
+    }
 }
