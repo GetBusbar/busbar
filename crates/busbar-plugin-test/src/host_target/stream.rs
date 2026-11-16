@@ -692,7 +692,7 @@ impl Conn<'_> {
     /// FINISHes the framing with `reason`, once, and writes what it owes.
     fn finish(&mut self, reason: u32) {
         if self.framing.is_some() {
-            drop(self.cross(Op::Finish { reason }));
+            let _ = self.cross(Op::Finish { reason });
             self.framing = None;
         }
     }

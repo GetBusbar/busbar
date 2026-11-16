@@ -1,4 +1,12 @@
 # Owner approval is required to change the architecture bars (decision 288).
-# No other path has a code owner.
+# The unsafe register below has a code owner too.
 /crates/busbar-kernel/tests/arch/source-tree.json @Matthew-Jackson
 /crates/busbar-kernel/tests/arch/layering.json @Matthew-Jackson
+# The unsafe register and the checks that read it (UNSAFE-MIN r3.1 E9; owner directive 2026-11-15).
+/unsafe.yaml @Matthew-Jackson
+/crates/busbar-ffi/ @Matthew-Jackson
+/crates/busbar-kernel/tests/arch/escapes.rs @Matthew-Jackson
+/crates/busbar-kernel/tests/arch/escapes.json @Matthew-Jackson
+/crates/busbar-kernel/tests/arch/scan.rs @Matthew-Jackson
+/crates/busbar-kernel/tests/arch/mod.rs @Matthew-Jackson
+/.gitlab/CODEOWNERS @Matthew-Jackson

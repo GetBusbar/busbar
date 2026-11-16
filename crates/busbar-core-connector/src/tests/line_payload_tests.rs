@@ -246,7 +246,6 @@ fn paired(limit: Option<usize>) -> (Arc<Pairing>, Arc<Sink>, Arc<Sink>) {
 #[test]
 fn published_line_metadata_is_neither_accepted_queued_nor_handed_and_frames_are_counted_exactly() {
     crate::support::worker().block_on(async {
-        let now = std::time::Instant::now();
         let (pairing, caller, upstream) = paired(None);
         let mut pieces = head_tail(CALLER_LINE);
         pieces.extend([
@@ -266,7 +265,7 @@ fn published_line_metadata_is_neither_accepted_queued_nor_handed_and_frames_are_
                 yielded.pieces = pieces;
                 yielded
             },
-            now,
+            Instant::now(),
         );
         assert!(batch.pieces.is_empty(), "a line is never the session's");
         let outcome = pairing.published().await;
@@ -316,7 +315,7 @@ fn published_line_metadata_is_neither_accepted_queued_nor_handed_and_frames_are_
                 yielded.pieces = pieces;
                 yielded
             },
-            now,
+            Instant::now(),
         );
         assert!(batch.pieces.is_empty());
         let outcome = pairing.published().await;
@@ -432,7 +431,6 @@ fn metadata_pieces_release_the_batch_custody_with_the_frames_that_did_cross() {
 fn copied_channel_payloads_and_empty_message_descriptors_keep_independent_custody() {
     use crate::publication::{Message, Messages};
     const EMPTY_PIECES: usize = 32;
-    let now = std::time::Instant::now();
     for payload_bytes in [crate::framer::FRAME_CAP / 2, 0] {
         let (pairing, _caller, _upstream) = paired(Some(8 * crate::framer::FRAME_CAP));
         let memory = pairing.memory_account();
@@ -444,7 +442,7 @@ fn copied_channel_payloads_and_empty_message_descriptors_keep_independent_custod
         yielded
             .pieces
             .extend((0..EMPTY_PIECES).map(|_| payload(99, b"")));
-        let mut batch = pairing.publish(Leg::Upstream, yielded, now);
+        let mut batch = pairing.publish(Leg::Upstream, yielded, Instant::now());
         assert_eq!(batch.pieces.len(), EMPTY_PIECES + 2);
         let queue = Messages::new(EMPTY_PIECES + 2);
         let mut owners = batch.owners.drain(..);

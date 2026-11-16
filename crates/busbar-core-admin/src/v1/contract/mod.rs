@@ -207,6 +207,9 @@ impl From<busbar_kernel::config::transaction::TxnError> for AdminError {
                 needed: Scope::Full,
             },
             busbar_kernel::config::transaction::TxnError::Internal => AdminError::Internal,
+            busbar_kernel::config::transaction::TxnError::Unavailable(msg) => {
+                AdminError::Unavailable(msg)
+            }
         }
     }
 }
@@ -241,6 +244,10 @@ pub struct InfoView {
     /// `false` = the config is LOCKED (`config.locked: true`) and admin-API config mutations are
     /// refused. Lets tooling tell an operator whether runtime changes are accepted and durable.
     pub config_persistence: bool,
+    /// The durable config generation (ADMIN-API-1.6 6.1): advanced in the Store before every
+    /// publication, so it never repeats across restarts. The ETag of every config resource is
+    /// `"<deployment_id>.<config_generation>"`.
+    pub config_generation: u64,
     /// Monotonic config version: `0` at boot, +1 per API config apply. Drift-detection: re-read and
     /// compare to tell whether the running config changed. Process-local (resets on restart).
     pub config_version: u64,
@@ -457,6 +464,47 @@ pub struct HookView {
     /// empty meaning ALL callers (unscoped). The other half of "when does this hook run", and the
     /// same writable-but-unreadable gap `phase` had.
     pub groups: Vec<String>,
+    /// Hook attach points (§8): every list this hook is attached to, with its place in the list.
+    /// `instance` is the plane instance for a plane-section attach point, else null.
+    pub attachments: Vec<HookAttachment>,
+}
+
+/// One place a hook is attached (ADMIN-API-1.6 §8). `target` is `pools` (every pool),
+/// `pools.<pool>`, `<section>` (a plane section's own list) or `<section>.<instance>` (one plane
+/// instance's list); the same string is the `{target}` of `PUT|DELETE /hooks/{name}/attachments/{target}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub struct HookAttachment {
+    pub target: String,
+    /// The plane instance, for `<section>.<instance>`; null for `pools` and `pools.<pool>`.
+    pub instance: Option<String>,
+    /// Zero-based place in the target's list; the list is the firing order.
+    pub position: u32,
+}
+
+/// The `PUT /hooks/{name}/attachments/{target}` body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct HookAttachRequest {
+    pub position: HookPosition,
+}
+
+/// Where in the target's list: the word `last`, or a zero-based place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+#[serde(untagged)]
+pub enum HookPosition {
+    Word(HookPositionWord),
+    Index(u32),
+}
+
+/// The one word a position may be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum HookPositionWord {
+    Last,
 }
 
 pub use busbar_kernel::api::NamedDefView;
@@ -874,26 +922,6 @@ impl<T> Page<T> {
     }
 }
 
-pub fn encode_offset_cursor(offset: usize) -> String {
-    hex::encode(format!("o:{offset}"))
-}
-
-pub fn decode_offset_cursor(cursor: &str) -> Option<usize> {
-    if cursor.is_empty() || !cursor.len().is_multiple_of(2) {
-        return None;
-    }
-    let bytes: Option<Vec<u8>> = (0..cursor.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(cursor.get(i..i + 2)?, 16).ok())
-        .collect();
-    let s = String::from_utf8(bytes?).ok()?;
-    s.strip_prefix("o:")?.parse::<usize>().ok()
-}
-
-#[cfg(test)]
-#[path = "tests/cursor_tests.rs"]
-mod cursor_tests;
-
 /// The EFFECTIVE config snapshot (`GET /api/v1/admin/config`): the running configuration as busbar
 /// resolved it, for drift detection (compare against your desired config) and one-shot inspection.
 /// Composed from the same REDACTED reads as the individual endpoints (auth chain names, pool/model/
@@ -906,6 +934,8 @@ pub struct EffectiveConfigView {
     /// The monotonic config version at the time of this read (see `InfoView.config_version`), so a
     /// drift-detection read gets the config AND its version in one call.
     pub version: u64,
+    /// The durable config generation at the time of this read (see `InfoView.config_generation`).
+    pub config_generation: u64,
     pub auth: AuthView,
     pub pools: Vec<PoolView>,
     pub models: Vec<ModelView>,
@@ -1080,6 +1110,85 @@ pub struct KeyUsageView {
     pub usage: UsageBreakdown,
 }
 
+/// `GET /usage` in range mode (`from`, `to`, `group_by`, filters): rows keyset-paged by `cursor`.
+/// Every row carries only the dimensions named in `group_by`. `currency` is the denomination of
+/// every `spend_micros`; a client derives per-row currency from `rate_card_version`.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub struct UsageSeries {
+    #[serde(serialize_with = "serialize_usage_currency")]
+    #[cfg_attr(feature = "openapi-schema", schemars(with = "String"))]
+    pub currency: (),
+    /// The epoch this read was computed at (counters accumulate live).
+    pub as_of: u64,
+    /// The highest history entry key used to price any row of the range, 40 lowercase hex digits.
+    pub rate_card_version: Option<String>,
+    pub items: Vec<UsageSeriesRow>,
+    pub next_cursor: Option<String>,
+}
+
+/// One row of a usage series. A dimension field is present exactly when `group_by` names it.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub struct UsageSeriesRow {
+    /// UTC-day bucket start, integer seconds (`group_by` has `bucket`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bucket_start: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// The engine kind id of the row's instance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// The instance that served the row, derived at read from the row's plane-qualified provider.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instance: Option<String>,
+    pub usage: SeriesUsage,
+    /// The keyset position of this row; never serialised.
+    #[serde(skip)]
+    pub sort: String,
+}
+
+/// [`UsageBreakdown`] for a range read: `spend_micros` is null and `priced` false when a lane or
+/// class in the row has no price (a range read never refuses on an unpriced class).
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub struct SeriesUsage {
+    #[cfg_attr(feature = "openapi-schema", schemars(with = "f64", extend("x-busbar-count-scale" = 6)))]
+    pub tokens_input: busbar_contract::count::Count,
+    #[cfg_attr(feature = "openapi-schema", schemars(with = "f64", extend("x-busbar-count-scale" = 6)))]
+    pub tokens_output: busbar_contract::count::Count,
+    #[cfg_attr(feature = "openapi-schema", schemars(with = "f64", extend("x-busbar-count-scale" = 6)))]
+    pub tokens_cache_read: busbar_contract::count::Count,
+    #[cfg_attr(feature = "openapi-schema", schemars(with = "f64", extend("x-busbar-count-scale" = 6)))]
+    pub tokens_cache_creation: busbar_contract::count::Count,
+    pub requests: u64,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub classes: std::collections::BTreeMap<String, ClassUsage>,
+    pub spend_micros: Option<i64>,
+    pub priced: bool,
+}
+
+impl SeriesUsage {
+    pub fn of(b: UsageBreakdown, priced: bool) -> Self {
+        Self {
+            tokens_input: b.tokens_input,
+            tokens_output: b.tokens_output,
+            tokens_cache_read: b.tokens_cache_read,
+            tokens_cache_creation: b.tokens_cache_creation,
+            requests: b.requests,
+            classes: b.classes,
+            spend_micros: priced.then_some(b.spend_micros),
+            priced,
+        }
+    }
+}
+
 /// The admin-plane auth read (`GET /api/v1/admin/admin-auth`): which modules guard the ADMIN surface
 /// (distinct from the ingress `auth` chain). `modules` is the live `admin_auth` chain (the SAME
 /// resource `PUT /api/v1/admin/admin-auth` writes), so a read-after-write is coherent. An empty chain is
@@ -1093,6 +1202,9 @@ pub struct AdminAuthView {
     /// Empty when the admin plane is open.
     #[cfg_attr(feature = "openapi-schema", schemars(description = modules_description()))]
     pub modules: Vec<String>,
+    /// Whether the chain is the default one (`auth.admin_auth` absent): the operator credential
+    /// when one is admitted, then `keys`.
+    pub default: bool,
 }
 
 #[cfg(feature = "openapi-schema")]

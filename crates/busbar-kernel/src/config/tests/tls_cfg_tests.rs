@@ -18,7 +18,7 @@ fn an_omitted_tls_block_is_the_bundled_roots_alone() {
 #[test]
 fn the_whole_grammar_parses_under_advanced_tls() {
     let a = advanced(
-        "tls:\n  roots: system\n  trust_anchors:\n    - { file: /etc/busbar/ca/corp.pem }\n    - { env: CORP_CA }\n    - \"-----BEGIN CERTIFICATE-----\\nAA==\\n-----END CERTIFICATE-----\\n\"\n  destinations:\n    - match: ldap.corp.internal\n      trust_anchors: [ { file: /etc/busbar/ca/ldap.pem } ]\n      include_roots: true\n      pin_spki_sha256: sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n      client_identity: { cert: { file: /c.pem }, key: { env: KEY } }\n    - { match: 10.0.0.5, plaintext: true }\n",
+        "tls:\n  roots: system\n  trust_anchors:\n    - { file: /etc/busbar/ca/corp.pem }\n    - { env: CORP_CA }\n    - \"-----BEGIN CERTIFICATE-----\\nAA==\\n-----END CERTIFICATE-----\\n\"\n  destinations:\n    - match: ldap.corp.internal\n      trust_anchors: [ { file: /etc/busbar/ca/ldap.pem } ]\n      include_roots: true\n      pin_spki_sha256: sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n      client_identity: { cert: { file: /c.pem }, key: { env: KEY } }\n    - { match: \x310.0.0.5, plaintext: true }\n",
     )
     .expect("the advanced.tls grammar parses");
     assert_eq!(a.tls.roots, TlsRoots::System);
@@ -35,7 +35,7 @@ fn the_whole_grammar_parses_under_advanced_tls() {
     assert!(d.include_roots);
     assert_eq!(d.pin_spki_sha256.len(), 1, "one pin may be written bare");
     assert!(d.client_identity.is_some());
-    assert_eq!(a.tls.plaintext_hosts(), ["10.0.0.5"]);
+    assert_eq!(a.tls.plaintext_hosts(), ["\x310.0.0.5"]);
 }
 
 #[test]

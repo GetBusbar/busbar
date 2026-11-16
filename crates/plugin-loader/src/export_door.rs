@@ -732,7 +732,12 @@ impl ExportCalls for ExportInstance {
         let plugin = &self.shared.plugin;
         let asked = req.headers.len().min(MAX_SERVE_HEADERS);
         let mut lent = [AbiStr::ZERO; MAX_SERVE_HEADERS * 2];
-        for (pair, (k, v)) in lent.chunks_exact_mut(2).zip(&req.headers[..asked]) {
+        for (pair, (k, v)) in lent
+            .as_chunks_mut::<2>()
+            .0
+            .iter_mut()
+            .zip(&req.headers[..asked])
+        {
             pair[0] = lend(k);
             pair[1] = lend(v);
         }

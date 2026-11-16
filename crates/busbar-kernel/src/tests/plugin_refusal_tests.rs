@@ -130,3 +130,84 @@ async fn a_retired_key_skip_seals_one_rejected_plugin_trust_record() {
         "a refused retired-key plugin is never recorded as an unverified load: {unverified:?}"
     );
 }
+
+/// FIPS admission (CRYPTO-SEAM §9 "no external"): on a crypto backend that admits no external
+/// plugin, an unsigned drop-in is refused through the real directory scan with every
+/// `plugins.trust` opt-in on, and the boot logger seals one rejected `plugin.trust` record coded
+/// `external_crypto`, never an unverified load. `FipsBackend` substitutes only the backend's
+/// answer (`EXTERNAL_PLUGINS = false`); the scan and the logger are the shipped ones.
+#[tokio::test]
+async fn a_fips_backend_refusal_of_an_unsigned_drop_in_seals_one_external_crypto_record() {
+    use busbar_contract::plugin_rows::PluginRows;
+    use busbar_plugin_loader::sign::{sha256_hex, FipsBackend, Manifest, TrustPolicy};
+
+    ensure_global_audit_stream_registered().await;
+    let file = "fips-external-unsigned-probe.tar.gz";
+    let lib = b"fips external-plugin probe library; refused before it is ever opened";
+    let manifest = Manifest {
+        name: "fips-external-unsigned-probe".into(),
+        alias: "fips-external-unsigned-probe".into(),
+        kind: "store".into(),
+        version: "1.0.0".into(),
+        publisher: "acme".into(),
+        abi_version: busbar_contract::abi::store::ABI_VERSION,
+        sha256: sha256_hex(lib),
+        ..Manifest::default()
+    };
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-kernel-fips-external-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create the plugins dir");
+    let tarball = busbar_plugin_loader::tarball::package(&manifest, "libplugin.so", lib)
+        .expect("package the probe");
+    std::fs::write(dir.join(file), tarball).expect("write the probe tarball");
+    let policy = TrustPolicy {
+        allow_unsigned: true,
+        allow_third_party: true,
+        binary_version: "1.6.0".into(),
+        ..TrustPolicy::default()
+    };
+    let registry = {
+        let _fips = FipsBackend::link();
+        busbar_plugin_loader::scan_and_validate(&dir, &policy)
+            .expect("a refused plugin is skipped, not fatal")
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let loadable = PluginRows::loadable(&registry);
+    let skipped = PluginRows::skipped(&registry);
+    assert!(
+        loadable.is_empty(),
+        "a FIPS backend loads no unsigned plugin, allow_unsigned or not: {loadable:?}"
+    );
+    assert_eq!(skipped.len(), 1, "the refusal is a skip: {skipped:?}");
+    assert_eq!(skipped[0].code, "external_crypto", "{}", skipped[0].reason);
+
+    log_scanned_rows(&loadable, &skipped, &[], "/plugins");
+
+    let resource = plugin_refusal_resource("file", file, "external_crypto");
+    crate::audit::auditlog::flush_pending()
+        .await
+        .expect("native refusal audit confirmed");
+    let sealed = AUDIT_LOG.list_filtered(
+        0,
+        usize::MAX,
+        Some(PluginRefusal::Trust.action()),
+        Some(&resource),
+    );
+    assert_eq!(sealed.len(), 1, "one record per refusal: {sealed:?}");
+    assert_eq!(sealed[0].outcome, "rejected");
+    assert_eq!(sealed[0].principal, PLUGIN_REFUSAL_PRINCIPAL);
+    let unverified = AUDIT_LOG.list_filtered(
+        0,
+        usize::MAX,
+        Some(PluginRefusal::Unverified.action()),
+        Some(&plugin_refusal_resource("file", file, "unverified")),
+    );
+    assert!(
+        unverified.is_empty(),
+        "a refused plugin is never recorded as an unverified load: {unverified:?}"
+    );
+}

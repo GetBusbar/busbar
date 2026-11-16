@@ -63,7 +63,7 @@ fn a_reachable_fallback_pool_outside_the_allow_list_is_not_authorized() {
         key: true,
         scoped: true,
         allowed: vec!["a", "b"],
-        fallback: [("a", "b"), ("b", "c")].into_iter().collect(),
+        fallback: BTreeMap::from([("a", "b"), ("b", "c")]),
         ..View::default()
     };
     assert_eq!(
@@ -78,7 +78,7 @@ fn a_fallback_cycle_ends_the_walk_without_a_refusal() {
         key: true,
         scoped: true,
         allowed: vec!["a", "b"],
-        fallback: [("a", "b"), ("b", "a")].into_iter().collect(),
+        fallback: BTreeMap::from([("a", "b"), ("b", "a")]),
         ..View::default()
     };
     assert_eq!(destination_guard(&v, "a"), Ok(()));

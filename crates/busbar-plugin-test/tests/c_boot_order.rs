@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! C-BOOT-ORDER (ABI-MIN3-INTERFACE §14): A store whose password references a secret that references a second
+//! secret: open order second, first, store, rest; a cycle is CONFIG.
+//!
+//! WBS rule 10: each arm is ignored for the task that lands the last piece it needs; that task writes
+//! the arm's body and un-ignores it in its own MR (red first, then green).
+
+#[test]
+#[ignore = "owner: W1-K9"]
+fn secrets_open_before_their_store() {
+    todo!("owner: W1-K9 (C-BOOT-ORDER)")
+}

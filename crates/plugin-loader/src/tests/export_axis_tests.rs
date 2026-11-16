@@ -130,6 +130,23 @@ fn the_log_binding_answers_the_same_through_either_door() {
     assert_eq!(transcripts[0], transcripts[1], "both doors answer the same");
 }
 
+/// The unknown-exporter refusal (BUSBAR-3131) lists the modules config may name. A sink dropped
+/// into `plugins.dir` is one exactly as a linked one is: core alone, which links no sink, must not
+/// answer "the built-in export modules are ." while it serves four (oracle F1, job 36815).
+#[test]
+fn a_dropped_in_sink_is_listed_as_a_module_config_may_name() {
+    let row = neutral_export::NAME;
+    let [linked, dropped] = both(row, neutral_export::door, neutral_export::cdylib());
+    for (door, registry) in [("linked", linked), ("dropped-in", dropped)] {
+        let rows = ExportRows::new(&registry, dispatcher());
+        assert_eq!(
+            rows.linked_modules(),
+            vec![row.to_string()],
+            "the {door} sink is a module config may name"
+        );
+    }
+}
+
 #[test]
 fn check_runs_when_the_first_instance_does_not_open() {
     let row = neutral_export::NAME;

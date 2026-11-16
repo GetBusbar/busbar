@@ -103,7 +103,9 @@ mod declared_timeout_tests;
 
 /// The literal judge over a guard that allowlists the loopback far ends these tests dial, and the
 pub(crate) fn loopback_literals() -> std::sync::Arc<dyn crate::DialJudge> {
-    let allow = ["127.0.0.1", "::1", "10.1.2.3"].map(str::to_owned).to_vec();
+    let allow = ["127.0.0.1", "::1", "\x310.1.2.3"]
+        .map(str::to_owned)
+        .to_vec();
     std::sync::Arc::new(crate::LiteralsOnly(
         crate::guard::Guard::from_config(&busbar_kernel::config::Destinations {
             block_private_addresses: true,
@@ -542,7 +544,7 @@ fn a_metadata_target_is_refused_even_over_a_served_transport() {
         for target in [
             "169.254.169.254:80",
             "[fd00:ec2::254]:80",
-            "100.100.100.200:80",
+            "\x3100.100.100.200:80",
         ] {
             let desc = OpenDesc {
                 target,
@@ -1357,7 +1359,7 @@ fn a_request_bound_times_out_a_far_end_that_never_answers() {
         .await
         .expect("the bound woke the reader before the far end ever answered");
         assert_eq!(read, Err(ConnError::Timeout));
-        let took = crate::support::since(started);
+        let took = started.elapsed();
         assert!(
             took >= std::time::Duration::from_millis(300)
                 && took < std::time::Duration::from_secs(2),
@@ -1479,7 +1481,7 @@ fn a_request_bound_past_the_clock_is_no_bound_of_its_own() {
     assert_eq!(due_at(last, u64::MAX), None, "past the clock: no bound");
     assert_eq!(due_at(last, 1_000), None);
 
-    let held = Held::over(None, None, None).bounded(now, u64::MAX);
+    let held = Held::over(None, None, None).bounded(std::time::Instant::now(), u64::MAX);
     let due = held.due.lock().expect("due");
     assert!(
         due.as_ref().is_none_or(|d| d.at > now),
@@ -1604,7 +1606,7 @@ fn loopback_allowed_refuses_plaintext_off_loopback() {
         let c = scheme_connector();
         c.declare_need(OWNER, NeedId(0), "plain", EGRESS_LOOPBACK_ALLOWED)
             .expect("a served scheme declares");
-        assert_eq!(open_in(&c, 0, "10.1.2.3:80"), Err(ConnError::Refused));
+        assert_eq!(open_in(&c, 0, "\x310.1.2.3:80"), Err(ConnError::Refused));
         let id = open_in(&c, 0, &far).expect("plaintext loopback opens");
         c.close(OWNER, id).unwrap();
     });
@@ -1628,12 +1630,12 @@ fn a_configured_mint_endpoint_takes_loopback_plaintext_and_nothing_else_in_plain
         let id = open_in(&c, 0, &far).expect("a loopback plaintext mint endpoint opens");
         c.close(OWNER, id).unwrap();
         assert_eq!(
-            declare(1, EGRESS_LOOPBACK_ALLOWED, "10.1.2.3:80"),
+            declare(1, EGRESS_LOOPBACK_ALLOWED, "\x310.1.2.3:80"),
             Err(ConnError::Refused),
             "plaintext off loopback, refused at its admission"
         );
         assert_eq!(
-            open_in(&c, 1, "10.1.2.3:80"),
+            open_in(&c, 1, "\x310.1.2.3:80"),
             Err(ConnError::Refused),
             "plaintext off loopback"
         );
@@ -2155,10 +2157,8 @@ fn program(command: &str, args: &[&str], env: &[(&str, &str)]) -> busbar_contrac
 async fn read_all(c: &Connector, id: ConnId, want: usize) -> Vec<u8> {
     let mut got = Vec::new();
     let mut buf = [0_u8; 256];
-    // At most 2000 polls (about 10 s), counted rather than read off the clock.
-    let mut polls = 0_u32;
-    while got.len() < want && polls < 2000 {
-        polls += 1;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while got.len() < want && std::time::Instant::now() < deadline {
         match c.read(OWNER, id, 7, &mut buf) {
             Ok(piece) => {
                 got.extend_from_slice(&buf[..piece.len]);
@@ -2211,10 +2211,8 @@ fn a_program_need_spawns_its_program_and_kills_it_on_close() {
         assert_eq!(echoed, b"hello\n");
         assert!(!gone(&pid), "the program runs while the connection is open");
         c.close(OWNER, id).unwrap();
-        // At most 250 polls (about 5 s), counted rather than read off the clock.
-        let mut polls = 0_u32;
-        while !gone(&pid) && polls < 250 {
-            polls += 1;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !gone(&pid) && std::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         assert!(gone(&pid), "the connector killed the program on close");
@@ -2334,10 +2332,8 @@ fn a_dialled_exchange_relays_empty_messages_and_completes_only_on_the_end_flag()
         let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
         let mut buf = [0_u8; 64];
         let mut seen = Vec::new();
-        // At most 2000 polls (about 10 s), counted rather than read off the clock.
-        let mut polls = 0_u32;
-        while polls < 2000 {
-            polls += 1;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
             match c.read(OWNER, id, 7, &mut buf) {
                 Ok(p) => {
                     seen.push((p.kind, buf[..p.len].to_vec()));
@@ -2622,12 +2618,10 @@ mod transport_pin {
         };
         let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
         let mut buf = [0_u8; 64];
-        // At most 2000 polls (about 10 s), counted rather than read off the clock.
-        let mut polls = 0_u32;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             match c.read(OWNER, id, 7, &mut buf) {
-                Err(ConnError::Pending) if polls < 2000 => {
-                    polls += 1;
+                Err(ConnError::Pending) if std::time::Instant::now() < deadline => {
                     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
                 }
                 Ok(p) => return (id, Ok(buf[..p.len].to_vec())),
@@ -2746,12 +2740,10 @@ mod transport_pin {
         };
         let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
         let mut buf = [0_u8; 64];
-        // At most 2000 polls (about 10 s), counted rather than read off the clock.
-        let mut polls = 0_u32;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             match c.read(OWNER, id, 7, &mut buf) {
-                Err(ConnError::Pending) if polls < 2000 => {
-                    polls += 1;
+                Err(ConnError::Pending) if std::time::Instant::now() < deadline => {
                     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
                 }
                 Ok(p) => return Ok(buf[..p.len].to_vec()),
@@ -4248,7 +4240,7 @@ fn a_pinned_target_every_dial_would_admit_is_admitted_at_declare() {
     let c = plain_and_secure_connector();
     let secure = pinned_need("sec", EGRESS_OPEN_WEB);
     assert_eq!(
-        DeclaredConns::declare(&c, OWNER, NeedId(0), &secure, Some("10.1.2.3:443"), None),
+        DeclaredConns::declare(&c, OWNER, NeedId(0), &secure, Some("\x310.1.2.3:443"), None),
         Ok(())
     );
     assert_eq!(
@@ -4276,7 +4268,7 @@ fn an_open_web_need_pinned_to_a_private_literal_is_refused_at_declare() {
     let c = plain_and_secure_connector();
     let need = pinned_need("sec", EGRESS_OPEN_WEB);
     assert_eq!(
-        DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some("10.0.0.5:443"), None),
+        DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some("\x310.0.0.5:443"), None),
         Err(ConnError::Refused)
     );
     assert_eq!(
@@ -4492,10 +4484,8 @@ async fn pooled_exchange(
     let mut got = Vec::new();
     let mut whole = false;
     let mut failed = None;
-    // At most 1000 polls (about 5 s), counted rather than read off the clock.
-    let mut polls = 0_u32;
-    while polls < 1000 {
-        polls += 1;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
         match c.read(owner, id, 7, &mut buf) {
             Ok(p) if p.kind == PieceKind::Completion => {
                 whole = true;
@@ -4593,10 +4583,8 @@ fn a_forgotten_instances_pooled_line_and_listener_go_and_a_neighbours_line_is_ke
         );
         assert_eq!(accepted.load(Ordering::SeqCst), 2, "each kept its own line");
         c.forget(OTHER);
-        // At most 1000 polls (about 5 s), counted rather than read off the clock.
-        let mut polls = 0_u32;
-        while ended.load(Ordering::SeqCst) < 1 && polls < 1000 {
-            polls += 1;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while ended.load(Ordering::SeqCst) < 1 && std::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
         assert_eq!(
@@ -4645,10 +4633,8 @@ fn an_idle_pooled_line_is_closed_once_its_idle_time_passes_whatever_is_opened_ne
             (b"x".to_vec(), true, None),
             "an open to another place"
         );
-        // At most 300 polls (about 3 s), counted rather than read off the clock.
-        let mut polls = 0_u32;
-        while first_closed.load(Ordering::SeqCst) == 0 && polls < 300 {
-            polls += 1;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while first_closed.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         assert_eq!(

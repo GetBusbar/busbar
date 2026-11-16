@@ -13,6 +13,10 @@ pub(crate) const NOT_GRANTED: &str = "the snapshot is lent only to the crossing 
 
 const UNKNOWN_SCOPE: &str = "no such snapshot scope";
 
+/// The refusal `/metrics` answers (503, reason `telemetry_disabled`) when the operator set
+/// `telemetry.enabled: false`.
+pub(crate) const TELEMETRY_DISABLED: &str = "telemetry_disabled";
+
 struct Lend {
     app: Option<Arc<App>>,
 }
@@ -75,6 +79,9 @@ pub(crate) fn read(scope: u32) -> impl std::future::Future<Output = Snapshot> + 
 }
 
 async fn whole(app: Option<&App>) -> Snapshot {
+    if crate::snapshot::explicitly_off() {
+        return Snapshot::Refused(TELEMETRY_DISABLED);
+    }
     let installed = crate::snapshot::recorder_installed();
     if let Some(app) = app.filter(|_| installed) {
         if let Err(error) = crate::snapshot::refresh_scrape_gauges(app).await {

@@ -67,7 +67,9 @@ pub mod node {
     #[cfg(test)]
     pub type Lent = (Resolve, u64);
 
-    pub type Reported = (busbar_contract::billing::ExactUsage, u32, String);
+    /// What a unit consumed: its usage, its fee count, its serving lane and its sealed
+    /// attribution (`group`, `pool`, `provider`; ADMIN-API-1.6 §3.2).
+    pub type Reported = (busbar_contract::billing::ExactUsage, u32, String, String);
 
     pub type Late = Box<dyn FnOnce() -> Option<Reported> + Send>;
 
@@ -655,6 +657,8 @@ pub(crate) const HOST_SERIES: &[&str] = &[
     busbar_kernel::snapshot::TRANSLATIONS_TOTAL,
     busbar_kernel::snapshot::PLANE_REQUESTS_TOTAL,
     busbar_kernel::snapshot::PLANE_REQUEST_DURATION_SECONDS,
+    busbar_kernel::snapshot::LANE_REQUEST_DURATION_SECONDS,
+    busbar_kernel::snapshot::UNIT_REFUSALS_TOTAL,
     busbar_kernel::snapshot::ADMISSION_DENIED_TOTAL,
     busbar_kernel::snapshot::METERING_PENDING_COALESCED_TOTAL,
     busbar_kernel::snapshot::PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL,

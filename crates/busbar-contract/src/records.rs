@@ -108,6 +108,9 @@ mod virtual_key_wire {
         /// The release a key was migrated from; absent on a key minted by this release.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub migrated_from: Option<String>,
+        /// The admin grant (ADMIN-API r5 section 2.1); absent on every key without one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub admin: Option<super::AdminGrant>,
     }
 
     /// The per-kind wire partition: `(allowed_pools, {allowed_{kind}s → values})`. The map carries
@@ -186,6 +189,7 @@ mod virtual_key_wire {
                 rotated_at: self.rotated_at,
                 rotation_count: self.rotation_count,
                 migrated_from: self.migrated_from.clone(),
+                admin: self.admin.clone(),
             }
             .serialize(s)
         }
@@ -216,6 +220,7 @@ mod virtual_key_wire {
                 rotated_at: w.rotated_at,
                 rotation_count: w.rotation_count,
                 migrated_from: w.migrated_from,
+                admin: w.admin,
             })
         }
     }
@@ -309,6 +314,20 @@ pub struct VirtualKey {
     pub rotation_count: u64,
     /// `Some("1.5.5")` on a key the migration carried from that release; `None` on a key minted here.
     pub migrated_from: Option<String>,
+    /// The admin grant (ADMIN-API r5 section 2.1): when set, this key is an admin credential.
+    /// `None` on every data-plane key. Trailing field with a serde default, so no migration.
+    pub admin: Option<AdminGrant>,
+}
+
+/// The admin grant a virtual key carries (ADMIN-API r5 section 2.1): a scope ceiling and the verbs
+/// the key holds. `verbs` empty means every verb within the scope ceiling.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AdminGrant {
+    /// `"read-only"` or `"full"`.
+    pub scope: String,
+    /// The verbs held by name; empty = every verb within `scope`.
+    #[serde(default)]
+    pub verbs: Vec<String>,
 }
 
 impl VirtualKey {
@@ -354,6 +373,7 @@ impl std::fmt::Debug for VirtualKey {
             .field("rotated_at", &self.rotated_at)
             .field("rotation_count", &self.rotation_count)
             .field("migrated_from", &self.migrated_from)
+            .field("admin", &self.admin)
             .finish()
     }
 }

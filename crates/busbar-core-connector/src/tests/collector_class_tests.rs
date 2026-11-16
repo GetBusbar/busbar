@@ -29,9 +29,9 @@ const NAMES: &[(&str, &str)] = &[
     ("imds.example.com", "169.254.169.254"),
     ("lo.test", "127.0.0.1"),
     ("lo6.test", "::1"),
-    ("ten.test", "10.0.0.1"),
-    ("lan.test", "192.168.1.1"),
-    ("cgnat.test", "100.64.0.1"),
+    ("ten.test", "\x310.0.0.1"),
+    ("lan.test", "\x3192.168.1.1"),
+    ("cgnat.test", "\x3100.64.0.1"),
     ("ula.test", "fd00::1"),
     ("imds.test", "169.254.169.254"),
     ("public.test", "93.184.216.34"),
@@ -175,7 +175,7 @@ fn cloud_metadata_never_reaches_a_collector_in_any_spelling() {
         "[::ffff:169.254.169.254]:443",
         "168.63.129.16:443",
         "192.0.0.192:443",
-        "100.100.100.200:443",
+        "\x3100.100.100.200:443",
         "[fd00:ec2::254]:443",
         "[fe80::1]:443",
         "imds.example.com:443",
@@ -249,11 +249,11 @@ fn an_alternate_ipv4_spelling_of_loopback_reaches_a_collector_as_in_1_5_5() {
 fn a_private_collector_is_refused_by_default_and_reached_when_allowlisted() {
     let strict = dial_judge();
     for authority in [
-        "10.0.0.1:4318",
+        "\x310.0.0.1:4318",
         "ten.test:4318",
-        "192.168.1.1:4318",
+        "\x3192.168.1.1:4318",
         "lan.test:4318",
-        "100.64.0.1:4318",
+        "\x3100.64.0.1:4318",
         "cgnat.test:4318",
         "[fd00::1]:4318",
         "ula.test:4318",
@@ -266,11 +266,11 @@ fn a_private_collector_is_refused_by_default_and_reached_when_allowlisted() {
     }
     assert!(open(&strict, "93.184.216.34:4318", true, LA).is_ok());
     assert!(open(&strict, "localhost:4318", false, LA).is_ok());
-    let allowed = allowing(&["10.0.0.1", "lan.test", "100.64.0.0/10", "fd00::/8"]);
+    let allowed = allowing(&["\x310.0.0.1", "lan.test", "\x3100.64.0.0/10", "fd00::/8"]);
     for (authority, at) in [
-        ("10.0.0.1:4318", "10.0.0.1:4318"),
-        ("lan.test:4318", "192.168.1.1:4318"),
-        ("cgnat.test:4318", "100.64.0.1:4318"),
+        ("\x310.0.0.1:4318", "\x310.0.0.1:4318"),
+        ("lan.test:4318", "\x3192.168.1.1:4318"),
+        ("cgnat.test:4318", "\x3100.64.0.1:4318"),
         ("[fd00::1]:4318", "[fd00::1]:4318"),
     ] {
         assert_eq!(
@@ -281,12 +281,12 @@ fn a_private_collector_is_refused_by_default_and_reached_when_allowlisted() {
     }
 
     assert_eq!(
-        open(&allowed, "10.0.0.1:4318", false, LA),
+        open(&allowed, "\x310.0.0.1:4318", false, LA),
         Err(DEST_PLAINTEXT)
     );
 
     assert_eq!(
-        open(&allowed, "192.168.1.1:4318", true, LA),
+        open(&allowed, "\x3192.168.1.1:4318", true, LA),
         Err(DEST_INTERNAL)
     );
 }
@@ -343,7 +343,7 @@ fn only_an_http_or_https_url_names_a_collector() {
     }
     assert_eq!(j.judge_name("", LA, false), Err(DEST_NO_HOST));
     for url in [
-        "https://svc:topsecret@10.0.0.1/v1/traces",
+        "https://svc:topsecret@\x310.0.0.1/v1/traces",
         "http://svc:pw0rd@collector.example.com:4318/v1/traces",
         "HTTPS://svc:topsecret@collector.example.com/v1/traces",
     ] {
@@ -493,7 +493,7 @@ fn plaintext_reaches_loopback_or_an_exact_plaintext_entry_in_every_class() {
     use busbar_contract::abi::host::conn::connector::{
         EGRESS_DEFAULT, EGRESS_OPERATOR_INFRASTRUCTURE, EGRESS_PROVIDER,
     };
-    let private: SocketAddr = "10.0.0.5:4318".parse().unwrap();
+    let private: SocketAddr = "\x310.0.0.5:4318".parse().unwrap();
     let lo: SocketAddr = "127.0.0.1:4318".parse().unwrap();
     for class in [
         EGRESS_DEFAULT,

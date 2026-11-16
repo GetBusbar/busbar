@@ -3,10 +3,12 @@
 
 use std::path::Path;
 
-use super::{crypto_graph, no_getrandom, repo_root, scan_source, seam_only_reached};
+use super::{
+    backend_only_reached, crypto_graph, no_getrandom, repo_root, scan_source, seam_only_reached,
+};
 
-/// The real tree: core's feature-resolved graph builds ring, sha2 and ed25519-dalek only beneath
-/// the seam.
+/// The real tree: core's feature-resolved graph builds ring, sha2, ed25519-dalek and curve25519-dalek
+/// only beneath the seam, and curve25519-dalek only beneath the backend.
 #[test]
 fn the_root_graph_builds_seam_only_crypto_beneath_busbar_crypto_alone() {
     let findings = crypto_graph(&repo_root()).expect("cargo tree resolves the root workspace");
@@ -102,4 +104,21 @@ fn a_graph_without_seam_only_crypto_is_clean() {
         .replace("3ring v0.17.14\n", "")
         .replace("2ring v0.17.14 (*)\n", "");
     assert!(seam_only_reached(&clean).is_empty());
+}
+
+/// The facade's graph with the backend pruned: curve25519-dalek reached from the facade itself is
+/// named with its path (a FIPS build, which swaps only the backend, would link it); reached only
+/// through the pruned backend, it is not listed at all.
+#[test]
+fn a_backend_only_crate_reached_from_the_facade_is_named_with_its_path() {
+    const FACADE: &str = "0busbar-crypto v1.6.0 (/r/crates/busbar-crypto)\n\
+                          1busbar-crypto-backend v1.6.0 (/r/crates/busbar-crypto-backend)\n\
+                          1helper v0.1.0\n2curve25519-dalek v4.1.3\n1zeroize v1.8.2\n";
+    assert_eq!(
+        backend_only_reached(FACADE),
+        ["curve25519-dalek v4.1.3 is built by busbar-crypto outside busbar-crypto-backend, so a \
+          swapped-in (FIPS) backend would link it: busbar-crypto -> helper -> curve25519-dalek"]
+    );
+    let clean = FACADE.replace("2curve25519-dalek v4.1.3\n", "");
+    assert!(backend_only_reached(&clean).is_empty());
 }

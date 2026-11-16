@@ -69,6 +69,7 @@ fn inputs(unit: u64) -> AuditInputs {
             children: vec![UnitKey::new(unit + 1000)],
         },
         correlation_label: Some("customer-order-99".into()),
+        unit: busbar_kernel_audit::UnitFacts::default(),
     }
 }
 
@@ -462,7 +463,7 @@ fn a_plane_contributes_exactly_two_identifiers() {
 
     assert_eq!(record.what.op_class.as_str(), "tool.call");
     assert_eq!(record.outcome.finish, FinishClass::TurnComplete);
-    assert_eq!(record.recipe, busbar_kernel_audit::recipe::Recipe::V5);
+    assert_eq!(record.recipe, busbar_kernel_audit::recipe::Recipe::V7);
     assert!(record.controls.hold_ref.is_some());
 }
 
@@ -639,7 +640,7 @@ fn v5_key_presence_and_every_key_byte_survive_seal_journal_and_publication() {
         input.usage.rate_card_version = key;
         let mut chain = AuditChain::new();
         let record = chain.seal(input, &Pass::<AuditStep>::mint(&crate::seal::acquire()));
-        assert_eq!(record.recipe, Recipe::V5);
+        assert_eq!(record.recipe, Recipe::V7);
         assert!(
             hashes.insert(record.hash.clone()),
             "None, zero, writer and counter must differ"
@@ -710,7 +711,7 @@ fn a_mixed_old_and_keyed_chain_preserves_original_old_heads() {
     let third = chain.seal(inputs(3), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
     let records = [first, second, third];
     assert_eq!(records[0].hash, FROZEN_V2);
-    assert_eq!(records[2].recipe, Recipe::V5);
+    assert_eq!(records[2].recipe, Recipe::V7);
     assert!(AuditChain::verify_chain(&records).is_ok());
     for record in &records {
         let bytes = busbar_kernel_audit::journal_body(record).unwrap();

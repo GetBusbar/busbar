@@ -2833,7 +2833,7 @@ fn a_handle_reused_for_another_request_of_one_service_is_fault_and_quarantines()
 #[test]
 fn a_repoll_of_the_same_request_on_its_handle_reads_the_answer_and_is_never_a_fault() {
     let d = double();
-    let first = "dest:a.example:443".to_owned();
+    let first = String::from("dest:a.example:443");
     let poll = |dest: &str| {
         let mut i = judge_in("", TICKET, 7, DEST_RESOLVE);
         i.dest = over(dest.as_bytes());
@@ -4189,7 +4189,7 @@ fn hook_child_requires_exact_invocation_and_kind_and_replays_one_service_result(
         (result.outcome(), out)
     };
     assert_eq!(call(&input).0, Outcome::Refused);
-    let other = Caller::for_test("double".into(), KindCode::Hook);
+    let other = Caller::for_test(Arc::from("double"), KindCode::Hook);
     d.route.store.bind_child(TICKET, &other, child.clone());
     assert_eq!(
         call(&input).0,

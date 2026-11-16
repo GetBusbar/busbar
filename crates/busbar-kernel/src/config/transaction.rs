@@ -84,6 +84,19 @@ pub enum TxnError {
     Conflict(String),
     /// The apply phase's `spawn_blocking` task panicked (a `JoinError`) rather than returning.
     Internal,
+    /// The durable config generation could not be kept, so the publication was refused (503).
+    Unavailable(String),
+}
+
+/// The refusal text the generation step starts with; `swap_error` maps it to [`TxnError::Unavailable`].
+pub const GENERATION_REFUSED: &str = "config generation was not kept";
+
+fn swap_error<E: From<TxnError>>(message: String) -> E {
+    if message.starts_with(GENERATION_REFUSED) {
+        E::from(TxnError::Unavailable(message))
+    } else {
+        E::from(TxnError::Validation(message))
+    }
 }
 
 impl TxnError {
@@ -93,6 +106,7 @@ impl TxnError {
             TxnError::Forbidden => "current authority does not admit this effect".into(),
             TxnError::Conflict(msg) => msg.clone(),
             TxnError::Internal => "internal error".to_string(),
+            TxnError::Unavailable(msg) => msg.clone(),
         }
     }
 }
@@ -389,7 +403,7 @@ where
                         )
                         .map_err(E::from)?;
                         super::security_policy::scoped(authority, || {
-                            persist().map_err(|message| E::from(TxnError::Validation(message)))
+                            persist().map_err(swap_error::<E>)
                         })?;
                         Ok::<_, E>(authority)
                     })
@@ -419,12 +433,12 @@ where
                                     .await
                             }
                         }
-                        .map_err(|message| E::from(TxnError::Validation(message)))?;
+                        .map_err(swap_error::<E>)?;
                     }
                     None => handle
                         .commit_and_swap(next, || Ok(()))
                         .await
-                        .map_err(|message| E::from(TxnError::Validation(message)))?,
+                        .map_err(swap_error::<E>)?,
                 }
                 committed = true;
                 secrets.disarm();
@@ -444,9 +458,7 @@ where
                 super::security_policy::admit(&handle.load(), &next, context, authority)
                     .map_err(E::from)?;
                 let expected = handle.load();
-                persist
-                    .await
-                    .map_err(|message| E::from(TxnError::Validation(message)))?;
+                persist.await.map_err(swap_error::<E>)?;
                 if !Arc::ptr_eq(&expected, &handle.load()) {
                     if let Some(overlay) = &expected.overlay_path {
                         overlay.require_reload();
@@ -470,12 +482,12 @@ where
                                     .await
                             }
                         }
-                        .map_err(|message| E::from(TxnError::Validation(message)))?;
+                        .map_err(swap_error::<E>)?;
                     }
                     None => handle
                         .commit_and_swap(next, || Ok(()))
                         .await
-                        .map_err(|message| E::from(TxnError::Validation(message)))?,
+                        .map_err(swap_error::<E>)?,
                 }
                 committed = true;
                 secrets.disarm();

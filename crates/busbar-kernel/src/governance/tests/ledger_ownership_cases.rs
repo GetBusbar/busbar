@@ -2,13 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-
-fn one_unit<T>(class: &str, count: T) -> BTreeMap<String, T> {
-    let mut units = BTreeMap::new();
-    units.insert(class.to_owned(), count);
-    units
-}
-
 #[tokio::test]
 async fn two_nodes_cannot_both_accept_corrections_beyond_the_shared_count() {
     const INITIAL_INPUT_UNITS: u64 = 100;
@@ -49,7 +42,10 @@ async fn two_nodes_cannot_both_accept_corrections_beyond_the_shared_count() {
     let first_key = key.clone();
     let correction_node = first_node.clone();
     let first = tokio::spawn(async move {
-        let delta = one_unit(busbar_contract::records::UNIT_INPUT, CORRECTION_INPUT_UNITS);
+        let delta = BTreeMap::from([(
+            busbar_contract::records::UNIT_INPUT.to_string(),
+            CORRECTION_INPUT_UNITS,
+        )]);
         correction_node
             .adjust_usage_async(
                 &model(&[]),
@@ -70,7 +66,10 @@ async fn two_nodes_cannot_both_accept_corrections_beyond_the_shared_count() {
     let paused = tokio::time::timeout(COORDINATION_TIMEOUT, observed)
         .await
         .unwrap();
-    let delta = one_unit(busbar_contract::records::UNIT_INPUT, CORRECTION_INPUT_UNITS);
+    let delta = BTreeMap::from([(
+        busbar_contract::records::UNIT_INPUT.to_string(),
+        CORRECTION_INPUT_UNITS,
+    )]);
     let second = if paused.is_ok() {
         Some({
             second_node
@@ -156,7 +155,7 @@ async fn correction_only_hydration_registers_its_group_for_reclamation() {
     let now = crate::store::now();
     store.identity().put_key(&key).await.unwrap();
     metered(&gov, &key.id, MODEL, REQUEST_CAP, now).await;
-    let delta = one_unit(busbar_contract::records::UNIT_INPUT, 1);
+    let delta = BTreeMap::from([(busbar_contract::records::UNIT_INPUT.to_string(), 1)]);
 
     gov.adjust_usage_async(
         &cm,
@@ -222,7 +221,7 @@ async fn correction_registers_a_second_owner_of_a_shared_legacy_bucket() {
         .unwrap();
     store.identity().put_key(&corrected_key).await.unwrap();
     metered(&gov, &corrected_key.id, MODEL, REQUEST_CAP, now).await;
-    let delta = one_unit(busbar_contract::records::UNIT_INPUT, 1);
+    let delta = BTreeMap::from([(busbar_contract::records::UNIT_INPUT.to_string(), 1)]);
 
     gov.adjust_usage_async(
         &corrected,
@@ -421,7 +420,7 @@ async fn correction_hydration_preserves_an_older_inflight_eras_retry_and_group_o
     let (corrector, correction_key) = (gov.clone(), key.clone());
     *store.before_add.lock().unwrap() = Some(Box::new(move || {
         Box::pin(async move {
-            let delta = one_unit(busbar_contract::records::UNIT_INPUT, 1);
+            let delta = BTreeMap::from([(busbar_contract::records::UNIT_INPUT.to_string(), 1)]);
             corrector
                 .adjust_usage_async(
                     &minute_fee_model(),

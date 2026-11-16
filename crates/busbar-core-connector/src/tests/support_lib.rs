@@ -10,7 +10,6 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Waker;
-use std::time::{Duration, Instant};
 
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::ticket::Ticket;
@@ -528,10 +527,4 @@ pub fn writable_on_lane(sink: &FramerSink, out: &mut FramerOut, stream: u64) {
         });
     }
     out.yielded.pieces_len = 1;
-}
-
-/// How long ago `start` was read: a test reads the clock once to open an interval and passes that
-/// value here to close it, so closing the interval is the only other read.
-pub fn since(start: Instant) -> Duration {
-    start.elapsed()
 }

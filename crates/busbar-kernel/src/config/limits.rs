@@ -303,6 +303,49 @@ impl Default for HealthDefaultsCfg {
     }
 }
 
+/// Default `telemetry.retention_seconds`.
+pub const DEFAULT_TELEMETRY_RETENTION_SECONDS: u64 = 300;
+
+/// Default `telemetry.max_lane_series`: lanes that get their own `busbar_lane_request_duration_seconds`
+/// series before the rest fold into `target="other"`.
+pub const DEFAULT_TELEMETRY_MAX_LANE_SERIES: usize = 1024;
+
+fn default_telemetry_enabled() -> bool {
+    true
+}
+
+fn default_telemetry_retention_seconds() -> u64 {
+    DEFAULT_TELEMETRY_RETENTION_SECONDS
+}
+
+fn default_telemetry_max_lane_series() -> usize {
+    DEFAULT_TELEMETRY_MAX_LANE_SERIES
+}
+
+/// The `telemetry:` block: the in-process metric registry. On by default, whatever the `export:`
+/// instances are; an export recorder only raises the retention. An explicit `enabled: false` is
+/// the one way to turn it off, and `/metrics` then answers 503 `telemetry_disabled`.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TelemetryCfg {
+    #[serde(default = "default_telemetry_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_telemetry_retention_seconds")]
+    pub retention_seconds: u64,
+    #[serde(default = "default_telemetry_max_lane_series")]
+    pub max_lane_series: usize,
+}
+
+impl Default for TelemetryCfg {
+    fn default() -> Self {
+        Self {
+            enabled: default_telemetry_enabled(),
+            retention_seconds: default_telemetry_retention_seconds(),
+            max_lane_series: default_telemetry_max_lane_series(),
+        }
+    }
+}
+
 /// The `routing:` block — the global default policy timeout (per-policy `policy.timeout_ms` still
 /// overrides).
 #[derive(Debug, Deserialize, Serialize, Clone)]

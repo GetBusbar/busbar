@@ -164,7 +164,7 @@ to a static address on your Docker network and name that address in your `provid
 ```yaml
 ollama:
   protocol: openai
-  base_url: http://172.18.0.5:11434/v1
+  base_url: http://192.0.2.5:11434/v1
   error_map: {}
 ```
 

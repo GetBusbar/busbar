@@ -157,8 +157,10 @@ const MIN_MIGRATED_BUDGET_AMOUNT: u64 = 1;
 const MISSING_SIGNING_KEY: &str =
     "auth.signing_key: required now that the chain uses `keys` (busbar no longer \
      auto-generates one); run `busbar --generate-signing-key` and set \
-     auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, \
-     shared across a fleet)";
+     auth.signing_key to a secret reference for it. {file: /path} and {env: VAR} \
+     are not built in: each needs an installed, admitted secret plugin that \
+     declares it (busbar-secret-file for file, busbar-secret-env for env), \
+     otherwise boot refuses; the key must be shared across a fleet";
 
 pub(crate) fn legacy_store_text(key: &str) -> &'static str {
     crate::config::migration_table::text(key)
@@ -2460,5 +2462,23 @@ mod decision_path_tests {
             .decision_paths()
             .iter()
             .all(|path| !path.contains("Bearer") && !path.contains("prefix")));
+    }
+}
+
+#[cfg(test)]
+mod missing_signing_key_hint_tests {
+    use super::*;
+
+    #[test]
+    fn the_hint_says_file_and_env_need_an_admitted_secret_plugin() {
+        assert_eq!(
+            MISSING_SIGNING_KEY,
+            "auth.signing_key: required now that the chain uses `keys` (busbar no longer \
+             auto-generates one); run `busbar --generate-signing-key` and set \
+             auth.signing_key to a secret reference for it. {file: /path} and {env: VAR} \
+             are not built in: each needs an installed, admitted secret plugin that \
+             declares it (busbar-secret-file for file, busbar-secret-env for env), \
+             otherwise boot refuses; the key must be shared across a fleet"
+        );
     }
 }

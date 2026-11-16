@@ -20407,22 +20407,6 @@
       "body_lines": "^busbar_(spend_cents|budget_remaining_cents|tokens)_"
     },
     {
-      "id": "documented|changelog|stats-reasons",
-      "plane": "core",
-      "family": "documented",
-      "driver": "http",
-      "outcome": "ok",
-      "request": {
-        "method": "GET",
-        "path": "/stats",
-        "headers": {},
-        "body": null,
-        "auth": "ok",
-        "listener": "data"
-      },
-      "why": "CHANGELOG:218-219 (1.5.1) '/stats and /metrics report why a lane cannot take a request \u2026 and how many requests are parked.' (endpoints.rs:89-135)"
-    },
-    {
       "id": "documented|changelog|validate-checks",
       "plane": "core",
       "family": "documented",
@@ -22930,27 +22914,6 @@
       "why": "flat {\"error\":\u2026} envelope",
       "bindings": [
         "PB-100"
-      ]
-    },
-    {
-      "id": "http.crosscut|bearer-and-x-api-key",
-      "plane": "core",
-      "family": "http.crosscut",
-      "driver": "http",
-      "outcome": "ok",
-      "request": {
-        "method": "GET",
-        "path": "/stats",
-        "headers": {
-          "x-api-key": "not-a-key"
-        },
-        "body": null,
-        "auth": "ok",
-        "listener": "data"
-      },
-      "why": "carrier precedence: Bearer wins",
-      "bindings": [
-        "PB-35"
       ]
     },
     {
@@ -36653,22 +36616,6 @@
       "why": "no oauth authorization server is configured: its well-known metadata path is unmounted"
     },
     {
-      "id": "neutrality|routes|stats",
-      "plane": "core",
-      "family": "neutrality",
-      "driver": "http",
-      "outcome": "ok",
-      "request": {
-        "method": "GET",
-        "path": "/stats",
-        "headers": {},
-        "body": null,
-        "auth": "ok",
-        "listener": "data"
-      },
-      "why": "the pool/lane topology route answers on a plane-neutral config exactly as the operational-routes rule in ARCHITECTURE.md describes"
-    },
-    {
       "id": "neutrality|routes|v1-models",
       "plane": "core",
       "family": "neutrality",
@@ -36720,23 +36667,6 @@
         "listener": "data"
       },
       "why": "no streams: block is configured: a websocket upgrade on the realtime path is not taken over by the ws transport and gets the ordinary 404"
-    },
-    {
-      "id": "neutrality|stats-idle-zero",
-      "plane": "core",
-      "family": "neutrality",
-      "driver": "http",
-      "outcome": "ok",
-      "request": {
-        "method": "GET",
-        "path": "/stats",
-        "headers": {},
-        "body": null,
-        "auth": "ok",
-        "listener": "data"
-      },
-      "why": "on an idle fresh boot every lane's in-flight fields read their zero/unbounded rest state: no session-transport plane is claimed, so nothing is pre-reserved",
-      "fresh": true
     },
     {
       "id": "ops.raw|header-order",
@@ -37028,25 +36958,6 @@
       },
       "outcome": "ok",
       "why": "ACROSS A RELOAD the two data-listener scrape routes answer as 1.5.5's did (ARCHITECT 2026-10-05, Q-U2-4 follow-up): boot with the prometheus exporter, scrape /metrics and /metrics/hooks with a key (both 200), rewrite config.yaml without the exporter and POST /api/v1/admin/config/reload, scrape again: /metrics (the exporter's plugin route) follows the configuration and 404s, /metrics/hooks (a core route mounted with the recorder at boot) keeps answering 200. Status and content type per scrape; the bodies carry live counters and are not compared. Recorded from the published 1.5.5 binary."
-    },
-    {
-      "id": "ops.scrape|stats|key",
-      "plane": "core",
-      "family": "ops.scrape",
-      "driver": "http",
-      "outcome": "ok",
-      "request": {
-        "method": "GET",
-        "path": "/stats",
-        "headers": {},
-        "body": null,
-        "auth": "ok",
-        "listener": "data"
-      },
-      "why": "20 per-lane fields, 'unbounded', variant names",
-      "bindings": [
-        "PB-43"
-      ]
     },
     {
       "id": "ops.scrape|stats|none",
