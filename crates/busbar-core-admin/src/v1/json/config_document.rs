@@ -806,15 +806,22 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_and_admission_caps_require_durable_restart_edits() {
+    fn retired_shutdown_and_admission_caps_never_enter_restart_state() {
         for path in [
             "/advanced/shutdown/drain_timeout",
             "/advanced/governance/max_pending_checkpoints",
             "/advanced/shutdown",
             "/advanced/governance",
         ] {
-            assert_eq!(restart_paths(&[path.to_owned()]), [path]);
+            assert!(
+                restart_paths(&[path.to_owned()]).is_empty(),
+                "retired configuration cannot become restart state: {path}"
+            );
         }
+        assert_eq!(
+            restart_paths(&["/advanced/worker_threads".to_owned()]),
+            ["/advanced/worker_threads"]
+        );
         assert!(restart_paths(&["/providers/example/timeout".to_owned()]).is_empty());
     }
 
