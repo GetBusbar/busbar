@@ -23,13 +23,19 @@ store = "min3-images"
 optional-image = "min3-images"
 "#;
     let (source, _) = linked_source(manifest, &|_| false);
-    assert!(source.contains("admit_linked(&neutral_store::PLUGIN)"), "{source}");
+    assert!(
+        source.contains("admit_linked(&neutral_store::PLUGIN)"),
+        "{source}"
+    );
     assert!(!source.contains("optional_plugin"), "{source}");
     assert!(!source.contains("neutral_store::linked"), "{source}");
     assert!(!source.contains("neutral_store::STORE"), "{source}");
     assert!(!source.contains("neutral_store::door"), "{source}");
     let (enabled, _) = linked_source(manifest, &|_| true);
-    assert!(enabled.contains("admit_linked(&optional_plugin::PLUGIN)"), "{enabled}");
+    assert!(
+        enabled.contains("admit_linked(&optional_plugin::PLUGIN)"),
+        "{enabled}"
+    );
 }
 
 fn read(rel: &str) -> String {

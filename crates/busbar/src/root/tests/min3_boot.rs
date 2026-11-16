@@ -11,6 +11,26 @@ use busbar_plugin_abi::plane::DEST_INTERNAL;
 
 use super::*;
 
+#[test]
+fn a_refused_compiled_image_refuses_boot_instead_of_falling_back() {
+    use busbar_plugin_loader::refusal::{Refusal, RefusalCode};
+    let rows = [super::super::linked::LinkedImage {
+        alias: "fixture",
+        admit: || {
+            Err(Refusal::new(
+                RefusalCode::Layout,
+                "layout",
+                "old",
+                "current",
+            ))
+        },
+    }];
+    let refusal = admit_linked_images(&rows).err().expect("boot must refuse");
+    assert!(refusal.contains("layout"), "{refusal}");
+    assert!(refusal.contains("old"), "{refusal}");
+    assert!(refusal.contains("current"), "{refusal}");
+}
+
 struct Open;
 
 impl Tickets for Open {
