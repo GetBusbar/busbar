@@ -1,12 +1,46 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Entitlements, tickets, host signing, signed ingress, replay claims and the KEYS_STALE refresh policy (IF §12.11). W0-ABI stub: frozen signatures, `todo!()` bodies; W1-K10 fills it.
+//! Entitlements, tickets, host signing, signed ingress, replay claims and the KEYS_STALE refresh policy (IF §12.11).
+//! The frozen contract is below; W1-K10's implementations: [`RequestGrants`] (entitle.rs), [`SealedTickets`]
+//! (tickets.rs), [`CoreJwsSigner`] (signer.rs), [`KeyRefresh`] (refresh.rs). The signed-ingress verifier and the
+//! replay guard live in `crate::ingress` (`signed_ingress`, `replay`).
 
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
 use busbar_plugin_abi::types::Pair;
+use busbar_plugin_loader::ports::auth::Identity;
 
 use crate::plugin_records::RecordsDenied;
+
+mod entitle;
+mod refresh;
+mod signer;
+mod tickets;
+
+pub use entitle::{GrantResolver, RequestGrants};
+pub use refresh::KeyRefresh;
+pub use signer::CoreJwsSigner;
+pub use tickets::{SealedTickets, TICKET_MARKER};
+
+/// A core-owned sub-namespace of `who`'s records namespace: (who.plugin, who.name, `tag`) (IF §12.11 "CoreStore
+/// namespace (who.plugin, who.name, "ticket")"). The tag rides in the configured-name half after a NUL, which no
+/// configured instance name holds, so a plugin's own RECORD/STORE namespace never reaches these rows.
+pub(crate) fn core_name(name: &str, tag: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 1 + tag.len());
+    out.push_str(name);
+    out.push('\0');
+    out.push_str(tag);
+    out
+}
+
+/// `who` re-addressed at its core sub-namespace `name` (from [`core_name`]).
+pub(crate) fn core_caller<'a>(who: &Caller<'a>, name: &'a str) -> Caller<'a> {
+    Caller { name, ..*who }
+}
+
+#[cfg(test)]
+#[path = "tests.rs"]
+mod tests;
 
 /// ENTITLE. The grant set of the verified principal (or ticket) is resolved once per request by the existing
 /// entitlement code (today's `entitlement.check` service) and cached on the request; `check` is a lookup.
@@ -34,9 +68,13 @@ pub struct TicketMint<'a> {
     /// MT_RECORD (empty when absent), ≤ MAX_TICKET_RECORD.
     pub record: &'a [u8],
 }
-// W0-ABI: `TicketAdmitted { identity: Identity, record: Option<Zeroizing<Vec<u8>>> }` names `Identity`, a
-// busbar-plugin-loader type (IF §11.3 auth); the kernel does not depend on the loader in wave 0. W1-K10 adds it
-// (and `Tickets::admit`, below) with that dependency.
+/// The admitted ticket (IF §12.11). W1-K10: the IF's `record` type is `zeroize::Zeroizing<Vec<u8>>`, which core
+/// bans (clippy-crate-wide disallowed-types, LR-094); it is its named replacement `SecureVec`, as for every other
+/// W0-ABI secret value.
+pub struct TicketAdmitted {
+    pub identity: Identity,
+    pub record: Option<busbar_contract::secure::SecureVec>,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TicketDenied {
     /// The seal does not open, or plugin/name/audience do not match (R_BAD_CREDENTIAL).
@@ -59,9 +97,17 @@ pub trait Tickets: Send + Sync + 'static {
     /// Pure and sync, no crypto and no store: the credential holds core's ticket marker `bbt1.` right after a
     /// prefix of ≤ 16 bytes of `[A-Za-z0-9_-]`. Used only to classify a request on a PRINCIPAL+TICKET route.
     fn is_ticket(&self, credential: &str) -> bool;
-    // W0-ABI: `admit<'a>(&'a self, plane: &'a Caller<'_>, audience: &'a str, credential: &'a str, now_s: u64)
-    // -> BoxFut<'a, Result<TicketAdmitted, TicketDenied>>` returns `TicketAdmitted` (see above); W1-K10 adds it
-    // with its IF doc lines once the kernel depends on plugin-loader.
+    /// AUTH_TICKET admission. Opens the seal and checks plugin, name, audience and expiry; then: `once` =>
+    /// one atomic take of the row (read and delete in one store commit; no row => Replayed), so exactly one
+    /// request on any replica is admitted; not once but with a row => read it. The record (if any) becomes
+    /// `PlaneReq.ticket_record`.
+    fn admit<'a>(
+        &'a self,
+        plane: &'a Caller<'_>,
+        audience: &'a str,
+        credential: &'a str,
+        now_s: u64,
+    ) -> BoxFut<'a, Result<TicketAdmitted, TicketDenied>>;
 }
 /// SIGN. The host's signing key (the existing notary/stamp signer seam, CRYPTO-SEAM §2.6 `Signer`), so keys may
 /// live in KMS/HSM. Core picks alg and kid. Never available to a plugin as key bytes.
@@ -104,23 +150,4 @@ pub trait ReplayGuard: Send + Sync + 'static {
         key: &'a [u8],
         ttl_s: u64,
     ) -> BoxFut<'a, Result<bool, RecordsDenied>>;
-}
-/// KEYS_STALE handling, owned by the auth adapter (L5) with this core policy: per auth instance, at most one
-/// `refresh` in flight (later KEYS_STALE verifies await the same one), and at most one started per
-/// `min_interval` (config `auth.unknown_key_refresh_s`, default 30 s, min 5 s). After it completes, the verify
-/// runs once more; a second KEYS_STALE or a declined refresh => `Verdict::Rejected { code: BAD_CREDENTIAL }`.
-pub struct KeyRefresh {
-    // W0-ABI: private fields (last_started: AtomicU64 (mono s), inflight: tokio::sync::OnceCell per round) land with
-    // W1-K10.
-    _stub: (),
-}
-impl KeyRefresh {
-    pub fn new(min_interval: std::time::Duration) -> Self {
-        let _ = min_interval;
-        todo!()
-    }
-    // W0-ABI: `refresh<'a>(&'a self, port: &'a dyn AuthPort, cx: CallCx) -> Option<BoxFut<'a, Result<(),
-    // PortError>>>` (doc: "Some(fut) = run or join the single-flight refresh; None = declined by the rate
-    // limit.") names `AuthPort`, `CallCx` and `PortError`, busbar-plugin-loader types (IF §11.3); W1-K10 adds it
-    // once the kernel depends on the loader.
 }

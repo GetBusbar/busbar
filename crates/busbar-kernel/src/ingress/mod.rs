@@ -365,6 +365,8 @@ pub fn ingress_error(proto: &str, status: StatusCode, kind: &str, message: &str)
 
 pub mod jsonrpc;
 pub mod protocols;
+pub mod replay;
+pub mod signed_ingress;
 
 #[cfg(test)]
 #[path = "tests/terminal_tests.rs"]
