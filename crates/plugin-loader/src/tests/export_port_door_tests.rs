@@ -389,3 +389,31 @@ fn a_scrape_renders_the_lowered_snapshot_at_scope_metrics() {
     assert_eq!(samples[2].0, x::SAMPLE_COUNT);
     assert_eq!(samples[2].1, 3.0);
 }
+
+#[test]
+fn a_terminal_limit_failure_is_not_reoffered() {
+    let (port, rx) = Double::new(&[x::STREAM_LOGS]);
+    port.answer(Err(PortError::Failed {
+        code: busbar_plugin_abi::fail::failed::F_LIMIT,
+        text: "limit".into(),
+        retry_after_s: None,
+        backend_status: None,
+        error: None,
+    }));
+    let door = open(port, Arc::new(Disk::default()));
+    let lines = [super::Line {
+        stream: x::STREAM_LOGS as u8,
+        bytes: busbar_contract::secure::SecureVec::from(b"limit-line".to_vec()),
+        _hold: Box::new(()),
+    }];
+    // Drive the production delivery loop synchronously: no sleeps or timeout-based
+    // assertion can hide a late retry, and the background queue stays empty.
+    door.shared.deliver_set(x::STREAM_LOGS as u8, &lines);
+    assert_eq!(next(&rx).attempt, 1);
+    assert!(
+        rx.try_recv().is_err(),
+        "F_LIMIT is terminal, never a resend"
+    );
+    assert_eq!(door.dropped(), 1);
+    assert_eq!(door.delivered(), 0);
+}
