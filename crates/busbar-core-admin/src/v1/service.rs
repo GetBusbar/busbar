@@ -1097,7 +1097,7 @@ pub(crate) fn inspect_plugin_view(
         "kind": manifest.kind,
         "schema": schema,
         "schema_error": schema_error,
-        "trust": trust,
+        "trust": crate::v1::contract::PluginTrustView::from_verification(manifest.signature_present, trust, &Default::default()),
         "source": "manifest",
         "restart_required_default": restart_default(&manifest.kind),
     })
@@ -1148,7 +1148,13 @@ fn plugin_inventory_view(row: busbar_kernel::admission::Inventoried) -> PluginVi
         version: row.stated.as_ref().map(|m| m.version.clone()),
         publisher: row.stated.as_ref().map(|m| m.publisher.clone()),
         interface_version: row.stated.as_ref().map(|m| m.abi_version),
-        trust,
+        trust: trust.map(|verdict| {
+            crate::v1::contract::PluginTrustView::from_verification(
+                row.stated.as_ref().is_some_and(|m| m.signature_present),
+                verdict,
+                &Default::default(),
+            )
+        }),
         valid: Some(row.status == "ready"),
         error: (row.status != "ready").then(|| row.status.clone()),
         schema_url,

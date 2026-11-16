@@ -12,6 +12,7 @@ use crate::record::{
     direction_tag, displays_as, finish_tag, step_tag, AbortTag, Attempt, AttemptOutcome,
     AuditRecord, Controls, FinishClass, HookApplied, HookHead, OpClassId, OutcomeFacts, OutcomeTag,
     QuantitySource, ReasonTag, Subject, UnitFacts, Usage, UsageLine, What, ATTEMPT_SLOTS,
+    LABEL_SLOTS,
 };
 
 /// Read a journal body back into the record it keeps.
@@ -348,6 +349,26 @@ fn read_unit_facts(r: &mut Reader<'_>) -> Option<UnitFacts> {
         });
     }
     unit.attempts_total = u32::try_from(r.num()?).ok()?;
+    // The optional records tail (§3.5): present only when the record keeps a user or a label, so
+    // a body that ends here is a `v7` body with neither. An empty tail is refused: it is not how
+    // the writer frames anything, and a second spelling of one record is not admitted.
+    if !r.done() {
+        unit.records.user = r.opt_text()?;
+        let labels = usize::try_from(r.num()?).ok()?;
+        if labels > LABEL_SLOTS {
+            return None;
+        }
+        unit.records.labels.reserve_exact(labels);
+        for _ in 0..labels {
+            let name = r.text()?;
+            unit.records
+                .labels
+                .push((std::sync::Arc::from(name), r.text()?));
+        }
+        if unit.records.is_empty() {
+            return None;
+        }
+    }
     Some(unit)
 }
 

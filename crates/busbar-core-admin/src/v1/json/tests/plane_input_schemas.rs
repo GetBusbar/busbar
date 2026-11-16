@@ -12,6 +12,7 @@ fn stated(name: &str, root: &str) -> Stated {
         alias: name.into(),
         kind: "plane".into(),
         version: "1.0.0".into(),
+        signature_present: false,
         publisher: "test".into(),
         abi_version: 1,
         configuration: Some(ConfigurationDeclaration {
