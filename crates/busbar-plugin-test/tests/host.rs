@@ -553,3 +553,157 @@ fn an_open_lends_the_plugin_the_secrets_the_test_states() {
         "OPEN lent the first secret the test stated"
     );
 }
+
+/// STH-ROWS D-1a/D-1b: the secret fixture opened through `open_lent`, lent `secret`.
+fn open_secret(h: &Host, secret: &[u8]) -> Opened<busbar_plugin_test::Secret> {
+    h.open_lent(
+        Image::<busbar_plugin_test::Secret>::linked(secret_door::door),
+        "host-fixture-secret",
+        b"{}",
+        &[secret],
+    )
+    .expect("the secret fixture opens")
+}
+
+/// CLOSE crossings the secret fixture answered so far.
+fn closes() -> u64 {
+    secret_door::CLOSES.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[test]
+fn validate_answers_before_open_and_a_refused_open_sends_no_close() {
+    let h = host();
+    let mut loaded = h
+        .load(
+            Image::<busbar_plugin_test::Secret>::linked(secret_door::door),
+            "host-fixture-secret",
+        )
+        .expect("the secret fixture loads");
+    let valid = loaded.validate(b"{}");
+    assert_eq!(
+        valid.outcome,
+        Outcome::Ready,
+        "VALIDATE answers before any OPEN: {:?}",
+        valid.error
+    );
+    let invalid = loaded.validate(b"[]");
+    assert_ne!(
+        invalid.outcome,
+        Outcome::Ready,
+        "a JSON list is not settings"
+    );
+    assert!(invalid.error.is_some(), "a refused VALIDATE states why");
+    let before = closes();
+    let (why, loaded) = match loaded.open(b"[]", &[]) {
+        Err(back) => back,
+        Ok(_) => panic!("the fixture's OPEN refuses a JSON list"),
+    };
+    assert!(matches!(why, Refused::Open(_)), "{why:?}");
+    drop(loaded);
+    assert_eq!(
+        closes(),
+        before,
+        "an OPEN that did not answer READY opened nothing, so nothing is CLOSEd"
+    );
+}
+
+#[test]
+fn an_opening_closes_once_when_dropped_and_readies_into_an_open_instance() {
+    let h = host();
+    let image = || Image::<busbar_plugin_test::Secret>::linked(secret_door::door);
+    let before = closes();
+    let opening = h
+        .load(image(), "host-fixture-secret")
+        .expect("the secret fixture loads")
+        .open(b"{}", &[b"lent-secret-0".as_slice()])
+        .map_err(|(why, _)| why)
+        .expect("the secret fixture opens");
+    drop(opening);
+    assert_eq!(
+        closes() - before,
+        1,
+        "an instance dropped between OPEN and READY CLOSEs once"
+    );
+    let mut t = h
+        .load(image(), "host-fixture-secret")
+        .expect("the secret fixture loads")
+        .open(b"{}", &[b"lent-secret-0".as_slice()])
+        .map_err(|(why, _)| why)
+        .expect("the secret fixture opens")
+        .ready()
+        .map_err(|(why, _)| why)
+        .expect("the secret fixture readies");
+    assert_eq!(
+        resolved(&mut t),
+        b"lent-secret-0",
+        "the readied instance serves"
+    );
+}
+
+#[test]
+fn the_lifecycle_slots_cross_an_open_instance_and_close_answers_once() {
+    let h = host();
+    let mut t = open_secret(&h, b"lent-secret-0");
+    let id = t.instance_id();
+    let valid = t.validate(b"{}");
+    assert_eq!(valid.outcome, Outcome::Ready, "{:?}", valid.error);
+    let refreshed = t.refresh(b"{}", &[b"refreshed-secret".as_slice()], 2);
+    assert_eq!(refreshed.outcome, Outcome::Ready, "{:?}", refreshed.error);
+    assert_eq!(
+        resolved(&mut t),
+        b"refreshed-secret",
+        "REFRESH lent the plugin its new secret"
+    );
+    let refused = t.refresh(b"[]", &[], 3);
+    assert_ne!(
+        refused.outcome,
+        Outcome::Ready,
+        "the fixture refuses a list"
+    );
+    assert!(refused.error.is_some(), "a refused REFRESH states why");
+    assert_eq!(t.instance_id(), id, "REFRESH keeps the instance");
+    let ticked = t.tick(100);
+    assert_eq!(ticked.outcome, Outcome::Ready, "{:?}", ticked.error);
+    assert_eq!(
+        ticked.next_tick_ns,
+        Some(105),
+        "TICK answers the plugin's next tick"
+    );
+    let retired = t.retire(1);
+    assert_eq!(retired.outcome, Outcome::Ready, "{:?}", retired.error);
+    let before = closes();
+    let closed = t.close();
+    assert_eq!(closed.outcome, Outcome::Ready, "{:?}", closed.error);
+    assert_eq!(
+        closes() - before,
+        1,
+        "close() CLOSEs once, and the drop after it sends no second CLOSE"
+    );
+}
+
+#[test]
+fn the_host_builders_keep_each_other_s_settings() {
+    use busbar_contract::services::HostServices;
+    use busbar_plugin_loader::dispatch::DispatchConfig;
+    use busbar_plugin_test::Services;
+
+    let base = host().dispatcher().workers();
+    let wider = DispatchConfig {
+        workers: 2,
+        ..DispatchConfig::default()
+    };
+    let svc: std::sync::Arc<dyn HostServices> = std::sync::Arc::new(Services::new());
+    let config_first = host().config(wider).services(std::sync::Arc::clone(&svc));
+    assert_eq!(
+        config_first.dispatcher().workers(),
+        base + 1,
+        "services() keeps the stated config"
+    );
+    assert!(config_first.dispatcher().host_services().is_some());
+    let services_first = host().services(svc).config(wider);
+    assert_eq!(services_first.dispatcher().workers(), base + 1);
+    assert!(
+        services_first.dispatcher().host_services().is_some(),
+        "config() keeps the stated services"
+    );
+}

@@ -2,32 +2,59 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The host's secret fixture: an SDK-authored secret door whose RESOLVE answers the first secret
-//! its OPEN was lent (empty when it was lent none), so a test sees exactly what the host lent.
+//! its OPEN (or its last REFRESH) was lent (empty when it was lent none), so a test sees exactly
+//! what the host lent. Its OPEN and REFRESH refuse a JSON list, its TICK asks for the next tick
+//! 5 ns on, and every CLOSE it answers is counted ([`CLOSES`]).
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use busbar_contract::abi::mechanism::call::Outcome;
+use busbar_contract::abi::sdk::conn::Host;
 use busbar_contract::abi::sdk::door::statement;
 use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
 use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
 use busbar_contract::abi::secret::{self, ResolveIn, ResolveOut};
 use busbar_contract::plugin::markers::SecretKind;
 
-/// The first secret OPEN was lent.
+/// CLOSE crossings into any instance of this fixture, process-wide.
+pub static CLOSES: AtomicU64 = AtomicU64::new(0);
+
+/// The settings the fixture's OPEN and REFRESH refuse.
+const REFUSED: &[u8] = b"[]";
+
+/// The first secret OPEN, or the last REFRESH that lent any, was lent.
 pub struct Lends(Mutex<Vec<u8>>);
 
 impl Life for Lends {
     type Kind = SecretKind;
     const CANCEL: u32 = secret::cancel::ABORTED;
 
-    fn open(_: &[u8], secrets: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+    fn open(settings: &[u8], secrets: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+        if settings == REFUSED {
+            return Err(Refusal::refused("open: the fixture refuses a list"));
+        }
         Ok(Self(Mutex::new(
             secrets.first().map(|s| s.to_vec()).unwrap_or_default(),
         )))
     }
 
-    fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+    fn refresh(&self, settings: &[u8], secrets: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+        if settings == REFUSED {
+            return Err(Refusal::refused("refresh: the fixture refuses a list"));
+        }
+        if let (Some(s), Ok(mut held)) = (secrets.first(), self.0.lock()) {
+            *held = s.to_vec();
+        }
         Ok(Refreshed::default())
+    }
+
+    fn tick(&self, now_ns: u64) -> u64 {
+        now_ns.saturating_add(5)
+    }
+
+    fn close(&self, _: Option<&Host<SecretKind>>) {
+        CLOSES.fetch_add(1, Ordering::SeqCst);
     }
 }
 
