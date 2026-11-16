@@ -139,7 +139,7 @@ pub fn outbound_owner<'s, 'w, S: AsRef<[&'w str]>>(
 ) -> Result<&'s str, OwnerRefusal> {
     let mut owners = styles
         .iter()
-        .filter(|(_, words)| words.as_ref().iter().any(|w| *w == word))
+        .filter(|(_, words)| words.as_ref().contains(&word))
         .map(|(identity, _)| *identity);
     match (owners.next(), owners.next()) {
         (Some(only), None) => Ok(only),
