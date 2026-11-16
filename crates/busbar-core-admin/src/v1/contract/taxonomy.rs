@@ -531,7 +531,11 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
         ],
         (Get, "/plugins") => de![Validation / MissingRequiredQuery],
         (Get, "/pools") => de![Validation / InvalidQueryValue],
-        (Get, "/usage") => de![Validation / InvalidQueryValue, UnpricedClass / Unpriced],
+        (Get, "/usage") => de![
+            Validation / InvalidQueryValue,
+            Validation / MalformedCursor,
+            UnpricedClass / Unpriced
+        ],
         (Get, "/groups/{name}/usage") => {
             de![NotFound / UnknownResource, UnpricedClass / Unpriced]
         }

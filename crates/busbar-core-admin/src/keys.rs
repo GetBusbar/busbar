@@ -1664,18 +1664,10 @@ pub(crate) async fn list_keys(
             }
         },
     };
-    let start = match q.get("cursor") {
-        Some(c) => match crate::v1::contract::decode_offset_cursor(c) {
-            Some(n) => n,
-            None => {
-                return key_err(
-                    KeyAudit::Read,
-                    &AdminError::Validation("invalid pagination cursor".into()),
-                    Cond::MalformedCursor,
-                )
-            }
-        },
-        None => 0,
+    let digest = crate::v1::json::cursor::filter_digest_of_pairs(&pairs);
+    let window = match crate::v1::json::cursor::window(&q, "keys", &digest, limit) {
+        Ok(w) => w,
+        Err(response) => return *response,
     };
 
     let include_tombstoned = match q.get("include") {
@@ -1734,17 +1726,38 @@ pub(crate) async fn list_keys(
                 .collect();
 
             filtered.sort_by(|(a, _), (b, _)| a.id.cmp(&b.id));
-            let total = filtered.len();
+            let more = filtered
+                .iter()
+                .filter(|(k, _)| {
+                    window
+                        .after
+                        .as_deref()
+                        .is_none_or(|after| k.id.as_str() > after)
+                })
+                .count()
+                > limit;
             let mut page = Vec::new();
-            for (k, _) in filtered.into_iter().skip(start).take(limit) {
+            let mut last_id = None;
+            for (k, _) in filtered
+                .into_iter()
+                .filter(|(k, _)| {
+                    window
+                        .after
+                        .as_deref()
+                        .is_none_or(|after| k.id.as_str() > after)
+                })
+                .take(limit)
+            {
+                last_id = Some(k.id.clone());
                 match key_view(&listed_gov, k, Some(&revocations)).await {
                     Ok(view) => page.push(view),
                     Err(e) => return internal_error("list_keys", &e),
                 }
             }
 
-            let end = start.saturating_add(page.len());
-            let next_cursor = (end < total).then(|| crate::v1::contract::encode_offset_cursor(end));
+            let next_cursor = last_id
+                .filter(|_| more)
+                .map(|id| crate::v1::json::cursor::encode("keys", &digest, &id));
             json_response(
                 StatusCode::OK,
                 json!({ "items": page, "next_cursor": next_cursor }),
