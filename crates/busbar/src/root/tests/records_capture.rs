@@ -111,7 +111,23 @@ fn user_pseudonym_stable() {
         "no key: nothing, never the plain value"
     );
 
+    // A replacement deployment keyset deliberately starts a new pseudonym era even
+    // when deployment_id remains stable. Rotation's durable audit row is owned by
+    // the deployment-keyset writer, not by this record projection.
+    let replacement = busbar_kernel_audit::AuditSigningKey::from_seed(&[0x43; 32]);
+    let rotated = replacement.derived_key(deployment, USER_KEY_INFO);
+    let rotated_user = on.user_of(Some(&rotated), "alice@example.com").unwrap();
+    assert_ne!(
+        rotated_user, first,
+        "a keyset change starts a new pseudonym era"
+    );
+    assert_eq!(
+        on.user_of(Some(&rotated), "alice@example.com").unwrap(),
+        rotated_user
+    );
+
     let plain = configured(RecordsUser::Plain, &[]);
+
     assert_eq!(
         plain.user_of(None, "alice@example.com").as_deref(),
         Some("alice@example.com")
