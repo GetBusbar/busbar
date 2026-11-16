@@ -776,27 +776,6 @@ fn doc_for(
         ],
     };
     Some(match verb {
-        KernelVerb::GetTelemetry => VerbDoc {
-            summary: "Bounded request-phase telemetry snapshot",
-            description: "An admin read of already-collected request-phase metrics. At most 32 \
-                identities and 65536 JSON bytes; omitted identities are explicitly counted. \
-                Counts, microsecond sums, bins and uptime are exact decimal strings. Bins are \
-                exclusive, not Prometheus cumulative buckets. The process boot nonce survives \
-                config reloads and scrapes; uptime_since_start_ms is monotonic time since shared process \
-                generation initialization (first info read or recorder setup), not OS process creation. \
-                LlmProducerDrive ends at producer completion; \
-                MountedResponseReady ends when the response is returned, before its body completes. \
-                Neither phase measures completed client delivery. This opens no outbound connection."
-                .to_string(),
-            success: Success::Json(
-                schema_of(gen.subschema_for::<super::telemetry::TelemetryView>()),
-                "A bounded cumulative snapshot; no-store",
-            ),
-            request: None,
-            query: Vec::new(),
-            errors: vec![unavailable_503("telemetry collection is disabled, unavailable, or could not produce a bounded snapshot")],
-        },
-
         KernelVerb::GetWhoami => VerbDoc {
             summary: "Who the admin chain says the caller is, and what the caller may do",
             description: "The caller's principal, the credential behind it (`operator`, `key`, \

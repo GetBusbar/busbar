@@ -670,6 +670,7 @@ pub(crate) const HOST_SERIES: &[&str] = &[
     busbar_kernel::snapshot::PLANE_REQUEST_DURATION_SECONDS,
     busbar_kernel::snapshot::LANE_REQUEST_DURATION_SECONDS,
     busbar_kernel::snapshot::UNIT_REFUSALS_TOTAL,
+    busbar_kernel::snapshot::BUILD_INFO,
     busbar_kernel::snapshot::ADMISSION_DENIED_TOTAL,
     busbar_kernel::snapshot::METERING_PENDING_COALESCED_TOTAL,
     busbar_kernel::snapshot::PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL,

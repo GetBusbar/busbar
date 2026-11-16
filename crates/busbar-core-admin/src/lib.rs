@@ -15,6 +15,7 @@ pub mod admin_codec;
 pub mod governance;
 pub mod idempotency;
 
+mod metrics_text;
 pub mod planeverbs;
 mod recovery;
 pub mod refusal;
@@ -64,6 +65,16 @@ fn seam_record_boot(app: &busbar_kernel::state::App) {
 fn seam_mount(
     router: axum::Router<std::sync::Arc<busbar_kernel::state::AppHandle>>,
 ) -> axum::Router<std::sync::Arc<busbar_kernel::state::AppHandle>> {
+    // `/metrics` and `/metrics/hooks` are the unprefixed Named surfaces; core encodes them itself.
+    let router = router
+        .route(
+            "/metrics",
+            axum::routing::get(crate::v1::json::metrics::get),
+        )
+        .route(
+            "/metrics/hooks",
+            axum::routing::get(crate::v1::json::metrics::get_hooks),
+        );
     crate::transport::mount(router, &crate::v1::json::JsonV1)
 }
 

@@ -135,7 +135,6 @@ pub enum KernelVerb {
     PostAuthCacheFlush,
     GetModels,
     GetInfo,
-    GetTelemetry,
     GetOperationsKey,
     GetWhoami,
     GetUsage,
@@ -317,7 +316,6 @@ pub const TABLE: &[VerbRow] = table! {
     New AmendRateHistory "POST" "/api/v1/admin/ledger/amend-rate-history" "amend_rate_history";
     New RecoveryList "POST" "/api/v1/admin/ledger/recovery/list" "recovery_list";
     New RecoveryResolve "POST" "/api/v1/admin/ledger/recovery/resolve" "recovery_resolve";
-    New GetTelemetry "GET" "/api/v1/admin/telemetry" "get_telemetry";
     New GetOperationsKey "GET" "/api/v1/admin/operations/{key}" "get_operations_key";
     New GetWhoami "GET" "/api/v1/admin/whoami" "get_whoami";
     New PutHooksNameAttachmentsTarget "PUT" "/api/v1/admin/hooks/{name}/attachments/{target}" "put_hooks_name_attachments_target";

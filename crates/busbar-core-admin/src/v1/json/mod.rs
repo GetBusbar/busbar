@@ -47,7 +47,6 @@ impl AdminTransport for JsonV1 {
         #[cfg_attr(not(test), allow(clippy::let_and_return))]
         let router = Router::new()
             .route("/info", get(info))
-            .route("/telemetry", get(telemetry::get))
             .route("/operations/{key}", get(generation::get_operation))
             .route("/whoami", get(whoami::get))
             .route("/pools", get(list_pools))
@@ -625,10 +624,10 @@ mod generation;
 mod hook_attachments;
 pub(crate) use hook_attachments::attachments_of;
 mod handlers;
+pub(crate) mod metrics;
 #[cfg(feature = "openapi-schema")]
 mod replay_metadata;
 mod settings_edit;
-pub(super) mod telemetry;
 mod whoami;
 pub(crate) use handlers::*;
 pub(crate) use whoami::who_of as whoami_of;
