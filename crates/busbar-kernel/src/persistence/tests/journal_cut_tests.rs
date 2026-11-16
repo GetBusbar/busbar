@@ -554,7 +554,7 @@ async fn checkpoint_audit_lookup_restarts_when_its_prefix_is_cut() {
             .unwrap()
             .expect("the retained terminal original remains discoverable");
     assert_eq!(found_seq, original_seq);
-    assert_eq!(found.fingerprint, audit.fingerprint);
+    assert_eq!(found.hash, audit.hash);
     assert!(journal_walk_restarts() > restarts);
 }
 
