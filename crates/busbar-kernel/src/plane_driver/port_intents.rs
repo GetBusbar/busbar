@@ -1155,7 +1155,6 @@ impl<'h> Resolver<'h> {
     }
 
     /// The WORK_ANS of every WORK of the answer, in intent order; `None` when it has none.
-
     fn works(&self, intents: &[Intent]) -> Option<Vec<u8>> {
         let mut outcomes: Vec<(u32, WorkOutcome)> = Vec::new();
         for intent in intents {
