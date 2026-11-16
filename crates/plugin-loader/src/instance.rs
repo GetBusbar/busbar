@@ -635,11 +635,20 @@ impl<N: Needs> Registry<N> {
             let opened = self.open_instance::<k::Export>(&spec).await?;
             let proxy = busbar_plugin_abi::export::Proxy::bind(Arc::clone(&opened.instance))
                 .ok_or_else(not_this_kind)?;
+            let frame = chains::frame(&opened.described.items);
+            let describe = crate::adapters::export::decode_describe(
+                Records::new(&frame),
+                opened.described.methods,
+                opened.described.facts,
+            )
+            .map_err(|e| {
+                OpenError::Unknown(format!("{}: the export's describe: {:?}", spec.name, e))
+            })?;
             let adapter = crate::adapters::export::ExportAdapter::open(
                 proxy,
                 Arc::clone(&self.needs),
                 opened.errors,
-                opened.described.clone(),
+                describe,
                 opened.dests,
                 &opened.answer.answer(),
             )
