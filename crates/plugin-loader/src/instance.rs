@@ -2269,3 +2269,6 @@ mod endpoint_decode_tests {
 #[cfg(test)]
 #[path = "tests/transport_endpoint_tests.rs"]
 mod transport_endpoint_tests;
+
+#[cfg(test)]
+mod needs_tests;
