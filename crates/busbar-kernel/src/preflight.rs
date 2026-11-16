@@ -291,10 +291,6 @@ pub struct RootInstall {
     /// ([`crate::appbuild::ConfigProjection`]), taken by every build. `None` = a generation keeps
     /// no projection.
     pub config_projection: Option<crate::appbuild::ConfigProjection>,
-    /// The root's phase 1 ([`config::grammar::grammar_for`]): the grammar the modules one read's
-    /// `plugins:` block admits declare, judged by the registry build's own scan, pure. `None` = a
-    /// read that loads no plugin admits nothing and one that would scan `plugins.dir` is refused.
-    pub grammar: Option<config::grammar::GrammarFn>,
     /// The grammar of the registry a build admits: the same judgement as [`Self::grammar`], over
     /// the registry admission put on the axis, so the grammar pin (BUSBAR-3170) compares the read's
     /// grammar with what was admitted. `None` (or `Ok(None)` for rows that are not the root's
@@ -1080,6 +1076,7 @@ pub(crate) fn valid_identity_provider_modules(registry: &dyn PluginRows) -> Stri
     names.join(" | ")
 }
 
+#[cfg(test)]
 fn check_secret_module_claim(
     claimed_by: &std::collections::BTreeMap<String, String>,
     canonical: &str,
@@ -1095,68 +1092,6 @@ fn check_secret_module_claim(
     Ok(())
 }
 
-/// The secret resolver of one generation: its `secret_modules` opened over `registry`, serving the
-/// shorthand `sources` that generation was read under (SECRET-SHORTHAND-BOOT §3.4).
-pub(crate) fn build_secret_resolver(
-    registry: Arc<dyn PluginRows>,
-    secret_modules: &std::collections::BTreeMap<String, config::SecretModuleCfg>,
-    sources: &busbar_contract::secret_ref::Sugars,
-) -> Result<config::secret::SecretResolver, String> {
-    let builtins = config::secret::SecretResolver::builtins_only().with_sources(sources.clone());
-
-    let mut raw_config: std::collections::BTreeMap<
-        String,
-        busbar_contract::plugin_settings::Settings,
-    > = std::collections::BTreeMap::new();
-
-    let mut claimed_by: std::collections::BTreeMap<String, String> =
-        std::collections::BTreeMap::new();
-    for (module, mcfg) in secret_modules {
-        let canonical = config_validate::secret_module(registry.as_ref(), module)?;
-
-        check_secret_module_claim(&claimed_by, &canonical, module)?;
-        config::secret::resolve_settings(
-            &mcfg.settings,
-            &registry.secret_slots(module),
-            &[],
-            module,
-            &builtins,
-            &busbar_contract::config_time::ConfigScope::config_time(),
-        )
-        .map_err(|e| format!("secrets.{module} settings: {e}"))?;
-        claimed_by.insert(canonical.clone(), module.clone());
-        raw_config.insert(canonical, mcfg.settings.clone());
-    }
-
-    let opened = OpenedSecrets::default();
-    let sources = sources.clone();
-    Ok(config::secret::SecretResolver::with_scoped_plugin(Box::new(
-        move |module: &str,
-              settings: &busbar_contract::plugin_settings::Settings,
-              scope: Option<&busbar_contract::config_time::ConfigScope>|
-              -> Result<config::secret::Held, config::secret::SecretRefused> {
-            if let Some(axis) = config::secret::axis().filter(|a| a.answers(module)) {
-                let canonical = registry.resolve(module).map(|p| p.key);
-                let key = canonical.as_deref().unwrap_or(module);
-                return opened.resolve(key, settings, scope, || {
-                    let raw = canonical.as_ref().and_then(|name| raw_config.get(name));
-                    let linked = config::secret::SecretResolver::builtins_only();
-                    axis.open(module, raw, &|r| match scope {
-                        Some(scope) => linked.resolve_at_config(r, scope),
-                        None => linked.resolve(r),
-                    })
-                });
-            }
-
-            Err(config::secret::SecretRefused {
-                error_kind: busbar_contract::abi::secret::ERROR_KIND_INVALID,
-                text: registry.secret_refusal(module),
-            })
-        },
-    ))
-    .with_sources(sources))
-}
-
 /// THE SECRET PLUGINS A RESOLVER OPENED, one SOURCE per plugin (audit kernel-K1 #6).
 ///
 /// The map's lock is held only to find or insert a source, never across an open or a resolve: one
@@ -1164,6 +1099,7 @@ pub(crate) fn build_secret_resolver(
 /// another module's, and never a second caller of its own that already holds the handle. Two first
 /// resolutions racing to open one module may both open; the loser's instance is dropped (closed)
 /// outside the lock.
+#[cfg(test)]
 #[derive(Default)]
 pub(crate) struct OpenedSecrets(std::sync::Mutex<std::collections::BTreeMap<String, Arc<Source>>>);
 
@@ -1172,6 +1108,7 @@ pub(crate) struct OpenedSecrets(std::sync::Mutex<std::collections::BTreeMap<Stri
 /// polled by the host refresher every [`RELEND_EVERY`] ± 10 %: a rotated credential (a
 /// workload-identity token file) reaches the plugin's `refresh`, or a successor instance, with no
 /// reload; a refusal keeps the running instance (BUSBAR-8028).
+#[cfg(test)]
 pub(crate) struct Source {
     key: String,
     calls: arc_swap::ArcSwap<Arc<dyn busbar_contract::secret::SecretCalls>>,
@@ -1253,6 +1190,7 @@ impl RelendStreak {
 /// The audit action a re-lend writes.
 pub(crate) const RELEND_ACTION: &str = "plugin.credential.rotate";
 
+#[cfg(test)]
 impl Source {
     fn new(
         key: &str,
@@ -1298,6 +1236,7 @@ impl Source {
     }
 }
 
+#[cfg(test)]
 impl crate::refresh::Refreshable for Source {
     fn refresh(&self, now: std::time::Instant) -> std::time::Instant {
         self.relend_now(now);
@@ -1305,6 +1244,7 @@ impl crate::refresh::Refreshable for Source {
     }
 }
 
+#[cfg(test)]
 impl OpenedSecrets {
     fn calls(
         &self,

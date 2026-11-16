@@ -494,7 +494,7 @@ pub(crate) async fn rollback_plugin(
             if let (Some(config_path), Ok(used)) =
                 (snapshot.config_path.as_deref(), snapshot.grammar.used())
             {
-                busbar_kernel::appbuild::pin_write_refusal(config_path, &pins, used)
+                busbar_kernel::appbuild::pin_write_refusal(config_path, &pins, used, snapshot.root_rules.as_ref())
                     .map_err(AdminError::Validation)?;
             }
 
@@ -2446,6 +2446,7 @@ async fn read_apply_body(
     .map_err(AdminError::Validation)?;
     busbar_kernel::config::security_policy::precheck(snapshot, &candidate)?;
     let grammar = crate::v1::service::read_grammar(
+        snapshot.root_rules.clone(),
         candidate.plugins,
         candidate.blocked_metadata_hosts,
         busbar_kernel::config::grammar::Fetch::Reload,
