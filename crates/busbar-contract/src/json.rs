@@ -11,7 +11,15 @@
 //! - [`parse_value`]: the tree, the last of duplicate object keys kept (as serde's maps keep it);
 //! - [`parse_typed`]: the tree as a typed field reads it (`u64`, else `i64`, else finite `f64`);
 //! - [`from_value`]: a tree into `T`, through its text;
-//! - [`to_vec`] / [`to_string`]: sonic's writer, raw numbers verbatim.
+//! - [`to_vec`] / [`to_string`]: sonic's writer, raw numbers verbatim ([`to_vec_pretty`],
+//!   [`to_string_pretty`] indented, [`to_writer`] streamed into any `io::Write`);
+//! - [`to_value`]: the tree of a serializable value; [`number_text`]: a number's lexeme.
+//!
+//! A built or edited object keeps its members in key order (the workspace turns on sonic's
+//! `sort_keys`), so it is written in the same order whatever order it was built in. That covers
+//! [`json!`], [`Map`], [`to_value`] and the trees of [`parse_value`] and [`parse_typed`] (their
+//! duplicate-key pass edits every object); a `Value` read by [`parse`] keeps the document's order
+//! until it is edited.
 //!
 //! [`parse_foreign`] is the one door through which a **third-party** type (one whose
 //! `Deserialize` we do not own) is filled: it reads numbers in binary64, so such a type sees
@@ -36,9 +44,18 @@ use crate::spans::{exceeds_max_depth, MAX_JSON_DEPTH};
 
 pub use sonic_rs::error::Category;
 pub use sonic_rs::{
-    json, Array, JsonContainerTrait, JsonValueMutTrait, JsonValueTrait, LazyValue, Number,
-    Object as Map, OwnedLazyValue, RawNumber, Value,
+    json, Array, JsonContainerTrait, JsonNumberTrait, JsonType, JsonValueMutTrait, JsonValueTrait,
+    LazyValue, Number, Object as Map, OwnedLazyValue, RawNumber, Value, ValueRef,
 };
+
+/// A reader over one document, for a caller that drives its own `Visitor` or `DeserializeSeed`
+/// (`Deserializer::from_str` / `from_slice`, then `end()` to refuse trailing bytes). Built so, it
+/// reads numbers in binary64; `.use_rawnumber()` hands `deserialize_any` the exact-number token
+/// instead, as [`parse`] does. It applies no depth guard: check [`exceeds_max_depth`] first when
+/// the input is untrusted.
+///
+/// [`exceeds_max_depth`]: crate::spans::exceeds_max_depth
+pub use sonic_rs::Deserializer;
 
 #[cfg(feature = "axum")]
 mod body;
@@ -295,37 +312,140 @@ pub fn to_string<T: Serialize + ?Sized>(value: &T) -> Result<String, Error> {
     Ok(sonic_rs::to_string(value)?)
 }
 
+/// [`to_vec`], indented two spaces per level (serde's pretty layout).
+///
+/// # Errors
+/// As [`to_vec`].
+pub fn to_vec_pretty<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, Error> {
+    Ok(sonic_rs::to_vec_pretty(value)?)
+}
+
+/// [`to_vec_pretty`] as text.
+///
+/// # Errors
+/// As [`to_vec`].
+pub fn to_string_pretty<T: Serialize + ?Sized>(value: &T) -> Result<String, Error> {
+    Ok(sonic_rs::to_string_pretty(value)?)
+}
+
+/// [`to_vec`] into any writer, streamed: the document is handed to `writer` in pieces as it is
+/// written, never held whole (a size-bounded or digesting sink sees every byte as it comes).
+///
+/// # Errors
+/// As [`to_vec`], and `writer`'s own I/O refusal.
+pub fn to_writer<W: std::io::Write, T: Serialize + ?Sized>(
+    writer: W,
+    value: &T,
+) -> Result<(), Error> {
+    Ok(sonic_rs::to_writer(
+        sonic_rs::writer::BufferedWriter::new(writer),
+        value,
+    )?)
+}
+
+/// Build the tree of a serializable value (a number keeps its lexeme when `value` holds one).
+///
+/// # Errors
+/// A value sonic cannot write (a non-finite float, a map key that is not a string).
+pub fn to_value<T: Serialize + ?Sized>(value: &T) -> Result<Value, Error> {
+    Ok(sonic_rs::to_value(value)?)
+}
+
+/// A number's text: a read number's lexeme exactly as the document spelled it, a built one as
+/// sonic writes it; `None` for a value that is not a number.
+pub fn number_text(value: &Value) -> Option<String> {
+    if let Some(raw) = value.as_raw_number() {
+        return Some(raw.as_str().to_owned());
+    }
+    value.as_number().map(|number| number.to_string())
+}
+
+/// The member a JSON Pointer (RFC 6901) names: `""` is the whole tree, every other pointer starts
+/// with `/`; `~1` reads `/` and `~0` reads `~`; an array step is a decimal index without a sign or a
+/// leading zero. `None` when a step names nothing.
+pub fn pointer<'v>(value: &'v Value, pointer: &str) -> Option<&'v Value> {
+    if pointer.is_empty() {
+        return Some(value);
+    }
+    pointer
+        .strip_prefix('/')?
+        .split('/')
+        .map(pointer_token)
+        .try_fold(value, |target, token| {
+            if target.is_object() {
+                target.get(token.as_str())
+            } else if target.is_array() {
+                pointer_index(&token).and_then(|at| target.get(at))
+            } else {
+                None
+            }
+        })
+}
+
+/// [`pointer`] for editing the member in place.
+pub fn pointer_mut<'v>(value: &'v mut Value, pointer: &str) -> Option<&'v mut Value> {
+    if pointer.is_empty() {
+        return Some(value);
+    }
+    pointer
+        .strip_prefix('/')?
+        .split('/')
+        .map(pointer_token)
+        .try_fold(value, |target, token| {
+            if target.is_object() {
+                target.get_mut(token.as_str())
+            } else if target.is_array() {
+                pointer_index(&token).and_then(move |at| target.get_mut(at))
+            } else {
+                None
+            }
+        })
+}
+
+/// One pointer step, unescaped (`~1` first, so `~01` reads `~1`).
+fn pointer_token(step: &str) -> String {
+    step.replace("~1", "/").replace("~0", "~")
+}
+
+/// An array step: decimal digits, no sign, no leading zero.
+fn pointer_index(token: &str) -> Option<usize> {
+    if token.starts_with('+') || (token.starts_with('0') && token.len() != 1) {
+        return None;
+    }
+    token.parse().ok()
+}
+
 /// The log line for a body that did not parse: its length, never its bytes.
 #[cold]
 pub fn parse_err_log(bytes_len: usize) -> String {
     format!("invalid JSON ({bytes_len} bytes)")
 }
 
-/// Convert plugin JSON into real YAML scalars. serde_json arbitrary_precision exposes a
-/// private map marker through generic serializers, which would corrupt numeric settings.
-/// Refuse integers outside YAML's exact range instead of silently rounding their value.
-pub fn to_yaml(value: &serde_json::Value) -> Result<crate::yaml::Value, String> {
-    use crate::yaml::Value;
-    use serde_json::Value as Json;
-    Ok(match value {
-        Json::Null => Value::Null,
-        Json::Bool(value) => Value::Bool(*value),
-        Json::String(value) => Value::Text(value.clone()),
-        Json::Number(value) => {
-            if let Some(value) = value.as_u64() {
-                Value::from(value)
-            } else if let Some(value) = value.as_i64() {
-                Value::from(value)
+/// Convert plugin JSON into real YAML scalars. A tree that keeps number lexemes hands a generic
+/// serializer a token struct in place of a number, which would corrupt numeric settings; this
+/// writes each number as a YAML scalar. Integers outside YAML's exact range are refused instead of
+/// silently rounded.
+pub fn to_yaml(value: &Value) -> Result<crate::yaml::Value, String> {
+    use crate::yaml::Value as Yaml;
+    Ok(match value.get_type() {
+        JsonType::Null => Yaml::Null,
+        JsonType::Boolean => Yaml::Bool(value.as_bool().unwrap_or_default()),
+        JsonType::String => Yaml::Text(value.as_str().unwrap_or_default().to_owned()),
+        JsonType::Number => {
+            if let Some(unsigned) = value.as_u64() {
+                Yaml::from(unsigned)
+            } else if let Some(signed) = value.as_i64() {
+                Yaml::from(signed)
             } else {
-                let text = value.to_string();
+                let text = number_text(value).unwrap_or_default();
                 if !text.contains(['.', 'e', 'E']) {
                     return Err("plugin migration integer exceeds the exact YAML range".into());
                 }
-                let value = value
+                let float = value
                     .as_f64()
-                    .filter(|value| value.is_finite())
+                    .filter(|float| float.is_finite())
                     .ok_or("plugin migration number is not a finite YAML scalar")?;
-                let replay = serde_json::Number::from_f64(value)
+                let replay = Number::from_f64(float)
                     .ok_or("plugin migration number is not finite")?
                     .to_string();
                 if decimal_value(&text) != decimal_value(&replay) {
@@ -333,15 +453,27 @@ pub fn to_yaml(value: &serde_json::Value) -> Result<crate::yaml::Value, String> 
                         "plugin migration decimal cannot be represented exactly in YAML".into(),
                     );
                 }
-                Value::Float(value)
+                Yaml::Float(float)
             }
         }
-        Json::Array(values) => Value::Array(values.iter().map(to_yaml).collect::<Result<_, _>>()?),
-        Json::Object(values) => Value::Map(
-            values
-                .iter()
-                .map(|(key, value)| Ok((Value::Text(key.clone()), to_yaml(value)?)))
-                .collect::<Result<_, String>>()?,
+        JsonType::Array => Yaml::Array(
+            value
+                .as_array()
+                .map(|items| items.iter().map(to_yaml).collect::<Result<_, _>>())
+                .transpose()?
+                .unwrap_or_default(),
+        ),
+        JsonType::Object => Yaml::Map(
+            value
+                .as_object()
+                .map(|members| {
+                    members
+                        .iter()
+                        .map(|(key, member)| Ok((Yaml::Text(key.to_owned()), to_yaml(member)?)))
+                        .collect::<Result<_, String>>()
+                })
+                .transpose()?
+                .unwrap_or_default(),
         ),
     })
 }
