@@ -84,3 +84,24 @@ fn a_session_that_wrote_no_head_is_a_gateway_failure_not_a_200() {
     let (status, fields, body) = parts_of(vec![ToClient::Body(b"x".to_vec()), ToClient::End]);
     assert_eq!((status, fields.len(), body), (502, 0, Vec::new()));
 }
+
+#[test]
+fn a_blocked_admission_is_answered_with_its_status_and_the_wait_it_names() {
+    use busbar_kernel::governance::LimitBlocked;
+    let limit = |metric, retry_after| LimitBlocked::Limit {
+        group: "g".into(),
+        metric,
+        window: None,
+        pool: None,
+        downgrade_to: None,
+        retry_after,
+    };
+    let rate = blocked_response(&limit("concurrent", None));
+    assert_eq!(rate.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(rate.headers().get(header::RETRY_AFTER).is_none());
+    let waited = blocked_response(&limit("requests", Some(30)));
+    assert_eq!(waited.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(waited.headers()[header::RETRY_AFTER], "30");
+    let frozen = blocked_response(&LimitBlocked::Disabled("g".into()));
+    assert_eq!(frozen.status(), StatusCode::FORBIDDEN);
+}
