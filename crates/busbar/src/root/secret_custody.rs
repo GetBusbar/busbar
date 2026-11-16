@@ -17,6 +17,7 @@ use busbar_kernel::custody::{
 use busbar_kernel::plugin_config::{ConfigBinder, RefSource};
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
 use busbar_plugin_abi::host_side::scrub::Scrub;
+#[cfg(test)]
 use busbar_ports::secret::SecretPort;
 use busbar_ports::CallCx;
 use foldhash::HashMap;
@@ -47,6 +48,7 @@ impl SecretView {
         })
     }
 
+    #[cfg(test)]
     fn without(&self, name: &str) -> Self {
         let mut open = (*self.open).clone();
         open.remove(name);
@@ -190,8 +192,15 @@ impl BootSecrets {
         ))
     }
 
+    /// Construct effective-generation custody over the same immutable source leases and process slots.
+    /// Existing bootstrap instances keep their original binder, prefix and cached handle answers.
+    pub(crate) fn with_binder(self: &Arc<Self>, binder: Arc<dyn ConfigBinder>) -> Arc<Self> {
+        Self::from_view(binder, Arc::clone(&self.slots), self.view.clone())
+    }
+
     /// A candidate retirement removes a source only from the returned view; an already captured prefix
     /// remains valid until its owning instance is retired and drops it.
+    #[cfg(test)]
     pub(crate) fn without(self: &Arc<Self>, name: &str) -> Arc<Self> {
         Self::from_view(
             Arc::clone(&self.binder),
@@ -200,6 +209,7 @@ impl BootSecrets {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn port(&self, name: &str) -> Option<Arc<dyn SecretPort>> {
         self.view.get(name).map(|source| source.port)
     }
