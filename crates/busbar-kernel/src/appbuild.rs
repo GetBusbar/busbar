@@ -2610,3 +2610,7 @@ fn accepted_operator(auth: &config::AuthCfg, operator: &crate::auth::Operator) {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "tests/boot_walk_tests.rs"]
+mod boot_walk_tests;
