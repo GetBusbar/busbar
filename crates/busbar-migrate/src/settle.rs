@@ -61,6 +61,14 @@ pub struct Settled {
     /// Exact pointers authorized by core from admitted describe paths and typed core leaves.
     /// Never infer this set from CONFIG strings or from requested LIFT fragments.
     pub allowed_lifts: std::collections::BTreeSet<String>,
+    pub placement: BagPlacement,
+}
+
+/// Core's authored location of the config bag, never chosen by the plugin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BagPlacement {
+    Settings,
+    Block,
 }
 
 /// A planned 0600 secret file: a lifted literal. The bytes are wiped on drop and never printed.

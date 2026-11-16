@@ -46,8 +46,8 @@ mod templates;
 
 pub use overlay::{Selected, SelectedBy};
 pub use settle::{
-    apply_settled, section as core_cfg_section, write_secrets, Applied, CoreCfg, SecretFile,
-    Settled,
+    apply_settled, section as core_cfg_section, write_secrets, Applied, BagPlacement, CoreCfg,
+    SecretFile, Settled,
 };
 
 /// Count one entry of `$field` in a test build (§9 C1 (sz2)); nothing in a shipped one.

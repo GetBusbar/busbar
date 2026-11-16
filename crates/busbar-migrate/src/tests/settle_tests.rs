@@ -34,6 +34,7 @@ fn store(index: u32, settings: Option<&str>, core_cfg: Vec<CoreCfg>) -> Settled 
         path: vec!["store".to_owned()],
         settings: settings.map(busbar_contract::secure::SecureString::from),
         core_cfg,
+        placement: crate::settle::BagPlacement::Settings,
         allowed_lifts: Default::default(),
     }
 }
@@ -161,6 +162,7 @@ fn a_current_config_moves_nothing() {
 #[test]
 fn a_named_section_is_one_entry_when_two_instances_state_it_identically_else_refused() {
     let same = |index| Settled {
+        placement: crate::settle::BagPlacement::Settings,
         allowed_lifts: Default::default(),
         index,
         path: vec!["auth".to_owned(), "ldap".to_owned()],
@@ -255,6 +257,7 @@ fn trust_and_route_media_go_where_their_sections_say() {
 #[test]
 fn a_lifted_literal_becomes_a_secret_file_reference_and_never_a_report_line() {
     let settled = Settled {
+        placement: crate::settle::BagPlacement::Settings,
         allowed_lifts: ["/bind_service_password".to_owned()].into_iter().collect(),
         index: 2,
         path: vec!["auth".to_owned(), "ldap".to_owned()],
@@ -404,4 +407,28 @@ fn authorized_lifts_still_require_exact_rfc6901_pointers_and_existing_strings() 
         assert_eq!(refused.word(), "CONFIG");
         assert!(!refused.to_string().contains("secret"));
     }
+}
+
+#[test]
+fn a_plane_settles_its_whole_top_level_bag_and_lifts_only_admitted_slots() {
+    let source = "config_version: 1\nplane: {old: true}\nstore: {module: m}\n";
+    let mut answer = store(
+        2,
+        Some(r#"{"member":{"secret":"literal"}}"#),
+        vec![cfg(section::LIFT, "", r#""/member/secret""#)],
+    );
+    answer.path = vec!["plane".to_owned()];
+    answer.placement = crate::settle::BagPlacement::Block;
+    answer.allowed_lifts.insert("/member/secret".to_owned());
+    let applied = apply(source, &[answer], false).unwrap();
+    let doc = tree(&applied);
+    assert!(doc.at("plane").get("settings").is_none());
+    assert!(doc.at("plane").get("old").is_none());
+    assert!(doc
+        .at("plane")
+        .at("member")
+        .at("secret")
+        .get("file")
+        .is_some());
+    assert_eq!(applied.secrets()[0].bytes(), b"literal");
 }

@@ -379,6 +379,7 @@ fn a_stamped_boot_writes_the_settled_answer_back_once() {
     let stamped = "config_version: 1\nstore: {module: m, settings: {url: old, junk: 1}}\n";
     let config = scratch.config(stamped);
     let settled = [busbar_migrate::Settled {
+        placement: busbar_migrate::BagPlacement::Settings,
         allowed_lifts: Default::default(),
         index: 0,
         path: vec!["store".to_owned()],
