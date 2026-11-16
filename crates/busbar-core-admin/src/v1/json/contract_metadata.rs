@@ -452,22 +452,6 @@ mod tests {
     }
 
     #[test]
-    fn telemetry_phase_is_a_string_enum_matching_the_wire() {
-        use super::super::telemetry::Phase;
-        let doc = super::super::handlers::openapi_doc();
-        let phase = &doc["components"]["schemas"]["Phase"];
-        assert_eq!(phase["type"], "string");
-        assert_eq!(
-            phase["enum"],
-            json!([
-                serde_json::to_value(Phase::LlmProducerDrive).unwrap(),
-                serde_json::to_value(Phase::MountedResponseReady).unwrap(),
-            ])
-        );
-        assert!(phase.get("oneOf").is_none());
-    }
-
-    #[test]
     fn published_contract_declares_group_pages_refusals_and_replay_headers() {
         let doc = super::super::handlers::openapi_doc();
         let paths = doc["paths"].as_object().unwrap();

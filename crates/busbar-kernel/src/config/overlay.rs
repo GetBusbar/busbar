@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 pub use super::overlay_native::{migration_rows, MigrationRows};
-pub use super::overlay_store::{LegacyImportState, OverlayStore};
+pub use super::overlay_store::OverlayStore;
 use super::{ConfigMgmtCfg, DeployCfg, GroupCfg, HookCfg, RateEntryCfg, RootCfg, StoreCfg, TlsCfg};
 use crate::diagnostics::{diag_error, CONFIG_OVERLAY_PATCH_UNPARSABLE};
 use busbar_contract::plugin::Kind;
@@ -28,7 +28,6 @@ pub fn admit_restart_scoped(store: &OverlayStore, restart: &[String]) -> Result<
     ))
 }
 
-pub const DEFAULT_OVERLAY_FILENAME: &str = "busbar-overlay.json";
 #[derive(Debug, Clone)]
 pub struct OverlayResolution {
     pub locked: bool,

@@ -60,32 +60,6 @@ fn settings(fee: i64) -> RootSettings {
 }
 
 #[tokio::test]
-async fn native_import_is_exact_and_a_later_edit_does_not_reimport() {
-    let overlay = OverlayStore::from_core(crate::real_store::core().await).unwrap();
-    let doc = OverlayDoc {
-        root: Some(settings(7)),
-        ..Default::default()
-    };
-    assert!(overlay.import_once_async([5; 32], &doc).await.unwrap());
-    persist_root_async(Some(&overlay), &settings(9))
-        .await
-        .unwrap();
-    assert!(!overlay.import_once_async([5; 32], &doc).await.unwrap());
-    assert!(overlay.import_once_async([6; 32], &doc).await.is_err());
-    assert_eq!(
-        overlay
-            .read_required_async()
-            .await
-            .unwrap()
-            .unwrap()
-            .root
-            .unwrap()
-            .per_request_fee,
-        Some(9)
-    );
-}
-
-#[tokio::test]
 async fn native_overlay_rejects_a_stale_carrier_until_explicit_reload() {
     let core = crate::real_store::core().await;
     let first = OverlayStore::from_core(core.clone()).unwrap();

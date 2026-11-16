@@ -173,6 +173,11 @@ criteria = "safe-to-deploy"
 version = "0.2.2"
 criteria = "safe-to-deploy"
 
+[[exemptions.close_fds]]
+version = "0.3.2"
+criteria = "safe-to-deploy"
+notes = "CLOEXEC ruling (AGREED 2026-11-16T00:19Z, BLD-3/DEP-5 routine exemption, not a self-audit): no imported audit covers it and no maintained safe crate marks arbitrary descriptors close-on-exec. Unmaintained (last release 2021-06). Its DirFdIter (/dev/fd and /proc/self/fd walk) builds an out-of-bounds &dirent and is unsound; busbar calls only CloseFdsBuilder::new().allow_filesystem(false).cloexecfrom(3), which never constructs it (Linux >= 5.11: close_range CLOSE_RANGE_CLOEXEC; else an fcntl loop bounded at 65536). Defence in depth behind closing every plugin instance before the migrate re-exec."
+
 [[exemptions.cmov]]
 version = "0.5.4"
 criteria = "safe-to-deploy"

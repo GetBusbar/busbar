@@ -232,23 +232,6 @@ fn release_index_orders_prereleases_before_stable_and_numeric_identifiers_numeri
 }
 
 #[test]
-fn migration_paths_do_not_consume_later_provider_options() {
-    for (option, path) in [
-        ("--migrate-config", "--config"),
-        ("--migrate-config", "--providers"),
-        ("--migrate-config", "-c"),
-        ("--config", "--migrate-config"),
-    ] {
-        let args = [option, path, "--providers", "selected-catalog.yaml"];
-        assert_eq!(
-            crate::root::cli::Argv::parse(args).providers,
-            Some("selected-catalog.yaml".to_owned()),
-            "the literal migration path {path} is not a providers option"
-        );
-    }
-}
-
-#[test]
 fn migration_staging_owns_only_its_fresh_private_directory() {
     let first = super::FetchedDir::create_in(&std::env::temp_dir()).unwrap();
     let second = super::FetchedDir::create_in(&std::env::temp_dir()).unwrap();

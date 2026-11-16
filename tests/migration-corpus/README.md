@@ -2,7 +2,7 @@
 
 Every `config.yaml` busbar has ever shipped, and the `providers.yaml` that shipped beside it, from
 every non-rc git tag. `crates/busbar/tests/migration_corpus.rs` migrates each one with
-`busbar --migrate-config` and asserts the result is a config the CURRENT binary accepts.
+the first-boot migration and asserts the result is a config the CURRENT binary accepts.
 
 ## Why real files, not fixtures
 

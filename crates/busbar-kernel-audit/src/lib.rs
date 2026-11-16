@@ -100,6 +100,29 @@ pub mod journal;
         clippy::allow_attributes_without_reason
     )
 )]
+pub mod link;
+// The page stamps and break notices (SEALING-FIX §3.1): built and signed by the notary and the
+// Bootstrap signer threads, never per request.
+pub mod stamp;
+// The audit signing capabilities (SEALING-FIX §5.3): consumed once at boot, used on the signer
+// threads only.
+pub mod grant;
+// busbar:request-path
+#[cfg_attr(
+    not(test),
+    deny(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        clippy::disallowed_types,
+        clippy::redundant_clone,
+        clippy::format_push_string,
+        clippy::needless_collect,
+        clippy::or_fun_call,
+        clippy::needless_pass_by_value,
+        clippy::allow_attributes,
+        clippy::allow_attributes_without_reason
+    )
+)]
 pub mod recipe;
 // busbar:request-path
 #[cfg_attr(
@@ -140,11 +163,16 @@ pub use amend::{
     content_access, Access, Adjust, AmendBody, AmendChain, AmendClass, AmendJournal, AmendSink,
     Amendment, ClassCounts, NodeAmendments, Reader, SubjectText, AMENDMENTS_RETAINED,
 };
+pub use grant::{
+    BootstrapGrant, BootstrapSigner, GrantError, LiveSigner, Notary, NotaryGrant, StampSignError,
+};
 pub use heads::{HeadHistory, SignedHead, HEAD_SAMPLE_SECONDS};
 pub use journal::{from_journal_body, journal_body, FieldTooLong, JOURNAL_TAG};
+pub use link::{line_fingerprint, line_hasher, Fingerprint, LineAt, Linked, Prepared};
 pub use recipe::{
     digest_over, digest_record, visit_fields, DigestField, DigestValue, FieldSink, Recipe,
     DIGEST_RECIPE, DIGEST_RECIPE_V2, DIGEST_RECIPE_V4, DIGEST_RECIPE_V6, DIGEST_RECIPE_V7,
+    LINK_RECIPE,
 };
 pub use record::{
     attribution, Attempt, AttemptOutcome, Audit, AuditBreak, AuditBreakKind, AuditChain,
@@ -155,6 +183,11 @@ pub use record::{
 pub use sign::{
     checkpoint_preimage, AuditKeySet, AuditSigningKey, AuditVerifyingKey, KeyError,
     CHECKPOINT_SIGNATURE_DOMAIN, SIGNATURE_ALGORITHM, SIGNATURE_DOMAIN,
+};
+pub use stamp::{
+    break_body, break_from_journal_body, stamp_body, stamp_from_journal_body, BreakNotice,
+    BreakReason, CoverError, Stamp, StampError, StampKind, BREAK_DOMAIN, BREAK_JOURNAL_TAG,
+    STAMP_DOMAIN, STAMP_JOURNAL_TAG,
 };
 
 /// TEST ONLY: the minimum the kernel's own tests reach that is not public API. They live in the

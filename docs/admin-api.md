@@ -260,9 +260,9 @@ from the path alone (the document explains them itself, under `info.x-busbar-mar
   mounted only on a node whose config carries that `<section>:` block. On any other node its path
   answers `404 not_found`, exactly as a path the surface has never had, and the document that node
   serves leaves the operation out (with every schema only it references).
-- **`x-busbar-since: 1.6.0`** — one of the 22 operations 1.6.0 adds to the closed verb table, answered
-  by the node's administrative loop: the 14 kernel verbs (ten money-governance verbs, three
-  trust verbs and the telemetry read), the five ledger views and the three audit-chain reads.
+- **`x-busbar-since: 1.6.0`** — one of the 21 operations 1.6.0 adds to the closed verb table, answered
+  by the node's administrative loop: the 13 kernel verbs (ten money-governance verbs, three
+  trust verbs), the five ledger views and the three audit-chain reads.
 
 `GET /api/v1/admin/ledger/openapi.json` serves the full document, unfiltered.
 
@@ -271,7 +271,6 @@ The 1.6.0 kernel verbs (each is served; every mutation is audited and spends the
 | Operation | Path | Scope | Does |
 | --- | --- | --- | --- |
 | `verify` | `GET /api/v1/admin/verify` | `read-only` | Verify this node's ledger: every sealed checkpoint re-hashes to its body, no node sequence goes backwards, the book is measured against the last checkpoint, and postings reconcile with the previous release's rows. A failed verification is still `200`: `ok` is the answer and `findings` says why |
-| `get_telemetry` | `GET /api/v1/admin/telemetry` | `read-only` | Bounded snapshot of collected request-phase duration counts, sums and exclusive bins; no outbound connection |
 | `plane_facts` | `GET /api/v1/admin/plane-facts?plane=` | `read-only` | What a plane this node serves declares about itself (config sections, grant kinds, billable classes, record kinds, operation classes) |
 | `plane_record_write` | `POST /api/v1/admin/plane-record-write` | `full` | Upsert one record, by `(kind, id)`, of a kind the named plane declares. `body` must be present and must not be JSON null; omission or null returns `400 invalid_request` (`body is required`). Honors `Idempotency-Key` |
 | `adjust` | `POST /api/v1/admin/adjust` | `full` | Correct a recorded unit's counts (below) |
@@ -770,54 +769,6 @@ curl -s -X POST -H "x-admin-token: $TOK" -H "If-Match: $ETAG" -H 'content-type: 
 ## The freeze
 
 **v1 is frozen, additive-only.** New fields may appear in any view; no field is ever removed or repurposed; no error `code` ever changes meaning; the scope matrix and the mount prefix are pinned by tests. A breaking change would ship as `/admin/v2/` alongside v1, never in place. Build against v1 and it keeps working.
-
-### Bounded request telemetry
-
-`GET /api/v1/admin/telemetry` uses the existing admin read-only authority. It reads metrics already
-collected by the configured recorder; it neither enables collection nor forwards requests to a
-plugin or upstream. Disabled or unavailable collection returns `503 unavailable`, never invented
-zero measurements. Successful responses use `Cache-Control: no-store`.
-
-The response contains a random 128-bit hexadecimal `process_boot_nonce`, `uptime_since_start_ms`,
-`captured_at_unix_ms`, `upper_bounds_ms`, `identities`, `omitted_identities`, `truncated`, and `dropped`. The nonce is stable
-across scrapes and config reloads, and changes with a new process. Uptime is monotonic elapsed
-milliseconds since shared process-generation initialization (first use), not the operating system's
-process-creation time. Reading `GET /info` may establish that epoch before metrics are enabled.
-`captured_at_unix_ms` is engine wall-clock Unix milliseconds sampled during capture, separately from
-monotonic uptime or consumer receive time. Invalid or out-of-range engine wall time is unavailable.
-Counts, microsecond sums, bins, omission/drop counters and timestamps are unsigned decimal strings,
-including values above JavaScript's exact-number range.
-
-Each identity names `plane`, `phase`, `pool`, and `ingress_protocol`; its `count`, `errors`, `client_errors`, `sum_us`, and
-16 `bins` are cumulative in that process and read coherently. `errors` counts the existing
-`error` and `exhausted` outcomes (including HTTP 503); `client_errors` counts HTTP 4xx. They use
-the same observed phase event as count and duration, not a separate completion claim. Each bin is exclusive: values are
-at most its inclusive upper bound and greater than the preceding bound. The upper bounds in
-milliseconds are `[1,5,10,25,50,100,250,500,1000,2500,5000,10000,30000,60000,120000,null]`;
-the final null means positive infinity. The bins sum to count. These are not Prometheus cumulative
-buckets. Durations are individually truncated to whole microseconds before accumulation.
-
-`LlmProducerDrive` ends when the model producer drive returns; buffered body bytes can still be
-pending. `MountedResponseReady` ends when a mounted handler returns its response, before its
-body completes. Neither measures completed client delivery or proves a successful body transfer.
-Cancellation that bypasses those observation points contributes no completion measurement.
-
-At most 32 identities and 65536 JSON bytes are returned. This response-body cap is distinct from
-any transport frame cap or forwarding envelope; callers must account for their own framing. Selection is lexical and stable; labels
-over 256 UTF-8 bytes and identities beyond either limit are omitted. `omitted_identities` reports
-the number omitted and `truncated` says whether it is nonzero; missing identities are not zeroes.
-The fixed `dropped` fields are `invalid_duration`, `integer_overflow`, `series_capacity`,
-`boot_nonce_unavailable`, `histogram_capacity`, and `unregistered_labels`. Drop counters are
-cumulative diagnostics, not one atomic snapshot with every other counter. Clients should reset
-their delta baseline when the process nonce changes and must retain the measured phase labels.
-
-`GET /api/v1/admin/info` also returns the same `process_boot_nonce`, even when metrics are disabled.
-It initializes only the process generation, without creating a recorder or histogram buffers.
-The value is a 32-character lowercase hexadecimal string, or null if OS randomness failed.
-A caller can compare this nonce before and after an approved restart, including restarts within
-one wall-clock second. Existing `started_at`, `uptime_seconds`, and configuration fields retain
-their meanings; null nonce is unavailable identity, not proof of either a restart or continuity.
-
 
 ### Additional authored host and plane metadata
 

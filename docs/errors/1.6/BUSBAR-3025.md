@@ -12,7 +12,7 @@ A provider's `base_url` or `token_url` names a private or loopback address (an R
 
 ## How to fix it
 
-Add exactly that host to `advanced.allow_destinations` (`busbar --migrate-config` adds the hosts a provider's plane reports), or point the provider at a public address. Turning `block_private_addresses` off also admits it, and every other private address with it.
+Add exactly that host to `advanced.allow_destinations`, or point the provider at a public address. Turning `block_private_addresses` off also admits it, and every other private address with it.
 
 ---
 

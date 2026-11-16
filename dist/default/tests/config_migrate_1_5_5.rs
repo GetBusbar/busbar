@@ -44,15 +44,8 @@ fn validate(dir: &Path, config: &Path) -> Output {
 }
 
 fn migrate(path: &Path) -> (String, String) {
-    let out = Command::new(common::boot::exe())
-        .arg("--migrate-config")
-        .arg(path)
-        .env_remove("BUSBAR_T_UPGRADE_UNSET_KEY")
-        .output()
-        .expect("run busbar --migrate-config");
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert_eq!(out.status.code(), Some(0), "migrates; stderr:\n{stderr}");
-    (String::from_utf8_lossy(&out.stdout).into_owned(), stderr)
+    let raw = std::fs::read_to_string(path).expect("the fixture reads");
+    common::migration_rows::migrate(&raw)
 }
 
 fn migrate_and_validate(name: &str) -> (String, String, String) {
@@ -88,7 +81,7 @@ const WRITE_TIER_UNITS: [&str; 2] = ["cache_write_30m", "cache_write_12h"];
 /// Why the migrator prices them at that rate, as its change line says.
 const WRITE_UNITS_WHY: &str = "(the entry's cache_write_utok, else input_utok; 1.5.5 billed cache writes inside input, never at 0)";
 
-/// The `--migrate-config` summary line that names both cache-write TTL units of `test-model`.
+/// The migration summary line that names both cache-write TTL units of `test-model`.
 fn write_units_line(summary: &str) -> Option<&str> {
     summary.lines().find(|line| {
         line.starts_with("  - rate_card.test-model.units: ")
@@ -274,7 +267,7 @@ fn boot_chat(
     common::chat_spend::Gateway::spawn(dir, &config, &providers, data, admin, env)
 }
 
-/// A 1.5.5 YAML booted as written (no `--migrate-config`): its root `cache_write_utok: 0` is the
+/// A 1.5.5 YAML booted as written (not migrated): its root `cache_write_utok: 0` is the
 /// 1.5.5 spelling of "no separate write tariff", so startup removes it with a WARN naming the model,
 /// and the 20 Chat cache writes bill at input_utok, never 0.
 #[test]
@@ -409,7 +402,7 @@ fn reload_refuses_a_root_yaml_zero_cache_write() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `--migrate-config` prices the two cache-write TTL units at the entry's resolved write rate as an
+/// The migration prices the two cache-write TTL units at the entry's resolved write rate as an
 /// exact UnitRate (never 0, and never a bare float `units:` would refuse), leaves them unpriced
 /// with a reason when that rate is not an exact number, and the migrated card bills a partitioned
 /// Chat write at that rate.

@@ -10,6 +10,7 @@ const NO_STORE: &str = "listen: \"127.0.0.1:8080\"\nproviders:\n  acme:\n    aut
 #[test]
 fn a_config_without_a_store_block_is_refused() {
     crate::dist_root_install::install();
+    crate::distribution::install_migration_rows();
 
     let deploy: config::DeployCfg = yaml::from_str(
         "providers: {}\nmodels: {}\nstore: {module: inert-store-metadata}\nauth: {chain: [], admin_auth: []}\n",
@@ -37,6 +38,7 @@ fn a_config_without_a_store_block_is_refused() {
 #[test]
 fn migrate_inserts_the_memory_store_into_a_config_without_one() {
     crate::dist_root_install::install();
+    crate::distribution::install_migration_rows();
     let out = busbar_migrations::config::migrate::migrate_config(NO_STORE)
         .expect("the no-store document migrates");
     let doc: Value = yaml::from_str(&out.yaml).expect("the output is YAML");
@@ -80,6 +82,7 @@ fn migrate_inserts_the_memory_store_into_a_config_without_one() {
 #[test]
 fn migrate_names_the_module_of_a_store_block_without_one_and_leaves_a_named_one() {
     crate::dist_root_install::install();
+    crate::distribution::install_migration_rows();
     let unnamed = format!("{NO_STORE}store:\n  settings: {{ k: v }}\n");
     let out = busbar_migrations::config::migrate::migrate_config(&unnamed).expect("migrates");
     let doc: Value = yaml::from_str(&out.yaml).expect("yaml");
@@ -97,9 +100,10 @@ fn migrate_names_the_module_of_a_store_block_without_one_and_leaves_a_named_one(
 #[test]
 fn the_store_double_answers_to_the_migrated_store_module() {
     crate::dist_root_install::install();
+    crate::distribution::install_migration_rows();
     assert_eq!(
         busbar_migrations::config::migrated_store_module(),
-        busbar_kernel::config::declared_vocabulary::text("store_1_5_default")
+        busbar_migrations::config::migration_table::text("store_1_5_default")
     );
     assert!(!busbar_migrations::config::migrated_store_module().is_empty());
     assert!(busbar_kernel::config::store_required().contains("store is required"));

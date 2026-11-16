@@ -8,6 +8,7 @@ use std::collections::HashMap;
 pub(crate) fn base_deploy() -> DeployCfg {
     DeployCfg {
         declared: Default::default(),
+        config_version: None,
         listen: DEFAULT_LISTEN_ADDR.into(),
         listen_explicit: false,
         authored_routing: None,
@@ -55,7 +56,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
 #[test]
 fn admin_require_mtls_defaults_on_and_the_retired_key_loud_fails() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let deploy: DeployCfg =
         yaml::from_str("providers: {}\nmodels: {}\npools: {}\n").expect("parses");
     assert!(
@@ -93,7 +94,7 @@ fn admin_require_mtls_defaults_on_and_the_retired_key_loud_fails() {
 #[test]
 fn test_identity_provider_definition_is_referenced_by_name_from_both_planes() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let op = busbar_kernel::config::operator_provider();
     let deploy: DeployCfg = yaml::from_str(&format!(
         "identity-providers:\n  \
@@ -140,7 +141,7 @@ fn test_identity_provider_definition_is_referenced_by_name_from_both_planes() {
 #[test]
 fn test_max_admin_scope_default_is_most_restrictive_except_the_operator_credential() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let op = busbar_kernel::config::operator_provider();
     let deploy: DeployCfg = yaml::from_str(&format!(
         "identity-providers:\n  corp-ad: {{ module: ad }}\n  {op}: {{ module: {op} }}\n\
@@ -169,7 +170,7 @@ fn test_max_admin_scope_default_is_most_restrictive_except_the_operator_credenti
 #[test]
 fn test_dangling_identity_provider_reference_is_an_error() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let deploy: DeployCfg =
         yaml::from_str("auth: { chain: [keys, ghost] }\nproviders: {}\nmodels: {}\npools: {}\n")
             .expect("parses");
@@ -190,7 +191,7 @@ fn test_dangling_identity_provider_reference_is_an_error() {
 #[test]
 fn test_token_on_a_non_operator_provider_is_an_error() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let deploy: DeployCfg = yaml::from_str(
         "identity-providers:\n  corp-ad: { module: ad, token: { env: X } }\n\
          auth: { chain: [corp-ad] }\nproviders: {}\nmodels: {}\npools: {}\n",
@@ -213,7 +214,7 @@ fn test_token_on_a_non_operator_provider_is_an_error() {
 #[test]
 fn test_pools_reserved_hooks_key() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
 
     let pools: busbar_kernel::config::PoolsCfg =
         yaml::from_str("hooks: [pii]\nfast:\n  members: []\n  hooks: [cheapest, pii]\n")
@@ -234,7 +235,7 @@ fn test_pools_reserved_hooks_key() {
 #[test]
 fn test_pools_reserved_name_refusal_is_the_coded_sentence() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let e = yaml::from_str::<busbar_kernel::config::PoolsCfg>("hooks:\n  members: []\n")
         .expect_err("a pool named `hooks` must be rejected");
     assert_eq!(
@@ -246,7 +247,7 @@ fn test_pools_reserved_name_refusal_is_the_coded_sentence() {
 #[test]
 fn test_pools_credential_mode_refusal_is_byte_identical_to_1_5_5() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let e = yaml::from_str::<busbar_kernel::config::PoolsCfg>("upstream_credentials: borrowed\n")
         .expect_err("an unknown all-pools credential mode must be rejected");
     assert_eq!(
@@ -259,7 +260,7 @@ fn test_pools_credential_mode_refusal_is_byte_identical_to_1_5_5() {
 #[test]
 fn additive_hook_lists_dedupe_at_first_position() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
 
     let section = vec!["audit".to_string(), "pii".to_string()];
     let entity = vec![
@@ -309,7 +310,7 @@ fn additive_hook_lists_dedupe_at_first_position() {
 #[test]
 fn pools_reserved_section_keys_are_frozen() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     assert_eq!(
         busbar_contract::section::RESERVED_SECTION_KEYS,
         ["hooks", "upstream_credentials", "usage_observations"],
@@ -334,7 +335,7 @@ fn pools_reserved_section_keys_are_frozen() {
 #[test]
 fn pools_upstream_credentials_is_a_scalar_override() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let deploy: DeployCfg = yaml::from_str(
         "pools:\n  upstream_credentials: own\n\
          \x20 fast:\n    members: []\n    upstream_credentials: passthrough\n\
@@ -367,7 +368,7 @@ fn pools_upstream_credentials_is_a_scalar_override() {
 #[test]
 fn secrets_block_stays_module_keyed_by_design() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let deploy: DeployCfg = yaml::from_str(
         "secrets:\n  vault:\n    settings: { address: \"https://vault.internal\" }\n\
          providers: {}\nmodels: {}\npools: {}\n",
@@ -396,7 +397,7 @@ fn secrets_block_stays_module_keyed_by_design() {
 #[test]
 fn test_auth_policy_block_parses_and_resolves() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     use busbar_kernel::config::BindingMode;
 
     let deploy: DeployCfg = busbar_kernel::config::deploy_from_yaml_str(
@@ -459,7 +460,7 @@ fn test_auth_policy_block_parses_and_resolves() {
 #[test]
 fn test_auth_policy_absent_is_default() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let deploy: DeployCfg =
         yaml::from_str("auth:\n  chain: [keys]\nproviders: {}\nmodels: {}\npools: {}\n")
             .expect("an auth block with no policy parses");
@@ -482,7 +483,7 @@ fn test_auth_policy_absent_is_default() {
 #[test]
 fn test_auth_policy_ceiling_allowed_pools_three_state() {
     crate::dist_root_install::install();
-    crate::root::migration_table::install();
+    crate::distribution::install_migration_rows();
     let deploy: DeployCfg = busbar_kernel::config::deploy_from_yaml_str(
         "auth:\n  \
            policy:\n    \

@@ -1731,6 +1731,14 @@ pub(crate) async fn get_audit(
             Cond::InvalidQueryValue,
         )
     };
+    if q.contains_key("kinds") {
+        return invalid("kinds: no such parameter; filter with `action=` and `kind=`");
+    }
+    let severity = match q.get("severity").map(String::as_str) {
+        None => None,
+        Some(s) if busbar_kernel::audit_ring::SEVERITIES.contains(&s) => Some(s),
+        Some(_) => return invalid("severity: expected info|warning|error"),
+    };
     let descending = match q.get("order").map(String::as_str) {
         None | Some("desc") => true,
         Some("asc") => false,
@@ -1770,6 +1778,9 @@ pub(crate) async fn get_audit(
         limit: w.limit,
         actions: &actions,
         resource: q.get("resource").map(String::as_str),
+        severity,
+        kind: q.get("kind").map(String::as_str),
+        instance: q.get("instance").map(String::as_str),
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait);
     let page = loop {
@@ -1777,7 +1788,7 @@ pub(crate) async fn get_audit(
         let notified = AUDIT_LOG.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
-        match AUDIT_LOG.list_after(&read) {
+        match AUDIT_LOG.list_after_store(&read).await {
             Err(oldest) => {
                 return cursor::expired(cursor::encode(
                     "audit",
@@ -1788,9 +1799,12 @@ pub(crate) async fn get_audit(
             Ok(page) if !page.items.is_empty() || descending || wait == 0 => break page,
             Ok(page) => {
                 let left = deadline.saturating_duration_since(std::time::Instant::now());
-                if left.is_zero() || tokio::time::timeout(left, notified).await.is_err() {
+                if left.is_zero() {
                     break page;
                 }
+                // Re-read at least once a second: a row another node appended pulses no `Notify` here.
+                let slice = left.min(std::time::Duration::from_secs(1));
+                let _ = tokio::time::timeout(slice, notified).await;
             }
         }
     };
@@ -2891,6 +2905,15 @@ async fn current_root_settings(
     (root, revision, status)
 }
 
+/// The shorthand the running generation admits, which the secret rule reads `{word: value}`
+/// references against.
+fn settings_sugars(app: &busbar_kernel::state::App) -> busbar_contract::secret_ref::Sugars {
+    app.grammar
+        .get()
+        .map(|grammar| grammar.sugars.clone())
+        .unwrap_or_default()
+}
+
 pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) -> Response {
     let dispatch = tracing::dispatcher::get_default(|d| d.clone());
     let read = config_transaction(&handle, move |txn| {
@@ -2913,6 +2936,7 @@ pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) ->
     let settings = crate::v1::service::redact_settings_bags(
         serde_json::to_value(root.authoring(&busbar_kernel::seal::acquire()))
             .unwrap_or_else(|_| json!({})),
+        &settings_sugars(&current),
     );
     with_config_etag(
         ok_json(
@@ -2920,7 +2944,7 @@ pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) ->
             &json!({
                 "applied": false,
                 "config_version": current.config_version,
-                // already reduced every bag inside `settings` to its key names.
+                // already projected every secret position inside `settings` to {set, secret_ref}.
                 "settings": settings,
                 "settings_source": "desired_root_overlay",
                 "desired_revision": desired_revision,
@@ -3117,6 +3141,7 @@ pub(crate) async fn put_config_settings(
             let settings = crate::v1::service::redact_settings_bags(
                 serde_json::to_value(merged.authoring(&busbar_kernel::seal::acquire()))
                     .unwrap_or_else(|_| json!({})),
+                &settings_sugars(&installed),
             );
             with_config_etag(
                 ok_json(
@@ -3124,7 +3149,7 @@ pub(crate) async fn put_config_settings(
                     &json!({
                         "applied": true,
                         "config_version": installed.config_version,
-                        // above has already reduced every bag inside `settings` to its key names.
+                        // above has already projected every secret position inside `settings` to {set, secret_ref}.
                         "settings": settings,
                         "configuration": configuration,
                         "reload_to_apply": reload_to_apply,
@@ -4370,6 +4395,21 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "Filter by exact resource (e.g. `hook:x`)",
                     false,
                 ),
+                (
+                    "severity",
+                    "Filter by severity: `info`, `warning` or `error`",
+                    false,
+                ),
+                (
+                    "kind",
+                    "Filter by the engine kind of the instance a row is about",
+                    false,
+                ),
+                (
+                    "instance",
+                    "Filter by the instance a row is about",
+                    false,
+                ),
                 ("limit", "Page size (default 200, max 1000)", false),
                 (
                     "cursor",
@@ -5063,6 +5103,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "x-busbar-reasons": reasons_component(),
             "x-busbar-plugin-refusals": busbar_kernel::admin::reasons::PLUGIN_REFUSALS,
             "x-busbar-unit-reasons": unit_reasons_component(),
+            "x-busbar-audit-actions": audit_actions_component(),
             "securitySchemes": {
                 "adminToken": {"type": "apiKey", "in": "header", "name": OPENAPI_ADMIN_TOKEN_HEADER},
                 "bearerAuth": {"type": "http", "scheme": "bearer",
@@ -5097,6 +5138,22 @@ fn reasons_component() -> serde_json::Value {
                 .collect();
         }
         table.insert(row.reason.to_string(), entry);
+    }
+    serde_json::Value::Object(table)
+}
+
+/// `components.x-busbar-audit-actions` (ADMIN-API-1.6 section 7.2): the closed set of actions an
+/// audit row carries. `action=` matches these names, and their nouns (the part before the first dot).
+/// Each row says what its `data` holds: an object, with members typed per action.
+#[cfg(feature = "openapi-schema")]
+fn audit_actions_component() -> serde_json::Value {
+    let mut table = serde_json::Map::new();
+    for action in busbar_kernel::audit::auditlog::AUDIT_ACTIONS {
+        table.insert(
+            (*action).to_string(),
+            json!({"noun": action.split('.').next().unwrap_or_default(),
+                   "data_schema": {"type": "object", "additionalProperties": true}}),
+        );
     }
     serde_json::Value::Object(table)
 }

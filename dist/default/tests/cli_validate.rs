@@ -203,7 +203,6 @@ fn a_missing_config_or_provider_flag_value_is_a_usage_error_before_boot() {
         vec!["--providers"],
         vec!["--validate", "--config"],
         vec!["--ignore-overlay", "--providers"],
-        vec!["--migrate-config", "legacy.yaml", "--providers"],
     ] {
         let (code, _, error) = run_busbar(&dir, &args);
         assert_eq!(code, 2, "{args:?}: {error}");
@@ -278,41 +277,6 @@ fn commands_after_boot_options_exit_without_starting_the_gateway() {
     assert_eq!(code, 2, "{error}");
     assert!(!output.starts_with("busbar "));
 
-    let legacy = dir.join("legacy.yaml");
-    std::fs::write(&legacy, "listen: '127.0.0.1:0'\nstore: {module: memory}\n").unwrap();
-    let mut child = command(&dir)
-        .args(["--ignore-overlay", "--migrate-config"])
-        .arg(&legacy)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let result = common::lines::try_wait_bounded(&mut child, Duration::from_secs(10));
-    let output = child.wait_with_output().unwrap();
-    assert_eq!(
-        result,
-        Ok(0),
-        "migration operand was lost: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    for filename in ["--config", "--providers", "-c"] {
-        std::fs::copy(&legacy, dir.join(filename)).unwrap();
-        let mut child = command(&dir)
-            .current_dir(&dir)
-            .args(["--migrate-config", filename])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let result = common::lines::try_wait_bounded(&mut child, Duration::from_secs(10));
-        let output = child.wait_with_output().unwrap();
-        assert_eq!(
-            result,
-            Ok(0),
-            "literal migration path {filename}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -771,63 +735,6 @@ fn list_plugins_selected_row_requires_every_conjunct() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[test]
-fn migrate_config_prints_changes_and_warnings_sections_when_non_empty() {
-    let dir = fixture_dir("migrate");
-    std::fs::create_dir_all(&dir).unwrap();
-    let legacy = dir.join("legacy.yaml");
-    std::fs::write(
-        &legacy,
-        "auth:\n  chain:\n    - oidc\n  group_map:\n    full:\n      allowed_pools: []\n",
-    )
-    .unwrap();
-
-    let out = Command::new(common::boot::exe())
-        .args(["--migrate-config", legacy.to_str().unwrap()])
-        .output()
-        .expect("run busbar --migrate-config");
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert_eq!(out.status.code(), Some(0), "stderr={stderr}");
-    assert!(
-        stderr.contains("CHANGES (") && stderr.contains("auth.group_map"),
-        "a non-empty changes list must print the CHANGES section: {stderr}"
-    );
-    assert!(
-        stderr.contains("WARNINGS (") && stderr.contains("allowed_pools"),
-        "a non-empty warnings list must print the WARNINGS section: {stderr}"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn migrate_config_omits_changes_and_warnings_sections_when_empty() {
-    let dir = fixture_dir("migrate-clean");
-    std::fs::create_dir_all(&dir).unwrap();
-    let legacy = dir.join("legacy.yaml");
-
-    std::fs::write(
-        &legacy,
-        "listen: \"127.0.0.1:8080\"\nstore: {module: memory}\n",
-    )
-    .unwrap();
-
-    let out = Command::new(common::boot::exe())
-        .args(["--migrate-config", legacy.to_str().unwrap()])
-        .output()
-        .expect("run busbar --migrate-config");
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert_eq!(out.status.code(), Some(0), "stderr={stderr}");
-    assert!(
-        !stderr.contains("CHANGES ("),
-        "an empty changes list must NOT print the CHANGES section: {stderr}"
-    );
-    assert!(
-        !stderr.contains("WARNINGS ("),
-        "an empty warnings list must NOT print the WARNINGS section: {stderr}"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
 #[cfg(linked_section_pools)]
 #[test]
 fn validate_fails_when_a_plugin_is_referenced_but_plugins_are_disabled() {
@@ -1052,9 +959,9 @@ fn validate_refuses_retired_overlay_selectors_without_file_effects() {
             "a retired file selector cannot replace the configured Store: {stderr}"
         );
         assert!(
-            stderr.contains("`config.overlay` is retired in 1.6.0")
-                && stderr.contains("busbar --migrate-config")
-                && stderr.contains("--migrate-overlay"),
+            stderr.contains("overlay")
+                && !stderr.contains("--migrate-config")
+                && !stderr.contains("--migrate-overlay"),
             "{stderr}"
         );
         assert_eq!(
@@ -1102,9 +1009,9 @@ fn validate_refuses_even_a_well_formed_legacy_overlay_selector() {
         "the retired YAML selector requires migration: {stderr}"
     );
     assert!(
-        stderr.contains("`config.overlay` is retired in 1.6.0")
-            && stderr.contains("busbar --migrate-config")
-            && stderr.contains("--migrate-overlay"),
+        stderr.contains("overlay")
+            && !stderr.contains("--migrate-config")
+            && !stderr.contains("--migrate-overlay"),
         "{stderr}"
     );
     assert_eq!(overlay_validation_tree(&dir), before);
@@ -2301,6 +2208,29 @@ fn validate_refuses_every_public_url_that_boot_refuses() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Red (mc1)(1), (i): 1.6.0 has no `--migrate-config` and no `--migrate-overlay`. The boot migrates a
+/// 1.5.5 config itself, so each flag is the CLI's own unknown-option usage error, with or without a path.
+#[test]
+fn the_retired_migrate_flags_are_unknown_options() {
+    let dir = fixture_dir("migrate-flags-removed");
+    let legacy = dir.join("old-config.yaml");
+    std::fs::write(&legacy, "listen: '127.0.0.1:0'\nstore: {module: memory}\n").unwrap();
+    let legacy = legacy.to_str().unwrap().to_owned();
+    for flag in ["--migrate-config", "--migrate-overlay"] {
+        for args in [vec![flag, "x"], vec![flag, legacy.as_str()], vec![flag]] {
+            let (code, stdout, error) = run_busbar(&dir, &args);
+            assert_eq!(code, 2, "{args:?}: {error}");
+            assert!(
+                error.contains(&format!("unrecognized argument '{flag}'")),
+                "{args:?}: {error}"
+            );
+            assert!(stdout.is_empty(), "{args:?}: nothing is printed: {stdout}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 /// QE: a pinned publisher key with no point on edwards25519 (`y = 2`: canonical, not small-order) is
 /// refused by `--validate` and by boot, with the INVALID text it had before Q9b, not first at the
 /// first verify of a plugin signed under it.

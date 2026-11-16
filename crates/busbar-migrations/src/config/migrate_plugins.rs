@@ -495,7 +495,6 @@ pub(super) fn migrate_recognized(
     host: &dyn MigrateHost,
     ledger: &mut Ledger<'_>,
 ) {
-    super::migrate_tls::apply(root, ledger);
     let from = host.migrating_from().to_owned();
     // Current plane payloads are validated by ordinary admission. Do not construct
     // historical plane envelopes or read their consumed catalogs on this path.
@@ -543,7 +542,6 @@ pub(super) fn migrate_over(
     ledger: &mut Ledger<'_>,
     planes: &[PlaneFacts],
 ) {
-    super::migrate_tls::apply(root, ledger);
     let from = host.migrating_from().to_string();
     let mut wanted: Vec<(String, String)> = Vec::new();
     for site in sites(root, planes, host, ledger) {
