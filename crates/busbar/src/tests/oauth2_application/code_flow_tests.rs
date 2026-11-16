@@ -420,3 +420,159 @@ async fn the_consent_screen_names_a_requested_scope_and_an_empty_grant() {
     assert_eq!(granted, "", "an empty default grants nothing");
     assert_eq!(shown, "no scopes", "and the screen says so");
 }
+
+async fn public_client_code(origin: &str, client_id: &str) -> String {
+    let client = super::client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let mut jar = Jar::new(true);
+    let authorize = format!(
+        "{origin}/authorize?response_type=code&client_id={client_id}&redirect_uri={}&scope={SCOPE}&code_challenge={CHALLENGE}&code_challenge_method=S256",
+        encode_component(REDIRECT_URI),
+    );
+    let (status, headers, body) =
+        send(&client, &mut jar, reqwest::Method::GET, &authorize, None).await;
+    assert_eq!(status, 302, "{body}");
+    let consent = location(&headers, origin);
+    let (status, _, body) = send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
+    assert_eq!(status, 200, "{body}");
+    let return_to =
+        percent_decode(&query_param(&consent, "return").expect("pending authorization"));
+    let (status, headers, body) = send(
+        &client,
+        &mut jar,
+        reqwest::Method::POST,
+        &format!("{origin}/consent"),
+        Some(&[("return", &return_to), ("answer", "approve")]),
+    )
+    .await;
+    assert_eq!(status, 302, "{body}");
+    let back = location(&headers, origin);
+    let (status, headers, body) = send(&client, &mut jar, reqwest::Method::GET, &back, None).await;
+    assert_eq!(status, 302, "{body}");
+    let redirect = location(&headers, origin);
+    assert!(redirect.starts_with(REDIRECT_URI), "{redirect}");
+    query_param(&redirect, "code").expect("approved authorization code")
+}
+
+#[tokio::test]
+async fn the_default_profile_binds_public_codes_to_client_redirect_and_pkce() {
+    use busbar_contract::json::JsonValueTrait as _;
+
+    let (origin, _) = serve().await;
+    let owner = register_client(&origin).await;
+    let other = register_client(&origin).await;
+    for (case, verifier, redirect, client_id, expected) in [
+        (
+            "wrong verifier",
+            Some("a-verifier-that-does-not-hash-to-the-challenge-at-all-00"),
+            REDIRECT_URI,
+            owner.as_str(),
+            "invalid_grant",
+        ),
+        (
+            "missing verifier",
+            None,
+            REDIRECT_URI,
+            owner.as_str(),
+            "invalid_grant",
+        ),
+        (
+            "wrong redirect",
+            Some(VERIFIER),
+            "http://127.0.0.1:9999/other",
+            owner.as_str(),
+            "invalid_grant",
+        ),
+        (
+            "another registered client",
+            Some(VERIFIER),
+            REDIRECT_URI,
+            other.as_str(),
+            "invalid_grant",
+        ),
+    ] {
+        let code = public_client_code(&origin, &owner).await;
+        let mut form = vec![
+            ("grant_type", "authorization_code"),
+            ("code", code.as_str()),
+            ("client_id", client_id),
+            ("redirect_uri", redirect),
+        ];
+        if let Some(verifier) = verifier {
+            form.push(("code_verifier", verifier));
+        }
+        let response = super::client()
+            .post(format!("{origin}/token"))
+            .form(&form)
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response.text().await.unwrap();
+        assert_eq!(status, 400, "{case}: {body}");
+        let value = busbar_contract::json::parse_value(body.as_bytes()).unwrap();
+        assert_eq!(value["error"].as_str(), Some(expected), "{case}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn default_profile_code_reuse_revokes_the_previously_admitted_token() {
+    use busbar_contract::json::JsonValueTrait as _;
+
+    let (origin, _) = serve().await;
+    let client_id = register_client(&origin).await;
+    let code = public_client_code(&origin, &client_id).await;
+    let form = [
+        ("grant_type", "authorization_code"),
+        ("code", code.as_str()),
+        ("client_id", client_id.as_str()),
+        ("redirect_uri", REDIRECT_URI),
+        ("code_verifier", VERIFIER),
+    ];
+    let client = super::client();
+    let first = client
+        .post(format!("{origin}/token"))
+        .form(&form)
+        .send()
+        .await
+        .unwrap();
+    let status = first.status();
+    let body = first.text().await.unwrap();
+    assert_eq!(status, 200, "{body}");
+    let token = busbar_contract::json::parse_value(body.as_bytes()).unwrap();
+    let access = token["access_token"].as_str().expect("access token");
+    let resource = format!("{origin}/stats");
+    assert_eq!(
+        client
+            .get(&resource)
+            .bearer_auth(access)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let replay = client
+        .post(format!("{origin}/token"))
+        .form(&form)
+        .send()
+        .await
+        .unwrap();
+    let status = replay.status();
+    let body = replay.text().await.unwrap();
+    assert_eq!(status, 400, "{body}");
+    let error = busbar_contract::json::parse_value(body.as_bytes()).unwrap();
+    assert_eq!(error["error"].as_str(), Some("invalid_grant"), "{body}");
+    assert_eq!(
+        client
+            .get(&resource)
+            .bearer_auth(access)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+}
