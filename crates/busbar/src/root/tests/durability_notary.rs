@@ -19,6 +19,86 @@ use crate::root::durability::{signer, Durability};
 
 const SEED: [u8; 32] = [0x5f; 32];
 
+#[tokio::test]
+async fn generated_delegated_key_stamps_only_after_boot_certificate_confirmation() {
+    use crate::root::durability::boot_jobs::BootPreparation;
+    use crate::root::durability::notary::{spawn_with_boot, NotaryRuntime};
+    use busbar_contract::crypto::{verify, DelegatedSigner, Signer};
+    let fixture = NativeFixture::new(41).await;
+    let book = Arc::new(Mutex::new(fixture.book().await));
+    let delegated = DelegatedSigner::generate().unwrap();
+    let public = delegated.public_key().clone();
+    let (notary, bootstrap) = AuditSigningKey::from_seed(&SEED)
+        .into_grants(LiveSigner::Delegated(Box::new(delegated)))
+        .unwrap();
+    let signers = signer::spawn(
+        NotaryCap::new(notary),
+        BootstrapSigner::new(bootstrap),
+        Arc::new(OnceLock::new()),
+    )
+    .unwrap();
+    let (journal, feed, start) = {
+        let held = book.lock().unwrap();
+        (held.journal.clone(), held.head.clone(), held.notary_start())
+    };
+    let node = journal.node();
+    let task = spawn_with_boot(
+        NotaryConfig {
+            node,
+            host: "delegated-test-host".into(),
+            every_ms: 1,
+            key_cert: 0,
+        },
+        start,
+        journal.clone(),
+        feed,
+        signers.live,
+        NotaryRuntime {
+            floor_hints: None,
+            drain_clock: None,
+            boot: Some(BootPreparation::new(
+                signers.boot,
+                book.clone(),
+                Vec::new(),
+                Some(public.clone()),
+            )),
+        },
+    );
+    stamped_through(&task, 1).await;
+    seal_n(&book, 2, 2).await;
+    stamped_through(&task, 3).await;
+    let end = task.stop().await.unwrap();
+    assert!(end.halted.is_none());
+    let rows = journal
+        .read_records(busbar_kernel::persistence::journal::BufferBudget {
+            records: 100,
+            bytes: 64 * 1024,
+        })
+        .await
+        .unwrap();
+    let certs: Vec<_> = rows
+        .iter()
+        .filter_map(|row| {
+            busbar_kernel_audit::notary_key::notary_key_from_journal_body(&row.body)
+                .unwrap()
+                .map(|cert| (row.node_seq, cert))
+        })
+        .collect();
+    assert_eq!(certs.len(), 1);
+    assert_eq!(certs[0].1.certificate.key_id, public.key_id.as_ref());
+    let mut page_count = 0;
+    for row in rows {
+        if let Some(page) = stamp_from_journal_body(&row.body).unwrap() {
+            assert!(row.node_seq > certs[0].0);
+            assert_eq!(page.key_cert, certs[0].0);
+            assert_eq!(page.key_id, public.key_id.as_ref());
+            verify(&public, &page.preimage(), &page.signature).unwrap();
+            page_count += 1;
+        }
+    }
+    assert!(page_count > 0);
+}
+
 fn verifying_key() -> AuditVerifyingKey {
     AuditVerifyingKey::from_hex(&AuditSigningKey::from_seed(&SEED).public_key_hex()).unwrap()
 }
