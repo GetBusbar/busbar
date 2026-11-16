@@ -1032,7 +1032,7 @@ pub const ERROR_CODES_WANT: &str = "1..=256 numbers, each 1..=9999, strictly asc
 pub fn record_error_codes_refused(kind: &str, file: &str, library_sha256: &str, have: &str) {
     let diag = crate::diagnostics::PLUGIN_ERROR_CODES_REFUSED.banner();
     tracing::warn!(
-        diag = diag.as_str(),
+        diag = %diag,
         kind,
         file,
         library_sha256,
