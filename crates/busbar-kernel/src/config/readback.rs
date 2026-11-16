@@ -156,7 +156,6 @@ impl ConfiguredView {
                 max_inbound_concurrent,
                 max_keys_per_principal,
                 max_auto_provisioned_groups,
-                hook_content_max_bytes,
                 hard_down_cooldown_secs,
                 upstream_error_body_max_bytes,
                 tls_handshake_timeout_secs,

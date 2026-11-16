@@ -12,6 +12,7 @@
 
 mod common;
 
+use busbar_contract::json;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -183,8 +184,8 @@ pools:
         String::from_utf8_lossy(&inspected.stdout),
         String::from_utf8_lossy(&inspected.stderr)
     );
-    let inventory: serde_json::Value =
-        serde_json::from_slice(&inspected.stdout).expect("the inspection report is JSON");
+    let inventory: json::Value =
+        json::parse_value(&inspected.stdout).expect("the inspection report is JSON");
     assert_eq!(
         inventory["store_ephemeral"], true,
         "the memory Store is the ephemeral instance this action initializes"
@@ -192,7 +193,7 @@ pools:
     let receipt = dir.join("fresh.json");
     std::fs::write(
         &receipt,
-        serde_json::to_vec(&serde_json::json!({
+        json::to_vec(&json::json!({
             "version": 1,
             "store_config_sha256": inventory["store_config_sha256"],
             "requirements": inventory["requirements"],

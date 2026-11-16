@@ -7,6 +7,7 @@
 
 mod common;
 
+use busbar_contract::json::{self, JsonValueTrait};
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -327,7 +328,7 @@ fn golden_meta_lines() -> Vec<String> {
     let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!("the 1.5.5 golden scrape cell must be readable at {path:?}: {e}")
     });
-    let cell: serde_json::Value = serde_json::from_str(&raw).expect("the golden cell is JSON");
+    let cell = json::parse_value(raw.as_bytes()).expect("the golden cell is JSON");
     let text = cell["body"]["text"]
         .as_str()
         .expect("the golden scrape cell carries its body text");

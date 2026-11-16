@@ -1609,13 +1609,12 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
 }
 
 pub use busbar_kernel::config::limits::{
-    default_default_max_tokens, default_hard_down_cooldown_secs, default_hook_content_max_bytes,
-    default_key_gauge_limit, default_max_auto_provisioned_groups,
-    default_max_honored_retry_after_secs, default_max_inbound_concurrent,
-    default_max_keys_per_principal, default_pool_idle_timeout_secs, default_pool_max_idle_per_host,
-    default_probe_interval_secs, default_probe_timeout_secs, default_rate_sweep_interval,
-    default_reasoning_high, default_reasoning_low, default_reasoning_medium,
-    default_reasoning_minimal, default_request_body_max_bytes,
+    default_default_max_tokens, default_hard_down_cooldown_secs, default_key_gauge_limit,
+    default_max_auto_provisioned_groups, default_max_honored_retry_after_secs,
+    default_max_inbound_concurrent, default_max_keys_per_principal, default_pool_idle_timeout_secs,
+    default_pool_max_idle_per_host, default_probe_interval_secs, default_probe_timeout_secs,
+    default_rate_sweep_interval, default_reasoning_high, default_reasoning_low,
+    default_reasoning_medium, default_reasoning_minimal, default_request_body_max_bytes,
     default_request_body_read_timeout_secs, default_tls_handshake_timeout_secs,
     default_upstream_error_body_max_bytes, default_upstream_request_timeout_secs,
     default_usage_flush_interval_ms, ExportLimits, HealthDefaultsCfg, LimitsCfg, LimitsResolved,

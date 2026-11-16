@@ -58,7 +58,7 @@ use crate::diagnostics::{
 };
 use crate::hooks::taps::{fire_stage_taps_where, spawn_bounded_tap, StageShape};
 use crate::hooks::{
-    content_capped, failed_call_refuses, FallbackHook, RequestedSignals, ResolvedPolicy, TapEntry,
+    failed_call_refuses, FallbackHook, RequestedSignals, ResolvedPolicy, TapEntry,
     REQUIRED_HOOK_UNAVAILABLE_MESSAGE, REQUIRED_HOOK_UNAVAILABLE_STATUS,
 };
 use crate::snapshot::{
@@ -738,14 +738,14 @@ impl<'a> Projection<'a> {
     }
 
     fn prompt(&self) -> PromptProjection<'_> {
-        content_capped(PromptProjection {
+        PromptProjection {
             system: self.system.as_deref().map(Cow::Borrowed),
             messages: self
                 .turns
                 .iter()
                 .map(|(r, t)| (Cow::Borrowed(&**r), Cow::Borrowed(&**t)))
                 .collect(),
-        })
+        }
     }
 
     fn request<'s>(

@@ -4,6 +4,8 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use busbar_contract::json::{self, JsonValueTrait};
+
 use crate::root::test_plugins as plugins;
 
 async fn app() -> Arc<busbar_kernel::state::App> {
@@ -153,13 +155,12 @@ async fn the_served_document_describes_the_ledger_views_as_the_loops() {
 
     let served = ask(addr, "/api/v1/admin/openapi.json").await;
     assert_eq!(served.status, 200, "the surface serves its document");
-    let document: serde_json::Value =
-        serde_json::from_str(&served.body).expect("the served document is JSON");
+    let document = json::parse_value(served.body.as_bytes()).expect("the served document is JSON");
     let paths = document["paths"].as_object().expect("it declares paths");
 
     for path in LEDGER_PATHS {
         let op = &paths
-            .get(*path)
+            .get(path)
             .unwrap_or_else(|| panic!("{path} is a served verb and in no document"))["get"];
         assert_eq!(
             op["x-busbar-since"], "1.6.0",
@@ -169,7 +170,7 @@ async fn the_served_document_describes_the_ledger_views_as_the_loops() {
     }
 
     assert!(
-        paths.contains_key("/api/v1/admin/usage"),
+        paths.contains_key(&"/api/v1/admin/usage"),
         "the served document is not the administrative document"
     );
 
