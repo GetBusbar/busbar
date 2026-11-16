@@ -24,13 +24,14 @@ use busbar_contract::json::{
 use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::host_side::caller::{BoxFut, InstanceLimits};
 use busbar_plugin_abi::host_side::HOST;
+use busbar_plugin_abi::need::need_flag;
 use busbar_plugin_abi::plugin::__rt::LinkedPlugin;
 use busbar_plugin_abi::plugin::Plugin;
 use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::admit::{admit_header, admit_linked, Admitted};
 use busbar_plugin_loader::binder::{BindError, ConfigBinder, DestDef, TrustAnchor};
 use busbar_plugin_loader::instance::{
-    Ceilings, InstanceSpec, OpenError, OpenedPort, PluginCode, Registry, Settled,
+    Ceilings, DeclaredEndpoint, InstanceSpec, OpenError, OpenedPort, PluginCode, Registry, Settled,
 };
 use busbar_plugin_loader::ports::auth::AuthPort;
 use busbar_plugin_loader::ports::export::ExportPort;
@@ -456,6 +457,8 @@ pub struct Harness {
     identity: String,
     kind: KindCode,
     refusals: Mutex<Vec<String>>,
+    /// Every ENDPOINT a successful `check` declared, in order (the generic match reads them).
+    declared: Mutex<Vec<DeclaredEndpoint>>,
     rt: crate::test_rt::TestRuntime,
     logs: Arc<LogBook>,
     _tap: tracing::subscriber::DefaultGuard,
@@ -511,6 +514,7 @@ impl Harness {
             identity,
             kind,
             refusals: Mutex::new(Vec::new()),
+            declared: Mutex::new(Vec::new()),
             rt,
             logs,
             _tap: tap,
@@ -571,10 +575,42 @@ impl Harness {
         answer
     }
 
-    /// DRY_RUN open (`--validate`): bind, `check`, no instance kept.
+    /// DRY_RUN open (`--validate`): bind, `check`, no instance kept. The ENDPOINTs the answer declared are kept
+    /// for the generic match ([`Harness::undeclared`]).
     pub fn check(&self, name: &str, config: &[u8]) -> Result<(), OpenError> {
         let spec = self.spec(name, config);
-        self.noted(self.block_on(self.registry.check(&spec)))
+        let declared = self.noted(self.block_on(self.registry.check_endpoints(&spec)))?;
+        self.declared
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extend(declared);
+        Ok(())
+    }
+
+    /// Every ENDPOINT a successful [`Harness::check`] declared so far, in order.
+    pub fn declared(&self) -> Vec<DeclaredEndpoint> {
+        self.declared
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The generic ENDPOINT match (TRANSPORT-SECURITY-POLICY §2): every OPEN or FETCH the plugin made whose
+    /// (host, TLS) is not among the ENDPOINTs its successful checks declared.
+    pub fn undeclared(&self) -> Vec<Seen> {
+        let declared = self.declared.lock().unwrap_or_else(PoisonError::into_inner);
+        self.needs.undeclared(&endpoint_pairs(&declared))
+    }
+
+    /// Panics, naming `suite`, when [`Harness::undeclared`] is not empty: every Need a suite drove must match an
+    /// ENDPOINT the plugin's `check` declared for the same config.
+    pub fn assert_needs_declared(&self, suite: &str) {
+        let undeclared = self.undeclared();
+        assert!(
+            undeclared.is_empty(),
+            "{suite} suite: needs the plugin's check did not declare as an ENDPOINT (TRANSPORT-SECURITY-POLICY §2): {undeclared:?}; declared: {:?}",
+            self.declared()
+        );
     }
 
     /// Open the instance as its kind and return the typed port.
@@ -683,6 +719,19 @@ impl Harness {
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
+}
+
+/// Each declared ENDPOINT as the (dest, TLS) pair `FakeNeeds::undeclared` matches on: TLS when its `NeedRec.flags`
+/// TLS bits ask for any TLS mode (TLS_INBAND included: the conn is upgraded in band) or its dest is an `https:` URL.
+fn endpoint_pairs(declared: &[DeclaredEndpoint]) -> Vec<(&str, bool)> {
+    declared
+        .iter()
+        .map(|ep| {
+            let tls = (ep.flags & need_flag::TLS_MASK) != need_flag::TLS_NONE
+                || ep.dest.starts_with("https://");
+            (&*ep.dest, tls)
+        })
+        .collect()
 }
 
 /// The core refusal an open answered, when core (not the plugin) refused.
