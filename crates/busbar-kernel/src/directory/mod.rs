@@ -4,7 +4,6 @@
 //! The kernel directory behind DIRECTORY Needs, and the CA-5 hold index (IF §12.29). W0-ABI stub: frozen signatures, `todo!()` bodies; W1-K6P fills it.
 
 use core::future::Future;
-use std::sync::Arc;
 
 use busbar_plugin_abi::host_side::caller::Caller;
 use busbar_plugin_abi::host_side::needs::{DirNeed, NeedErr, NeedOut};
@@ -29,32 +28,6 @@ pub const MAX_ATTEMPTS: u32 = 4;
 /// nothing, audits and alerts `provisioning_held_full`.
 pub const MAX_HELD: u32 = 262_144;
 
-/// K6p, the CA-5 index. Built per config generation from every `provisioning.link`. K8p resolves `for_inbound`
-/// once per generation and keeps the answer beside the inbound auth port; the request path never calls it.
-pub struct Holds {
-    // W0-ABI: private field (inbound auth instance id -> Box<[Arc<HoldSet>]>; only instances named in some
-    // link.auth) lands with W1-K6P.
-    _stub: (),
-}
-impl Holds {
-    /// None = no provisioning instance links `inbound`: K8p makes no probe for it at all.
-    pub fn for_inbound(&self, inbound: u64) -> Option<&[Arc<HoldSet>]> {
-        let _ = (&self._stub, inbound);
-        todo!()
-    }
-}
-/// One provisioning instance's held principals (the `link.index` values of its INACTIVE subjects).
-pub struct HoldSet {
-    // W0-ABI: private fields (len: AtomicU32, set: ArcSwap<HashSet<Box<str>, foldhash::fast::RandomState>>, wake:
-    // Notify, generation: AtomicU64) land with W1-K6P.
-    _stub: (),
-}
-impl HoldSet {
-    /// true = `principal` is held. Sync, no allocation, no lock, no await: one Relaxed load of `len` (0 = false);
-    /// otherwise one `ArcSwap::load` (2 RMWs on the caller's own debt slot, §0 I5's fourth exception) and one
-    /// foldhash probe of the principal bytes. B-HOLD (§14).
-    pub fn holds(&self, principal: &str) -> bool {
-        let _ = (&self._stub, principal);
-        todo!()
-    }
-}
+/// The CA-5 index and one provisioning instance's held principals live in `crate::holds` (W2-K8P owns
+/// `holds/**`, WBS §3); the directory names them here, as IF §12.29 does.
+pub use crate::holds::{HoldSet, Holds};

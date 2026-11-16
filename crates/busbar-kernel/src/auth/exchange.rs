@@ -71,6 +71,17 @@ pub(crate) async fn exchange(
         Err(response) => return *response,
     };
 
+    // CA-5 (IF §12.29): a principal whose linked subject is INACTIVE in a provisioning instance that links this
+    // inbound instance is refused before any mint; no plugin is asked. No probe when nothing links it.
+    if let super::ChainVerdict::Identified {
+        module, principal, ..
+    } = &verdict
+    {
+        if crate::holds::held_now(module, &principal.id).is_some() {
+            return held_refusal();
+        }
+    }
+
     let (
         SelfMint {
             principal,
@@ -192,6 +203,17 @@ struct ExchangeRefused {
 struct SenderConstrained {
     error: &'static str,
     error_description: &'static str,
+}
+
+/// CA-5: the verified principal is held (R_DENIED). The probe already audited `principal_held{instance}`.
+fn held_refusal() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        axum::Json(ExchangeRefused {
+            error: "identity is deactivated by its provisioning directory".into(),
+        }),
+    )
+        .into_response()
 }
 
 fn refusal(e: &ExchangeError) -> Response {
