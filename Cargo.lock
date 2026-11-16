@@ -329,7 +329,10 @@ dependencies = [
 name = "busbar-ci-checks"
 version = "1.6.0"
 dependencies = [
+ "object",
  "proc-macro2",
+ "quote",
+ "serde_json",
  "syn 2.0.117",
 ]
 
@@ -1805,6 +1808,15 @@ dependencies = [
  "http-body",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "object"
+version = "0.37.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

@@ -29,7 +29,37 @@ use syn::{
     Attribute, Expr, ExprLit, ImplItem, Item, ItemMod, Lit, Meta, Token, TraitItem, UseTree,
 };
 
-const CHECKS: [&str; 2] = ["no-getrandom", "crypto-graph"];
+/// Checks over core's own tree: with no argument every one runs.
+const CHECKS: [&str; 7] = [
+    "no-getrandom",
+    "crypto-graph",
+    "fleet-manifest",
+    "c-transport",
+    "export-streams",
+    "no-licence",
+    "core-scan",
+];
+/// Checks that take arguments (a plugin repo, files). Named first, the rest of the command line is theirs.
+const ARG_CHECKS: [&str; 8] = [
+    "template-drift",
+    "patch-drift",
+    "no-host-link",
+    "plugin-rules",
+    "c-alias",
+    "core-scan",
+    "loc-report",
+    "fleet-manifest",
+];
+
+/// A check's findings, or the error that stopped it.
+pub(crate) type Outcome = Result<Vec<String>, String>;
+
+mod core_scan;
+mod core_src;
+mod fleet;
+mod host_link;
+mod plugin_rules;
+mod supply;
 /// The crypto seam: `busbar-crypto` and `busbar-crypto-backend` (crate directories and packages).
 const SEAM: &str = "busbar-crypto";
 /// Crypto crates reachable only through the seam.
@@ -38,19 +68,32 @@ const SEAM_ONLY: [&str; 3] = ["ring", "sha2", "ed25519-dalek"];
 fn main() -> ExitCode {
     let root = repo_root();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let names: Vec<&str> = if args.is_empty() {
-        CHECKS.to_vec()
-    } else {
-        args.iter().map(String::as_str).collect()
+    // A check that takes arguments is named first and owns the rest of the command line.
+    let (names, rest): (Vec<&str>, &[String]) = match args.split_first() {
+        None => (CHECKS.to_vec(), &[]),
+        Some((first, rest)) if ARG_CHECKS.contains(&first.as_str()) => (vec![first.as_str()], rest),
+        Some(_) => (args.iter().map(String::as_str).collect(), &[]),
     };
     let mut failed = false;
     for name in names {
         let outcome = match name {
             "no-getrandom" => no_getrandom(&root),
             "crypto-graph" => crypto_graph(&root),
+            "fleet-manifest" => fleet::fleet_manifest(&root),
+            "c-alias" => fleet::c_alias(&root, rest),
+            "c-transport" => core_src::c_transport(&root),
+            "export-streams" => core_src::export_streams(&root),
+            "no-licence" => core_src::no_licence(&root),
+            "core-scan" => core_scan::core_scan(&root, rest),
+            "loc-report" => core_src::loc_report(&root),
+            "template-drift" => supply::template_drift_cli(rest),
+            "patch-drift" => supply::patch_drift_cli(&root, rest),
+            "no-host-link" => host_link::no_host_link(rest),
+            "plugin-rules" => plugin_rules::plugin_rules(rest),
             other => Err(format!(
-                "unknown check `{other}` (checks: {})",
-                CHECKS.join(", ")
+                "unknown check `{other}` (checks: {}; with arguments: {})",
+                CHECKS.join(", "),
+                ARG_CHECKS.join(", ")
             )),
         };
         match outcome {
@@ -510,3 +553,6 @@ fn seam_only_reached(tree: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod checks_tests;
