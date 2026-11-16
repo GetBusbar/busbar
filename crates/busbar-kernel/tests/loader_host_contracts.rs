@@ -21,11 +21,11 @@ async fn admitted() -> Host {
     admitted_over(real_store::core().await).await
 }
 async fn admitted_over(store: Arc<persistence::facade::CoreStore>) -> Host {
-    let h = Host::new().with_pool(Arc::new(BlockingPool::new(
+    let mut h = Host::new().with_pool(Arc::new(BlockingPool::new(
         tokio::runtime::Handle::current(),
         1024,
     )));
-    assert!(h.attach_persistence(store));
+    h = h.with_persistence(store);
     h.admit(
         "plane",
         InstanceFacts {

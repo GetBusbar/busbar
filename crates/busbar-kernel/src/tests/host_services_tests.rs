@@ -123,12 +123,12 @@ fn rig() -> Rig {
     let store = Arc::new(ready(native_attach(Arc::clone(&backend))));
     let clock = Arc::new(AtomicU64::new(now * 1000));
     let c = Arc::clone(&clock);
-    let s = KernelServices::new()
+    let mut s = KernelServices::new()
         .with_pool(Arc::new(Inline))
         .with_signer(Arc::new(FixedKey))
         .with_demotions(demotions(&store), SECTION_KEY)
         .with_wall_clock(Arc::new(move || c.load(Ordering::SeqCst)));
-    assert!(s.attach_persistence(Arc::clone(&store)));
+    s = s.with_persistence(Arc::clone(&store));
     s.admit_sync(
         "inst",
         InstanceFacts {
@@ -471,17 +471,17 @@ fn trust_sight_judges_from_the_admitted_entries_and_writes_the_demotion() {
     let sight = |h: &str| run(|l| r.s.trust_sight(&me, "cp", h, l));
 
     assert_eq!(sight("moved").value, svc::TRUST_NEW);
-    assert!(ready(r.s.demotions.get().unwrap().record.list()).is_empty());
+    assert!(ready(r.s.demotions.as_ref().unwrap().record.list()).is_empty());
     assert_eq!(sight("fp").value, svc::TRUST_NEW);
     ready(r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)).unwrap();
     assert_eq!(sight("fp").value, svc::TRUST_SAME, "approved");
     assert_eq!(sight("moved").value, svc::TRUST_DRIFTED);
-    let demoted = ready(r.s.demotions.get().unwrap().record.list());
+    let demoted = ready(r.s.demotions.as_ref().unwrap().record.list());
     assert_eq!(demoted.len(), 1);
     assert_eq!(demoted[0].upstream, demotion_key("inst", "cp"));
     assert_eq!(sight("moved").value, svc::TRUST_QUARANTINED);
     assert_eq!(sight("fp").value, svc::TRUST_SAME);
-    assert!(ready(r.s.demotions.get().unwrap().record.list()).is_empty());
+    assert!(ready(r.s.demotions.as_ref().unwrap().record.list()).is_empty());
     let s = run(|l| r.s.trust_sight(&me, "nobody", "fp", l));
     assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_A_COUNTERPARTY));
 }
@@ -502,7 +502,7 @@ fn the_operators_trust_decisions_are_kept_and_replayed_at_a_restart() {
     let row = ready(r.s.trust_rule("inst/cp", Ruling::Approve)).unwrap();
     assert_eq!(row.approved.as_deref(), Some("moved"));
     assert!(
-        ready(r.s.demotions.get().unwrap().record.list()).is_empty(),
+        ready(r.s.demotions.as_ref().unwrap().record.list()).is_empty(),
         "the approval clears the demotion"
     );
     assert_eq!(r.s.trust_unreached(&me, "cp").value, svc::TRUST_SAME);
@@ -826,11 +826,11 @@ fn an_items_drift_demotion_outlives_a_restart() {
 }
 
 fn restarted(r: &Rig) -> KernelServices {
-    let demotions = r.s.demotions.get().unwrap();
-    let host = KernelServices::new()
+    let demotions = r.s.demotions.as_ref().unwrap();
+    let mut host = KernelServices::new()
         .with_demotions(Arc::clone(&demotions.record), &demotions.default_instance)
         .with_pool(Arc::new(Inline));
-    assert!(host.attach_persistence(Arc::clone(&r.store)));
+    host = host.with_persistence(Arc::clone(&r.store));
     host
 }
 
@@ -910,7 +910,7 @@ fn an_unprefixed_row_replays_into_the_default_instance_only_and_it_clears_it() {
         run(|l| pinned.trust_sight(&caller(SECTION_KEY), "cp", "fp", l)).value,
         svc::TRUST_NEW
     );
-    assert!(ready(r.s.demotions.get().unwrap().record.list()).is_empty());
+    assert!(ready(r.s.demotions.as_ref().unwrap().record.list()).is_empty());
 }
 
 #[test]
@@ -1016,9 +1016,9 @@ fn pooled(
     rt: &tokio::runtime::Runtime,
     backend: Arc<dyn busbar_contract::persistence::PersistenceBackend>,
 ) -> KernelServices {
-    let host =
+    let mut host =
         KernelServices::new().with_pool(Arc::new(BlockingPool::new(rt.handle().clone(), 64)));
-    assert!(host.attach_persistence(attach_backend(backend)));
+    host = host.with_persistence(attach_backend(backend));
     host.admit_sync(
         "inst",
         InstanceFacts {
@@ -1116,13 +1116,16 @@ fn a_demotion_is_written_on_the_pool_and_the_sighting_answers_after_it() {
 
     assert!(matches!(ran, Ran::Later));
     assert!(slot.lock().unwrap().is_none());
-    assert!(ready(r.s.demotions.get().unwrap().record.list()).is_empty());
+    assert!(ready(r.s.demotions.as_ref().unwrap().record.list()).is_empty());
     assert_eq!(held.drain(), 1);
     assert_eq!(
         slot.lock().unwrap().take().unwrap().value,
         svc::TRUST_DRIFTED
     );
-    assert_eq!(ready(r.s.demotions.get().unwrap().record.list()).len(), 1);
+    assert_eq!(
+        ready(r.s.demotions.as_ref().unwrap().record.list()).len(),
+        1
+    );
 
     let s2 = run(|l| s.trust_sight(&caller("inst"), "cp", "moved", l));
     assert_eq!(s2.value, svc::TRUST_QUARANTINED);
@@ -1132,7 +1135,7 @@ fn a_demotion_is_written_on_the_pool_and_the_sighting_answers_after_it() {
 #[test]
 fn a_durable_record_with_no_pool_judges_nothing() {
     let r = rig();
-    let d = r.s.demotions.get().unwrap();
+    let d = r.s.demotions.as_ref().unwrap();
     let s = KernelServices::new().with_demotions(Arc::clone(&d.record), SECTION_KEY);
     s.admit_sync("inst", trusting(Some("fp"))).unwrap();
     let a = run(|l| s.trust_sight(&caller("inst"), "cp", "moved", l));
@@ -1234,8 +1237,9 @@ fn a_flush_the_pool_refuses_leaves_the_writes_readable_and_queued_for_the_next()
         .build()
         .unwrap();
     let store = native_store();
-    let s = KernelServices::new().with_pool(Arc::new(BlockingPool::new(rt.handle().clone(), 64)));
-    assert!(s.attach_persistence(store));
+    let mut s =
+        KernelServices::new().with_pool(Arc::new(BlockingPool::new(rt.handle().clone(), 64)));
+    s = s.with_persistence(store);
     s.admit_sync(
         "inst",
         InstanceFacts {
@@ -1259,7 +1263,7 @@ fn a_flush_the_pool_refuses_leaves_the_writes_readable_and_queued_for_the_next()
 fn a_row_without_a_label_is_read_back_under_the_section_key_instance_and_no_other() {
     let r = rig();
 
-    let d = r.s.demotions.get().unwrap();
+    let d = r.s.demotions.as_ref().unwrap();
     ready(d.record.record("cp", "quarantined", 1)).unwrap();
     let fresh = restarted(&r);
     for label in [SECTION_KEY, "inst", "tools-2"] {
@@ -1368,8 +1372,9 @@ fn a_call_past_the_pools_bound_answers_failed_at_once() {
         .build()
         .unwrap();
     let gate = Arc::new(Gate::default());
-    let s = KernelServices::new().with_pool(Arc::new(BlockingPool::new(rt.handle().clone(), 2)));
-    assert!(s.attach_persistence(attach_backend(gate.clone())));
+    let mut s =
+        KernelServices::new().with_pool(Arc::new(BlockingPool::new(rt.handle().clone(), 2)));
+    s = s.with_persistence(attach_backend(gate.clone()));
     s.admit_sync(
         "inst",
         InstanceFacts {
@@ -1478,8 +1483,8 @@ fn a_write_the_store_refuses_answers_failed_and_leaves_the_overlay() {
         backend: NativeBackend::default(),
     }));
     let held = Arc::new(Held::default());
-    let s = KernelServices::new().with_pool(Arc::new(Arc::clone(&held)));
-    assert!(s.attach_persistence(store));
+    let mut s = KernelServices::new().with_pool(Arc::new(Arc::clone(&held)));
+    s = s.with_persistence(store);
     s.admit_sync(
         "inst",
         InstanceFacts {
@@ -1505,8 +1510,8 @@ fn a_write_dropped_before_any_flush_answers_dropped() {
 }
 
 fn writer(store: &Arc<CoreStore>, pool: Arc<dyn Offload>) -> KernelServices {
-    let s = KernelServices::new().with_pool(pool);
-    assert!(s.attach_persistence(Arc::clone(store)));
+    let mut s = KernelServices::new().with_pool(pool);
+    s = s.with_persistence(Arc::clone(store));
     s.admit_sync(
         "inst",
         InstanceFacts {
@@ -1714,7 +1719,7 @@ fn a_dead_or_expired_key_sees_nothing() {
 
 #[test]
 fn entitlement_is_judged_against_the_principal_as_it_stands_now() {
-    let r = rig();
+    let mut r = rig();
     let admitted = key_granting(&[("item", "one"), ("item", "two")]);
     assert!(
         entitled(&r, 1, Some(Arc::clone(&admitted)), "standing:"),
@@ -1724,9 +1729,8 @@ fn entitlement_is_judged_against_the_principal_as_it_stands_now() {
         Some(key_granting(&[("item", "one")])),
     ));
     let live = Arc::clone(&now);
-    assert!(r
-        .s
-        .attach_standing(Arc::new(move |_, _| live.lock().unwrap().clone())));
+    r.s =
+        r.s.with_standing(Arc::new(move |_, _| live.lock().unwrap().clone()));
     assert!(
         !(entitled(&r, 1, Some(Arc::clone(&admitted)), "item:two")),
         "the narrowed grant is the one judged"
@@ -2230,7 +2234,7 @@ fn a_credential_consumer_prefix_has_one_instance_owner() {
 
 #[tokio::test]
 async fn a_ticket_is_minted_for_the_units_principal_under_the_declared_prefix() {
-    let r = rig();
+    let mut r = rig();
     r.s.admit(
         "minter",
         InstanceFacts {
@@ -2258,9 +2262,7 @@ async fn a_ticket_is_minted_for_the_units_principal_under_the_declared_prefix() 
         (Outcome::Refused, TICKET_NO_PRESS)
     );
     let press = Arc::new(Press::default());
-    assert!(r
-        .s
-        .attach_tickets(Arc::clone(&press) as Arc<dyn TicketPress>));
+    r.s = r.s.with_tickets(Arc::clone(&press) as Arc<dyn TicketPress>);
     let minted = ticket_result(&r.s, caller("minter"), Some(7), 600, b"{\"m\":1}").await;
     assert_eq!(minted.outcome, Outcome::Ready);
     assert_eq!(minted.bytes, b"tk_vk_caller:600");
@@ -2451,7 +2453,7 @@ async fn ticket_press_receives_the_exact_host_unit_caller_and_principal() {
             Ok(("published".into(), now + ttl_secs))
         }
     }
-    let r = rig();
+    let mut r = rig();
     r.s.admit(
         "minter",
         InstanceFacts {
@@ -2473,7 +2475,7 @@ async fn ticket_press_receives_the_exact_host_unit_caller_and_principal() {
             depth: 0,
         },
     );
-    assert!(r.s.attach_tickets(Arc::new(BoundPress { principal })));
+    r.s = r.s.with_tickets(Arc::new(BoundPress { principal }));
     let result = ticket_result(&r.s, caller("minter"), Some(71), 600, b"opaque").await;
     assert_eq!(result.outcome, Outcome::Ready);
     assert_eq!(result.bytes, b"published");
@@ -2511,7 +2513,7 @@ async fn a_refused_mint_carries_the_presss_code_retry_and_reason() {
         ),
         (TicketRefusal::NotKept, svc::TICKET_REFUSED_OTHER),
     ] {
-        let r = rig();
+        let mut r = rig();
         r.s.admit(
             "minter",
             InstanceFacts {
@@ -2531,7 +2533,7 @@ async fn a_refused_mint_carries_the_presss_code_retry_and_reason() {
                 depth: 0,
             },
         );
-        assert!(r.s.attach_tickets(Arc::new(Saturated(refusal))));
+        r.s = r.s.with_tickets(Arc::new(Saturated(refusal)));
         let result = ticket_result(&r.s, caller("minter"), Some(72), 600, b"opaque").await;
         assert_eq!(result.outcome, Outcome::Refused);
         assert_eq!(result.error, refusal.reason());
