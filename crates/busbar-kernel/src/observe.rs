@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-pub const PLUGIN_LABEL: &str = "plugin";
+/// The label core writes on every plugin metric: the instance's kind word (IF §12.17). There is no `plugin` label:
+/// no metric names a stamp name, module or former name (I2).
+pub const KIND_LABEL: &str = "kind";
+/// The label core writes on every MIN-3 plugin metric: the configured instance name (IF §12.17).
+pub const INSTANCE_LABEL: &str = "instance";
 
 /// An opaque budget group. The composition root reuses one owner for every
 /// instance of an implementation, including replacements. This is not authority.
@@ -220,7 +224,9 @@ fn fold_metrics(grants: &dyn Grants, sink: &dyn ObservationSink, raw: &[serde_js
 
         if let Some(labels) = &mut m.labels {
             labels.retain(|k, _| {
-                k != PLUGIN_LABEL && !(m.kind == "histogram" && k == super::source::QUANTILE_LABEL)
+                k != KIND_LABEL
+                    && k != INSTANCE_LABEL
+                    && !(m.kind == "histogram" && k == super::source::QUANTILE_LABEL)
             });
         }
 

@@ -54,6 +54,7 @@ tracing-log = { workspace = true }
 
 [dev-dependencies]
 libc = { workspace = true }
+stats_alloc = { workspace = true }
 serde_json = { workspace = true }
 jsonschema = { workspace = true }
 hyper = { workspace = true }
@@ -90,6 +91,9 @@ stage-probe = []
 # Test-only; named only in [dev-dependencies]. Counts every entry `abi::sdk::expiry::Counted`
 # reads or yields, so a test can assert that a request-path operation does not walk its state.
 visit-count = []
+
+[target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
+tikv-jemallocator = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

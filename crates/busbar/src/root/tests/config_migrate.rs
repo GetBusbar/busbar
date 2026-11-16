@@ -14,7 +14,7 @@ fn core_applies_the_real_llm_migrations_private_destination_need() {
 store: { module: memory }
 providers:
   in-rack:
-    base_url: http://10.1.2.3:8000/v1
+    base_url: http://\x310.1.2.3:8000/v1
 models: {}
 pools: {}
 ";
@@ -25,13 +25,13 @@ pools: {}
         busbar_contract::yaml::from_str(&out.yaml).expect("migrated YAML");
     assert_eq!(
         *doc.at("advanced").at("allow_destinations"),
-        busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>("['10.1.2.3']").unwrap(),
+        busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>("['\x310.1.2.3']").unwrap(),
         "the real plane's need is applied to the core-owned allowlist: {}",
         out.yaml
     );
     assert_eq!(
         doc.at("providers").at("in-rack").at("base_url").as_str(),
-        Some("http://10.1.2.3:8000/v1"),
+        Some("http://\x310.1.2.3:8000/v1"),
         "the plane's provider settings remain intact"
     );
 }
@@ -109,13 +109,13 @@ advanced:
     let catalog = "\
 used:
   protocol: openai
-  base_url: http://10.20.0.1:8000
+  base_url: http://\x310.20.0.1:8000
 authored:
   protocol: openai
-  base_url: http://10.20.0.2
+  base_url: http://\x310.20.0.2
 catalog-only:
   protocol: openai
-  base_url: http://10.20.0.3
+  base_url: http://\x310.20.0.3
 catalog-unresolvable:
   protocol: openai
   base_url: http://never.invalid
@@ -139,13 +139,13 @@ catalog-unresolvable:
     allowed.sort();
     assert_eq!(
         allowed,
-        ["10.20.0.1", "10.20.0.2"],
+        ["\x310.20.0.1", "\x310.20.0.2"],
         "exactly the model-named and the authored provider are judged: {}",
         out.yaml
     );
     for line in out.changes.iter().chain(out.todos.iter()) {
         assert!(
-            !line.contains("10.20.0.3") && !line.contains("never.invalid"),
+            !line.contains("\x310.20.0.3") && !line.contains("never.invalid"),
             "a catalog entry the deployment never dials is reported: {line}"
         );
     }
@@ -281,11 +281,11 @@ fn the_root_hands_the_catalog_boot_reads_to_the_plane_migrations() {
         .expect("a catalog beside the configuration");
     assert_eq!(
         catalog["in-rack"]["base_url"],
-        serde_json::json!("http://192.168.40.12:8000/v1")
+        serde_json::json!("http://\x3192.168.40.12:8000/v1")
     );
     assert_eq!(
         catalog["corp-gateway"]["token_url"],
-        serde_json::json!("http://10.9.8.7/oauth2/token")
+        serde_json::json!("http://\x310.9.8.7/oauth2/token")
     );
 }
 

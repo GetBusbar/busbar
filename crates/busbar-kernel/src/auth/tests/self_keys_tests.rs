@@ -307,8 +307,6 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
             .secret
     }
 
-    let mint_now = busbar_kernel::store::now();
-    let now = mint_now;
     for contender_refresh in [false, true] {
         let store = Arc::new(RefreshOverlapStore {
             inner: crate::real_store::native_backend().await,
@@ -328,6 +326,7 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
             .unwrap(),
         );
 
+        let mint_now = busbar_kernel::store::now();
         let original = issued(
             mint_provisioned_self_key(
                 gov.clone(),
@@ -340,6 +339,7 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
             )
             .await,
         );
+        let now = busbar_kernel::store::now();
         let original_id = gov
             .verify_token(original.expose(&crate::seal::lend()), now, None)
             .expect("the initial token verifies")
@@ -443,6 +443,7 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
             "the same subject must wait for its refresh transfer"
         );
 
+        let now = busbar_kernel::store::now();
         assert!(gov
             .verify_token(original.expose(&crate::seal::lend()), now, None)
             .is_none());
@@ -864,7 +865,7 @@ async fn resolve_then_issue_via_real_seam() {
         .starts_with("bbk_"));
     assert_eq!(issued.group, "user:sam");
 
-    let now = mint_now;
+    let now = busbar_kernel::store::now();
     assert!(gov
         .verify_token(issued.secret.expose(&crate::seal::lend()), now, None)
         .is_some());
@@ -1359,7 +1360,7 @@ async fn a_second_provider_asserting_the_same_subject_is_refused() {
         after.generation_hash, before.generation_hash,
         "corp's key is untouched"
     );
-    let now = mint_now;
+    let now = busbar_kernel::store::now();
     assert!(gov
         .verify_token(issued.secret.expose(&crate::seal::lend()), now, None)
         .is_some());

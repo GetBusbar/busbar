@@ -16,6 +16,9 @@ use busbar_kernel::plane_driver::route_input::{
     LaneInput, OnExhaustedInput, PoolInput, PoolMemberInput,
 };
 
+/// The MIN-3 boot: one generic walk over `Registry::boot_plan` (IF §11.2, §12.10 item 4).
+pub mod boot_walk;
+
 pub const ENV_CONFIG: &str = "BUSBAR_CONFIG";
 
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/busbar/config.yaml";
@@ -2248,12 +2251,18 @@ async fn build_app_native(
         .iter()
         .map(|(model, &idx)| (model.as_str(), idx))
         .collect();
-    let tslots = Arc::new(telemetry::AppSlots::build(
+    let mut tslots = telemetry::AppSlots::build(
         &ts_pools,
         &ts_by_model,
         |idx| lane_inputs.get(idx).map(|lane| lane.model.as_str()),
         crate::plane_driver::dispatch::fallback_key(),
-    ));
+    );
+    tslots.attach_lane_durations(
+        |idx| lane_inputs.get(idx).map(|lane| lane.model.as_str()),
+        |idx| lane_inputs.get(idx).map(|lane| lane.provider.as_str()),
+        crate::telemetry::max_lane_series(),
+    );
+    let tslots = Arc::new(tslots);
 
     let config_tables = Arc::new(busbar_kernel::plane_driver::route_tables::ConfigTables::of(
         &lane_inputs,
@@ -2618,3 +2627,7 @@ fn accepted_operator(auth: &config::AuthCfg, operator: &crate::auth::Operator) {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "tests/boot_walk_tests.rs"]
+mod boot_walk_tests;

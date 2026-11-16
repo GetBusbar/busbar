@@ -220,6 +220,7 @@ const KEY_FIELDS: &[&str] = &[
     "rotated_at",
     "rotation_count",
     "migrated_from",
+    "admin",
 ];
 const CREDENTIAL_FIELDS: &[&str] = &[
     "id",

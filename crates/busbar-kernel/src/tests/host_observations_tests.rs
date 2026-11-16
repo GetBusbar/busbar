@@ -25,10 +25,10 @@ impl Offload for Pool {
     }
 }
 fn cost(rate: u64) -> Arc<CostModel> {
-    let rates = [(
+    let rates = BTreeMap::from([(
         "serving".to_owned(),
         crate::config::RateEntryCfg {
-            units: [
+            units: BTreeMap::from([
                 (
                     "work_units".to_owned(),
                     busbar_kernel_ledger::cost::UnitRate::from_whole_micros(rate).unwrap(),
@@ -37,15 +37,11 @@ fn cost(rate: u64) -> Arc<CostModel> {
                     "other_units".to_owned(),
                     busbar_kernel_ledger::cost::UnitRate::from_whole_micros(rate).unwrap(),
                 ),
-            ]
-            .into_iter()
-            .collect(),
+            ]),
             ..Default::default()
         },
-    )]
-    .into_iter()
-    .collect::<BTreeMap<_, _>>();
-    let groups = [(
+    )]);
+    let groups = BTreeMap::from([(
         "group".to_owned(),
         GroupCfg {
             enabled: true,
@@ -61,9 +57,7 @@ fn cost(rate: u64) -> Arc<CostModel> {
             }],
             ..Default::default()
         },
-    )]
-    .into_iter()
-    .collect::<BTreeMap<_, _>>();
+    )]);
     Arc::new(CostModel::resolve_parts(Some(&rates), 0, &groups))
 }
 fn admitted(
@@ -74,15 +68,14 @@ fn admitted(
     unit: u64,
 ) {
     let grant = Arc::new(gov.try_admit(&cost, &key, "", 100).unwrap());
-    let classes: Arc<[String]> = vec!["work_units".to_owned(), "other_units".to_owned()].into();
     money.open_admitted(
         UnitKey::new(unit),
         UnitMoney {
             key,
             cost,
             pool: String::new(),
-            lane: "serving".to_owned(),
-            classes,
+            lane: "serving".into(),
+            classes: Arc::from(vec!["work_units".into(), "other_units".into()]),
             arrived: 100,
             mode: crate::config::groups::ExhaustionMode::FinishUnit,
             fee: FeeRefund::CallerStatus,
@@ -166,8 +159,8 @@ async fn neutral_runtime_custody_reserves_settles_and_reattaches_original_tariff
         generation: 1,
     };
     let policy = ObservationPolicy {
-        instance: "fixture".to_owned(),
-        destination: "member".to_owned(),
+        instance: "fixture".into(),
+        destination: "member".into(),
         serving_subject: "serving".into(),
         accounting_namespace: "account".into(),
         classes: vec![0],

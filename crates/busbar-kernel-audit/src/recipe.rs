@@ -9,6 +9,10 @@ pub const DIGEST_RECIPE: &str = "busbar.audit.digest.v5";
 /// Exact scale-six quantities, with canonical decimal text in the quantity field.
 pub const DIGEST_RECIPE_V6: &str = "busbar.audit.digest.v6";
 
+/// The recipe every new record is sealed under (ADMIN-API-1.6 §3.2): `v6`'s exact decimal
+/// quantities for every line, whole or fractional, plus the per-unit facts `/records` serves.
+pub const DIGEST_RECIPE_V7: &str = "busbar.audit.digest.v7";
+
 /// The unchanged legacy recipe with a chain-local rate-card ordinal.
 pub const DIGEST_RECIPE_V4: &str = "busbar.audit.digest.v4";
 
@@ -40,8 +44,11 @@ pub enum Recipe {
     },
     /// The keyed recipe retained for whole-count seals.
     V5,
-    /// The keyed recipe with exact decimal quantity text. Whole-only seals keep V5.
+    /// The keyed recipe with exact decimal quantity text, retained for verification.
     V6,
+    /// The recipe this build seals under: every quantity as exact decimal text, plus
+    /// [`crate::record::UnitFacts`] after the `v6` fields.
+    V7,
 }
 
 impl Recipe {
@@ -53,7 +60,20 @@ impl Recipe {
             Recipe::V4 { .. } => DIGEST_RECIPE_V4,
             Recipe::V5 => DIGEST_RECIPE,
             Recipe::V6 => DIGEST_RECIPE_V6,
+            Recipe::V7 => DIGEST_RECIPE_V7,
         }
+    }
+
+    /// Whether the recipe frames the incarnation, the node and the hook heads (`v4` on).
+    #[must_use]
+    pub(crate) fn keyed_frame(&self) -> bool {
+        !matches!(self, Recipe::V2 { .. })
+    }
+
+    /// Whether the recipe frames each quantity as exact decimal text (`v6` on).
+    #[must_use]
+    pub(crate) fn exact_quantities(&self) -> bool {
+        matches!(self, Recipe::V6 | Recipe::V7)
     }
 }
 
@@ -132,7 +152,7 @@ pub fn visit_fields(record: &crate::record::AuditRecord, f: &mut impl FieldSink)
     }
     f.num("unit_key", record.what.unit_key.get());
 
-    if matches!(record.recipe, Recipe::V4 { .. } | Recipe::V5 | Recipe::V6) {
+    if record.recipe.keyed_frame() {
         f.num("incarnation", record.what.incarnation);
     }
     f.text("op_class", record.what.op_class.as_str());
@@ -152,7 +172,7 @@ pub fn visit_fields(record: &crate::record::AuditRecord, f: &mut impl FieldSink)
     f.num("wall", record.wall);
     f.num("mono", record.mono);
 
-    if matches!(record.recipe, Recipe::V4 { .. } | Recipe::V5 | Recipe::V6) {
+    if record.recipe.keyed_frame() {
         f.num("node", record.node);
     }
     f.text("origin_kind", record.origin_kind);
@@ -174,7 +194,7 @@ pub fn visit_fields(record: &crate::record::AuditRecord, f: &mut impl FieldSink)
     f.num("lines_count", record.usage.lines.len() as u64);
     for line in &record.usage.lines {
         f.text("lines[].class", line.class.as_str());
-        if matches!(record.recipe, Recipe::V6) {
+        if record.recipe.exact_quantities() {
             f.text_fmt("lines[].quantity", format_args!("{}", line.quantity));
         } else {
             f.num(
@@ -206,7 +226,7 @@ pub fn visit_fields(record: &crate::record::AuditRecord, f: &mut impl FieldSink)
         } => {
             f.num("rate_card_version", legacy_rate_card_version);
         }
-        Recipe::V5 | Recipe::V6 => {
+        Recipe::V5 | Recipe::V6 | Recipe::V7 => {
             f.num(
                 "rate_card_key_present",
                 u64::from(record.usage.rate_card_version.is_some()),
@@ -240,7 +260,7 @@ pub fn visit_fields(record: &crate::record::AuditRecord, f: &mut impl FieldSink)
     for hook in &record.controls.hooks_applied {
         f.text("hooks[].hook", &hook.hook);
 
-        if matches!(record.recipe, Recipe::V4 { .. } | Recipe::V5 | Recipe::V6) {
+        if record.recipe.keyed_frame() {
             f.text("hooks[].head", hook.head.as_str());
             f.num("hooks[].failed", u64::from(hook.failed));
         }
@@ -254,6 +274,28 @@ pub fn visit_fields(record: &crate::record::AuditRecord, f: &mut impl FieldSink)
         "correlation_hash",
         record.correlation_hash.as_deref().unwrap_or(""),
     );
+    if matches!(record.recipe, Recipe::V7) {
+        visit_unit_facts(&record.unit, f);
+    }
+}
+
+/// The fields recipe `v7` appends, in order (`docs/audit-chain-digest-v7.md`, positions 46 on).
+fn visit_unit_facts(unit: &crate::record::UnitFacts, f: &mut impl FieldSink) {
+    use crate::record::HexBytes;
+    f.num("wall_ms", unit.wall_ms);
+    f.text("attribution", &unit.attribution);
+    f.text_fmt("boot_nonce", format_args!("{}", HexBytes(&unit.boot_nonce)));
+    f.num("status", u64::from(unit.status));
+    f.num("ttft_us", unit.ttft_us);
+    f.num("total_us", unit.total_us);
+    f.num("attempts_count", unit.attempts_used().count() as u64);
+    for attempt in unit.attempts_used() {
+        f.text("attempts[].outcome", attempt.outcome.as_str());
+        f.text("attempts[].target", &attempt.target);
+        f.text("attempts[].reason", &attempt.reason);
+        f.num("attempts[].us", attempt.us);
+    }
+    f.num("attempts_total", u64::from(unit.attempts_total));
 }
 
 /// Hash one record under the record chain's framing, field by field, as [`visit_fields`] reads it.

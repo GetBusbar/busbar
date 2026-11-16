@@ -286,7 +286,6 @@ fn a_back_only_line_batch_starts_publication_and_preserves_its_empty_frame() {
 
 #[test]
 fn real_pairing_requeues_source_before_new_inputs_and_retires_both_queue_lists_once() {
-    let now = Instant::now();
     for cancel in [false, true] {
         let sink = Sink::new();
         let pairing = Pairing::with_memory_limit(
@@ -294,6 +293,7 @@ fn real_pairing_requeues_source_before_new_inputs_and_retires_both_queue_lists_o
             "127.0.0.1:1".parse().unwrap(),
             Some(1 << 20),
         );
+        let now = Instant::now();
         pairing.sort(Leg::Caller, vec![piece(10, b"kind: opaque\r\n", true)], now);
         pairing.sort(
             Leg::Upstream,

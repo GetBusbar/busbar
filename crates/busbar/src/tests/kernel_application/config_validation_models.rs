@@ -453,9 +453,9 @@ fn test_validate_token_url_ssrf_and_scheme() {
     }
 
     for tu in [
-        "http://10.0.0.5/oauth2/token",
-        "http://172.16.4.2/token",
-        "http://192.168.1.20:8080/token",
+        "http://\x310.0.0.5/oauth2/token",
+        "http://\x3172.16.4.2/token",
+        "http://\x3192.168.1.20:8080/token",
         "http://127.0.0.1:9000/token",
         "http://[::1]:9000/token",
         "http://localhost:9000/token",

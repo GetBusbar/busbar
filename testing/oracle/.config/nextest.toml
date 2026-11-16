@@ -1,0 +1,7 @@
+# The oracle package's own nextest overrides; ci/qa.yml adds busbar-release's ci/nextest.toml (admission).
+# These two binaries are sweeps: each test boots the product once per case (every bundled plane door's
+# black-box cases; every shipped 1.x config migrated, validated and booted), serially, inside one test.
+# Every case keeps its own deadlines; the outer cap is twenty minutes instead of five.
+[[profile.default.overrides]]
+filter = 'binary(=plane_blackbox) | binary(=migration_corpus)'
+slow-timeout = { period = "60s", terminate-after = 20 }

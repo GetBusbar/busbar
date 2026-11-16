@@ -37,7 +37,7 @@ docker pull -q "$IMAGE" >/dev/null
 for variant in ecdsa rsa; do
   kt=ec256; [ "$variant" = rsa ] && kt=rsa2048
   certs="$C/certs-$variant"; mkdir -p "$certs"
-  "$C/lego-$LEGO_VER" --accept-tos --email security@getbusbar.com --domains "$HOST" --key-type "$kt" \
+  "$C/lego-$LEGO_VER" --accept-tos --email "${LEGO_EMAIL:-lab@example.com}" --domains "$HOST" --key-type "$kt" \
     --path "$certs" --http --http.port :80 run
   name="busbar-tls-lab-$variant-$$"
   docker run -d --rm --name "$name" -p 443:8443 \

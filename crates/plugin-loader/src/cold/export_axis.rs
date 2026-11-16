@@ -43,15 +43,22 @@ pub(crate) fn settings_unrendered(error: &serde_json::Error) -> Vec<String> {
     vec![error.to_string()]
 }
 
-/// Config: lists the linked export modules config may name.
+/// Config: lists the export modules config may name: every export row, linked or dropped in, by
+/// its alias, once, in registration order (the linked rows lead).
 #[cold]
 pub(crate) fn linked_modules(registry: &PluginRegistry) -> Vec<String> {
-    let linked = registry.linked();
-    linked
+    let mut modules: Vec<String> = Vec::new();
+    for p in registry
+        .linked()
         .iter()
+        .chain(registry.loadable())
         .filter(|p| p.manifest.kind == SECTION)
-        .map(|p| p.manifest.alias.clone())
-        .collect()
+    {
+        if !modules.contains(&p.manifest.alias) {
+            modules.push(p.manifest.alias.clone());
+        }
+    }
+    modules
 }
 
 /// Config: an export module's routes, read when config names it.

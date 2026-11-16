@@ -11,9 +11,6 @@ use busbar_core_connector::udp::{bind, ReadyPort};
 
 use super::{lock, CallerLeg, ClaimDoor, CALLER_QUEUE};
 
-fn instant_now() -> Instant {
-    Instant::now()
-}
 pub(super) fn got(stream: u64, bytes: &[u8], fields: bool) -> Got {
     Got {
         stream,
@@ -184,7 +181,7 @@ async fn session_delivery_and_close_allow_the_receiver_waker_to_reenter_the_leg(
         let mut cx = std::task::Context::from_waker(&waker);
         assert!(rx.poll_recv(&mut cx).is_pending());
         if deliver {
-            leg.take(vec![got(SESSION_CHANNEL, b"piece", false)], instant_now());
+            leg.take(vec![got(SESSION_CHANNEL, b"piece", false)], Instant::now());
         } else {
             pairing.close();
         }
@@ -276,7 +273,7 @@ pub(crate) mod peer {
                 Self {
                     socket,
                     framing,
-                    pending: [yielded].into_iter().collect::<VecDeque<_>>(),
+                    pending: VecDeque::from([yielded]),
                 },
                 offer,
             )
@@ -292,7 +289,7 @@ pub(crate) mod peer {
                 Self {
                     socket,
                     framing,
-                    pending: [first, yielded].into_iter().collect::<VecDeque<_>>(),
+                    pending: VecDeque::from([first, yielded]),
                 },
                 answer,
             )
@@ -349,13 +346,7 @@ pub(crate) mod peer {
                                 if let Some(message) = announce.take() {
                                     self.pending.push_back(
                                         self.framing
-                                            .emit(
-                                                piece.stream,
-                                                message,
-                                                true,
-                                                true,
-                                                super::instant_now(),
-                                            )
+                                            .emit(piece.stream, message, true, true, Instant::now())
                                             .unwrap(),
                                     );
                                 }

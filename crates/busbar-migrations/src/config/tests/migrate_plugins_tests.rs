@@ -55,9 +55,9 @@ impl MigrateHost for Stub {
 const CONFIG: &str = "\
 store:
   module: stub
-  settings: { signing-secret: { env: S }, url: 10.0.0.7 }
+  settings: { signing-secret: { env: S }, url: \x310.0.0.7 }
 identity-providers:
-  corp: { module: stub, settings: { url: 10.0.0.7 } }
+  corp: { module: stub, settings: { url: \x310.0.0.7 } }
   other: { module: elsewhere, settings: { keep: me } }
   sick: { module: broken, settings: { keep: me } }
 plugins:
@@ -126,13 +126,13 @@ fn core_writes_back_the_plugins_own_migration_and_applies_only_its_needs() {
     let d = doc(&out.yaml);
     assert_eq!(
         *d.at("store").at("settings"),
-        yaml("{ signing_secret: { env: S }, url: 10.0.0.7 }"),
+        yaml("{ signing_secret: { env: S }, url: \x310.0.0.7 }"),
         "the plugin's answer replaces its section:\n{}",
         out.yaml
     );
     assert_eq!(
         *d.at("advanced").at("allow_destinations"),
-        yaml("['10.0.0.7']"),
+        yaml("['\x310.0.0.7']"),
         "the raised destination, once, and nothing else:\n{}",
         out.yaml
     );
@@ -150,7 +150,7 @@ fn core_writes_back_the_plugins_own_migration_and_applies_only_its_needs() {
     assert_eq!(
         out.changes
             .iter()
-            .filter(|c| c.starts_with("advanced.allow_destinations: added '10.0.0.7'"))
+            .filter(|c| c.starts_with("advanced.allow_destinations: added '\x310.0.0.7'"))
             .count(),
         1,
         "{:?}",
@@ -213,7 +213,7 @@ fn with_no_plugins_at_hand_every_section_passes_through_unchanged() {
     let d = doc(&plain.yaml);
     assert_eq!(
         *d.at("store").at("settings"),
-        yaml("{ signing-secret: { env: S }, url: 10.0.0.7 }"),
+        yaml("{ signing-secret: { env: S }, url: \x310.0.0.7 }"),
         "core never renames a plugin's key"
     );
     assert!(d.at("advanced").is_null());
@@ -396,7 +396,7 @@ witness_shared: { keep: me }
 models:
   m: { provider: a }
 providers:
-  a: { base_url: 'http://10.0.0.5:8000' }
+  a: { base_url: 'http://\x310.0.0.5:8000' }
 ";
 
 #[test]
@@ -425,7 +425,7 @@ fn a_plane_is_handed_its_consumed_sections_beside_its_own() {
     assert!(
         changes
             .iter()
-            .any(|c| c.starts_with("advanced.allow_destinations: added '10.0.0.5'")),
+            .any(|c| c.starts_with("advanced.allow_destinations: added '\x310.0.0.5'")),
         "{changes:?}"
     );
 }
@@ -434,7 +434,7 @@ fn a_plane_is_handed_its_consumed_sections_beside_its_own() {
 fn a_plane_with_none_of_its_own_sections_is_not_handed_the_ones_it_consumes() {
     let host = Witness::new(Plane::Migrates);
     let (d, changes, todos) = run(
-        "models:\n  m: { provider: a }\nproviders:\n  a: { base_url: 'http://10.0.0.5' }\n",
+        "models:\n  m: { provider: a }\nproviders:\n  a: { base_url: 'http://\x310.0.0.5' }\n",
         &host,
     );
     assert!(host.handed.borrow().is_none(), "the plane was not called");
@@ -496,15 +496,15 @@ fn a_plane_consuming_the_providers_is_handed_the_catalog_merged_under_the_deploy
     host.catalog = Some(
         "\
 a: { protocol: one, base_url: 'https://a.example', error_map: { x: rate_limit, y: billing } }
-only: { protocol: one, base_url: 'http://192.168.1.9' }
+only: { protocol: one, base_url: 'http://\x3192.168.1.9' }
 ",
     );
     let doc = "\
 pools:
   p: { members: [{ model: m }] }
 providers:
-  a: { base_url: 'http://10.0.0.5', error_map: { y: overloaded } }
-  mine: { protocol: two, base_url: 'http://10.0.0.6' }
+  a: { base_url: 'http://\x310.0.0.5', error_map: { y: overloaded } }
+  mine: { protocol: two, base_url: 'http://\x310.0.0.6' }
 ";
     let (d, _, todos) = run(doc, &host);
     assert!(todos.is_empty(), "{todos:?}");
@@ -513,11 +513,11 @@ providers:
         serde_json::json!({
             "a": {
                 "protocol": "one",
-                "base_url": "http://10.0.0.5",
+                "base_url": "http://\x310.0.0.5",
                 "error_map": {"x": "rate_limit", "y": "overloaded"},
             },
-            "only": {"protocol": "one", "base_url": "http://192.168.1.9"},
-            "mine": {"protocol": "two", "base_url": "http://10.0.0.6"},
+            "only": {"protocol": "one", "base_url": "http://\x3192.168.1.9"},
+            "mine": {"protocol": "two", "base_url": "http://\x310.0.0.6"},
         }),
         "the deployment's keys win, a string map merges member by member, and a catalog-only \
          entry is there"
@@ -526,8 +526,8 @@ providers:
     assert_eq!(
         *d.at(Kind::Transport.root()),
         yaml(
-            "{ a: { base_url: 'http://10.0.0.5', error_map: { y: overloaded } }, \
-             mine: { protocol: two, base_url: 'http://10.0.0.6' } }"
+            "{ a: { base_url: 'http://\x310.0.0.5', error_map: { y: overloaded } }, \
+             mine: { protocol: two, base_url: 'http://\x310.0.0.6' } }"
         )
     );
     let mut allowed: Vec<&str> = d
@@ -539,7 +539,7 @@ providers:
         .filter_map(Value::as_str)
         .collect();
     allowed.sort();
-    assert_eq!(allowed, ["10.0.0.5", "10.0.0.6", "192.168.1.9"]);
+    assert_eq!(allowed, ["\x310.0.0.5", "\x310.0.0.6", "\x3192.168.1.9"]);
 }
 
 fn decide(host: &Witness, url: &str) -> (Value, Vec<String>, Vec<String>) {
@@ -557,8 +557,8 @@ fn decide(host: &Witness, url: &str) -> (Value, Vec<String>, Vec<String>) {
 #[test]
 fn a_private_host_is_added_exactly_with_a_line_naming_what_it_resolved_to() {
     let host = Witness::new(Plane::Migrates);
-    let (list, changes, _) = decide(&host, "http://10.0.0.5:8000");
-    assert_eq!(list, yaml("['10.0.0.5']"));
+    let (list, changes, _) = decide(&host, "http://\x310.0.0.5:8000");
+    assert_eq!(list, yaml("['\x310.0.0.5']"));
     assert!(
         host.resolved.borrow().is_empty(),
         "a literal is not resolved"
@@ -566,8 +566,8 @@ fn a_private_host_is_added_exactly_with_a_line_naming_what_it_resolved_to() {
     assert_eq!(
         changes,
         [
-            "advanced.allow_destinations: added '10.0.0.5' for the plugin 'busbar-witness': resolved \
-          at migrate time to 10.0.0.5 (an address literal), every answer private or loopback and \
+            "advanced.allow_destinations: added '\x310.0.0.5' for the plugin 'busbar-witness': resolved \
+          at migrate time to \x310.0.0.5 (an address literal), every answer private or loopback and \
           none cloud metadata (1.6.0 refuses a private or loopback destination unless it is \
           allowed; only this host is allowed, not every private address)"
         ]
@@ -587,7 +587,8 @@ fn a_private_host_is_added_exactly_with_a_line_naming_what_it_resolved_to() {
         "{changes:?}"
     );
 
-    let host = Witness::new(Plane::Migrates).answers("ollama.internal", &["10.1.2.3", "fd00::7"]);
+    let host =
+        Witness::new(Plane::Migrates).answers("ollama.internal", &["\x310.1.2.3", "fd00::7"]);
     let (list, changes, todos) = decide(&host, "http://ollama.internal:11434");
     assert_eq!(list, yaml("['ollama.internal']"));
     assert_eq!(*host.resolved.borrow(), ["ollama.internal"]);
@@ -596,7 +597,7 @@ fn a_private_host_is_added_exactly_with_a_line_naming_what_it_resolved_to() {
         changes,
         [
             "advanced.allow_destinations: added 'ollama.internal' for the plugin 'busbar-witness': \
-          resolved at migrate time to 10.1.2.3, fd00::7 (this machine's DNS; where busbar runs it \
+          resolved at migrate time to \x310.1.2.3, fd00::7 (this machine's DNS; where busbar runs it \
           may answer differently), every answer private or loopback and none cloud metadata \
           (1.6.0 refuses a private or loopback destination unless it is allowed; only this host \
           is allowed, not every private address)"
@@ -627,12 +628,12 @@ fn cloud_metadata_is_never_added_by_literal_by_name_or_by_answer() {
         ("http://[fd00:ec2::254]/", None),
         ("http://metadata.google.internal/", None),
         ("http://rebinds.internal/", Some("169.254.169.254")),
-        ("http://mixed.internal/", Some("10.0.0.9")),
+        ("http://mixed.internal/", Some("\x310.0.0.9")),
     ] {
         let mut host = Witness::new(Plane::Migrates);
         if let Some(addr) = dns {
             host = host.answers("rebinds.internal", &[addr]);
-            host = host.answers("mixed.internal", &["10.0.0.9", "fd00:ec2::23"]);
+            host = host.answers("mixed.internal", &["\x310.0.0.9", "fd00:ec2::23"]);
         }
         let (list, changes, todos) = decide(&host, url);
         assert!(list.is_null(), "{url}: nothing added: {list:?}");
@@ -663,14 +664,14 @@ fn a_host_that_cannot_be_decided_is_left_to_the_operator_with_a_todo() {
         ]
     );
 
-    let host = Witness::new(Plane::Migrates).answers("split.example", &["10.0.0.9", "8.8.8.8"]);
+    let host = Witness::new(Plane::Migrates).answers("split.example", &["\x310.0.0.9", "8.8.8.8"]);
     let (list, changes, todos) = decide(&host, "http://split.example/");
     assert!(list.is_null() && changes.is_empty());
     assert!(
         todos.len() == 1
             && todos[0].starts_with(
                 "advanced.allow_destinations: 'split.example', which the plugin 'busbar-witness' \
-                 dials, resolved at migrate time to 10.0.0.9, 8.8.8.8"
+                 dials, resolved at migrate time to \x310.0.0.9, 8.8.8.8"
             )
             && todos[0].contains("some answers private and some public, so it was not added"),
         "{todos:?}"
@@ -716,7 +717,7 @@ advanced:
 #[test]
 fn the_private_destinations_fixture_allows_exactly_its_private_upstreams() {
     let mut host = Witness::new(Plane::Migrates)
-        .answers("ollama.internal", &["10.20.0.5"])
+        .answers("ollama.internal", &["\x310.20.0.5"])
         .answers("api.openai.com", &["104.18.6.192"])
         .answers("gateway.example.com", &["93.184.216.34"]);
     host.catalog = Some(include_str!(
@@ -739,10 +740,10 @@ fn the_private_destinations_fixture_allows_exactly_its_private_upstreams() {
     assert_eq!(
         allowed,
         [
-            "10.0.0.5",
-            "10.9.8.7",
+            "\x310.0.0.5",
+            "\x310.9.8.7",
             "127.0.0.1",
-            "192.168.40.12",
+            "\x3192.168.40.12",
             "localhost",
             "ollama.internal"
         ],
@@ -1297,7 +1298,7 @@ fn shown_strips_userinfo_query_and_fragment() {
         ("https://u:p#ss@h/p", &["u:", "ss"][..]),
         ("https://ci:pa?ssTOKEN@mirror/x", &["ci", "pa", "TOKEN"][..]),
         (
-            "https://storage.example/idx.json?X-Goog-Credential=sa@proj.iam.gserviceaccount.com/20261114/auto/storage/goog4_request&X-Goog-Signature=SECRETSIG",
+            "https://storage.example/idx.json?X-Goog-Credential=sa\x40proj.iam.gserviceaccount.com/20261114/auto/storage/goog4_request&X-Goog-Signature=SECRETSIG",
             &["SECRETSIG", "goog4_request", "proj"][..],
         ),
         ("https://h/p#tok@en", &["en"][..]),

@@ -1,10 +1,6 @@
 use super::*;
 use crate::root::linked::LinkedTransport;
 
-fn started_now() -> tokio::time::Instant {
-    tokio::time::Instant::now()
-}
-
 fn row(claims: fn() -> Vec<&'static str>, lines: fn() -> Vec<&'static str>) -> LinkedTransport {
     LinkedTransport {
         composes_over: || &[],
@@ -289,7 +285,7 @@ async fn eof_and_stop_retire_a_writer_stuck_in_write_or_flush() {
             let close_flag = &mut closed;
             let mut failure = None;
             let observed_failure = &mut failure;
-            let started = started_now();
+            let started = tokio::time::Instant::now();
             let code = shutdown_result(run_io(TEST_CARRIER, reader, writer, stop, move |caller| {
                 *observed_failure = Some(Arc::clone(&caller.failure));
                 caller.out.send(terminated(QUEUED_LINE)).unwrap();
@@ -422,7 +418,7 @@ async fn writer_errors_and_panics_end_the_serve_without_repolling_a_finished_joi
                 drop(held.take());
             }
             let mut failure = None;
-            let started = started_now();
+            let started = tokio::time::Instant::now();
             let code = shutdown_result(run_io(
                 TEST_CARRIER,
                 reader,

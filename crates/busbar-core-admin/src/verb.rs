@@ -34,11 +34,11 @@ impl VerbScope {
 pub enum Class {
     /// One of the 66 operations of 1.5.5's `openapi.json`.
     Legacy,
-    /// One of the 14 new 1.6.0 verbs.
+    /// One of the 15 new 1.6.0 verbs.
     New,
     /// One of the five 1.6.0 ledger views.
     Ledger,
-    /// One of the three 1.6.0 audit-chain reads.
+    /// One of the 1.6.0 audit-chain reads, and `/records`, the per-unit projection of the chain.
     Audit,
     /// A named non-admin surface.
     Named,
@@ -137,6 +137,7 @@ pub enum KernelVerb {
     GetInfo,
     GetTelemetry,
     GetOperationsKey,
+    GetWhoami,
     GetConfigTree,
     GetUsage,
     GetOpenapiJson,
@@ -164,6 +165,8 @@ pub enum KernelVerb {
     GetHooksNameSchema,
     PatchHooksNameSettings,
     GetHooksNameStatus,
+    PutHooksNameAttachmentsTarget,
+    DeleteHooksNameAttachmentsTarget,
 
     GetIdentityProviders,
     DeleteIdentityProvidersName,
@@ -220,6 +223,7 @@ pub enum KernelVerb {
     GetAuditHead,
     GetAuditRange,
     GetAuditKeys,
+    GetRecords,
 
     PostAuthToken,
     GetAuthToken,
@@ -316,6 +320,9 @@ pub const TABLE: &[VerbRow] = table! {
     New RecoveryResolve "POST" "/api/v1/admin/ledger/recovery/resolve" "recovery_resolve";
     New GetTelemetry "GET" "/api/v1/admin/telemetry" "get_telemetry";
     New GetOperationsKey "GET" "/api/v1/admin/operations/{key}" "get_operations_key";
+    New GetWhoami "GET" "/api/v1/admin/whoami" "get_whoami";
+    New PutHooksNameAttachmentsTarget "PUT" "/api/v1/admin/hooks/{name}/attachments/{target}" "put_hooks_name_attachments_target";
+    New DeleteHooksNameAttachmentsTarget "DELETE" "/api/v1/admin/hooks/{name}/attachments/{target}" "delete_hooks_name_attachments_target";
     New GetConfigTree "GET" "/api/v1/admin/config/tree" "get_config_tree";
     New GetTrust "GET" "/api/v1/admin/trust" "get_trust";
     New TrustApprove "POST" "/api/v1/admin/trust/approve" "trust_approve";
@@ -328,6 +335,7 @@ pub const TABLE: &[VerbRow] = table! {
     Audit GetAuditHead "GET" "/api/v1/admin/audit/head" "get_audit_head";
     Audit GetAuditRange "GET" "/api/v1/admin/audit/range" "get_audit_range";
     Audit GetAuditKeys "GET" "/api/v1/admin/audit/keys" "get_audit_keys";
+    Audit GetRecords "GET" "/api/v1/admin/records" "get_records";
     Named PostAuthToken "POST" "/auth/token" "post_auth_token";
     Named GetAuthToken "GET" "/auth/token" "get_auth_token";
     Named GetV1Models "GET" "/v1/models" "get_v1_models";

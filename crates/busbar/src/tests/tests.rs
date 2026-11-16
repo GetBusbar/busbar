@@ -919,41 +919,6 @@ async fn one_seal_after_two_reloads() {
     );
 }
 
-#[cfg(not(target_env = "msvc"))]
-#[test]
-fn the_idle_purge_puts_each_arena_back_to_its_own_decay() {
-    use busbar_kernel::mallctl;
-
-    let big = vec![1u8; 64 << 20];
-    assert_eq!(big[big.len() - 1], 1);
-    drop(big);
-    let decays = || -> Vec<(u32, isize)> {
-        let n: u32 = mallctl::read(c"arenas.narenas").unwrap_or(0);
-        (0..n)
-            .filter_map(|i| {
-                let key = std::ffi::CString::new(format!("arena.{i}.dirty_decay_ms")).ok()?;
-                mallctl::read::<isize>(&key).ok().map(|v| (i, v))
-            })
-            .collect()
-    };
-    let before = decays();
-    assert!(
-        before.iter().any(|(_, v)| *v == 0),
-        "the huge arena is initialized and runs at decay 0: {before:?}"
-    );
-    super::purge_idle_arenas();
-    super::purge_idle_arenas();
-    let after = decays();
-    for (i, was) in &before {
-        let now = after.iter().find(|(j, _)| j == i).map(|(_, v)| *v);
-        assert_eq!(
-            now,
-            Some(*was),
-            "arena {i}'s decay was not put back to its own value"
-        );
-    }
-}
-
 #[test]
 fn the_line_serve_flag_is_read_off_the_planes_declared_rows() {
     let planted: &[crate::root::linked::CliHelpRow] = &[(

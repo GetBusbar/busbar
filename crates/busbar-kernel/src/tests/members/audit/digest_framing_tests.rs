@@ -77,6 +77,7 @@ fn record_inputs(op_class: &str, destination: &str) -> AuditInputs {
             children: Vec::new(),
         },
         correlation_label: None,
+        unit: busbar_kernel_audit::UnitFacts::default(),
     }
 }
 

@@ -6,3 +6,4 @@
 //! (W1-A3), B-SYNC (W1-H0), B-STORE-LANE (W1-L3), B-CHAIN and B-HOLD (wave 4). Wave 0 lands the empty files.
 
 #![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]

@@ -338,6 +338,35 @@ pub(crate) enum AuditRecipeElement {
     _Members(BTreeMap<String, AuditRecipeScalar>),
 }
 
+/// `GET /operations/{key}`: one idempotent operation record.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct OperationView {
+    idempotency_key: String,
+    principal: String,
+    operation_id: String,
+    /// One of `applied`, `rejected` or `in_flight`.
+    state: OperationState,
+    status: Option<u16>,
+    request_sha256: String,
+    received_at: u64,
+    completed_at: Option<u64>,
+    config_generation: Option<u64>,
+    audit_seq: Option<u64>,
+    /// The stored response body; `null` while in flight.
+    response: Value,
+}
+
+/// Where an idempotent operation stands.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum OperationState {
+    _Applied,
+    _Rejected,
+    _InFlight,
+}
+
 /// `GET /audit/keys`: the public keys the chain is signed with.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
@@ -766,6 +795,23 @@ fn doc_for(
             request: None,
             query: Vec::new(),
             errors: vec![unavailable_503("telemetry collection is disabled, unavailable, or could not produce a bounded snapshot")],
+        },
+
+        KernelVerb::GetWhoami => VerbDoc {
+            summary: "Who the admin chain says the caller is, and what the caller may do",
+            description: "The caller's principal, the credential behind it (`operator`, `key`, \
+                `identity_provider` or `open`), its scope, and every verb of the closed table it \
+                may call, computed with the gate's own predicate. Any identified admin credential \
+                may read its own identity, whatever verbs it holds. A read: it mutates nothing. \
+                `rate.read.limit` is `0`: reads are not metered."
+                .to_string(),
+            success: Success::Json(
+                schema_of(gen.subschema_for::<super::whoami::WhoamiView>()),
+                "The caller's identity and authority",
+            ),
+            request: None,
+            query: Vec::new(),
+            errors: Vec::new(),
         },
 
         KernelVerb::ChainBreak => VerbDoc {
@@ -1251,20 +1297,7 @@ fn doc_for(
                 operation and needs the `full` scope."
                 .to_string(),
             success: Success::Json(
-                json!({"type": "object", "required": ["idempotency_key", "principal",
-                    "operation_id", "state", "request_sha256", "received_at"],
-                    "properties": {
-                        "idempotency_key": {"type": "string"},
-                        "principal": {"type": "string"},
-                        "operation_id": {"type": "string"},
-                        "state": {"enum": ["applied", "rejected", "in_flight"]},
-                        "status": {"type": ["integer", "null"]},
-                        "request_sha256": {"type": "string"},
-                        "received_at": {"type": "integer"},
-                        "completed_at": {"type": ["integer", "null"]},
-                        "config_generation": {"type": ["integer", "null"]},
-                        "audit_seq": {"type": ["integer", "null"]},
-                        "response": {}}}),
+                schema_of(gen.subschema_for::<OperationView>()),
                 "The operation record",
             ),
             request: None,
@@ -1307,8 +1340,150 @@ fn doc_for(
                 .collect(),
             errors: vec![unavailable_503("the node could not take the read")],
         },
+        KernelVerb::PutHooksNameAttachmentsTarget
+        | KernelVerb::DeleteHooksNameAttachmentsTarget => {
+            let attach = verb == KernelVerb::PutHooksNameAttachmentsTarget;
+            VerbDoc {
+                summary: if attach {
+                    "Attach a hook at one attach point"
+                } else {
+                    "Detach a hook from one attach point"
+                },
+                description: "`target` is `pools` (every pool), `pools.<pool>`, a plane section, or \
+                    `<section>.<instance>`, exactly as `HookView.attachments[].target` lists it. \
+                    Attaching places the hook at `position` (`last` or a zero-based place) in that \
+                    list; an attach that changes nothing, and a repeat, answer the same hook \
+                    without a new generation. A hook defined in the base config file is refused \
+                    (`base_defined`). Audited as `hook.attach` and `hook.detach`; config budget."
+                    .to_string(),
+                success: Success::Json(
+                    schema_of(gen.subschema_for::<crate::v1::contract::HookView>()),
+                    "The hook, with its attachments after the change",
+                ),
+                request: attach.then(|| {
+                    schema_of(req_gen.subschema_for::<crate::v1::contract::HookAttachRequest>())
+                }),
+                query: vec![
+                    json!({"name": "name", "in": "path", "required": true,
+                           "schema": {"type": "string"}}),
+                    json!({"name": "target", "in": "path", "required": true,
+                           "schema": {"type": "string"}}),
+                ],
+                errors: vec![
+                    (
+                        "400",
+                        format!("`invalid_request`: malformed body or target, a position past the end, or {BODY_UNREADABLE}"),
+                    ),
+                    gated_403(),
+                    (
+                        "404",
+                        "`not_found`: no such hook or pool, or (detach) the hook is not attached there"
+                            .to_string(),
+                    ),
+                    (
+                        "409",
+                        "`conflict`: `base_defined`, an attach point the configuration does not \
+                         have, or a higher-priority override of the list"
+                            .to_string(),
+                    ),
+                    unavailable_503("the Store could not commit the change"),
+                ],
+            }
+        }
+        KernelVerb::GetRecords => records_doc(schema_of(
+            gen.subschema_for::<crate::v1::records::RecordsPage>(),
+        )),
         _ => return None,
     })
+}
+
+/// `GET /records` (ADMIN-API-1.6 §3.3): the per-unit records feed of this node.
+#[cfg(feature = "openapi-schema")]
+fn records_doc(schema: Value) -> VerbDoc {
+    use crate::v1::records::{
+        RECORDS_LIMIT_DEFAULT, RECORDS_LIMIT_MAX, RECORDS_SCAN_BOUND, RECORDS_WAIT_MAX_SECS,
+    };
+    let text = |name: &str, description: &str| {
+        json!({"name": name, "in": "query", "required": false,
+               "schema": {"type": "string"}, "description": description})
+    };
+    let integer = |name: &str, maximum: u64, description: &str| {
+        json!({"name": name, "in": "query", "required": false,
+               "schema": {"type": "integer", "minimum": 0, "maximum": maximum},
+               "description": description})
+    };
+    let mut query = vec![
+        text(
+            "cursor",
+            "Opaque `next_cursor` of an earlier page of this node. A cursor of another node is \
+             400 `cursor_mismatch` with `details.cursor_node_id`.",
+        ),
+        integer(
+            "limit",
+            RECORDS_LIMIT_MAX as u64,
+            &format!("At most this many records (default {RECORDS_LIMIT_DEFAULT})."),
+        ),
+        integer(
+            "wait",
+            RECORDS_WAIT_MAX_SECS,
+            "Seconds to wait for a record when the page would be empty and caught up.",
+        ),
+        integer(
+            "from_ms",
+            u64::MAX,
+            "A SEEK, not a filter: the first page starts at the first record whose \
+             `arrived_at_ms` is at least this (a binary search over the chain). Ignored with a \
+             cursor. A backward clock step can misplace records near the boundary.",
+        ),
+        integer(
+            "to_ms",
+            u64::MAX,
+            "Only records whose `arrived_at_ms` is before this.",
+        ),
+    ];
+    for name in [
+        "kind", "instance", "key", "group", "model", "provider", "target", "outcome", "reason",
+        "unit",
+    ] {
+        query.push(text(
+            name,
+            "An exact filter on the record field of this name.",
+        ));
+    }
+    VerbDoc {
+        summary: "Per-unit records: the sealed audit chain, one record per unit, as a feed",
+        description: format!(
+            "A read-time projection of this node's sealed per-unit audit records, oldest first. \
+             `next_cursor` is always a string; `complete: true` means caught up. With no cursor \
+             the feed starts at the oldest retained record. A request scans at most \
+             {RECORDS_SCAN_BOUND} sealed records, so a filtered page may be short or empty with a \
+             cursor that continues. Records are per node: `/info.nodes` lists every node. Spend \
+             is priced at read by the rule `GET /usage` uses. A read: it mutates nothing and is \
+             never posture-gated."
+        ),
+        success: Success::Json(schema, "One page of records"),
+        request: None,
+        query,
+        errors: vec![
+            (
+                "400",
+                "`invalid_request`: a malformed or unknown query parameter or cursor; \
+                 `cursor_mismatch`: a cursor of another node"
+                    .to_string(),
+            ),
+            (
+                "404",
+                "`not_found`: this node binds no audit chain to read".to_string(),
+            ),
+            (
+                "410",
+                "`cursor_expired`: the cursor's position is no longer retained; \
+                 `details.oldest_available` resumes"
+                    .to_string(),
+            ),
+            unavailable_503("the node could not take the unit, or the chain did not answer"),
+        ],
+    }
 }
 
 #[cfg(feature = "openapi-schema")]
@@ -1392,6 +1567,9 @@ pub(crate) fn operations(
             "x-busbar-since": SINCE,
             RESPONSES_KEY: by_status,
         });
+        if let Some(verb) = crate::admin_codec::verbs::name_at(http_method.as_str(), &path) {
+            op["x-busbar-verb"] = json!(verb);
+        }
         if !doc.query.is_empty() {
             op["parameters"] = Value::Array(doc.query);
         }

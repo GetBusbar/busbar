@@ -95,13 +95,17 @@ fn pool_key_collision_never_lends() {
                 "{what}: the same hash with another field is another key"
             );
             assert!(
-                c.pools.lend(shard, &colliding).is_none(),
+                c.pools
+                    .take(shard, &colliding, false, false)
+                    .lent()
+                    .is_none(),
                 "{what}: the line is never lent to a key whose hash collides with its own"
             );
         }
         let lent = c
             .pools
-            .lend(shard, &key)
+            .take(shard, &key, false, false)
+            .lent()
             .expect("control: the line is lent to its own key");
         assert!(Arc::ptr_eq(&lent, &line), "control: the kept line itself");
     });
