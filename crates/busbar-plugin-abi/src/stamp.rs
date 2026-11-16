@@ -27,6 +27,13 @@ pub struct Stamp {
     pub crypto: [u8; 8], // 248  "host" (Rust plugins), "external" (C header), or a backend name (out_of_process only)
     pub _reserved: [u8; 16], // 256  0
 }
+
+// The typed view of busbar-ffi's `StampBytes` (what `Plugin::stamp` points at): same size and alignment.
+const _: () = assert!(
+    core::mem::size_of::<Stamp>() == busbar_ffi::header::STAMP_SIZE
+        && core::mem::size_of::<Stamp>() == core::mem::size_of::<busbar_ffi::StampBytes>()
+        && core::mem::align_of::<Stamp>() == core::mem::align_of::<busbar_ffi::StampBytes>()
+);
 pub const STAMP_MAGIC: [u8; 16] = *b"BUSBAR\0PLUGSTAMP";
 pub const STAMP_LOCAL_BUILD: u32 = 1;
 // Round 28: bits 2 and 4 are retired, never reused; a stamp setting

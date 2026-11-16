@@ -20,7 +20,7 @@ memio = []
 
 [dependencies]
 zerocopy = { version = "0.8", features = ["derive"] }
-# The plugin boundary (UNSAFE-MIN r3.1): its types are the ABI types; feature `host` forwards to its loader side.
+# The plugin boundary (UNSAFE-MIN r3.1): the views, Host table, Out sink, Plugin header, chain bytes and the 7 layouts live there; this crate re-exports them. `host` forwards its loader side.
 busbar-ffi = { path = "../busbar-ffi" }
 # Feature `host` (IF §1): the crypto facade the Host marshals onto (never the backend), the scrubber's automaton,
 # lock-free snapshot swap and the encodings its needles are matched in. The arena/needle wipes use the unconditional zeroize below.
@@ -32,6 +32,10 @@ percent-encoding = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
 # The volatile wipe of a Reply block before it is freed (I11; IF §1 names zerocopy + zeroize). Never `Zeroizing`.
 zeroize = { workspace = true }
+
+[dev-dependencies]
+# W1-A2: the safe host API's unit tests lend their test vtable's output from busbar-ffi's crypto `Arena`, as host_vt does.
+busbar-ffi = { path = "../busbar-ffi", features = ["host"] }
 
 [lints]
 workspace = true

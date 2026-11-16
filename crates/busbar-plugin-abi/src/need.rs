@@ -3,9 +3,6 @@
 
 //! Need steps: the wire, chain-scoped argument handles and the plugin-side Need API (IF §6.1, §6.2, §6.3). W0-ABI stub: frozen signatures, `todo!()` bodies; A3 fills it.
 
-use core::cell::Cell;
-use core::marker::PhantomData;
-
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 // ---- §6.1 Wire (inside `mechanism!`) ----
@@ -188,59 +185,9 @@ pub mod open_flag {
 
 // ---- §6.2 Chain-scoped argument handles ----
 
-/// An async argument. Valid only while its own chain is being polled on this thread.
-/// No Deref, AsRef, Borrow, Index, as_ptr, guard type or IntoIterator. `!Sync`, `Send`.
-/// The check value is `ChainId`, which is **never reused while the image is mapped** and, round 7, **does not
-/// depend on the slot table at all** (so the §6.5 free-list sharding branch keeps it unchanged): `inst` is a 64-bit
-/// serial from a per-image `static NEXT_INST: AtomicU64` taken once per `Inst` (cold, in `open`; the global open
-/// slab is serial 0, real instances start at 1); `thread` is the starting thread's ordinal, taken once per thread
-/// from a per-image `static NEXT_THREAD: AtomicU32` on its first chain start (one RMW per thread lifetime; 0 is
-/// never issued; at 2^32 − 1 the image FAULTs `Exhausted` on further chain starts, unreachable in practice);
-/// `serial` is that thread's own chain counter, a `const`-initialised `Cell<u64>` thread-local (no destructor,
-/// I13) bumped by a plain store on every chain start (no RMW). (thread, serial) is unique for every chain the
-/// image ever starts and cannot wrap (2^64 per thread), so a handle stashed anywhere (a
-/// `static Mutex<Option<ChainBytes>>`, `Box::leak`) fails the check in every later chain, including chains of a
-/// reopened instance at the same address and chains in the same slot after any number of reuses, whatever the
-/// slot table's own generation does. A stash cannot outlive the image either: its static lives in the image (I13).
-pub struct ChainBytes {
-    ptr: *const u8,
-    len: usize,
-    id: ChainId,
-    _ns: PhantomData<Cell<()>>,
-}
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ChainId {
-    inst: u64,
-    thread: u32,
-    serial: u64,
-}
-impl ChainBytes {
-    /// Checks CURRENT.id == self.id (one TLS load, three compares), then calls f.
-    /// Any other thread or chain: panic -> FAULT StaleHandle.
-    pub fn with<R>(&self, f: impl for<'a> FnOnce(&'a [u8]) -> R) -> R {
-        let _ = (
-            self.ptr,
-            self.len,
-            self.id.inst,
-            self.id.thread,
-            self.id.serial,
-            f,
-        );
-        todo!()
-    }
-    pub fn len(&self) -> usize {
-        todo!()
-    }
-    pub fn is_empty(&self) -> bool {
-        todo!()
-    }
-    /// Checked copy: the way to keep bytes across an .await or past the chain.
-    pub fn to_vec(&self) -> Vec<u8> {
-        todo!()
-    }
-}
-// W0-ABI: `unsafe impl Send for ChainBytes {}` is in the IF (W1-A3 adds it with its escape); until then the raw
-// `ptr` field leaves the stub `!Send` as well as `!Sync`.
+/// An async argument (IF §6.2). busbar-ffi owns it: the check value, the `CURRENT` restore and the one read of
+/// host memory are the plugin boundary (UNSAFE-MIN r3.1), so this is its type under the frozen path.
+pub use busbar_ffi::ChainBytes;
 
 // ---- §6.3 Plugin-side Need API ----
 
