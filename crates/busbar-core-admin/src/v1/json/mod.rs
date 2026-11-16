@@ -664,3 +664,5 @@ pub use handlers::credential_flush_response_for_test;
 #[cfg(test)]
 #[path = "tests/admin_grant_tests.rs"]
 mod admin_grant_tests;
+#[path = "tests/audit_feed_tests.rs"]
+mod audit_feed_tests;
