@@ -234,7 +234,8 @@ impl TransportPort for TransportAdapter {
 
     /// The argument is one record (R6b): EVENT_PATH and EVENT_KEYING through the §8.8 encoders, EV_RENDEZVOUS
     /// one generic TEXT. It is written into a `Reply`, which zeroes its bytes on growth and drop (I11: the
-    /// keying material), until W1-H1's `impl Writer for PooledOut` lets it use the thread's `args` buffer.
+    /// keying material). `impl Writer for PooledOut` is on dev; moving this onto the thread's `args` buffer is a later
+    /// optimisation, not a correctness gap.
     fn event(
         &self,
         s: &mut TransportSession,
