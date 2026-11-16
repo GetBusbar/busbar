@@ -209,7 +209,9 @@ impl IntoResponse for GuardAdminError {
         };
         (
             self.status(),
-            axum::Json(serde_json::json!({ "error": { "message": message } })),
+            busbar_contract::json::Body(
+                busbar_contract::json::json!({ "error": { "message": message } }),
+            ),
         )
             .into_response()
     }
