@@ -28,6 +28,10 @@ pub use recovery_runtime::RecoveryWork;
 
 pub const QUEUE_FULL: &str = "the record write queue is full";
 
+#[cfg(test)]
+#[path = "tests/invocation_context_tests.rs"]
+mod invocation_context_tests;
+
 use crate::host_records::{
     record_key, Acked, Owed as WriteOwed, PendingRecords, RecordRows, Write, WriteBehind,
 };
