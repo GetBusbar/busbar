@@ -600,6 +600,7 @@ receives identity-provider settings, not deployment credential references.
   credentials, connection grants) is derived by HKDF-SHA256 from `auth.signing_key`, so one secret
   now covers both uses and rotating `auth.signing_key` also retires the credentials sealed under it
   (re-mint them). A config that sets it is refused as an unknown key.
+- `limits.hook_content_max_bytes`: removed; a content-granted hook always sees the whole content (the old default of unlimited). A config that sets it is refused as an unknown key.
 
 ## Released 1.5.5 persistent configuration
 
