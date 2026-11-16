@@ -360,7 +360,7 @@ fn conn_info<'a>(c: &ConnIn<'a>) -> ConnInfo<'a> {
 
 /// A REFUSED or FAILED answer's parts as the port's error: the plugin text scrubbed, then cut (§12.16
 /// `fail_text`), the FAILED-only facts, and the resolved ERROR code.
-fn shown(
+pub fn shown(
     status: Status,
     fail: Option<(u32, &str)>,
     retry_after_s: Option<u64>,
