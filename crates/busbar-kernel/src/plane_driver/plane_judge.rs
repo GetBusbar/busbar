@@ -6,6 +6,7 @@
 //! `dest_judge`) minus `DEST_EXPLAIN` and the address list: no plane dials, so no pin set is handed back, and the
 //! plane never learns a resolved address, the matched rule or another destination's state.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -14,6 +15,7 @@ use busbar_plugin_abi::plane::{
     JUDGE_RESOLVE,
 };
 
+use crate::diagnostics::PLANE_JUDGE_UNAVAILABLE;
 use crate::host_services::{Admitted, DestJudge};
 
 /// The longest destination text a plane may ask about; longer answers `DEST_NO_HOST` without a lookup.
@@ -72,6 +74,22 @@ impl PlaneJudge {
             Ok(_) => DEST_ALLOWED,
             Err(refused) => verdict_of(refused.verdict),
         }
+    }
+}
+
+/// BUSBAR-7108, once per process: later answers are the same condition and log at debug.
+fn warn_unavailable() {
+    static LOGGED: AtomicBool = AtomicBool::new(false);
+    if LOGGED.swap(true, Ordering::Relaxed) {
+        busbar_contract::diag_debug!(
+            PLANE_JUDGE_UNAVAILABLE,
+            "no destination judge is installed: JUDGE answers internal"
+        );
+    } else {
+        busbar_contract::diag_warn!(
+            PLANE_JUDGE_UNAVAILABLE,
+            "no destination judge is installed: every plane JUDGE answers internal"
+        );
     }
 }
 
