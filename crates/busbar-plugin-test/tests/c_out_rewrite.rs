@@ -69,7 +69,8 @@ fn resolve(name: &str) -> (Status, Vec<(u16, Vec<u8>)>) {
     let lease = || OutLease::new(vec![0; 4096], 1 << 20).expect("a free ACTIVE slot");
     let bytes = fixture_library();
     let manifest = test_manifest(bytes, &["out-rewrite-c"]).expect("the fixture's own stamp scans");
-    let admitted = admit_bytes(bytes, &manifest).unwrap_or_else(|r| panic!("{r}"));
+    let admitted = admit_bytes(bytes, &manifest, "busbar-out-rewrite-c-fixture")
+        .unwrap_or_else(|r| panic!("{r}"));
     let mut out = lease();
     let OpenAnswer::Done(Status::OK, Some(inst)) =
         admitted

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use crate::sign::{Manifest, SigningKey, TrustPolicy};
+use crate::sign::{sign, Manifest, SigningKey, TrustPolicy};
 use crate::PluginRegistry;
 use std::path::PathBuf;
 

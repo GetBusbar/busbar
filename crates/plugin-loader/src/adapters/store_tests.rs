@@ -286,7 +286,12 @@ fn info_durability_must_agree_with_the_ephemeral_fact() {
 #[test]
 fn request_clock_writes_one_clock_record() {
     let d = DatasetId([7; 16]);
-    let req = request(4096, &Op::Clock(d)).expect("fits max_out");
+    let req = request(
+        4096,
+        &Op::Clock(d),
+        &busbar_contract::plugin::TestKernelSeal,
+    )
+    .expect("fits max_out");
     let bytes = req.bytes();
     assert!(!bytes.is_empty());
     assert!(bytes.windows(16).any(|w| w == d.0));

@@ -12,7 +12,9 @@ use core::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use busbar_contract::json::{self, JsonValueMutTrait as _, JsonValueTrait as _};
+use busbar_contract::json::{
+    self, JsonContainerTrait as _, JsonValueMutTrait as _, JsonValueTrait as _,
+};
 use busbar_contract::secure::SecureVec;
 use busbar_ffi::image::Admitted as Header;
 use busbar_ffi::Kind;

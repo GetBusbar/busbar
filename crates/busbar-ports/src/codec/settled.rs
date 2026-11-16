@@ -55,7 +55,7 @@ pub fn with_limits_json(mut base: InstanceLimits, json: &[u8]) -> InstanceLimits
         return base;
     };
     let pick = |key: &str, cap: u32| {
-        map.get(key)
+        map.get(&key)
             .and_then(json::Value::as_u64)
             .map(|v| u32::try_from(v).unwrap_or(cap).min(cap))
     };
