@@ -1904,3 +1904,7 @@ fn secret_handles(v: &serde_json::Value, out: &mut Vec<u32>) {
         _ => {}
     }
 }
+
+#[cfg(test)]
+#[path = "tests/transport_endpoint_tests.rs"]
+mod transport_endpoint_tests;
