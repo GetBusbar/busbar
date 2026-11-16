@@ -985,6 +985,7 @@ version = "1.6.0"
 dependencies = [
  "arc-swap",
  "busbar-contract",
+ "busbar-ffi",
  "busbar-plugin-abi",
  "flate2",
  "foldhash 0.2.0",
