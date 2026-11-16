@@ -52,6 +52,19 @@ pub(crate) struct CoreRouteTable {
 }
 
 impl CoreRouteTable {
+    /// This table and `other` as one: for a router merged from two [`CoreRouter`]s.
+    pub(crate) fn merged(mut self, other: CoreRouteTable) -> Self {
+        for route in other.routes {
+            self.by_path
+                .entry(route.path.clone())
+                .or_default()
+                .push((route.method, route.auth));
+            self.routes.push(route);
+        }
+        self.door_refusals.extend(other.door_refusals);
+        self
+    }
+
     pub(crate) fn declared_auth(&self, path: &str, method: &Method) -> Option<RouteAuth> {
         let rm = route_method_of(method)?;
         self.by_path

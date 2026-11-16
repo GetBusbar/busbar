@@ -233,3 +233,39 @@ pub(crate) fn percent_decode(s: &str) -> String {
     }
     String::from_utf8(out).expect("the server produced UTF-8")
 }
+
+/// The CSRF token an operator form carries.
+pub(crate) fn csrf_of(page: &str) -> String {
+    let after = page
+        .split("name=\"csrf_token\" value=\"")
+        .nth(1)
+        .expect("the operator form carries a CSRF token");
+    after.split('"').next().unwrap_or_default().to_string()
+}
+
+/// Answer the consent screen `page`, served at `consent` on the admin origin, as the operator's
+/// browser does: the form's fields, posted back to the page's origin.
+pub(crate) async fn answer_consent(
+    client: &reqwest::Client,
+    jar: &mut Jar,
+    consent: &str,
+    page: &str,
+    answer: &str,
+) -> (reqwest::StatusCode, reqwest::header::HeaderMap, String) {
+    let return_to = percent_decode(&query_param(consent, "return").expect("the pending request"));
+    let reference = query_param(consent, "ref").expect("the starting browser");
+    let token = csrf_of(page);
+    send(
+        client,
+        jar,
+        reqwest::Method::POST,
+        &format!("{}/oauth/consent", origin_of(consent)),
+        Some(&[
+            ("return", return_to.as_str()),
+            ("ref", reference.as_str()),
+            ("csrf_token", token.as_str()),
+            ("answer", answer),
+        ]),
+    )
+    .await
+}

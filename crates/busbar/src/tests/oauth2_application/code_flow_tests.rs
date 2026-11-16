@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::{
-    application_with_resource_auth,
-    browser::{encode_component, location, path_of, percent_decode, query_param, send, Jar},
+    application_with_resource_auth_at,
+    browser::{answer_consent, encode_component, location, path_of, query_param, send, Jar},
 };
 use base64::Engine as _;
 use busbar_core_oauth2::config::OauthAsCfg;
@@ -23,17 +23,15 @@ async fn serve_with_scopes(scopes: &[&str]) -> (String, Arc<busbar_kernel::state
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
+    let (admin_listener, admin_listen) = super::bind_admin().await;
     let origin = format!("https://{}", listener.local_addr().unwrap());
     let config = OauthAsCfg {
         issuer: origin.clone(),
         default_grant: scopes.iter().map(|scope| (*scope).into()).collect(),
         ..Default::default()
     };
-    let app = application_with_resource_auth(Some(&config), None, true).await;
-    let router = busbar_kernel::build_router(Arc::clone(&app));
-    tokio::spawn(async move {
-        super::serve_tls(listener, router).await;
-    });
+    let app = application_with_resource_auth_at(Some(&config), true, &admin_listen).await;
+    super::serve_split(Arc::clone(&app), listener, admin_listener, true);
     (origin, app)
 }
 
@@ -108,8 +106,8 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
     assert_eq!(status, 302, "authorize must redirect to consent: {body}");
     let consent = location(&headers, &origin);
     assert!(
-        consent.starts_with(&format!("{origin}/consent?return=")),
-        "the redirect must name this deployment's consent screen: {consent}"
+        consent.starts_with("http://127.0.0.1:") && path_of(&consent) == "/oauth/consent",
+        "the redirect must name this deployment's consent screen, on its admin listener: {consent}"
     );
 
     let (status, headers, body) =
@@ -126,27 +124,18 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
     );
 
     assert!(
-        jar.header_for("/consent").is_some(),
-        "the consent POST reads the session cookie; Set-Cookie was {set_cookie:?}"
+        jar.header_for("/oauth/consent").is_some(),
+        "the consent POST reads the form cookie; Set-Cookie was {set_cookie:?}"
     );
     assert!(
         jar.header_for("/authorize").is_some(),
-        "`/authorize` is where the approval resolver reads the session cookie, and it is a SIBLING \
-         of `/consent`, not a child: a cookie the browser will not send here cannot mint a code. \
-         Set-Cookie was {set_cookie:?}"
+        "`/authorize` is where the approval resolver reads the start cookie the authorization \
+         endpoint set: a cookie the browser will not send here cannot mint a code. Set-Cookie was \
+         {set_cookie:?}"
     );
 
-    let return_to =
-        query_param(&consent, "return").expect("the screen carries the pending request");
-    let return_to = percent_decode(&return_to);
-    let (status, headers, body) = send(
-        &client,
-        &mut jar,
-        reqwest::Method::POST,
-        &format!("{origin}/consent"),
-        Some(&[("return", return_to.as_str()), ("answer", "approve")]),
-    )
-    .await;
+    let (status, headers, body) =
+        answer_consent(&client, &mut jar, &consent, &body, "approve").await;
     assert_eq!(status, 302, "an approval must redirect back: {body}");
     let back = location(&headers, &origin);
     assert!(
@@ -213,7 +202,7 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
     assert_eq!(status, 302, "{body}");
     assert_eq!(
         path_of(&location(&headers, &origin)),
-        "/consent",
+        "/oauth/consent",
         "a spent approval must not authorise a second request"
     );
 }
@@ -241,17 +230,8 @@ async fn mint_access_token(origin: &str, client_id: &str) -> String {
         send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
     assert_eq!(status, 200, "the consent screen must render: {body}");
 
-    let return_to =
-        query_param(&consent, "return").expect("the screen carries the pending request");
-    let return_to = percent_decode(&return_to);
-    let (status, headers, body) = send(
-        &client,
-        &mut jar,
-        reqwest::Method::POST,
-        &format!("{origin}/consent"),
-        Some(&[("return", return_to.as_str()), ("answer", "approve")]),
-    )
-    .await;
+    let (status, headers, body) =
+        answer_consent(&client, &mut jar, &consent, &body, "approve").await;
     assert_eq!(status, 302, "an approval must redirect back: {body}");
     let back = location(&headers, origin);
 
@@ -355,17 +335,8 @@ async fn shown_and_granted(
     assert_eq!(status, 200, "the consent screen must render: {page}");
     let shown = requesting(&page);
 
-    let return_to = percent_decode(
-        &query_param(&consent, "return").expect("the screen carries the pending request"),
-    );
-    let (status, headers, body) = send(
-        &client,
-        &mut jar,
-        reqwest::Method::POST,
-        &format!("{origin}/consent"),
-        Some(&[("return", return_to.as_str()), ("answer", "approve")]),
-    )
-    .await;
+    let (status, headers, body) =
+        answer_consent(&client, &mut jar, &consent, &page, "approve").await;
     assert_eq!(status, 302, "an approval must redirect back: {body}");
     let back = location(&headers, origin);
     let (status, headers, body) = send(&client, &mut jar, reqwest::Method::GET, &back, None).await;

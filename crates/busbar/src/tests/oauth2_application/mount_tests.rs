@@ -60,10 +60,8 @@ fn inventory(id: &AsIdentity) -> Vec<String> {
         authorize_path,
         token_path,
         device_authorization_path,
-        verification_path,
         revocation_path,
         jwks_path,
-        consent_path,
 
         register_path,
 
@@ -88,10 +86,8 @@ fn inventory(id: &AsIdentity) -> Vec<String> {
         authorize_path.clone(),
         token_path.clone(),
         device_authorization_path.clone(),
-        verification_path.clone(),
         revocation_path.clone(),
         jwks_path.clone(),
-        consent_path.clone(),
         register_path.clone(),
     ];
     if *fapi2 {
@@ -221,6 +217,40 @@ async fn the_mounted_surface_and_the_app_state_cannot_disagree() {
             served.contains(&path),
             "`{path}` is derived from the configured identity, so the actual product router \
              built with that configuration must serve it"
+        );
+    }
+}
+
+/// #140: the operator approval pages are the ADMIN listener's, at fixed paths, declared `Admin`, and
+/// mounted whether or not `oauth_as:` is on (each answers 404 while the server is off); the data
+/// listener's inventory above names none of them.
+#[tokio::test]
+async fn the_admin_listener_declares_exactly_the_operator_approval_pages() {
+    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    use busbar_core_oauth2::config::{OPERATOR_CONSENT_PATH, OPERATOR_DEVICE_PATH};
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
+    let _app = application(None, None).await;
+    let operator: std::collections::HashSet<(String, RouteMethod, RouteAuth)> =
+        busbar_kernel::admin_core_lines()
+            .into_iter()
+            .filter(|(path, _, _)| path.starts_with("/oauth/"))
+            .collect();
+    let expected: std::collections::HashSet<(String, RouteMethod, RouteAuth)> = [
+        (OPERATOR_DEVICE_PATH, RouteMethod::Get),
+        (OPERATOR_DEVICE_PATH, RouteMethod::Post),
+        (OPERATOR_CONSENT_PATH, RouteMethod::Get),
+        (OPERATOR_CONSENT_PATH, RouteMethod::Post),
+    ]
+    .into_iter()
+    .map(|(path, method)| (path.to_string(), method, RouteAuth::Admin))
+    .collect();
+    assert_eq!(operator, expected);
+    for (path, _, auth) in
+        busbar_kernel::base_data_core_lines(&*application(Some(&cfg()), None).await)
+    {
+        assert!(
+            auth != RouteAuth::Admin && !path.starts_with("/oauth/"),
+            "the data listener declares an operator route: {path}"
         );
     }
 }

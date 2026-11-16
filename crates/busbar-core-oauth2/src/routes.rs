@@ -3,7 +3,7 @@
 
 use axum::response::{IntoResponse, Response};
 
-fn as_plane(app: &busbar_kernel::state::App) -> Option<&super::plane::AsPlane> {
+pub(super) fn as_plane(app: &busbar_kernel::state::App) -> Option<&super::plane::AsPlane> {
     app.oauth_as_any()
         .and_then(|p| p.downcast_ref::<super::plane::AsPlane>())
 }
@@ -21,115 +21,6 @@ pub(crate) async fn forward(
 fn into_axum(response: oauth_as::http::Response) -> Response {
     response
         .map(|body| axum::body::Body::from(body.into_bytes()))
-        .into_response()
-}
-
-pub(crate) async fn device_verification(
-    busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
-    request: axum::extract::Request,
-) -> Response {
-    let Some(plane) = as_plane(&app) else {
-        return not_found();
-    };
-    let (request, consumed) = if request.method() == axum::http::Method::POST {
-        let (parts, body) = request.into_parts();
-        let bytes = match axum::body::to_bytes(body, oauth_as::http::MAX_BODY_BYTES).await {
-            Ok(bytes) => bytes,
-            Err(_) => return axum::http::StatusCode::PAYLOAD_TOO_LARGE.into_response(),
-        };
-        let session = device_session_id(&parts.headers);
-        let csrf = form_urlencoded_pairs(&String::from_utf8_lossy(&bytes))
-            .into_iter()
-            .find(|(key, _)| key == "csrf_token")
-            .map(|(_, value)| value);
-        let consumed = match (session, csrf) {
-            (Some(session), Some(csrf)) if !csrf.is_empty() => {
-                match plane
-                    .consume_device_form(session, &csrf, ADMIN_SUBJECT)
-                    .await
-                {
-                    Ok(true) => Some(csrf),
-                    Ok(false) => None,
-                    Err(error) => {
-                        tracing::warn!(%error, "oauth_as: the device form could not be consumed");
-                        return store_unavailable();
-                    }
-                }
-            }
-            _ => None,
-        };
-        (
-            axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes)),
-            consumed,
-        )
-    } else {
-        (request, None)
-    };
-
-    let (Some(session), Some(csrf)) = (new_session_id(), new_session_id()) else {
-        return no_entropy();
-    };
-    if let Err(error) = plane
-        .issue_device_form(&session, &csrf, ADMIN_SUBJECT)
-        .await
-    {
-        tracing::warn!(%error, "oauth_as: the device form could not be kept");
-        return store_unavailable();
-    }
-    let cookie = device_session_cookie(plane.identity(), &session);
-    let Ok(cookie) = axum::http::HeaderValue::from_str(&cookie) else {
-        return not_representable();
-    };
-    let mut response = into_axum(
-        plane
-            .handle_device(request, ADMIN_SUBJECT, csrf, consumed)
-            .await,
-    );
-    response
-        .headers_mut()
-        .append(axum::http::header::SET_COOKIE, cookie);
-    response.headers_mut().insert(
-        axum::http::header::CACHE_CONTROL,
-        axum::http::HeaderValue::from_static("no-store"),
-    );
-    response
-}
-
-const DEVICE_SESSION_COOKIE: &str = "busbar_as_device";
-
-fn device_session_id(headers: &axum::http::HeaderMap) -> Option<&str> {
-    for raw in headers.get_all(axum::http::header::COOKIE) {
-        let raw = raw.to_str().ok()?;
-        if let Some((_, value)) = raw
-            .split(';')
-            .filter_map(|pair| pair.split_once('='))
-            .find(|(name, _)| name.trim() == DEVICE_SESSION_COOKIE)
-        {
-            return Some(value.trim());
-        }
-    }
-    None
-}
-
-fn device_session_cookie(identity: &crate::config::AsIdentity, id: &str) -> String {
-    let secure = if identity.issuer().starts_with("https://") {
-        "; Secure"
-    } else {
-        ""
-    };
-    format!(
-        "{DEVICE_SESSION_COOKIE}={id}; Path={}; HttpOnly{secure}; SameSite=Lax; Max-Age={}",
-        identity.verification_path(),
-        super::consent::SESSION_TTL.as_secs(),
-    )
-}
-
-fn store_unavailable() -> Response {
-    (
-        axum::http::StatusCode::SERVICE_UNAVAILABLE,
-        [(axum::http::header::CACHE_CONTROL, "no-store")],
-        axum::response::Html(PAGE_NO_SESSION),
-    )
         .into_response()
 }
 
@@ -153,18 +44,76 @@ pub(crate) async fn authorize(
     let Some(plane) = as_plane(&app) else {
         return not_found();
     };
-    if let Some(gate) = GateInputs::of(&request) {
-        if let Some(undecided) = pushed_request_gate(plane, gate).await {
-            return into_axum(undecided);
-        }
+    // 3. **The starting browser is named by its start cookie S** (#140), minted here only if it has
+    //    none, and never stored: an unauthenticated endpoint must not fill the session table.
+    let (start, minted) = match super::consent::start_of(request.headers()) {
+        Some(start) => (start, false),
+        None => match super::consent::new_handle() {
+            Some(start) => (start, true),
+            None => return no_entropy(),
+        },
+    };
+    // 4. **The one-time T the consent page appended is removed VERBATIM** before the library sees
+    //    the request: the stake's key is computed from the request's exact bytes.
+    let (request, handle) = match without_handle(request) {
+        Ok(split) => split,
+        Err(refused) => return refused,
+    };
+    let browser = super::consent::Browser {
+        session: super::consent::session_of(&start),
+        handle,
+    };
+    let undecided = match GateInputs::of(&request) {
+        Some(gate) => pushed_request_gate(plane, gate, &browser).await,
+        None => None,
+    };
+    let mut response = match undecided {
+        Some(undecided) => into_axum(undecided),
+        None => error_page(plane.authorize(request, browser).await),
+    };
+    if minted {
+        let cookie = super::consent::start_cookie(plane.identity(), &start);
+        let Ok(cookie) = axum::http::HeaderValue::from_str(&cookie) else {
+            return not_representable();
+        };
+        response
+            .headers_mut()
+            .append(axum::http::header::SET_COOKIE, cookie);
     }
-    error_page(plane.handle(request).await)
+    response
+}
+
+/// The request without its trailing `busbar_consent=<T>`, and T.
+fn without_handle(
+    request: axum::extract::Request,
+) -> Result<(axum::extract::Request, Option<String>), Response> {
+    let split = request
+        .uri()
+        .path_and_query()
+        .and_then(|pq| super::consent::split_handle(pq.as_str()))
+        .map(|(base, handle)| (base.parse::<axum::http::Uri>(), handle.to_string()));
+    let Some((uri, handle)) = split else {
+        return Ok((request, None));
+    };
+    let Ok(uri) = uri else {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            [(axum::http::header::CACHE_CONTROL, "no-store")],
+            axum::response::Html(PAGE_NO_REQUEST),
+        )
+            .into_response());
+    };
+    let (mut parts, body) = request.into_parts();
+    parts.uri = uri;
+    Ok((
+        axum::extract::Request::from_parts(parts, body),
+        Some(handle),
+    ))
 }
 
 struct GateInputs {
     client_id: String,
     request_uri: String,
-    session: Option<String>,
     target: String,
 }
 
@@ -180,31 +129,39 @@ impl GateInputs {
         Some(Self {
             client_id: param("client_id")?,
             request_uri: param("request_uri")?,
-            session: super::consent::session_id(request.headers()),
             target: request.uri().path_and_query()?.as_str().to_string(),
         })
     }
 }
 
+/// A pushed request reaches the library only once an answer is staked for it under THIS browser's
+/// consent session WITH the T it came back with: a wrong or missing T never reaches the library,
+/// so it cannot burn the one-time `request_uri`.
 async fn pushed_request_gate(
     plane: &super::plane::AsPlane,
     gate: GateInputs,
+    browser: &super::consent::Browser,
 ) -> Option<oauth_as::http::Response> {
     let pushed = plane.pushed(&gate.request_uri).await?;
     if pushed.client_id != gate.client_id {
         return None;
     }
     let key = super::consent::pushed_key(&gate.client_id, &gate.request_uri);
-    let decided = match &gate.session {
-        Some(session) => plane.is_staked(session, &key).await,
+    let decided = match &browser.handle {
+        Some(handle) => {
+            plane
+                .is_staked(&browser.session, &super::consent::handled_key(&key, handle))
+                .await
+        }
         None => false,
     };
     if decided {
         return None;
     }
     Some(super::consent::login_redirect(
-        &plane.identity().consent_url(),
+        &plane.consent_url(),
         &gate.target,
+        &browser.session,
     ))
 }
 
@@ -227,7 +184,7 @@ fn error_page(response: oauth_as::http::Response) -> Response {
         .into_response()
 }
 
-fn unresolved_grant(error: &oauth_as::store::StorageError) -> Response {
+pub(super) fn unresolved_grant(error: &oauth_as::store::StorageError) -> Response {
     tracing::warn!(%error, "oauth_as: the consent grant could not be resolved");
     (
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -237,160 +194,23 @@ fn unresolved_grant(error: &oauth_as::store::StorageError) -> Response {
         .into_response()
 }
 
-pub(crate) async fn consent_screen(
-    busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
-    axum::extract::Query(query): axum::extract::Query<ConsentQuery>,
-) -> Response {
-    let Some(plane) = as_plane(&app) else {
-        return not_found();
-    };
-    let Some(target) = query.return_to.as_deref().filter(|t| is_local_path(t)) else {
-        return (
-            axum::http::StatusCode::BAD_REQUEST,
-            axum::response::Html(PAGE_NO_REQUEST),
-        )
-            .into_response();
-    };
-    let pending = match pending_request(plane, target).await {
-        Ok(pending) => pending,
-        Err(error) => return unresolved_grant(&error),
-    };
-
-    let Some(id) = new_session_id() else {
-        return no_entropy();
-    };
-    if let Err(error) = plane.open_session(ADMIN_SUBJECT, id.clone()).await {
-        tracing::warn!(%error, "oauth_as: the consent session could not be kept");
-        return store_unavailable();
-    }
-    let page = consent_page(target, &pending);
-
-    let mut response = axum::response::Html(page).into_response();
-    let headers = response.headers_mut();
-    for cookie in session_cookies(plane.identity(), &id) {
-        let Ok(value) = axum::http::HeaderValue::from_str(&cookie) else {
-            return not_representable();
-        };
-
-        headers.append(axum::http::header::SET_COOKIE, value);
-    }
-
-    headers.insert(
-        axum::http::header::CACHE_CONTROL,
-        axum::http::HeaderValue::from_static("no-store"),
-    );
-    response
-}
-
-pub(super) fn session_cookies(identity: &crate::config::AsIdentity, id: &str) -> [String; 2] {
-    let secure = if identity.issuer().starts_with("https://") {
-        "; Secure"
-    } else {
-        ""
-    };
-
-    let attrs = format!(
-        "HttpOnly{secure}; SameSite=Lax; Max-Age={}",
-        super::consent::SESSION_TTL.as_secs()
-    );
-    let name = super::consent::SESSION_COOKIE;
-    [
-        format!("{name}={id}; Path={}; {attrs}", identity.authorize_path()),
-        format!("{name}={id}; Path={}; {attrs}", identity.consent_path()),
-    ]
-}
-
-pub(crate) async fn consent_submit(
-    busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
-    headers: axum::http::HeaderMap,
-    axum::extract::Form(form): axum::extract::Form<ConsentForm>,
-) -> Response {
-    let Some(plane) = as_plane(&app) else {
-        return not_found();
-    };
-    let Some(target) = form.return_to.as_deref().filter(|t| is_local_path(t)) else {
-        return (
-            axum::http::StatusCode::BAD_REQUEST,
-            axum::response::Html(PAGE_NO_REQUEST),
-        )
-            .into_response();
-    };
-
-    let Some(session) = super::consent::session_id(&headers) else {
-        return (
-            axum::http::StatusCode::BAD_REQUEST,
-            axum::response::Html(PAGE_NO_REQUEST),
-        )
-            .into_response();
-    };
-
-    let approve = match form.answer.as_deref() {
-        Some("approve") => true,
-        Some("deny") => false,
-        None | Some(_) => {
-            return (
-                axum::http::StatusCode::BAD_REQUEST,
-                axum::response::Html(PAGE_NO_REQUEST),
-            )
-                .into_response()
-        }
-    };
-
-    if let Some((client_id, _scope, _redirect_host)) = client_and_scope_of(target) {
-        let key = match query_value(target, "request_uri") {
-            Some(handle) => super::consent::pushed_key(&client_id, &handle),
-            None => super::consent::request_key(&client_id, target),
-        };
-        if let Err(error) = plane.stake(&session, key, approve).await {
-            tracing::warn!(%error, "oauth_as: the consent answer could not be kept");
-            return store_unavailable();
-        }
-    }
-    (
-        axum::http::StatusCode::FOUND,
-        [
-            (axum::http::header::LOCATION, target),
-            (axum::http::header::CACHE_CONTROL, "no-store"),
-        ],
-    )
-        .into_response()
-}
-
-const ADMIN_SUBJECT: &str = "busbar-operator";
-
-/// `?return=` on the consent screen.
-#[derive(serde::Deserialize)]
-pub(crate) struct ConsentQuery {
-    #[serde(rename = "return")]
-    return_to: Option<String>,
-}
-
-/// The consent form's fields: the pending request, and which button was pressed.
-#[derive(serde::Deserialize)]
-pub(crate) struct ConsentForm {
-    #[serde(rename = "return")]
-    return_to: Option<String>,
-    /// `approve` or `deny`.
-    answer: Option<String>,
-}
-
-fn query_value(target: &str, name: &str) -> Option<String> {
+pub(super) fn query_value(target: &str, name: &str) -> Option<String> {
     form_urlencoded_pairs(target.split_once('?')?.1)
         .into_iter()
         .find(|(k, _)| k == name)
         .map(|(_, v)| v)
 }
 
-struct Pending {
-    client_id: String,
+pub(super) struct Pending {
+    pub(super) client_id: String,
 
-    scope: String,
-    redirect_host: String,
+    pub(super) scope: String,
+    pub(super) redirect_host: String,
 
-    revisit: bool,
+    pub(super) revisit: bool,
 }
 
-async fn pending_request(
+pub(super) async fn pending_request(
     plane: &super::plane::AsPlane,
     target: &str,
 ) -> Result<Pending, oauth_as::store::StorageError> {
@@ -421,7 +241,7 @@ async fn pending_request(
     })
 }
 
-fn is_local_path(value: &str) -> bool {
+pub(super) fn is_local_path(value: &str) -> bool {
     let mut bytes = value.bytes();
     bytes.next() == Some(b'/')
         && !matches!(bytes.next(), Some(b'/' | b'\\'))
@@ -430,7 +250,7 @@ fn is_local_path(value: &str) -> bool {
             .any(|c| c == '\\' || c.is_control() || c.is_whitespace())
 }
 
-fn client_and_scope_of(target: &str) -> Option<(String, Option<String>, String)> {
+pub(super) fn client_and_scope_of(target: &str) -> Option<(String, Option<String>, String)> {
     let query = target.split_once('?')?.1;
     let mut client_id = None;
     let mut scope = None;
@@ -497,17 +317,7 @@ fn form_decoded(s: &str) -> String {
     }
 }
 
-fn new_session_id() -> Option<String> {
-    let mut bytes = [0u8; 32];
-    busbar_contract::crypto::fill(&mut bytes).ok()?;
-    let mut id = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        let _ = std::fmt::Write::write_fmt(&mut id, format_args!("{byte:02x}"));
-    }
-    Some(id)
-}
-
-fn no_entropy() -> Response {
+pub(super) fn no_entropy() -> Response {
     (
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
         axum::response::Html(PAGE_NO_SESSION),
@@ -515,7 +325,7 @@ fn no_entropy() -> Response {
         .into_response()
 }
 
-fn not_representable() -> Response {
+pub(super) fn not_representable() -> Response {
     (
         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
         axum::response::Html(PAGE_NO_SESSION),
@@ -523,7 +333,7 @@ fn not_representable() -> Response {
         .into_response()
 }
 
-fn not_found() -> Response {
+pub(super) fn not_found() -> Response {
     (
         axum::http::StatusCode::NOT_FOUND,
         [(axum::http::header::CONTENT_TYPE, "application/json")],
@@ -532,50 +342,15 @@ fn not_found() -> Response {
         .into_response()
 }
 
-const PAGE_NO_REQUEST: &str = "<!doctype html><meta charset=utf-8><title>busbar</title>\
+pub(super) const PAGE_NO_REQUEST: &str = "<!doctype html><meta charset=utf-8><title>busbar</title>\
     <p>There is no authorization request waiting. Start the login from your agent.</p>";
 
-const PAGE_NO_SESSION: &str = "<!doctype html><meta charset=utf-8><title>busbar</title>\
+pub(super) const PAGE_NO_SESSION: &str = "<!doctype html><meta charset=utf-8><title>busbar</title>\
     <p>This server could not start a session. Try again, and tell your operator if it persists.</p>";
 
 const PAGE_UNRESOLVED_GRANT: &str = "<!doctype html><meta charset=utf-8><title>busbar</title>\
     <p>This server could not resolve the requested permissions. Try again, and tell your operator \
     if it persists.</p>";
-
-fn consent_page(return_to: &str, pending: &Pending) -> String {
-    let scope = if pending.scope.is_empty() {
-        "no scopes"
-    } else {
-        &pending.scope
-    };
-    let redirect_host = if pending.redirect_host.is_empty() {
-        "(unnamed)"
-    } else {
-        &pending.redirect_host
-    };
-
-    let revisit = if pending.revisit {
-        "<p id=\"revisit\">This request was shown before.</p>"
-    } else {
-        ""
-    };
-    format!(
-        "<!doctype html><meta charset=utf-8><title>busbar — authorize</title>\
-         <h1>Authorize this client?</h1>\
-         <p>Client: <code>{client}</code></p>\
-         <p>Requesting: <code>{scope}</code></p>\
-         <p>Sends the credential to: <code>{host}</code></p>{revisit}\
-         <form method=post>\
-         <input type=hidden name=return value=\"{ret}\">\
-         <button type=submit id=approve name=answer value=approve>Approve</button>\
-         <button type=submit id=deny name=answer value=deny>Deny</button>\
-         </form>",
-        client = Escaped(&pending.client_id),
-        scope = Escaped(scope),
-        host = Escaped(redirect_host),
-        ret = Escaped(return_to),
-    )
-}
 
 /// Text made safe for HTML as it is written into the page.
 pub(super) struct Escaped<'a>(pub(super) &'a str);

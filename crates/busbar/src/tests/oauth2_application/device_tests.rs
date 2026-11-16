@@ -120,7 +120,7 @@ async fn start(subject: &Subject) -> Value {
     assert_eq!(status, 200, "{grant}");
     assert_eq!(
         grant["verification_uri"],
-        format!("{}/device", subject.origin)
+        format!("{}/oauth/device", subject.admin)
     );
     assert!(grant["device_code"]
         .as_str()
@@ -157,7 +157,7 @@ fn csrf(page: &str) -> String {
 
 async fn screen(client: &reqwest::Client, jar: &mut Jar, origin: &str, grant: &Value) -> String {
     let target = format!(
-        "{origin}/device?user_code={}",
+        "{origin}/oauth/device?user_code={}",
         grant["user_code"].as_str().unwrap()
     );
     let (status, _, page) = send(client, jar, reqwest::Method::GET, &target, None).await;
@@ -179,19 +179,19 @@ async fn submit(
     request_origin: &str,
 ) -> (reqwest::StatusCode, String) {
     let mut request = client
-        .post(format!("{origin}/device"))
+        .post(format!("{origin}/oauth/device"))
         .header(reqwest::header::ORIGIN, request_origin)
         .form(&[
             ("user_code", grant["user_code"].as_str().unwrap()),
             ("csrf_token", token),
             ("action", action),
         ]);
-    if let Some(cookie) = jar.header_for("/device") {
+    if let Some(cookie) = jar.header_for("/oauth/device") {
         request = request.header(reqwest::header::COOKIE, cookie);
     }
     let response = request.send().await.unwrap();
     for cookie in response.headers().get_all(reqwest::header::SET_COOKIE) {
-        jar.store(cookie.to_str().unwrap(), "/device");
+        jar.store(cookie.to_str().unwrap(), "/oauth/device");
     }
     let status = response.status();
     (status, response.text().await.unwrap())
@@ -221,11 +221,17 @@ async fn advertised_device_flow_requires_confirmation_mints_and_revokes() {
     );
     let grant = start(&subject).await;
     let mut jar = Jar::new(true);
-    let token = screen(&client, &mut jar, &origin, &grant).await;
+    let token = screen(&client, &mut jar, &subject.admin, &grant).await;
     assert!(jar.header_for("/token").is_none());
     assert!(jar.header_for("/revoke").is_none());
     let (status, page) = submit(
-        &client, &mut jar, &origin, &grant, &token, "approve", &origin,
+        &client,
+        &mut jar,
+        &subject.admin,
+        &grant,
+        &token,
+        "approve",
+        &subject.admin,
     )
     .await;
     assert_eq!(status, 200, "{page}");
@@ -312,7 +318,7 @@ async fn device_forms_refuse_missing_forged_replayed_and_cross_origin_csrf_and_a
     for attack in ["missing", "forged", "cross-origin", "replay"] {
         let grant = start(&subject).await;
         let mut jar = Jar::new(true);
-        let token = screen(&client, &mut jar, &origin, &grant).await;
+        let token = screen(&client, &mut jar, &subject.admin, &grant).await;
         let submitted = match attack {
             "missing" => "",
             "forged" => "not-issued",
@@ -321,20 +327,28 @@ async fn device_forms_refuse_missing_forged_replayed_and_cross_origin_csrf_and_a
         let request_origin = if attack == "cross-origin" {
             "https://attacker.example"
         } else {
-            &origin
+            &subject.admin
         };
         if attack == "replay" {
             assert_eq!(
-                submit(&client, &mut jar, &origin, &grant, &token, "", &origin)
-                    .await
-                    .0,
+                submit(
+                    &client,
+                    &mut jar,
+                    &subject.admin,
+                    &grant,
+                    &token,
+                    "",
+                    &subject.admin
+                )
+                .await
+                .0,
                 200
             );
         }
         let (status, page) = submit(
             &client,
             &mut jar,
-            &origin,
+            &subject.admin,
             &grant,
             submitted,
             "approve",
@@ -349,8 +363,17 @@ async fn device_forms_refuse_missing_forged_replayed_and_cross_origin_csrf_and_a
     }
     let grant = start(&subject).await;
     let mut jar = Jar::new(true);
-    let token = screen(&client, &mut jar, &origin, &grant).await;
-    let (status, page) = submit(&client, &mut jar, &origin, &grant, &token, "deny", &origin).await;
+    let token = screen(&client, &mut jar, &subject.admin, &grant).await;
+    let (status, page) = submit(
+        &client,
+        &mut jar,
+        &subject.admin,
+        &grant,
+        &token,
+        "deny",
+        &subject.admin,
+    )
+    .await;
     assert_eq!(status, 200, "{page}");
     assert!(page.contains("denied"), "{page}");
     assert_eq!(poll(&subject, &grant).await.1["error"], "access_denied");
@@ -358,11 +381,11 @@ async fn device_forms_refuse_missing_forged_replayed_and_cross_origin_csrf_and_a
 
 #[tokio::test]
 async fn the_browser_device_routes_require_admin_and_public_registration_keeps_its_grant_policy() {
-    let (origin, _app) = super::consent_tests::serve(&["read"], true).await;
+    let (origin, admin, _app) = super::consent_tests::serve_at(&["read"], true).await;
     let client = super::client();
     for method in [reqwest::Method::GET, reqwest::Method::POST] {
         let response = client
-            .request(method, format!("{origin}/device"))
+            .request(method, format!("{admin}/oauth/device"))
             .form(&[("user_code", "ABCD-EFGH"), ("action", "approve")])
             .send()
             .await

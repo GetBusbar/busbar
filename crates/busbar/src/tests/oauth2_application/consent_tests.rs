@@ -3,7 +3,7 @@
 
 use super::{
     application_with_document,
-    browser::{location, percent_decode, query_param, send, Jar},
+    browser::{answer_consent, location, query_param, send, Jar},
 };
 use busbar_core_oauth2::config::OauthAsCfg;
 use std::sync::Arc;
@@ -108,23 +108,14 @@ async fn a_multi_scope_or_default_scope_request_is_approved_on_its_first_consent
             "{scope:?}: authorize must redirect to consent: {body}"
         );
         let consent = location(&headers, &origin);
-        let (status, _headers, body) =
+        let (status, _headers, page) =
             send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
         assert_eq!(
             status, 200,
-            "{scope:?}: the consent screen must render: {body}"
+            "{scope:?}: the consent screen must render: {page}"
         );
-        let return_to = percent_decode(
-            &query_param(&consent, "return").expect("the screen carries the pending request"),
-        );
-        let (status, headers, body) = send(
-            &client,
-            &mut jar,
-            reqwest::Method::POST,
-            &format!("{origin}/consent"),
-            Some(&[("return", return_to.as_str()), ("answer", "approve")]),
-        )
-        .await;
+        let (status, headers, body) =
+            answer_consent(&client, &mut jar, &consent, &page, "approve").await;
         assert_eq!(
             status, 302,
             "{scope:?}: an approval must redirect back: {body}"
@@ -262,12 +253,15 @@ async fn a_return_target_a_browser_reads_as_off_site_is_refused_on_approve_and_d
     let (status, _, body) = send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
     assert_eq!(
         status, 200,
-        "the consent screen renders and opens a session: {body}"
+        "the consent screen renders and opens its form: {body}"
     );
     assert!(
-        jar.header_for("/consent").is_some(),
-        "the session cookie is live"
+        jar.header_for("/oauth/consent").is_some(),
+        "the form cookie is live"
     );
+    let admin = super::browser::origin_of(&consent);
+    let reference = query_param(&consent, "ref").expect("the starting browser");
+    let token = super::browser::csrf_of(&body);
 
     for answer in ["approve", "deny"] {
         for bypass in ["/\t/evil.example", "/\n/evil.example", "/\\evil.example"] {
@@ -275,8 +269,13 @@ async fn a_return_target_a_browser_reads_as_off_site_is_refused_on_approve_and_d
                 &client,
                 &mut jar,
                 reqwest::Method::POST,
-                &format!("{origin}/consent"),
-                Some(&[("return", bypass), ("answer", answer)]),
+                &format!("{admin}/oauth/consent"),
+                Some(&[
+                    ("return", bypass),
+                    ("ref", reference.as_str()),
+                    ("csrf_token", token.as_str()),
+                    ("answer", answer),
+                ]),
             )
             .await;
             assert_eq!(
@@ -294,7 +293,7 @@ async fn a_return_target_a_browser_reads_as_off_site_is_refused_on_approve_and_d
         &client,
         &mut jar,
         reqwest::Method::GET,
-        &format!("{origin}/consent?return=%2F%09%2Fevil.example"),
+        &format!("{admin}/oauth/consent?return=%2F%09%2Fevil.example&ref={reference}"),
         None,
     )
     .await;

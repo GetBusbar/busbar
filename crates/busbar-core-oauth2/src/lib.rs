@@ -12,6 +12,8 @@ pub mod crypto_provider;
 mod cold;
 mod hosted_login;
 mod mount;
+// The operator approval pages (admin listener): off the data listener's request path.
+mod operator;
 mod sweep;
 // The plane's build, generation hand-over and sweep; its request path is the marked `plane::serve`.
 pub mod plane;
@@ -105,6 +107,7 @@ pub fn install<C: Connections>() {
             check: config::seam_check,
             build: plane::seam_build::<C>,
             mount: mount::seam_mount,
+            mount_operator: mount::seam_mount_operator,
             verify_dpop: plane::seam_verify_dpop,
         },
     );

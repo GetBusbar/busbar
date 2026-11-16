@@ -492,6 +492,11 @@ pub fn build_router_with_limits(
         Vec::new(),
     );
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
+    // One listener serving both planes: the admin listener's operator approval pages too.
+    let (operator, operator_routes) =
+        crate::oauth_as::seam::mount_operator(crate::core_routes::CoreRouter::new()).into_parts();
+    let router = router.merge(operator);
+    let core_routes = core_routes.merged(operator_routes);
     let router = crate::admin::seam::mount_admin(router);
     let router = crate::plugin_routes::mount_plugin_routes(router, &plugin_routes, true);
     let router = apply_common_layers(
@@ -1103,6 +1108,18 @@ pub(crate) fn unchanged_dispatch_layer(
     router
 }
 
+/// The core routes the ADMIN listener declares: `/healthz`, and the authorization server's operator
+/// approval pages (#140), which are admin pages.
+pub(crate) fn admin_core_router() -> crate::core_routes::CoreRouter {
+    let admin = crate::core_routes::CoreRouter::new().route(
+        crate::auth::HEALTHZ_PATH,
+        busbar_contract::abi::mechanism::route::RouteMethod::Get,
+        busbar_contract::abi::mechanism::route::RouteAuth::None,
+        endpoints::healthz,
+    );
+    crate::oauth_as::seam::mount_operator(admin)
+}
+
 pub fn build_admin_router_on_with_dispatch_layer(
     handle: &std::sync::Arc<state::AppHandle>,
     request_body_max_bytes: usize,
@@ -1111,14 +1128,7 @@ pub fn build_admin_router_on_with_dispatch_layer(
 ) -> Router {
     let plugin_routes = handle.load().plugin_routes.clone();
 
-    let (admin, admin_core_routes) = crate::core_routes::CoreRouter::new()
-        .route(
-            crate::auth::HEALTHZ_PATH,
-            busbar_contract::abi::mechanism::route::RouteMethod::Get,
-            busbar_contract::abi::mechanism::route::RouteAuth::None,
-            endpoints::healthz,
-        )
-        .into_parts();
+    let (admin, admin_core_routes) = admin_core_router().into_parts();
     let admin = crate::admin::seam::mount_admin(admin);
     let admin = crate::plugin_routes::mount_plugin_routes(admin, &plugin_routes, true);
     apply_common_layers(

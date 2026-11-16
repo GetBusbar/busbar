@@ -10,8 +10,10 @@ use serde_json::{json, Value};
 
 use busbar_core_oauth2::config::{OauthAsCfg, StaticClientCfg, StaticClientJwk, StaticClientJwks};
 
-use super::application_with_resource_auth;
-use super::browser::{encode_component, location, path_of, percent_decode, query_param, send, Jar};
+use super::application_with_resource_auth_at;
+use super::browser::{
+    answer_consent, encode_component, location, path_of, percent_decode, query_param, send, Jar,
+};
 
 const REDIRECT_URI: &str = "http://127.0.0.1:9999/cb";
 
@@ -279,6 +281,7 @@ async fn serve(fapi2: bool) -> Subject {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
+    let (admin_listener, admin_listen) = super::bind_admin().await;
     let origin = format!("https://{}", listener.local_addr().expect("addr"));
     let (key, other) = (Key::new("fapi-client-key"), Key::new("fapi-client-2-key"));
     let rsa = RsaKey::new("fapi-client-ps256-key");
@@ -303,11 +306,8 @@ async fn serve(fapi2: bool) -> Subject {
         ],
     };
 
-    let app = application_with_resource_auth(Some(&cfg), None, true).await;
-    let router = busbar_kernel::build_router(Arc::clone(&app));
-    tokio::spawn(async move {
-        super::serve_tls(listener, router).await;
-    });
+    let app = application_with_resource_auth_at(Some(&cfg), true, &admin_listen).await;
+    super::serve_split(Arc::clone(&app), listener, admin_listener, true);
     Subject {
         app,
         origin,
@@ -387,18 +387,10 @@ async fn consent(s: &Subject, jar: &mut Jar, authorize: &str, answer: &str) -> S
         "an undecided pushed request goes to consent: {body}"
     );
     let screen = location(&headers, &s.origin);
-    assert_eq!(path_of(&screen), "/consent", "{screen}");
+    assert_eq!(path_of(&screen), "/oauth/consent", "{screen}");
     let (status, _, page) = send(&s.client, jar, reqwest::Method::GET, &screen, None).await;
     assert_eq!(status, 200, "the consent screen renders: {page}");
-    let return_to = percent_decode(&query_param(&screen, "return").expect("return"));
-    let (status, headers, body) = send(
-        &s.client,
-        jar,
-        reqwest::Method::POST,
-        &format!("{}/consent", s.origin),
-        Some(&[("return", return_to.as_str()), ("answer", answer)]),
-    )
-    .await;
+    let (status, headers, body) = answer_consent(&s.client, jar, &screen, &page, answer).await;
     assert_eq!(status, 302, "the answer redirects back: {body}");
     let back = location(&headers, &s.origin);
     assert_eq!(path_of(&back), "/authorize");

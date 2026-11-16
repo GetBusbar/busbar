@@ -37,7 +37,6 @@ fn an_issuer_with_no_path_serves_the_bare_well_known_document() {
         "/.well-known/oauth-authorization-server"
     );
     assert_eq!(id.authorize_path(), "/authorize");
-    assert_eq!(id.consent_url(), "https://gw.example.com/consent");
 }
 
 #[test]

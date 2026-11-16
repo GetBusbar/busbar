@@ -204,6 +204,13 @@ written in the top-level `pools:` map with `tools:` / `agents:` entries as bare-
 the same breaker and failover you already run for models applies to them; see
 [Circuit breaker](circuit-breaker.md).
 
+`oauth_as:` serves its operator approval pages (`/oauth/device` and `/oauth/consent`) on the admin
+listener, never on `listen`, and publishes the admin listener's address for them. In 1.6.0 that
+address is derived only from a loopback `admin_listen` (`http(s)://127.0.0.1:8081`, `https` when
+`admin_tls` is set): reach it with `ssh -L 8081:127.0.0.1:8081` or `kubectl port-forward`. Any other
+`admin_listen` with `oauth_as:` refuses to start (BUSBAR-3129), and changing `admin_listen` or
+`admin_tls` while `oauth_as:` is on needs a restart.
+
 Validation messages keep 1.5.5's wording, but the key lists they print are not frozen: where a
 message lists what a section accepts (`expected one of …`), the list now also names what 1.6.0
 added, such as the new sections and the group-limit token sub-metrics `tokens_input`,
