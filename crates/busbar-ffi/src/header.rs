@@ -86,6 +86,15 @@ impl LinkedPlugin {
     }
 }
 
+/// `&LinkedPlugin` coerces to `&Plugin` (and `&'static` stays `&'static` for statics), so the SDK suites' frozen
+/// `&'static Plugin` signatures (IF §14) take `plugin!`'s static directly. Safe: it only reads the field.
+impl core::ops::Deref for LinkedPlugin {
+    type Target = Plugin;
+    fn deref(&self) -> &Plugin {
+        &self.0
+    }
+}
+
 /// The kind a stamp names.
 pub(crate) const fn stamp_kind(stamp: &StampBytes) -> u32 {
     let b = &stamp.0;
