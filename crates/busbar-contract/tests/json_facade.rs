@@ -530,3 +530,36 @@ fn to_value_pretty_writer_and_number_text() {
     );
     assert_eq!(json::number_text(&json::Value::from("7")), None);
 }
+
+/// `pointer` / `pointer_mut` read RFC 6901 as serde_json's `Value::pointer` did: `""` is the whole
+/// tree, `~1` and `~0` unescape, an array index has no sign and no leading zero.
+#[test]
+fn pointer_reads_rfc_6901() {
+    let mut tree = json::json!({"a": {"b/c": [10, {"~d": true}]}, "": 1});
+    assert_eq!(json::pointer(&tree, ""), Some(&tree.clone()));
+    assert_eq!(
+        json::pointer(&tree, "/a/b~1c/0").and_then(|n| n.as_u64()),
+        Some(10)
+    );
+    assert_eq!(
+        json::pointer(&tree, "/a/b~1c/1/~0d").and_then(|b| b.as_bool()),
+        Some(true)
+    );
+    assert_eq!(json::pointer(&tree, "/").and_then(|n| n.as_u64()), Some(1));
+    for absent in [
+        "a",
+        "/a/b~1c/01",
+        "/a/b~1c/+1",
+        "/a/b~1c/2",
+        "/a/x",
+        "/a/b~1c/0/z",
+    ] {
+        assert!(json::pointer(&tree, absent).is_none(), "{absent}");
+    }
+    *json::pointer_mut(&mut tree, "/a/b~1c/0").expect("slot") = json::json!(11);
+    assert_eq!(
+        json::pointer(&tree, "/a/b~1c/0").and_then(|n| n.as_u64()),
+        Some(11)
+    );
+    assert!(json::pointer_mut(&mut tree, "/a/missing").is_none());
+}

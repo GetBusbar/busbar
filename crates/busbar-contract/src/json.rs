@@ -360,6 +360,61 @@ pub fn number_text(value: &Value) -> Option<String> {
     value.as_number().map(|number| number.to_string())
 }
 
+/// The member a JSON Pointer (RFC 6901) names: `""` is the whole tree, every other pointer starts
+/// with `/`; `~1` reads `/` and `~0` reads `~`; an array step is a decimal index without a sign or a
+/// leading zero. `None` when a step names nothing.
+pub fn pointer<'v>(value: &'v Value, pointer: &str) -> Option<&'v Value> {
+    if pointer.is_empty() {
+        return Some(value);
+    }
+    pointer
+        .strip_prefix('/')?
+        .split('/')
+        .map(pointer_token)
+        .try_fold(value, |target, token| {
+            if target.is_object() {
+                target.get(token.as_str())
+            } else if target.is_array() {
+                pointer_index(&token).and_then(|at| target.get(at))
+            } else {
+                None
+            }
+        })
+}
+
+/// [`pointer`] for editing the member in place.
+pub fn pointer_mut<'v>(value: &'v mut Value, pointer: &str) -> Option<&'v mut Value> {
+    if pointer.is_empty() {
+        return Some(value);
+    }
+    pointer
+        .strip_prefix('/')?
+        .split('/')
+        .map(pointer_token)
+        .try_fold(value, |target, token| {
+            if target.is_object() {
+                target.get_mut(token.as_str())
+            } else if target.is_array() {
+                pointer_index(&token).and_then(move |at| target.get_mut(at))
+            } else {
+                None
+            }
+        })
+}
+
+/// One pointer step, unescaped (`~1` first, so `~01` reads `~1`).
+fn pointer_token(step: &str) -> String {
+    step.replace("~1", "/").replace("~0", "~")
+}
+
+/// An array step: decimal digits, no sign, no leading zero.
+fn pointer_index(token: &str) -> Option<usize> {
+    if token.starts_with('+') || (token.starts_with('0') && token.len() != 1) {
+        return None;
+    }
+    token.parse().ok()
+}
+
 /// The log line for a body that did not parse: its length, never its bytes.
 #[cold]
 pub fn parse_err_log(bytes_len: usize) -> String {
