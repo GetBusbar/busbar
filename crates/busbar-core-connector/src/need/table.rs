@@ -38,10 +38,13 @@ struct Row<V> {
     held: Held<V>,
 }
 
+/// The rows of each (instance, conn) chain.
+type Chains<V> = HashMap<(u64, u64), Vec<Row<V>>>;
+
 /// The table.
 #[derive(Debug)]
 pub struct ConnTable<V> {
-    chains: Mutex<HashMap<(u64, u64), Vec<Row<V>>>>,
+    chains: Mutex<Chains<V>>,
     next: AtomicU64,
     max_per_chain: usize,
 }

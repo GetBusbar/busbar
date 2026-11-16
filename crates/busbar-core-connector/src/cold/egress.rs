@@ -25,6 +25,16 @@ pub(crate) fn refusal(verdict: u64, host: &str, addr: Option<IpAddr>) -> crate::
     }
 }
 
+/// A guard refusal of the node's own front door at `addr`: the host is the address as judged.
+#[cold]
+pub(crate) fn own_door_refusal(verdict: u64, addr: std::net::SocketAddr) -> crate::guard::Refusal {
+    crate::guard::Refusal {
+        verdict,
+        host: format!("{addr}"),
+        addr: Some(addr.ip()),
+    }
+}
+
 /// A failed system lookup, answered with its sentence.
 #[cold]
 pub(crate) fn lookup_failed(e: &std::io::Error) -> String {
