@@ -553,6 +553,7 @@ dependencies = [
  "metrics-util",
  "proc-macro2",
  "reqwest",
+ "rustls-pki-types",
  "schemars",
  "serde",
  "serde_json",
@@ -725,6 +726,7 @@ dependencies = [
  "sonic-rs",
  "tikv-jemallocator",
  "tokio",
+ "url",
  "zeroize",
 ]
 
