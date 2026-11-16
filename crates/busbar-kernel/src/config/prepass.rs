@@ -366,13 +366,41 @@ pub fn deploy_from_deserializer<'de, D: Deserializer<'de>>(
     de: D,
     grammar: &Grammar,
 ) -> Result<DeployCfg, D::Error> {
+    // Bind the opaque named secret definitions before any typed SecretRef is parsed. The
+    // untyped reader rejects duplicate keys, including duplicate instance definitions.
+    let bound;
     let words = busbar_contract::secret_ref::context::UsedWords::default();
-    let SplitDocument(mut deploy, sections) =
-        busbar_contract::secret_ref::context::deserialize_recording::<SplitDocument, _>(
-            de,
-            &grammar.sugars,
-            &words,
-        )?;
+    let (SplitDocument(mut deploy, sections), grammar) = if !grammar.secret_binding_required() {
+        (
+            busbar_contract::secret_ref::context::deserialize_recording::<SplitDocument, _>(
+                de,
+                &grammar.sugars,
+                &words,
+            )?,
+            grammar,
+        )
+    } else {
+        use busbar_contract::yaml::ValueExt as _;
+        let document = busbar_contract::yaml::untyped(de)?;
+        let secrets = match document.get("secrets") {
+            Some(value) => busbar_contract::yaml::from_value::<
+                std::collections::BTreeMap<String, super::SecretModuleCfg>,
+            >(value.clone())
+            .map_err(D::Error::custom)?,
+            None => std::collections::BTreeMap::new(),
+        };
+        bound = grammar
+            .bind_secret_instances(&secrets)
+            .map_err(D::Error::custom)?;
+        let parsed =
+            busbar_contract::secret_ref::context::deserialize_recording::<SplitDocument, _>(
+                busbar_contract::yaml::deserializer(document),
+                &bound.sugars,
+                &words,
+            )
+            .map_err(D::Error::custom)?;
+        (parsed, &bound)
+    };
     // What this read used of its grammar, recorded by the parse itself (§3.8): the grammar pin
     // compares exactly these items.
     let mut used = super::grammar::Used::default();

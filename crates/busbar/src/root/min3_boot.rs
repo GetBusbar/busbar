@@ -542,15 +542,19 @@ fn configured(cfg: &RootCfg, planes: &[PlaneImage]) -> Result<Vec<Configured>, S
     use busbar_kernel::appbuild::{instance_limits, STORE_INSTANCE};
     let seal = busbar_kernel::seal::lend();
     let mut out = Vec::new();
-    for (name, secret) in &cfg.secrets {
-        let config = secret
-            .settings
-            .encode()
-            .map_err(|error| format!("secrets.{name}: {error}"))?
-            .into_exposed(&seal);
+    let grammar = cfg.grammar().map_err(|error| error.0)?;
+    for (name, source) in &grammar.secret_instances {
+        let config = match cfg.secrets.get(name) {
+            Some(secret) => secret
+                .settings
+                .encode()
+                .map_err(|error| format!("secrets.{name}: {error}"))?
+                .into_exposed(&seal),
+            None => b"{}".to_vec(),
+        };
         out.push(Configured {
             kind: KindCode::Secret,
-            identity: name.clone(),
+            identity: source.identity.clone(),
             name: name.clone(),
             config,
             limits: instance_limits(cfg, "secrets", name),
@@ -602,59 +606,19 @@ fn upstreams_of(
     .map_err(|refused| refused.join("; "))
 }
 
-/// The shorthands the admitted secret images declare, as the one `Sugars` the binder and the config parser read.
-fn sugars_of(registry: &MinRegistry) -> Result<Sugars, String> {
-    use busbar_contract::abi::mechanism::door::{
-        REWRITE_ALIAS, REWRITE_SUGAR, REWRITE_SUGAR_NAMES, REWRITE_SUGAR_ROLE, REWRITE_SUGAR_SHOWN,
-        SUGAR_ROLE_FILL, SUGAR_ROLE_PATH,
-    };
-    let decls = registry.sugars();
-    let mut owners: Vec<Arc<str>> = Vec::new();
-    for decl in decls {
-        if !owners.iter().any(|owner| **owner == *decl.identity) {
-            owners.push(Arc::clone(&decl.identity));
-        }
-    }
-    let mut sugars = Sugars::default();
-    for owner in owners {
-        let mut rewrites: Vec<(u32, String, String)> = Vec::new();
-        for decl in decls.iter().filter(|decl| *decl.identity == *owner) {
-            let word = decl.word.to_string();
-            if decl.alias {
-                rewrites.push((REWRITE_ALIAS, word.clone(), owner.to_string()));
-            }
-            rewrites.push((REWRITE_SUGAR, word.clone(), decl.key.to_string()));
-            rewrites.push((REWRITE_SUGAR_SHOWN, word.clone(), decl.shown.to_string()));
-            rewrites.push((REWRITE_SUGAR_NAMES, word.clone(), decl.names.to_string()));
-            let role = match decl.role {
-                busbar_plugin_abi::secret::SUGAR_ROLE_FILL => Some(SUGAR_ROLE_FILL),
-                busbar_plugin_abi::secret::SUGAR_ROLE_PATH => Some(SUGAR_ROLE_PATH),
-                _ => None,
-            };
-            if let Some(role) = role {
-                rewrites.push((REWRITE_SUGAR_ROLE, word, role.to_owned()));
-            }
-        }
-        sugars.declare(&owner, &rewrites)?;
-    }
-    Ok(sugars)
-}
-
-/// Each configured secret instance's reference schema (its image's D_REF_SCHEMA), by configured name.
-fn ref_schemas(registry: &MinRegistry, cfg: &RootCfg) -> Vec<(Arc<str>, Box<str>)> {
-    cfg.secrets
-        .keys()
-        .filter_map(|name| {
-            let identity = registry.identity_of(name)?;
-            let described = registry.described(&identity)?;
-            let (_, body) = described
-                .items
-                .iter()
-                .find(|(tag, _)| *tag == busbar_plugin_abi::secret::tag::D_REF_SCHEMA)?;
-            let text = core::str::from_utf8(body).ok()?;
-            Some((Arc::from(name.as_str()), Box::from(text)))
+/// Reference schemas include implicit instances and are keyed by the exact configured reference target.
+fn ref_schemas(cfg: &RootCfg) -> Result<Vec<(Arc<str>, Box<str>)>, String> {
+    let grammar = cfg.grammar().map_err(|error| error.0)?;
+    Ok(grammar
+        .secret_instances
+        .iter()
+        .map(|(name, source)| {
+            (
+                Arc::from(name.as_str()),
+                Box::from(source.ref_schema.as_str()),
+            )
         })
-        .collect()
+        .collect())
 }
 
 /// The registry over the production Need handlers, every image added, the binder told the shorthands and the
@@ -700,9 +664,9 @@ fn build(
     }
     let registry = Registry::new(described.finish(), Arc::new(needs), Arc::clone(&binder));
 
-    let sugars = sugars_of(&registry)?;
+    let sugars = cfg.grammar().map_err(|error| error.0)?.sugars.clone();
     binder.set_sugars(Arc::new(sugars.clone()));
-    binder.set_ref_schemas(ref_schemas(&registry, cfg));
+    binder.set_ref_schemas(ref_schemas(cfg)?);
     let registry = Arc::new(registry);
     let seal: StoreSeal = Box::new(|| Box::new(busbar_kernel::seal::lend()));
     let auth_core = Arc::new(KernelAuthCore::new(

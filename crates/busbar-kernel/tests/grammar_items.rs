@@ -41,14 +41,14 @@ fn phase_one(_: &PhaseOneIn<'_>) -> Result<Grammar, GrammarRefusal> {
     )
 }
 
-fn publish() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        busbar_kernel::preflight::publish_root_rows(busbar_kernel::preflight::RootInstall {
-            grammar: Some(phase_one),
-            ..Default::default()
-        });
-    });
+struct Reader;
+impl busbar_kernel::appbuild::RootRules for Reader {
+    fn check(&self, _: &busbar_kernel::config::RootCfg) -> Result<(), String> {
+        Ok(())
+    }
+    fn grammar(&self, input: &PhaseOneIn<'_>) -> Result<Grammar, GrammarRefusal> {
+        phase_one(input)
+    }
 }
 
 fn scratch(tag: &str, body: &str) -> std::path::PathBuf {
@@ -71,14 +71,19 @@ fn scratch(tag: &str, body: &str) -> std::path::PathBuf {
 /// comes before the typed parse, so nothing is built.
 #[test]
 fn running_plane_made_inadmissible_refuses_reload_and_keeps_serving() {
-    publish();
     let config = scratch(
         "not-admitted",
         "providers: {}\nfixture-plane:\n  entry: {}\n",
     );
-    let refused = busbar_kernel::load_config_from_disk(&config, None, false, EnvSubst::Lenient)
-        .map(|_| ())
-        .expect_err("the section's module is not admitted by this read");
+    let refused = busbar_kernel::appbuild::load_config_from_disk_judged(
+        &config,
+        None,
+        false,
+        EnvSubst::Lenient,
+        &Reader,
+    )
+    .map(|_| ())
+    .expect_err("the section's module is not admitted by this read");
     assert!(
         refused.contains("`fixture-plane:` is the section of `fixture-plane-module`")
             && refused.contains("which this read's plugins: block does not admit")
@@ -94,14 +99,19 @@ fn running_plane_made_inadmissible_refuses_reload_and_keeps_serving() {
 /// restart refusal, not an unknown style.
 #[test]
 fn style_admitted_after_start_gets_the_restart_refusal() {
-    publish();
     let config = scratch(
         "unregistered-style",
         "providers:\n  up:\n    base_url: https://up.example\n    auth: fixture-style\n",
     );
-    let refused = busbar_kernel::load_config_from_disk(&config, None, false, EnvSubst::Lenient)
-        .map(|_| ())
-        .expect_err("the style's module was not registered at start");
+    let refused = busbar_kernel::appbuild::load_config_from_disk_judged(
+        &config,
+        None,
+        false,
+        EnvSubst::Lenient,
+        &Reader,
+    )
+    .map(|_| ())
+    .expect_err("the style's module was not registered at start");
     assert!(
         refused.contains("outbound auth style `fixture-style` is the style of `fixture-auth`")
             && refused.contains("which this process did not load at start")

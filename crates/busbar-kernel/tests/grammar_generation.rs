@@ -33,14 +33,14 @@ fn phase_one(input: &PhaseOneIn<'_>) -> Result<Grammar, GrammarRefusal> {
     Ok(Grammar::new(sugars, BTreeMap::new(), Vec::new()))
 }
 
-fn publish() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        busbar_kernel::preflight::publish_root_rows(busbar_kernel::preflight::RootInstall {
-            grammar: Some(phase_one),
-            ..Default::default()
-        });
-    });
+struct Reader;
+impl busbar_kernel::appbuild::RootRules for Reader {
+    fn check(&self, _: &busbar_kernel::config::RootCfg) -> Result<(), String> {
+        Ok(())
+    }
+    fn grammar(&self, input: &PhaseOneIn<'_>) -> Result<Grammar, GrammarRefusal> {
+        phase_one(input)
+    }
 }
 
 /// A scratch deployment: `config.yaml` (with `body` after a minimal document) and an empty
@@ -66,7 +66,6 @@ fn scratch(tag: &str, body: &str) -> std::path::PathBuf {
 /// names the pending file and the remedies, so the operator is not left with "not declared".
 #[test]
 fn fetch_only_module_at_first_boot_is_refused_naming_the_fetch() {
-    publish();
     let config = scratch("fetch-limit", "");
     let plugins = config.parent().expect("scratch dir").join("plugins");
     let mut text = std::fs::read_to_string(&config).expect("config");
@@ -76,9 +75,15 @@ fn fetch_only_module_at_first_boot_is_refused_naming_the_fetch() {
         "0".repeat(64)
     ));
     std::fs::write(&config, text).expect("config");
-    let refused = busbar_kernel::load_config_from_disk(&config, None, false, EnvSubst::Lenient)
-        .map(|_| ())
-        .expect_err("the word's module is not in plugins.dir yet");
+    let refused = busbar_kernel::appbuild::load_config_from_disk_judged(
+        &config,
+        None,
+        false,
+        EnvSubst::Lenient,
+        &Reader,
+    )
+    .map(|_| ())
+    .expect_err("the word's module is not in plugins.dir yet");
     assert!(
         refused.contains(UNDECLARED_MARKER) && refused.contains(WORD),
         "the word is refused as undeclared: {refused}"
@@ -98,10 +103,15 @@ fn fetch_only_module_at_first_boot_is_refused_naming_the_fetch() {
 /// would serve a generation without it, silently.
 #[test]
 fn persisted_identity_provider_with_a_removed_word_refuses_reload() {
-    publish();
     let config = scratch("persisted-removed-word", "");
-    let mut loaded = busbar_kernel::load_config_from_disk(&config, None, false, EnvSubst::Lenient)
-        .expect("the document reads: it uses no word");
+    let mut loaded = busbar_kernel::appbuild::load_config_from_disk_judged(
+        &config,
+        None,
+        false,
+        EnvSubst::Lenient,
+        &Reader,
+    )
+    .expect("the document reads: it uses no word");
     let mut doc = busbar_kernel::config::overlay::OverlayDoc::default();
     doc.named_maps.insert(
         "identity-providers".into(),
@@ -131,15 +141,20 @@ fn persisted_identity_provider_with_a_removed_word_refuses_reload() {
 /// the bag under another grammar.
 #[test]
 fn overlay_hook_and_root_settings_words_join_the_reads_used_set() {
-    publish();
     let config = scratch("overlay-bags", "");
     let plugins = config.parent().expect("scratch dir").join("plugins");
     std::fs::write(plugins.join(FILE), b"declares the word").expect("fixture file");
     let mut text = std::fs::read_to_string(&config).expect("config");
     text.push_str(&format!("plugins:\n  enabled: true\n  dir: {plugins:?}\n"));
     std::fs::write(&config, text).expect("config");
-    let mut loaded = busbar_kernel::load_config_from_disk(&config, None, false, EnvSubst::Lenient)
-        .expect("the document reads under its own block");
+    let mut loaded = busbar_kernel::appbuild::load_config_from_disk_judged(
+        &config,
+        None,
+        false,
+        EnvSubst::Lenient,
+        &Reader,
+    )
+    .expect("the document reads under its own block");
     let mut doc = busbar_kernel::config::overlay::OverlayDoc::default();
     doc.hooks.insert(
         "fixture-gate".to_owned(),

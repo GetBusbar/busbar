@@ -2049,6 +2049,7 @@ async fn a_reload_class_read_behind_a_held_scan_gate_is_unavailable() {
         ..Default::default()
     };
     let refused = read_grammar(
+        std::sync::Arc::new(busbar_kernel::appbuild::AcceptAll),
         plugins,
         Vec::new(),
         busbar_kernel::config::grammar::Fetch::None,
