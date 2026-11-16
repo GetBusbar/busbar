@@ -7,7 +7,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-H1"]
+#[ignore = "owner: W1-H1 (blocked: entry::guard, GetBusbar/busbar#272)"]
 fn a_nested_entry_restores_active_and_the_watchdog_word() {
     todo!("owner: W1-H1 (C-NESTED)")
 }
