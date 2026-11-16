@@ -487,6 +487,9 @@ pub struct Arrival {
     pub fields: HeadFields,
     /// The caller's body, kept for every attempt.
     pub body: bytes::Bytes,
+    /// IF §12.23: the line-carrier id (`PlaneReq.carrier`): non-zero exactly on a line read by `serve_lines`, 0 on
+    /// every other arrival. Only the host line carrier sets it; no client field can.
+    pub carrier: u64,
 }
 
 /// What `arrive` said.
