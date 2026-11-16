@@ -327,7 +327,7 @@ fn feed_upstream(
     encode_upstream_head(&mut head, 200, &[], None, None)
         .expect("plane suite: the upstream head fits a reply");
     let mut step = |session: &mut PlaneSession, told: &mut Told, flags: u32, bytes: &[u8]| {
-        let next = Told::default();
+        let mut next = Told::default();
         must(
             "piece(FROM_UPSTREAM)",
             port.piece(
