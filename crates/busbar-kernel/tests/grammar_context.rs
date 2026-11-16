@@ -43,3 +43,33 @@ fn separate_readers_keep_their_owned_grammar_context() {
         &["first process"]
     );
 }
+
+#[test]
+fn named_secret_is_bound_before_the_document_reads_shorthand() {
+    use busbar_contract::abi::mechanism::door::REWRITE_SUGAR;
+    use busbar_kernel::config::grammar::SecretSource;
+    let mut sugars = busbar_contract::secret_ref::Sugars::default();
+    sugars
+        .declare(
+            "fixture-secret",
+            &[(REWRITE_SUGAR, "fixture-word".into(), "slot".into())],
+        )
+        .unwrap();
+    let grammar = Grammar::new(sugars, Default::default(), Vec::new()).with_secret_sources(
+        std::collections::BTreeMap::from([(
+            "fixture-secret".into(),
+            SecretSource {
+                identity: "fixture-secret".into(),
+                ref_schema: "{}".into(),
+            },
+        )]),
+    );
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        "secrets:\n  selected:\n    module: fixture-secret\n    settings: {}\nauth:\n  admin_auth: []\n  signing_key: {fixture-word: signing}\n",
+        &grammar,
+    ).expect("shorthand is parsed after its named instance is known");
+    let bound = deploy.grammar.get().unwrap();
+    assert!(bound.secret_instances.contains_key("selected"));
+    assert!(!bound.secret_instances.contains_key("fixture-word"));
+    assert_eq!(bound.sugars.iter().next().unwrap().module, "selected");
+}
