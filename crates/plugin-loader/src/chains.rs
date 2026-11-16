@@ -290,11 +290,13 @@ fn visit(
 }
 
 /// The r6 §3 step 2 order over configured kinds. `deps(i)` = the secret instances instance `i`'s bag references
-/// (indices into `kinds`). 2a = the store's secret instances and, transitively, theirs (depth at most 4, a cycle
+/// (indices into `kinds`). `roots` = the secret instances core's own sections reference (indices into
+/// `kinds`; ignored without a store, where there is no 2a). 2a = the store's secret instances and, transitively, theirs (depth at most 4, a cycle
 /// is refused), dependencies first; 2b = the store; 2c = every remaining instance kind by kind (secret, auth,
 /// hook, export, plane, transport), config order within a kind.
 pub(crate) fn plan_order(
     kinds: &[KindCode],
+    roots: &[usize],
     deps: &mut dyn FnMut(usize) -> Result<Vec<usize>, OpenError>,
 ) -> Result<Vec<(u32, BootPhase)>, OpenError> {
     let mut plan = Vec::new();
@@ -303,6 +305,12 @@ pub(crate) fn plan_order(
         let mut path = Vec::new();
         for dep in deps(store)? {
             visit(dep, kinds, deps, &mut path, &mut placed, &mut plan)?;
+        }
+        // Core's own sections the store boot needs (admin token, signing key, at-rest keys): the secret instances
+        // they name open in 2a too, after the store's own, each with its own dependencies first. A root that is
+        // not a secret instance, or is already placed, is skipped by `visit`.
+        for &root in roots {
+            visit(root, kinds, deps, &mut path, &mut placed, &mut plan)?;
         }
         placed[store] = true;
         plan.push((store as u32, BootPhase::Store));
@@ -962,7 +970,14 @@ mod tests {
     #[test]
     fn core_roots_open_in_2a_after_the_stores_own_secrets_and_with_theirs_first() {
         // 0 plane, 1 store (needs 3), 2 secret (core's root, needs 4), 3 secret, 4 secret, 5 secret (unreferenced)
-        let kinds = [K::Plane, K::Store, K::Secret, K::Secret, K::Secret, K::Secret];
+        let kinds = [
+            K::Plane,
+            K::Store,
+            K::Secret,
+            K::Secret,
+            K::Secret,
+            K::Secret,
+        ];
         let mut deps = |i: usize| {
             Ok(match i {
                 1 => vec![3],
@@ -998,7 +1013,15 @@ mod tests {
     #[test]
     fn a_core_root_cycle_is_refused() {
         let kinds = [K::Store, K::Secret, K::Secret];
-        let mut cycle = |i: usize| Ok(if i == 1 { vec![2] } else if i == 2 { vec![1] } else { vec![] });
+        let mut cycle = |i: usize| {
+            Ok(if i == 1 {
+                vec![2]
+            } else if i == 2 {
+                vec![1]
+            } else {
+                vec![]
+            })
+        };
         assert!(matches!(
             plan_order(&kinds, &[1], &mut cycle),
             Err(OpenError::Config { .. })
