@@ -260,6 +260,8 @@ pub mod plane_node;
 pub mod plugin_fetch;
 pub mod policy;
 pub mod principal_transition;
+// ADMIN-API-1.6 §3.5: `records.user` and `records.labels`, configured at boot.
+pub(crate) mod records_capture;
 pub mod registry;
 // busbar:request-path
 /// The launch variables 1.6.0 retired: the BUSBAR-3029 "set but ignored" notice.
@@ -319,6 +321,10 @@ mod product_pin_aliases;
 #[cfg(test)]
 #[path = "tests/product_pin_former_names.rs"]
 mod product_pin_former_names;
+
+#[cfg(test)]
+#[path = "tests/records_capture.rs"]
+mod records_capture_tests;
 
 #[cfg(test)]
 pub(crate) static PUBLISHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());

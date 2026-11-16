@@ -406,7 +406,7 @@ fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
     };
 
     let release = crate::sign::SigningKey::from_bytes(&[37u8; 32]);
-    let manifest = crate::sign::sign(&release, manifest, &lib);
+    let manifest = crate::sign::seal_test_artifact(&release, manifest, &lib);
     let tarball = crate::tarball::package(&manifest, "lib.so", &lib).unwrap();
     std::fs::write(dir.join("plane-door.tar.gz"), tarball).unwrap();
     let policy = crate::sign::TrustPolicy {
@@ -415,8 +415,7 @@ fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
         first_party_floors: Default::default(),
         first_party_high_water: Default::default(),
         publishers: Default::default(),
-        allow_unsigned: false,
-        allow_third_party: false,
+        allow_untrusted: false,
         min_versions: Default::default(),
         ..crate::sign::TrustPolicy::default()
     };

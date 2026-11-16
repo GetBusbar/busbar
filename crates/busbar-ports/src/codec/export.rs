@@ -160,6 +160,31 @@ pub fn decode_delivered<'o>(
     delivered(a.records(), confirm)
 }
 
+fn confirmed(recs: Records<'_>) -> Result<CustodyRec, RecErr> {
+    let mut found = None;
+    for next in recs {
+        let rec = next?;
+        match rec.tag {
+            tag::CUSTODY if found.is_none() => {
+                let value = rec.pod::<CustodyRec>()?;
+                if value.level > CUSTODY_INDEXED {
+                    return Err(RecErr::Size);
+                }
+                found = Some(value);
+            }
+            generic::METRIC => {}
+            tag::CUSTODY => return Err(RecErr::Size),
+            other => return Err(RecErr::Unknown(other)),
+        }
+    }
+    found.ok_or(RecErr::Truncated)
+}
+
+/// IF §8.5: a bytes-free confirm answers exactly one CUSTODY, including NONE.
+pub fn decode_confirmed(a: &Answer<'_>) -> Result<CustodyRec, RecErr> {
+    confirmed(a.records())
+}
+
 /// Round 33: D_DELIVERY's `pending_capacity` (None when absent), with §8.5's describe rules checked in the
 /// same pass as D_STREAMS and FB_SPAN_RECORDS: M_CONFIRM ⇔ D_DELIVERY, STREAM_CONTENT declared, no D_DEST_PATH,
 /// ≥ 1, at most one. In 1.6.0 L7 calls it for the validation only; the value is kept from 1.6.x.
@@ -240,6 +265,41 @@ mod tests {
     }
     fn run(w: &Reply, confirm: bool) -> Result<Delivered<'_>, RecErr> {
         delivered(Records::new(w.as_bytes()), confirm)
+    }
+
+    #[test]
+    fn confirm_accepts_none_and_each_positive_custody_level() {
+        for level in CUSTODY_NONE..=CUSTODY_INDEXED {
+            let mut w = Reply::new();
+            cust(&mut w, level, 7);
+            let found = confirmed(Records::new(w.as_bytes())).unwrap();
+            assert_eq!((found.level, found.recheck_s), (level, 7));
+        }
+    }
+
+    #[test]
+    fn confirm_refuses_missing_duplicate_or_out_of_range_custody() {
+        assert!(confirmed(Records::new(&[])).is_err());
+        let mut w = Reply::new();
+        cust(&mut w, CUSTODY_INDEXED + 1, 0);
+        assert!(confirmed(Records::new(w.as_bytes())).is_err());
+        let mut w = Reply::new();
+        cust(&mut w, CUSTODY_ACCEPTED, 0);
+        cust(&mut w, CUSTODY_INDEXED, 0);
+        assert!(confirmed(Records::new(w.as_bytes())).is_err());
+    }
+
+    #[test]
+    fn confirm_does_not_accept_a_delivery_ack_or_body() {
+        let mut w = Reply::new();
+        ack(&mut w, 1);
+        cust(&mut w, CUSTODY_INDEXED, 0);
+        assert!(confirmed(Records::new(w.as_bytes())).is_err());
+        let mut w = Reply::new();
+        cust(&mut w, CUSTODY_INDEXED, 0);
+        w.put(tag::BODY, b"must not be returned on confirm")
+            .unwrap();
+        assert!(confirmed(Records::new(w.as_bytes())).is_err());
     }
 
     #[test]

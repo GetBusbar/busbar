@@ -429,9 +429,24 @@ impl MemBinder {
         replace(&mut doc, paths[1], TRUST, &mut bound.trust, &present)?;
         record_refs(&mut doc, paths[3], &mut bound.refs)?;
         bound.ref_paths = paths[3].iter().map(|p| (*p).to_owned()).collect();
+        #[cfg(feature = "target-sockets")]
+        let socket_doc = doc.clone();
         // Last, as in core's binder: a dest at `""` is the whole bag.
         replace(&mut doc, paths[2], DEST, &mut bound.dests, &present)?;
         let out = facade::to_vec(&doc).map_err(|_| BindError::TooMany)?;
+        #[cfg(feature = "target-sockets")]
+        if let Some(needs) = &self.needs {
+            if let Some(host) = needs.socket_report() {
+                let mut values = crate::sockets::Bindings {
+                    trusts: Vec::new(),
+                    clients: Vec::new(),
+                };
+                collect_socket_bindings(&socket_doc, "", &bound, needs, host, &mut values)?;
+                needs
+                    .bind_sockets(instance, values)
+                    .map_err(|_| bad_reference("", "socket trust binding refused"))?;
+            }
+        }
         self.table().insert(instance, bound);
         Ok(out)
     }
@@ -498,6 +513,10 @@ impl ConfigBinder for MemBinder {
     }
 
     fn unbind(&self, instance: u64) {
+        #[cfg(feature = "target-sockets")]
+        if let Some(needs) = &self.needs {
+            needs.unbind_sockets(instance);
+        }
         self.table().remove(&instance);
     }
 
@@ -859,7 +878,12 @@ impl Harness {
     /// for the generic match ([`Harness::undeclared`]).
     pub fn check(&self, name: &str, config: &[u8]) -> Result<(), OpenError> {
         let spec = self.spec(name, config);
-        let declared = self.noted(self.block_on(self.registry.check_endpoints(&spec)))?;
+        self.check_spec(&spec)
+    }
+
+    /// The typed store facade supplies limits without bypassing endpoint or refusal observations.
+    pub(crate) fn check_spec(&self, spec: &InstanceSpec<'_>) -> Result<(), OpenError> {
+        let declared = self.noted(self.block_on(self.registry.check_endpoints(spec)))?;
         self.declared
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -909,7 +933,15 @@ impl Harness {
     /// A store needs `registry().set_store_seal(..)` first (the kernel's seal factory).
     pub fn open_store(&self, name: &str, config: &[u8]) -> Result<StoreHandle, OpenError> {
         let spec = self.spec(name, config);
-        self.noted(self.block_on(self.registry.open_store(&spec)))
+        self.open_store_spec(&spec)
+    }
+
+    /// Open with an explicit spec through the same refusal recorder as the ordinary harness.
+    pub(crate) fn open_store_spec(
+        &self,
+        spec: &InstanceSpec<'_>,
+    ) -> Result<StoreHandle, OpenError> {
+        self.noted(self.block_on(self.registry.open_store(spec)))
     }
 
     pub fn open_secret(&self, name: &str, config: &[u8]) -> Result<Arc<dyn SecretPort>, OpenError> {
@@ -1277,4 +1309,64 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, BindError::NotAReference { .. }));
     }
+}
+
+#[cfg(feature = "target-sockets")]
+fn collect_socket_bindings(
+    node: &Value,
+    at: &str,
+    bound: &Bound,
+    needs: &FakeNeeds,
+    host: &crate::sockets::SocketTargets,
+    out: &mut crate::sockets::Bindings,
+) -> Result<(), BindError> {
+    if let Some(handle) = node.get(TRUST).and_then(count) {
+        if host.wants_trust(at) {
+            let index = usize::try_from(handle)
+                .ok()
+                .and_then(|h| h.checked_sub(1))
+                .ok_or(BindError::TooMany)?;
+            let pem = bound
+                .trust
+                .get(index)
+                .and_then(JsonValueTrait::as_str)
+                .ok_or_else(|| bad_reference(at, "socket trust must be PEM text"))?;
+            out.trusts.push((
+                at.to_owned(),
+                u32::try_from(handle).map_err(|_| BindError::TooMany)?,
+                pem.to_owned(),
+            ));
+        }
+        return Ok(());
+    }
+    if let Some(handle) = node.get(SECRET).and_then(count) {
+        if host.wants_client(at) {
+            let pem = needs
+                .secret_at(at)
+                .ok_or_else(|| bad_reference(at, "socket client identity is not scripted"))?;
+            out.clients.push((
+                at.to_owned(),
+                u32::try_from(handle).map_err(|_| BindError::TooMany)?,
+                SecureVec::from(pem),
+            ));
+        }
+        return Ok(());
+    }
+    if let Some(members) = node.as_object() {
+        for (key, value) in members.iter() {
+            collect_socket_bindings(
+                value,
+                &format!("{at}/{}", escape(key)),
+                bound,
+                needs,
+                host,
+                out,
+            )?;
+        }
+    } else if let Some(items) = node.as_array() {
+        for (index, value) in items.iter().enumerate() {
+            collect_socket_bindings(value, &format!("{at}/{index}"), bound, needs, host, out)?;
+        }
+    }
+    Ok(())
 }

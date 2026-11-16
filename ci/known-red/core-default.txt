@@ -5,7 +5,6 @@ busbar-default::bin/busbar distribution::config_parser_deploy::test_identity_pro
 busbar-default::bin/busbar distribution::config_parser_deploy::test_token_on_a_non_operator_provider_is_an_error	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::config_validation_application::test_validate_runs_on_resolved_root_cfg_clean_config	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::config_validation_application::test_validate_runs_on_resolved_root_cfg_collects_new_surface_faults	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar distribution::config_validation_store::migrate_inserts_the_memory_store_into_a_config_without_one	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::decisions_hooks::a_decisions_hooks_rewrite_alters_the_request_the_provider_receives	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::decisions_hooks::a_gate_named_in_decisions_hooks_refuses_the_unit	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::decisions_hooks::a_global_gate_refuses_a_decisions_request_before_its_dial	CDT-KNOWN-RED	stable
@@ -60,8 +59,6 @@ busbar-default::cli_validate validate_refuses_a_decisions_hook_naming_an_undefin
 busbar-default::cli_validate validate_refuses_a_decisions_model_naming_an_undefined_provider	CDT-KNOWN-RED	stable
 busbar-default::cli_validate validate_refuses_a_decisions_model_whose_provider_speaks_a_foreign_dialect	CDT-KNOWN-RED	stable
 busbar-default::cli_validate validate_refuses_the_planes_protocol_when_its_section_is_not_configured	CDT-KNOWN-RED	stable
-busbar-default::config_migrate_1_5_5 a_1_5_5_provider_with_no_bindings_keeps_its_users_after_migration	CDT-KNOWN-RED	stable
-busbar-default::config_migrate_cross_plane end_to_end_a_full_legacy_config_migrates_validates_and_drops_every_deprecated_spelling	CDT-KNOWN-RED	stable
 busbar-default::config_validate_cross_plane the_agents_section_enumerates_every_secret_reference_its_plane_declares	CDT-KNOWN-RED	stable
 busbar-default::config_validate_cross_plane the_tools_section_enumerates_every_secret_reference_its_plane_declares	CDT-KNOWN-RED	stable
 busbar-default::decisions_served a_booted_busbar_serves_post_v1_systemone	CDT-KNOWN-RED	stable
