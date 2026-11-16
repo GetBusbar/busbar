@@ -55,8 +55,9 @@ fn a_private_provider_a_model_names_is_allowed_and_a_public_one_needs_no_entry()
     );
     assert_eq!(listed, ["ollama.lan"]);
     assert_eq!(report.len(), 2, "one line per decision: {report:?}");
-    assert!(report.iter().any(|line| line.contains("api.example.com")
-        && line.contains("every answer public")));
+    assert!(report
+        .iter()
+        .any(|line| line.contains("api.example.com") && line.contains("every answer public")));
 }
 
 #[test]
@@ -95,7 +96,14 @@ fn an_entry_already_listed_is_left_and_never_resolved() {
 
 #[test]
 fn metadata_mixed_unresolved_and_silent_hosts_are_never_added() {
-    for host in ["meta.lan", "mixed.lan", "empty.lan", "gone.lan", "169.254.169.254", "metadata.google.internal"] {
+    for host in [
+        "meta.lan",
+        "mixed.lan",
+        "empty.lan",
+        "gone.lan",
+        "169.254.169.254",
+        "metadata.google.internal",
+    ] {
         let (listed, report) = decide(
             "models: {m: {provider: p}}\n",
             &format!("p: {{base_url: 'http://{host}/v1'}}\n"),
@@ -120,7 +128,16 @@ fn nothing_is_written_when_no_host_is_added() {
     let catalog: Value = yaml::from_str("p: {base_url: 'https://api.example.com'}\n").unwrap();
     let mut after = resolved.clone();
     let mut report = Vec::new();
-    allow_dest::run(after.as_mapping_mut().unwrap(), &resolved, Some(&catalog), answers, &mut report);
-    assert!(yaml::same_tree(&resolved, &after), "the document is untouched");
+    allow_dest::run(
+        after.as_mapping_mut().unwrap(),
+        &resolved,
+        Some(&catalog),
+        answers,
+        &mut report,
+    );
+    assert!(
+        yaml::same_tree(&resolved, &after),
+        "the document is untouched"
+    );
     assert!(after.as_mapping().unwrap().get_key("advanced").is_none());
 }

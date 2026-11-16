@@ -147,19 +147,34 @@ mod ephemeral {
 
     #[test]
     fn exactly_one_declaring_store_is_named_whatever_its_word() {
-        for source in ["listen: x\n", "listen: x\nstore:\n", "listen: x\nstore: {module: ~}\n"] {
+        for source in [
+            "listen: x\n",
+            "listen: x\nstore:\n",
+            "listen: x\nstore: {module: ~}\n",
+        ] {
             let (after, report) = named(source, &["store-ram"]).expect("one store");
-            assert_eq!(after.at("store").at("module").as_str(), Some("store-ram"), "{source:?}");
+            assert_eq!(
+                after.at("store").at("module").as_str(),
+                Some("store-ram"),
+                "{source:?}"
+            );
             assert_eq!(report.len(), 1, "{source:?}");
         }
-        let (after, _) = named("listen: x\nstore: {settings: {token: x}}\n", &["store-ram"]).unwrap();
-        assert_eq!(after.at("store").at("settings").at("token").as_str(), Some("x"));
+        let (after, _) =
+            named("listen: x\nstore: {settings: {token: x}}\n", &["store-ram"]).unwrap();
+        assert_eq!(
+            after.at("store").at("settings").at("token").as_str(),
+            Some("x")
+        );
     }
 
     #[test]
     fn a_named_module_is_left_alone_whatever_the_build_declares() {
         let (after, report) = named("store: {module: busbar-store-sqlite-plugin}\n", &[]).unwrap();
-        assert_eq!(after.at("store").at("module").as_str(), Some("busbar-store-sqlite-plugin"));
+        assert_eq!(
+            after.at("store").at("module").as_str(),
+            Some("busbar-store-sqlite-plugin")
+        );
         assert!(report.is_empty());
     }
 
@@ -167,11 +182,19 @@ mod ephemeral {
     fn zero_or_several_refuse_config_with_the_modules_to_choose_from() {
         let none = named("listen: x\n", &[]).unwrap_err();
         assert_eq!(none.word(), "CONFIG");
-        assert!(none.to_string().contains("this build has no such store"), "{none}");
+        assert!(
+            none.to_string().contains("this build has no such store"),
+            "{none}"
+        );
         let several = named("listen: x\n", &["a", "b"]).unwrap_err();
         assert_eq!(several.word(), "CONFIG");
         let text = several.to_string();
-        assert!(text.contains("this build has several such stores") && text.contains('a') && text.contains('b'), "{text}");
+        assert!(
+            text.contains("this build has several such stores")
+                && text.contains('a')
+                && text.contains('b'),
+            "{text}"
+        );
         assert!(text.contains("add `store: {module: "), "{text}");
     }
 }

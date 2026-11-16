@@ -17,12 +17,31 @@ fn tree(text: &str) -> Value {
 
 #[test]
 fn a_style_becomes_the_unique_declaring_identity_and_only_that_binding_changes() {
-    let styles: [(&str, &[&str]); 2] = [("auth-jwt", &["jwt-bearer", "x"]), ("auth-other", &["other"])];
+    let styles: [(&str, &[&str]); 2] = [
+        ("auth-jwt", &["jwt-bearer", "x"]),
+        ("auth-other", &["other"]),
+    ];
     let (written, lines) = resolve(DEFERRED, &styles).expect("resolves");
     let tree = tree(&written);
-    assert_eq!(tree.at("auth").at("anthropic-outbound").at("module").as_str(), Some("auth-jwt"));
-    assert_eq!(tree.at("auth").at("mine").at("module").as_str(), Some("written-by-hand"));
-    assert_eq!(tree.at("auth").at("anthropic-outbound").at("config").at("style").as_str(), Some("jwt-bearer"));
+    assert_eq!(
+        tree.at("auth")
+            .at("anthropic-outbound")
+            .at("module")
+            .as_str(),
+        Some("auth-jwt")
+    );
+    assert_eq!(
+        tree.at("auth").at("mine").at("module").as_str(),
+        Some("written-by-hand")
+    );
+    assert_eq!(
+        tree.at("auth")
+            .at("anthropic-outbound")
+            .at("config")
+            .at("style")
+            .as_str(),
+        Some("jwt-bearer")
+    );
     assert!(!written.contains("$style"));
     assert_eq!(lines.len(), 1, "{lines:?}");
 }
@@ -51,6 +70,12 @@ fn several_declaring_plugins_refuse_config_naming_them() {
     let styles: [(&str, &[&str]); 2] = [("auth-a", &["jwt-bearer"]), ("auth-b", &["jwt-bearer"])];
     let refused = resolve(DEFERRED, &styles).unwrap_err();
     let text = refused.to_string();
-    assert!(text.contains("`auth.anthropic-outbound`") && text.contains("several do") && text.contains("auth-a") && text.contains("auth-b"), "{text}");
+    assert!(
+        text.contains("`auth.anthropic-outbound`")
+            && text.contains("several do")
+            && text.contains("auth-a")
+            && text.contains("auth-b"),
+        "{text}"
+    );
     assert!(text.contains("write `module:`"), "{text}");
 }

@@ -23,7 +23,7 @@ use crate::Refusal;
 /// The overlay's hook fields (top level).
 pub(crate) const KEYS: [&str; 3] = ["hooks", "global_hooks", "deleted"];
 /// v1.5.5 `HookCfg`'s fields (`module` read also as `plugin`).
-const FIELDS: [&str; 16] = [
+const FIELDS: [&str; 17] = [
     "kind",
     "module",
     "plugin",
@@ -40,6 +40,7 @@ const FIELDS: [&str; 16] = [
     "default",
     "groups",
     "phase",
+    "insecure_transport",
 ];
 /// `HookStage`, the same words in both releases.
 const STAGES: [&str; 4] = ["request", "candidate", "routing", "response"];
@@ -71,6 +72,8 @@ struct Hook<'a> {
     default: bool,
     groups: Vec<String>,
     phase: Vec<String>,
+    /// A 1.6.0 key an operator added beside `module` (TRANSPORT-SECURITY-POLICY §6): carried verbatim.
+    insecure_transport: Option<&'a json::Value>,
 }
 
 /// Read `hooks.<name>` as v1.5.5's `HookCfg`; an entry 1.5.5 could not read refuses (the
@@ -178,6 +181,7 @@ fn read<'a>(name: &str, value: &'a json::Value, o: &str) -> Result<Hook<'a>, Ref
         default: flag("default")?,
         groups: list("groups", None)?,
         phase: list("phase", Some(STAGES.as_slice()))?,
+        insecure_transport: fields.get(&"insecure_transport"),
     })
 }
 
@@ -231,6 +235,12 @@ fn definition(hook: &Hook<'_>, o: &str) -> Result<Value, Refusal> {
     out.push((key("priority"), Value::from(hook.priority)));
     if !hook.signals.is_empty() {
         out.push((key("signals"), strings(&hook.signals, "signals")?));
+    }
+    if let Some(carried) = hook.insecure_transport {
+        out.push((
+            key("insecure_transport"),
+            to_yaml(carried, &path("insecure_transport"), o)?,
+        ));
     }
     Ok(Value::Map(out))
 }

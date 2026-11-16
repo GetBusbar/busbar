@@ -246,13 +246,16 @@ fn the_open_units_are_the_boots_facts_and_the_boots_parse_judges_them() {
 /// overlay named-map instance.
 #[test]
 fn upgrade_from_155_shape_carries_acceptance() {
-    const LINE: &str = "{ accept: plaintext, reason: \"pg sidecar on the pod network; INFRA-142\" }";
+    const LINE: &str =
+        "{ accept: plaintext, reason: \"pg sidecar on the pod network; INFRA-142\" }";
     let base = format!(
         "listen: 0.0.0.0:8080\nstore:\n  module: pg\n  settings: {{url: 'postgres://db/x?sslmode=disable'}}\n  insecure_transport: {LINE}\nidentity-providers:\n  corp-ldap:\n    module: ldap\n    settings: {{url: 'ldap://dc1.corp'}}\n    insecure_transport: {LINE}\n"
     );
     let (written, _) = upgrade(&base, &facts());
     assert_eq!(
-        written.matches(&format!("insecure_transport: {LINE}")).count(),
+        written
+            .matches(&format!("insecure_transport: {LINE}"))
+            .count(),
         2,
         "both blocks keep the line byte for byte:\n{written}"
     );

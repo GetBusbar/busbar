@@ -192,14 +192,57 @@ pub(crate) fn held_in(plan: Option<&Plan>, path: &Path) -> Option<SecureString> 
 #[cold]
 #[inline(never)]
 pub(crate) async fn finish() -> Result<Option<Written>, String> {
+    finish_settled(Vec::new()).await
+}
+
+/// Step 5 with what every instance's `open` settled (MIGRATE-ON-BOOT r42 §4, `Registry::take_settled`): the
+/// bags and CORE_CFG are filed into the re-run document, the lifted secret files written, then the stamp.
+/// A refusal of a settled answer writes nothing.
+///
+/// # Errors
+/// As [`finish`], and CONFIG naming the instance index for an answer core cannot file.
+#[cold]
+#[inline(never)]
+pub(crate) async fn finish_settled(
+    settled: Vec<busbar_migrate::Settled>,
+) -> Result<Option<Written>, String> {
     let Some(plan) = PENDING.get() else {
         return Ok(None);
     };
-    tokio::task::spawn_blocking(move || busbar_migrate::write(plan, &strict_parse))
-        .await
-        .map_err(|error| format!("the config.yaml upgrade did not finish its write: {error}"))?
-        .map(Some)
-        .map_err(text_of)
+    tokio::task::spawn_blocking(move || {
+        busbar_migrate::write_settled(plan, &settled, &strict_parse)
+    })
+    .await
+    .map_err(|error| format!("the config.yaml upgrade did not finish its write: {error}"))?
+    .map(Some)
+    .map_err(text_of)
+}
+
+/// 5W (MIGRATE-ON-BOOT r42 §3): on a stamped boot and on a reload, write what the instances settled back into
+/// config.yaml through the patch writer, under the directory lock. `seen` is the text the boot read; when
+/// config.yaml is no longer those bytes (an operator edit, a peer's write-back) nothing is written and the
+/// next load converts again; equal bytes are not written. The caller logs and audits an `Err` and boots on,
+/// the instance serving.
+///
+/// # Errors
+/// The write-back's refusal text (lock not held, a fragment on a current config, an I/O failure).
+#[cfg(test)]
+#[cold]
+#[inline(never)]
+pub(crate) fn write_back_settled(
+    config: &Path,
+    seen: &str,
+    settled: &[busbar_migrate::Settled],
+) -> Result<busbar_migrate::WroteBack, String> {
+    fn env(name: &str) -> Option<String> {
+        std::env::var(name).ok()
+    }
+    busbar_migrate::write_back(config, &busbar_migrate::digest(seen), &|now| {
+        let applied = busbar_migrate::apply_settled(now, config, settled, true, env)?;
+        busbar_migrate::write_secrets(applied.secrets())?;
+        Ok(applied.text().to_owned())
+    })
+    .map_err(text_of)
 }
 
 /// After step 5 wrote (or found a peer's stamp, (q)): hand an armed first start over while its
@@ -233,12 +276,22 @@ pub(crate) fn restart<T>(
 #[cold]
 #[inline(never)]
 fn migrate_admit(n: u64) -> Result<(), &'static str> {
+    admit_for_host(n).map_err(|text| -> &'static str { text.leak() })
+}
+
+/// The MIN-3 `Host::migrate_admit` answer (IF §5, §12.10; WBS K9), the same verdict as the loader's
+/// today's-ABI slot, on every load path: `n == 0` or a resolved at-rest key is OK, else core's text
+/// (the store's REFUSED R_CONFIG). Valid only during a store's open; the host vtable entry that
+/// calls this knows that, not this function.
+///
+/// # Errors
+/// Core's refusal text.
+pub(crate) fn admit_for_host(n: u64) -> Result<(), String> {
     let dir = CONFIG_DIR
         .get()
         .cloned()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
     admit_answer(n, busbar_kernel::appbuild::bootstrap_at_rest(), &dir)
-        .map_err(|text| -> &'static str { text.leak() })
 }
 
 /// The gate's verdict for `n` rows, from the bootstrap's at-rest verdict `keys` (`None` = no

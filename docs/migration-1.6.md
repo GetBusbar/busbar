@@ -304,6 +304,67 @@ health-probed.
   Point the issuer at the address it finally serves from.
 - A third-party plugin built for 1.5.5 needs a 1.6.0 build from its author.
 
+### Transport security
+
+1.6.0 connects only over verified TLS, and nothing is exempt: not loopback, not unix sockets. The
+upgrade rewrites none of this. A security posture is not a format step, and accepting an exception
+needs a human reason, so every shape below that refuses at boot refuses with the exact line to add
+(BUSBAR-3160 for a plaintext endpoint, BUSBAR-3161 for a certificate busbar cannot verify). The
+line goes under the instance's block in the file as read, and it is carried through the upgrade
+byte for byte, in config.yaml and in a 1.5.5 overlay file alike:
+
+```yaml
+insecure_transport: { accept: plaintext, reason: "<why this is acceptable>" }
+```
+
+A 1.5.5 busbar refuses a file holding that key, so add it only once every 1.5.5 instance on the
+configuration has stopped. Each refusal below becomes a boot after the edit in the last column.
+
+| 1.5.5 shape | 1.6.0 | Your edit |
+|---|---|---|
+| store `memory` or `sqlite`; secret `env` or `file`; export `file` or `prometheus`; any instance that dials nothing | boots | none |
+| store postgres `sslmode=verify-full` or `verify-ca` | boots when the server chains to the bundled roots | otherwise its CA under `advanced.tls.trust_anchors`, or pin its key |
+| store postgres `sslmode=require` | now verified (1.5.5 only encrypted); BUSBAR-3161 on a private or self-signed certificate | the CA, a pin, or `accept: unverified_tls` |
+| store postgres `sslmode=disable` (any host, loopback included) | BUSBAR-3160 | TLS on the server, or `accept: plaintext` |
+| store postgres, no `sslmode` | TLS is requested; a server without TLS fails at open | TLS on the server, or `sslmode=disable` plus `accept: plaintext` |
+| store postgres `sslmode=prefer` or `allow` | BUSBAR-3142 | `require`, or `disable` plus `accept: plaintext` |
+| store postgres on a unix-socket host | BUSBAR-3160 | `accept: plaintext`, or TCP with TLS |
+| store valkey `rediss://` or `valkeys://` | verified | the CA if private, or a pin |
+| store valkey `rediss://...#insecure` | BUSBAR-3143 | drop `#insecure`; the CA, a pin, or `accept: unverified_tls` |
+| store valkey `redis://`, `valkey://`, `unix://`, `redis+unix://`, `valkey+unix://` | BUSBAR-3160 | `rediss://`, or `accept: plaintext` |
+| store mysql over TCP, `ssl-mode` absent, `REQUIRED` or `VERIFY_*` | verified; a server without TLS fails at open | TLS on the server, the CA, or `ssl-mode=DISABLED` plus `accept: plaintext` |
+| store mysql `ssl-mode=DISABLED`, or `?socket=` | BUSBAR-3160 | TLS, or `accept: plaintext` |
+| store mysql `ssl-mode=PREFERRED` | refused at check | `REQUIRED`, or `DISABLED` plus `accept: plaintext` |
+| auth ldap `ldaps://`, or `ldap://` with `start_tls: true` | verified (with its `ca_cert_pem`) | the CA if it fails |
+| auth ldap `ldap://` without STARTTLS (any host, loopback included) | BUSBAR-3160 | `start_tls: true` or `ldaps://`, or `accept: plaintext` |
+| auth ldap `allow_insecure_transport: true` | the key is dropped (BUSBAR-3417), not converted; then as the row above | as above |
+| auth ldap `allow_insecure_transport: false` | the key is dropped; no other effect | none |
+| auth ldap `start_tls: true` to a server that refuses STARTTLS | refused at open with the line to add | TLS on the directory, or plain `ldap://` plus `accept: plaintext` |
+| secret vault `addr: https://...` | verified (with its `ca_cert_pem`) | the CA if it fails |
+| secret vault `addr: http://...` (dev mode `http://127.0.0.1:8200` included) | BUSBAR-3160 | TLS on Vault, or `accept: plaintext` |
+| export otlp `url: http://` (a loopback collector too); hook webrequest `url: http://` | BUSBAR-3160 | `https://`, or `accept: plaintext` |
+| export webhook, auth oidc, github or oauth, plane mcp or a2a with `https://` | verified | the CA or a pin if private |
+| any of those with an `http://` URL 1.5.5 admitted (an issuer, GHES, or plane-mcp member on `http://`) | BUSBAR-3160 | `https://`, or `accept: plaintext` |
+| auth github `api_base`, `token_base`, `authorize_base`, or auth oidc issuer, `authorization_endpoint`, `token_endpoint` on `http://` | BUSBAR-3160, or "use https" where the destination guard refuses the host | `https://`, or `accept: plaintext` |
+| transport instance dials (`ws://`, gRPC h2c or `http://`, plain tcp) | BUSBAR-3160 naming the transport instance | `wss://`, `https://`, TLS, or `accept: plaintext` on that instance |
+| transport instance dial over TLS to a private or self-signed server | BUSBAR-3161 | the CA, a pin, or `accept: unverified_tls` |
+
+### Plugin error codes
+
+Pre-release 1.6.0 builds printed plugin error codes as `BUSBAR-NNNN`. They are now
+`BUSBAR-<plugin>-NNNN` with the same number; no released build or log carries the old form. A
+pre-release plugin image whose signed `declares.json` still has `diagnostics` is refused until it
+is rebuilt and re-signed. Core's own codes keep the `BUSBAR-NNNN` form.
+
+### Private provider hosts are allowed for you
+
+1.5.5 dialled a private or loopback provider with no allowlist, and 1.6.0 refuses one unless
+`advanced.allow_destinations` names it. The upgrade adds `base_url` and `token_url` hosts of the
+providers your models use (and of every provider your own `providers:` section defines) when every
+address the host answers at upgrade time is private or loopback and none is cloud metadata. One
+line per decision is printed. A host that is public, mixed, unresolvable or cloud metadata is not
+added: add the first three by hand if they are yours; cloud metadata is never admitted.
+
 ---
 
 ## What you will notice

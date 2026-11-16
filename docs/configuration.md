@@ -2149,8 +2149,8 @@ may make one cleartext write of at most 64 bytes before its upgrade; anything el
 non-admitted host is refused. Credentials are never sent in clear to a host that is not loopback,
 whatever an entry says (BUSBAR-3146). Postgres `sslmode=prefer`, `sslmode=allow` and a missing
 sslmode are refused (BUSBAR-3142, owner sign-off 2026-11-13: encryption required); valkey
-`#insecure` is refused (BUSBAR-3143). the first-boot migration rewrites them (BUSBAR-3412,
-BUSBAR-3413) and moves every plugin `ca_cert_pem` to an exact-host entry here (BUSBAR-3415).
+`#insecure` is refused (BUSBAR-3143). the upgrade rewrites none of this: it refuses with the line to add (see
+[transport security](migration-1.6.md#transport-security)).
 
 Every refused dial writes one rate-limited BUSBAR-5046 line and one `egress.dial_refused` audit
 record; every TLS verification failure writes one BUSBAR-5047 line and one

@@ -369,3 +369,52 @@ fn a_descriptor_a_plugin_left_inheritable_does_not_reach_the_new_image() {
         "descriptor {fd} reached the new image"
     );
 }
+
+/// 5W (MIGRATE-ON-BOOT r42 §3): a stamped boot writes what an instance settled back through the patch
+/// writer; the same answer twice writes nothing the second time; an operator edit between the read
+/// and the write-back keeps the file as the operator left it.
+#[test]
+fn a_stamped_boot_writes_the_settled_answer_back_once() {
+    let scratch = Scratch::new("write-back");
+    let stamped = "config_version: 1\nstore: {module: m, settings: {url: old, junk: 1}}\n";
+    let config = scratch.config(stamped);
+    let settled = [busbar_migrate::Settled {
+        index: 0,
+        path: vec!["store".to_owned()],
+        settings: Some(busbar_contract::yaml::from_str(r#"{"url": "new"}"#).unwrap()),
+        core_cfg: Vec::new(),
+    }];
+    assert_eq!(
+        write_back_settled(&config, stamped, &settled),
+        Ok(busbar_migrate::WroteBack::Written)
+    );
+    let written = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        written.contains("url: new") && !written.contains("junk"),
+        "{written}"
+    );
+    assert!(written.starts_with("config_version: 1\n"));
+    assert_eq!(
+        write_back_settled(&config, &written, &settled),
+        Ok(busbar_migrate::WroteBack::Unchanged),
+        "equal bytes are not written"
+    );
+    assert_eq!(
+        write_back_settled(&config, stamped, &settled),
+        Ok(busbar_migrate::WroteBack::Changed),
+        "a file that is no longer the one read is left alone"
+    );
+    let fragment = [busbar_migrate::Settled {
+        core_cfg: vec![busbar_migrate::CoreCfg {
+            section: busbar_migrate::core_cfg_section::LIMITS,
+            name: String::new(),
+            value: busbar_contract::yaml::from_str(r#"{"timeout_ms": 1}"#).unwrap(),
+        }],
+        ..settled[0].clone()
+    }];
+    let refused = write_back_settled(&config, &written, &fragment).unwrap_err();
+    assert!(
+        refused.starts_with("CONFIG: ") && refused.contains("instance 0"),
+        "{refused}"
+    );
+}
