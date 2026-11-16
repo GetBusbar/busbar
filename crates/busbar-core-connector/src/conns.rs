@@ -4222,7 +4222,10 @@ impl Connector {
             head_words: if prepare {
                 (Vec::new(), Vec::new())
             } else {
-                (desc.method.to_vec(), desc.head_target.to_vec())
+                (
+                    crate::off_path::conns::owned_bytes(desc.method),
+                    crate::off_path::conns::owned_bytes(desc.head_target),
+                )
             },
             anchors: None,
         };

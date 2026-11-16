@@ -118,9 +118,9 @@ impl GuardJudge {
         if literal.is_some() {
             plaintext_to_loopback(class, target.secure, host)?;
         }
-        let host = url_host_to_ascii(host)
-            .map_err(|_| DEST_NO_HOST)?
-            .into_owned();
+        let host = crate::off_path::process::host_text(
+            url_host_to_ascii(host).map_err(|_| DEST_NO_HOST)?,
+        );
         Ok((host, port, target.secure, literal))
     }
 
@@ -418,12 +418,9 @@ impl OneJudge {
         let pended: Box<dyn FnOnce(Admitted) + Send> = Box::new(move |v| {
             let own = Arc::clone(&later.read().expect("own ports"));
             let also = match &v {
-                Ok((at, addrs)) => addrs
-                    .iter()
-                    .map(|ip| SocketAddr::new(*ip, at.port()))
-                    .filter(|a| a != at)
-                    .filter(|a| not_the_node(class, &own, Ok(*a)).is_ok())
-                    .collect(),
+                Ok((at, addrs)) => crate::off_path::process::also_reachable(*at, addrs, |a| {
+                    not_the_node(class, &own, Ok(a)).is_ok()
+                }),
                 Err(_) => Vec::new(),
             };
             done(not_the_node(class, &own, pin(&v)), also);
