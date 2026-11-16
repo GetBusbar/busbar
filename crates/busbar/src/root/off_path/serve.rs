@@ -218,25 +218,33 @@ impl Served {
     ) -> tokio::task::JoinHandle<()> {
         let routes = self.nests.clone();
         let kernels: Vec<_> = self.planes.iter().map(|p| p.kernel.clone()).collect();
-        struct Ready(Vec<Arc<KernelServices>>);
+        struct Ready(
+            Vec<Arc<KernelServices>>,
+            Option<Arc<crate::root::min3_boot::Booted>>,
+        );
         impl Drop for Ready {
             fn drop(&mut self) {
                 for kernel in &self.0 {
                     kernel.set_recovery_scheduler_ready(false);
                 }
-                crate::root::min3_boot::set_recovery_ready(false);
+                if let Some(native) = &self.1 {
+                    crate::root::min3_boot::set_recovery_ready(native, false);
+                }
             }
         }
-        let ready = Ready(kernels);
+        let ready = Ready(kernels, self.native.clone());
         if routes.is_some() {
             for kernel in &ready.0 {
                 kernel.set_recovery_scheduler_ready(true);
             }
         }
         // The MIN-3 plane seats' durable WORK is recovered by this same scheduler (IF §12.24 step 3).
-        let ports = crate::root::min3_boot::booted().is_some_and(|booted| !booted.seats.is_empty());
-        if ports {
-            crate::root::min3_boot::set_recovery_ready(true);
+        let native = self.native.clone();
+        let ports = native
+            .as_ref()
+            .is_some_and(|booted| !booted.seats.is_empty());
+        if let Some(native) = &native {
+            crate::root::min3_boot::set_recovery_ready(native, ports);
         }
         tokio::spawn(async move {
             let _ready = ready;
@@ -264,8 +272,8 @@ impl Served {
                     for routes in live {
                         routes.recover_work(app.load()).await;
                     }
-                    if ports {
-                        crate::root::min3_boot::recover_ports(app.load()).await;
+                    if let Some(native) = &native {
+                        crate::root::min3_boot::recover_ports(native, app.load()).await;
                     }
                 };
                 tokio::select! {
@@ -417,6 +425,7 @@ impl LeaseTick {
     reason = "composition takes every boot part it wires together"
 )]
 pub(crate) async fn compose_served_checked(
+    native: Option<Arc<crate::root::min3_boot::Booted>>,
     gov: Option<Arc<busbar_kernel::governance::GovState>>,
     doors: &[(String, DoorPlane)],
     dispatcher: &Arc<Dispatcher>,
@@ -433,7 +442,11 @@ pub(crate) async fn compose_served_checked(
             tracing::warn!("door planes stay unopened: no governance book to settle on");
         }
         let served = Served {
-            ports: crate::root::min3_boot::seats(),
+            ports: native
+                .as_ref()
+                .map(|native| native.seats.clone())
+                .unwrap_or_default(),
+            native,
             ..Served::default()
         };
         check(&served)?;
@@ -487,6 +500,11 @@ pub(crate) async fn compose_served_checked(
             .migrate_caller_references(&caller_migration)
             .await?;
     }
+    served.ports = native
+        .as_ref()
+        .map(|native| native.seats.clone())
+        .unwrap_or_default();
+    served.native = native;
     served.post = Some(post);
     served.billing = Some(port_billing);
     let binds = check(&served)?;
@@ -838,7 +856,6 @@ pub(crate) async fn compose_planes_over(
 ) -> Result<Served, String> {
     let mut served = Served {
         tables: tables.clone(),
-        ports: crate::root::min3_boot::seats(),
         ..Served::default()
     };
     let Some(kernel) = late.kernel() else {
@@ -3525,7 +3542,10 @@ pub(crate) fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
     // The MIN-3 plane instances serve their data routes through their ports (PLANE-BOOT-MOUNT).
     tail.extend(crate::root::port_mount::routes(
         &served.ports,
-        crate::root::min3_boot::signed_ingress(),
+        served
+            .native
+            .as_deref()
+            .map(crate::root::min3_boot::signed_ingress),
         served.billing.as_ref(),
     ));
     tail

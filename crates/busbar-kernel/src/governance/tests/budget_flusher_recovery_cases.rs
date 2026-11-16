@@ -164,6 +164,7 @@ async fn flusher_resumes_not_landed_with_current_cost(drain: bool) {
     let app = Arc::new(crate::state::App::from_test_parts(crate::state::AppParts {
         fallback_runtime_key: "",
         serve_tables: Default::default(),
+        port_seats: Default::default(),
         root_rules: Arc::new(crate::appbuild::AcceptAll),
         config_projection: Default::default(),
         config_tables: Default::default(),

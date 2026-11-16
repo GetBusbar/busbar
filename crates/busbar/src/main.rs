@@ -1323,7 +1323,7 @@ async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: Con
             .unwrap_or_else(|error| die(format!("cold record bootstrap refused: {error}")));
     }
 
-    let (store_admission, mut generation_workers, exports) = root::min3_boot::finish(
+    let (store_admission, mut generation_workers, exports, native) = root::min3_boot::finish(
         serving_ready,
         process_io.handle(),
         store_admission,
@@ -1339,8 +1339,12 @@ async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: Con
     export::plugin::open_prepared(&export_config, &exports.calls())
         .unwrap_or_else(|error| die_list("config errors", [error]));
     let app = Arc::new(
-        export::plugin::assemble_routes(Arc::unwrap_or_clone(app), &export_config)
-            .unwrap_or_else(|error| die_list("config errors", [error])),
+        export::plugin::assemble_routes(
+            Arc::unwrap_or_clone(app),
+            &export_config,
+            native.seats.clone(),
+        )
+        .unwrap_or_else(|error| die_list("config errors", [error])),
     );
 
     let door_live_handle = Arc::default();
@@ -1354,6 +1358,7 @@ async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: Con
         root::serve::upgrade_carriers(LINKED.transports, &dropped_doors),
     );
     let mut served = root::serve::compose_served_checked(
+        Some(native),
         app.governance.clone(),
         root::boot::door_planes(),
         &serving_dispatcher,

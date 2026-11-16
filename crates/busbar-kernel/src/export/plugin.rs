@@ -329,6 +329,7 @@ impl PluginHttpDispatch for Served {
 pub fn assemble_routes(
     mut app: crate::state::App,
     cfg: &crate::config::ExportCfg,
+    seats: Vec<crate::plane_driver::port::PortSeat>,
 ) -> Result<crate::state::App, String> {
     let (routes, withheld) = crate::off_path::export::route_projection(cfg);
     let routes = app
@@ -337,6 +338,7 @@ pub fn assemble_routes(
         .with_withheld_public_exports(withheld);
     app.boot_route_paths = Arc::new(routes.paths());
     app.plugin_routes = Arc::new(routes);
+    app.port_seats = seats.into();
     Ok(app)
 }
 

@@ -51,6 +51,8 @@ pub struct App {
     /// carried onto every generation built after it (a clone shares the one table). The admin
     /// router's fallback and every stated admin route answer off it.
     pub serve_tables: crate::plane_driver::serve::ServeTables,
+    /// Native admin routes retained with this complete application generation.
+    pub port_seats: Arc<[crate::plane_driver::port::PortSeat]>,
     /// The composition root's rules this generation was built under
     /// ([`crate::appbuild::RootRules`]): every build after it (an apply, a rebuild, a
     /// dry run) is judged by them.
@@ -457,6 +459,8 @@ pub struct AppParts {
     pub fallback_runtime_key: &'static str,
 
     pub serve_tables: crate::plane_driver::serve::ServeTables,
+    /// Native admin routes retained with this complete application generation.
+    pub port_seats: Arc<[crate::plane_driver::port::PortSeat]>,
 
     pub root_rules: Arc<dyn crate::appbuild::RootRules>,
 
@@ -645,6 +649,7 @@ impl App {
         let AppParts {
             fallback_runtime_key,
             serve_tables,
+            port_seats,
             root_rules,
             config_projection,
             config_tables,
@@ -728,6 +733,7 @@ impl App {
             tslots,
             fallback_runtime_key,
             serve_tables,
+            port_seats,
             root_rules,
             config_projection,
             configured_view: None,

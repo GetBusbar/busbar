@@ -908,6 +908,7 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
     );
     let doors = [(instance.to_string(), plane)];
     let served = compose_served_checked(
+        None,
         Some(Arc::clone(&gov)),
         &doors,
         &dispatcher,

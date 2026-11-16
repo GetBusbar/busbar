@@ -2546,6 +2546,7 @@ async fn build_app_native(
         crate::state::AppParts {
             limits,
             serve_tables,
+            port_seats: prior.map(|app| app.port_seats.clone()).unwrap_or_default(),
             root_rules,
             config_projection,
             plane_sections,

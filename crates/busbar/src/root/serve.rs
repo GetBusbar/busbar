@@ -1223,6 +1223,8 @@ pub(crate) struct Served {
     pub(crate) planes: Vec<ServedPlane>,
     /// The MIN-3 plane instances served through their ports (`PortDriver`), in the order they were opened.
     pub(crate) ports: Vec<busbar_kernel::plane_driver::port::PortSeat>,
+    /// Complete native instance ownership of this serving generation.
+    pub(crate) native: Option<Arc<crate::root::min3_boot::Booted>>,
     /// What bills the requests those ports serve (their unit admission and settlement); `None` = no governance
     /// book, so a port request is not a billed unit (audit rows only).
     pub(crate) billing: Option<busbar_kernel::plane_driver::port_billing::PortBilling>,

@@ -5,6 +5,7 @@
 use super::*;
 use busbar_kernel::appbuild::RootRules;
 use busbar_kernel::config::secret::SecretResolver;
+use std::sync::OnceLock;
 
 struct Process {
     resources: busbar_plugin_loader::process::ProcessResources,

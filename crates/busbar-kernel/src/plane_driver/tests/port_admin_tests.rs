@@ -89,5 +89,5 @@ async fn with_no_plane_installed_no_admin_route_is_answered() {
         request_id: 1,
         now_s: 1,
     };
-    assert!(answer(request).await.is_none());
+    assert!(answer(&[], request).await.is_none());
 }

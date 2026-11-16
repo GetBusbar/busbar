@@ -8,7 +8,7 @@
 //! record and directory owners and the immutable prefix of successfully opened secret instances.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use super::boot::restricted::{BootstrapDirectory, BootstrapRecords};
@@ -201,6 +201,7 @@ impl Shared {
 pub(crate) struct Booted {
     pub(crate) registry: Arc<MinRegistry>,
     _bootstrap_registry: Arc<MinRegistry>,
+    _transports: Vec<transports::ServedTransport>,
     _opened: Vec<(
         u32,
         busbar_plugin_loader::instance::BootPhase,
@@ -221,7 +222,13 @@ pub(crate) struct Booted {
     work: Arc<StoreWork>,
 }
 
-static BOOTED: OnceLock<Booted> = OnceLock::new();
+impl std::fmt::Debug for Booted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Booted")
+            .field("seats", &self.seats)
+            .finish_non_exhaustive()
+    }
+}
 
 impl Booted {
     /// The boot's one summary line: what ran, never a value.
@@ -245,16 +252,6 @@ impl Booted {
     }
 }
 
-/// What the MIN-3 boot left running, once it ran.
-pub(crate) fn booted() -> Option<&'static Booted> {
-    BOOTED.get()
-}
-
-/// The MIN-3 plane instances the boot opened, for `Served.ports`.
-pub(crate) fn seats() -> Vec<PortSeat> {
-    booted().map(|b| b.seats.clone()).unwrap_or_default()
-}
-
 /// How long one recovery scan, and one recovery poll, may take (today's scheduler's per-poll deadline).
 const RECOVERY_POLL: Duration = Duration::from_secs(30);
 
@@ -263,10 +260,8 @@ static RECOVERY_REQUESTS: AtomicU64 = AtomicU64::new(1);
 
 /// The recovery scheduler runs (`true`) or stopped (`false`): WORK_OPEN answers `R_UNSUPPORTED` while it does not
 /// (core cannot recover, IF §12.24 step 1). A boot that took the old path has no MIN-3 instances.
-pub(crate) fn set_recovery_ready(ready: bool) {
-    if let Some(booted) = booted() {
-        booted.work.set_recovery_ready(ready);
-    }
+pub(crate) fn set_recovery_ready(booted: &Booted, ready: bool) {
+    booted.work.set_recovery_ready(ready);
 }
 
 /// One recovery pass over the MIN-3 plane seats (IF §12.24 step 3), on the scheduler's cadence: per seat with a
@@ -274,10 +269,7 @@ pub(crate) fn set_recovery_ready(ready: bool) {
 /// still restores (`restore_for_app` + `standing_over`, today's standing and expiry rules) one poll as the restored
 /// principal (`PortSeat::recover`), the row held for the poll's life. Core never infers settlement: a row stays live
 /// until the plane settles it. Answers how many polls were attempted.
-pub(crate) async fn recover_ports(app: Arc<busbar_kernel::state::App>) -> usize {
-    let Some(booted) = booted() else {
-        return 0;
-    };
+pub(crate) async fn recover_ports(booted: &Booted, app: Arc<busbar_kernel::state::App>) -> usize {
     if app.governance.is_none() {
         return 0;
     }
@@ -342,15 +334,14 @@ impl RouteSecrets for CustodySecrets {
 /// Standard Webhooks verifier over custody and the replay claim in the core store. The IF names no config key for a
 /// route's webhook secret and K7's `Min3Config` carries none yet, so no route has one: every signed route answers
 /// `R_BAD_CREDENTIAL` until the operator's `routes.<id>` block supplies it (the same answer the unwired route gave).
-pub(crate) fn signed_ingress() -> Option<Arc<Ingress>> {
-    let booted = booted()?;
-    Some(Arc::new(Ingress {
+pub(crate) fn signed_ingress(booted: &Booted) -> Arc<Ingress> {
+    Arc::new(Ingress {
         verifier: Arc::new(StandardWebhooks::new(CustodySecrets(Arc::clone(
             &booted.secrets,
         )))),
         replay: Arc::new(StoreReplay::new(booted.records.clone())),
         secrets: Arc::new(|_: &str, _: u32| None),
-    }))
+    })
 }
 
 /// The MIN-3 images the plugins directory's scan holds, each with its signed manifest's `alias` (a plane instance is
@@ -1342,6 +1333,7 @@ pub(crate) async fn finish(
         Startup,
         super::boot::workers::PreparedWorkers,
         super::exports::ports::Exports,
+        Arc<Booted>,
     ),
     String,
 > {
@@ -1565,7 +1557,7 @@ pub(crate) async fn finish(
         Arc::new(move |text| settlement::candidate(text, &plane_checks)),
     )
     .await?;
-    transports::publish(transports::opened(&walked.opened, &specs))?;
+    let transports = transports::table(transports::opened(&walked.opened, &specs))?;
     let secrets = steps.prefix();
     let core = core_secrets;
     let seats = steps
@@ -1577,12 +1569,11 @@ pub(crate) async fn finish(
         .into_inner()
         .unwrap_or_else(PoisonError::into_inner);
     let ticking = seats.clone();
-    // The admin listener serves the planes' ROUTE_ADMIN routes from here on.
-    busbar_kernel::plane_driver::port_admin::install(seats.clone());
-    let installed = BOOTED.set(Booted {
+    let booted = Arc::new(Booted {
         resolver: secrets.resolver(reactor, built.sugars.clone()),
         registry: built.registry,
         _bootstrap_registry,
+        _transports: transports,
         _opened: walked.opened,
         instances: serving_instances,
         directory,
@@ -1594,9 +1585,6 @@ pub(crate) async fn finish(
         work: Arc::clone(&shared.work),
         records,
     });
-    if installed.is_err() {
-        return Err("the MIN-3 boot ran twice in one process".to_owned());
-    }
     // Retain dormant maintenance until root has published the serving routes.
     let mut workers = super::boot::workers::PreparedWorkers::new();
     workers.push(refresh.run());
@@ -1608,13 +1596,12 @@ pub(crate) async fn finish(
         let queue = Arc::clone(&queue);
         workers.push(async move { seat.tick_task(queue).await });
     }
-    if let Some(held) = booted() {
-        tracing::info!("{}", held.describe());
-    }
+    tracing::info!("{}", booted.describe());
     Ok((
         startup,
         workers,
         super::exports::ports::Exports::new(export_doors)?,
+        booted,
     ))
 }
 
