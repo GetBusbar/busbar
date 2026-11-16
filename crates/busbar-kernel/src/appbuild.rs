@@ -1255,7 +1255,14 @@ fn admitted_pin(
         return Ok(());
     };
     match admitted(rows).map_err(String::from)? {
-        Some(now) => config::grammar::pin(read, &now, used, config::grammar::Pin::Admission),
+        Some(now) => {
+            let now = if now.secret_binding_required() {
+                now.bind_secret_instances(&cfg.secrets)?
+            } else {
+                now
+            };
+            config::grammar::pin(read, &now, used, config::grammar::Pin::Admission)
+        }
         None => Ok(()),
     }
 }
