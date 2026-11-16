@@ -846,6 +846,18 @@ diagnostics! {
         "A plane journal scope that had been evicted from the in-memory cache was read back from               the durable store to take its next record, and the persisted tail does NOT verify               against its own hash chain, which is tamper evidence surfaced at runtime rather than at               boot. The chain resumes from the broken tail and the write is not refused, because               refusing here would convert a detection control into a deletion primitive.",
         "Treat the durable governance store as compromised until explained: capture it for              forensic review before it is overwritten, then restore from a trusted backup once the              cause is understood.";
 
+    /// The audit notary could not stamp a page (SEALING-FIX §3.3).
+    AUDIT_STAMP_FAILED = 2049, Audit, Actionable, "audit-stamp-failed", "1.6.0", false,
+        "The audit notary could not stamp a page (lines stay durable and linked)",
+        "The background audit notary signs the newest audit line fingerprint every audit.seal_every milliseconds, and that one stamp vouches for every line before it. It could not: its signer failed, timed out or panicked three times in a row (reason=signer, signer_panic), the store refused or did not confirm the staged stamp (reason names the journal error), the journal failed for this process, or the notary task itself stopped (reason=panic). Requests are not affected and every line is still durable and linked; only the stamp is missing. Stamping resumes on its own after a transient failure, with a capped backoff of up to one second, and an Info line follows the first success. If the notary stopped for good, the next busbar process on this host seals the unstamped tail after restart or records a chain break.",
+        "Check the field reason. For signer: check the audit signing key or KMS secret plugin. For a journal error: check the store health. For panic or signer_panic: restart the process when convenient and report the log; until then lines are unstamped but durable.";
+
+    /// The oldest unstamped audit line is older than the stall threshold (SEALING-FIX §5.1).
+    AUDIT_NOTARY_STALLED = 2050, Audit, Actionable, "audit-notary-stalled", "1.6.0", false,
+        "Audit lines have gone unstamped for too long",
+        "The oldest audit line no stamp covers yet is older than the alert threshold (ten times audit.seal_every, at least one second). The notary is backing off a failing signer or store, or it has stopped. Lines are durable and linked; a crash now leaves a longer unstamped tail for the next process on this host to seal or report.",
+        "Look for BUSBAR-2049 just before this line and act on its reason. The gauge audit_unstamped_age_ms shows the current age.";
+
     PLANE_AUDITLOG_WRITE_FAILED = 2044, Audit, Actionable, "plane-auditlog-write-failed", "1.6.0", false,
         "Admin audit record could not be written through the durable journal seam (evidence lost)",
         "The admin audit record could NOT be written through the durable journal seam, so this mutation is being served but its evidence is being lost on that path. The chain position is unchanged, so the chain stays contiguous — what is missing is this one record, not the ones after it. This can recur per mutation during a store outage, so it warns on the transition into the failing state and holds subsequent occurrences at debug.",
