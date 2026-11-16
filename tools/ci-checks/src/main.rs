@@ -14,6 +14,14 @@
 //!   kind), `ring`, `sha2` and `ed25519-dalek` are built only beneath `busbar-crypto*`. Dev edges
 //!   count: tests use the facade too.
 //!
+//! - `fleet-manifest`: `fleet/deps.toml`'s `[min3-closure]` and `plugins.yaml`'s 33 ported and 2 archived
+//!   repos (IF §15 rules 1a, 1b).
+//! - `c-transport`, `export-streams`, `no-licence`, `core-scan`: source checks over core (C-TRANSPORT
+//!   test 11, C-EXPORT-STREAMS, C-NO-LICENCE (a), the §15.8 core scan). `loc-report` prints per-file
+//!   production and test lines (a report, no gate).
+//! - With arguments, the first one naming the check: `template-drift`, `patch-drift`, `no-host-link`,
+//!   `plugin-rules` and `c-alias`, run from a plugin repo's CI against the repo or its files.
+//!
 //! Usage: `busbar-ci-checks [check...]`; with no argument every check runs. Each finding prints as
 //! one line; any finding or error fails the run.
 

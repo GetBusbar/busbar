@@ -237,3 +237,17 @@ allow = [
     { crate = "libsqlite3-sys", version = "=0.40.0", features = ["bundled"], reason = "SQLite compiled in for the sqlite store (rusqlite 0.42's line, bundling SQLite 3.54.1, which fixes RUSTSEC-2026-0459; bundled + pinned)" },
     { crate = "libz-sys", version = "=1.1.29", features = ["static"], reason = "zlib compiled in for the mysql store's compression (ARCHITECT 2026-10-01, bundled + pinned)" },
 ]
+
+# ── The MIN-3 closure (IF §15 rules 1a and 1b; W1-X1) ─────────────────────────────────────────────
+# What a rendered plugin repo's Cargo workspace may name of busbar. `tools/ci-checks` (`fleet-manifest`)
+# holds this table to these values; `plugin-rules` holds every plugin repo's `cargo metadata` to it.
+#   - busbar-plugin-abi is a plugin's ONLY busbar dependency (feature `memio` for its own tests, never
+#     `host`); a kind-free helper crate may be a second one if its only busbar dependency is
+#     busbar-plugin-abi at default features (rule 1a, round 30).
+#   - busbar-plugin-test is the ONLY busbar dev-dependency (rule 1b; a repo's own crates aside).
+#   - No plugin crate, and none of the core crates below, is reachable through a normal or build edge.
+[min3-closure]
+plugin_busbar_dependency = "busbar-plugin-abi"
+helper_busbar_dependency = "busbar-plugin-abi"
+plugin_busbar_dev_dependency = "busbar-plugin-test"
+forbidden_plugin_dependencies = ["busbar-contract", "plugin-loader", "busbar-kernel", "busbar-core-connector", "busbar-crypto", "busbar-crypto-backend"]
