@@ -249,7 +249,9 @@ impl FakeNeeds {
 
     /// The value custody returns for the secret the operator config holds at `pointer` (the suite binds the
     /// config, so the plugin only ever sees the handle). Handles are numbered from 1 in the order of these calls,
-    /// the order the suite binds the pointers in.
+    /// the order the suite binds the pointers in. For a D_REF_PATH reference, `pointer` is its concrete pointer:
+    /// the suite binder writes this value there, as a JSON string, before `check` and `open` (a reference with no
+    /// value scripted is refused, as custody's failed resolve is).
     pub fn secret(&mut self, pointer: &str, value: &[u8]) -> &mut Self {
         self.state()
             .secrets
@@ -265,6 +267,15 @@ impl FakeNeeds {
     /// value is registered (a plugin's FAIL text and log lines are then scrubbed of nothing it resolved).
     pub fn attach_scrubs(&self, scrub_of: ScrubOf) {
         *self.scrubs.lock().unwrap_or_else(PoisonError::into_inner) = Some(scrub_of);
+    }
+
+    /// The first value `secret` scripted for `pointer`.
+    pub(crate) fn secret_at(&self, pointer: &str) -> Option<Vec<u8>> {
+        self.lock()
+            .secrets
+            .iter()
+            .find(|(at, _)| at == pointer)
+            .map(|(_, value)| value.clone())
     }
 
     /// Scripted kernel answers for plane intents (ENTITLE grants, MINT/SIGN outputs, CONNECT states, rendezvous).
