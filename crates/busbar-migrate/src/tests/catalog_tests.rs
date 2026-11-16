@@ -27,6 +27,22 @@ anthropic:
   base_url: https://api.anthropic.com
 ";
 
+#[test]
+fn a_conflicting_catalog_refuses_before_store_migration() {
+    let scratch = Scratch::new();
+    let path = scratch.config("listen: x\nstore: {module: sqlite}\n");
+    scratch.file("providers.yaml", CATALOG);
+    let target = scratch.file("providers.busbar-1.6.yaml", "other: {}\n");
+    let refused = plan(&Inputs::new(&path, &facts(), &crate::scratch::accept)).unwrap_err();
+    assert_eq!(refused.word(), "CONFIG");
+    assert!(refused.to_string().contains("providers.busbar-1.6.yaml"));
+    assert_eq!(std::fs::read_to_string(target).unwrap(), "other: {}\n");
+    assert_eq!(
+        std::fs::read_to_string(path).unwrap(),
+        "listen: x\nstore: {module: sqlite}\n"
+    );
+}
+
 /// Plan and write `config` in `scratch` with `facts`, recording the catalog the parse was handed.
 fn upgrade(scratch: &Scratch, config: &str, facts: &Facts) -> (Vec<String>, Option<String>) {
     let path = scratch.config(config);
