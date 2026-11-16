@@ -194,8 +194,8 @@ impl Shared {
 
     /// Delivers one line set until every line is accepted, refused or out of attempts.
     fn deliver_set(&self, stream: u8, lines: &[Line]) {
-        let delivery = 0u64;
-        let mut attempt = 0u32;
+        let mut delivery = mint_delivery();
+        let mut attempt = 1u32;
         let mut start = 0usize;
         while start < lines.len() {
             if attempt > DELIVER_ATTEMPTS {
@@ -230,6 +230,7 @@ impl Shared {
                     self.delivered.fetch_add(n as u64, Ordering::Relaxed);
                     start += n;
                     if start < lines.len() {
+                        delivery = mint_delivery();
                         resend(&mut attempt, None);
                     }
                 }
@@ -253,6 +254,7 @@ impl Shared {
                             self.delivered.fetch_add(n as u64, Ordering::Relaxed);
                             start += n;
                             if start < lines.len() {
+                                delivery = mint_delivery();
                                 resend(&mut attempt, None);
                             }
                         }
