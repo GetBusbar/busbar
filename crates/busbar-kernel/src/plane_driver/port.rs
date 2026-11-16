@@ -28,7 +28,7 @@ use super::port_auth::{
     admit, refuse, subject_identity, Admitted, Credentials, NoTickets, Principal, TicketDoor,
 };
 use super::port_channels::{decode_tick, TickOut};
-use super::port_intents::{subject_scope, IntentHost, Resolver};
+use super::port_intents::{subject_scope, IntentHost, Namespace, Resolver};
 use super::port_money::write_audit;
 use super::port_money::PortMoney;
 use super::port_routes::{admin_catalog, admin_hydrate, plan, Mounted, PortRoutes};
@@ -36,6 +36,7 @@ use super::port_serve::{run_session, AuditOnly, Books, Drive, Ran, UnitBooks};
 use super::port_session::{run_local, Effects, SessionError, ToClient};
 use super::port_upstream::{Members, UpSend};
 use super::{AuditSink, CoreAudit};
+use crate::push::PushQueue;
 use crate::refusal::{ClientRefusal, RefusalMap};
 use crate::teller::UnitCtx;
 use busbar_plugin_abi::types::{Bytes, Pair, Str};
@@ -92,13 +93,59 @@ pub(crate) fn carrier_end_arg(carrier: u64) -> Vec<u8> {
     arg.as_bytes().to_vec()
 }
 
-/// One served MIN-3 plane instance: its driver and the audience its line session is bound to (the `canonical_uri`
-/// of its config block, `None` when it states none).
+/// One served MIN-3 plane instance: its driver, the audience its line session is bound to (the `canonical_uri`
+/// of its config block, `None` when it states none), what its intents run against and who it is to the store.
 #[derive(Clone)]
 pub struct PortSeat {
     pub instance: String,
     pub driver: Arc<PortDriver>,
     pub audience: Option<String>,
+    /// What this instance's intents (records, push, signals, WORK) run against: [`PortDriver::serve`]'s `intents`.
+    pub intents: Arc<dyn IntentHost>,
+    /// The instance's record namespace (§12.5): the caller its pushes are queued under.
+    pub who: Namespace,
+}
+
+impl PortSeat {
+    /// One `admin(ADMIN_TICK)`: the plane's PUSHes are queued under this instance's namespace (EMITs already went
+    /// to their carriers). A refused or failed tick, or a push the queue refuses, is logged and dropped: the next
+    /// tick is the retry. Answers how many pushes were queued.
+    pub async fn tick_once(&self, queue: &dyn PushQueue) -> usize {
+        let out = match self.driver.tick().await {
+            Ok(out) => out,
+            Err(error) => {
+                tracing::warn!(instance = %self.instance, ?error, "a plane tick failed");
+                return 0;
+            }
+        };
+        let who = self.who.caller();
+        let mut queued = 0;
+        for (ttl_s, recs) in &out.pushes {
+            match queue.enqueue(&who, *ttl_s, recs).await {
+                Ok(()) => queued += 1,
+                Err(denied) => {
+                    tracing::warn!(instance = %self.instance, ?denied, "a plane push was not queued");
+                }
+            }
+        }
+        queued
+    }
+
+    /// The tick timer task (§8.6 `tick_s`): `tick_once` every period until the task is dropped. A plane that
+    /// states no period is never ticked (the task returns at once).
+    pub async fn tick_task(self, queue: Arc<dyn PushQueue>) {
+        let Some(period) = self.driver.tick_s().filter(|s| *s > 0) else {
+            return;
+        };
+        let mut every = tokio::time::interval(Duration::from_secs(period));
+        every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // The first tick of an interval is immediate: the plane has just opened, its first period starts now.
+        every.tick().await;
+        loop {
+            every.tick().await;
+            self.tick_once(&*queue).await;
+        }
+    }
 }
 
 impl std::fmt::Debug for PortSeat {

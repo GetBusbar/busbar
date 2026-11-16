@@ -611,7 +611,8 @@ pub struct Namespace {
 }
 
 impl Namespace {
-    pub(crate) fn caller(&self) -> Caller<'_> {
+    #[must_use]
+    pub fn caller(&self) -> Caller<'_> {
         Caller {
             plugin: &self.plugin,
             kind: KindCode::Plane,
