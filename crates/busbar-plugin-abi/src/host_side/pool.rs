@@ -1,9 +1,42 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Host-owned output buffers and the process-wide buffer pool (IF §10.1). W0-ABI stub: frozen signatures, `todo!()` bodies; W1-H1 fills it.
+//! Host-owned output buffers and the process-wide buffer pool (IF §10.1; W1-H1).
+//!
+//! UNSAFE-MIN r3.1 (owner-approved, later than the IF): an entry's out buffer reaches the plugin only as a
+//! busbar-ffi `OutLease`, which owns a `Vec<u8>` for the entry and does `grow` itself. So an `OutBuf` is backed
+//! by a `Vec<u8>` allocated zeroed over its whole length (`vec![0u8; cap]` is `alloc_zeroed`), where the IF wrote
+//! `Vec<u64>`: the records reader copies every Pod out (`read_from_prefix`), so no reader relies on the 8-byte
+//! alignment, and a `Vec<u64>` cannot be handed to busbar-ffi without a copy. `PooledOut::lend` moves the buffer
+//! into the lease for one entry and takes it back after (`OutLease::into_buf`), applying the plugin-stated length
+//! through the H1/H2 clamp. The buffer's length is its capacity (`own_cap`, host state); nothing here calls
+//! `with_capacity`, `reserve`, `set_len` or `MaybeUninit` (C-ZEROIZE-FRESH).
 
-use core::marker::PhantomData;
+use core::cell::RefCell;
+use core::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
+
+use busbar_ffi::host::OutLease;
+use crossbeam_queue::ArrayQueue;
+use zerocopy::IntoBytes;
+
+use crate::records::{
+    FactRec, FactTextRec, Full, Nested, PairRec, Pod, RawWrite, Reply, Writer, put_parts, tag,
+};
+
+/// The four class sizes (§10.1): 4 KiB, 64 KiB, 1 MiB, 16 MiB.
+pub(crate) const CLASSES: [usize; 4] = [4 << 10, 64 << 10, 1 << 20, 16 << 20];
+
+/// The class whose size is exactly `cap`, if any.
+fn class_of(cap: usize) -> Option<usize> {
+    CLASSES.iter().position(|&size| size == cap)
+}
+
+/// Zeroes `bytes` with stores the optimiser cannot drop before a free (the block may be released next).
+fn wipe(bytes: &mut [u8]) {
+    bytes.fill(0);
+    core::hint::black_box(&*bytes);
+}
 
 /// Host-owned, 8-aligned. `max_out` from describe, clamped. Tracks a high-water mark of bytes written since the
 /// last reset: by the host directly, and by the plugin as the host learns it (`out.len` on every return,
@@ -32,9 +65,45 @@ use core::marker::PhantomData;
 /// `len = cap` without writing makes the host read zeros, never old heap (another request's credential) and never
 /// uninitialised memory (UB). C-ZEROIZE-FRESH (§14).
 pub struct OutBuf {
-    // W0-ABI: private fields (Vec<u64> backing, allocated zeroed (never resized in place), len, high_water,
-    // max_out, class) land with W1-H1.
-    _stub: PhantomData<()>,
+    /// The block; its length is its capacity (`own_cap`) and every byte of it was initialised to zero.
+    buf: Vec<u8>,
+    /// Bytes written (host) or stated (plugin, clamped to `own_cap`).
+    len: usize,
+    /// The furthest byte written or exposed since the last zeroing, never past `own_cap`.
+    high_water: usize,
+    max_out: usize,
+}
+
+impl OutBuf {
+    /// A fresh block of `cap` bytes, all zero.
+    fn zeroed(cap: usize, max_out: usize) -> OutBuf {
+        OutBuf {
+            buf: vec![0u8; cap],
+            len: 0,
+            high_water: 0,
+            max_out,
+        }
+    }
+
+    fn cap(&self) -> usize {
+        self.buf.len()
+    }
+
+    /// `high_water = min(own_cap, max(high_water, min(v, own_cap)))` (round 13).
+    fn raise(&mut self, v: usize) {
+        let cap = self.cap();
+        self.high_water = self.high_water.max(v.min(cap)).min(cap);
+    }
+
+    /// Zeroes `[0, min(max(len, high_water), own_cap))` and empties the buffer.
+    fn clear(&mut self) {
+        let end = self.len.max(self.high_water).min(self.cap());
+        if let Some(touched) = self.buf.get_mut(..end) {
+            wipe(touched);
+        }
+        self.len = 0;
+        self.high_water = 0;
+    }
 }
 
 /// A pooled OutBuf. Drop zeroes `[0, high_water)` (I11: credentials pass through every kind's buffers — WRITE
@@ -46,25 +115,218 @@ pub struct OutBuf {
 /// entry has ≥ 4 KiB capacity, so a FAIL record always fits (§3.2).
 #[derive(Default)]
 pub struct PooledOut {
-    // W0-ABI: private fields (OutBuf, &'static Pool) land with W1-H1.
-    _stub: PhantomData<()>,
+    buf: Option<OutBuf>,
+    /// The pool it returns to (`Pool::global()` when none: a handle built by `Default` holds no buffer).
+    pool: Option<&'static Pool>,
 }
 impl PooledOut {
+    /// The empty handle, usable in a `const` thread-local.
+    pub(crate) const fn empty() -> PooledOut {
+        PooledOut {
+            buf: None,
+            pool: None,
+        }
+    }
+
     pub fn bytes(&self) -> &[u8] {
-        todo!()
+        match &self.buf {
+            Some(held) => held.buf.get(..held.len.min(held.cap())).unwrap_or(&[]),
+            None => &[],
+        }
     }
     // zeroes [0, high_water), len = 0
     pub fn reset(&mut self) {
-        todo!()
+        if let Some(held) = &mut self.buf {
+            held.clear();
+        }
     }
     /// Round 9: false for the empty handle (`PooledOut::default()`: no buffer, Drop does nothing, no queue op).
     pub fn is_held(&self) -> bool {
-        todo!()
+        self.buf.is_some()
+    }
+    /// The buffer's own capacity (host state, `own_cap`); 0 for the empty handle.
+    pub fn capacity(&self) -> usize {
+        self.buf.as_ref().map_or(0, OutBuf::cap)
+    }
+    /// The whole block, `[0, own_cap)`: a host-side view for the zeroing checks (C-ZEROIZE*). Never handed to
+    /// a plugin and never parsed: answers are read through `bytes()`.
+    pub fn whole(&self) -> &[u8] {
+        self.buf
+            .as_ref()
+            .map_or(&[][..], |held| held.buf.as_slice())
+    }
+
+    /// Sets the growth cap (describe's `max_out`, clamped by core) for the next use.
+    pub(crate) fn set_max_out(&mut self, max_out: usize) {
+        if let Some(held) = &mut self.buf {
+            held.max_out = max_out;
+        }
+    }
+
+    /// Lends the buffer to one entry as busbar-ffi's `OutLease` (which zero-fills it and grows it within
+    /// `max_out`), runs `call`, and takes the buffer back with the plugin-stated length clamped to the
+    /// buffer's own capacity (r4 H2; round 13's mark update). None: the handle is empty, or the thread's ACTIVE
+    /// stack is full (busbar-ffi `DEPTH`); the buffer is then gone (zeroed by the lease) and the handle empty.
+    /// If `call` unwinds, the lease's Drop zeroes the buffer and the handle stays empty.
+    pub(crate) fn lend<R>(&mut self, call: impl FnOnce(&mut OutLease) -> R) -> Option<R> {
+        let mut held = self.buf.take()?;
+        let block = core::mem::take(&mut held.buf);
+        let mut lease = OutLease::new(block, held.max_out)?;
+        let answer = call(&mut lease);
+        let (block, len) = lease.into_buf();
+        held.buf = block;
+        held.len = len.min(held.cap());
+        held.high_water = 0;
+        held.raise(len);
+        self.buf = Some(held);
+        Some(answer)
+    }
+
+    fn pool(&self) -> &'static Pool {
+        self.pool.unwrap_or_else(Pool::global)
+    }
+
+    /// Up to `n` writable bytes after the written ones (grown like any write, within max_out), counted as
+    /// exposed (the mark covers them) so a handler that writes into them and commits less still has every
+    /// byte it wrote zeroed. None: no room even for one byte.
+    pub(crate) fn spare(&mut self, n: usize) -> Option<&mut [u8]> {
+        let room = self.capacity().saturating_sub(self.written());
+        let n = if n > room && self.room(n).is_err() {
+            room
+        } else {
+            n
+        };
+        let held = self.buf.as_mut()?;
+        let end = held.len.checked_add(n)?;
+        held.raise(end);
+        held.buf.get_mut(held.len..end)
+    }
+    /// Counts `n` bytes of the last `spare` as written.
+    pub(crate) fn commit(&mut self, n: usize) {
+        if let Some(held) = self.buf.as_mut() {
+            held.len = (held.len + n).min(held.high_water);
+        }
+    }
+
+    /// Appends whole records already framed (a scratch `Reply`'s bytes).
+    fn put_framed(&mut self, bytes: &[u8]) -> Result<(), Full> {
+        self.room(bytes.len())?;
+        self.append(bytes);
+        Ok(())
     }
 }
-// W0-ABI: `impl Writer for PooledOut` (crate::records::Writer) lands with W1-H1 (A3 one-impl rule: the IF's
-// other Writer impls live in records.rs).
-// W0-ABI: `impl Drop for PooledOut` (zero `[0, high_water)`, release to its current class) lands with W1-H1.
+
+impl RawWrite for PooledOut {
+    fn written(&self) -> usize {
+        self.buf.as_ref().map_or(0, |held| held.len)
+    }
+    /// Growth (§10.1): the smallest class that fits `len + need` (or an exact zeroed block above 16 MiB), the
+    /// written bytes copied over, the old block zeroed over what was written and released to its own class.
+    /// Never `reserve`/`realloc` (I11). Over max_out: Full, nothing changed. An empty handle has no room.
+    fn room(&mut self, need: usize) -> Result<(), Full> {
+        let pool = self.pool();
+        let held = self.buf.as_mut().ok_or(Full)?;
+        let want = held.len.checked_add(need).ok_or(Full)?;
+        if want <= held.cap() {
+            return Ok(());
+        }
+        if want > held.max_out {
+            return Err(Full);
+        }
+        let mut grown = pool.take(want, held.max_out);
+        if let (Some(dst), Some(src)) = (grown.buf.get_mut(..held.len), held.buf.get(..held.len)) {
+            dst.copy_from_slice(src);
+        }
+        grown.len = held.len;
+        grown.raise(held.len);
+        let old = core::mem::replace(held, grown);
+        pool.release(old);
+        Ok(())
+    }
+    fn append(&mut self, bytes: &[u8]) {
+        let Some(held) = self.buf.as_mut() else {
+            assert!(bytes.is_empty(), "a write into an empty PooledOut");
+            return;
+        };
+        let end = held.len + bytes.len();
+        let Some(dst) = held.buf.get_mut(held.len..end) else {
+            panic!("a record write past the room it made");
+        };
+        dst.copy_from_slice(bytes);
+        held.len = end;
+        held.raise(end);
+    }
+    fn patch(&mut self, at: usize, bytes: &[u8]) {
+        if let Some(held) = self.buf.as_mut() {
+            let end = at + bytes.len();
+            assert!(end <= held.len, "a patch past the written bytes");
+            if let Some(dst) = held.buf.get_mut(at..end) {
+                dst.copy_from_slice(bytes);
+            }
+        }
+    }
+    fn truncate(&mut self, len: usize) {
+        if let Some(held) = self.buf.as_mut() {
+            if let Some(tail) = held.buf.get_mut(len..held.len) {
+                wipe(tail);
+            }
+            held.len = held.len.min(len);
+        }
+    }
+}
+
+/// Every write is a whole record (`put_parts`) or, for the two nested shapes, a scratch `Reply` copied in once
+/// (records.rs keeps its nested-record writer private to its own sinks; the scratch wipes itself on drop).
+impl Writer for PooledOut {
+    fn put(&mut self, tag: u16, body: &[u8]) -> Result<(), Full> {
+        put_parts(self, tag, &[body])
+    }
+    fn put_pod<T: Pod>(&mut self, tag: u16, v: &T) -> Result<(), Full> {
+        put_parts(self, tag, &[v.as_bytes()])
+    }
+    fn put_pod_tail<T: Pod>(&mut self, tag: u16, v: &T, tail: &[u8]) -> Result<(), Full> {
+        put_parts(self, tag, &[v.as_bytes(), tail])
+    }
+    fn put_text(&mut self, tag: u16, s: &str) -> Result<(), Full> {
+        put_parts(self, tag, &[s.as_bytes()])
+    }
+    fn put_pair(&mut self, tag: u16, name: &str, value: &[u8]) -> Result<(), Full> {
+        let head = PairRec {
+            name_len: u32::try_from(name.len()).map_err(|_| Full)?,
+            _r: 0,
+        };
+        put_parts(self, tag, &[head.as_bytes(), name.as_bytes(), value])
+    }
+    fn put_fact(&mut self, key: u32, value: u64) -> Result<(), Full> {
+        put_parts(self, tag::FACT, &[FactRec { key, _r: 0, value }.as_bytes()])
+    }
+    fn put_fact_text(&mut self, key: u32, value: &str) -> Result<(), Full> {
+        let head = FactTextRec { key, _r: 0 };
+        put_parts(self, tag::FACT_TEXT, &[head.as_bytes(), value.as_bytes()])
+    }
+    fn put_metric(&mut self, id: u32, op: u32, value: f64, labels: &[&str]) -> Result<(), Full> {
+        let mut scratch = Reply::new();
+        scratch.put_metric(id, op, value, labels)?;
+        self.put_framed(scratch.as_bytes())
+    }
+    fn put_nested(
+        &mut self,
+        tag: u16,
+        f: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full> {
+        let mut scratch = Reply::new();
+        scratch.put_nested(tag, f)?;
+        self.put_framed(scratch.as_bytes())
+    }
+}
+
+impl Drop for PooledOut {
+    fn drop(&mut self) {
+        if let Some(held) = self.buf.take() {
+            self.pool().release(held);
+        }
+    }
+}
 
 /// Pool sizing. `inflight` = the number of concurrently live async chains the pool keeps allocation-free
 /// (config `plugins.pool.inflight`, default 1,024; boot sets it ≥ the connector's request concurrency limit).
@@ -90,25 +352,123 @@ impl Default for PoolCaps {
 /// is full (counted in `plugin_pool_drop_total`). Buffers carry no thread affinity, so a chain that starts on
 /// worker A and ends on worker B returns its buffers to the shared queue. Buffers above 16 MiB are never pooled.
 pub struct Pool {
-    // W0-ABI: private fields ([ArrayQueue<OutBuf>; 4], counters) land with W1-H1 (crossbeam-queue is not a
-    // wave-0 dependency).
-    _stub: PhantomData<()>,
+    queues: [ArrayQueue<OutBuf>; 4],
+    misses: AtomicU64,
+    drops: AtomicU64,
 }
+
+static GLOBAL: OnceLock<Pool> = OnceLock::new();
+
 impl Pool {
+    /// A pool sized by `caps` (tests build their own and leak it; production has the one global).
+    pub(crate) fn new(caps: PoolCaps) -> Pool {
+        let inflight = usize::try_from(caps.inflight).unwrap_or(usize::MAX).max(1);
+        Pool {
+            queues: [
+                ArrayQueue::new(inflight.saturating_mul(4)),
+                ArrayQueue::new((inflight / 4).max(1)),
+                ArrayQueue::new(16),
+                ArrayQueue::new(2),
+            ],
+            misses: AtomicU64::new(0),
+            drops: AtomicU64::new(0),
+        }
+    }
     /// Set once at boot, before the first acquire (later calls are ignored and logged).
+    ///
+    /// W1-H1: the abi crate has no logger of its own, so "logged" is the caller's: this answers nothing and the
+    /// registry, which calls it once from `Registry::new`, can compare `Pool::global()`'s queue sizes (no API
+    /// call in the hot path depends on which call won).
     pub fn init_global(caps: PoolCaps) {
-        let _ = caps;
-        todo!()
+        let _ = GLOBAL.set(Pool::new(caps));
     }
     pub fn global() -> &'static Pool {
-        todo!()
+        GLOBAL.get_or_init(|| Pool::new(PoolCaps::default()))
     }
     pub fn acquire(&'static self, max_out: usize) -> PooledOut {
-        let _ = max_out;
-        todo!()
+        PooledOut {
+            buf: Some(self.take(CLASSES[0], max_out)),
+            pool: Some(self),
+        }
     }
     pub fn misses(&self) -> u64 {
-        todo!()
+        self.misses.load(Ordering::Relaxed)
+    }
+    /// Buffers freed because their class queue was full, or because they are not a class size (above 16 MiB, or
+    /// a block busbar-ffi's `grow` sized): `plugin_pool_drop_total`.
+    pub fn drops(&self) -> u64 {
+        self.drops.load(Ordering::Relaxed)
+    }
+
+    /// A block of the smallest class that fits `want` (one pop; a miss allocates it zeroed), or an exact zeroed
+    /// block above 16 MiB (never pooled). Every block comes back with `len = high_water = 0`.
+    fn take(&self, want: usize, max_out: usize) -> OutBuf {
+        let Some(class) = CLASSES.iter().position(|&size| size >= want) else {
+            return OutBuf::zeroed(want.next_multiple_of(8), max_out);
+        };
+        match self.queues.get(class).and_then(ArrayQueue::pop) {
+            Some(mut buf) => {
+                buf.max_out = max_out;
+                buf
+            }
+            None => {
+                self.misses.fetch_add(1, Ordering::Relaxed);
+                OutBuf::zeroed(CLASSES[class], max_out)
+            }
+        }
+    }
+
+    /// Zeroes what the block exposed, then one push to its current class; a full queue, or a block of no class,
+    /// frees it.
+    fn release(&self, mut buf: OutBuf) {
+        buf.clear();
+        let pushed = match class_of(buf.cap()).and_then(|class| self.queues.get(class)) {
+            Some(queue) => queue.push(buf).is_ok(),
+            None => false,
+        };
+        if !pushed {
+            self.drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// One thread's two sync buffers, and whether a sync call on this thread holds them (C-NESTED).
+struct SyncBufs {
+    args: PooledOut,
+    out: PooledOut,
+    busy: bool,
+}
+
+std::thread_local! {
+    /// The thread's sync buffers; their destructor zeroes and releases both at thread exit (PooledOut's Drop).
+    static SYNC: RefCell<SyncBufs> = const {
+        RefCell::new(SyncBufs { args: PooledOut::empty(), out: PooledOut::empty(), busy: false })
+    };
+}
+
+/// Hands a sync call's two buffers back after the call, on return and on unwind: both reset, a buffer that grew
+/// past class 1 swapped for a class-0 one, the thread's holder marked free.
+struct SyncLoan {
+    args: PooledOut,
+    out: PooledOut,
+}
+
+impl Drop for SyncLoan {
+    fn drop(&mut self) {
+        let mut args = core::mem::take(&mut self.args);
+        let mut out = core::mem::take(&mut self.out);
+        for buf in [&mut args, &mut out] {
+            buf.reset();
+            if buf.capacity() > CLASSES[1] {
+                *buf = PooledOut::empty();
+            }
+        }
+        let _ = SYNC.try_with(|cell| {
+            let mut bufs = cell.borrow_mut();
+            bufs.args = args;
+            bufs.out = out;
+            bufs.busy = false;
+        });
     }
 }
 
@@ -128,8 +488,34 @@ pub fn sync_bufs<R>(
     max_out: usize,
     f: impl FnOnce(&mut PooledOut /* args */, &mut PooledOut /* out */) -> R,
 ) -> R {
-    let _ = (max_out, f);
-    todo!()
+    let loaned = SYNC
+        .try_with(|cell| {
+            let mut bufs = cell.borrow_mut();
+            if bufs.busy {
+                return None;
+            }
+            bufs.busy = true;
+            Some((
+                core::mem::take(&mut bufs.args),
+                core::mem::take(&mut bufs.out),
+            ))
+        })
+        .ok()
+        .flatten();
+    let Some((args, out)) = loaned else {
+        // Nested (or the thread is exiting): fresh buffers, zeroed and released on drop.
+        let mut args = Pool::global().acquire(max_out);
+        let mut out = Pool::global().acquire(max_out);
+        return f(&mut args, &mut out);
+    };
+    let mut loan = SyncLoan { args, out };
+    for buf in [&mut loan.args, &mut loan.out] {
+        if !buf.is_held() {
+            *buf = Pool::global().acquire(max_out);
+        }
+        buf.set_max_out(max_out);
+    }
+    f(&mut loan.args, &mut loan.out)
 }
 
 /// The buffers one async chain owns, all from `Pool::global()`: `req` (the §8.8 request records), `out` (two,
@@ -146,13 +532,21 @@ pub struct ChainBufs {
 }
 impl ChainBufs {
     pub fn acquire(max_out: usize) -> Self {
-        let _ = max_out;
-        todo!()
+        let pool = Pool::global();
+        ChainBufs {
+            req: pool.acquire(max_out),
+            out: [pool.acquire(max_out), PooledOut::empty()],
+            results: PooledOut::empty(),
+        }
     }
     /// Idempotent: acquires `out[1]` and `results` (class fitting `max_out`'s first class) if not held.
     pub fn on_need(&mut self, max_out: usize) {
-        let _ = max_out;
-        todo!()
+        let pool = Pool::global();
+        for buf in [&mut self.out[1], &mut self.results] {
+            if !buf.is_held() {
+                *buf = pool.acquire(max_out);
+            }
+        }
     }
 }
 

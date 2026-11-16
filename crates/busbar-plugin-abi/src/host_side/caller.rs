@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The host-side caller identity, instance limits and the transport-security verdict (IF §10.3, §48). W0-ABI stub: frozen signatures, `todo!()` bodies; W1-H1 fills it (`transport_verdict` is filled, S3-STORE-TLS).
+//! The host-side caller identity, instance limits and the transport-security verdict (IF §10.3, §48; W1-H1).
 
+use core::cell::Cell;
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use crate::types::KindCode;
@@ -17,14 +19,18 @@ pub struct CallStack {
     pub depth: u8,
 }
 impl CallStack {
+    /// Whether `instance` is on the stack. Only the first `depth` ids count (a `depth` past 4 reads as 4).
     pub fn contains(&self, instance: u64) -> bool {
-        let _ = instance;
-        todo!()
+        let depth = usize::from(self.depth).min(self.ids.len());
+        self.ids.iter().take(depth).any(|&id| id == instance)
     }
     /// None when depth is already 4 (custody then refuses: CustodyDenied::Cycle).
     pub fn push(self, instance: u64) -> Option<CallStack> {
-        let _ = instance;
-        todo!()
+        let mut next = self;
+        let slot = next.ids.get_mut(usize::from(self.depth))?;
+        *slot = instance;
+        next.depth = self.depth.checked_add(1)?;
+        Some(next)
     }
 }
 
@@ -84,7 +90,26 @@ pub struct Caller<'a> {
 /// C-RMW counts it once per thread, never per chain. Ordinals overflow only after 2^32 thread births plus
 /// counter wraps, which no process reaches; debug builds assert it.
 pub fn next_chain() -> u64 {
-    todo!()
+    let mut ord = ORDINAL.get();
+    let mut n = COUNTER.get();
+    if ord == 0 || n == u32::MAX {
+        ord = ORDINALS.fetch_add(1, Ordering::Relaxed);
+        debug_assert!(ord < 1 << 32, "chain-id thread ordinals exhausted");
+        ORDINAL.set(ord);
+        n = 0;
+    }
+    COUNTER.set(n + 1);
+    (ord << 32) | u64::from(n)
+}
+
+/// The next thread ordinal; starts at 1 and is never decremented, so no chain id is 0 or reused.
+static ORDINALS: AtomicU64 = AtomicU64::new(1);
+
+std::thread_local! {
+    /// This thread's ordinal (0 = none taken yet).
+    static ORDINAL: Cell<u64> = const { Cell::new(0) };
+    /// The low 32 bits of this thread's next chain id.
+    static COUNTER: Cell<u32> = const { Cell::new(0) };
 }
 
 /// Round 8 (§12.22): core-owned per-instance limits, operator config `<kind>.<name>.limits` beside `module`.

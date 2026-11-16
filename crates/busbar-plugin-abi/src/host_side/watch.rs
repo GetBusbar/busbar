@@ -1,7 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Watchdog words: the per-thread busy word table and its scanner (IF §10.6). W0-ABI stub: frozen signatures, `todo!()` bodies; W1-H1 fills it.
+//! Watchdog words: the per-thread busy word table and its scanner (IF §10.6; W1-H1).
+//!
+//! A thread claims one word on its first entry (one `compare_exchange` on the occupancy bitmap, the only RMW
+//! here outside thread exit) and releases it from a host-side TLS destructor. Every later `enter`/`leave` is
+//! one Relaxed store each, plus thread-local loads and stores. Nested entries (C-NESTED) keep the enclosing
+//! entry's word in a thread-local stack and `leave` stores it back, so the scanner sees the outer entry's word
+//! unchanged (its time keeps counting) once the nested one returns. The scanner counts ticks (one per `scan`
+//! call, every 100 ms) instead of reading a clock, so it is deterministic under test.
+
+use core::cell::Cell;
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 /// Reserved entry indices for non-method entries (method bits are 0..=55).
 pub const ENTRY_DESCRIBE: u8 = 56;
@@ -26,19 +37,193 @@ pub const WATCH_CAP: u32 = 1_024;
 /// on the hot path, `WATCH_CAP` `last_seq` u32s and `WATCH_CAP / 64` occupancy bitmap words, all zeroed
 /// (~132 KiB total). The bitmap and `last_seq` are touched only by claim/release (cold) and the scanner (reads).
 pub fn init() {
-    todo!()
+    let _ = table();
 }
+
+/// The table and the scanner's state, allocated once.
+struct Table {
+    words: Box<[WatchWord]>,
+    /// The sequence each index's last owner reached (read by the next owner of that index).
+    last_seq: Box<[AtomicU32]>,
+    /// One bit per word: claimed.
+    bitmap: Box<[AtomicU64]>,
+    /// The scanner's per-index memory and tick count (the watchdog thread alone takes it).
+    scan: Mutex<Scanner>,
+    /// Entries that ran unwatched because no word was free (`plugin_watch_full_total`).
+    full: AtomicU64,
+}
+
+#[derive(Clone, Copy, Default)]
+struct Seen {
+    word: u64,
+    first_tick: u64,
+    epoch: u32,
+    reported: bool,
+}
+
+struct Scanner {
+    tick: u64,
+    seen: Box<[Seen]>,
+}
+
+static TABLE: OnceLock<Table> = OnceLock::new();
+
+fn table() -> &'static Table {
+    TABLE.get_or_init(|| {
+        let cap = WATCH_CAP as usize;
+        Table {
+            words: (0..cap).map(|_| WatchWord(AtomicU64::new(0))).collect(),
+            last_seq: (0..cap).map(|_| AtomicU32::new(0)).collect(),
+            bitmap: (0..cap / 64).map(|_| AtomicU64::new(0)).collect(),
+            scan: Mutex::new(Scanner {
+                tick: 0,
+                seen: vec![Seen::default(); cap].into_boxed_slice(),
+            }),
+            full: AtomicU64::new(0),
+        }
+    })
+}
+
+/// Nested entries whose enclosing word is kept (deeper ones restore idle; busbar-ffi's ACTIVE bound).
+const NEST: usize = 16;
+
+/// This thread's claim: its word index (`u32::MAX` = unclaimed) and its sequence. Dropped at thread exit.
+struct Claim {
+    idx: Cell<u32>,
+    seq: Cell<u32>,
+    /// The word this thread last stored (what a nested entry's `leave` restores).
+    word: Cell<u64>,
+    depth: Cell<usize>,
+    saved: [Cell<u64>; NEST],
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        let idx = self.idx.get();
+        if idx == u32::MAX {
+            return;
+        }
+        let Some(table) = TABLE.get() else {
+            return;
+        };
+        let i = idx as usize;
+        if let Some(word) = table.words.get(i) {
+            word.0.store(0, Ordering::Relaxed);
+        }
+        if let Some(last) = table.last_seq.get(i) {
+            last.store(self.seq.get(), Ordering::Relaxed);
+        }
+        if let Some(bits) = table.bitmap.get(i / 64) {
+            bits.fetch_and(!(1u64 << (i % 64)), Ordering::Release);
+        }
+    }
+}
+
+std::thread_local! {
+    static CLAIM: Claim = const {
+        Claim {
+            idx: Cell::new(u32::MAX),
+            seq: Cell::new(0),
+            word: Cell::new(0),
+            depth: Cell::new(0),
+            saved: [const { Cell::new(0) }; NEST],
+        }
+    };
+}
+
+/// Claims a free word for this thread: one successful `compare_exchange` on a zero bit, scanning from a
+/// per-thread start (the claim's own address), a lost race retrying on the next zero bit. None: the table is
+/// full (the entry runs unwatched and the next entry retries).
+fn claim(table: &Table, claim: &Claim) -> Option<u32> {
+    let words = table.bitmap.len();
+    if words == 0 {
+        return None;
+    }
+    let hint = (core::ptr::from_ref(claim).addr() / 64) % words;
+    for k in 0..words {
+        let w = (hint + k) % words;
+        let bits = table.bitmap.get(w)?;
+        let mut cur = bits.load(Ordering::Relaxed);
+        while cur != u64::MAX {
+            let bit = (!cur).trailing_zeros();
+            match bits.compare_exchange(cur, cur | (1 << bit), Ordering::Acquire, Ordering::Relaxed)
+            {
+                Ok(_) => {
+                    let idx = u32::try_from(w * 64).ok()? + bit;
+                    let last = table.last_seq.get(idx as usize)?.load(Ordering::Relaxed);
+                    claim.seq.set(last);
+                    claim.idx.set(idx);
+                    return Some(idx);
+                }
+                Err(now) => cur = now,
+            }
+        }
+    }
+    table.full.fetch_add(1, Ordering::Relaxed);
+    None
+}
+
 /// Registers the calling thread on its first entry (cold, below), then two Relaxed stores.
 pub fn enter(slot: u32, entry: u8) {
-    let _ = (slot, entry);
-    todo!()
+    let Some(table) = TABLE.get() else {
+        return;
+    };
+    let _ = CLAIM.try_with(|c| {
+        let depth = c.depth.get();
+        if let Some(saved) = c.saved.get(depth) {
+            saved.set(c.word.get());
+        }
+        c.depth.set(depth + 1);
+        let mut idx = c.idx.get();
+        if idx == u32::MAX {
+            match claim(table, c) {
+                Some(claimed) => idx = claimed,
+                None => return,
+            }
+        }
+        let mut seq = c.seq.get().wrapping_add(1);
+        if seq == 0 {
+            seq = 1;
+        }
+        c.seq.set(seq);
+        let word =
+            u64::from(slot & 0x00FF_FFFF) | (u64::from(entry) << 24) | (u64::from(seq) << 32);
+        c.word.set(word);
+        if let Some(w) = table.words.get(idx as usize) {
+            w.0.store(word, Ordering::Relaxed);
+        }
+    });
 }
 pub fn leave() {
-    todo!()
+    let Some(table) = TABLE.get() else {
+        return;
+    };
+    let _ = CLAIM.try_with(|c| {
+        let depth = c.depth.get().saturating_sub(1);
+        c.depth.set(depth);
+        let restored = c.saved.get(depth).map_or(0, Cell::get);
+        c.word.set(restored);
+        if let Some(w) = table.words.get(c.idx.get() as usize) {
+            w.0.store(restored, Ordering::Relaxed);
+        }
+    });
 }
 /// Live registrations (popcount of the occupancy bitmap). For C-WATCH-CHURN and `plugin_watch_threads`.
 pub fn live() -> u32 {
-    todo!()
+    TABLE.get().map_or(0, |table| {
+        table
+            .bitmap
+            .iter()
+            .map(|bits| bits.load(Ordering::Relaxed).count_ones())
+            .sum()
+    })
+}
+/// Entries that ran unwatched because the table was full (`plugin_watch_full_total`). W1-H1: the registry's
+/// watchdog thread turns a rise into the once-a-minute ERROR line §10.6 asks for (this module has no logger).
+pub fn full_total() -> u64 {
+    TABLE
+        .get()
+        .map_or(0, |table| table.full.load(Ordering::Relaxed))
 }
 /// For the loader's watchdog thread (scan every 100 ms; the only code here that reads a clock). It keeps,
 /// per thread, the last word seen, the scan tick at which it first saw it and (round 14) the slot epoch it read
@@ -55,18 +240,67 @@ pub fn live() -> u32 {
 /// time, so its lease was held the whole time (a lease is released only after the last entry under it returns,
 /// I10 (d)); the epoch read between those two loads is therefore the owner's (the epoch is bumped with Release
 /// only when the slot is re-allocated, after the previous lease's last `leave`).
+///
+/// W1-H1: one call is one 100 ms tick (`busy_ms` = ticks × 100), so the scan reads no clock at all. A ceiling
+/// of 0 (a slot with no row) is never reported.
 pub fn scan(
     ceiling: impl Fn(u32 /*slot*/, u8 /*entry*/) -> (u32 /*ceiling µs*/, u32 /*epoch*/),
-    report: impl FnMut(u32 /*slot*/, u32 /*epoch*/, u8 /*entry*/, u64 /*busy_ms*/),
+    mut report: impl FnMut(
+        u32, /*slot*/
+        u32, /*epoch*/
+        u8,  /*entry*/
+        u64, /*busy_ms*/
+    ),
 ) {
-    let _ = (ceiling, report);
-    todo!()
+    let Some(table) = TABLE.get() else {
+        return;
+    };
+    let mut scanner = table.scan.lock().unwrap_or_else(PoisonError::into_inner);
+    scanner.tick += 1;
+    let tick = scanner.tick;
+    for (w, bits) in table.bitmap.iter().enumerate() {
+        let claimed = bits.load(Ordering::Acquire);
+        for bit in 0..64 {
+            let i = w * 64 + bit;
+            let Some(seen) = scanner.seen.get_mut(i) else {
+                continue;
+            };
+            let word = match table.words.get(i) {
+                Some(word) if claimed & (1 << bit) != 0 => word.0.load(Ordering::Relaxed),
+                _ => 0,
+            };
+            if word == 0 {
+                *seen = Seen::default();
+                continue;
+            }
+            let slot = (word & 0x00FF_FFFF) as u32;
+            let entry = ((word >> 24) & 0xFF) as u8;
+            if word != seen.word {
+                *seen = Seen {
+                    word,
+                    first_tick: tick,
+                    epoch: ceiling(slot, entry).1,
+                    reported: false,
+                };
+                continue;
+            }
+            if seen.reported {
+                continue;
+            }
+            let busy_ms = (tick - seen.first_tick).saturating_mul(100);
+            let (ceiling_us, _) = ceiling(slot, entry);
+            if ceiling_us != 0 && busy_ms.saturating_mul(1_000) >= u64::from(ceiling_us) {
+                seen.reported = true;
+                report(slot, seen.epoch, entry, busy_ms);
+            }
+        }
+    }
 }
 /// The slot of the entry running on this thread (log attribution, §5), or None outside an entry. Round 24: reads
 /// `entry.rs`'s `OWNER` cell (§10.7), never the watch claim or word, so it is Some in every entry, watched or not
 /// ("Full table" below), and in a nested entry it names the nested entry's owner.
 pub fn current_slot() -> Option<u32> {
-    todo!()
+    crate::host_side::entry::owner()
 }
 
 #[cfg(test)]
