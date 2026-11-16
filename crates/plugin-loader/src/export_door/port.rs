@@ -536,6 +536,18 @@ impl PortDoor {
         disk: Arc<dyn DestAppend>,
         limits: &InstanceLimits,
     ) -> Result<Arc<Self>, String> {
+        let door = Self::prepare(label, port, disk, limits);
+        door.start()?;
+        Ok(door)
+    }
+
+    /// Construct a candidate's complete delivery adapter without starting its pump.
+    pub fn prepare(
+        label: &str,
+        port: Arc<dyn ExportPort>,
+        disk: Arc<dyn DestAppend>,
+        limits: &InstanceLimits,
+    ) -> Arc<Self> {
         let timeout = match limits.timeout_ms {
             0 => DEFAULT_DELIVER_TIMEOUT,
             ms => Duration::from_millis(u64::from(ms)),
@@ -551,25 +563,51 @@ impl PortDoor {
             stop: AtomicBool::new(false),
             abort: AtomicBool::new(false),
             in_flight: AtomicU64::new(0),
-            lifecycle: Mutex::new(Lifecycle::default()),
+            lifecycle: Mutex::new(Lifecycle {
+                finished: true,
+                ..Lifecycle::default()
+            }),
             settled: Condvar::new(),
             cancellation: Mutex::new(None),
             shed: AtomicU64::new(0),
             delivered: AtomicU64::new(0),
             custody: Default::default(),
         });
-        let pump = {
-            let shared = shared.clone();
-            std::thread::Builder::new()
-                .name(format!("export-{label}"))
-                .spawn(move || shared.pump())
-                .map_err(|e| format!("the export pump for `{label}` could not start: {e}"))?
-        };
-        Ok(Arc::new(Self {
+        Arc::new(Self {
             shared,
             streams,
-            pump: Mutex::new(Some(pump)),
-        }))
+            pump: Mutex::new(None),
+        })
+    }
+
+    /// Start a prepared candidate once, after root's fallible serving assembly succeeds.
+    pub fn start(&self) -> Result<(), String> {
+        let mut pump = self.pump.lock().unwrap_or_else(|p| p.into_inner());
+        let mut life = self.shared.lifecycle();
+        if pump.is_some() || self.shared.stop.load(Ordering::Acquire) {
+            return Err(format!(
+                "the export pump for `{}` is already started or stopped",
+                self.shared.label
+            ));
+        }
+        life.finished = false;
+        let shared = Arc::clone(&self.shared);
+        match std::thread::Builder::new()
+            .name(format!("export-{}", shared.label))
+            .spawn(move || shared.pump())
+        {
+            Ok(worker) => {
+                *pump = Some(worker);
+                Ok(())
+            }
+            Err(error) => {
+                life.finished = true;
+                Err(format!(
+                    "the export pump for `{}` could not start: {error}",
+                    self.shared.label
+                ))
+            }
+        }
     }
 
     /// The custody ceiling the instance stated in its `open` answer (§8.5), read through L7.
