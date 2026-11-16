@@ -7,9 +7,10 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use busbar_contract::persistence::control::SLOT_NS;
 use busbar_contract::persistence::{
     Address, AttemptId, Candidate, ExpectedValue, Mutation, NamespaceId, Predicate, TimeGuard,
-    CANDIDATE_VERSION, SLOT_NS,
+    CANDIDATE_VERSION,
 };
 use busbar_contract::Secret;
 

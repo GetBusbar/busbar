@@ -27,6 +27,7 @@ pub struct OwnedUpstreamIn {
     caller_cred: Owned,
     scope: Option<Box<str>>,
     caller_grant: Option<Vec<u8>>,
+    min_valid_s: u32,
 }
 
 fn own(pairs: &[Pair<'_>]) -> Owned {
@@ -58,6 +59,7 @@ impl OwnedUpstreamIn {
             caller_cred: own(req.caller_cred),
             scope: req.scope.map(Box::from),
             caller_grant: req.caller_grant.map(<[u8]>::to_vec),
+            min_valid_s: req.min_valid_s,
         }
     }
 
@@ -73,6 +75,7 @@ impl OwnedUpstreamIn {
             caller_cred: &caller_cred,
             scope: self.scope.as_deref(),
             caller_grant: self.caller_grant.as_deref(),
+            min_valid_s: self.min_valid_s,
         };
         port.outbound(cx, &req).await
     }
