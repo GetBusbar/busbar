@@ -33,10 +33,8 @@ async fn located_attempt(c: &Connector, far: &str, located_at: &str) -> (Exchang
     let mut got = Vec::new();
     let mut whole = false;
     let mut failed = None;
-    // At most 1000 polls (about 5 s), counted rather than read off the clock.
-    let mut polls = 0_u32;
-    while polls < 1000 {
-        polls += 1;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
         match c.read(OWNER, id, 7, &mut buf) {
             Ok(p) if p.kind == PieceKind::Completion => {
                 whole = true;

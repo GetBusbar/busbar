@@ -9,6 +9,8 @@
 
 #[path = "fixtures/media_door.rs"]
 mod media_door;
+#[path = "fixtures/secret_door.rs"]
+mod secret_door;
 #[path = "fixtures/store_door.rs"]
 mod store_door;
 #[path = "fixtures/transport_door.rs"]
@@ -511,4 +513,43 @@ fn a_dropping_media_mutant_forwards_a_stream_framer_s_answer_untouched() {
 #[should_panic(expected = "the first media route is number 1")]
 fn a_dropping_media_row_refuses_every_zero() {
     let _ = Mutant::dropping_media(media_door::door, 0);
+}
+
+/// The fixture secret's RESOLVE answer: the first secret its OPEN was lent.
+fn resolved(t: &mut Opened<busbar_plugin_test::Secret>) -> Vec<u8> {
+    use busbar_contract::abi::secret::{slot as secret_slot, ResolveIn};
+    let mut i = Loans::<ResolveIn>::new();
+    let k = i.secret_buf(64);
+    match t.call::<{ secret_slot::RESOLVE }>(i) {
+        Called::Ready(a) => {
+            assert_eq!(a.outcome(), Outcome::Ready, "RESOLVE answers");
+            let len = a.get(|o| o.secret.len);
+            a.read(&k)
+                .get(..len)
+                .expect("inside the lent buffer")
+                .to_vec()
+        }
+        Called::Pending(p) => {
+            p.leak_loans();
+            panic!("the fixture's RESOLVE does not pend");
+        }
+    }
+}
+
+#[test]
+fn an_open_lends_the_plugin_the_secrets_the_test_states() {
+    let secrets: [&[u8]; 2] = [b"lent-secret-0", b"lent-secret-1"];
+    let mut t = host()
+        .open_lent(
+            Image::<busbar_plugin_test::Secret>::linked(secret_door::door),
+            "host-fixture-secret",
+            b"{}",
+            &secrets,
+        )
+        .expect("the secret fixture opens");
+    assert_eq!(
+        resolved(&mut t),
+        b"lent-secret-0",
+        "OPEN lent the first secret the test stated"
+    );
 }

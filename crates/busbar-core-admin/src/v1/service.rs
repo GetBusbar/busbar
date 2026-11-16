@@ -295,13 +295,14 @@ fn row_card<'a>(
     ),
     busbar_kernel::cost::MoneyError,
 > {
-    use busbar_kernel::cost::{EntryId, MoneyError, RawRateEra};
-    let era = match EntryId::parse_metering_version(&row.pricing_version) {
-        Some(Some(id)) => RawRateEra::entry(row.priced_from_ms, id),
+    use busbar_kernel::cost::{EntryId, MoneyError};
+    let entry_id = match EntryId::parse_metering_version(&row.pricing_version) {
+        Some(Some(id)) => Some(id),
         Some(None) => return Err(MoneyError::NoCardInForce { at: wall_at }),
-        None => RawRateEra::legacy(row.priced_from_ms),
+        None => None,
     };
-    view.card_for_raw_era(era, wall_at)
+    // The one rule `/records` prices a sealed unit by, too (ADMIN-API-1.6 §3.2).
+    busbar_kernel::cost::price_era(view, entry_id, row.priced_from_ms, wall_at)
         .ok_or(MoneyError::NoCardInForce { at: wall_at })
 }
 
@@ -1234,6 +1235,7 @@ pub(crate) struct AdminService {
 
 #[path = "service_operations.rs"]
 mod operations;
+pub(crate) use operations::{parse_utc_day, SeriesSpec, UsageDim};
 
 pub(crate) fn project_hook_view(name: &str, cfg: &HookCfg, global_hooks: &[String]) -> HookView {
     {
@@ -1281,6 +1283,7 @@ pub(crate) fn project_hook_view(name: &str, cfg: &HookCfg, global_hooks: &[Strin
             global: cfg.global || global_hooks.iter().any(|n| n == name),
             default: cfg.default,
             groups: cfg.groups.clone(),
+            attachments: Vec::new(),
         }
     }
 }
@@ -1412,3 +1415,7 @@ mod filename_policy_order_tests {
             if message == "no plugin trust policy is installed (the composition root's)"));
     }
 }
+
+#[cfg(test)]
+#[path = "tests/usage_series_tests.rs"]
+mod usage_series_tests;

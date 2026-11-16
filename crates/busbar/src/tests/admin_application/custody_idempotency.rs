@@ -321,3 +321,95 @@ async fn credential_body_binding_survives_process_cache_loss() {
         .await
         .is_err());
 }
+
+async fn replay_rows(store: &busbar_kernel::persistence::scoped::ScopedStore) -> usize {
+    let mut after = None;
+    let mut rows = 0;
+    loop {
+        let page = store
+            .page("busbar.admin-idempotency", b"", after.as_ref())
+            .await
+            .unwrap();
+        rows += page.rows.len();
+        after = page.next;
+        if after.is_none() {
+            return rows;
+        }
+    }
+}
+
+#[tokio::test]
+async fn settle_sweep_bounded() {
+    // ADMIN-API-1.6 6.3: a settle sweeps one page of the replay kind and resumes from a cursor, so
+    // repeated settles drain expired rows without any one settle walking the whole kind.
+    let now = busbar_kernel::store::now();
+    let old = now - IDEMPOTENCY_TTL_SECS * 3;
+    let store = durable_store().await;
+    for n in 0..3 {
+        let k = key("sweeper", &format!("old-{n}"));
+        let claim = durable::claim(store.as_ref(), &k, old).await.unwrap();
+        durable::settle(store.as_ref(), &claim, old + 1, &Settled::Answer(vec![1]))
+            .await
+            .unwrap();
+    }
+    let kept = durable::claim(store.as_ref(), &key("sweeper", "fresh"), now)
+        .await
+        .unwrap();
+    for _ in 0..8 {
+        durable::settle(store.as_ref(), &kept, now, &Settled::Answer(vec![2]))
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        replay_rows(store.as_ref()).await,
+        1,
+        "the expired answers are swept; the fresh one stays"
+    );
+}
+
+#[tokio::test]
+async fn operations_lookup() {
+    let now = busbar_kernel::store::now();
+    let store = durable_store().await;
+    let k = key("alice", "op:lookup-1");
+    assert_eq!(durable::lookup(store.as_ref(), &k, now).await, Ok(None));
+    let claim = durable::claim_bound(store.as_ref(), &k, [7u8; 32], now)
+        .await
+        .unwrap()
+        .unwrap();
+    match durable::lookup(store.as_ref(), &k, now).await.unwrap() {
+        Some(durable::Looked::InFlight {
+            request_sha256,
+            received_at,
+        }) => {
+            assert_eq!(request_sha256, [7u8; 32]);
+            assert_eq!(received_at, now);
+        }
+        other => panic!("a bound, unsettled claim is in flight: {other:?}"),
+    }
+    durable::settle(
+        store.as_ref(),
+        &claim,
+        now + 1,
+        &Settled::Answer(vec![9, 9]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        durable::lookup(store.as_ref(), &k, now + 2).await,
+        Ok(Some(durable::Looked::Done {
+            answer: vec![9, 9],
+            completed_at: now + 1
+        }))
+    );
+    assert_eq!(
+        durable::lookup(store.as_ref(), &k, now + IDEMPOTENCY_TTL_SECS * 2).await,
+        Ok(None),
+        "past retention the key is unknown"
+    );
+    assert_eq!(
+        durable::lookup(store.as_ref(), &key("bob", "op:lookup-1"), now).await,
+        Ok(None),
+        "a caller sees only its own keys"
+    );
+}

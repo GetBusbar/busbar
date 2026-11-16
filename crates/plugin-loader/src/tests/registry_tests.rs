@@ -1643,3 +1643,47 @@ fn a_skip_line_names_the_file_and_a_fixed_class() {
         "\"a\\\"b\\n.tar.gz\" (kind auth) was not admitted: revoked"
     );
 }
+
+/// A plane registers at process start under its Statement's name (`decision`, `streaming`); its
+/// signed manifest is named after its repo (`busbar-plane-decisions`). A read judges the
+/// registered plane's sections by the dropped-in row that is that module, so the row must answer
+/// to its Statement's name too, or a pack still in plugins.dir is refused as "no longer in
+/// plugins.dir" (oracle F2, job 36815).
+#[test]
+fn a_dropped_in_plane_is_the_module_its_statement_names() {
+    let release = key(43);
+    let dir = tmpdir("plane-statement-name");
+    let lib = b"a plane image; naming it never opens it";
+    let mut m = crate::both_ways::statement(
+        "plane",
+        "busbar-plane-witness-repo",
+        "witness",
+        supported_abi("plane").expect("the host loads planes"),
+    );
+    m.statement = Some(hex::encode(
+        crate::dispatch::rendering_of(crate::neutral_plane::door)
+            .expect("the witness door renders its Statement"),
+    ));
+    let m = sign(&release, m, lib);
+    write_tarball(&dir, "busbar-plane-witness-x86_64.tar.gz", &m, lib);
+    let p = TrustPolicy {
+        binary_version: "1.6.0".into(),
+        ..policy(&release)
+    };
+    let reg = scan_and_validate(&dir, &p).expect("scan");
+    assert_eq!(reg.loadable().len(), 1, "the signed plane is admitted");
+    let image = reg.loadable()[0].archive_sha256.clone().unwrap_or_default();
+    assert_eq!(
+        reg.dropped_image("plane", crate::neutral_plane::NAME),
+        Some(image.clone()),
+        "the row is the module its Statement names"
+    );
+    assert_eq!(
+        reg.dropped_image("plane", "busbar-plane-witness-repo"),
+        Some(image),
+        "and the module its manifest names"
+    );
+    assert_eq!(reg.dropped_image("auth", crate::neutral_plane::NAME), None);
+    assert_eq!(reg.dropped_image("plane", "no-such-plane"), None);
+    let _ = std::fs::remove_dir_all(&dir);
+}

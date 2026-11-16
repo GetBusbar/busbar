@@ -119,8 +119,9 @@ pub(crate) fn first_spawn_env_due() -> std::time::Instant {
     std::time::Instant::now() + crate::spawn_env::SPAWN_ENV_LEASE
 }
 
-/// The pools' shards, `count` empty maps: made once, with the connector.
-pub(crate) fn pool_shards<T: Default>(count: usize) -> Box<[std::sync::Mutex<T>]> {
+/// The pools' shards, `count` empty maps: made once, with the connector, and shared with every
+/// claimed dial's leader.
+pub(crate) fn pool_shards<T: Default>(count: usize) -> std::sync::Arc<[std::sync::Mutex<T>]> {
     (0..count)
         .map(|_| std::sync::Mutex::new(T::default()))
         .collect()
@@ -148,13 +149,13 @@ pub(crate) fn sweep_idle_lines(
     let mut next: Option<std::time::Instant> = None;
     for shard in &*pools.shards {
         let mut map = shard.lock().expect("pool");
-        map.retain(|_, entries| {
-            let mut i = entries.len();
+        map.retain(|_, slot| {
+            let mut i = slot.lines().len();
             while i > 0 {
                 i -= 1;
-                match entries[i].idle {
+                match slot.lines()[i].idle {
                     Some(since) if now.duration_since(since) >= timeout => {
-                        spent.push(entries.swap_remove(i).line);
+                        spent.push(slot.remove(i));
                     }
                     Some(since) => {
                         if let Some(ends) = since.checked_add(timeout) {
@@ -164,7 +165,8 @@ pub(crate) fn sweep_idle_lines(
                     None => {}
                 }
             }
-            !entries.is_empty()
+            // A claimed dial in flight keeps its slot (WASTE-EGRESS rule 6).
+            !slot.vacant()
         });
     }
     if let Some(next) = next {
@@ -176,19 +178,24 @@ pub(crate) fn sweep_idle_lines(
 }
 
 /// `owner` is gone (its instance is unloaded): every line dialled for it leaves the pools, and
-/// each nobody holds is closed.
+/// each nobody holds is closed. Every claimed dial in flight for it ends with its slot, and its
+/// followers are woken once no shard lock is held (WASTE-EGRESS rule 6).
 pub(crate) fn forget_pooled(pools: &crate::pool::Pools, owner: busbar_contract::conn::InstanceId) {
     let mut gone = crate::pool::Spent::take();
+    let mut ended = Vec::new();
     for shard in &*pools.shards {
-        shard.lock().expect("pool").retain(|key, entries| {
+        shard.lock().expect("pool").retain(|key, slot| {
             if key.owner != owner {
                 return true;
             }
-            gone.extend(entries.drain(..).map(|e| e.line));
+            slot.empty_into(&mut gone, &mut ended);
             false
         });
     }
     gone.close();
+    for opening in ended {
+        crate::pool::wake_all(opening.end());
+    }
 }
 
 /// THE PROXY POSTURE, said once at boot and audited ([`crate::process::note_proxy_posture`]): the

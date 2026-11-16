@@ -38,9 +38,7 @@ fn the_tables_project_the_resolved_sections_in_lane_order() {
         ),
         pool("spare", vec![member(1, 1)], OnExhaustedInput::default()),
     ];
-    let mut by_model: HashMap<String, usize> = HashMap::new();
-    by_model.insert("m-a".to_string(), 0);
-    by_model.insert("m-b".to_string(), 1);
+    let by_model: HashMap<String, usize> = [("m-a".to_string(), 0), ("m-b".to_string(), 1)].into();
     let t = ConfigTables::of(
         &lanes,
         &pools,

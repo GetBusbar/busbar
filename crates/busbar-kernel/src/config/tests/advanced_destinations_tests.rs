@@ -9,11 +9,11 @@ use super::*;
 #[test]
 fn the_destination_keys_parse_under_advanced() {
     let a: AdvancedCfg = busbar_contract::yaml::from_str(
-        "block_private_addresses: false\nallow_destinations: [10.0.0.0/8, '*.corp.example']\n",
+        "block_private_addresses: false\nallow_destinations: [\x310.0.0.0/8, '*.corp.example']\n",
     )
     .expect("the destination keys are advanced keys");
     assert!(!a.block_private_addresses);
-    assert_eq!(a.allow_destinations, ["10.0.0.0/8", "*.corp.example"]);
+    assert_eq!(a.allow_destinations, ["\x310.0.0.0/8", "*.corp.example"]);
 }
 
 #[test]

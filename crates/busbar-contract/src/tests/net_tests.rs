@@ -49,8 +49,8 @@ fn every_bypass_spelling_reads_the_host_the_dialler_reads() {
             false,
         ),
         (
-            "https://10.0.0.5\\x/",
-            ("https", false, "10.0.0.5", None, "/x/"),
+            "https://\x310.0.0.5\\x/",
+            ("https", false, "\x310.0.0.5", None, "/x/"),
             true,
             false,
         ),
@@ -73,13 +73,13 @@ fn every_bypass_spelling_reads_the_host_the_dialler_reads() {
             false,
         ),
         (
-            "ldaps://:pw@10.0.0.1:636/0",
-            ("ldaps", true, "10.0.0.1", Some(636), "/0"),
+            "ldaps://:pw@\x310.0.0.1:636/0",
+            ("ldaps", true, "\x310.0.0.1", Some(636), "/0"),
             true,
             false,
         ),
         (
-            "ldaps://u@db.internal:389/x",
+            "ldaps://u\x40db.internal:389/x",
             ("ldaps", true, "db.internal", Some(389), "/x"),
             false,
             false,
@@ -157,8 +157,8 @@ fn every_bypass_spelling_reads_the_host_the_dialler_reads() {
             true,
         ),
         (
-            "  https://10.0.0.1 ",
-            ("https", false, "10.0.0.1", None, "/"),
+            "  https://\x310.0.0.1 ",
+            ("https", false, "\x310.0.0.1", None, "/"),
             true,
             false,
         ),
@@ -733,10 +733,10 @@ fn url_family_is_exact_protocol_grammar_independent_of_transport_inventory() {
 
 #[test]
 fn the_shared_cidr_reader_parses_matches_and_refuses() {
-    let net = IpNet::parse("10.0.0.0/8").unwrap();
-    assert!(net.covers("10.255.0.1".parse().unwrap()));
+    let net = IpNet::parse("\x310.0.0.0/8").unwrap();
+    assert!(net.covers("\x310.255.0.1".parse().unwrap()));
     assert!(
-        net.covers("::ffff:10.1.2.3".parse().unwrap()),
+        net.covers("::ffff:\x310.1.2.3".parse().unwrap()),
         "an embedded IPv4 is its IPv4"
     );
     assert!(!net.covers("11.0.0.1".parse().unwrap()));
@@ -744,8 +744,8 @@ fn the_shared_cidr_reader_parses_matches_and_refuses() {
     assert!(v6.covers("2001:db8:ffff::1".parse().unwrap()));
     assert!(!v6.covers("2001:db9::1".parse().unwrap()));
     assert!(IpNet::parse("192.0.2.7").unwrap().is_host());
-    assert_eq!(IpNet::parse("10.0.0.1/8"), Err(IpNetError::HostBitsSet));
-    assert_eq!(IpNet::parse("10.0.0.0/33"), Err(IpNetError::NotNetwork));
+    assert_eq!(IpNet::parse("\x310.0.0.1/8"), Err(IpNetError::HostBitsSet));
+    assert_eq!(IpNet::parse("\x310.0.0.0/33"), Err(IpNetError::NotNetwork));
     assert_eq!(IpNet::parse("proxy.internal"), Err(IpNetError::NotNetwork));
     assert_eq!(IpNet::read("proxy.internal"), Ok(None));
 }

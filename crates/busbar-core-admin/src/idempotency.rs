@@ -179,6 +179,10 @@ pub mod durable {
 
     const MAX_GENERATIONS: u32 = 64;
 
+    /// Where the bounded sweep resumes: one page per settle, not the whole replay kind.
+    static SWEEP_AFTER: std::sync::Mutex<Option<busbar_kernel::persistence::scoped::Cursor>> =
+        std::sync::Mutex::new(None);
+
     const LAYOUT: u8 = 1;
 
     /// What a claimed key settled to.
@@ -413,6 +417,63 @@ pub mod durable {
         Err(Refused::InFlight)
     }
 
+    /// What `GET /operations/{key}` reads for one `(principal, key)`.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum Looked {
+        /// Claimed and bound, not yet settled: the request's fingerprint and its receive time.
+        InFlight {
+            request_sha256: [u8; 32],
+            received_at: u64,
+        },
+        /// Settled with an answer written at `completed_at`.
+        Done { answer: Vec<u8>, completed_at: u64 },
+    }
+
+    /// Reads one operation: `None` when the key is unknown or past retention.
+    pub async fn lookup(
+        store: &ScopedStore,
+        key: &(String, String),
+        now: u64,
+    ) -> Result<Option<Looked>, String> {
+        let id = record_id(key);
+        let unavailable = |e: Refused| format!("{e:?}");
+        match read_any(store, &id).await.map_err(unavailable)? {
+            Some((_, written_at, Settled::Answer(answer))) => {
+                if now.saturating_sub(written_at) < IDEMPOTENCY_TTL_SECS {
+                    return Ok(Some(Looked::Done {
+                        answer,
+                        completed_at: written_at,
+                    }));
+                }
+                return Ok(None);
+            }
+            // Refused with nothing done: the key is free again, there is no operation to show.
+            Some((_, _, Settled::Released)) => return Ok(None),
+            _ => {}
+        }
+        let binding = store
+            .get(REPLAY_KIND, format!("binding:{id}").as_bytes())
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        let Some(binding) = binding else {
+            return Ok(None);
+        };
+        let bytes = binding.expose(&busbar_kernel::seal::lend());
+        if bytes.len() != 40 {
+            return Err("unreadable request binding".into());
+        }
+        let received_at = u64::from_be_bytes(bytes[..8].try_into().expect("length checked"));
+        if now.saturating_sub(received_at) >= IDEMPOTENCY_TTL_SECS {
+            return Ok(None);
+        }
+        let mut request_sha256 = [0u8; 32];
+        request_sha256.copy_from_slice(&bytes[8..]);
+        Ok(Some(Looked::InFlight {
+            request_sha256,
+            received_at,
+        }))
+    }
+
     pub async fn claim_held(
         store: &ScopedStore,
         key: &(String, String),
@@ -493,14 +554,15 @@ pub mod durable {
             claim.id.clone()
         };
         put(store, &id, body).await?;
-        // Held and retained receipts never expire through ordinary replay cleanup.
-        let mut cursor = None;
-        loop {
-            let page = match store.page(REPLAY_KIND, b"", cursor.as_ref()).await {
+        // Held and retained receipts never expire through ordinary replay cleanup. One page per
+        // settle (ADMIN-API-1.6 6.3): the sweep resumes from the cursor the last settle left.
+        let resume = SWEEP_AFTER.lock().unwrap_or_else(|e| e.into_inner()).take();
+        {
+            let page = match store.page(REPLAY_KIND, b"", resume.as_ref()).await {
                 Ok(page) => page,
                 Err(error) => {
                     tracing::warn!(error = ?error, "expired idempotency records were not swept; the next settle retries");
-                    break;
+                    return Ok(());
                 }
             };
             for (key, bytes) in page.rows {
@@ -532,10 +594,7 @@ pub mod durable {
                     }
                 }
             }
-            cursor = page.next;
-            if cursor.is_none() {
-                break;
-            }
+            *SWEEP_AFTER.lock().unwrap_or_else(|e| e.into_inner()) = page.next;
         }
         Ok(())
     }

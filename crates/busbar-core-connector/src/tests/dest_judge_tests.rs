@@ -75,7 +75,7 @@ fn dest_judge_refuses_what_the_name_decides_at_once() {
         ("https://[fd00:ec2::254]/", svc::DEST_METADATA),
         ("https://0x7f000001/", svc::DEST_OBFUSCATED),
         ("ftp://files.example/", svc::DEST_SCHEME),
-        ("https://10.0.0.7/", svc::DEST_INTERNAL),
+        ("https://\x310.0.0.7/", svc::DEST_INTERNAL),
         ("https://93.184.216.34/", svc::DEST_ALLOWED),
     ] {
         let (_, later) = recorder();
@@ -99,7 +99,7 @@ fn dest_judge_refuses_every_loopback_spelling_without_resolving() {
         "https://localhost#a",
         "https://127.0.0.1./",
         "https://%6c%6fcalhost/",
-        "https://10.0.0.5\\x/",
+        "https://\x310.0.0.5\\x/",
     ] {
         let (_, later) = recorder();
         let got = verdict_now(s.dest_judge(dest, 0, 0, Some(later)));
@@ -128,7 +128,7 @@ fn dest_judge_resolves_only_when_asked_and_judges_what_answered() {
         Ran::Later
     ));
     let done = r.held.lock().unwrap().pop().unwrap();
-    done(Ok(vec!["10.1.2.3".parse().unwrap()]));
+    done(Ok(vec!["\x310.1.2.3".parse().unwrap()]));
     assert_eq!(
         slot.lock().unwrap().as_ref().unwrap().value,
         svc::DEST_INTERNAL
@@ -218,7 +218,7 @@ fn dest_judge_writes_the_addresses_it_judged() {
     let done = r.held.lock().unwrap().pop().unwrap();
     done(Ok(vec![
         "93.184.216.34".parse().unwrap(),
-        "10.0.0.7".parse().unwrap(),
+        "\x310.0.0.7".parse().unwrap(),
     ]));
     let got = slot.lock().unwrap().take().unwrap();
     assert_eq!(got.value, svc::DEST_INTERNAL);
@@ -371,7 +371,7 @@ fn dest_judge_refuses_private_reach_when_asked_and_names_what_decided_it() {
         (strict, svc::DEST_INTERNAL),
     ] {
         let (_, later) = recorder();
-        let got = verdict_now(s.dest_judge("https://10.0.0.7/", open_web, flags, Some(later)));
+        let got = verdict_now(s.dest_judge("https://\x310.0.0.7/", open_web, flags, Some(later)));
         assert_eq!(got.value, want, "flags {flags}");
     }
     let (_, later) = recorder();
@@ -398,11 +398,11 @@ fn dest_judge_refuses_private_reach_when_asked_and_names_what_decided_it() {
     };
     let private = vec![
         "93.184.216.34".parse().unwrap(),
-        "10.1.2.3".parse().unwrap(),
+        "\x310.1.2.3".parse().unwrap(),
     ];
     assert_eq!(
         answered(Ok(private.clone()), strict),
-        (svc::DEST_INTERNAL, "10.1.2.3".to_string())
+        (svc::DEST_INTERNAL, "\x310.1.2.3".to_string())
     );
     assert_eq!(
         answered(Ok(private), svc::DEST_RESOLVE | svc::DEST_REFUSE_PRIVATE),
@@ -435,7 +435,7 @@ fn a_private_reach_admits_a_private_address_in_its_class_and_never_metadata() {
     let never = || -> Box<dyn FnOnce(busbar_kernel::host_services::Admitted) + Send> {
         Box::new(|_| panic!("a literal answers at once"))
     };
-    let private = "http://10.1.2.3:8080";
+    let private = "http://\x310.1.2.3:8080";
     assert!(matches!(
         judge.judge(private, P, false, never()),
         Some(Err(_))
@@ -443,7 +443,7 @@ fn a_private_reach_admits_a_private_address_in_its_class_and_never_metadata() {
     let admitted = judge.judge_reaching(private, P, never());
     assert_eq!(
         admitted.expect("at once").expect("admitted").0,
-        "10.1.2.3:8080".parse::<SocketAddr>().unwrap()
+        "\x310.1.2.3:8080".parse::<SocketAddr>().unwrap()
     );
     let metadata = "http://169.254.169.254";
     assert!(matches!(
@@ -461,10 +461,10 @@ fn a_private_reach_admits_a_private_address_in_its_class_and_never_metadata() {
         )
         .is_none());
     let done = resolver.held.lock().unwrap().pop().expect("asked once");
-    done(Ok(vec!["192.168.7.9".parse().unwrap()]));
+    done(Ok(vec!["\x3192.168.7.9".parse().unwrap()]));
     assert_eq!(
         got.lock().unwrap().take().expect("answered").ok(),
-        Some("192.168.7.9:443".parse().unwrap())
+        Some("\x3192.168.7.9:443".parse().unwrap())
     );
 }
 

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::{KeysDoc, ReleaseKey, Role, Signed, Target, TargetsDoc};
-use serde_json::Value;
+use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const SPEC_VERSION: &str = "0.1-provisional";
@@ -11,25 +11,23 @@ pub const KEYS_TYPE: &str = "busbar-keys";
 
 pub const TARGETS_TYPE: &str = "targets";
 
-/// The canonical (OLPC) bytes of a release document, written by olpc-cjson (DEPENDENCY-LADDER C16)
-/// over the subset both sides sign: non-negative integers and printable ASCII.
+/// The canonical (OLPC) bytes of a release document, written by olpc-cjson's sonic-rs formatter
+/// (DEPENDENCY-LADDER C16, SERDE-JSON-EXIT r2 §2) over the subset both sides sign: non-negative
+/// integers and printable ASCII.
 pub fn canonical(v: &Value) -> Result<Vec<u8>, String> {
     in_canonical_subset(v)?;
-    let mut out = Vec::new();
     let mut ser =
-        serde_json::Serializer::with_formatter(&mut out, olpc_cjson::CanonicalFormatter::new());
+        sonic_rs::Serializer::with_formatter(Vec::new(), olpc_cjson::CanonicalFormatter::new());
     serde::Serialize::serialize(v, &mut ser).map_err(|e| e.to_string())?;
-    Ok(out)
+    Ok(ser.into_inner())
 }
 
 fn in_canonical_subset(v: &Value) -> Result<(), String> {
-    match v {
-        Value::Null | Value::Bool(_) => Ok(()),
-        Value::Number(n) if n.as_u64().is_some() => Ok(()),
-        Value::Number(n) => Err(format!("number {n} is not a non-negative integer")),
-        Value::String(s) => printable_ascii(s),
-        Value::Array(items) => items.iter().try_for_each(in_canonical_subset),
-        Value::Object(map) => map.iter().try_for_each(|(k, v)| {
+    if let Some(items) = v.as_array() {
+        return items.iter().try_for_each(in_canonical_subset);
+    }
+    if let Some(map) = v.as_object() {
+        return map.iter().try_for_each(|(k, v)| {
             printable_ascii(k)?;
             // olpc-cjson orders keys by their escaped bytes; these are the only keys for which
             // that differs from the Python (securesystemslib) order.
@@ -39,7 +37,24 @@ fn in_canonical_subset(v: &Value) -> Result<(), String> {
                 ));
             }
             in_canonical_subset(v)
-        }),
+        });
+    }
+    if let Some(s) = v.as_str() {
+        return printable_ascii(s);
+    }
+    if v.is_number() && whole(v).is_none() {
+        return Err(format!("number {v} is not a non-negative integer"));
+    }
+    Ok(())
+}
+
+/// A non-negative integer. A number read from a document keeps its lexeme, and it counts only
+/// when that lexeme is a `u64` (as exact numbers always read here: `1.0`, `1e2` and `-0` are
+/// not); a number built in code is read as its value.
+fn whole(v: &Value) -> Option<u64> {
+    match v.as_raw_number() {
+        Some(raw) => raw.as_str().parse().ok(),
+        None => v.as_u64(),
     }
 }
 
@@ -57,7 +72,7 @@ pub fn key_object(key: &ReleaseKey) -> Value {
         ReleaseKey::Ed25519(k) => ("ed25519", "ed25519", hex::encode(k.as_bytes())),
         ReleaseKey::P256(point) => ("ecdsa", "ecdsa-sha2-nistp256", hex::encode(point)),
     };
-    serde_json::json!({"keytype": keytype, "scheme": scheme, "keyval": {"public": public}})
+    json::json!({"keytype": keytype, "scheme": scheme, "keyval": {"public": public}})
 }
 
 pub fn key_id(key: &ReleaseKey) -> String {
@@ -71,7 +86,7 @@ pub(crate) fn read_key_object(v: &Value) -> Result<ReleaseKey, String> {
     let keytype = str_field(obj, "keytype")?;
     let scheme = str_field(obj, "scheme")?;
     let keyval = obj
-        .get("keyval")
+        .get(&"keyval")
         .and_then(Value::as_object)
         .ok_or("a key has no keyval object")?;
     only_fields(keyval, &["public"], "keyval")?;
@@ -122,22 +137,25 @@ type KeyedSigs = Vec<(String, Vec<u8>)>;
 pub type SealBytes = (Vec<u8>, Vec<u8>);
 
 fn read_envelope(bytes: &[u8], what: &str) -> Result<(Value, Vec<u8>, KeyedSigs), String> {
-    let v: Value =
-        serde_json::from_slice(bytes).map_err(|e| format!("the {what} is not JSON: {e}"))?;
+    let v = json::parse_value(bytes).map_err(|e| format!("the {what} is not JSON: {e}"))?;
     let obj = v
         .as_object()
         .ok_or_else(|| format!("the {what} is not an object"))?;
-    if let Some(k) = obj.keys().find(|k| *k != "signed" && *k != "signatures") {
+    if let Some(k) = obj
+        .iter()
+        .map(|(k, _)| k)
+        .find(|k| *k != "signed" && *k != "signatures")
+    {
         return Err(format!("the {what} envelope has an unknown field '{k}'"));
     }
     let signed = obj
-        .get("signed")
+        .get(&"signed")
         .ok_or_else(|| format!("the {what} has no `signed`"))?
         .clone();
     let signed_bytes = canonical(&signed).map_err(|e| format!("the {what}: {e}"))?;
     let mut sigs = Vec::new();
     for s in obj
-        .get("signatures")
+        .get(&"signatures")
         .and_then(Value::as_array)
         .ok_or_else(|| format!("the {what} has no `signatures` list"))?
     {
@@ -157,35 +175,34 @@ pub fn write_envelope(signed: &Value, sigs: &[(String, Vec<u8>)]) -> Result<Vec<
     canonical(signed)?;
     let signatures: Vec<Value> = sigs
         .iter()
-        .map(|(id, s)| serde_json::json!({"keyid": id, "sig": hex::encode(s)}))
+        .map(|(id, s)| json::json!({"keyid": id, "sig": hex::encode(s)}))
         .collect();
-    canonical(&serde_json::json!({"signed": signed, "signatures": signatures}))
+    let mut envelope = Map::new();
+    envelope.insert("signed", signed.clone());
+    envelope.insert("signatures", signatures);
+    canonical(&envelope.into_value())
 }
 
-fn str_field<'v>(obj: &'v serde_json::Map<String, Value>, k: &str) -> Result<&'v str, String> {
-    obj.get(k)
+fn str_field<'v>(obj: &'v Map, k: &str) -> Result<&'v str, String> {
+    obj.get(&k)
         .and_then(Value::as_str)
         .ok_or_else(|| format!("`{k}` is missing or not a string"))
 }
 
-fn u64_field(obj: &serde_json::Map<String, Value>, k: &str) -> Result<u64, String> {
-    obj.get(k)
-        .and_then(Value::as_u64)
+fn u64_field(obj: &Map, k: &str) -> Result<u64, String> {
+    obj.get(&k)
+        .and_then(whole)
         .ok_or_else(|| format!("`{k}` is missing or not a non-negative integer"))
 }
 
-fn only_fields(
-    obj: &serde_json::Map<String, Value>,
-    known: &[&str],
-    what: &str,
-) -> Result<(), String> {
-    match obj.keys().find(|k| !known.contains(&k.as_str())) {
+fn only_fields(obj: &Map, known: &[&str], what: &str) -> Result<(), String> {
+    match obj.iter().map(|(k, _)| k).find(|k| !known.contains(k)) {
         Some(k) => Err(format!("the {what} has an unknown field '{k}'")),
         None => Ok(()),
     }
 }
 
-fn header(obj: &serde_json::Map<String, Value>, ty: &str) -> Result<(u64, u64), String> {
+fn header(obj: &Map, ty: &str) -> Result<(u64, u64), String> {
     if str_field(obj, "_type")? != ty {
         return Err(format!("`_type` is not '{ty}'"));
     }
@@ -220,7 +237,7 @@ pub fn read_keys(bytes: &[u8]) -> Result<Signed<KeysDoc>, String> {
     let (version, expires) = header(obj, KEYS_TYPE)?;
     let mut keys = BTreeMap::new();
     for (id, k) in obj
-        .get("keys")
+        .get(&"keys")
         .and_then(Value::as_object)
         .ok_or("`keys` is not an object")?
     {
@@ -230,11 +247,11 @@ pub fn read_keys(bytes: &[u8]) -> Result<Signed<KeysDoc>, String> {
                 "key {id} is listed under an id that is not its own"
             ));
         }
-        keys.insert(id.clone(), key);
+        keys.insert(id.to_string(), key);
     }
     let mut roles = BTreeMap::new();
     for (name, r) in obj
-        .get("roles")
+        .get(&"roles")
         .and_then(Value::as_object)
         .ok_or("`roles` is not an object")?
     {
@@ -243,7 +260,7 @@ pub fn read_keys(bytes: &[u8]) -> Result<Signed<KeysDoc>, String> {
             .ok_or_else(|| format!("role {name} is not an object"))?;
         only_fields(r, &["keyids", "threshold"], "role")?;
         let keyids: Vec<String> = r
-            .get("keyids")
+            .get(&"keyids")
             .and_then(Value::as_array)
             .ok_or_else(|| format!("role {name} has no keyids list"))?
             .iter()
@@ -251,13 +268,13 @@ pub fn read_keys(bytes: &[u8]) -> Result<Signed<KeysDoc>, String> {
             .collect::<Option<_>>()
             .ok_or_else(|| format!("role {name} has a keyid that is not a string"))?;
         let threshold = u64_field(r, "threshold")?;
-        roles.insert(name.clone(), Role { keyids, threshold });
+        roles.insert(name.to_string(), Role { keyids, threshold });
     }
     let (mut revoked_keyids, mut revoked_digests) = (BTreeSet::new(), BTreeMap::new());
-    if let Some(rev) = obj.get("revocations") {
+    if let Some(rev) = obj.get(&"revocations") {
         let rev = rev.as_object().ok_or("`revocations` is not an object")?;
         only_fields(rev, &["keyids", "digests"], "revocations")?;
-        if let Some(ids) = rev.get("keyids") {
+        if let Some(ids) = rev.get(&"keyids") {
             for id in ids.as_array().ok_or("revocations.keyids is not a list")? {
                 revoked_keyids.insert(
                     id.as_str()
@@ -266,7 +283,7 @@ pub fn read_keys(bytes: &[u8]) -> Result<Signed<KeysDoc>, String> {
                 );
             }
         }
-        if let Some(digests) = rev.get("digests") {
+        if let Some(digests) = rev.get(&"digests") {
             for (d, why) in digests
                 .as_object()
                 .ok_or("revocations.digests is not an object")?
@@ -308,17 +325,20 @@ pub fn read_targets(bytes: &[u8]) -> Result<Signed<TargetsDoc>, String> {
     let (version, expires) = header(obj, TARGETS_TYPE)?;
     let role = str_field(obj, "role")?.to_string();
     let mut targets = Vec::new();
-    for (path, t) in obj
-        .get("targets")
+    // In path order, as the document's own order is not signed (the canonical form sorts it).
+    let by_path: BTreeMap<&str, &Value> = obj
+        .get(&"targets")
         .and_then(Value::as_object)
         .ok_or("`targets` is not an object")?
-    {
+        .iter()
+        .collect();
+    for (path, t) in by_path {
         let t = t
             .as_object()
             .ok_or_else(|| format!("target {path} is not an object"))?;
         only_fields(t, &["length", "hashes", "custom"], "target")?;
         let custom = t
-            .get("custom")
+            .get(&"custom")
             .and_then(Value::as_object)
             .ok_or_else(|| format!("target {path} has no custom"))?;
         only_fields(custom, &["name", "version", "target"], "target custom")?;
@@ -333,7 +353,7 @@ pub fn read_targets(bytes: &[u8]) -> Result<Signed<TargetsDoc>, String> {
             ));
         }
         let hashes = t
-            .get("hashes")
+            .get(&"hashes")
             .and_then(Value::as_object)
             .ok_or_else(|| format!("target {path} has no hashes object"))?;
         only_fields(hashes, &["sha256"], "target hashes")?;
@@ -368,22 +388,18 @@ pub fn read_targets(bytes: &[u8]) -> Result<Signed<TargetsDoc>, String> {
 }
 
 pub fn keys_signed(doc: &KeysDoc) -> Value {
-    let keys: serde_json::Map<String, Value> = doc
-        .keys
-        .iter()
-        .map(|(id, k)| (id.clone(), key_object(k)))
-        .collect();
-    let roles: serde_json::Map<String, Value> = doc
-        .roles
-        .iter()
-        .map(|(n, r)| {
-            (
-                n.clone(),
-                serde_json::json!({"keyids": r.keyids, "threshold": r.threshold}),
-            )
-        })
-        .collect();
-    serde_json::json!({
+    let mut keys = Map::new();
+    for (id, k) in &doc.keys {
+        keys.insert(id, key_object(k));
+    }
+    let mut roles = Map::new();
+    for (n, r) in &doc.roles {
+        roles.insert(
+            n,
+            json::json!({"keyids": r.keyids, "threshold": r.threshold}),
+        );
+    }
+    json::json!({
         "_type": KEYS_TYPE,
         "spec_version": SPEC_VERSION,
         "version": doc.version,
@@ -395,21 +411,18 @@ pub fn keys_signed(doc: &KeysDoc) -> Value {
 }
 
 pub fn targets_signed(doc: &TargetsDoc) -> Value {
-    let targets: serde_json::Map<String, Value> = doc
-        .targets
-        .iter()
-        .map(|t| {
-            (
-                format!("{}/{}/{}", t.name, t.version, t.target),
-                serde_json::json!({
-                    "length": t.length,
-                    "hashes": {"sha256": t.sha256},
-                    "custom": {"name": t.name, "version": t.version, "target": t.target},
-                }),
-            )
-        })
-        .collect();
-    serde_json::json!({
+    let mut targets = Map::new();
+    for t in &doc.targets {
+        targets.insert(
+            &format!("{}/{}/{}", t.name, t.version, t.target),
+            json::json!({
+                "length": t.length,
+                "hashes": {"sha256": t.sha256},
+                "custom": {"name": t.name, "version": t.version, "target": t.target},
+            }),
+        );
+    }
+    json::json!({
         "_type": TARGETS_TYPE,
         "spec_version": SPEC_VERSION,
         "version": doc.version,
@@ -440,10 +453,12 @@ pub fn format_time(t: u64) -> String {
 pub const SEAL_PREFIX: &str = "seal:";
 
 pub fn write_seal(keys: &[u8], targets: &[u8]) -> Result<String, String> {
-    let keys: Value = serde_json::from_slice(keys).map_err(|e| format!("keys document: {e}"))?;
-    let targets: Value =
-        serde_json::from_slice(targets).map_err(|e| format!("release manifest: {e}"))?;
-    let body = canonical(&serde_json::json!({"keys": keys, "targets": targets}))?;
+    let keys = json::parse_value(keys).map_err(|e| format!("keys document: {e}"))?;
+    let targets = json::parse_value(targets).map_err(|e| format!("release manifest: {e}"))?;
+    let mut seal = Map::new();
+    seal.insert("keys", keys);
+    seal.insert("targets", targets);
+    let body = canonical(&seal.into_value())?;
     Ok(format!(
         "{SEAL_PREFIX}{}",
         String::from_utf8(body).expect("canonical bytes are ASCII")
@@ -453,13 +468,15 @@ pub fn write_seal(keys: &[u8], targets: &[u8]) -> Result<String, String> {
 pub fn read_seal(signature: &str) -> Option<Result<SealBytes, String>> {
     let body = signature.trim().strip_prefix(SEAL_PREFIX)?;
     Some((|| {
-        let v: Value =
-            serde_json::from_str(body).map_err(|e| format!("the seal is not JSON: {e}"))?;
+        let v =
+            json::parse_value(body.as_bytes()).map_err(|e| format!("the seal is not JSON: {e}"))?;
         let obj = v.as_object().ok_or("the seal is not an object")?;
         only_fields(obj, &["keys", "targets"], "seal")?;
         let doc = |k: &str| -> Result<Vec<u8>, String> {
-            let d = obj.get(k).ok_or_else(|| format!("the seal has no `{k}`"))?;
-            serde_json::to_vec(d).map_err(|e| e.to_string())
+            let d = obj
+                .get(&k)
+                .ok_or_else(|| format!("the seal has no `{k}`"))?;
+            json::to_vec(d).map_err(|e| e.to_string())
         };
         Ok((doc("keys")?, doc("targets")?))
     })())
@@ -468,6 +485,6 @@ pub fn read_seal(signature: &str) -> Option<Result<SealBytes, String>> {
 #[cfg(test)]
 pub fn sealed_keys_version(signature: &str) -> Option<u64> {
     let (keys, _) = read_seal(signature)?.ok()?;
-    let v: Value = serde_json::from_slice(&keys).ok()?;
-    v.get("signed")?.get("version")?.as_u64()
+    let v = json::parse_value(&keys).ok()?;
+    whole(v.get("signed")?.get("version")?)
 }

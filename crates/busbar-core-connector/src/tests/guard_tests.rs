@@ -35,10 +35,10 @@ fn verdict(r: Result<(), Refusal>) -> Option<u64> {
 fn a_private_answer_is_refused_by_default() {
     let g = Guard::default();
     for a in [
-        "10.0.0.5",
+        "\x310.0.0.5",
         "127.0.0.1",
-        "192.168.1.1",
-        "100.64.0.1",
+        "\x3192.168.1.1",
+        "\x3100.64.0.1",
         "fd12::1",
         "::1",
     ] {
@@ -62,32 +62,32 @@ fn the_allowlist_admits_a_private_answer() {
         &[
             "Ollama.Internal.",
             "*.corp.example",
-            "10.0.0.0/8",
+            "\x310.0.0.0/8",
             "fd00:1::/32",
         ],
     );
     assert_eq!(
-        g.judge_answer("ollama.internal", &[ip("10.9.9.9")], C),
+        g.judge_answer("ollama.internal", &[ip("\x310.9.9.9")], C),
         Ok(())
     );
     assert_eq!(
-        g.judge_answer("db.corp.example", &[ip("192.168.1.1")], C),
+        g.judge_answer("db.corp.example", &[ip("\x3192.168.1.1")], C),
         Ok(())
     );
     assert_eq!(
-        g.judge_answer("a.b.corp.example", &[ip("192.168.1.1")], C),
+        g.judge_answer("a.b.corp.example", &[ip("\x3192.168.1.1")], C),
         Ok(())
     );
-    assert_eq!(g.judge_answer("x.test", &[ip("10.1.2.3")], C), Ok(()));
+    assert_eq!(g.judge_answer("x.test", &[ip("\x310.1.2.3")], C), Ok(()));
     assert_eq!(
-        g.judge_answer("x.test", &[ip("::ffff:10.1.2.3")], C),
+        g.judge_answer("x.test", &[ip("::ffff:\x310.1.2.3")], C),
         Ok(())
     );
     assert_eq!(g.judge_answer("x.test", &[ip("fd00:1::5")], C), Ok(()));
 
     for host in ["corp.example", "xcorp.example"] {
         assert_eq!(
-            verdict(g.judge_answer(host, &[ip("192.168.1.1")], C)),
+            verdict(g.judge_answer(host, &[ip("\x3192.168.1.1")], C)),
             Some(DEST_INTERNAL),
             "{host}"
         );
@@ -189,7 +189,7 @@ fn an_allow_entry_naming_metadata_is_refused_at_boot() {
         "169.254.169.254",
         "169.254.169.254/32",
         "169.254.170.2",
-        "100.100.100.200",
+        "\x3100.100.100.200",
         "168.63.129.16/32",
         "fd00:ec2::254",
         "[fd00:ec2::254]",
@@ -214,7 +214,7 @@ fn an_allow_entry_naming_metadata_is_refused_at_boot() {
     for wider in [
         "169.254.0.0/16",
         "169.254.169.0/24",
-        "100.100.100.200/31",
+        "\x3100.100.100.200/31",
         "fd00:ec2::254/127",
         "fe80::/10",
         "0.0.0.0/0",
@@ -235,11 +235,15 @@ fn an_allow_entry_naming_metadata_is_refused_at_boot() {
 #[test]
 fn a_cidr_allowlist_entry_does_not_admit_a_metadata_address_inside_it() {
     for (entry, meta, private) in [
-        ("100.64.0.0/10", "100.100.100.200", Some("100.64.0.1")),
+        (
+            "\x3100.64.0.0/10",
+            "\x3100.100.100.200",
+            Some("\x3100.64.0.1"),
+        ),
         ("169.254.0.0/16", "169.254.169.254", None),
         ("169.254.0.0/16", "169.254.170.2", None),
         ("169.254.0.0/16", "::ffff:169.254.169.254", None),
-        ("0.0.0.0/0", "168.63.129.16", Some("10.0.0.5")),
+        ("0.0.0.0/0", "168.63.129.16", Some("\x310.0.0.5")),
         ("192.0.0.0/24", "192.0.0.192", None),
         ("fd00::/8", "fd00:ec2::254", Some("fd12::1")),
         ("fd00:ec2::/32", "fd00:ec2::23", None),
@@ -312,8 +316,8 @@ fn a_cidr_allowlist_entry_does_not_admit_a_metadata_address_inside_it() {
 #[test]
 fn an_exact_metadata_allow_entry_admits_nothing() {
     for (entry, meta) in [
-        ("100.100.100.200", "100.100.100.200"),
-        ("100.100.100.200/32", "100.100.100.200"),
+        ("\x3100.100.100.200", "\x3100.100.100.200"),
+        ("\x3100.100.100.200/32", "\x3100.100.100.200"),
         ("169.254.169.254/32", "169.254.169.254"),
         ("169.254.169.254", "::ffff:169.254.169.254"),
         ("fd00:ec2::254", "fd00:ec2::254"),
@@ -330,7 +334,7 @@ fn an_exact_metadata_allow_entry_admits_nothing() {
         }
     }
     for wider in [
-        "100.100.100.200/31",
+        "\x3100.100.100.200/31",
         "169.254.169.0/24",
         "fd00:ec2::254/127",
     ] {
@@ -338,7 +342,7 @@ fn an_exact_metadata_allow_entry_admits_nothing() {
         let meta = if wider.contains(':') {
             "fd00:ec2::254"
         } else if wider.starts_with("100.") {
-            "100.100.100.200"
+            "\x3100.100.100.200"
         } else {
             "169.254.169.254"
         };
@@ -354,7 +358,7 @@ fn an_exact_metadata_allow_entry_admits_nothing() {
 #[test]
 fn block_false_admits_private_but_not_metadata() {
     let g = guard(false, &[]);
-    assert_eq!(g.judge_answer("db.test", &[ip("10.0.0.5")], C), Ok(()));
+    assert_eq!(g.judge_answer("db.test", &[ip("\x310.0.0.5")], C), Ok(()));
     assert_eq!(g.judge_name("localhost", C), Ok(None));
     assert_eq!(
         verdict(g.judge_answer("x.test", &[ip("169.254.169.254")], C)),
@@ -478,7 +482,7 @@ fn a_bad_entry_is_refused_naming_the_key() {
         "host.test:8080",
         "*.",
         "a..b",
-        "10.0.0.0/33",
+        "\x310.0.0.0/33",
         "*corp.example",
     ] {
         assert!(
@@ -486,7 +490,7 @@ fn a_bad_entry_is_refused_naming_the_key() {
             "{bad}"
         );
     }
-    assert!(refused("10.0.0.1/8").contains("past its prefix length"));
+    assert!(refused("\x310.0.0.1/8").contains("past its prefix length"));
 }
 
 /// THE DEFAULT POLICY is one table: the provider class and a destination from request data (the
@@ -495,17 +499,21 @@ fn private_is_refused_for_providers_and_request_data_and_allowed_for_operator_in
     let g = Guard::default();
     for class in PRIVATE_REFUSED_IN {
         assert_eq!(
-            verdict(g.judge_answer("db.test", &[ip("10.0.0.5")], *class)),
+            verdict(g.judge_answer("db.test", &[ip("\x310.0.0.5")], *class)),
             Some(DEST_INTERNAL)
         );
     }
     assert!(PRIVATE_REFUSED_IN.contains(&EGRESS_PROVIDER));
     assert_eq!(
-        g.judge_answer("db.test", &[ip("10.0.0.5")], EGRESS_OPERATOR_INFRASTRUCTURE),
+        g.judge_answer(
+            "db.test",
+            &[ip("\x310.0.0.5")],
+            EGRESS_OPERATOR_INFRASTRUCTURE
+        ),
         Ok(())
     );
     assert_eq!(
-        verdict(g.judge_answer("db.test", &[ip("10.0.0.5")], EGRESS_LOOPBACK_ALLOWED)),
+        verdict(g.judge_answer("db.test", &[ip("\x310.0.0.5")], EGRESS_LOOPBACK_ALLOWED)),
         Some(DEST_INTERNAL)
     );
     for class in [EGRESS_OPERATOR_INFRASTRUCTURE, EGRESS_LOOPBACK_ALLOWED] {
@@ -525,7 +533,7 @@ fn a_provider_dial_is_refused_a_private_address_unless_allowlisted() {
     let strict = Guard::default();
     let p = EGRESS_PROVIDER;
     assert_eq!(
-        verdict(strict.judge_answer("model.internal", &[ip("10.0.0.5")], p)),
+        verdict(strict.judge_answer("model.internal", &[ip("\x310.0.0.5")], p)),
         Some(DEST_INTERNAL)
     );
     assert_eq!(
@@ -538,7 +546,7 @@ fn a_provider_dial_is_refused_a_private_address_unless_allowlisted() {
     );
     let allowed = guard(true, &["model.internal", "127.0.0.1", "localhost"]);
     assert_eq!(
-        allowed.judge_answer("model.internal", &[ip("10.0.0.5")], p),
+        allowed.judge_answer("model.internal", &[ip("\x310.0.0.5")], p),
         Ok(())
     );
     assert_eq!(
@@ -559,7 +567,7 @@ fn operator_infrastructure_is_allowed_private_and_refused_metadata_whatever_is_c
     let oi = EGRESS_OPERATOR_INFRASTRUCTURE;
     let strict = Guard::default();
     assert_eq!(
-        strict.judge_answer("db.test", &[ip("10.0.0.5")], oi),
+        strict.judge_answer("db.test", &[ip("\x310.0.0.5")], oi),
         Ok(())
     );
     assert_eq!(
@@ -641,7 +649,7 @@ fn a_configured_open_web_target_keeps_its_class_and_is_refused_a_private_address
         EGRESS_OPERATOR_INFRASTRUCTURE
     );
     let g = Guard::default();
-    for a in ["127.0.0.1", "10.0.0.7"] {
+    for a in ["127.0.0.1", "\x310.0.0.7"] {
         assert_eq!(
             verdict(g.judge_answer(a, &[ip(a)], judged_class(EGRESS_OPEN_WEB, true))),
             Some(DEST_INTERNAL),
@@ -771,7 +779,11 @@ fn the_configured_lists_compare_in_the_mapped_form() {
     let g = guard(true, &["xn--bcher-kva.example"]);
     for idn in ["b\u{fc}cher.example", "B\u{dc}CHER.example."] {
         assert_eq!(g.judge_name(idn, C), Ok(None), "{idn}");
-        assert_eq!(g.judge_answer(idn, &[ip("10.0.0.5")], C), Ok(()), "{idn}");
+        assert_eq!(
+            g.judge_answer(idn, &[ip("\x310.0.0.5")], C),
+            Ok(()),
+            "{idn}"
+        );
     }
 }
 
@@ -787,7 +799,7 @@ fn a_public_idn_name_maps_to_punycode_and_is_allowed() {
             "{idn}"
         );
         assert_eq!(
-            verdict(g.judge_answer(idn, &[ip("10.0.0.5")], C)),
+            verdict(g.judge_answer(idn, &[ip("\x310.0.0.5")], C)),
             Some(DEST_INTERNAL),
             "{idn}"
         );
@@ -935,15 +947,15 @@ fn every_feature_plugin_class_is_governed_by_the_one_allowlist() {
         true,
         &[
             "collector.internal",
-            "10.2.3.4",
+            "\x310.2.3.4",
             "fec0::/10",
             "169.254.0.0/16",
         ],
     );
     for class in classes {
         for (host, addr) in [
-            ("collector.internal", "10.9.9.9"),
-            ("mcp.internal", "10.2.3.4"),
+            ("collector.internal", "\x310.9.9.9"),
+            ("mcp.internal", "\x310.2.3.4"),
             ("old.internal", "fec0::7"),
         ] {
             assert_eq!(

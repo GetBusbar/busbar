@@ -119,7 +119,7 @@ fn assert_branded_error_page(body: &str, heading: &str) {
 #[test]
 fn key_page_injects_base_url_verbatim() {
     let page = render_key_issued(
-        "sam@acme.com",
+        "sam\x40acme.com",
         "user:sam",
         "bb_live_7Qm2",
         "https://busbar.example.com",
@@ -143,7 +143,7 @@ fn key_page_injects_base_url_verbatim() {
 #[test]
 fn key_page_has_copy_buttons_wired_to_clipboard() {
     let page = render_key_issued(
-        "sam@acme.com",
+        "sam\x40acme.com",
         "user:sam",
         "bb_live_7Qm2",
         "https://busbar.example.com",

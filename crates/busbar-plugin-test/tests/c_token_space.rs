@@ -22,7 +22,7 @@ fn chain_and_session_tokens_of_one_slot_differ_in_bit_63_only() {
 }
 
 #[test]
-#[ignore = "owner: W1-A3"]
+#[ignore = "owner: W1-A3 (needs a session-kind image and a raw-token entry: GetBusbar/busbar#266)"]
 fn a_token_of_the_other_space_never_cross_drops() {
     todo!("owner: W1-A3 (C-TOKEN-SPACE)")
 }

@@ -61,6 +61,7 @@ pub(crate) fn inputs(unit: u64) -> AuditInputs {
         },
         controls: Controls::default(),
         correlation_label: None,
+        unit: busbar_kernel_audit::UnitFacts::default(),
     }
 }
 

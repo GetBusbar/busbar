@@ -23,19 +23,18 @@ pub const fn fp_parts(parts: &[&[u8]]) -> u64 {
     }
     hash
 }
-/// The fingerprint of the `mechanism! { .. }` block in types.rs + records.rs + host.rs + need.rs + plugin.rs.
+/// The fingerprint of the `mechanism! { .. }` blocks: this crate's (records.rs, host.rs, need.rs, in that
+/// order) and then busbar-ffi's (`busbar_ffi::MECHANISM`: raw types, header, the 7 layouts, in its fixed
+/// order), because the views, the `Host` table, the `Plugin` header and the layouts live there (UNSAFE-MIN
+/// §4.5). A layout change in either crate moves it.
 ///
-/// `fp_parts` over the five blocks in that order, folded one block per constant so no single const evaluation
+/// `fp_parts` over the six blocks in that order, folded one block per constant so no single const evaluation
 /// walks all of them (`a_block_chain_is_fp_parts` below checks the two agree).
 pub const CORE_FP: u64 = fold(
-    separate(AFTER_NEED),
-    crate::plugin::MECHANISM_BLOCK.as_bytes(),
+    separate(AFTER_FFI_HEADER),
+    busbar_ffi::MECHANISM[2].as_bytes(),
 );
-const AFTER_TYPES: u64 = fold(OFFSET, crate::types::MECHANISM_BLOCK.as_bytes());
-const AFTER_RECORDS: u64 = fold(
-    separate(AFTER_TYPES),
-    crate::records::MECHANISM_BLOCK.as_bytes(),
-);
+const AFTER_RECORDS: u64 = fold(OFFSET, crate::records::MECHANISM_BLOCK.as_bytes());
 const AFTER_HOST: u64 = fold(
     separate(AFTER_RECORDS),
     crate::host::MECHANISM_BLOCK.as_bytes(),
@@ -44,6 +43,8 @@ const AFTER_NEED: u64 = fold(
     separate(AFTER_HOST),
     crate::need::MECHANISM_BLOCK.as_bytes(),
 );
+const AFTER_FFI_RAW: u64 = fold(separate(AFTER_NEED), busbar_ffi::MECHANISM[0].as_bytes());
+const AFTER_FFI_HEADER: u64 = fold(separate(AFTER_FFI_RAW), busbar_ffi::MECHANISM[1].as_bytes());
 
 /// FNV-1a over `bytes` from `hash`, skipping the ASCII whitespace bytes (space, \t, \n, \x0C, \r).
 const fn fold(mut hash: u64, bytes: &[u8]) -> u64 {
@@ -69,20 +70,23 @@ mod tests {
 
     #[test]
     fn a_block_chain_is_fp_parts() {
+        let [ffi_raw, ffi_header, ffi_vt] = busbar_ffi::MECHANISM.map(str::as_bytes);
         let blocks = [
-            crate::types::MECHANISM_BLOCK.as_bytes(),
             crate::records::MECHANISM_BLOCK.as_bytes(),
             crate::host::MECHANISM_BLOCK.as_bytes(),
             crate::need::MECHANISM_BLOCK.as_bytes(),
-            crate::plugin::MECHANISM_BLOCK.as_bytes(),
+            ffi_raw,
+            ffi_header,
+            ffi_vt,
         ];
         assert_eq!(CORE_FP, fp_parts(&blocks));
         // Every block is hashed: each one holds its frozen items (a doc line or token change moves CORE_FP).
-        assert!(crate::types::MECHANISM_BLOCK.contains("TOKEN_SESSION"));
+        assert!(busbar_ffi::MECHANISM[0].contains("TOKEN_SESSION"));
         assert!(crate::records::MECHANISM_BLOCK.contains("D_ERRORS"));
         assert!(crate::host::MECHANISM_BLOCK.contains("crypto_status"));
         assert!(crate::need::MECHANISM_BLOCK.contains("NeedResRec"));
-        assert!(crate::plugin::MECHANISM_BLOCK.contains("former_names"));
+        assert!(busbar_ffi::MECHANISM[1].contains("former_names"));
+        assert!(busbar_ffi::MECHANISM[2].contains("EntryFn0"));
     }
 
     #[test]

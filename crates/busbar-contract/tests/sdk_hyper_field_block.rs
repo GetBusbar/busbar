@@ -3,62 +3,33 @@
 
 //! A field block must never reallocate after it starts copying credential values.
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
+use std::sync::Mutex;
 
 use hyper::header::{HeaderMap, HeaderValue};
+use stats_alloc::StatsAlloc;
+#[cfg(target_env = "msvc")]
+use std::alloc::System as Base;
+#[cfg(not(target_env = "msvc"))]
+use tikv_jemallocator::Jemalloc as Base;
 
 busbar_contract::hyper_io!(hyper::body::Bytes);
 
-thread_local! {
-    static COUNTING: Cell<bool> = const { Cell::new(false) };
-    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
-    static REALLOCATIONS: Cell<usize> = const { Cell::new(0) };
-}
-
-struct Counting;
-
-fn count(counter: &'static std::thread::LocalKey<Cell<usize>>) {
-    let _ = COUNTING.try_with(|active| {
-        if active.get() {
-            let _ = counter.try_with(|value| value.set(value.get() + 1));
-        }
-    });
-}
-
-// SAFETY: every allocation operation delegates unchanged to System; no payload is read.
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        count(&ALLOCATIONS);
-        // SAFETY: the caller provides a valid allocation layout.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        // SAFETY: the caller provides the live allocation and its original layout.
-        unsafe { System.dealloc(pointer, layout) }
-    }
-
-    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-        count(&REALLOCATIONS);
-        // SAFETY: the caller provides the live allocation, its layout and a valid new size.
-        unsafe { System.realloc(pointer, layout, size) }
-    }
-}
-
+/// The shipped allocator (jemalloc), counted process-wide by `stats_alloc`.
 #[global_allocator]
-static ALLOCATOR: Counting = Counting;
+static ALLOCATOR: StatsAlloc<Base> = StatsAlloc::new(Base);
+
+/// One measurement at a time: the counts are process-wide, so two tests must not overlap.
+static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
 fn measured(headers: &HeaderMap, also: &[&str]) -> (Vec<u8>, usize, usize) {
-    ALLOCATIONS.with(|value| value.set(0));
-    REALLOCATIONS.with(|value| value.set(0));
-    COUNTING.with(|active| active.set(true));
+    let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(|p| p.into_inner());
+    let before = ALLOCATOR.stats();
     let block = hyper_io::field_block(headers, also);
-    COUNTING.with(|active| active.set(false));
+    let after = ALLOCATOR.stats();
     (
         block,
-        ALLOCATIONS.with(Cell::get),
-        REALLOCATIONS.with(Cell::get),
+        after.allocations - before.allocations,
+        after.reallocations - before.reallocations,
     )
 }
 

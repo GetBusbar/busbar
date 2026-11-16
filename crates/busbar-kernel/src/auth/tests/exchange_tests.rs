@@ -47,17 +47,16 @@ async fn mode_refused_exchange_leaves_its_verified_identitys_replay_claim_unclai
         principal,
         resolved: None,
     };
-    let mut bindings = crate::config::RoleBindings::new();
-    bindings
-        .entry("mode-replay-idp".to_string())
-        .or_default()
-        .insert(
+    let bindings = std::collections::BTreeMap::from([(
+        "mode-replay-idp".to_string(),
+        std::collections::BTreeMap::from([(
             "eng".to_string(),
             crate::config::RoleBindingCfg {
                 group: Some("team".to_string()),
                 ..Default::default()
             },
-        );
+        )]),
+    )]);
     let policy = crate::governance::mint_policy::MintPolicy {
         block_binding_modes: Some(vec![crate::governance::SELF_KEY_BINDING_MODE_APP.into()]),
         ..Default::default()
@@ -284,7 +283,6 @@ impl busbar_contract::persistence::PersistenceBackend for ReplayBackend {
 #[tokio::test]
 async fn concurrent_auth_replay_admission_delivers_one_win_including_retained_unknown() {
     use std::sync::Arc;
-    let now = crate::store::now();
     for (lose, expires_before_delivery) in [(false, false), (true, false), (true, true)] {
         let backend = Arc::new(ReplayBackend {
             inner: crate::real_store::native_backend().await,
@@ -302,6 +300,7 @@ async fn concurrent_auth_replay_admission_delivers_one_win_including_retained_un
             key: "one-verified-request".into(),
             ttl_secs: 300,
         };
+        let now = crate::store::now();
         for ttl_secs in [u64::MAX, u64::MAX - now] {
             let unbounded = busbar_contract::auth_calls::Replay {
                 key: "unbounded-window".into(),

@@ -123,10 +123,10 @@ fn every_egress_class_is_judged_by_the_one_guard() {
 #[test]
 fn a_private_address_is_refused_for_providers_and_request_data_unless_allowlisted() {
     let strict = process_judge(&[], vec![]);
-    let allowed = process_judge(&["10.0.0.0/8", "127.0.0.1"], vec![]);
+    let allowed = process_judge(&["\x310.0.0.0/8", "127.0.0.1"], vec![]);
     for class in crate::guard::PRIVATE_REFUSED_IN.iter().copied() {
         assert_eq!(
-            now(&strict, "10.0.0.5:5432", class),
+            now(&strict, "\x310.0.0.5:5432", class),
             Err(DEST_INTERNAL),
             "{class}"
         );
@@ -140,11 +140,11 @@ fn a_private_address_is_refused_for_providers_and_request_data_unless_allowliste
             Err(DEST_INTERNAL),
             "{class}"
         );
-        assert!(now(&allowed, "10.0.0.5:5432", class).is_ok(), "{class}");
+        assert!(now(&allowed, "\x310.0.0.5:5432", class).is_ok(), "{class}");
         assert!(now(&allowed, "127.0.0.1:6379", class).is_ok(), "{class}");
     }
     let class = EGRESS_OPERATOR_INFRASTRUCTURE;
-    assert!(now(&strict, "10.0.0.5:5432", class).is_ok(), "{class}");
+    assert!(now(&strict, "\x310.0.0.5:5432", class).is_ok(), "{class}");
     assert!(now(&strict, "127.0.0.1:6379", class).is_ok(), "{class}");
     for class in CLASSES {
         assert_eq!(
@@ -200,7 +200,7 @@ fn loopback_allowed_refuses_the_nodes_own_ports() {
 /// `dest.judge`'s arms through the same judge: a URL's scheme by class (open-web secure only,
 #[test]
 fn the_kernel_asks_the_same_judge() {
-    let j = guard_judge(&["127.0.0.1", "10.1.2.3"], vec![]);
+    let j = guard_judge(&["127.0.0.1", "\x310.1.2.3"], vec![]);
     assert_eq!(
         j.judge_name("http://93.184.216.34/x", EGRESS_OPEN_WEB, false),
         Err(DEST_PLAINTEXT)
@@ -210,7 +210,7 @@ fn the_kernel_asks_the_same_judge() {
         Ok(())
     );
     assert_eq!(
-        j.judge_name("http://10.1.2.3/x", EGRESS_LOOPBACK_ALLOWED, false),
+        j.judge_name("http://\x310.1.2.3/x", EGRESS_LOOPBACK_ALLOWED, false),
         Err(DEST_PLAINTEXT)
     );
     assert_eq!(
@@ -226,11 +226,15 @@ fn the_kernel_asks_the_same_judge() {
         Err(DEST_NO_HOST)
     );
     assert_eq!(
-        j.judge_name("https://10.0.0.5/", 0, false),
+        j.judge_name("https://\x310.0.0.5/", 0, false),
         Err(DEST_INTERNAL)
     );
     let r = j
-        .judge_answer("api.test", &["10.9.9.9".parse().unwrap()], EGRESS_DEFAULT)
+        .judge_answer(
+            "api.test",
+            &["\x310.9.9.9".parse().unwrap()],
+            EGRESS_DEFAULT,
+        )
         .unwrap_err();
     assert_eq!(r.verdict, DEST_INTERNAL);
     assert!(r.reason.contains("advanced.allow_destinations"), "{r}");

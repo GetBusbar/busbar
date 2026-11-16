@@ -1,8 +1,9 @@
 [workspace]
 resolver = "2"
-# dist/default is its own workspace; the root crate depends on no plugin. busbar-crypto-backend is its
-# own lock root so a private build can [patch] a backend of the same name in.
-exclude = ["dist/default", "tools/system-hammer", "crates/busbar-crypto-backend"]
+# dist/default and testing/oracle (the black-box oracle) are their own workspaces; the root crate depends on
+# no plugin. busbar-crypto-backend is its own lock root so a private build can [patch] a backend of the same
+# name in.
+exclude = ["dist/default", "testing/oracle", "tools/system-hammer", "crates/busbar-crypto-backend"]
 members = [
     "crates/busbar",
     "crates/busbar-core-connector",
@@ -19,6 +20,7 @@ members = [
     "crates/busbar-kernel-wal",
     "crates/busbar-kernel-audit",
     "crates/plugin-loader",
+    "crates/busbar-ffi",
     "crates/busbar-plugin-abi",
     "crates/busbar-plugin-bench",
     "crates/busbar-plugin-test",
@@ -92,9 +94,9 @@ oauth-as = { version = "1.1", default-features = false, features = [
     "dpop",
     "client-assertion",
 ] }
-# Canonical (OLPC) JSON for the signed release documents (plugin-loader release_trust); it rides on
-# serde_json, which it forces (decision 223).
-olpc-cjson = "0.1.4"
+# Canonical (OLPC) JSON for the signed release documents (plugin-loader release_trust), written through
+# its sonic-rs formatter; serde_json, its default, stays off (SERDE-JSON-EXIT r2 §2, decision 223).
+olpc-cjson = { version = "0.1.4", default-features = false, features = ["sonic-rs"] }
 # URI component and form codecs (DEPENDENCY-LADDER C6); already linked through url. The fleet's
 # plugins take percent-encoding from this row too.
 percent-encoding = "2.3.2"
@@ -137,10 +139,15 @@ syn = { version = "2", features = ["full", "visit", "parsing", "printing"] }
 time = { version = "0.3.49", default-features = false }
 # No `xattr`: the loader unpacks in memory.
 tar = { version = "0.4", default-features = false }
-# Called directly (busbar-kernel `mallctl`); default features off adds nothing tikv-jemallocator
-# does not already turn on.
-tikv-jemalloc-sys = { version = "0.6", default-features = false }
+# Test-only (dev-dependencies of busbar-kernel and busbar): the per-thread allocation counters through the
+# upstream safe wrapper (UNSAFE-MIN QJ). `stats` makes jemalloc keep them. Its `paste` dependency is a
+# recorded cargo-deny exception (RUSTSEC-2024-0436), dev graph only.
+tikv-jemalloc-ctl = { version = "=0.6.1", default-features = false, features = ["stats"] }
 tikv-jemallocator = "0.6"
+# Test-only allocation counters (UNSAFE-MIN §4.4): `StatsAlloc<Jemalloc>` counts allocations, deallocations
+# and reallocations process-wide; its own `unsafe impl` is the dependency's (cargo-vet exemption). The
+# `nightly` feature only makes `StatsAlloc::new` a `const fn`, which a `#[global_allocator]` static needs.
+stats_alloc = { version = "0.1.10", features = ["nightly"] }
 # No feature floor: each member picks its own slice.
 tokio = "1"
 tokio-util = { version = "0.7", default-features = false, features = ["compat"] }
@@ -170,7 +177,7 @@ unicode-normalization = "0.1.25"
 # plane door; core's source gates a few tests on two of them, and core alone sets none.
 # busbar-kernel: the transaction-fence red witness.
 # busbar-core-connector: mio's poll(2) backend switch, mirrored by the short-transfer readiness gate.
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(linked_section_pools)", "cfg(linked_section_agents)", "cfg(txn_fence_red)", "cfg(mio_unsupported_force_poll_poll)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(linked_section_pools)", "cfg(linked_section_agents)", "cfg(txn_fence_red)", "cfg(mio_unsupported_force_poll_poll)", "cfg(loom)"] }
 
 # Fleet bad-pattern rules: the list is in clippy.toml (a byte-identical copy of GetBusbar/busbar-release
 # template/clippy.toml's block). It is raised to deny only inside module trees that carry the
@@ -214,7 +221,7 @@ granit-parser = { git = "https://github.com/MattJackson/granit-parser", rev = "d
 # (serde buffering, YAML) and an authenticated Value hand-off, offered upstream (cloudwego/sonic-rs).
 sonic-rs = { git = "https://github.com/MattJackson/sonic-rs", rev = "10b80cdcbfb07c0edc6535df28f7b248dc4f5223" }
 # Canonical JSON: olpc-cjson 0.1.4 with serde_json optional and a sonic-rs Formatter, offered upstream
-# (awslabs/tough). Default features keep today's serde_json formatter until release_trust moves over.
+# (awslabs/tough). busbar's workspace row turns its default (serde_json) off and takes the sonic-rs formatter.
 olpc-cjson = { git = "https://github.com/MattJackson/olpc-cjson", rev = "0a96a65b1122a2bbb93fd36cae3b36dd2b045c7e" }
 
 [profile.release]

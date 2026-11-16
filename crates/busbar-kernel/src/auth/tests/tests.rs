@@ -1578,7 +1578,6 @@ async fn two_racing_identical_deliveries_admit_at_most_one() {
     ));
     let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(8));
     let mut racing = Vec::new();
-    let now = busbar_kernel::store::now();
     for _ in 0..8 {
         let gov = gov.clone();
         let bindings = bindings.clone();
@@ -1587,8 +1586,10 @@ async fn two_racing_identical_deliveries_admit_at_most_one() {
             let answered =
                 chain_verdict_of(hook_answer(Some("standard-webhooks/msg_race"), Vec::new()));
             let verdict = complete_chain(chain_position_verdict("door", answered.verdict));
-            let pending =
-                PendingClaim::of(ReplayClaim::of("door", answered.replay, now), Some(gov));
+            let pending = PendingClaim::of(
+                ReplayClaim::of("door", answered.replay, busbar_kernel::store::now()),
+                Some(gov),
+            );
             barrier.wait().await;
             match admit_verified_session(&bindings, verdict, pending.as_ref()).await {
                 Ok(_) => true,
@@ -1699,6 +1700,11 @@ fn a_role_granting_verbs_by_name_is_identified_with_its_allow_list() {
     use busbar_contract::authz::{Grants, Scope};
 
     let operator = Operator::new("operator-provider");
+    let rungs = std::collections::BTreeMap::from([
+        ("post_config_apply", Scope::Full),
+        ("post_keys", Scope::Full),
+        ("get_keys", Scope::ReadOnly),
+    ]);
     let identified = || ChainVerdict::Identified {
         module: "test-scope-module".to_string(),
         principal: grp_principal("test:ops", &["ops"]),
@@ -1714,7 +1720,7 @@ fn a_role_granting_verbs_by_name_is_identified_with_its_allow_list() {
         "operator:local",
         identified(),
         Some(Scope::Full),
-        verb_rung,
+        |name| rungs.get(name).copied(),
     );
     let AdminDoor::Listed(principal, grants, list) = door else {
         panic!("a role granting verbs by name is identified with its list, got {door:?}");
@@ -1749,6 +1755,11 @@ fn verbs_star_is_exactly_admin_scope_full() {
     use busbar_contract::authz::Scope;
 
     let operator = Operator::new("operator-provider");
+    let rungs = std::collections::BTreeMap::from([
+        ("post_config_apply", Scope::Full),
+        ("post_keys", Scope::Full),
+        ("get_keys", Scope::ReadOnly),
+    ]);
     let identified = || ChainVerdict::Identified {
         module: "test-scope-module".to_string(),
         principal: grp_principal("test:ops", &["ops"]),
@@ -1772,7 +1783,7 @@ fn verbs_star_is_exactly_admin_scope_full() {
             "operator:local",
             identified(),
             Some(Scope::Full),
-            verb_rung,
+            |name| rungs.get(name).copied(),
         );
         assert!(matches!(by_star, AdminDoor::Identified(..)), "{by_star:?}");
         assert_eq!(
@@ -1783,7 +1794,7 @@ fn verbs_star_is_exactly_admin_scope_full() {
                 "operator:local",
                 identified(),
                 Some(Scope::Full),
-                verb_rung
+                |name| rungs.get(name).copied()
             ),
             "{method} {path}: `verbs: \"*\"` must be exactly `admin_scope: full`"
         );
@@ -1795,6 +1806,11 @@ fn a_binding_without_verbs_is_judged_by_its_rung_alone() {
     use busbar_contract::authz::{Grants, Scope};
 
     let operator = Operator::new("operator-provider");
+    let rungs = std::collections::BTreeMap::from([
+        ("post_config_apply", Scope::Full),
+        ("post_keys", Scope::Full),
+        ("get_keys", Scope::ReadOnly),
+    ]);
     let identified = || ChainVerdict::Identified {
         module: "test-scope-module".to_string(),
         principal: grp_principal("test:ops", &["ops"]),
@@ -1811,7 +1827,7 @@ fn a_binding_without_verbs_is_judged_by_its_rung_alone() {
             "operator:local",
             identified(),
             Some(Scope::Full),
-            verb_rung,
+            |name| rungs.get(name).copied(),
         );
         let AdminDoor::Identified(_, grants) = door else {
             panic!("{scope}: a binding with no `verbs` key is never listed, got {door:?}");
@@ -1825,6 +1841,11 @@ fn the_providers_ceiling_caps_a_named_verb() {
     use busbar_contract::authz::{Grants, Scope};
 
     let operator = Operator::new("operator-provider");
+    let rungs = std::collections::BTreeMap::from([
+        ("post_config_apply", Scope::Full),
+        ("post_keys", Scope::Full),
+        ("get_keys", Scope::ReadOnly),
+    ]);
     let identified = || ChainVerdict::Identified {
         module: "test-scope-module".to_string(),
         principal: grp_principal("test:ops", &["ops"]),
@@ -1840,7 +1861,7 @@ fn the_providers_ceiling_caps_a_named_verb() {
         "operator:local",
         identified(),
         Some(Scope::ReadOnly),
-        verb_rung,
+        |name| rungs.get(name).copied(),
     );
     let AdminDoor::Listed(_, grants, list) = door else {
         panic!("the named read survives the ceiling, got {door:?}");
@@ -2054,14 +2075,5 @@ async fn a_sender_constraint_refusal_without_resource_metadata_names_its_reason_
                 .then_some(description),
         };
         assert_eq!(named, Some(description), "{ingress:?}: {body}");
-    }
-}
-
-/// The verb rungs the admin-scope tests judge against.
-fn verb_rung(name: &str) -> Option<busbar_contract::authz::Scope> {
-    match name {
-        "post_config_apply" | "post_keys" => Some(busbar_contract::authz::Scope::Full),
-        "get_keys" => Some(busbar_contract::authz::Scope::ReadOnly),
-        _ => None,
     }
 }
