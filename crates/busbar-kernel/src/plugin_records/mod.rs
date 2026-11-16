@@ -156,6 +156,8 @@ pub const MAX_VALUE: usize = 64 * 1024;
 pub const MAX_CHAIN_ENTRY: usize = 64 * 1024;
 
 mod chain;
+#[cfg(test)]
+mod late_tests;
 pub(crate) mod store;
 
 pub use store::StoreRecords;
