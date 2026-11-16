@@ -6,6 +6,9 @@ use std::sync::Arc;
 
 use crate::root::loader::export_axis::ExportRows;
 
+#[path = "export_ports.rs"]
+pub(crate) mod ports;
+
 /// The root's export axis.
 #[derive(Debug)]
 pub struct RootExports;
