@@ -170,3 +170,70 @@ fn labels_allow_list_only() {
         "names match exactly, case aside"
     );
 }
+
+/// §3.6: the configured facts are owned at Decode/projection. Sealing must move them,
+/// never clone each label or introduce plugin/store/clock work. Compare the actual
+/// prepare/link/advance seal with a full allow-list against the same empty record.
+#[cfg(not(target_env = "msvc"))]
+#[test]
+fn seal_alloc_bounded() {
+    use busbar_contract::work_count::Tally;
+    use busbar_kernel_audit::{AuditChain, RecordFacts};
+    fn measure(records: RecordFacts) -> (Tally, busbar_kernel_audit::AuditRecord) {
+        let mut inputs = crate::root::durability::tests::audit_inputs(1);
+        inputs.unit.records = records;
+        let mut chain = AuditChain::new().sealing_as(7);
+        let kernel = crate::root::kernel::new_kernel();
+        let pass = busbar_kernel::teller::verb_audit_pass(&kernel);
+        busbar_contract::work_count::count_allocations_through(|| {
+            let stats = crate::GLOBAL.stats();
+            (stats.allocations + stats.reallocations) as u64
+        });
+        let before = Tally::now();
+        let prepared = AuditChain::prepare(inputs, 7);
+        let linked = chain.link(prepared, 1_700_000_000_000, &pass);
+        chain.advance(&linked);
+        let record = linked.into_record();
+        (Tally::now().since(before), record)
+    }
+    let kept = RecordFacts {
+        user: Some("u_00112233445566778899aabbccddeeff".into()),
+        labels: (0..8)
+            .map(|i| {
+                (
+                    std::sync::Arc::from(format!("x-label-{i}")),
+                    "v".repeat(VALUE_MAX),
+                )
+            })
+            .collect(),
+    };
+    // Warm backend initialization before measuring either case.
+    let _ = measure(RecordFacts::default());
+    let (bare, _) = measure(RecordFacts::default());
+    let (full, record) = measure(kept);
+    assert_eq!(record.unit.records.labels.len(), 8);
+    assert!(record.unit.records.user.is_some());
+    assert!(
+        full.allocations <= bare.allocations + 1,
+        "bare={bare:?}, full={full:?}"
+    );
+    assert_eq!(full.crossings, bare.crossings);
+    assert_eq!(full.store_round_trips, bare.store_round_trips);
+    assert_eq!(full.clock_reads, bare.clock_reads);
+}
+
+#[test]
+fn changed_keyset_changes_user_pseudonym() {
+    let on = configured(RecordsUser::Pseudonymous, &[]);
+    let first = busbar_kernel_audit::AuditSigningKey::from_seed(&[11; 32]);
+    let rotated = busbar_kernel_audit::AuditSigningKey::from_seed(&[12; 32]);
+    let deployment = b"dep_0123456789abcdef";
+    assert_ne!(
+        on.user_of(Some(&first.derived_key(deployment, USER_KEY_INFO)), "alice"),
+        on.user_of(
+            Some(&rotated.derived_key(deployment, USER_KEY_INFO)),
+            "alice"
+        ),
+        "a keyset change marks a pseudonym discontinuity within the same deployment"
+    );
+}
