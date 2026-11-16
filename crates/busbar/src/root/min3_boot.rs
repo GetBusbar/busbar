@@ -224,8 +224,6 @@ pub(crate) struct Booted {
     records: Records,
     /// Durable WORK of every seat: what the recovery scheduler scans ([`recover_ports`]).
     work: Arc<StoreWork>,
-    /// The seats' probe targets: their probers hold them weakly, so the process holds them here.
-    _probes: Vec<Arc<dyn Send + Sync>>,
 }
 
 static BOOTED: OnceLock<Booted> = OnceLock::new();
@@ -752,8 +750,8 @@ struct Steps<'r> {
     built: &'r Built,
     /// K9: what every seat's egress walk and carrier are composed over (the boot's one upstream table).
     seat: SeatShared,
-    /// The seats' probe targets, held for their probers.
-    probes: Mutex<Vec<Arc<dyn Send + Sync>>>,
+    /// Dormant probes prepared while opening seats, consumed only at publication.
+    probes: Mutex<Vec<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>>,
 }
 
 impl Steps<'_> {
@@ -1571,7 +1569,6 @@ pub(crate) async fn finish(
         work_binder: shared.work_binder.clone(),
         work: Arc::clone(&shared.work),
         records,
-        _probes: probes,
     });
     if installed.is_err() {
         return Err("the MIN-3 boot ran twice in one process".to_owned());
@@ -1579,6 +1576,9 @@ pub(crate) async fn finish(
     // Retain dormant maintenance until root has published the serving routes.
     let mut workers = super::boot::workers::PreparedWorkers::new();
     workers.push(refresh.run());
+    for probe in probes {
+        workers.push(probe);
+    }
     let queue: Arc<dyn PushQueue> = shared.push.clone();
     for seat in ticking {
         let queue = Arc::clone(&queue);

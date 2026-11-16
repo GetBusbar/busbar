@@ -57,7 +57,7 @@ use busbar_kernel::plane_driver::port_probes::PortProbes;
 use busbar_kernel::plane_driver::port_session::Effects;
 use busbar_kernel::plane_driver::route_input::HealthModeInput;
 use busbar_kernel::plugin_records::RecordsDenied;
-use busbar_kernel::probe::{spawn_probers, ProbeCfg, ProbeMember, ProbeSchedule};
+use busbar_kernel::probe::{run_probers, ProbeCfg, ProbeMember, ProbeSchedule};
 use busbar_kernel::teller::Kernel;
 use busbar_kernel::upstreams::{ConfiguredUpstreams, UpstreamDef, Upstreams};
 use busbar_kernel_egress::ports::{Dispatched, DurabilityUnavailable, Journal};
@@ -120,8 +120,8 @@ pub(crate) struct SeatWiring {
     /// `None` = no connection table: a FORWARD fails `NotDriven`.
     pub(crate) upstream: Option<Arc<dyn PortUpstream>>,
     pub(crate) carrier: Arc<PortCarrier>,
-    /// The seat's probe target, kept alive for its probers (they hold it weakly); `None` = nothing is probed.
-    pub(crate) probes: Option<Arc<dyn Send + Sync>>,
+    /// Dormant probe work that retains its target until stopped by the generation owner.
+    pub(crate) probes: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
 }
 
 /// The connection-table owner of a seat's upstream exchanges: its own identity, never a dispatch handle's.
@@ -561,14 +561,14 @@ fn egress_of(
     })
 }
 
-/// The probe target of a seat whose plane states FB_PROBES, its probers started: recovery probes only
+/// Dormant probes for a seat whose plane states FB_PROBES: recovery probes only
 /// (`HealthModeInput::Dead`: a member is probed while the breaker holds it off), the limits' default interval and
 /// timeout. `None` = the plane states no probes or walks no member.
 fn probes_of(
     port: &Arc<dyn PlanePort>,
     egress: &PortEgress,
     pool: &SeatPool,
-) -> Option<Arc<dyn Send + Sync>> {
+) -> Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> {
     if port.facts() & busbar_plugin_abi::plane::FB_PROBES == 0 || pool.members.is_empty() {
         return None;
     }
@@ -605,8 +605,7 @@ fn probes_of(
         )
         .charging(Arc::clone(port)),
     );
-    spawn_probers(&target, &schedule, &probers);
-    Some(target as Arc<dyn Send + Sync>)
+    Some(Box::pin(run_probers(target, schedule, probers)))
 }
 
 /// Composes one seat's egress and carrier (see the module docs). `accept` is the instance's core-held
