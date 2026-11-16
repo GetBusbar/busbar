@@ -41,6 +41,8 @@ path = "benches/b_hold.rs"
 [dev-dependencies]
 # B-SYNC (W1-H0) times the host side directly.
 busbar-plugin-abi = { path = "../busbar-plugin-abi", features = ["host"] }
+# B-SYNC REFUSED arm through the auth adapter (W1-L5).
+busbar-plugin-loader = { path = "../plugin-loader" }
 # B-SLOTS (W1-A3) records the AGREED 209/215 comparison against the slab crate already in core's lock.
 sharded-slab = "0.1.7"
 

@@ -3735,7 +3735,7 @@ async fn delegated_users_dispatch_with_their_own_auth_and_no_shared_fallback() {
     let services = crate::host_services::KernelServices::new();
     let caller = busbar_contract::services::Caller::issue(
         &crate::seal::acquire(),
-        "plane".into(),
+        Arc::from("plane"),
         busbar_contract::abi::mechanism::KindCode::Plane,
     );
     let t = token();
@@ -3819,7 +3819,7 @@ async fn delegated_prepared_exchange_is_secure_exact_once_and_has_no_shared_auth
     let services = crate::host_services::KernelServices::new();
     let caller = busbar_contract::services::Caller::issue(
         &crate::seal::acquire(),
-        "plane".into(),
+        Arc::from("plane"),
         busbar_contract::abi::mechanism::KindCode::Plane,
     );
     delegated_owner(&services, 1, "bob");
@@ -3897,7 +3897,7 @@ async fn delegated_stored_body_is_reusable_but_fenced_before_each_dispatch() {
     let services = crate::host_services::KernelServices::new();
     let caller = busbar_contract::services::Caller::issue(
         &crate::seal::acquire(),
-        "plane".into(),
+        Arc::from("plane"),
         busbar_contract::abi::mechanism::KindCode::Plane,
     );
     delegated_owner(&services, 1, "bob");

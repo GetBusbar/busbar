@@ -8,7 +8,7 @@ use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::services::{chain_key, Caller, HostServices, Later, Ran, RecordsList, Stored};
 use busbar_kernel::host_services::{BlockingPool, InstanceFacts, KernelServices as Host};
-use busbar_kernel::{door, persistence};
+use busbar_kernel::persistence;
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 const NOT_ADMITTED: &str = "the instance is not admitted";

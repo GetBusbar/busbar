@@ -136,19 +136,17 @@ async fn paused_at(
 
 #[tokio::test(flavor = "current_thread")]
 async fn ticket_store_waits_leave_the_scheduler_live_and_admission_is_one_shot() {
-    // One clock reading serves every redemption: the tickets live 600 s.
-    let at = crate::store::now() + 1;
     for op in ["live", "get"] {
         let (gov, id, ticket, release, entered) = paused(op).await;
         let running = tokio::spawn({
             let (gov, ticket) = (Arc::clone(&gov), ticket.clone());
             async move {
                 if op == "live" {
-                    gov.peek_ticket_async(PREFIX, &ticket, at)
+                    gov.peek_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
                         .await
                         .map(|key| (key.id.clone(), Vec::new()))
                 } else {
-                    gov.admit_ticket_async(PREFIX, &ticket, at)
+                    gov.admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
                         .await
                         .map(|(key, record)| (key.id.clone(), record))
                 }
@@ -172,25 +170,33 @@ async fn ticket_store_waits_leave_the_scheduler_live_and_admission_is_one_shot()
             }
         );
         if op == "live" {
-            assert!(gov.admit_ticket_async(PREFIX, &ticket, at).await.is_some());
+            assert!(gov
+                .admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
+                .await
+                .is_some());
         }
-        assert!(gov.admit_ticket_async(PREFIX, &ticket, at).await.is_none());
+        assert!(gov
+            .admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
+            .await
+            .is_none());
     }
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn revocation_while_ticket_store_waits_is_checked_before_accepting_identity() {
-    // One clock reading serves every redemption: the tickets live 600 s.
-    let at = crate::store::now() + 1;
     for op in ["live", "get"] {
         let (gov, id, ticket, release, entered) = paused(op).await;
         let running = tokio::spawn({
             let (gov, ticket) = (Arc::clone(&gov), ticket.clone());
             async move {
                 if op == "live" {
-                    gov.peek_ticket_async(PREFIX, &ticket, at).await.is_some()
+                    gov.peek_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
+                        .await
+                        .is_some()
                 } else {
-                    gov.admit_ticket_async(PREFIX, &ticket, at).await.is_some()
+                    gov.admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
+                        .await
+                        .is_some()
                 }
             }
         });
@@ -200,23 +206,28 @@ async fn revocation_while_ticket_store_waits_is_checked_before_accepting_identit
             .unwrap();
         release.0.release();
         assert!(!running.await.unwrap());
-        assert!(gov.admit_ticket_async(PREFIX, &ticket, at).await.is_none());
+        assert!(gov
+            .admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
+            .await
+            .is_none());
     }
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn cancelling_a_started_ticket_store_wait_does_not_reopen_redemption() {
-    // One clock reading serves every redemption: the tickets live 600 s.
-    let at = crate::store::now() + 1;
     for op in ["live", "get"] {
         let (gov, _, ticket, release, entered) = paused(op).await;
         let running = tokio::spawn({
             let (gov, ticket) = (Arc::clone(&gov), ticket.clone());
             async move {
                 if op == "live" {
-                    gov.peek_ticket_async(PREFIX, &ticket, at).await.is_some()
+                    gov.peek_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
+                        .await
+                        .is_some()
                 } else {
-                    gov.admit_ticket_async(PREFIX, &ticket, at).await.is_some()
+                    gov.admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
+                        .await
+                        .is_some()
                 }
             }
         });
@@ -226,7 +237,9 @@ async fn cancelling_a_started_ticket_store_wait_does_not_reopen_redemption() {
         assert!(release.0.busy.load(Ordering::SeqCst));
         release.0.release();
         assert!(
-            gov.admit_ticket_async(PREFIX, &ticket, at).await.is_some(),
+            gov.admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
+                .await
+                .is_some(),
             "a cancelled waiter retains its original spend; one eligible retry delivers once"
         );
         if op == "get" {
@@ -240,7 +253,10 @@ async fn cancelling_a_started_ticket_store_wait_does_not_reopen_redemption() {
                 "retry preserves the same native candidate fingerprint"
             );
         }
-        assert!(gov.admit_ticket_async(PREFIX, &ticket, at).await.is_none());
+        assert!(gov
+            .admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
+            .await
+            .is_none());
     }
 }
 

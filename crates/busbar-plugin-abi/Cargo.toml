@@ -14,7 +14,7 @@ path = "src/lib.rs"
 [features]
 default = []
 # Core's side: answers, the buffer pool, the Need driver, the entry guard, the Host static and the scrubber (§10).
-host = ["busbar-ffi/host", "dep:busbar-crypto", "dep:aho-corasick", "dep:arc-swap", "dep:base64", "dep:percent-encoding", "dep:hex"]
+host = ["busbar-ffi/host", "dep:busbar-crypto", "dep:crossbeam-queue", "dep:aho-corasick", "dep:arc-swap", "dep:base64", "dep:percent-encoding", "dep:hex"]
 # The in-memory hyper/tokio IO adapter transports use (§9).
 memio = []
 
@@ -30,8 +30,14 @@ arc-swap = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 percent-encoding = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
+# Feature `host` (IF §10.1): the buffer pool's per-class queues (`crossbeam_queue::ArrayQueue<OutBuf>`).
+crossbeam-queue = { workspace = true, optional = true }
 # The volatile wipe of a Reply block before it is freed (I11; IF §1 names zerocopy + zeroize). Never `Zeroizing`.
 zeroize = { workspace = true }
+
+[dev-dependencies]
+# W1-A2: the safe host API's unit tests lend their test vtable's output from busbar-ffi's crypto `Arena`, as host_vt does.
+busbar-ffi = { path = "../busbar-ffi", features = ["host"] }
 
 [lints]
 workspace = true

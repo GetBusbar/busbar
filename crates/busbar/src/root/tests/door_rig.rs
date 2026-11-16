@@ -47,7 +47,7 @@ fn declared_section(door: DoorFn, instance: &str) -> Option<&'static str> {
     let plane = load_linked::<Plane>(
         &row,
         Bind {
-            instance: <Arc<str>>::from(instance),
+            instance: Arc::from(instance),
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
@@ -76,7 +76,7 @@ pub(crate) fn bind_door(
     load_linked::<Plane>(
         &row,
         Bind {
-            instance: <Arc<str>>::from(instance),
+            instance: Arc::from(instance),
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),

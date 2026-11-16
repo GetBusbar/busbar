@@ -5,28 +5,36 @@
 //! `contain`, the one-call-per-request marshalling onto `busbar-crypto`, the fault counters, the deployment id
 //! and the log sink.
 //!
-//! Safe Rust only (owner, 2026-11-15: no `unsafe`). The IF's raw side is left out until the UNSAFE-MIN design
-//! settles the boundary, as W0-ABI left it:
-//!   pub static HOST: Host;  // IF §10.7: `Host { ctx, now, mono, random, crypto, log, log_level, grow,
-//!                           // deployment, migrate_admit }`, each field an `unsafe extern "C" fn` whose body is
-//!                           // `contain(FALLBACK, || ..)` over the matching `vt` fn here
-//! together with those `extern "C"` entries: reading a `*const CryptoReq` and handing a `random`/`crypto` output
-//! back as a `Bytes<'static>` view of this thread's arena both need `unsafe`. `Host`'s raw fields are also
-//! W1-A2's, which the WBS orders after this task. `grow` (it rewrites the entry's ACTIVE pool buffer, W1-H1),
-//! `log_level` (no source in the IF) and `migrate_admit` (K9's seam, valid only in a store's open chain, which
-//! the entry guard knows) land with those pieces.
+//! Safe Rust only (owner, 2026-11-15: no `unsafe`). The raw side is busbar-ffi's (UNSAFE-MIN r3.1): `Host`,
+//! `HostFns`, `Ctx`, `CryptoRet` and the `Arena` that lends an output are its types, so every entry of
+//! [`HOST`] is a safe `extern "C" fn` over a body here, and nothing in this file needs `unsafe`.
+//!
+//! `random` and `crypto` write their output into a scratch buffer that is zeroed on every path, then lend it
+//! from this thread's `busbar_ffi::host::Arena` (append-only, valid until the outermost entry returns).
+//! Outside an entry (`entry::owner()` is none) there is no arena span that could be reclaimed, so both
+//! answer `CryptoRet::empty(ctx, RNG)`; a full arena answers `empty(ctx, LIMIT)`. `grow` is
+//! `busbar_ffi::host::grow` on the entry's own `&mut RawOut` (W1-H1's pool feeds the `OutLease` it matches).
+//! The outermost entry guard (W1-H1) calls [`reset_arena`] once at its exit, never while a `Host::scoped`
+//! call is live: it zeroes everything lent in that entry (I11). `migrate_admit` is K9's seam, valid only in
+//! a store's open chain, which the entry guard knows; it is `None` (the entry's fallback, REFUSED) until the
+//! guard lands.
 
 use core::cell::RefCell;
 use core::panic::AssertUnwindSafe;
-use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering::Relaxed;
+use core::sync::atomic::{AtomicU32, AtomicU64};
 use std::sync::OnceLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use busbar_crypto::{self as crypto, Error};
 use zeroize::Zeroize as _;
 
-use crate::host::{CryptoReq, DeploymentId, alg, crypto_status as status, key_form};
+use busbar_ffi::host as ffi_host;
+use busbar_ffi::host::Arena;
+use busbar_ffi::{CryptoReq, CryptoRet, Ctx, DeploymentId, Host, HostFns, RawOut, Str};
+
+use crate::host::{alg, crypto_status as status, key_form};
+use crate::host_side::entry;
 
 /// Round 20: host-side fault counters, `[SELF_TEST, HOST_PANIC, LOG_UNATTRIBUTED]` (indices 0, 1 and, round 24, 2:
 /// a log line the sink got with no slot, §10.7 `set_log_sink`), written only on the failure paths (one Relaxed
@@ -82,84 +90,67 @@ mod injection {
     }
 }
 
-/// Per-thread scratch arena for `random` and `crypto` outputs (r4 H3): append-only for the whole outermost entry.
-/// Its block is allocated once, lazily on the thread's first output, at the full cap (`vec![0; ..]` is
-/// `alloc_zeroed`, so pages never written are never committed) and never grown, so no realloc can free a block
-/// holding an earlier output. `used` is the bytes written since the last reset; the outermost entry guard's exit
-/// zeroes `[0, used)` (W1-H1's guard wiring), and the thread's exit zeroes it before the free (I11).
-struct Arena {
-    buf: Vec<u8>,
-    used: usize,
-}
+/// This thread's crypto arena (r4 H3): busbar-ffi's append-only `Arena`, allocated once at its cap on the thread's
+/// first output (`vec![0; ..]` is `alloc_zeroed`, so pages never written are never committed) and never grown, so
+/// no realloc can free a block holding an earlier output. [`reset_arena`] zeroes what an entry lent, and the
+/// thread's exit zeroes it before the free (I11).
+struct ThreadArena(Arena);
 
-impl Arena {
-    /// `len` fresh bytes after the entry's earlier outputs, or None (LIMIT: written nowhere, earlier outputs
-    /// untouched). `used` advances before the output is written, so a write followed by an error or a caught
-    /// panic leaves nothing past `used` that the reset would miss; a non-OK answer's span stays reserved.
-    fn take(&mut self, len: usize) -> Option<usize> {
-        let end = self.used.checked_add(len).filter(|&end| end <= ARENA_CAP)?;
-        if self.buf.is_empty() {
-            self.buf = vec![0; ARENA_CAP];
-        }
-        let at = self.used;
-        self.used = end;
-        Some(at)
-    }
-}
-
-impl Drop for Arena {
+impl Drop for ThreadArena {
     fn drop(&mut self) {
-        if let Some(written) = self.buf.get_mut(..self.used) {
-            written.zeroize();
-        }
+        self.0.drain().zeroize();
     }
 }
 
 std::thread_local! {
-    static ARENA: RefCell<Arena> = const { RefCell::new(Arena { buf: Vec::new(), used: 0 }) };
+    static ARENA: RefCell<ThreadArena> = RefCell::new(ThreadArena(Arena::new(ARENA_CAP)));
 }
 
-/// A `random`/`crypto` answer: a `crypto_status` and the span of the calling thread's arena that holds the
-/// output (empty on every non-OK status). The raw entry turns it into `CryptoRet`'s `out`; safe code reads it
-/// with [`CryptoOut::read`] on the same thread.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The outermost entry guard's exit: zero everything lent in the entry and start the arena over (I11).
+/// Contract (W1-H1): call it only at the outermost exit of this thread's entries, never while a `Host::scoped`
+/// call is live, since every `RawLent` handed out in the entry ends here.
+pub fn reset_arena() {
+    let _ = ARENA.try_with(|cell| {
+        if let Ok(mut arena) = cell.try_borrow_mut() {
+            arena.0.drain().zeroize();
+        }
+    });
+}
+
+/// A `random`/`crypto` answer before it is lent: a `crypto_status` and the output (empty on every non-OK
+/// status). The output is zeroed when this is dropped, on every path including an unwind (I11); `vt::random`
+/// and `vt::crypto` lend it from the thread's arena and answer `CryptoRet`.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CryptoOut {
     status: u32,
-    at: usize,
-    len: usize,
+    bytes: Vec<u8>,
+}
+
+impl Drop for CryptoOut {
+    fn drop(&mut self) {
+        self.bytes.zeroize();
+    }
 }
 
 impl CryptoOut {
     const fn status(status: u32) -> CryptoOut {
         CryptoOut {
             status,
-            at: 0,
-            len: 0,
+            bytes: Vec::new(),
         }
     }
 
     /// The `crypto_status`.
-    pub fn crypto_status(self) -> u32 {
+    pub fn crypto_status(&self) -> u32 {
         self.status
     }
 
-    pub fn len(self) -> usize {
-        self.len
+    pub fn len(&self) -> usize {
+        self.bytes.len()
     }
 
-    pub fn is_empty(self) -> bool {
-        self.len == 0
-    }
-
-    /// Runs `f` over the output bytes in this thread's arena (empty if this thread holds no such span).
-    pub fn read<R>(self, f: impl FnOnce(&[u8]) -> R) -> R {
-        ARENA.with(|cell| {
-            let arena = cell.borrow();
-            f(arena
-                .buf
-                .get(self.at..self.at + self.len)
-                .unwrap_or_default())
-        })
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
     }
 }
 
@@ -179,22 +170,16 @@ fn status_of(error: Error) -> u32 {
     }
 }
 
-/// One output of `len` bytes, written by `write` straight into fresh arena space.
+/// One output of `len` bytes, written by `write` into a scratch buffer that `CryptoOut`'s drop zeroes.
 fn written(len: usize, write: impl FnOnce(&mut [u8]) -> Result<(), Error>) -> CryptoOut {
-    ARENA.with(|cell| {
-        let mut arena = cell.borrow_mut();
-        let Some(at) = arena.take(len) else {
-            return CryptoOut::status(status::LIMIT);
-        };
-        match write(&mut arena.buf[at..at + len]) {
-            Ok(()) => CryptoOut {
-                status: status::OK,
-                at,
-                len,
-            },
-            Err(error) => CryptoOut::status(status_of(error)),
-        }
-    })
+    let mut out = CryptoOut {
+        status: status::OK,
+        bytes: vec![0; len],
+    };
+    match write(&mut out.bytes) {
+        Ok(()) => out,
+        Err(error) => CryptoOut::status(status_of(error)),
+    }
 }
 
 /// A fixed-size output (digest, MAC, signature).
@@ -517,18 +502,42 @@ pub fn set_log_sink(sink: fn(slot: Option<u32>, level: u32, error: u32, msg: &st
 /// with the slot of the entry running on this thread.
 fn log_body(level: u32, error: u32, msg: &str) {
     if let Some(sink) = SINK.get() {
-        sink(super::entry::owner(), level, error, msg);
+        sink(entry::owner(), level, error, msg);
+    }
+}
+
+/// The most verbose log level enabled (0 = off), answered by `Host::log_level`. The registry raises it with
+/// [`set_log_level`] when it installs the sink; until then the plugins format nothing.
+static LOG_LEVEL: AtomicU32 = AtomicU32::new(0);
+
+/// Sets the level `Host::log_level` answers.
+pub fn set_log_level(level: u32) {
+    LOG_LEVEL.store(level, Relaxed);
+}
+
+/// Lends `out` from this thread's arena as `ctx`'s entry brand. A non-OK answer, and one that does not fit after
+/// the entry's earlier outputs (LIMIT: written nowhere, earlier outputs intact), carry an EMPTY output.
+fn lend<'e>(ctx: Ctx<'e>, out: &CryptoOut) -> CryptoRet<'e> {
+    if out.status != status::OK {
+        return CryptoRet::empty(ctx, out.status);
+    }
+    match ARENA.with_borrow_mut(|arena| arena.0.lend(ctx, &out.bytes)) {
+        Some(lent) => CryptoRet {
+            status: status::OK,
+            _r: 0,
+            out: lent,
+        },
+        None => CryptoRet::empty(ctx, status::LIMIT),
     }
 }
 
 /// The bodies of `Host`'s fields, in safe Rust, each inside `contain` (I10): `crypto` and `random` answer RNG with
 /// an empty output (round 24: the safe layer's `Err(Rng)`, FAILED, never REFUSED), `now`/`mono` 0, `deployment`
-/// all zero, and `log` drops the line. The raw `extern "C"` entries `HOST` points at wrap these one to one; they
-/// and `HOST` wait for UNSAFE-MIN (module doc).
+/// all zero, `grow` false, and `log` drops the line. Outside an entry (no `entry::owner()`) `random` and `crypto`
+/// answer the same empty RNG: there is no outermost exit to reclaim an arena span. The `extern "C"` entries
+/// [`HOST`] points at wrap these one to one.
 pub mod vt {
     use super::*;
-
-    const RNG: CryptoOut = CryptoOut::status(status::RNG);
 
     pub fn now() -> u64 {
         contain(0, now_ns)
@@ -538,21 +547,32 @@ pub mod vt {
         contain(0, mono_ns)
     }
 
-    pub fn random(len: usize) -> CryptoOut {
-        contain(RNG, || random_body(len))
+    pub fn random(ctx: Ctx<'_>, len: usize) -> CryptoRet<'_> {
+        contain(CryptoRet::empty(ctx, status::RNG), || {
+            if entry::owner().is_none() {
+                return CryptoRet::empty(ctx, status::RNG);
+            }
+            lend(ctx, &random_body(len))
+        })
     }
 
-    pub fn crypto(req: &CryptoReq<'_>) -> CryptoOut {
-        contain(RNG, || {
-            crypto_body(&Req {
-                alg: req.alg,
-                key_form: req.key_form,
-                param: req.param,
-                key: req.key.get(),
-                data: req.data.get(),
-                aux: req.aux.get(),
-                aad: req.aad.get(),
-            })
+    pub fn crypto<'e>(ctx: Ctx<'e>, req: &CryptoReq<'_>) -> CryptoRet<'e> {
+        contain(CryptoRet::empty(ctx, status::RNG), || {
+            if entry::owner().is_none() {
+                return CryptoRet::empty(ctx, status::RNG);
+            }
+            lend(
+                ctx,
+                &crypto_body(&Req {
+                    alg: req.alg,
+                    key_form: req.key_form,
+                    param: req.param,
+                    key: req.key.get(),
+                    data: req.data.get(),
+                    aux: req.aux.get(),
+                    aad: req.aad.get(),
+                }),
+            )
         })
     }
 
@@ -561,10 +581,69 @@ pub mod vt {
         contain((), || log_body(level, error, msg));
     }
 
+    pub fn log_level() -> u32 {
+        contain(0, || LOG_LEVEL.load(Relaxed))
+    }
+
+    /// Grows this thread's ACTIVE out buffer by `need` (I10, §10.1); false on any refusal or a caught panic.
+    pub fn grow(raw: &mut RawOut, need: usize) -> bool {
+        contain(false, || ffi_host::grow(raw, need))
+    }
+
     pub fn deployment() -> DeploymentId {
         contain(DeploymentId([0; 16]), deployment_body)
     }
 }
+
+extern "C" fn host_now(_ctx: Ctx<'_>) -> u64 {
+    vt::now()
+}
+
+extern "C" fn host_mono(_ctx: Ctx<'_>) -> u64 {
+    vt::mono()
+}
+
+extern "C" fn host_random(ctx: Ctx<'_>, len: usize) -> CryptoRet<'_> {
+    vt::random(ctx, len)
+}
+
+extern "C" fn host_crypto<'e>(ctx: Ctx<'e>, req: &CryptoReq<'_>) -> CryptoRet<'e> {
+    vt::crypto(ctx, req)
+}
+
+/// The plugin guarantees UTF-8 (IF §2) but core does not take its word: an invalid line is logged lossily.
+extern "C" fn host_log(_ctx: Ctx<'_>, level: u32, error: u32, msg: Str<'_>) {
+    vt::log(level, error, &String::from_utf8_lossy(msg.bytes().get()));
+}
+
+extern "C" fn host_log_level(_ctx: Ctx<'_>) -> u32 {
+    vt::log_level()
+}
+
+extern "C" fn host_grow(_ctx: Ctx<'_>, raw: &mut RawOut, need: usize) -> bool {
+    vt::grow(raw, need)
+}
+
+extern "C" fn host_deployment(_ctx: Ctx<'_>) -> DeploymentId {
+    vt::deployment()
+}
+
+/// The process-wide host table every plugin is handed (IF §5, §10.7). `migrate_admit` stays `None` (the entry's
+/// fallback, REFUSED) until the entry guard, which knows a store's open chain, supplies it.
+pub static HOST: Host = Host::new(
+    0,
+    HostFns {
+        now: Some(host_now),
+        mono: Some(host_mono),
+        random: Some(host_random),
+        crypto: Some(host_crypto),
+        log: Some(host_log),
+        log_level: Some(host_log_level),
+        grow: Some(host_grow),
+        deployment: Some(host_deployment),
+        migrate_admit: None,
+    },
+);
 
 #[cfg(test)]
 mod tests {
@@ -572,6 +651,7 @@ mod tests {
     //! arm (IF §5, §5.2, §10.7, §14), over the bodies `HOST` points at.
 
     use super::*;
+    use busbar_ffi::Bytes;
     use core::cell::Cell;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
@@ -588,10 +668,31 @@ mod tests {
         }
     }
 
-    /// The bytes of an answer, read back from this thread's arena.
+    /// The bytes of an answer.
     fn bytes(out: CryptoOut) -> Vec<u8> {
         assert_eq!(out.status, status::OK, "{out:?}");
-        ARENA.with(|cell| cell.borrow().buf[out.at..out.at + out.len].to_vec())
+        out.bytes.clone()
+    }
+
+    /// A host with no entries: the tests need only its `Ctx` brand.
+    const NO_HOST: Host = Host::new(
+        0,
+        HostFns {
+            now: None,
+            mono: None,
+            random: None,
+            crypto: None,
+            log: None,
+            log_level: None,
+            grow: None,
+            deployment: None,
+            migrate_admit: None,
+        },
+    );
+
+    /// Status and a copy of the lent bytes of one answer.
+    fn seen(ret: CryptoRet<'_>) -> (u32, Vec<u8>) {
+        (ret.status, ret.out.get().to_vec())
     }
 
     fn unhex(text: &str) -> Vec<u8> {
@@ -642,48 +743,66 @@ mod tests {
     #[test]
     fn c_header_arena_outputs_are_append_only_and_intact() {
         fresh(|| {
-            let kat = unhex("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
-            let first = crypto_body(&req(
-                alg::HMAC_SHA256,
-                key_form::RAW,
-                b"Jefe",
-                b"what do ya want for nothing?",
-                b"",
-            ));
-            let second = crypto_body(&req(
-                alg::HMAC_SHA256,
-                key_form::RAW,
-                b"Jefe",
-                b"provided",
-                b"",
-            ));
-            assert!(first.at + first.len <= second.at, "{first:?} {second:?}");
-            assert_eq!(bytes(first), kat);
-            assert_ne!(bytes(second), kat);
-            let random = random_body(64);
-            assert!(second.at + second.len <= random.at);
-            assert_eq!(
-                bytes(first),
-                kat,
-                "the first output is intact after two more"
-            );
+            entry::within(7, || {
+                NO_HOST.scoped(|ctx| {
+                    let kat =
+                        unhex("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
+                    let hmac = |data: &[u8]| {
+                        vt::crypto(
+                            ctx,
+                            &CryptoReq {
+                                alg: alg::HMAC_SHA256,
+                                key_form: key_form::RAW,
+                                param: 0,
+                                key: Bytes::new(b"Jefe"),
+                                data: Bytes::new(data),
+                                aux: Bytes::EMPTY,
+                                aad: Bytes::EMPTY,
+                            },
+                        )
+                    };
+                    let first = hmac(b"what do ya want for nothing?");
+                    let second = hmac(b"provided");
+                    assert_eq!((first.status, second.status), (status::OK, status::OK));
+                    let (f, s) = (first.out.get(), second.out.get());
+                    assert!(f.as_ptr().addr() + f.len() <= s.as_ptr().addr());
+                    assert_eq!(f, kat);
+                    assert_ne!(s, kat);
+                    let random = vt::random(ctx, 64);
+                    assert_eq!(random.status, status::OK);
+                    let r = random.out.get();
+                    assert!(s.as_ptr().addr() + s.len() <= r.as_ptr().addr());
+                    assert_eq!(
+                        first.out.get(),
+                        kat,
+                        "the first output is intact after two more"
+                    );
 
-            // Filling to the cap: the output that does not fit is LIMIT, written nowhere; earlier outputs stay.
-            let mut last = random;
-            while let Some(next) = Some(random_body(RANDOM_MAX)).filter(|o| o.status == status::OK)
-            {
-                last = next;
-            }
-            assert_eq!(random_body(RANDOM_MAX), CryptoOut::status(status::LIMIT));
-            let room = ARENA_CAP - (last.at + last.len);
-            assert_eq!(random_body(room + 1), CryptoOut::status(status::LIMIT));
-            if room > 0 {
-                assert_eq!(random_body(room).status, status::OK);
-            }
-            assert_eq!(random_body(1), CryptoOut::status(status::LIMIT));
-            assert_eq!(bytes(first), kat);
-            let limit = vt::random(1);
-            assert_eq!((limit.crypto_status(), limit.len()), (status::LIMIT, 0));
+                    // Filling to the cap: the output that does not fit is LIMIT, written nowhere, and the
+                    // earlier outputs stay.
+                    let mut used = 32 + 32 + 64;
+                    while used + RANDOM_MAX <= ARENA_CAP {
+                        assert_eq!(vt::random(ctx, RANDOM_MAX).status, status::OK);
+                        used += RANDOM_MAX;
+                    }
+                    let room = ARENA_CAP - used;
+                    assert_eq!(seen(vt::random(ctx, RANDOM_MAX)), (status::LIMIT, vec![]));
+                    assert_eq!(seen(vt::random(ctx, room + 1)), (status::LIMIT, vec![]));
+                    if room > 0 {
+                        assert_eq!(vt::random(ctx, room).status, status::OK);
+                    }
+                    assert_eq!(seen(vt::random(ctx, 1)), (status::LIMIT, vec![]));
+                    assert_eq!(first.out.get(), kat);
+
+                    // The outermost exit zeroes what was lent (I11) and the arena starts over.
+                    reset_arena();
+                    assert!(first.out.get().iter().all(|&b| b == 0));
+                    assert!(r.iter().all(|&b| b == 0));
+                    let again = vt::random(ctx, 64);
+                    assert_eq!(again.status, status::OK);
+                    assert_eq!(again.out.get().as_ptr(), f.as_ptr());
+                });
+            });
         });
     }
 
@@ -696,16 +815,83 @@ mod tests {
                 CryptoOut::status(status::INVALID)
             );
             let (a, b) = (random_body(32), random_body(32));
-            assert_ne!(bytes(a), bytes(b));
+            assert_ne!(bytes(a.clone()), bytes(b));
             assert_ne!(bytes(a), [0; 32]);
-            let raw = vt::random(16);
-            assert_eq!((raw.crypto_status(), raw.len()), (status::OK, 16));
-            assert_eq!(raw.read(<[u8]>::len), 16);
-            let refused = vt::random(0);
-            assert_eq!(
-                (refused.crypto_status(), refused.len()),
-                (status::INVALID, 0)
+            entry::within(1, || {
+                NO_HOST.scoped(|ctx| {
+                    let raw = seen(vt::random(ctx, 16));
+                    assert_eq!((raw.0, raw.1.len()), (status::OK, 16));
+                    assert_eq!(seen(vt::random(ctx, 0)), (status::INVALID, vec![]));
+                });
+            });
+        });
+    }
+
+    #[test]
+    fn random_and_crypto_outside_an_entry_answer_empty_with_a_failure_status() {
+        fresh(|| {
+            NO_HOST.scoped(|ctx| {
+                let (status, bytes) = seen(vt::random(ctx, 16));
+                assert_ne!(status, status::OK);
+                assert!(bytes.is_empty());
+                let req = CryptoReq {
+                    alg: alg::SHA256,
+                    key_form: key_form::RAW,
+                    param: 0,
+                    key: Bytes::EMPTY,
+                    data: Bytes::new(b"abc"),
+                    aux: Bytes::EMPTY,
+                    aad: Bytes::EMPTY,
+                };
+                let (status, bytes) = seen(vt::crypto(ctx, &req));
+                assert_ne!(status, status::OK);
+                assert!(bytes.is_empty());
+            });
+            // Nothing was lent, so the arena is untouched and the next entry starts at its beginning.
+            entry::within(1, || {
+                NO_HOST.scoped(|ctx| assert_eq!(vt::random(ctx, 8).status, status::OK));
+            });
+        });
+    }
+
+    #[test]
+    fn the_host_static_carries_the_safe_trampolines() {
+        fresh(|| {
+            let fns = HOST.fns();
+            assert!(fns.now.is_some() && fns.mono.is_some() && fns.log.is_some());
+            assert!(fns.log_level.is_some() && fns.grow.is_some() && fns.deployment.is_some());
+            assert!(
+                fns.migrate_admit.is_none(),
+                "K9's seam waits for the entry guard"
             );
+            let random = fns.random.expect("random");
+            let crypto = fns.crypto.expect("crypto");
+            let now = fns.now.expect("now");
+            HOST.scoped(|ctx| {
+                assert!(now(ctx) > 1_600_000_000_000_000_000);
+                let outside = random(ctx, 16);
+                assert_ne!(outside.status, status::OK);
+                assert!(outside.out.is_empty());
+                entry::within(3, || {
+                    let ok = random(ctx, 16);
+                    assert_eq!((ok.status, ok.out.get().len()), (status::OK, 16));
+                    let req = CryptoReq {
+                        alg: alg::SHA256,
+                        key_form: key_form::RAW,
+                        param: 0,
+                        key: Bytes::EMPTY,
+                        data: Bytes::new(b"abc"),
+                        aux: Bytes::EMPTY,
+                        aad: Bytes::EMPTY,
+                    };
+                    let sha = crypto(ctx, &req);
+                    assert_eq!(
+                        sha.out.get(),
+                        unhex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+                    );
+                });
+                reset_arena();
+            });
         });
     }
 
@@ -905,17 +1091,31 @@ mod tests {
             injection::arm_panic();
             assert_eq!(vt::mono(), 0);
             injection::arm_panic();
-            let random = vt::random(16);
-            assert_eq!((random.crypto_status(), random.len()), (status::RNG, 0));
+            NO_HOST.scoped(|ctx| {
+                entry::within(2, || {
+                    assert_eq!(seen(vt::random(ctx, 16)), (status::RNG, vec![]));
+                    injection::arm_panic();
+                    let req = CryptoReq {
+                        alg: alg::SHA256,
+                        key_form: key_form::RAW,
+                        param: 0,
+                        key: Bytes::EMPTY,
+                        data: Bytes::new(b"abc"),
+                        aux: Bytes::EMPTY,
+                        aad: Bytes::EMPTY,
+                    };
+                    assert_eq!(seen(vt::crypto(ctx, &req)), (status::RNG, vec![]));
+                });
+            });
             injection::arm_panic();
             assert_eq!(vt::deployment(), DeploymentId([0; 16]));
             injection::arm_panic();
             vt::log(3, 0, "dropped");
-            assert_eq!(faults(HOST_PANIC), before + 5);
+            assert_eq!(faults(HOST_PANIC), before + 6);
             assert!(vt::now() > 1_600_000_000_000_000_000);
             assert_eq!(
                 faults(HOST_PANIC),
-                before + 5,
+                before + 6,
                 "an armed injection fires once"
             );
 
@@ -923,7 +1123,7 @@ mod tests {
             set_log_sink(test_sink);
             SINK_PANICS.with(|p| p.set(true));
             contain((), || log_body(1, 0, "line"));
-            assert_eq!(faults(HOST_PANIC), before + 6);
+            assert_eq!(faults(HOST_PANIC), before + 7);
             SINK_PANICS.with(|p| p.set(false));
         });
     }

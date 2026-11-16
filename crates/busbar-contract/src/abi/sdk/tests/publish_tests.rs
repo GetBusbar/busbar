@@ -15,7 +15,7 @@ fn read(s: AbiStr) -> Vec<u8> {
 
 /// A snapshot built from values the "plugin" owns and drops right after publishing.
 fn publish_then_drop(gens: &Generations<PlaneSnapshot>, generation: u64) -> *const PlaneSnapshot {
-    let mut verb = "POST".to_owned();
+    let mut verb = String::from("POST");
     let mut target = format!("/echo/{generation}");
     let mut openapi = br#"{"paths":{}}"#.to_vec();
     let spec = SnapshotSpec {

@@ -31,7 +31,10 @@
       "crates/busbar-kernel/src/audit/mod.rs": ["ChainedRecord"],
       "crates/busbar-kernel/src/auth/login_limits/mod.rs": ["CredentialDoor"],
       "crates/busbar-kernel/src/auth/self_keys.rs": ["SelfGroupProvisioner", "SelfServeKeys"],
+      "crates/busbar-kernel/src/auth/verdicts.rs": ["VerdictCache"],
       "crates/busbar-kernel/src/config/settings_public.rs": ["PublicSettings"],
+      "crates/busbar-kernel/src/custody/cred.rs": ["CredentialCache"],
+      "crates/busbar-kernel/src/custody/mod.rs": ["SecretCustody"],
       "crates/busbar-kernel/src/door.rs": ["PoolView"],
       "crates/busbar-kernel/src/durable.rs": ["DurableFs"],
       "crates/busbar-kernel/src/governance/mod.rs": ["IntoStoreResult"],
@@ -65,6 +68,7 @@
       "crates/busbar-migrations/src/startup.rs": ["FrozenBindingResolver"],
       "crates/busbar-migrations/src/verification.rs": ["NativeReadback", "TargetRecoveryProbe"],
       "crates/busbar-plugin-abi/src/host.rs": ["HostExt"],
+      "crates/busbar-plugin-abi/src/host_side/needs.rs": ["Needs"],
       "crates/busbar/src/root/serve_neutral.rs": ["Output"],
       "crates/busbar/src/root/startup_upgrade/document_commit.rs": ["Checkpoints"],
       "crates/busbar/src/root/units_admin/mod.rs": ["AuditView"],
@@ -115,6 +119,9 @@
     }
   },
   "admitted": {
+    "crates/busbar-kernel/src/auth/verdicts.rs VerdictCache": "W1-K2: IF 12.28 freezes VerdictCache as the auth chain's seam (K8 drives begin/settle through it); its one impl is core's cache built from VerifyBook. Owner approval is the CODEOWNERS review of this MR",
+    "crates/busbar-kernel/src/custody/cred.rs CredentialCache": "W1-K2: IF 12.2 freezes CredentialCache (not dyn, consumers generic over C: CredentialCache); its one impl is core's CredCache. Owner approval is the CODEOWNERS review of this MR",
+    "crates/busbar-kernel/src/custody/mod.rs SecretCustody": "W1-K2: IF 12.2 freezes SecretCustody (RPITIT, HostNeeds and the connector generic over C: SecretCustody); its one impl is core's Custody. Owner approval is the CODEOWNERS review of this MR",
     "crates/busbar-plugin-abi/src/host.rs HostExt": "W1-A1F, coordinator ruling on W1-U0 (MIN3-RULINGS-COORD 2026-11-15T23:44Z): the IF 5.1 safe host methods are an extension trait over busbar-ffi's Host, which plugin-abi cannot add inherent methods to; owner approval is the CODEOWNERS review of this MR",
     "crates/busbar-ffi/src/shim.rs Call0": "W1-A4 (MIN3-RULINGS-COORD, W1-A4 2026-11-16): kind! writes busbar-ffi's per-slot shim impls for each kind's Shim<T>, because busbar-ffi owns the seven tables (UNSAFE-MIN r3.1) and a slot adapter exists per kind and slot; owner approval is the CODEOWNERS review of this MR",
     "crates/busbar-ffi/src/shim.rs Call1": "W1-A4 (MIN3-RULINGS-COORD, W1-A4 2026-11-16): kind! writes busbar-ffi's per-slot shim impls for each kind's Shim<T>, because busbar-ffi owns the seven tables (UNSAFE-MIN r3.1) and a slot adapter exists per kind and slot; owner approval is the CODEOWNERS review of this MR",

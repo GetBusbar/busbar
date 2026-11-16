@@ -57,3 +57,24 @@ full:
   - production-mix
 stores: [store-memory, store-sqlite, store-postgres, store-valkey, store-mysql]
 planes: [plane-mcp, plane-a2a, plane-streams, plane-decisions]
+# The release PGO/BOLT training mix (release/pgo-workload.args): boot per scenario, the LLM request
+# path (core, bodies, tools, openai passthrough), the MCP / A2A / streams / decisions planes, key auth,
+# hooks, the secrets and metrics/file export paths, the admin API and a production-shaped mix. Only
+# scenarios that need neither docker nor plugin tarballs, so it runs on any release builder.
+pgo:
+  - stub-plugins
+  - llm-openai-openai
+  - llm-core
+  - llm-bodies
+  - llm-tools
+  - plane-mcp
+  - plane-a2a
+  - plane-streams
+  - plane-decisions
+  - auth
+  - hooks
+  - secrets
+  - export-prometheus
+  - export-file
+  - admin-ops
+  - production-mix

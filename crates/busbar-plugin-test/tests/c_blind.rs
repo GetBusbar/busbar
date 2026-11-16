@@ -19,8 +19,28 @@ fn no_stamp_name_reaches_a_deliver_batch_or_render_snapshot() {
     todo!("owner: W1-K8C (C-BLIND)")
 }
 
+/// Round 34: a stamp name appears only inside `plugin_diag` (the code core wrote beside the text); the plugin's
+/// raw text member carries no stamp name, and a plugin that writes a `BUSBAR-...` itself is not rewritten.
 #[test]
-#[ignore = "owner: W1-K8D"]
 fn a_stamp_name_appears_only_inside_plugin_diag() {
-    todo!("owner: W1-K8D (C-BLIND)")
+    use busbar_kernel::plugin_text::PluginText;
+    use busbar_plugin_loader::instance::PluginCode;
+
+    let code = PluginCode {
+        plugin: "acme-auth",
+        number: 42,
+    };
+    let shown = PluginText::new(Some(code), "the directory refused the bind");
+    assert!(!shown.text().contains("acme-auth"));
+    assert_eq!(
+        shown.code.map(|c| c.to_string()).as_deref(),
+        Some("BUSBAR-acme-auth-0042")
+    );
+    assert_eq!(
+        shown.to_string(),
+        "BUSBAR-acme-auth-0042: the directory refused the bind"
+    );
+    let own = PluginText::new(None, "BUSBAR-other-0001 is mine");
+    assert_eq!(own.text(), "BUSBAR-other-0001 is mine");
+    assert_eq!(own.to_string(), own.text());
 }

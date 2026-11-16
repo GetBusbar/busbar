@@ -409,15 +409,15 @@ PRE-GA (the slice in R2.3):
 POST-GA:
 5. BOOT-023 and BOOT-031 (provider `base_url` / `token_url` plaintext text). Planned **unchanged**:
    Q4 keeps these strings byte-identical. A signature is needed only if Q4 cannot.
-6. `store.boot|postgres|private-validate` (`postgres://…@10.255.255.1:5432/busbar`, no sslmode) and
-   `store.boot|valkey|private-validate` (`redis://10.255.255.1:6379/0`). 1.5.5 accepts both under
+6. `store.boot|postgres|private-validate` (`postgres://…@192.0.2.1:5432/busbar`, no sslmode) and
+   `store.boot|valkey|private-validate` (`redis://192.0.2.1:6379/0`). 1.5.5 accepts both under
    `--validate`. Under P-c for carriers (Q4), plaintext intent to a non-loopback host without
    `{host, plaintext: true}` is refused at declaration, so both would exit 1. Either the owner signs
    the refusal, or the cell configs gain the entry (also a signed edit). Recommended: sign the
    refusal, because a 1.5.5 operator with a private plaintext database gets a migration-written
    entry (3414) when the URL is literal, and a coded refusal when it is ref-held.
 7. Behaviour difference with no cell: a private non-loopback `http://` provider (for example vLLM at
-   `http://10.0.0.5:8000`) needs `plaintext: true` in addition to its 2026-10-02 allowlist entry.
+   `http://192.0.2.5:8000`) needs `plaintext: true` in addition to its 2026-10-02 allowlist entry.
 8. `admin.ops__GetHooksNameSchema__ok_hooks-webrequest`: unchanged unless the schema description is
    edited for P-c. The plan keeps it.
 9. No change: `store.boot|postgres|sslmode-disable`, `sslmode-require`, `multi-host`, `key-value`,
@@ -568,7 +568,7 @@ advanced:
   block_private_addresses: true             # unchanged, default true
   allow_destinations:                       # unchanged short form: a host, *.domain, IP or CIDR
     - ollama.internal
-    - 10.20.30.0/24
+    - 192.0.2.0/24
     - host: otel-collector.observability.svc.cluster.local   # object form (new)
       plaintext: true                       # D1 / P-c: this destination may be dialled without TLS
   tls:                                      # new: THE trust store, boot-time

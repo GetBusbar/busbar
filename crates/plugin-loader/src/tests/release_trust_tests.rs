@@ -4,6 +4,7 @@
 use super::*;
 use crate::sign::{parse_release_keys, sha256_hex, FirstPartyKey};
 use busbar_contract::crypto::ecdsa_p256;
+use busbar_contract::json::{self, JsonValueMutTrait};
 
 pub(crate) enum TestSigner {
     P256(ecdsa_p256::KeyPair),
@@ -333,9 +334,9 @@ fn a_forged_retired_root_keyid_is_not_authenticated_as_a_retired_signature() {
     };
     assert!(retired.retired_reason().is_some());
     let (keys, targets) = w.release(&w.kms);
-    let mut envelope: serde_json::Value = serde_json::from_slice(&keys).unwrap();
-    envelope["signatures"][0]["keyid"] = serde_json::json!(wire::key_id(&retired.key));
-    let forged = serde_json::to_vec(&envelope).unwrap();
+    let mut envelope = json::parse_value(&keys).unwrap();
+    envelope["signatures"][0]["keyid"] = json::json!(wire::key_id(&retired.key));
+    let forged = json::to_vec(&envelope).unwrap();
     assert!(matches!(
         verify_release(
             std::slice::from_ref(&retired),
@@ -349,12 +350,12 @@ fn a_forged_retired_root_keyid_is_not_authenticated_as_a_retired_signature() {
         Err(SealRefusal::KeysSignature { .. })
     ));
 
-    let mut valid: serde_json::Value = serde_json::from_slice(&keys).unwrap();
+    let mut valid = json::parse_value(&keys).unwrap();
     valid["signatures"]
         .as_array_mut()
         .unwrap()
         .push(envelope["signatures"][0].clone());
-    let valid = serde_json::to_vec(&valid).unwrap();
+    let valid = json::to_vec(&valid).unwrap();
     let mut roots = w.roots();
     roots.push(retired);
     verify_release(
@@ -375,9 +376,9 @@ fn a_keys_document_altered_after_the_root_signed_it_is_refused() {
     let stranger = TestSigner::p256();
     let honest = seal_keys(&keys_doc(&[&w.signer]), &[&w.kms]);
 
-    let mut env: serde_json::Value = serde_json::from_slice(&honest).unwrap();
+    let mut env = json::parse_value(&honest).unwrap();
     env["signed"] = wire::keys_signed(&keys_doc(&[&stranger]));
-    let forged = serde_json::to_vec(&env).unwrap();
+    let forged = json::to_vec(&env).unwrap();
     let targets = seal_targets(
         &targets_doc(vec![entry(NAME, VERSION, PLUGIN_TARGET, &artefact())]),
         &[&stranger],
@@ -527,26 +528,21 @@ fn the_permanently_retired_public_key_stays_retired_when_delegated() {
         &targets_doc(vec![entry(NAME, VERSION, PLUGIN_TARGET, &artefact())]),
         &[&w.signer],
     );
-    let mut forged: serde_json::Value = serde_json::from_slice(&targets).unwrap();
-    forged["signatures"][0]["keyid"] = serde_json::json!(retired_id);
-    let forged_bytes = serde_json::to_vec(&forged).unwrap();
+    let mut forged = json::parse_value(&targets).unwrap();
+    forged["signatures"][0]["keyid"] = json::json!(retired_id);
+    let forged_bytes = json::to_vec(&forged).unwrap();
     assert!(matches!(
         w.verify(&keys, &forged_bytes, &artefact(), checks()),
         Err(SealRefusal::TargetsSignature { valid: 0, .. })
     ));
 
-    let mut valid: serde_json::Value = serde_json::from_slice(&targets).unwrap();
+    let mut valid = json::parse_value(&targets).unwrap();
     valid["signatures"]
         .as_array_mut()
         .unwrap()
         .push(forged["signatures"][0].clone());
-    w.verify(
-        &keys,
-        &serde_json::to_vec(&valid).unwrap(),
-        &artefact(),
-        checks(),
-    )
-    .expect("a forged retired signer id cannot poison a valid current signer");
+    w.verify(&keys, &json::to_vec(&valid).unwrap(), &artefact(), checks())
+        .expect("a forged retired signer id cannot poison a valid current signer");
 }
 
 #[test]
@@ -693,26 +689,20 @@ fn every_refusal_is_explained_and_coded() {
 
 #[test]
 fn canonical_json_is_sorted_compact_and_matches_python() {
-    let v = serde_json::json!({"b": [1, "x\"y\\z"], "a": {"d": true, "c": null}});
+    let v = json::json!({"b": [1, "x\"y\\z"], "a": {"d": true, "c": null}});
 
     assert_eq!(
         String::from_utf8(wire::canonical(&v).unwrap()).unwrap(),
         r#"{"a":{"c":null,"d":true},"b":[1,"x\"y\\z"]}"#
     );
+    assert!(wire::canonical(&json::json!(1.5)).is_err(), "no floats");
+    assert!(wire::canonical(&json::json!(-1)).is_err(), "no negatives");
     assert!(
-        wire::canonical(&serde_json::json!(1.5)).is_err(),
-        "no floats"
-    );
-    assert!(
-        wire::canonical(&serde_json::json!(-1)).is_err(),
-        "no negatives"
-    );
-    assert!(
-        wire::canonical(&serde_json::json!("caf\u{e9}")).is_err(),
+        wire::canonical(&json::json!("caf\u{e9}")).is_err(),
         "ASCII only"
     );
     assert!(
-        wire::canonical(&serde_json::json!("a\nb")).is_err(),
+        wire::canonical(&json::json!("a\nb")).is_err(),
         "no control characters"
     );
 }
@@ -722,7 +712,7 @@ fn canonical_json_is_sorted_compact_and_matches_python() {
 /// and values. Green on the hand writer; the crate must give the same bytes.
 #[test]
 fn canonical_json_bytes_are_pinned_before_the_crate_swap() {
-    let v = serde_json::json!({
+    let v = json::json!({
         "z": [],
         "_type": "targets",
         "B": {},
@@ -744,15 +734,15 @@ fn canonical_json_bytes_are_pinned_before_the_crate_swap() {
 #[test]
 fn canonical_json_refuses_keys_whose_byte_order_differs_from_python() {
     for key in ["a b", "a!", "a\"", " ", "!"] {
-        let mut map = serde_json::Map::new();
-        map.insert(key.to_owned(), serde_json::json!(1));
-        let err = wire::canonical(&serde_json::Value::Object(map))
+        let mut map = json::Map::new();
+        map.insert(key, json::json!(1));
+        let err = wire::canonical(&json::Value::from(map))
             .expect_err("a key outside the canonical key set is refused");
         assert!(err.contains("key"), "{key:?}: {err}");
     }
     // Values keep the whole printable-ASCII subset.
     assert_eq!(
-        String::from_utf8(wire::canonical(&serde_json::json!({"a": "x y!\""})).unwrap()).unwrap(),
+        String::from_utf8(wire::canonical(&json::json!({"a": "x y!\""})).unwrap()).unwrap(),
         r#"{"a":"x y!\""}"#
     );
 }
@@ -830,13 +820,13 @@ fn a_key_id_is_the_sha256_of_its_canonical_key_object() {
 fn a_document_with_an_unknown_field_or_spec_version_is_refused() {
     let w = World::new();
     let mut signed = wire::keys_signed(&keys_doc(&[&w.signer]));
-    signed["extra"] = serde_json::json!(1);
+    signed["extra"] = json::json!(1);
     let env = wire::write_envelope(&signed, &[]).unwrap();
     assert!(wire::read_keys(&env)
         .unwrap_err()
         .contains("unknown field 'extra'"));
     let mut signed = wire::keys_signed(&keys_doc(&[&w.signer]));
-    signed["spec_version"] = serde_json::json!("9");
+    signed["spec_version"] = json::json!("9");
     let env = wire::write_envelope(&signed, &[]).unwrap();
     assert!(wire::read_keys(&env).unwrap_err().contains("spec_version"));
 }
@@ -847,9 +837,9 @@ fn unknown_fields_in_keys_signatures_and_target_details_are_refused() {
     for nested in [false, true] {
         let mut key = wire::key_object(&signer.key());
         if nested {
-            key["keyval"]["extra"] = serde_json::json!("unsupported");
+            key["keyval"]["extra"] = json::json!("unsupported");
         } else {
-            key["extra"] = serde_json::json!("unsupported");
+            key["extra"] = json::json!("unsupported");
         }
         assert!(wire::read_key_object(&key)
             .unwrap_err()
@@ -857,9 +847,9 @@ fn unknown_fields_in_keys_signatures_and_target_details_are_refused() {
     }
 
     let keys = seal_keys(&keys_doc(&[&signer]), &[&signer]);
-    let mut envelope: serde_json::Value = serde_json::from_slice(&keys).unwrap();
-    envelope["signatures"][0]["extra"] = serde_json::json!("unsupported");
-    assert!(wire::read_keys(&serde_json::to_vec(&envelope).unwrap())
+    let mut envelope = json::parse_value(&keys).unwrap();
+    envelope["signatures"][0]["extra"] = json::json!("unsupported");
+    assert!(wire::read_keys(&json::to_vec(&envelope).unwrap())
         .unwrap_err()
         .contains("unknown field 'extra'"));
 
@@ -871,7 +861,7 @@ fn unknown_fields_in_keys_signatures_and_target_details_are_refused() {
             &artefact(),
         )]));
         let path = format!("{NAME}/{VERSION}/{PLUGIN_TARGET}");
-        signed["targets"][&path][nested]["extra"] = serde_json::json!("unsupported");
+        signed["targets"][&path][nested]["extra"] = json::json!("unsupported");
         let envelope = wire::write_envelope(&signed, &[]).unwrap();
         assert!(wire::read_targets(&envelope)
             .unwrap_err()
@@ -883,10 +873,10 @@ fn unknown_fields_in_keys_signatures_and_target_details_are_refused() {
 fn malformed_revocation_lists_are_refused_instead_of_ignored() {
     let signer = TestSigner::ed25519(8);
     for (field, value) in [
-        ("keyids", serde_json::json!("revoked-key")),
-        ("keyids", serde_json::Value::Null),
-        ("digests", serde_json::json!(["revoked-digest"])),
-        ("digests", serde_json::Value::Null),
+        ("keyids", json::json!("revoked-key")),
+        ("keyids", json::json!(null)),
+        ("digests", json::json!(["revoked-digest"])),
+        ("digests", json::json!(null)),
     ] {
         let mut signed = wire::keys_signed(&keys_doc(&[&signer]));
         signed["revocations"][field] = value;
@@ -1007,4 +997,27 @@ fn a_clock_before_the_epoch_reads_as_the_far_future_so_expiry_fails_closed() {
         clock_secs(std::time::UNIX_EPOCH + std::time::Duration::from_secs(5)),
         5
     );
+}
+
+/// SERDE-JSON-EXIT r2 (DEP-3, ARC-6): release trust reads its documents through
+/// `busbar_contract::json` and writes the canonical form with olpc-cjson's sonic-rs formatter, so
+/// neither file of the module names serde_json. The same bytes stay signed: every canonical-form
+/// and signature test above runs unchanged on the new reader and writer.
+#[test]
+fn release_trust_names_no_serde_json() {
+    for (file, text) in [
+        (
+            "release_trust/mod.rs",
+            include_str!("../release_trust/mod.rs"),
+        ),
+        (
+            "release_trust/wire.rs",
+            include_str!("../release_trust/wire.rs"),
+        ),
+    ] {
+        assert!(
+            !text.contains("serde_json"),
+            "{file} names serde_json; JSON goes through busbar_contract::json (DEP-3)"
+        );
+    }
 }

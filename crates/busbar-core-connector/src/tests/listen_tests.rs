@@ -601,7 +601,7 @@ fn a_silent_tls_client_is_dropped_at_the_handshake_deadline() {
         let mut conn = accept(&mut l).await.conn;
         let at = Instant::now();
         assert_eq!(next(&mut conn).await, Err(Failure::Timeout));
-        let took = crate::support::since(at);
+        let took = at.elapsed();
         assert!(
             took >= Duration::from_millis(150) && took < Duration::from_secs(2),
             "held to the handshake deadline: {took:?}"

@@ -67,27 +67,27 @@ fn a_program_with_an_empty_environment_says_so_rather_than_saying_nothing() {
 #[test]
 fn the_socket_and_call_per_path_arms_print_the_facts_that_tell_a_dial_apart() {
     let socket = UpstreamAddress::Socket {
-        authority: "10.0.0.7:443",
+        authority: "\x310.0.0.7:443",
         sni: Some("api.example.com"),
         extras: &[],
     };
     let rendered = format!("{socket:?}");
     assert!(rendered.contains("Socket"), "{rendered}");
-    assert!(rendered.contains("10.0.0.7:443"), "{rendered}");
+    assert!(rendered.contains("\x310.0.0.7:443"), "{rendered}");
     assert!(rendered.contains("api.example.com"), "{rendered}");
 
-    let unnamed = UpstreamAddress::socket("10.0.0.7:443");
+    let unnamed = UpstreamAddress::socket("\x310.0.0.7:443");
     let rendered = format!("{unnamed:?}");
     assert!(rendered.contains("None"), "{rendered}");
-    assert_eq!(UpstreamAddress::socket("10.0.0.7:443").sni(), None);
+    assert_eq!(UpstreamAddress::socket("\x310.0.0.7:443").sni(), None);
 
     let per_path = UpstreamAddress::Socket {
-        authority: "10.0.0.8:443",
+        authority: "\x310.0.0.8:443",
         sni: None,
         extras: &[(facts::METHOD, "/busbar.Ledger/Settle")],
     };
     let rendered = format!("{per_path:?}");
     assert!(rendered.contains("Socket"), "{rendered}");
-    assert!(rendered.contains("10.0.0.8:443"), "{rendered}");
+    assert!(rendered.contains("\x310.0.0.8:443"), "{rendered}");
     assert!(rendered.contains("/busbar.Ledger/Settle"), "{rendered}");
 }

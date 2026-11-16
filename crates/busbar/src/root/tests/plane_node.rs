@@ -298,7 +298,7 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
             .await
             .expect("mint the expired key");
 
-    let priced_card = [(
+    let priced_card = std::collections::BTreeMap::from([(
         LANE.to_string(),
         busbar_kernel::config::RateEntryCfg {
             input_utok: 1.0,
@@ -307,9 +307,7 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
             cache_write_utok: Some(0.0),
             ..Default::default()
         },
-    )]
-    .into_iter()
-    .collect::<std::collections::BTreeMap<_, _>>();
+    )]);
     let cost = busbar_kernel::cost::CostModel::resolve_parts(
         billed.then_some(&priced_card),
         FEE_CENTS,
@@ -754,15 +752,14 @@ fn history_of(entries: &[(u64, f64)]) -> crate::root::kernel::PinnedHistory {
 fn report_of(output: u64) -> Report {
     Report {
         usage: busbar_contract::billing::ExactUsage {
-            usage_units: [(
+            usage_units: std::collections::BTreeMap::from([(
                 busbar_contract::records::UNIT_OUTPUT.to_string(),
                 output.into(),
-            )]
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>(),
+            )]),
         },
         fee_count: 0,
         lane: "lane".to_string(),
+        attribution: String::new(),
     }
 }
 
@@ -1938,6 +1935,7 @@ fn split_report(input: u64, output: u64, fee_count: u32) -> Report {
         usage: busbar_contract::billing::ExactUsage { usage_units: units },
         fee_count,
         lane: "lane".to_string(),
+        attribution: String::new(),
     }
 }
 
@@ -2149,13 +2147,11 @@ async fn an_unpriced_class_on_a_present_card_keeps_its_counts_row_and_the_read_r
         .collect();
     assert_eq!(
         counts,
-        [
+        std::collections::BTreeMap::from([
             (busbar_contract::records::UNIT_INPUT, 1_000),
             (busbar_contract::records::UNIT_OUTPUT, 250),
             (busbar_contract::records::UNIT_CACHE_READ, 10_000_000)
-        ]
-        .into_iter()
-        .collect::<std::collections::BTreeMap<_, _>>()
+        ])
     );
     assert_eq!(entry.fee_count, busbar_contract::Count::from(1u64));
 
@@ -2672,12 +2668,14 @@ fn rerank_history_on(
 fn rerank_report(units: u64) -> Report {
     Report {
         usage: busbar_contract::billing::ExactUsage {
-            usage_units: [(SEARCH_UNITS.to_string(), units.into())]
-                .into_iter()
-                .collect::<std::collections::BTreeMap<_, _>>(),
+            usage_units: std::collections::BTreeMap::from([(
+                SEARCH_UNITS.to_string(),
+                units.into(),
+            )]),
         },
         fee_count: 1,
         lane: "lane".to_string(),
+        attribution: String::new(),
     }
 }
 
@@ -2698,16 +2696,14 @@ async fn an_unpriced_class_on_a_present_card_leaves_a_durable_counts_row_and_the
     let counts = row.counts.as_ref().expect("the row carries the counts");
     assert_eq!(
         counts.classes,
-        [
+        std::collections::BTreeMap::from([
             (busbar_contract::records::UNIT_INPUT.to_string(), 1_000),
             (busbar_contract::records::UNIT_OUTPUT.to_string(), 250),
             (
                 busbar_contract::records::UNIT_CACHE_READ.to_string(),
                 10_000_000
             ),
-        ]
-        .into_iter()
-        .collect::<std::collections::BTreeMap<_, _>>(),
+        ]),
         "every count, whole — not zeroed, not trimmed to the priced classes"
     );
     assert_eq!((counts.lane.as_str(), counts.fee_count), ("lane", 1));
@@ -3149,17 +3145,13 @@ async fn binding_the_node_keeps_every_confirmed_card_in_the_native_store() {
     use crate::root::kernel::RootHistory;
     use busbar_kernel::config::card::CardFields;
     let card = |input| CardFields {
-        rate_card: Some(
-            [(
-                "gpt".into(),
-                busbar_kernel::config::RateEntryCfg {
-                    input_utok: input,
-                    ..Default::default()
-                },
-            )]
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>(),
-        ),
+        rate_card: Some(std::collections::BTreeMap::from([(
+            "gpt".into(),
+            busbar_kernel::config::RateEntryCfg {
+                input_utok: input,
+                ..Default::default()
+            },
+        )])),
         ..Default::default()
     };
     let core = (crate::root::real_store::core()).await;
@@ -3640,7 +3632,7 @@ async fn the_admission_check_reads_the_arrival_window_and_not_the_clock() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_aliased_lane_prices_at_the_rate_card_under_its_config_name() {
     const WIRE: &str = "m0-on-the-wire";
-    let card = [(
+    let card = std::collections::BTreeMap::from([(
         LANE.to_string(),
         busbar_kernel::config::RateEntryCfg {
             input_utok: 1000.0,
@@ -3649,9 +3641,7 @@ async fn an_aliased_lane_prices_at_the_rate_card_under_its_config_name() {
             cache_write_utok: Some(0.0),
             ..Default::default()
         },
-    )]
-    .into_iter()
-    .collect::<std::collections::BTreeMap<_, _>>();
+    )]);
     let answered = || MockResponse::Ok {
         status: reqwest::StatusCode::OK,
         body: serde_json::json!({
@@ -3834,7 +3824,7 @@ async fn the_tap_reports_the_end_a_status_line_cannot() {
             relayed,
             "{label}: the caller has exactly what was relayed before the end: {text}"
         );
-        let (usage, _fee_count, lane) = reached
+        let (usage, _fee_count, lane, _attribution) = reached
             .reported
             .unwrap_or_else(|| panic!("{label}: the tap reported nothing at all"));
         assert_eq!(

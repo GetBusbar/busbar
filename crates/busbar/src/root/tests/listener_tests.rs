@@ -72,10 +72,6 @@ fn accept_backoff_spins_only_on_per_connection_transients() {
     assert_eq!(b.next_delay(&emfile), Some(super::AcceptBackoff::FIRST));
 }
 
-fn elapsed_since(start: Instant) -> Duration {
-    start.elapsed()
-}
-
 fn test_router() -> Router {
     Router::new().route("/healthz", get(|| async { "ok" }))
 }
@@ -423,7 +419,7 @@ async fn throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch(
 
     let mut buf = [0u8; 256];
     let outcome = tokio::time::timeout(Duration::from_secs(20), rd.read(&mut buf)).await;
-    let elapsed = elapsed_since(start);
+    let elapsed = start.elapsed();
     writer.abort();
 
     match outcome {
@@ -603,7 +599,7 @@ async fn total_deadline_trips_on_a_body_that_stays_above_the_floor_forever() {
 
     let mut buf = [0u8; 256];
     let outcome = tokio::time::timeout(Duration::from_secs(8), rd.read(&mut buf)).await;
-    let elapsed = elapsed_since(start);
+    let elapsed = start.elapsed();
     writer.abort();
 
     match outcome {
@@ -892,7 +888,7 @@ struct TlsBinding {
 
 fn fixture_reference(label: &str) -> busbar_contract::secret_ref::SourceReference {
     busbar_contract::secret_ref::SourceReference {
-        module: "tls-fixture".to_owned(),
+        module: "tls-fixture".into(),
         settings: serde_json::Map::from_iter([("fixture".into(), label.into())]).into(),
     }
 }
@@ -1246,7 +1242,7 @@ async fn a_stalled_tls_handshake_is_dropped_at_the_limit() {
     let at = Instant::now();
     let mut buf = [0_u8; 16];
     let read = tokio::time::timeout(Duration::from_secs(8), stalled.read(&mut buf)).await;
-    let took = elapsed_since(at);
+    let took = at.elapsed();
     match read {
         Ok(Ok(0)) | Ok(Err(_)) => {}
         Ok(Ok(n)) => panic!("{n} bytes answered a client that never spoke"),

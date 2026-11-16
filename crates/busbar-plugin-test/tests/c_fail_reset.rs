@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-H1"]
+#[ignore = "owner: W1-H1 (blocked: an image answering Err(Full) at max_out and the slot state, W1-L2)"]
 fn full_is_one_fail_f_limit_and_the_instance_stays_live() {
     todo!("owner: W1-H1 (C-FAIL-RESET)")
 }

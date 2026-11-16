@@ -109,7 +109,7 @@ fn offenders_in(feature: &str, text: &str, label: &str) -> (Vec<String>, usize) 
             let key = trimmed.split('=').next().unwrap_or_default().trim();
             let value = trimmed.split_once('=').map(|(_, v)| v).unwrap_or_default();
             let names_itself = value
-                .split(|c: char| c == ',' || c == '[' || c == ']')
+                .split([',', '[', ']'])
                 .any(|item| item.trim().trim_matches('"') == key);
             if GUARDED.contains(&key) && !names_itself {
                 continue;
