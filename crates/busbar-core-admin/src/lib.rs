@@ -17,6 +17,8 @@ pub mod idempotency;
 
 mod metrics_text;
 pub mod planeverbs;
+// W2-K8P: the provisioning mount (CA-2) and the guard admin (IF §12.29).
+pub mod provision;
 mod recovery;
 pub mod refusal;
 
