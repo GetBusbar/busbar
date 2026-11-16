@@ -25,6 +25,29 @@ pub(crate) struct ProvisioningAuth {
     pub(crate) facts: ProvisioningFacts,
 }
 
+impl ProvisioningAuth {
+    pub(crate) fn described(
+        name: &str,
+        plugin: &str,
+        id: u64,
+        inbound: bool,
+        facts: u64,
+        methods: u64,
+    ) -> Self {
+        use busbar_plugin_abi::auth::{FB_PROVISION, M_VERIFY, M_VERIFY_IO};
+        Self {
+            name: name.into(),
+            plugin: plugin.into(),
+            id,
+            inbound,
+            facts: ProvisioningFacts {
+                fb_provision: facts & FB_PROVISION != 0,
+                verifies: methods & (M_VERIFY | M_VERIFY_IO) != 0,
+            },
+        }
+    }
+}
+
 /// S7's complete services and dormant work. Only S9 may consume `refresh.start()`.
 pub(crate) struct PreparedProvisioning {
     pub(crate) directory: Arc<KernelDirectory>,

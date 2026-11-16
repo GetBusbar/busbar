@@ -1320,7 +1320,7 @@ async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: Con
             .unwrap_or_else(|error| die(format!("cold record bootstrap refused: {error}")));
     }
 
-    let store_admission = root::min3_boot::finish(
+    let (store_admission, directory_refresh) = root::min3_boot::finish(
         serving_ready,
         process_io.handle(),
         store_admission,
@@ -1478,6 +1478,7 @@ async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: Con
         root::inbound::stage(guests, refusals);
     }
     let _ = root::inbound::publish(&app_handle.load());
+    directory_refresh.start();
     app_handle.on_apply(Box::new({
         let plan = Arc::clone(&listener_plan);
         move |app| {

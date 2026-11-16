@@ -180,19 +180,6 @@ impl DirectoryRefresh {
 }
 
 impl KernelDirectory {
-    /// Binds every instance's scope and, for each with a `link`, loads its HoldSet by a full scan before this
-    /// generation serves, then starts its refresh task (must run inside a tokio runtime). Err = the instance
-    /// whose store could not be read: the generation does not serve.
-    pub async fn build(
-        store: Arc<CoreStore>,
-        events: Arc<dyn DirectoryEvents>,
-        specs: Vec<ProvisioningInstance>,
-    ) -> Result<(Self, Holds), String> {
-        let (directory, holds, refresh) = Self::prepare(store, events, specs).await?;
-        refresh.start();
-        Ok((directory, holds))
-    }
-
     /// Load the candidate's complete hold snapshots without starting background work.
     /// Reserved inbound IDs must be the same IDs consumed when opening the candidate's ports.
     pub async fn prepare(

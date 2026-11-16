@@ -210,6 +210,8 @@ pub(crate) struct Booted {
         Option<OpenedPort>,
     )>,
     pub(crate) instances: std::collections::BTreeMap<String, Namespace>,
+    pub(crate) directory: Arc<KernelDirectory>,
+    pub(crate) holds: Arc<busbar_kernel::directory::Holds>,
     pub(crate) seats: Vec<PortSeat>,
     pub(crate) core: Arc<CoreSecrets>,
     /// The secret kind the boot opened its secret instances into (webhook secrets resolve through it).
@@ -1031,6 +1033,7 @@ pub(crate) struct ServingReady {
     declared: std::collections::BTreeMap<String, busbar_kernel::upstreams::Declared>,
     leases: super::boot::walk::BootstrapLeases<Option<OpenedPort>>,
     reserved: Vec<(u32, PreparedInstance)>,
+    provisioning: Vec<busbar_kernel::directory::ProvisioningInstance>,
     core: Arc<CoreSecrets>,
     public_url: Option<String>,
     prefix: Arc<BootSecrets>,
@@ -1283,6 +1286,31 @@ pub(crate) fn prepare_serving(
         })
         .collect::<Result<Vec<_>, String>>()?;
     drop(specs);
+    let auth = reserved
+        .iter()
+        .filter(|(_, prepared)| prepared.kind() == KindCode::Auth)
+        .map(|(_, prepared)| {
+            let described = registry
+                .described(prepared.identity())
+                .ok_or("reserved auth image has no admitted description")?;
+            let inbound = cfg.auth.as_ref().is_some_and(|auth| {
+                auth.chain
+                    .iter()
+                    .chain(&auth.admin_auth)
+                    .any(|entry| entry.name == prepared.name())
+            });
+            Ok(super::provisioning::ProvisioningAuth::described(
+                prepared.name(),
+                prepared.identity(),
+                prepared.id(),
+                inbound,
+                described.facts,
+                described.methods,
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let provisioning = super::provisioning::specifications(&cfg.min3, &auth)
+        .map_err(|refusals| refusals.join("\n"))?;
     let built = Built {
         registry,
         sugars,
@@ -1296,6 +1324,7 @@ pub(crate) fn prepare_serving(
         declared,
         leases,
         reserved,
+        provisioning,
         core,
         prefix,
         public_url: cfg.public_url.clone(),
@@ -1310,13 +1339,14 @@ pub(crate) async fn finish(
     reactor: tokio::runtime::Handle,
     startup: Startup,
     services: Option<Arc<KernelServices>>,
-) -> Result<Startup, String> {
+) -> Result<(Startup, busbar_kernel::directory::DirectoryRefresh), String> {
     let ServingReady {
         built,
         instances,
         declared,
         leases,
         reserved,
+        provisioning,
         _bootstrap_registry,
         core: core_secrets,
         public_url,
@@ -1329,9 +1359,11 @@ pub(crate) async fn finish(
         .ok_or("S6 did not retain the admitted Store")?;
     let specs = specifications(&instances, public_url.as_deref(), converting);
     let records = Arc::new(StoreRecords::new(Arc::clone(&core)));
-    let (directory, _holds) =
-        KernelDirectory::build(Arc::clone(&core), Arc::new(LogEvents), Vec::new()).await?;
-    let directory = Arc::new(directory);
+    let super::provisioning::PreparedProvisioning {
+        directory,
+        holds,
+        refresh,
+    } = super::provisioning::prepare(Arc::clone(&core), Arc::new(LogEvents), provisioning).await?;
     let push = Arc::new(StorePushQueue::new(
         Arc::clone(&core),
         Arc::new(RetryPolicyImpl::default()),
@@ -1354,7 +1386,7 @@ pub(crate) async fn finish(
         services,
         seats: Mutex::default(),
         shared: Arc::clone(&shared),
-        directory,
+        directory: Arc::clone(&directory),
         core: Arc::clone(&core_secrets),
         secrets: prefix,
         built: &built,
@@ -1530,6 +1562,8 @@ pub(crate) async fn finish(
         _bootstrap_registry,
         _opened: walked.opened,
         instances: serving_instances,
+        directory,
+        holds,
         seats,
         core,
         secrets,
@@ -1551,7 +1585,7 @@ pub(crate) async fn finish(
     if let Some(held) = booted() {
         tracing::info!("{}", held.describe());
     }
-    Ok(startup)
+    Ok((startup, refresh))
 }
 
 #[cfg(test)]
