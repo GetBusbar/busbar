@@ -1,0 +1,576 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! The boot's MIN-3 registry (ROOT-BOOT; ABI-MIN3-INTERFACE §11.2, §12.10 item 4, §13).
+//!
+//! The root builds one `Registry<HostNeeds<..>>` over the process's custody (`BootSecrets`), the guard, the config
+//! binder and the records and directory handles, admits the MIN-3 images the plugins directory holds, installs the
+//! kernel's sides (store seal, auth core, store opener, auth opener) and walks the boot plan (2a, 2b,
+//! `set_deployment`, re-check, 2c) before any listener serves. A plugin image that is not MIN-3 is not admitted
+//! here: the old path still serves it (the WBS's switch-overs, then the W3 deletions).
+//!
+//! Records and directory are built before the store (the store opens through the registry), so the Need handlers
+//! own late handles the walk fills at the deployment point, after the store opened and before the first 2c
+//! instance.
+
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
+
+use busbar_contract::secret_ref::Sugars;
+use busbar_contract::secure::SecureVec;
+use busbar_core_connector::guard::Guard;
+use busbar_core_connector::need::{HostNeeds, NeedLimits};
+use busbar_kernel::appbuild::boot_registry::{boot, install_kernel_sides, KernelAuthCore};
+use busbar_kernel::appbuild::boot_walk::{
+    deployment_bytes, BootSteps, DeploymentRead, RegistryBoot,
+};
+use busbar_kernel::config::{PluginsCfg, RootCfg};
+use busbar_kernel::directory::{KernelDirectory, LateDirectory, LogEvents};
+use busbar_kernel::host_services::KernelServices;
+use busbar_kernel::ingress::replay::StoreReplay;
+use busbar_kernel::issued::IssuedCredentials;
+use busbar_kernel::persistence::boot_identity::BootIdentity;
+use busbar_kernel::persistence::startup::Startup;
+use busbar_kernel::plane_driver::port::{PortDriver, PortSeat};
+use busbar_kernel::plugin_config::{Binder, ConfigBinder};
+use busbar_kernel::plugin_records::{LateRecords, StoreRecords};
+use busbar_plugin_abi::host_side::caller::BoxFut;
+use busbar_plugin_abi::host_side::host_vt::HOST;
+use busbar_plugin_abi::types::KindCode;
+use busbar_plugin_loader::admit::Admitted;
+use busbar_plugin_loader::instance::{
+    Ceilings, InstanceSpec, OpenError, OpenedPort, Registry, StoreSeal,
+};
+use busbar_plugin_loader::ports::store::StoreHandle;
+
+use super::secret_custody::{self, BootCustody, BootRefs};
+
+/// The records every Need handler, the replay guard and the plane driver share: filled once the store is open.
+pub(crate) type Records = LateRecords<Arc<StoreRecords>>;
+/// The directory the DIRECTORY Need reads: filled once the store is open.
+pub(crate) type Directory = LateDirectory<KernelDirectory>;
+/// The Need handlers the registry runs every plugin under.
+pub(crate) type Needs = HostNeeds<BootCustody, Records, Directory>;
+/// The process's MIN-3 registry.
+pub(crate) type MinRegistry = Registry<Needs>;
+
+/// How long a core-internal secret may take to resolve at boot.
+const CORE_SECRET_DEADLINE: Duration = Duration::from_secs(30);
+/// `auth.unknown_key_refresh_s` (IF §12.11): at least 5 s, 30 s by default.
+const UNKNOWN_KEY_REFRESH: Duration = Duration::from_secs(30);
+
+/// The issued credentials core has minted. The admin surface that issues them on this path has not landed, so
+/// every id is unknown: the empty value, through the one code path every unknown id takes (IF §12.8).
+struct Unissued;
+
+impl IssuedCredentials for Unissued {
+    fn lookup<'a>(
+        &'a self,
+        _auth_instance: u64,
+        _kind: &'a str,
+        _id: &'a str,
+    ) -> BoxFut<'a, SecureVec> {
+        Box::pin(core::future::ready(SecureVec::from(&[][..])))
+    }
+}
+
+/// Core's own secrets, resolved at boot through the secret kind into owned values (IF §11.2: the admin token,
+/// the signing key, the at-rest keys). `None` = the config states no such reference.
+#[derive(Default)]
+pub(crate) struct CoreSecrets {
+    pub(crate) operator_token: Option<SecureVec>,
+    pub(crate) signing_key: Option<SecureVec>,
+    pub(crate) at_rest_key: Option<SecureVec>,
+    pub(crate) at_rest_previous: Option<SecureVec>,
+}
+
+/// What a boot through the MIN-3 registry leaves running.
+pub(crate) struct Booted {
+    pub(crate) registry: Arc<MinRegistry>,
+    pub(crate) seats: Vec<PortSeat>,
+    pub(crate) core: CoreSecrets,
+    pub(crate) deployment: [u8; 16],
+    /// The format admission the walk attached the store through.
+    pub(crate) startup: Mutex<Option<Startup>>,
+}
+
+static BOOTED: OnceLock<Booted> = OnceLock::new();
+
+impl Booted {
+    /// The boot's one summary line: what ran, never a value.
+    fn describe(&self) -> String {
+        let held = |secret: &Option<SecureVec>| {
+            if secret.is_some() {
+                "resolved"
+            } else {
+                "not configured"
+            }
+        };
+        let attached = self
+            .startup
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some();
+        format!(
+            "MIN-3 boot: {} planes served through ports, {} shorthands declared, deployment dep_{}, \
+             store attached: {attached}; core secrets: admin token {}, signing key {}, at-rest key {}, \
+             previous at-rest key {}",
+            self.seats.len(),
+            self.registry.sugars().len(),
+            hex::encode(self.deployment),
+            held(&self.core.operator_token),
+            held(&self.core.signing_key),
+            held(&self.core.at_rest_key),
+            held(&self.core.at_rest_previous),
+        )
+    }
+}
+
+/// What the MIN-3 boot left running, once it ran.
+pub(crate) fn booted() -> Option<&'static Booted> {
+    BOOTED.get()
+}
+
+/// The MIN-3 plane instances the boot opened, for `Served.ports`.
+pub(crate) fn seats() -> Vec<PortSeat> {
+    booted().map(|b| b.seats.clone()).unwrap_or_default()
+}
+
+/// The MIN-3 images the plugins directory's scan holds. The scan verified each one; admission re-verifies the
+/// same bytes. An image that is not MIN-3 (a refusal at admit) stays on the old path, which judges it as before.
+#[cfg(target_os = "linux")]
+pub(crate) fn admit_images(plugins: &PluginsCfg) -> Result<Vec<Admitted>, String> {
+    let Some(scanned) = super::boot::dropped_registry() else {
+        return Ok(Vec::new());
+    };
+    let policy = super::boot::trust_policy(plugins, env!("CARGO_PKG_VERSION"))
+        .map_err(|error| format!("plugins.trust is invalid: {error}"))?;
+    let mut admitted = Vec::new();
+    for row in scanned.loadable() {
+        if row.linked() {
+            continue;
+        }
+        match busbar_plugin_loader::admit::admit_bytes(&row.lib_bytes, &row.manifest, &policy) {
+            Ok(image) => admitted.push(image),
+            Err(refusal) => tracing::debug!(
+                plugin = %row.manifest.name,
+                %refusal,
+                "not a MIN-3 image: it stays on the old path"
+            ),
+        }
+    }
+    Ok(admitted)
+}
+
+/// Only Linux loads plugin images.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn admit_images(_plugins: &PluginsCfg) -> Result<Vec<Admitted>, String> {
+    Ok(Vec::new())
+}
+
+/// One configured instance, owned until the plan borrows it.
+struct Configured {
+    kind: KindCode,
+    identity: String,
+    name: String,
+    config: Vec<u8>,
+    limits: busbar_plugin_abi::host_side::caller::InstanceLimits,
+}
+
+/// Every configured instance of a kind the MIN-3 path serves, in config order: the secret instances, then the
+/// store. A later switch-over adds its kind here and nowhere else (the walk is generic).
+fn configured(cfg: &RootCfg) -> Result<Vec<Configured>, String> {
+    use busbar_kernel::appbuild::{instance_limits, STORE_INSTANCE};
+    let seal = busbar_kernel::seal::lend();
+    let mut out = Vec::new();
+    for (name, secret) in &cfg.secrets {
+        let config = secret
+            .settings
+            .encode()
+            .map_err(|error| format!("secrets.{name}: {error}"))?
+            .into_exposed(&seal);
+        out.push(Configured {
+            kind: KindCode::Secret,
+            identity: name.clone(),
+            name: name.clone(),
+            config,
+            limits: instance_limits(cfg, "secrets", name),
+        });
+    }
+    let store = cfg
+        .store
+        .as_ref()
+        .ok_or_else(busbar_kernel::config::store_required)?;
+    let config = store
+        .settings
+        .encode()
+        .map_err(|error| format!("store: {error}"))?
+        .into_exposed(&seal);
+    out.push(Configured {
+        kind: KindCode::Store,
+        identity: store.module.clone(),
+        name: STORE_INSTANCE.to_owned(),
+        config,
+        limits: instance_limits(cfg, STORE_INSTANCE, STORE_INSTANCE),
+    });
+    Ok(out)
+}
+
+/// The shorthands the admitted secret images declare, as the one `Sugars` the binder and the config parser read.
+fn sugars_of(registry: &MinRegistry) -> Result<Sugars, String> {
+    use busbar_contract::abi::mechanism::door::{
+        REWRITE_ALIAS, REWRITE_SUGAR, REWRITE_SUGAR_NAMES, REWRITE_SUGAR_ROLE, REWRITE_SUGAR_SHOWN,
+        SUGAR_ROLE_FILL, SUGAR_ROLE_PATH,
+    };
+    let decls = registry.sugars();
+    let mut owners: Vec<Arc<str>> = Vec::new();
+    for decl in decls {
+        if !owners.iter().any(|owner| **owner == *decl.identity) {
+            owners.push(Arc::clone(&decl.identity));
+        }
+    }
+    let mut sugars = Sugars::default();
+    for owner in owners {
+        let mut rewrites: Vec<(u32, String, String)> = Vec::new();
+        for decl in decls.iter().filter(|decl| *decl.identity == *owner) {
+            let word = decl.word.to_string();
+            if decl.alias {
+                rewrites.push((REWRITE_ALIAS, word.clone(), owner.to_string()));
+            }
+            rewrites.push((REWRITE_SUGAR, word.clone(), decl.key.to_string()));
+            rewrites.push((REWRITE_SUGAR_SHOWN, word.clone(), decl.shown.to_string()));
+            rewrites.push((REWRITE_SUGAR_NAMES, word.clone(), decl.names.to_string()));
+            let role = match decl.role {
+                busbar_plugin_abi::secret::SUGAR_ROLE_FILL => Some(SUGAR_ROLE_FILL),
+                busbar_plugin_abi::secret::SUGAR_ROLE_PATH => Some(SUGAR_ROLE_PATH),
+                _ => None,
+            };
+            if let Some(role) = role {
+                rewrites.push((REWRITE_SUGAR_ROLE, word, role.to_owned()));
+            }
+        }
+        sugars.declare(&owner, &rewrites)?;
+    }
+    Ok(sugars)
+}
+
+/// Each configured secret instance's reference schema (its image's D_REF_SCHEMA), by configured name.
+fn ref_schemas(registry: &MinRegistry, cfg: &RootCfg) -> Vec<(Arc<str>, Box<str>)> {
+    cfg.secrets
+        .keys()
+        .filter_map(|name| {
+            let identity = registry.identity_of(name)?;
+            let described = registry.described(&identity)?;
+            let (_, body) = described
+                .items
+                .iter()
+                .find(|(tag, _)| *tag == busbar_plugin_abi::secret::tag::D_REF_SCHEMA)?;
+            let text = core::str::from_utf8(body).ok()?;
+            Some((Arc::from(name.as_str()), Box::from(text)))
+        })
+        .collect()
+}
+
+/// The registry over the production Need handlers, every image added, the binder told the shorthands and the
+/// schemas, custody attached to the binder and the registry's scrub sets, and the kernel's sides installed.
+/// `store` carries what the deployment step fills.
+struct Built {
+    registry: Arc<MinRegistry>,
+    sugars: Sugars,
+    records: Records,
+    directory: Directory,
+}
+
+fn build(guard: Guard, cfg: &RootCfg, images: Vec<Admitted>) -> Result<Built, String> {
+    let secrets = secret_custody::the();
+    let binder: Arc<dyn ConfigBinder> = Arc::new(Binder::new(Arc::new(BootRefs)));
+    let records = Records::default();
+    let directory = Directory::default();
+    let needs = HostNeeds::production(
+        guard,
+        BootCustody(secrets),
+        records.clone(),
+        directory.clone(),
+        Arc::clone(&binder),
+        NeedLimits::default(),
+    );
+    let mut registry = Registry::new(
+        &HOST,
+        Arc::new(needs),
+        Arc::clone(&binder),
+        Ceilings::DEFAULT,
+    );
+    for image in images {
+        registry
+            .add(image)
+            .map_err(|refusal| format!("plugin image refused: {refusal}"))?;
+    }
+    let sugars = sugars_of(&registry)?;
+    binder.set_sugars(Arc::new(sugars.clone()));
+    binder.set_ref_schemas(ref_schemas(&registry, cfg));
+    let registry = Arc::new(registry);
+    registry.start_watchdog();
+    let weak = Arc::downgrade(&registry);
+    secrets.attach(
+        Arc::clone(&binder),
+        Arc::new(move |slot| weak.upgrade()?.scrub_of(slot)),
+    );
+    let seal: StoreSeal = Box::new(|| Box::new(busbar_kernel::seal::lend()));
+    let auth_core = Arc::new(KernelAuthCore::new(
+        Unissued,
+        StoreReplay::new(records.clone()),
+    ));
+    install_kernel_sides(Arc::clone(&registry), seal, auth_core, UNKNOWN_KEY_REFRESH);
+    Ok(Built {
+        registry,
+        sugars,
+        records,
+        directory,
+    })
+}
+
+/// The walk's steps: the registry's own, except that a secret instance opens through `open_secret_steps` (its
+/// port enters the table the store's SECRET Needs read, at once) and a plane through `PortDriver` (which opens
+/// the instance and keeps its seat).
+struct Steps<'r> {
+    inner: RegistryBoot<'r, Needs>,
+    services: Option<Arc<KernelServices>>,
+    seats: Mutex<Vec<PortSeat>>,
+}
+
+impl Steps<'_> {
+    async fn open_plane(&self, spec: &InstanceSpec<'_>) -> Result<(), OpenError> {
+        let services = self.services.clone().ok_or_else(|| {
+            OpenError::Unknown("the kernel services are not installed: a plane cannot open".into())
+        })?;
+        let seal = busbar_kernel::seal::acquire();
+        let caller = busbar_contract::services::Caller::issue(
+            &seal,
+            Arc::from(spec.name),
+            busbar_contract::abi::mechanism::KindCode::Plane,
+        );
+        let driver = PortDriver::open(self.inner.registry, spec, services, caller).await?;
+        self.seats
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(PortSeat {
+                instance: spec.name.to_owned(),
+                driver: Arc::new(driver),
+                audience: audience_of(spec.config_json),
+            });
+        Ok(())
+    }
+}
+
+/// The `canonical_uri` of a plane's config block: the audience its line session is bound to.
+fn audience_of(config_json: &[u8]) -> Option<String> {
+    serde_json::from_slice::<serde_json::Value>(config_json)
+        .ok()?
+        .get("canonical_uri")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+impl BootSteps for Steps<'_> {
+    /// `None` for a plane: its port lives in its seat.
+    type Opened = Option<OpenedPort>;
+
+    fn open(&self, index: u32) -> BoxFut<'_, Result<Option<OpenedPort>, OpenError>> {
+        let found = usize::try_from(index)
+            .ok()
+            .and_then(|at| self.inner.instances.get(at));
+        let Some((kind, spec)) = found else {
+            return Box::pin(core::future::ready(Err(OpenError::Unknown(format!(
+                "the boot plan names instance {index}, which is not configured"
+            )))));
+        };
+        match kind {
+            KindCode::Secret => Box::pin(async move {
+                secret_custody::open_secret_steps(
+                    self.inner.registry,
+                    &[index],
+                    self.inner.instances,
+                )
+                .await?;
+                secret_custody::the()
+                    .port(spec.name)
+                    .map(|port| Some(OpenedPort::Secret(port)))
+                    .ok_or_else(|| {
+                        OpenError::Unknown(format!(
+                            "secret instance {index} opened but is not in the process table"
+                        ))
+                    })
+            }),
+            KindCode::Plane => Box::pin(async move { self.open_plane(spec).await.map(|()| None) }),
+            _ => {
+                let opened = self.inner.open(index);
+                Box::pin(async move { opened.await.map(Some) })
+            }
+        }
+    }
+
+    fn check(&self, index: u32) -> BoxFut<'_, Result<(), OpenError>> {
+        self.inner.check(index)
+    }
+
+    fn deployment<'a>(
+        &'a self,
+        store: &'a Option<OpenedPort>,
+    ) -> BoxFut<'a, Result<[u8; 16], String>> {
+        match store {
+            Some(port) => self.inner.deployment(port),
+            None => Box::pin(core::future::ready(Err(
+                "the step-2b instance did not open as a store".to_owned(),
+            ))),
+        }
+    }
+}
+
+/// The deployment point (IF §11.2 round 29): the store just opened is attached to the kernel's core store, the
+/// records and directory handles the Need handlers hold are filled from it, and the deployment id is read or kept
+/// through it. The attached format admission is parked in `startup`.
+fn deployment_read(
+    records: Records,
+    directory: Directory,
+    startup: Arc<Mutex<Option<Startup>>>,
+) -> Box<DeploymentRead> {
+    Box::new(
+        move |handle: &StoreHandle| -> BoxFut<'static, Result<[u8; 16], String>> {
+            let backend = handle.backend.clone();
+            let records = records.clone();
+            let directory = directory.clone();
+            let startup = Arc::clone(&startup);
+            Box::pin(async move {
+                let admitted = super::boot::admit_format(backend, true).await?;
+                let core = admitted
+                    .store()
+                    .ok_or_else(|| "the store format admission left no core store".to_owned())?;
+                records.install(Arc::new(StoreRecords::new(Arc::clone(&core))));
+                let (served, _holds) =
+                    KernelDirectory::build(Arc::clone(&core), Arc::new(LogEvents), Vec::new())
+                        .await?;
+                directory.install(served);
+                let kept = BootIdentity::new(core)?.keep_deployment_id().await?;
+                *startup.lock().unwrap_or_else(PoisonError::into_inner) = Some(admitted);
+                deployment_bytes(&kept)
+            })
+        },
+    )
+}
+
+/// Core's own secrets, through the secret kind (§12.2: by reference, an empty call stack, no source named in an
+/// error). A reference naming no open secret instance refuses the boot.
+async fn core_secrets_of(cfg: &RootCfg) -> Result<CoreSecrets, String> {
+    let secrets = secret_custody::the();
+    let deadline = Instant::now() + CORE_SECRET_DEADLINE;
+    let resolve = |what: &'static str, reference: &busbar_contract::secret_ref::SecretRef| {
+        let reference = reference.clone();
+        async move {
+            secrets
+                .resolve_ref(deadline, &reference)
+                .await
+                .map_err(|denied| format!("{what} could not be resolved ({denied:?})"))
+        }
+    };
+    let mut out = CoreSecrets::default();
+    if let Some(auth) = &cfg.auth {
+        if let Some(reference) = auth.operator_token_ref() {
+            out.operator_token = Some(resolve("the admin token", reference).await?);
+        }
+        if let Some(reference) = &auth.signing_key {
+            out.signing_key = Some(resolve("the signing key", reference).await?);
+        }
+    }
+    if let Some(keys) = &cfg.credentials.at_rest {
+        out.at_rest_key = Some(resolve("the at-rest key", &keys.key).await?);
+        if let Some(previous) = &keys.previous {
+            out.at_rest_previous = Some(resolve("the previous at-rest key", previous).await?);
+        }
+    }
+    Ok(out)
+}
+
+/// Boot through the MIN-3 registry, before any listener serves. `Ok(false)`: the configured store is not a MIN-3
+/// image, so the old path boots (nothing here ran past admission). `Ok(true)`: every instance opened in plan
+/// order, core's own secrets are resolved and the process holds the registry ([`registry`], [`seats`]).
+pub(crate) async fn run(
+    cfg: &RootCfg,
+    plugins: &PluginsCfg,
+    guard: Guard,
+    services: Option<Arc<KernelServices>>,
+) -> Result<bool, String> {
+    let images = admit_images(plugins)?;
+    if images.is_empty() {
+        return Ok(false);
+    }
+    let built = build(guard, cfg, images)?;
+    let store_module = cfg
+        .store
+        .as_ref()
+        .map(|store| store.module.as_str())
+        .ok_or_else(busbar_kernel::config::store_required)?;
+    if built.registry.identity_of(store_module).is_none() {
+        return Ok(false);
+    }
+    let instances = configured(cfg)?;
+    let specs: Vec<(KindCode, InstanceSpec<'_>)> = instances
+        .iter()
+        .map(|one| {
+            (
+                one.kind,
+                InstanceSpec {
+                    identity: &one.identity,
+                    name: &one.name,
+                    config_json: &one.config,
+                    limits: one.limits,
+                    public_url: cfg.public_url.as_deref(),
+                    caller_upstreams: &[],
+                },
+            )
+        })
+        .collect();
+    let startup: Arc<Mutex<Option<Startup>>> = Arc::default();
+    let reader = deployment_read(
+        built.records.clone(),
+        built.directory.clone(),
+        Arc::clone(&startup),
+    );
+    let steps = Steps {
+        inner: RegistryBoot {
+            registry: &*built.registry,
+            instances: &specs,
+            deployment: &*reader,
+        },
+        services,
+        seats: Mutex::default(),
+    };
+    let core_modules = busbar_kernel::appbuild::core_secret_modules(cfg);
+    let core_refs: Vec<&str> = core_modules.iter().map(String::as_str).collect();
+    let walked = boot(&*built.registry, &specs, &built.sugars, &core_refs, &steps)
+        .await
+        .map_err(|refused| refused.to_string())?;
+    let core = core_secrets_of(cfg).await?;
+    let seats = steps
+        .seats
+        .into_inner()
+        .unwrap_or_else(PoisonError::into_inner);
+    let installed = BOOTED.set(Booted {
+        registry: built.registry,
+        seats,
+        core,
+        deployment: walked.deployment,
+        startup: Mutex::new(
+            startup
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take(),
+        ),
+    });
+    if installed.is_err() {
+        return Err("the MIN-3 boot ran twice in one process".to_owned());
+    }
+    if let Some(held) = booted() {
+        tracing::info!("{}", held.describe());
+    }
+    Ok(true)
+}
