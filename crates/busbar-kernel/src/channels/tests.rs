@@ -30,7 +30,7 @@ fn a_child_that_exits_at_once_backs_off_then_trips_on_the_fifth_end() {
     let mut r = Respawn::new();
     assert_eq!(r.next(t0), Spawn::Now, "the first attach spawns at once");
     let mut at = t0;
-    for (n, wait) in [100u64, 200, 400, 800].into_iter().enumerate() {
+    for (n, wait) in [100u32, 200, 400, 800].into_iter().enumerate() {
         assert!(!r.ended(at), "end {} does not trip", n + 1);
         assert_eq!(r.next(at), Spawn::After(wait * MS));
         assert_eq!(r.next(at + (wait / 2) * MS), Spawn::After((wait / 2) * MS));
@@ -182,4 +182,75 @@ fn a_signal_fans_out_to_at_most_max_fanout_sessions() {
         reg.signal(2, b"k", None, 0, b"x"),
         busbar_plugin_abi::plane::MAX_FANOUT
     );
+}
+
+mod attachments {
+    use super::super::link::Link;
+    use super::super::{Attachment, ChannelMsg};
+    use crate::plugin_records::RecordsDenied;
+    use tokio::sync::mpsc;
+
+    fn attach(
+        link: &std::sync::Arc<Link>,
+        slot: u64,
+        greet: bool,
+    ) -> (Attachment, mpsc::Sender<ChannelMsg>) {
+        let (tx, rx) = mpsc::channel(4);
+        (
+            Attachment::linked(link.clone(), 1, slot, greet, Box::new([]), rx),
+            tx,
+        )
+    }
+
+    #[tokio::test]
+    async fn send_writes_in_arrival_order_and_recv_yields_then_ends() {
+        let (link, mut queue) = Link::new(false);
+        let (mut a, tx) = attach(&link, 1, true);
+        a.send(b"one", false).await.unwrap();
+        a.send(b"two", true).await.unwrap();
+        assert_eq!(&*queue.recv().await.unwrap(), b"one");
+        assert_eq!(&*queue.recv().await.unwrap(), b"two");
+        tx.send(ChannelMsg::Message(b"in".as_slice().into()))
+            .await
+            .unwrap();
+        assert!(matches!(a.recv().await, Some(ChannelMsg::Message(m)) if &*m == b"in"));
+        drop(tx);
+        assert!(matches!(a.recv().await, Some(ChannelMsg::Ended)));
+    }
+
+    #[tokio::test]
+    async fn serial_asks_wait_their_turn_and_detach_hands_on() {
+        let (link, mut queue) = Link::new(true);
+        let (mut a, _ta) = attach(&link, 1, true);
+        let (mut b, _tb) = attach(&link, 2, false);
+        a.send(b"a", true).await.unwrap();
+        b.send(b"b", true).await.unwrap();
+        b.send(b"reply", false).await.unwrap();
+        assert_eq!(&*queue.recv().await.unwrap(), b"a");
+        assert_eq!(&*queue.recv().await.unwrap(), b"reply");
+        assert!(queue.try_recv().is_err(), "b's ask waits behind a's");
+        drop(a);
+        assert_eq!(&*queue.recv().await.unwrap(), b"b");
+    }
+
+    #[tokio::test]
+    async fn only_the_greeting_session_readies_and_a_dead_writer_is_unavailable() {
+        let (link, queue) = Link::new(false);
+        let (mut g, _tg) = attach(&link, 1, true);
+        let (mut n, _tn) = attach(&link, 2, false);
+        n.ready(b"no");
+        assert!(link.ready_tail().is_none());
+        g.ready(b"yes");
+        assert_eq!(link.ready_tail().as_deref(), Some(b"yes".as_slice()));
+        drop(queue);
+        assert_eq!(g.send(b"x", false).await, Err(RecordsDenied::Unavailable));
+    }
+
+    #[tokio::test]
+    async fn a_detaching_greeter_hands_the_greet_on() {
+        let (link, _queue) = Link::new(false);
+        let (g, _tg) = attach(&link, 1, true);
+        drop(g);
+        link.greet_released().await;
+    }
 }

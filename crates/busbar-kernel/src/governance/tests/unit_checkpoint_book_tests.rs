@@ -432,13 +432,16 @@ async fn book_mutations_keep_derived_indexes_exact() {
     assert_eq!(gov.check_unit_checkpoint_book(), 0);
 
     // The unit index: zero, one and two live entries for a unit.
-    assert!(gov.note_unit_audit(20, 1).is_err(), "no entry for the unit");
+    assert!(
+        gov.note_unit_audit(20, 1, [0; 32]).is_err(),
+        "no entry for the unit"
+    );
     gov.stage_unit_checkpoint(unit(20, 20, &[], &[]));
-    assert_eq!(gov.note_unit_audit(20, 2), Ok(()));
+    assert_eq!(gov.note_unit_audit(20, 2, [0; 32]), Ok(()));
     assert_eq!(gov.unit_checkpoint_audit_seq(&id(20)), Some(2));
     gov.stage_unit_checkpoint(unit(21, 20, &[], &[]));
     assert!(
-        gov.note_unit_audit(20, 3).is_err(),
+        gov.note_unit_audit(20, 3, [0; 32]).is_err(),
         "two live entries: a miss, never a guess"
     );
     assert_eq!(gov.unit_checkpoint_audit_seq(&id(20)), Some(2));
@@ -447,7 +450,7 @@ async fn book_mutations_keep_derived_indexes_exact() {
         Pending::recovered(recovered(30, "group:D@total"), Some(0)),
     );
     assert!(
-        gov.note_unit_audit(30, 4).is_err(),
+        gov.note_unit_audit(30, 4, [0; 32]).is_err(),
         "recovered entries are skipped"
     );
     assert_eq!(gov.unit_audit_misses(), 3);
@@ -598,4 +601,89 @@ async fn the_terminal_mirror_feeds_the_admission_gate() {
         Err(LimitBlocked::Draining)
     ));
     assert_eq!(gov.admissions().live(), 0);
+}
+
+/// SHUTDOWN-HANG 8.13: the removal after settlement takes each entry out of the terminal
+/// mirror, so the mirror equals the book's `ended` entries after removals too.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_terminal_mirror_falls_with_each_removal() {
+    let (gov, sink) = gov(vec![
+        recovered(1, "group:Y@total"),
+        recovered(2, "group:Y@total"),
+    ])
+    .await;
+    assert!(gov.finish_unit_checkpoint(unit(3, 3, &[("group:C@total", 0)], &[])));
+    stage_live(&gov, 4_000, 2);
+    assert_eq!(gov.admissions().terminal(), 3);
+    gov.check_unit_checkpoint_book();
+    sink.stuck.store(false, Ordering::SeqCst);
+    gov.flush_unit_checkpoints().await.ok();
+    gov.check_unit_checkpoint_book();
+    assert!(
+        !gov.unit_checkpoint_pending(&id(1)) && !gov.unit_checkpoint_pending(&id(2)),
+        "the recovered entries settled and were removed"
+    );
+    let ended = gov
+        .unit_checkpoint_states()
+        .iter()
+        .filter(|state| state.ended)
+        .count() as u64;
+    assert_eq!(
+        gov.admissions().terminal(),
+        ended,
+        "the mirror equals the ended entries after removal"
+    );
+    assert!(ended <= 1, "only the finished unit may remain ended");
+}
+
+/// SHUTDOWN-HANG 8.13: `close()` racing 32 threads of real governed admissions: every
+/// admission was either counted before the close or refused with `Draining`, and once closed
+/// the live count never rises again.
+#[tokio::test(flavor = "multi_thread")]
+async fn close_racing_governed_admissions_counts_each_once() {
+    let cost = cost(&["A"]);
+    let a = key("A");
+    for _ in 0..50 {
+        let (gov, _sink) = gov(Vec::new()).await;
+        let barrier = std::sync::Barrier::new(33);
+        let (admitted, live_at_close) = std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..32)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        match gov.try_admit(&cost, &a, "", AT) {
+                            Ok(grant) => Some(grant),
+                            Err(LimitBlocked::Draining) => None,
+                            Err(other) => panic!("only a drain refusal is expected: {other:?}"),
+                        }
+                    })
+                })
+                .collect();
+            barrier.wait();
+            gov.admissions().close();
+            let live_at_close = gov.admissions().live();
+            let grants: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+            (grants, live_at_close)
+        });
+        let counted = admitted.iter().filter(|grant| grant.is_some()).count() as u64;
+        assert_eq!(
+            gov.admissions().live(),
+            counted,
+            "each admission counted once"
+        );
+        assert!(
+            counted <= live_at_close,
+            "no admission is counted after close"
+        );
+        assert!(matches!(
+            gov.try_admit(&cost, &a, "", AT),
+            Err(LimitBlocked::Draining)
+        ));
+        drop(admitted);
+        assert_eq!(
+            gov.admissions().live(),
+            0,
+            "every count falls with its grant"
+        );
+    }
 }

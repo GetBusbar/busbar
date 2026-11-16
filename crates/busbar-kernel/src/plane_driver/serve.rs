@@ -124,6 +124,9 @@ impl RouteIndex {
     }
 }
 
+/// A route found for a request: its table, the route's index in it, and the filled name.
+type Found<'p> = (Arc<ServeTable>, usize, &'p str);
+
 /// The first route of `index` that `path` fills and `method` names, and whether any route of it
 /// filled `path` at all (a wrong verb, then).
 fn resolve<'p>(
@@ -131,7 +134,7 @@ fn resolve<'p>(
     index: &RouteIndex,
     method: &str,
     path: &'p str,
-) -> (Option<(Arc<ServeTable>, usize, &'p str)>, bool) {
+) -> (Option<Found<'p>>, bool) {
     let mut named = false;
     for &(t, i) in index.bucket(path) {
         let table = &snapshot.tables[t];

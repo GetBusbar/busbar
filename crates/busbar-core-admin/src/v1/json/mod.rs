@@ -47,7 +47,6 @@ impl AdminTransport for JsonV1 {
         #[cfg_attr(not(test), allow(clippy::let_and_return))]
         let router = Router::new()
             .route("/info", get(info))
-            .route("/telemetry", get(telemetry::get))
             .route("/operations/{key}", get(generation::get_operation))
             .route("/kinds", get(kinds::list))
             .route("/kinds/{kind}/instances", get(kinds::instances))
@@ -632,10 +631,10 @@ mod generation;
 mod hook_attachments;
 pub(crate) use hook_attachments::attachments_of;
 mod handlers;
+pub(crate) mod metrics;
 #[cfg(feature = "openapi-schema")]
 mod replay_metadata;
 mod settings_edit;
-pub(super) mod telemetry;
 mod whoami;
 pub(crate) use handlers::*;
 pub(crate) use whoami::who_of as whoami_of;
@@ -669,8 +668,10 @@ mod hook_attachment_tests;
 #[cfg(feature = "test-support")]
 pub use handlers::credential_flush_response_for_test;
 
+#[cfg(test)]
 #[path = "tests/admin_grant_tests.rs"]
 mod admin_grant_tests;
+
 #[cfg(test)]
 #[path = "tests/audit_feed_tests.rs"]
 mod audit_feed_tests;

@@ -39,16 +39,6 @@ impl OutboundTlsCfg {
     pub fn is_default(&self) -> bool {
         *self == Self::default()
     }
-
-    /// The exact hosts and IPs an entry admits plaintext to (`plaintext: true`), as written.
-    #[must_use]
-    pub fn plaintext_hosts(&self) -> Vec<String> {
-        self.destinations
-            .iter()
-            .filter(|d| d.plaintext)
-            .map(|d| d.matches.clone())
-            .collect()
-    }
 }
 
 /// `advanced.proxy_resolution`: who resolves a target's name when an outbound proxy
@@ -195,10 +185,6 @@ pub struct TlsDestinationCfg {
     /// The client certificate busbar presents to this destination when it asks for one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_identity: Option<TlsClientIdentityCfg>,
-    /// Always false after parse: `plaintext: true` is refused (transport security is the instance's
-    /// `insecure_transport`). The field stays for the old plaintext rule's callers until W3-D-CONTRACT.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub plaintext: bool,
 }
 
 /// `advanced.tls.destinations[].verify`.
@@ -224,8 +210,9 @@ struct RawTlsDestinationCfg {
     verify: Option<TlsVerify>,
     #[serde(default)]
     client_identity: Option<TlsClientIdentityCfg>,
+    /// Parsed only to refuse `plaintext: true` with the replacement named; never carried into the config.
     #[serde(default, deserialize_with = "plaintext_refused")]
-    plaintext: bool,
+    _plaintext: bool,
 }
 
 impl TryFrom<RawTlsDestinationCfg> for TlsDestinationCfg {
@@ -245,7 +232,6 @@ impl TryFrom<RawTlsDestinationCfg> for TlsDestinationCfg {
             pin_spki_sha256: raw.pin_spki_sha256,
             verify: raw.verify,
             client_identity: raw.client_identity,
-            plaintext: raw.plaintext,
         })
     }
 }

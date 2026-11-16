@@ -55,6 +55,7 @@ async fn an_unverified_load_seals_one_degraded_plugin_trust_record() {
         abi_version: 3,
         trust: Trust::Allowed {
             reason: "plugin manifest is unsigned|x; loaded because allow_unsigned is set".into(),
+            setting: "allow_unsigned",
         },
         ephemeral: false,
         in_process: false,
@@ -66,7 +67,7 @@ async fn an_unverified_load_seals_one_degraded_plugin_trust_record() {
 
     log_scanned_rows(&[row], &[], &[], "/plugins");
 
-    let resource = plugin_refusal_resource("file", "item1-unsigned-probe.tar.gz", "unverified");
+    let resource = plugin_refusal_resource("file", "item1-unsigned-probe.tar.gz", "allow_unsigned");
     crate::audit::auditlog::flush_pending()
         .await
         .expect("native refusal audit confirmed");
@@ -83,6 +84,52 @@ async fn an_unverified_load_seals_one_degraded_plugin_trust_record() {
     );
     assert_eq!(sealed[0].outcome, "degraded");
     assert_eq!(sealed[0].principal, PLUGIN_REFUSAL_PRINCIPAL);
+}
+
+fn allowed_row(file: &str, setting: &'static str) -> Row {
+    Row {
+        file: file.into(),
+        key: file.into(),
+        name: file.into(),
+        alias: file.into(),
+        kind: "store".into(),
+        version: "1.0.0".into(),
+        abi_version: 3,
+        trust: Trust::Allowed {
+            reason: format!("admitted by {setting}"),
+            setting,
+        },
+        ephemeral: false,
+        in_process: false,
+        linked: false,
+        needs_prompt: NeedLevel::No,
+        needs_user: NeedLevel::No,
+        settings_schema: None,
+    }
+}
+
+/// SEC-4 / PRD-5: the audit record of an opt-in admission names WHICH `plugins.trust` setting
+/// admitted the plugin, so an operator reading the chain can tell unsigned from third-party.
+#[tokio::test]
+async fn each_trust_opt_in_seals_a_record_naming_its_own_setting() {
+    ensure_global_audit_stream_registered().await;
+    for (file, setting) in [
+        ("trust-optin-third-party.tar.gz", "allow_third_party"),
+        ("trust-optin-retired-key.tar.gz", "retired_key"),
+    ] {
+        log_scanned_rows(&[allowed_row(file, setting)], &[], &[], "/plugins");
+        crate::audit::auditlog::flush_pending()
+            .await
+            .expect("native refusal audit confirmed");
+        let sealed = AUDIT_LOG.list_filtered(
+            0,
+            usize::MAX,
+            Some(PluginRefusal::Unverified.action()),
+            Some(&plugin_refusal_resource("file", file, setting)),
+        );
+        assert_eq!(sealed.len(), 1, "{setting}: one record: {sealed:?}");
+        assert_eq!(sealed[0].outcome, "degraded");
+    }
 }
 
 #[tokio::test]

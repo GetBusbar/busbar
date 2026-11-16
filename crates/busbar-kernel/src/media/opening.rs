@@ -68,7 +68,7 @@ impl Lines {
                 self.media.len(),
             ));
         }
-        let pairs = self.media.iter().zip(&answered.media).enumerate();
+        let mut pairs = self.media.iter().zip(&answered.media).enumerate();
         if let Some((i, (offered, got))) = pairs.find(|(_, (a, b))| a != b) {
             return Err(line_kinds_differ(i, offered, got));
         }

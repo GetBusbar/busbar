@@ -136,14 +136,13 @@ pub enum KernelVerb {
     GetAuth,
     PostAuthCacheFlush,
     GetInfo,
-    GetTelemetry,
     GetOperationsKey,
+    GetWhoami,
     GetConfigTree,
     GetKinds,
     GetKindInstances,
     GetKindInstance,
     GetKindInstanceView,
-    GetWhoami,
     GetUsage,
     GetOpenapiJson,
 
@@ -291,16 +290,15 @@ pub const TABLE: &[VerbRow] = table! {
     New AmendRateHistory "POST" "/api/v1/admin/ledger/amend-rate-history" "amend_rate_history";
     New RecoveryList "POST" "/api/v1/admin/ledger/recovery/list" "recovery_list";
     New RecoveryResolve "POST" "/api/v1/admin/ledger/recovery/resolve" "recovery_resolve";
-    New GetTelemetry "GET" "/api/v1/admin/telemetry" "get_telemetry";
     New GetOperationsKey "GET" "/api/v1/admin/operations/{key}" "get_operations_key";
+    New GetWhoami "GET" "/api/v1/admin/whoami" "get_whoami";
+    New PutHooksNameAttachmentsTarget "PUT" "/api/v1/admin/hooks/{name}/attachments/{target}" "put_hooks_name_attachments_target";
+    New DeleteHooksNameAttachmentsTarget "DELETE" "/api/v1/admin/hooks/{name}/attachments/{target}" "delete_hooks_name_attachments_target";
     New GetConfigTree "GET" "/api/v1/admin/config/tree" "get_config_tree";
     New GetKinds "GET" "/api/v1/admin/kinds" "get_kinds";
     New GetKindInstances "GET" "/api/v1/admin/kinds/{kind}/instances" "get_kind_instances";
     New GetKindInstance "GET" "/api/v1/admin/kinds/{kind}/instances/{id}" "get_kind_instance";
     New GetKindInstanceView "GET" "/api/v1/admin/kinds/{kind}/instances/{id}/views/{view}" "get_kind_instance_view";
-    New GetWhoami "GET" "/api/v1/admin/whoami" "get_whoami";
-    New PutHooksNameAttachmentsTarget "PUT" "/api/v1/admin/hooks/{name}/attachments/{target}" "put_hooks_name_attachments_target";
-    New DeleteHooksNameAttachmentsTarget "DELETE" "/api/v1/admin/hooks/{name}/attachments/{target}" "delete_hooks_name_attachments_target";
     New GetTrust "GET" "/api/v1/admin/trust" "get_trust";
     New TrustApprove "POST" "/api/v1/admin/trust/approve" "trust_approve";
     New TrustRevoke "POST" "/api/v1/admin/trust/revoke" "trust_revoke";

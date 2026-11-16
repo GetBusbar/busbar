@@ -50,6 +50,9 @@ pub enum Trust {
     Allowed {
         /// The opt-in's reason.
         reason: String,
+        /// The `plugins.trust` setting that admitted it: `allow_unsigned`, `allow_third_party`
+        /// or `retired_key` (a publisher entry naming a retired release key).
+        setting: &'static str,
     },
 }
 

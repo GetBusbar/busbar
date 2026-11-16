@@ -4,14 +4,14 @@
 //! The plugin header, `LinkedPlugin`, `plugin()` and the one exported macro, `export!` (IF §7.1, §7.7;
 //! UNSAFE-MIN §2.2 A1, §4.2).
 //!
-//! `unsafe` here: `Sync for Plugin`, and `export!`'s `#[unsafe(no_mangle)]`, the only `unsafe` token in
+//! `unsafe` here: `export!`'s `#[unsafe(no_mangle)]`, the only `unsafe` token in
 //! any busbar-ffi macro body (E4).
 
 #![allow(unsafe_code)]
 
 use core::ffi::c_void;
 
-use crate::raw::Str;
+use crate::raw::{Shared, Str};
 use crate::shim::{self, Image};
 use crate::vt::{Built, CancelFn, CloseFn, DescribeFn, Kind, OpenFn, ResumeFn};
 
@@ -19,6 +19,16 @@ use crate::vt::{Built, CancelFn, CloseFn, DescribeFn, Kind, OpenFn, ResumeFn};
 pub const STAMP_SIZE: usize = 272;
 /// The byte offset of `Stamp::kind` (IF §7.4), little-endian.
 pub const STAMP_KIND_AT: usize = 24;
+
+/// The five optional entries of a plugin's table, in table order.
+#[cfg(feature = "host")]
+pub(crate) type Entries = (
+    Option<DescribeFn>,
+    Option<OpenFn>,
+    Option<ResumeFn>,
+    Option<CancelFn>,
+    Option<CloseFn>,
+);
 
 mechanism! {
 /// The stamp's bytes (IF §7.4: 272 bytes, align 8); busbar-plugin-abi's `Stamp` is the typed view.
@@ -31,8 +41,8 @@ pub struct StampBytes(pub [u8; 272]);
 /// table to one image type.
 #[repr(C)]
 pub struct Plugin {
-    stamp: *const StampBytes,
-    kind_vt: *const c_void,
+    stamp: Shared<StampBytes>,
+    kind_vt: Shared<c_void>,
     describe: Option<DescribeFn>,
     open: Option<OpenFn>,
     resume: Option<ResumeFn>,
@@ -51,10 +61,9 @@ pub const PLUGIN_STAMP_AT: usize = core::mem::offset_of!(Plugin, stamp);
 /// Byte offset of `Plugin::kind_vt`.
 pub const PLUGIN_KIND_VT_AT: usize = core::mem::offset_of!(Plugin, kind_vt);
 
-// SAFETY: a `Plugin` is immutable after it is built (no interior mutability, no `&mut` API), and its two
-// raw pointers point at immutable statics of the image (`STAMP`, the kind table) that live as long as the
-// image, which is never unloaded once admitted (I13); sharing `&Plugin` across threads only reads them.
-unsafe impl Sync for Plugin {}
+// `Plugin` is `Sync` structurally: its two raw pointers are `Shared`, pointing at immutable statics of the
+// image (`STAMP`, the kind table) that live as long as the image, which is never unloaded once admitted
+// (I13); it has no interior mutability and no `&mut` API.
 
 /// A compiled-in or exported plugin header built by `plugin()`. `Admitted::linked` takes only this, never
 /// a bare `&'static Plugin` (A1).
@@ -95,8 +104,8 @@ pub const fn plugin<M: Image, K: Kind>(
         "the stamp names another kind"
     );
     LinkedPlugin(Plugin {
-        stamp,
-        kind_vt: vt.as_ptr(),
+        stamp: Shared::new(core::ptr::from_ref(stamp)),
+        kind_vt: Shared::new(vt.as_ptr()),
         describe: Some(shim::describe::<M>),
         open: Some(shim::open::<M>),
         resume: Some(shim::resume::<M>),
@@ -110,8 +119,8 @@ impl Plugin {
     /// The first null header entry, named (admit refuses it, step 9).
     pub fn null_field(&self) -> Option<&'static str> {
         [
-            ("stamp", self.stamp.is_null()),
-            ("kind_vt", self.kind_vt.is_null()),
+            ("stamp", self.stamp.get().is_null()),
+            ("kind_vt", self.kind_vt.get().is_null()),
             ("describe", self.describe.is_none()),
             ("open", self.open.is_none()),
             ("resume", self.resume.is_none()),
@@ -123,22 +132,14 @@ impl Plugin {
     }
     #[cfg(feature = "host")]
     pub(crate) fn stamp_ptr(&self) -> *const StampBytes {
-        self.stamp
+        self.stamp.get()
     }
     #[cfg(feature = "host")]
     pub(crate) fn kind_vt_ptr(&self) -> *const c_void {
-        self.kind_vt
+        self.kind_vt.get()
     }
     #[cfg(feature = "host")]
-    pub(crate) fn entries(
-        &self,
-    ) -> (
-        Option<DescribeFn>,
-        Option<OpenFn>,
-        Option<ResumeFn>,
-        Option<CancelFn>,
-        Option<CloseFn>,
-    ) {
+    pub(crate) fn entries(&self) -> Entries {
         (
             self.describe,
             self.open,

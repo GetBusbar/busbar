@@ -371,15 +371,7 @@ fn labels_of(key: &Key) -> Vec<(String, String)> {
 }
 
 struct Series {
-    labels: Vec<(String, String)>,
     samples: Vec<Sample>,
-}
-
-impl Drop for Series {
-    fn drop(&mut self) {
-        use zeroize::Zeroize;
-        self.labels.zeroize();
-    }
 }
 
 /// The families being built: by kind then displayed name, each series by its full raw recorder key.
@@ -393,7 +385,19 @@ impl Drop for SnapshotName {
     }
 }
 
-type Building = BTreeMap<(u8, SnapshotName), BTreeMap<Key, Series>>;
+/// A series' place in its family: labels first, then the raw recorder key. The map keeps this
+/// order as series are inserted, so a scrape never sorts.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct SeriesSlot(Vec<(String, String)>, Key);
+
+impl Drop for SeriesSlot {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.0.zeroize();
+    }
+}
+
+type Building = BTreeMap<(u8, SnapshotName), BTreeMap<SeriesSlot, Series>>;
 
 fn put(out: &mut Building, kind: u8, key: &Key, lines: Vec<(&str, Option<String>, String)>) {
     let name = SnapshotName(key.name().to_owned());
@@ -410,9 +414,8 @@ fn put(out: &mut Building, kind: u8, key: &Key, lines: Vec<(&str, Option<String>
     });
     let series = out.entry((kind, name.clone())).or_default();
     series.insert(
-        key.clone(),
+        SeriesSlot(labels.clone(), key.clone()),
         Series {
-            labels: labels.clone(),
             samples: samples.collect(),
         },
     );
@@ -510,23 +513,16 @@ impl Source {
         // exporter drains concurrently. Rolling-window expiration never affects these totals.
         lock(&self.request_distributions).put(&mut out, self.process_boot_nonce);
         let help = lock(&self.help);
-        let family = |((kind, mut name), series): ((u8, SnapshotName), BTreeMap<Key, Series>)| {
-            let mut series: Vec<_> = series.into_iter().collect();
-
-            series.sort_by(|(a_key, a), (b_key, b)| {
-                a.labels.cmp(&b.labels).then_with(|| a_key.cmp(b_key))
-            });
-            Family {
-                help: help.get(&name.0).cloned(),
-                name: std::mem::take(&mut name.0),
-                unit: None,
-                kind,
-                samples: series
-                    .into_iter()
-                    .flat_map(|(_, mut s)| std::mem::take(&mut s.samples))
-                    .collect(),
-            }
-        };
+        let family =
+            |((kind, mut name), series): ((u8, SnapshotName), BTreeMap<SeriesSlot, Series>)| {
+                Family {
+                    help: help.get(&name.0).cloned(),
+                    name: std::mem::take(&mut name.0),
+                    unit: None,
+                    kind,
+                    samples: series.into_values().flat_map(|s| s.samples).collect(),
+                }
+            };
         out.into_iter().map(family).collect()
     }
 

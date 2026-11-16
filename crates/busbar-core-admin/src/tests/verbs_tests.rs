@@ -875,3 +875,10 @@ fn every_named_surface_is_never_rate_limited_as_a_mutation() {
         }
     }
 }
+
+#[test]
+fn telemetry_path_gone() {
+    assert!(crate::verb::verb_for("GET", "/api/v1/admin/telemetry").is_none());
+    assert!(crate::verb::admin_rows().all(|row| row.path != "/api/v1/admin/telemetry"));
+    assert!(crate::verb::admin_rows().all(|row| row.name != "get_telemetry"));
+}

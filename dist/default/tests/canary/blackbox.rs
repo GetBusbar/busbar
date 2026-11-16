@@ -165,8 +165,6 @@ const ADMIN_VIEWS: &[&str] = &[
 ];
 
 const OTHER_RESPONSES: &[&str] = &[
-    "/api/v1/admin/export/hook/settings",
-    "/api/v1/admin/identity-providers/admin-tokens/settings",
     "/api/v1/admin/trust",
     "/metrics",
     "/healthz",

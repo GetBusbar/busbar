@@ -1,0 +1,5 @@
+# Mirrors the deny.toml advisory exception: RUSTSEC-2024-0436 (`paste`, unmaintained proc-macro, no unsafe,
+# no runtime code) arrives only through tikv-jemalloc-ctl, a test-only dev-dependency (UNSAFE-MIN QJ, r3.1).
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0436"
+reason = "paste: unmaintained, proc-macro only; reached solely via the test-only tikv-jemalloc-ctl dev-dependency (see deny.toml)"

@@ -294,6 +294,7 @@ pub const AUDIT_ACTIONS: &[&str] = &[
     "config.settings",
     "credential.at_rest.open",
     "credential.at_rest.rewrap",
+    "diagnostic.raised",
     "group.create",
     "group.delete",
     "group.patch",
@@ -309,6 +310,8 @@ pub const AUDIT_ACTIONS: &[&str] = &[
     "key.revoke",
     "key.rotate",
     "keyset.rotated",
+    "node.boot",
+    "node.drain",
     "overlay.reset",
     "plugin.health",
     "plugin.install",
@@ -1411,7 +1414,7 @@ pub const ERROR_CODES_WANT: &str = "1..=256 numbers, each 1..=9999, strictly asc
 pub fn record_error_codes_refused(kind: &str, file: &str, library_sha256: &str, have: &str) {
     let diag = crate::diagnostics::PLUGIN_ERROR_CODES_REFUSED.banner();
     tracing::warn!(
-        diag = diag.as_str(),
+        diag = %diag,
         kind,
         file,
         library_sha256,

@@ -37,7 +37,7 @@ mod transfer;
 #[cfg(test)]
 pub(crate) use transfer::Handover;
 mod recovery_hooks;
-pub(crate) use recovery_hooks::Selection;
+pub(crate) use recovery_hooks::{RowChange, Selection};
 pub mod runtime;
 pub use runtime::{BufferBudget, RuntimeError, RuntimeJournal, StagedRun};
 

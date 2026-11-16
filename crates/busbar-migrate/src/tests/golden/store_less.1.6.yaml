@@ -1,0 +1,15 @@
+# busbar 1.5.5, the default install: no store block, so 1.5.5 ran it on its built-in store.
+config_version: 1
+listen: "0.0.0.0:8080"
+admin_listen: 127.0.0.1:8081
+
+models:
+  claude:
+    provider: anthropic # from providers.yaml
+
+pools:
+  fast:
+    members:
+      - model: claude
+store:
+  module: memory

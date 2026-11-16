@@ -23,7 +23,7 @@ Set `advanced.worker_threads` in the migrated config if you meant to pin the wor
 ## Example
 
 ```text
-BUSBAR_WORKER_THREADS=auto busbar --migrate-config old.yaml
+BUSBAR_WORKER_THREADS=auto busbar
 ```
 
 Busbar reports:

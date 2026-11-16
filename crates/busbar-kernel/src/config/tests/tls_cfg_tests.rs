@@ -12,7 +12,6 @@ fn an_omitted_tls_block_is_the_bundled_roots_alone() {
     let a = advanced("rate_sweep_interval: 256\n").expect("parses");
     assert!(a.tls.is_default());
     assert_eq!(a.tls.roots, TlsRoots::Bundled);
-    assert!(a.tls.plaintext_hosts().is_empty());
 }
 
 #[test]
@@ -35,7 +34,6 @@ fn the_whole_grammar_parses_under_advanced_tls() {
     assert!(d.include_roots);
     assert_eq!(d.pin_spki_sha256.len(), 1, "one pin may be written bare");
     assert!(d.client_identity.is_some());
-    assert!(a.tls.plaintext_hosts().is_empty());
 }
 
 #[test]
@@ -104,7 +102,6 @@ fn a_plaintext_destination_entry_is_refused_at_parse() {
     let err = advanced("tls:\n  destinations:\n    - { match: 10.0.0.5, plaintext: true }\n")
         .expect_err("plaintext: true is refused");
     assert!(err.contains("insecure_transport"), "{err}");
-    let kept = advanced("tls:\n  destinations:\n    - { match: 10.0.0.5, plaintext: false }\n")
+    advanced("tls:\n  destinations:\n    - { match: 10.0.0.5, plaintext: false }\n")
         .expect("plaintext: false still parses");
-    assert!(!kept.tls.destinations[0].plaintext);
 }

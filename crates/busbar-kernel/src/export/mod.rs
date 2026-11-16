@@ -5,6 +5,7 @@ pub mod delivery;
 pub mod plugin;
 pub(crate) mod projection;
 pub(crate) mod scrape;
+pub use scrape::{app_families, hook_families, ScrapeRefusal};
 pub mod traces;
 
 use crate::export::projection::{ProjectedRecord, Rendered};
