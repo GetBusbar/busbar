@@ -214,3 +214,44 @@ fn a_provider_1_5_5_admitted_ungoverned_gains_the_ungoverned_binding() {
     assert!(yaml::same_tree(&again, &after));
     assert!(report.is_empty(), "{report:?}");
 }
+
+#[test]
+fn trust_optins_migrate_only_when_intent_is_unambiguous() {
+    for unsigned in [false, true] {
+        for third_party in [false, true] {
+            let source = format!("plugins: {{trust: {{allow_unsigned: {unsigned}, allow_third_party: {third_party}}}}}");
+            let result = passes(&source, &facts());
+            if unsigned != third_party {
+                assert!(result.is_err(), "one opt-in must require an explicit decision");
+            } else {
+                let (after, report) = result.unwrap();
+                let trust = after.at("plugins").at("trust");
+                assert_eq!(trust.at("allow_untrusted").as_bool(), Some(unsigned));
+                assert!(trust.get("allow_unsigned").is_none());
+                assert!(trust.get("allow_third_party").is_none());
+                assert!(report.iter().any(|line| line.contains("allow_untrusted")));
+            }
+        }
+    }
+}
+
+#[test]
+fn ambiguous_trust_and_unscoped_publishers_refuse_without_mutation() {
+    for source in [
+        "plugins: {trust: {allow_unsigned: false, allow_untrusted: false}}",
+        "plugins: {trust: {allow_third_party: true}}",
+        "plugins: {trust: {publishers: [{name: vendor, public_key: deadbeef}]}}",
+    ] {
+        let resolved = value(source);
+        let mut after = resolved.clone();
+        assert!(run(after.as_mapping_mut().unwrap(), &resolved, &facts(), &mut Vec::new()).is_err());
+        assert_eq!(after, resolved, "refusal preserves input: {source}");
+    }
+}
+
+#[test]
+fn explicit_scoped_publisher_policy_needs_no_migration() {
+    let source = "plugins: {trust: {allow_untrusted: false, publishers: [{name: vendor, plugins: [example], keys: [{public_key: deadbeef}]}]}}";
+    let (after, _) = passes(source, &facts()).unwrap();
+    assert_eq!(after, value(source));
+}
