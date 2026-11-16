@@ -1127,7 +1127,7 @@ impl Registry {
     /// with its kind; `deps` = the kernel's existing edges, `appbuild::bootstrap_dependency_names` (appbuild.rs:770),
     /// fed with every SecretRef the binder finds in the store's bag at **any** position (`bind_any` semantics,
     /// because a 1.x bag's older positions are undeclared on an unstamped boot) and in core's own sections that the store
-    /// boot needs (admin token, signing key, at-rest keys), each resolved to a configured secret instance through
+    /// boot needs (admin token, signing key), each resolved to a configured secret instance through
     /// `Sugars`. 2a = those secret instances, then transitively the secret instances their own bags reference
     /// (depth ≤ 4; a cycle refuses CONFIG naming the instance indices), dependencies first; 2b = the store;
     /// 2c = every remaining instance kind by kind (secret, auth, hook, export, plane, transport), config order

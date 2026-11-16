@@ -10,7 +10,7 @@ use crate::diagnostics::{
     PLUGINS_FETCH_RELOAD_MISS, PROVIDER_API_KEY_UNRESOLVABLE, STATEFUL_PLANE_EPHEMERAL_STORE,
     STORE_SECRET_REF_UNRESOLVED,
 };
-use crate::preflight::{build_secret_resolver, resolve_at_rest_keys, resolve_signing_key};
+use crate::preflight::{build_secret_resolver, resolve_signing_key};
 use crate::router::project_auth_scope_caps;
 use crate::state::App;
 use crate::store::{HealthState, LaneData};
@@ -835,15 +835,15 @@ async fn rewrap_at_rest(gs: &governance::GovState) {
             crate::diagnostics::CREDENTIAL_AT_REST_REWRAP_PENDING,
             resealed = pass.resealed,
             pending = pass.pending,
-            "{} recoverable credential(s) are still sealed under credentials.at_rest.previous (or \
-             stored in the clear): another node holds their re-wrap, or the store keeps no claims. \
-             They still authenticate; keep credentials.at_rest.previous configured until a boot \
+            "{} recoverable credential(s) are still stored in the clear (written by 1.5.5): \
+             another node holds their re-wrap, or the store keeps no claims. \
+             They still authenticate; a later boot \
              or reload re-seals them all",
             pass.pending
         ),
         Ok(pass) if pass.resealed > 0 => tracing::info!(
             resealed = pass.resealed,
-            "recoverable credentials re-sealed under credentials.at_rest.key"
+            "recoverable credentials re-sealed under the key derived from auth.signing_key"
         ),
         Ok(_) => {}
         Err(e) => diag_warn!(
@@ -1115,12 +1115,11 @@ async fn bootstrap_store_inputs(
     )?;
 
     let signer = resolve_signing_key(cfg.auth.as_ref(), &resolver)?;
-    let at_rest = resolve_at_rest_keys(&cfg.credentials, &resolver);
-    publish_bootstrap_at_rest(at_rest.as_ref().map(Option::is_some).map_err(Clone::clone));
-    publish_records_keys(RecordsKeys {
-        at_rest: at_rest?,
-        signer,
-    });
+    let at_rest = signer
+        .as_ref()
+        .map(|s| crate::governance::at_rest::AtRestKeys::from_signing_secret(&s.secret_bytes()));
+    publish_bootstrap_at_rest(Ok(at_rest.is_some()));
+    publish_records_keys(RecordsKeys { at_rest, signer });
     Ok((registry, resolver))
 }
 
@@ -1147,24 +1146,7 @@ fn publish_records_keys(keys: RecordsKeys) {
 ///
 /// # Errors
 /// A key that is not 32 bytes (raw or hex).
-pub fn records_keys_from(
-    at_rest_key: Option<&[u8]>,
-    at_rest_previous: Option<&[u8]>,
-    signing_key: Option<&[u8]>,
-) -> Result<RecordsKeys, String> {
-    let at_rest = match at_rest_key {
-        None => None,
-        Some(key) => {
-            let key = crate::governance::at_rest::parse_key("credentials.at_rest.key", key)?;
-            let previous = at_rest_previous
-                .map(|p| crate::governance::at_rest::parse_key("credentials.at_rest.previous", p))
-                .transpose()?;
-            Some(crate::governance::at_rest::AtRestKeys::new(
-                &key,
-                previous.as_deref(),
-            ))
-        }
-    };
+pub fn records_keys_from(signing_key: Option<&[u8]>) -> Result<RecordsKeys, String> {
     let signer = signing_key
         .map(|bytes| {
             crate::preflight::parse_signing_secret(bytes).map(|secret| {
@@ -1175,6 +1157,9 @@ pub fn records_keys_from(
             })
         })
         .transpose()?;
+    let at_rest = signer
+        .as_ref()
+        .map(|s| crate::governance::at_rest::AtRestKeys::from_signing_secret(&s.secret_bytes()));
     Ok(RecordsKeys { at_rest, signer })
 }
 
@@ -1300,7 +1285,7 @@ pub fn bootstrap_dependency_names(
 }
 
 /// The `module` each of core's own secret references names (IF §11.2 `boot_plan`: the admin token, the signing
-/// key, the at-rest keys), in that order, each once. This is what `Registry::boot_plan_with_core` is fed so the
+/// key), in that order, each once. This is what `Registry::boot_plan_with_core` is fed so the
 /// secret instances core itself resolves from open in 2a, before the store.
 pub fn core_secret_modules(cfg: &config::RootCfg) -> Vec<String> {
     let mut modules: Vec<String> = Vec::new();
@@ -1317,12 +1302,6 @@ pub fn core_secret_modules(cfg: &config::RootCfg) -> Vec<String> {
         }
         if let Some(reference) = &auth.signing_key {
             add(reference);
-        }
-    }
-    if let Some(keys) = &cfg.credentials.at_rest {
-        add(&keys.key);
-        if let Some(previous) = &keys.previous {
-            add(previous);
         }
     }
     modules
@@ -1439,27 +1418,16 @@ async fn open_config_store(
 /// The store's configured instance name: its config section key.
 pub const STORE_INSTANCE: &str = "store";
 
-/// The `<section>.<name>.limits` and `.insecure_transport` the operator stated for an instance (IF §12.22,
-/// TRANSPORT-SECURITY-POLICY §4), as the registry takes them: every number 0 (the kind's default) when no `limits`
-/// is stated, `accept` empty (verified TLS only) when no `insecure_transport` is.
+/// The limits of an instance as the registry takes them: every number 0 (the kind's default; there is no `limits`
+/// key, and the plugin's settled LIMITS answer is applied in memory at its open), `accept` from the instance's
+/// `insecure_transport` (TRANSPORT-SECURITY-POLICY §4), empty (verified TLS only) when none is stated.
 pub fn instance_limits(
     cfg: &config::RootCfg,
     section: &str,
     name: &str,
 ) -> busbar_plugin_abi::host_side::caller::InstanceLimits {
     let key: (Box<str>, Box<str>) = (Box::from(section), Box::from(name));
-    let mut limits = cfg
-        .min3
-        .limits
-        .get(&key)
-        .map_or_else(Default::default, |limits| {
-            busbar_plugin_abi::host_side::caller::InstanceLimits {
-                timeout_ms: limits.timeout_ms,
-                connect_timeout_ms: limits.connect_timeout_ms,
-                max_inflight: limits.max_inflight,
-                ..Default::default()
-            }
-        });
+    let mut limits = busbar_plugin_abi::host_side::caller::InstanceLimits::default();
     // TRANSPORT-SECURITY-POLICY §4: the instance's `insecure_transport`, absent = verified TLS only.
     if let Some(accepted) = cfg.min3.insecure_transport.get(&key) {
         limits.accept = accepted.accept;
@@ -1831,10 +1799,7 @@ async fn build_app_native(
         cfg.per_request_fee,
         &cfg.groups,
     );
-    let cost = Arc::new(
-        cost.with_plane_fees(&cfg.plane_fees)
-            .with_measurement_rates(&cfg.plugin_rate_cards),
-    );
+    let cost = Arc::new(cost.with_plane_fees(&cfg.plane_fees));
 
     let (mut lanes, mut units) = (Vec::new(), Vec::new());
     for (lane, e) in cfg.rate_card.iter().flatten() {
@@ -1843,10 +1808,6 @@ async fn build_app_native(
             units.push((lane.clone(), class.clone(), rate.nanos_per_unit()));
         }
     }
-    units.extend(
-        crate::cost::measurement_rate_cells(&cfg.plugin_rate_cards)
-            .map(|(cell, rate)| (cell.lane, cell.class, rate)),
-    );
     let resolved_rates = config::card::CardRates {
         lanes,
         units,
@@ -2121,20 +2082,14 @@ async fn build_app_native(
                 Some(_) => Some(resolve_signing_key(auth, &secret_resolver)?),
                 None => None,
             };
-
-            let at_rest = match cfg.credentials.at_rest {
-                Some(_) => resolve_at_rest_keys(&cfg.credentials, &secret_resolver)?,
-                None => None,
-            };
-            if signer.is_some() || at_rest.is_some() {
+            if signer.is_some() {
                 rotate_gov_credentials = Some(Box::pin(async move {
                     if let Some(signer) = signer {
+                        let sealed = signer.is_some();
                         gs.set_signing_key(signer);
-                    }
-                    if let Some(keys) = at_rest {
-                        gs.set_at_rest_keys(Some(keys));
-
-                        rewrap_at_rest(&gs).await;
+                        if sealed {
+                            rewrap_at_rest(&gs).await;
+                        }
                     }
                 }));
             }
@@ -2176,8 +2131,8 @@ async fn build_app_native(
         .await?;
 
         let signer = resolve_signing_key(cfg.auth.as_ref(), &secret_resolver)?;
+        let sealed = signer.is_some();
 
-        let at_rest = resolve_at_rest_keys(&cfg.credentials, &secret_resolver)?;
         // The operator credential is the operator row's own instance (OPERATOR-FROM-ADMITTED-AUTH
         // §3.8): core holds no operator token digest.
         match governance::GovState::new_with_core(core, None, signer).await {
@@ -2185,7 +2140,7 @@ async fn build_app_native(
                 gs.install_transition_self_holds(transition_holds);
                 let gs = Arc::new(gs);
 
-                if gs.set_at_rest_keys(at_rest) {
+                if sealed {
                     rewrap_at_rest(&gs).await;
                 }
 

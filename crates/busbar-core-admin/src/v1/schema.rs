@@ -327,11 +327,6 @@ pub struct SigningKeyRotateView {
 /// reused `UpstreamClients` only reads once at boot, and `max_inbound_concurrent`, which is baked
 /// once into the data router's `GlobalConcurrencyLimitLayer` at process start (a config apply swaps
 /// only `Arc<App>`, never the router): two independent freezing mechanisms.
-/// The optional `limits.datagram_line_memory_bytes` setting is off by default. Setting it to
-/// a positive integer enables a retained-capacity limit for new datagram LINE pairings; null
-/// disables it. Existing connections retain their chosen limit. Exhaustion closes the affected
-/// connection. The limit counts retained requested capacity across both directions, queued output
-/// ownership and metadata, not process RSS or allocator overhead.
 /// There is NO
 /// `observability` section here, and no `metrics` one either: 1.5.3 DELETED both from the config
 /// grammar, and `RootSettings` (what this endpoint projects) carries neither field: a PUT naming

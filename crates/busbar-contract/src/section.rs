@@ -133,7 +133,7 @@ pub const RESERVED_MODELS_KEY: &str = "models";
 /// THE PROVIDER an entry of a [`RESERVED_MODELS_KEY`] map names (#49's uniform schema
 pub const MODEL_PROVIDER_KEY: &str = "provider";
 
-/// THE WIRE-PROTOCOL OVERRIDE of a [`RESERVED_MODELS_KEY`] entry, in the order read (#51: the
+/// THE `protocol` KEY of a provider table, in the order read (#51: the
 pub const MODEL_PROTOCOL_KEYS: &[&str] = &["protocol", "dialect"];
 
 /// A pool's member list, inside its [`RESERVED_POOLS_KEY`] entry.

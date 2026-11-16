@@ -107,8 +107,6 @@ pub struct MemberView<'a> {
     /// The identity of `v`'s image (selects its D_DIALECT_AUTH rows).
     pub image: &'a str,
     pub provider: &'a str,
-    /// `models.<m>.protocol` (or `dialect`), the model's dialect override.
-    pub model_protocol: Option<&'a str>,
 }
 
 /// Everything one load's provider bindings read.
@@ -136,11 +134,6 @@ pub struct ProviderBindings {
     pub by_attempt: BTreeMap<AttemptKey, Box<str>>,
     /// Explicit bindings' core-vocabulary keys their `settings` lacked, to add in memory before bind.
     pub fills: BTreeMap<Box<str>, Fills>,
-}
-
-/// The dialect of a member: the model's override first, else the provider's protocol (round 15).
-pub(crate) fn member_dialect<'a>(member: &MemberView<'a>, provider: &ProviderView<'a>) -> &'a str {
-    member.model_protocol.unwrap_or(provider.protocol)
 }
 
 fn row_of<'r>(
@@ -228,7 +221,7 @@ pub fn bind_providers(plan: &ProviderPlan<'_>) -> Result<ProviderBindings, Vec<S
         let Some(p) = plan.providers.iter().find(|p| p.name == m.provider) else {
             continue;
         };
-        let d = member_dialect(m, p);
+        let d = p.protocol;
         let attempt = (Box::from(m.plane), Box::from(p.name), Box::from(d));
         match p.auth {
             ProviderAuth::None => {

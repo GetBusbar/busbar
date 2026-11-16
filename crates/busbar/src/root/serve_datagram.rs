@@ -1006,10 +1006,7 @@ impl Opened {
         let from = Messages::new(CALLER_QUEUE);
         let to_session = Arc::clone(&from);
         let leg = CallerLeg::new(door, to_session);
-        let limit = busbar_kernel::config::limits::installed()
-            .and_then(|limits| limits.datagram_line_memory_bytes);
-        let pairing =
-            Pairing::with_memory_limit(Arc::clone(&leg) as Arc<dyn LegSink>, door.local(), limit);
+        let pairing = Pairing::new(Arc::clone(&leg) as Arc<dyn LegSink>, door.local());
         let pairing = OpeningPairing {
             pairing,
             admitted: false,

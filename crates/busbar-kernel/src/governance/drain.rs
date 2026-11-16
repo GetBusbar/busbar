@@ -14,12 +14,14 @@ use tokio::time::Instant;
 
 use super::{GovState, LimitBlocked};
 
-/// `advanced.shutdown.drain_timeout`'s default: the drain budget decision 174 set.
-pub const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(20);
+/// The shutdown drain budget, from the first shutdown signal to exit: the 20 s decision 174 set.
+/// Fixed; there is no config key for it.
+pub const DRAIN_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// `advanced.governance.max_pending_checkpoints`'s default: 1,000 finished units per second of
-/// drain budget (20,000 at 20 s), sized from the networked store's settlement target.
-pub const DEFAULT_MAX_PENDING_CHECKPOINTS: u64 = 1_000 * DEFAULT_DRAIN_TIMEOUT.as_secs();
+/// The terminal-backlog cap of governed admission: 1,000 finished units per second of drain budget
+/// (20,000 at 20 s), sized from the networked store's settlement target. Fixed; there is no config
+/// key for it.
+pub const MAX_PENDING_CHECKPOINTS: u64 = 1_000 * DRAIN_TIMEOUT.as_secs();
 
 /// The phase limits of one armed drain. Every bounded shutdown wait names one explicitly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -191,7 +193,7 @@ impl AdmissionGate {
         Self {
             word: AtomicU64::new(0),
             terminal,
-            cap: AtomicU64::new(DEFAULT_MAX_PENDING_CHECKPOINTS),
+            cap: AtomicU64::new(MAX_PENDING_CHECKPOINTS),
             full: AtomicBool::new(false),
         }
     }
@@ -284,7 +286,8 @@ impl AdmissionGate {
         self.cap.load(Ordering::Relaxed)
     }
 
-    /// Applied at boot and on config apply; at least 1.
+    /// Test seam: production keeps [`MAX_PENDING_CHECKPOINTS`]. At least 1.
+    #[cfg(test)]
     pub fn set_cap(&self, cap: u64) {
         self.cap.store(cap.max(1), Ordering::Relaxed);
     }

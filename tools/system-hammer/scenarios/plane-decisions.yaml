@@ -26,8 +26,8 @@ config: |
     m-openai: { provider: openai }
   decisions:
     models:
-      d-jev: { provider: dec-jev, upstream_model: systemone, protocol: jev }
-      d-nano: { provider: dec-nano, upstream_model: evaluator, protocol: nanojev }
+      d-jev: { provider: dec-jev, upstream_model: systemone }
+      d-nano: { provider: dec-nano, upstream_model: evaluator }
 providers: |
   openai: { protocol: openai, base_url: "{MOCK}" }
   dec-jev: { protocol: jev, base_url: "{MOCK}" }

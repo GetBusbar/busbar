@@ -2380,9 +2380,6 @@ async fn only_the_host_line_carrier_adds_a_session_after_external_fields_are_fil
     kernel.close_carrier_session(session.get());
 }
 
-#[path = "serve_hook_child.rs"]
-mod hook_child_tests;
-
 #[path = "serve_ticket_custody.rs"]
 mod ticket_custody_tests;
 

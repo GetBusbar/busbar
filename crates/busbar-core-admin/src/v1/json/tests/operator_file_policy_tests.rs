@@ -397,14 +397,3 @@ async fn r23e_a_patch_on_the_trust_policy_is_refused() {
     )
     .await;
 }
-
-#[test]
-fn r23f_a_patch_on_plugin_logs_is_accepted() {
-    bind_operator();
-    let (patch, loaded) = compose("r23f", json!({"set": {"/plugins/logs/level": "debug"}}));
-    assert!(
-        super::config_document::document_patch_rejection(&patch, None).is_none()
-            && super::config_document::document_patch_rejection(&patch, Some(&loaded)).is_none(),
-        "R23f: plugins.logs has no admission effect"
-    );
-}
