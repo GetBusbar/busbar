@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use super::boot::registry::boot;
+use super::boot::restricted::{BootstrapDirectory, BootstrapRecords};
 use super::boot::walk::{deployment_bytes, BootSteps, DeploymentRead, RegistryBoot};
 use busbar_contract::secret_ref::{SecretRef, Sugars};
 use busbar_contract::secure::SecureVec;
@@ -66,6 +67,7 @@ pub(crate) type Records = LateRecords<Arc<StoreRecords>>;
 pub(crate) type Directory = LateDirectory<KernelDirectory>;
 /// The Need handlers the registry runs every plugin under.
 pub(crate) type Needs = HostNeeds<BootCustody, Records, Directory>;
+type BootstrapNeeds = HostNeeds<BootCustody, BootstrapRecords, BootstrapDirectory>;
 /// The process's MIN-3 registry.
 pub(crate) type MinRegistry = Registry;
 
@@ -630,6 +632,17 @@ struct Built {
 }
 
 impl Built {
+    fn bootstrap_needs_for(&self, prefix: Arc<BootSecrets>) -> Arc<BootstrapNeeds> {
+        Arc::new(HostNeeds::production(
+            self.guard.clone(),
+            BootCustody(prefix),
+            BootstrapRecords,
+            BootstrapDirectory,
+            Arc::clone(&self.binder),
+            NeedLimits::default(),
+        ))
+    }
+
     fn needs_for(&self, prefix: Arc<BootSecrets>) -> Arc<Needs> {
         Arc::new(HostNeeds::production(
             self.guard.clone(),
@@ -850,7 +863,7 @@ impl BootSteps for Steps<'_> {
         match kind {
             KindCode::Secret => Box::pin(async move {
                 let prefix = self.prefix();
-                let needs = self.built.needs_for(Arc::clone(&prefix));
+                let needs = self.built.bootstrap_needs_for(Arc::clone(&prefix));
                 let prepared = self.registry.reserve(spec)?;
                 let id = prepared.id();
                 let port = self.registry.open_secret_reserved(prepared, &needs).await?;
@@ -886,7 +899,12 @@ impl BootSteps for Steps<'_> {
                     }
                 })
                 .await;
-                self.open_port(index).await.map(Some)
+                let needs = self.built.bootstrap_needs_for(self.prefix());
+                self.registry
+                    .open_store(spec, &needs, Arc::clone(&self.store_seal))
+                    .await
+                    .map(OpenedPort::Store)
+                    .map(Some)
             }),
             _ => {
                 let opened = self.open_port(index);
@@ -1135,7 +1153,15 @@ pub(crate) async fn run(
         seat,
         probes: Mutex::default(),
     };
-    let core_modules = busbar_kernel::appbuild::core_secret_modules(cfg);
+    let mut core_modules = busbar_kernel::appbuild::core_secret_modules(cfg);
+    core_modules.extend(
+        instances
+            .iter()
+            .filter(|instance| instance.kind == KindCode::Secret)
+            .map(|instance| instance.name.clone()),
+    );
+    core_modules.sort();
+    core_modules.dedup();
     let core_refs: Vec<&str> = core_modules.iter().map(String::as_str).collect();
     let walked = boot(&*built.registry, &specs, &built.sugars, &core_refs, &steps)
         .await

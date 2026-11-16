@@ -3,6 +3,107 @@
 
 //! Bootstrap record and directory capabilities never acquire a Store after construction.
 
+use busbar_kernel::plugin_records::{
+    ChainRead, CommitOp, CommitOutcome, PluginRecords, RecordsDenied, Scope,
+};
+use busbar_plugin_abi::host_side::caller::Caller;
+use busbar_plugin_abi::host_side::needs::{DirNeed, NeedErr, NeedOut};
+
+#[derive(Clone, Copy)]
+pub(crate) struct BootstrapRecords;
+
+impl PluginRecords for BootstrapRecords {
+    fn get(
+        &self,
+        _who: &Caller<'_>,
+        _scope: Scope,
+        _key: &[u8],
+        _sink: &mut (dyn FnMut(&[u8]) + Send),
+    ) -> impl core::future::Future<Output = Result<bool, RecordsDenied>> + Send {
+        std::future::ready(Err(RecordsDenied::Unavailable))
+    }
+    fn put(
+        &self,
+        _who: &Caller<'_>,
+        _scope: Scope,
+        _key: &[u8],
+        _value: &[u8],
+        _ttl_s: u64,
+    ) -> impl core::future::Future<Output = Result<(), RecordsDenied>> + Send {
+        std::future::ready(Err(RecordsDenied::Unavailable))
+    }
+    fn claim(
+        &self,
+        _who: &Caller<'_>,
+        _scope: Scope,
+        _key: &[u8],
+        _value: &[u8],
+        _ttl_s: u64,
+    ) -> impl core::future::Future<Output = Result<bool, RecordsDenied>> + Send {
+        std::future::ready(Err(RecordsDenied::Unavailable))
+    }
+    fn del(
+        &self,
+        _who: &Caller<'_>,
+        _scope: Scope,
+        _key: &[u8],
+    ) -> impl core::future::Future<Output = Result<(), RecordsDenied>> + Send {
+        std::future::ready(Err(RecordsDenied::Unavailable))
+    }
+    fn list(
+        &self,
+        _who: &Caller<'_>,
+        _scope: Scope,
+        _prefix: &[u8],
+        _limit: u32,
+        _sink: &mut (dyn FnMut(&[u8], &[u8]) + Send),
+    ) -> impl core::future::Future<Output = Result<u32, RecordsDenied>> + Send {
+        std::future::ready(Err(RecordsDenied::Unavailable))
+    }
+    fn commit(
+        &self,
+        _who: &Caller<'_>,
+        _scope: Scope,
+        _ops: &[CommitOp<'_>],
+    ) -> impl core::future::Future<Output = Result<CommitOutcome, RecordsDenied>> + Send {
+        std::future::ready(Err(RecordsDenied::Unavailable))
+    }
+    fn append(
+        &self,
+        _who: &Caller<'_>,
+        _scope: Scope,
+        _chain: &[u8],
+        _entry: &[u8],
+    ) -> impl core::future::Future<Output = Result<u64, RecordsDenied>> + Send {
+        std::future::ready(Err(RecordsDenied::Unavailable))
+    }
+    fn chain(
+        &self,
+        _who: &Caller<'_>,
+        _scope: Scope,
+        _chain: &[u8],
+        _after: u64,
+        _limit: u32,
+        _sink: &mut (dyn FnMut(u64, &[u8]) + Send),
+    ) -> impl core::future::Future<Output = Result<ChainRead, RecordsDenied>> + Send {
+        std::future::ready(Err(RecordsDenied::Unavailable))
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct BootstrapDirectory;
+
+impl busbar_kernel::directory::PluginDirectory for BootstrapDirectory {
+    fn apply(
+        &self,
+        _who: &Caller<'_>,
+        _need: DirNeed<'_>,
+        _out: &mut NeedOut<'_>,
+    ) -> impl core::future::Future<Output = Result<(), NeedErr>> + Send {
+        std::future::ready(Err(NeedErr::Unavailable))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
