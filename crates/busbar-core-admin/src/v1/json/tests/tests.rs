@@ -348,8 +348,9 @@ fn served_openapi_equals_committed_file() {
     let committed_text =
         std::fs::read_to_string(COMMITTED_OPENAPI_PATH).expect("read committed openapi");
     let generated = openapi_doc();
-    let generated_bytes =
-        busbar_contract::json::to_vec(&generated).expect("serialize generated openapi");
+    // serde_json writes its exact numbers as plain JSON numbers; the facade (sonic-rs) would write
+    // them as the `$serde_json::private::Number` wrapper, which no committed file carries.
+    let generated_bytes = serde_json::to_vec(&generated).expect("serialize generated openapi");
 
     let want = openapi_leaves(&generated_bytes);
     let have = openapi_leaves(committed_text.as_bytes());
