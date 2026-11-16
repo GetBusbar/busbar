@@ -717,6 +717,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn needs_are_matched_against_the_endpoints_check_declared() {
+        use busbar_plugin_abi::need::{need_flag, op};
+        use busbar_plugin_loader::instance::DeclaredEndpoint;
+        let declared = [
+            DeclaredEndpoint {
+                op: op::OPEN,
+                flags: need_flag::TLS_REQUIRED,
+                dest: "db.test:5432".into(),
+            },
+            DeclaredEndpoint {
+                op: op::OPEN,
+                flags: need_flag::TLS_INBAND,
+                dest: "pg.test:5432".into(),
+            },
+            DeclaredEndpoint {
+                op: op::FETCH,
+                flags: need_flag::TLS_NONE,
+                dest: "https://api.test/v1".into(),
+            },
+            DeclaredEndpoint {
+                op: op::OPEN,
+                flags: need_flag::TLS_NONE,
+                dest: "cache.test:6379".into(),
+            },
+        ];
+        assert_eq!(
+            endpoint_pairs(&declared),
+            [
+                ("db.test:5432", true),
+                ("pg.test:5432", true),
+                ("https://api.test/v1", true),
+                ("cache.test:6379", false),
+            ]
+        );
+        let needs = FakeNeeds::default();
+        assert!(
+            needs.undeclared(&endpoint_pairs(&declared)).is_empty(),
+            "no Need was made, so none is undeclared"
+        );
+    }
+
+    #[test]
     fn bind_numbers_handles_from_one_in_pointer_order_and_unbind_restores() {
         let binder = MemBinder::new();
         let config = br#"{"a":{"k":"s1"},"list":[{"v":"s2"},{"v":"s3"}],"keep":"x"}"#;
