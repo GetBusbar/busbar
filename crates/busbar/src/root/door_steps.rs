@@ -183,11 +183,14 @@ impl DoorPools {
         pool: &str,
     ) -> impl Iterator<Item = &'p String> + 'p {
         let gated = self.member_granted.contains(pool);
-        self.pools
-            .get(pool)
-            .into_iter()
-            .flatten()
-            .filter(move |m| !gated || key.scope_allowed(kind, m))
+        let pool_allowed = key.scope_allowed(kind, pool);
+        self.pools.get(pool).into_iter().flatten().filter(move |m| {
+            if gated {
+                key.scope_allowed(kind, m)
+            } else {
+                pool_allowed
+            }
+        })
     }
 
     /// Narrow a resolved pool route to the members its key may reach (#108): a route over a
@@ -219,7 +222,7 @@ impl DoorPools {
         kind: Option<&str>,
         key: Option<&VirtualKey>,
         pool: &str,
-    ) -> Option<Vec<String>> {
+    ) -> Option<BTreeMap<String, Vec<String>>> {
         let (kind, key) = (kind?, key?);
         key.allowed_scopes.as_ref()?;
         let mut reach: Vec<&str> = Vec::new();
@@ -231,15 +234,17 @@ impl DoorPools {
         if !reach.iter().any(|p| self.member_granted.contains(*p)) {
             return None;
         }
-        let mut members: Vec<String> = Vec::new();
-        for pool in reach {
-            for member in self.granted_members(kind, key, pool) {
-                if !members.contains(member) {
-                    members.push(member.clone());
-                }
-            }
-        }
-        Some(members)
+        Some(
+            reach
+                .into_iter()
+                .map(|pool| {
+                    (
+                        pool.to_string(),
+                        self.granted_members(kind, key, pool).cloned().collect(),
+                    )
+                })
+                .collect(),
+        )
     }
 }
 
@@ -745,6 +750,21 @@ impl<'s> DoorSteps<'s> {
         self.lock().routed.as_ref().map(read)
     }
 
+    pub(crate) fn member_grants(&self) -> Option<BTreeMap<String, Vec<String>>> {
+        let unit = self.lock();
+        let (pool, _) = unit.routed.as_ref()?;
+        self.pools
+            .walk_members(self.facts.scope_kind.as_deref(), self.key.as_deref(), pool)
+            .map(|grants| {
+                grants
+                    .into_iter()
+                    .map(|(pool, members)| {
+                        (plane_lane(self.facts.plane.lane_prefix(), &pool), members)
+                    })
+                    .collect()
+            })
+    }
+
     #[must_use]
     pub(crate) fn connection_required(&self) -> bool {
         self.app.upstream_creds() == busbar_contract::config::UpstreamCreds::Connection
@@ -917,6 +937,13 @@ impl<'s> DoorSteps<'s> {
                     && self.downgrade_reaches(key, &to, &visited) =>
                 {
                     routed = self.pools.resolve(ROUTE_POOL, Some(to.as_bytes()));
+                    if let Some(route) = &mut routed {
+                        self.pools
+                            .confine(self.facts.scope_kind.as_deref(), Some(key), route);
+                        if route.1.is_empty() {
+                            return Err(Refusal::new(ReasonCode::ScopeDenied));
+                        }
+                    }
                     visited.push(to);
                 }
                 Err(blocked) => {
@@ -1126,6 +1153,15 @@ impl DriverSteps for DoorSteps<'_> {
             .is_some_and(|(class, _)| *class == ROUTE_DIRECT);
         let mut routed = named.and_then(|(class, n)| self.pools.resolve(class, n.as_deref()));
         let entry_known = direct.then_some(routed.is_some());
+        if !direct {
+            if let Some(route) = &mut routed {
+                self.pools
+                    .confine(self.facts.scope_kind.as_deref(), self.key.as_deref(), route);
+                if route.1.is_empty() {
+                    return Err(Refusal::new(ReasonCode::ScopeDenied));
+                }
+            }
+        }
         self.child_live()?;
         if let Some(c) = &self.child_constraints {
             if let Some((_, members)) = &mut routed {

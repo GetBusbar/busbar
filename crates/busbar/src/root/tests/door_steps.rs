@@ -691,12 +691,12 @@ fn a_member_granted_pool_route_is_judged_on_the_member_it_is_addressed_to() {
         "an empty grant reaches no member"
     );
     assert!(
-        granted(&key(&[]), None),
-        "no counterparty stated: the members are the plane's to judge"
+        !granted(&key(&[]), None),
+        "no counterparty stated: core refuses the scoped key"
     );
     assert!(
-        granted(&key(&[]), Some("elsewhere")),
-        "a counterparty outside the pool names no member of it"
+        !granted(&key(&[]), Some("elsewhere")),
+        "a counterparty outside the pool is refused by core"
     );
     assert!(
         p.granted_to(
