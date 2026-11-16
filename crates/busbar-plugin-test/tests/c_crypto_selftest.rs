@@ -117,8 +117,39 @@ fn self_test_reaches_each_port_as_failed_unavailable() {
     todo!("owner: W1-K8D (C-CRYPTO-SELFTEST)")
 }
 
+/// (f), the auth adapter's side (W1-L5): a host crypto call the module does not offer (`Error::Unsupported`, the
+/// facade's one UNAVAILABLE) reaches the plugin as `CryptoErr::Unavailable`, which `?` turns into REFUSED
+/// R_UNSUPPORTED (§4.1 `From`); the auth adapter returns that from `verify` as `PortError::Refused { code:
+/// R_UNSUPPORTED }`, never as a credential verdict, and the mapping moves no host fault counter. The fixture run
+/// through the stub backend joins with A2's `HOST` and H1's guard.
 #[test]
-#[ignore = "owner: W1-L5"]
 fn unsupported_is_refused_unsupported_and_moves_no_counter() {
-    todo!("owner: W1-L5 (C-CRYPTO-SELFTEST)")
+    use std::sync::atomic::Ordering;
+
+    use busbar_plugin_abi::fail::refused;
+    use busbar_plugin_abi::host_side::host_vt::HOST_FAULTS;
+    use busbar_plugin_abi::host_side::scrub::Scrub;
+    use busbar_plugin_loader::adapters::auth::verify_refusal;
+    use busbar_plugin_loader::ports::PortError;
+
+    let before: Vec<u64> = HOST_FAULTS
+        .iter()
+        .map(|c| c.load(Ordering::Relaxed))
+        .collect();
+    assert!(matches!(
+        verify_refusal(
+            refused::R_UNSUPPORTED,
+            "HMAC_SHA384 unsupported",
+            &Scrub::new()
+        ),
+        Err(PortError::Refused {
+            code: refused::R_UNSUPPORTED,
+            ..
+        })
+    ));
+    let after: Vec<u64> = HOST_FAULTS
+        .iter()
+        .map(|c| c.load(Ordering::Relaxed))
+        .collect();
+    assert_eq!(before[0], after[0], "HOST_FAULTS[SELF_TEST] does not move");
 }

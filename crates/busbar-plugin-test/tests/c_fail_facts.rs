@@ -89,10 +89,78 @@ fn secret_adapter_maps_the_facts() {
     ));
 }
 
+/// The auth arm (W1-L5): FAILED carries the stated Retry-After and backend status and the resolved ERROR, absent
+/// facts are None, REFUSED carries no fact, and a status that is neither is a FAULT (IF §11.3 round 21, §8.3
+/// login outcomes).
 #[test]
-#[ignore = "owner: W1-L5"]
 fn auth_adapter_maps_the_facts() {
-    todo!("owner: W1-L5 (C-FAIL-FACTS)")
+    use busbar_plugin_abi::auth::SECURITY_CHECK;
+    use busbar_plugin_abi::fail::{failed, CallError, FaultReason};
+    use busbar_plugin_abi::host_side::scrub::Scrub;
+    use busbar_plugin_abi::types::Status;
+    use busbar_plugin_loader::adapters::auth::plugin_error;
+    use busbar_plugin_loader::instance::PluginCode;
+    use busbar_plugin_loader::ports::PortError;
+
+    let scrub = Scrub::new();
+    let code = PluginCode {
+        plugin: "auth-oidc",
+        number: 12,
+    };
+    assert_eq!(
+        plugin_error(
+            Status::FAILED,
+            failed::F_UNAVAILABLE,
+            "the provider said 503",
+            Some(30),
+            Some(503),
+            Some(code),
+            &scrub
+        ),
+        PortError::Failed {
+            code: failed::F_UNAVAILABLE,
+            text: "the provider said 503".into(),
+            retry_after_s: Some(30),
+            backend_status: Some(503),
+            error: Some(code),
+        }
+    );
+    assert!(matches!(
+        plugin_error(
+            Status::FAILED,
+            failed::F_TIMEOUT,
+            "slow",
+            None,
+            None,
+            None,
+            &scrub
+        ),
+        PortError::Failed {
+            retry_after_s: None,
+            backend_status: None,
+            ..
+        }
+    ));
+    assert_eq!(
+        plugin_error(
+            Status::REFUSED,
+            SECURITY_CHECK,
+            "nonce",
+            Some(30),
+            Some(503),
+            None,
+            &scrub
+        ),
+        PortError::Refused {
+            code: SECURITY_CHECK,
+            text: "nonce".into(),
+            error: None,
+        }
+    );
+    assert_eq!(
+        plugin_error(Status::OK, 0, "", Some(30), None, None, &scrub),
+        PortError::Call(CallError::Fault(FaultReason::BadStatus(Status::OK.0)))
+    );
 }
 
 #[test]

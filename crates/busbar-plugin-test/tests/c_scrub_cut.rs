@@ -82,9 +82,34 @@ fn the_secret_adapters_port_error_log_line_and_audit_row_hold() {
 }
 
 #[test]
-#[ignore = "owner: W1-L5"]
 fn the_auth_adapters_port_error_log_line_and_audit_row_hold() {
-    todo!("owner: W1-L5 (C-SCRUB-CUT)")
+    use busbar_plugin_abi::auth::BAD_CREDENTIAL;
+    use busbar_plugin_abi::types::Status;
+    use busbar_plugin_loader::adapters::auth::{plugin_error, rejected};
+    use busbar_plugin_loader::ports::auth::Verdict;
+    use busbar_plugin_loader::ports::PortError;
+
+    let scrub = Scrub::new();
+    scrub.register(1, &[SECRET.as_bytes()]);
+    for form in &needles(SECRET.as_bytes()) {
+        let form = core::str::from_utf8(form).expect("ASCII");
+        let text = format!("{}{form}{}", "a".repeat(500), "b".repeat(60));
+        // A login/outbound/refresh/serve REFUSED or FAILED, and a verify rejection (the verdict text).
+        for status in [Status::REFUSED, Status::FAILED] {
+            let (PortError::Refused { text: shown, .. } | PortError::Failed { text: shown, .. }) =
+                plugin_error(status, 1, &text, None, None, None, &scrub)
+            else {
+                panic!("not a plugin error")
+            };
+            assert!(shown.len() <= FAIL_TEXT_SHOWN);
+            assert!(!leaks(&shown, form.as_bytes()), "{form}");
+        }
+        let Verdict::Rejected { text: shown, .. } = rejected(BAD_CREDENTIAL, &text, &scrub) else {
+            panic!("not Rejected")
+        };
+        assert!(shown.len() <= FAIL_TEXT_SHOWN);
+        assert!(!leaks(&shown, form.as_bytes()), "{form}");
+    }
 }
 
 #[test]
