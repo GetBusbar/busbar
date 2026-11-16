@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait as _};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -108,17 +109,20 @@ async fn proof_role_pool_ceiling_refuses_an_over_ceiling_rotate() {
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
-    let request = serde_json::json!({"name":"svc"});
-    let created: serde_json::Value = client
-        .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
-        .json(&request)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let request = json::json!({"name":"svc"});
+    let created = json::parse_value(
+        &client
+            .post(format!("http://{addr}/api/v1/admin/keys"))
+            .header("x-admin-token", "admintok")
+            .json(&request)
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     let id = created["id"]
         .as_str()
         .expect("the actual operator minted the existing key")
@@ -139,7 +143,7 @@ async fn proof_role_pool_ceiling_refuses_an_over_ceiling_rotate() {
         .await
         .unwrap();
     let status = response.status().as_u16();
-    let body: serde_json::Value = response.json().await.unwrap_or(serde_json::Value::Null);
+    let body = json::parse_value(&response.bytes().await.unwrap_or_default()).unwrap_or_default();
     handle.abort();
     let after = gov
         .core_store()
@@ -267,18 +271,21 @@ async fn proof_role_pool_ceiling_rotates_an_in_ceiling_key() {
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
-    let mut request = serde_json::json!({"name":"svc"});
-    request["allowed_pools"] = serde_json::json!(["pool-ok"]);
-    let created: serde_json::Value = client
-        .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
-        .json(&request)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let mut request = json::json!({"name":"svc"});
+    request["allowed_pools"] = json::json!(["pool-ok"]);
+    let created = json::parse_value(
+        &client
+            .post(format!("http://{addr}/api/v1/admin/keys"))
+            .header("x-admin-token", "admintok")
+            .json(&request)
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     let id = created["id"]
         .as_str()
         .expect("the actual operator minted the existing key")
@@ -299,7 +306,7 @@ async fn proof_role_pool_ceiling_rotates_an_in_ceiling_key() {
         .await
         .unwrap();
     let status = response.status().as_u16();
-    let body: serde_json::Value = response.json().await.unwrap_or(serde_json::Value::Null);
+    let body = json::parse_value(&response.bytes().await.unwrap_or_default()).unwrap_or_default();
     handle.abort();
     let after = gov
         .core_store()
@@ -312,7 +319,7 @@ async fn proof_role_pool_ceiling_rotates_an_in_ceiling_key() {
         .generation_hash;
     let moved = before != after;
     assert_eq!(status, 200, "an in-ceiling rotate answers: {body}");
-    assert!(body["token"].is_string(), "{body}");
+    assert!(body["token"].is_str(), "{body}");
     assert!(moved, "the rotate retired the previous generation");
     println!("{WITNESS}");
 }
@@ -416,17 +423,20 @@ async fn a_past_ceiling_rotate_releases_its_idempotency_claim() {
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
-    let request = serde_json::json!({"name":"svc"});
-    let created: serde_json::Value = client
-        .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
-        .json(&request)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let request = json::json!({"name":"svc"});
+    let created = json::parse_value(
+        &client
+            .post(format!("http://{addr}/api/v1/admin/keys"))
+            .header("x-admin-token", "admintok")
+            .json(&request)
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     let id = created["id"]
         .as_str()
         .expect("the actual operator minted the existing key")

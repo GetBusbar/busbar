@@ -7,7 +7,7 @@
 // concrete `TrustBook` struct, so the trait lives in this new file (`crate::trust::plane_book::TrustBook`).
 
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
-use busbar_plugin_loader::ports::plane::TrustItem;
+use busbar_ports::plane::TrustItem;
 
 use crate::plugin_records::RecordsDenied;
 

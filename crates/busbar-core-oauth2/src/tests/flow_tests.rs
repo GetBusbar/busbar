@@ -4,6 +4,7 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use busbar_contract::json;
 use oauth_as::client::{Client, ClientAuth, ClientId};
 use oauth_as::grant::GrantType;
 use oauth_as::scope::ScopeSet;
@@ -268,7 +269,7 @@ async fn a_metadata_document_client_naming_no_scope_is_shown_the_default_it_is_g
     plane
         .server()
         .store()
-        .set_fetcher(Arc::new(StubDocumentHost(serde_json::json!({
+        .set_fetcher(Arc::new(StubDocumentHost(json::json!({
             "client_id":CIMD_CLIENT_ID,"redirect_uris":[REDIRECT_URI],
             "token_endpoint_auth_method":"none","client_name":"an agent",
         }))));
@@ -341,7 +342,7 @@ async fn a_failed_default_scope_lookup_refuses_consent_and_recovers() {
 
 const CIMD_CLIENT_ID: &str = "https://client.example/oauth-client";
 
-struct StubDocumentHost(serde_json::Value);
+struct StubDocumentHost(json::Value);
 
 impl crate::cimd::CimdFetch for StubDocumentHost {
     fn fetch<'a>(
@@ -351,7 +352,7 @@ impl crate::cimd::CimdFetch for StubDocumentHost {
     {
         Box::pin(async move {
             if url == CIMD_CLIENT_ID {
-                Ok(serde_json::to_vec(&self.0).expect("the stub document serialises"))
+                Ok(json::to_vec(&self.0).expect("the stub document serialises"))
             } else {
                 Err(format!("no document at `{url}`"))
             }
@@ -365,7 +366,7 @@ async fn a_client_id_metadata_document_admits_a_client_end_to_end() {
     plane
         .server()
         .store()
-        .set_fetcher(Arc::new(StubDocumentHost(serde_json::json!({
+        .set_fetcher(Arc::new(StubDocumentHost(json::json!({
             "client_id":CIMD_CLIENT_ID,"redirect_uris":[REDIRECT_URI],
             "token_endpoint_auth_method":"none","client_name":"an agent","scope":SCOPE,
         }))));

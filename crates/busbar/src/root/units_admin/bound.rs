@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use busbar_contract::json::{self, JsonValueTrait};
 use busbar_contract::plane::PlaneDeclaration;
 use busbar_contract::records::{PlaneDisposition, PlaneRecord};
 use busbar_core_admin::GovernanceError;
@@ -136,8 +137,8 @@ pub(crate) fn journal_unavailable(why: &str) -> AdminAnswer {
     refused(503, "service_unavailable", why)
 }
 
-fn answer(value: &serde_json::Value) -> Result<AdminAnswer, GovernanceError> {
-    serde_json::to_vec(value)
+fn answer(value: &json::Value) -> Result<AdminAnswer, GovernanceError> {
+    json::to_vec(value)
         .map(super::json_answer)
         .map_err(|_| GovernanceError::Store)
 }
@@ -191,7 +192,7 @@ pub(crate) async fn verify_effect(
                 .map(|finding| format!("stored chain: {finding}")),
         );
     }
-    answer(&serde_json::json!({
+    answer(&json::json!({
         "checkpoints": 0,
         "since": null,
         "book_verified": false,
@@ -208,12 +209,11 @@ pub(crate) async fn plane_record_write_effect(
     planes: &(dyn Fn(&str) -> Option<PlaneDeclaration> + Send + Sync),
     sink: Option<&PlaneRecordSink>,
 ) -> Result<EffectAnswer, GovernanceError> {
-    let doc: serde_json::Value =
-        serde_json::from_slice(body).map_err(|_| GovernanceError::Validation)?;
+    let doc: json::Value = json::parse_value(body).map_err(|_| GovernanceError::Validation)?;
     let obj = doc.as_object().ok_or(GovernanceError::Validation)?;
     let text = |key: &str| {
-        obj.get(key)
-            .and_then(serde_json::Value::as_str)
+        obj.get(&key)
+            .and_then(json::Value::as_str)
             .filter(|s| !s.trim().is_empty())
     };
     let Some(plane) = text("plane") else {
@@ -225,15 +225,18 @@ pub(crate) async fn plane_record_write_effect(
     let Some(id) = text("id") else {
         return Ok(refused_effect(400, "invalid_request", "id is required"));
     };
-    let row = match obj.get("body") {
-        None | Some(serde_json::Value::Null) => {
+    let row = match obj.get(&"body") {
+        Some(row) if !row.is_null() => row,
+        _ => {
             return Ok(refused_effect(400, "invalid_request", "body is required"));
         }
-        Some(row) => row,
     };
-    let parent = match obj.get("parent") {
-        None | Some(serde_json::Value::Null) => None,
-        Some(serde_json::Value::String(p)) if !p.trim().is_empty() => Some(p.clone()),
+    let parent = match obj.get(&"parent") {
+        None => None,
+        Some(p) if p.is_null() => None,
+        Some(p) if p.as_str().is_some_and(|p| !p.trim().is_empty()) => {
+            p.as_str().map(str::to_string)
+        }
         Some(_) => {
             return Ok(refused_effect(
                 400,
@@ -242,9 +245,10 @@ pub(crate) async fn plane_record_write_effect(
             ));
         }
     };
-    let terminal = match obj.get("terminal") {
-        None | Some(serde_json::Value::Null) => false,
-        Some(serde_json::Value::Bool(b)) => *b,
+    let terminal = match obj.get(&"terminal") {
+        None => false,
+        Some(b) if b.is_null() => false,
+        Some(b) if b.is_boolean() => b.as_bool() == Some(true),
         Some(_) => {
             return Ok(refused_effect(
                 400,
@@ -305,10 +309,10 @@ pub(crate) async fn plane_record_write_effect(
         } else {
             PlaneDisposition::Active
         },
-        body: serde_json::to_vec(row).map_err(|_| GovernanceError::Validation)?,
+        body: json::to_vec(row).map_err(|_| GovernanceError::Validation)?,
     };
 
-    let applied = answer(&serde_json::json!({
+    let applied = answer(&json::json!({
         "plane": plane,
         "kind": kind,
         "id": record.id,
@@ -341,12 +345,11 @@ pub(crate) async fn commit_upgrade_effect(
     principal: &str,
     journal: Option<&AmendmentJournal>,
 ) -> Result<EffectAnswer, GovernanceError> {
-    let doc: serde_json::Value =
-        serde_json::from_slice(body).map_err(|_| GovernanceError::Validation)?;
+    let doc: json::Value = json::parse_value(body).map_err(|_| GovernanceError::Validation)?;
     let obj = doc.as_object().ok_or(GovernanceError::Validation)?;
     let Some(version) = obj
-        .get("version")
-        .and_then(serde_json::Value::as_str)
+        .get(&"version")
+        .and_then(json::Value::as_str)
         .filter(|s| !s.trim().is_empty())
     else {
         return Ok(refused_effect(
@@ -394,7 +397,7 @@ pub(crate) async fn commit_upgrade_effect(
             receipt,
         ));
     }
-    match answer(&serde_json::json!({
+    match answer(&json::json!({
         "committed": version,
         "committed_at": at,
         "seq": node_seq,
@@ -410,8 +413,8 @@ pub(crate) async fn commit_upgrade_effect(
     }
 }
 
-fn trust_row(row: &KeyRow) -> serde_json::Value {
-    serde_json::json!({
+fn trust_row(row: &KeyRow) -> json::Value {
+    json::json!({
         "key": row.key(),
         "instance": row.instance,
         "counterparty": row.counterparty,
@@ -424,7 +427,7 @@ fn trust_row(row: &KeyRow) -> serde_json::Value {
 
 pub(crate) fn trust_list_effect(desk: &TrustDesk) -> Result<AdminAnswer, GovernanceError> {
     let rows = desk().map(|k| k.trust_rows()).unwrap_or_default();
-    answer(&serde_json::json!({
+    answer(&json::json!({
         "keys": rows.iter().map(trust_row).collect::<Vec<_>>(),
     }))
 }
@@ -434,21 +437,18 @@ pub(crate) async fn trust_decide_effect(
     ruling: Ruling,
     desk: &TrustDesk,
 ) -> Result<AdminAnswer, GovernanceError> {
-    let doc: serde_json::Value =
-        serde_json::from_slice(body).map_err(|_| GovernanceError::Validation)?;
+    let doc: json::Value = json::parse_value(body).map_err(|_| GovernanceError::Validation)?;
     let obj = doc.as_object().ok_or(GovernanceError::Validation)?;
     let Some(key) = obj
-        .get("key")
-        .and_then(serde_json::Value::as_str)
+        .get(&"key")
+        .and_then(json::Value::as_str)
         .filter(|k| !k.trim().is_empty())
     else {
         return Ok(refused(400, "invalid_request", "key is required"));
     };
-    let expected_digest = match obj.get("expected_digest") {
+    let expected_digest = match obj.get(&"expected_digest") {
         None => None,
-        Some(serde_json::Value::String(digest)) if !digest.trim().is_empty() => {
-            Some(digest.as_str())
-        }
+        Some(digest) if digest.as_str().is_some_and(|d| !d.trim().is_empty()) => digest.as_str(),
         Some(_) => {
             return Ok(refused(
                 400,
@@ -473,6 +473,14 @@ pub(crate) async fn trust_decide_effect(
     {
         Ok(row) => answer(&trust_row(&row)),
         Err(TrustRefused::NoSuchKey) => not_found(),
+        Err(TrustRefused::Ambiguous) => Ok(refused(
+            409,
+            "conflict",
+            &format!(
+                "trust key `{key}` names more than one trust row; a registration name \
+                 containing `/` makes it ambiguous, so rename the registration"
+            ),
+        )),
         Err(TrustRefused::NothingSighted) => Ok(refused(
             409,
             "conflict",
@@ -716,7 +724,7 @@ fn stored_answer(value: &ReplayValue) -> Vec<u8> {
     }
     push(&mut out, &answer.body);
     if let Some(receipt) = &value.receipt {
-        let receipt = serde_json::to_vec(receipt)
+        let receipt = json::to_vec(receipt)
             .expect("an effect receipt contains only serializable strings, integers and bytes");
         push(&mut out, &receipt);
     }
@@ -748,7 +756,7 @@ fn kept_answer(kept: &[u8]) -> Option<ReplayValue> {
     let receipt = if cursor == kept.len() {
         None
     } else {
-        Some(serde_json::from_slice(pull(kept, &mut cursor)?).ok()?)
+        Some(json::parse(pull(kept, &mut cursor)?).ok()?)
     };
     if cursor != kept.len() {
         return None;

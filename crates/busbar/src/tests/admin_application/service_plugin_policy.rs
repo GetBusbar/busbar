@@ -3,6 +3,7 @@
 
 use crate::root::test_plugins as plugins;
 use base64::Engine as _;
+use busbar_contract::json::{self, JsonValueTrait};
 use std::sync::Arc;
 
 #[tokio::test]
@@ -132,14 +133,14 @@ async fn inspect_bounds_pathological_schema_nesting_depth() {
     let client = reqwest::Client::new();
     let response = client.post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"file":"depthbomb.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(tarball)}))
+        .json(&json::json!({"file":"depthbomb.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(tarball)}))
         .send().await.unwrap();
     assert_eq!(
         response.status().as_u16(),
         400,
         "a pathological authoritative schema is refused before plugin admission"
     );
-    let view: serde_json::Value = response.json().await.unwrap();
+    let view = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(view["error"]["code"], "invalid_request");
     let error = view["error"]["message"]
         .as_str()
@@ -243,14 +244,14 @@ async fn install_rejects_bad_filenames() {
     ] {
         let response = client.post(format!("http://{addr}/api/v1/admin/plugins"))
             .header("x-admin-token", "admintok")
-            .json(&serde_json::json!({"file":bad, "tarball_b64":base64::engine::general_purpose::STANDARD.encode(b"bytes")}))
+            .json(&json::json!({"file":bad, "tarball_b64":base64::engine::general_purpose::STANDARD.encode(b"bytes")}))
             .send().await.unwrap();
         assert_eq!(
             response.status().as_u16(),
             400,
             "filename `{bad}` must reject"
         );
-        let error: serde_json::Value = response.json().await.unwrap();
+        let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
         assert_eq!(error["error"]["code"], "invalid_request");
     }
     let after: std::collections::BTreeSet<_> = std::fs::read_dir(&directory)
@@ -349,10 +350,10 @@ async fn inspect_verdicts_refuse_malformed_archives_without_publication() {
     let client = reqwest::Client::new();
     let response = client.post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"file":"candidate.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(b"not a tarball at all")}))
+        .json(&json::json!({"file":"candidate.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(b"not a tarball at all")}))
         .send().await.unwrap();
     assert_eq!(response.status().as_u16(), 400);
-    let error: serde_json::Value = response.json().await.unwrap();
+    let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "invalid_request");
     let after: std::collections::BTreeSet<_> = std::fs::read_dir(&directory)
         .unwrap()

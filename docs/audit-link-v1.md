@@ -3,6 +3,8 @@
 
 # The busbar audit link line, `busbar.audit.link.v1`
 
+<!-- docs-truth: #315 - no non-test caller of AuditChain::link on dev and record.rs seals every record as digest v7; busbar-audit-verify does not verify link lines or stamps. Confirm at the release-candidate pass. -->
+
 The link line (journal tag `audit.v8`) is the audit line of SEALING-FIX: it is
 linked to its predecessor by a fingerprint and carries no signature of its own.
 Authorship is proven for a whole page of lines at once by a page stamp

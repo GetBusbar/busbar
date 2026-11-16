@@ -20,10 +20,10 @@ use busbar_plugin_abi::kinds::secret::secret::{tag, Proxy, F_LEASE_S};
 use busbar_plugin_abi::records::{FactRec, RecErr, Records};
 use busbar_plugin_abi::types::Status;
 
-use crate::encode::secret::encode_reference;
-use crate::instance::PluginCode;
-use crate::ports::secret::{SecretAnswer, SecretPort};
-use crate::ports::{CallCx, PortError};
+use busbar_ports::codec::secret::encode_reference;
+use busbar_ports::secret::{SecretAnswer, SecretPort};
+use busbar_ports::PluginCode;
+use busbar_ports::{CallCx, PortError};
 
 /// The secret port over one instance's proxy.
 pub struct SecretAdapter<N: Needs> {

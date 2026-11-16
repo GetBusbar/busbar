@@ -30,6 +30,7 @@ use busbar_contract::json::{JsonContainerTrait, JsonValueTrait, Map, Value};
 use busbar_contract::plugin::Kind;
 use busbar_kernel::plane_driver::registry::PlaneDecl;
 use busbar_kernel::state::{App, AppHandle};
+use busbar_plugin_abi::types::KindCode;
 
 use super::views::{self, Descriptor};
 use super::{err_json, err_json_cond};
@@ -39,13 +40,13 @@ use crate::v1::contract::{AdminError, LIST_LIMIT_DEFAULT};
 
 /// The closed category list (§5.2): the seven engine kinds and `core`.
 pub(crate) const CATEGORIES: [&str; 8] = [
-    "plane",
-    "auth",
-    "store",
-    "secret",
-    "export",
-    "hook",
-    "transport",
+    KindCode::Plane.word(),
+    KindCode::Auth.word(),
+    KindCode::Store.word(),
+    KindCode::Secret.word(),
+    KindCode::Export.word(),
+    KindCode::Hook.word(),
+    KindCode::Transport.word(),
     "core",
 ];
 
@@ -112,14 +113,15 @@ pub(crate) struct Instance {
 /// The category word of a plugin kind.
 fn category_of(kind: Kind) -> &'static str {
     match kind {
-        Kind::Plane => "plane",
-        Kind::Transport => "transport",
-        Kind::Auth => "auth",
-        Kind::Store => "store",
-        Kind::Secret => "secret",
-        Kind::Hook => "hook",
-        Kind::Export => "export",
+        Kind::Plane => KindCode::Plane,
+        Kind::Transport => KindCode::Transport,
+        Kind::Auth => KindCode::Auth,
+        Kind::Store => KindCode::Store,
+        Kind::Secret => KindCode::Secret,
+        Kind::Hook => KindCode::Hook,
+        Kind::Export => KindCode::Export,
     }
+    .word()
 }
 
 /// A plane's kind id: its registry key, folded to `[a-z][a-z0-9_]{0,31}`.
@@ -1094,8 +1096,18 @@ pub(crate) mod doc {
         names
             .iter()
             .filter_map(|name| {
+                if *name == "category" {
+                    let parameter = busbar_contract::json::json!({
+                        "name": "category",
+                        "in": "query",
+                        "required": false,
+                        "schema": {"type": "string", "enum": super::CATEGORIES},
+                        "description": "Only the kinds of this category."
+                    });
+                    let bytes = busbar_contract::json::to_vec(&parameter).ok()?;
+                    return busbar_contract::json::parse_foreign(&bytes).ok();
+                }
                 let text = match *name {
-                    "category" => r#"{"name":"category","in":"query","required":false,"schema":{"type":"string","enum":["plane","auth","store","secret","export","hook","transport","core"]},"description":"Only the kinds of this category."}"#,
                     "cursor" => r#"{"name":"cursor","in":"query","required":false,"schema":{"type":"string"},"description":"Opaque continuation cursor from `next_cursor`."}"#,
                     "limit" => r#"{"name":"limit","in":"query","required":false,"schema":{"type":"integer","minimum":1,"maximum":1000},"description":"Page size (default 200, max 1000)."}"#,
                     "from_ms" => r#"{"name":"from_ms","in":"query","required":false,"schema":{"type":"integer","minimum":0},"description":"Window start, Unix milliseconds."}"#,
@@ -1136,7 +1148,7 @@ pub(crate) mod doc {
                 "required": ["kind", "category", "display", "instance_count", "views", "record_attributes", "descriptors_uniform", "etag"],
                 "properties": {
                     "kind": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
-                    "category": {"enum": ["plane", "auth", "store", "secret", "export", "hook", "transport", "core"]},
+                    "category": {"enum": super::CATEGORIES},
                     "display": {"type": "object", "required": ["label", "plural", "description"], "properties": {"label": {"type": "string"}, "plural": {"type": "string"}, "description": {"type": "string"}}},
                     "instance_count": {"type": "integer", "minimum": 0},
                     "views": {"type": "array", "items": {"type": "object", "description": "A view descriptor"}},

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! The frozen export-stream vocabulary: [`ExportStream`], its wire tokens and its default field sets.
 //!
 //! Moved out of `abi::export` (WBS W0-D1A) so the stream vocabulary has one home; the export kind

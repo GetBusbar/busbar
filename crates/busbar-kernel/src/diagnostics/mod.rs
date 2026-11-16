@@ -289,7 +289,7 @@ diagnostics! {
     MIGRATE_PRIVATE_REACH_TO_ALLOWLIST = 3410, Config, Actionable, "migrate-private-reach-to-allowlist", "1.6.0", false,
         "A registration's allow_private was replaced by exact advanced.allow_destinations entries",
         "An MCP server (`tools.<server>`) or A2A agent (`agents.<agent>`) set the retired `allow_private`. The migration removed the key and listed exactly the hosts that registration dials in `advanced.allow_destinations` (never a wildcard or a network, never a cloud-metadata host). A plaintext `http://` registration to a non-loopback host is refused at 1.6.0: the planes admit `http://` to loopback only.",
-        "Review the listed hosts. Move a non-loopback `http://` registration to `https://`; per-destination plaintext arrives after 1.6.0.";
+        "Review the listed hosts. Move a non-loopback `http://` registration to `https://`; busbar has no per-destination plaintext switch.";
 
     /// The migration removed a retired 1.5.5 cloud-metadata carve-out key.
     MIGRATE_METADATA_CARVE_OUT_REMOVED = 3411, Config, Actionable, "migrate-metadata-carve-out-removed", "1.6.0", false,
@@ -313,7 +313,7 @@ diagnostics! {
     PLUGIN_USES_DEPRECATED_ABI_VALUE = 6015, Plugins, Actionable, "plugin-uses-deprecated-abi-value", "1.6.0", false,
         "A plugin used a deprecated ABI value (refused from 1.7.0)",
         "A plugin secured an operator-infrastructure connection with `UPGRADE_VERIFY_OFF`, so the far end's certificate is not verified (postgres `sslmode=prefer`, valkey `#insecure`). The value is honoured in 1.6.x, deprecated, and refused from 1.7.0. The first use per instance is logged and audited.",
-        "Configure the server with a certificate the plugin can verify (`sslmode=require` or `verify-full`, `rediss://` without `#insecure`); the core trust store for private CAs arrives after 1.6.0.";
+        "Configure the server with a certificate the plugin can verify (`sslmode=require` or `verify-full`, `rediss://` without `#insecure`); for a server with a private CA, list that CA under `advanced.tls.trust_anchors` (or the server under `advanced.tls.destinations`).";
 
     /// A plane registration sets the retired `allow_private`; the one private-address policy is `advanced.allow_destinations`.
     CONFIG_PRIVATE_REACH_RETIRED = 3135, Config, Fatal, "config-private-reach-retired", "1.6.0", false,
@@ -730,8 +730,8 @@ diagnostics! {
     /// A provider api_key SecretRef did not resolve; boot refuses.
     PROVIDER_API_KEY_UNRESOLVABLE = 8020, Governance, Fatal, "provider-api-key-unresolvable", "1.6.0", false,
         "Provider api_key did not resolve (boot refuses)",
-        "A provider's `api_key` secret reference could not be resolved — an unset environment variable, a missing file, a value or file that is empty or whitespace-only, an unknown module, or a secret plugin that failed — so busbar refuses to start. It does not fall back to an empty credential: that lane could never authenticate, would report healthy, would be skipped by the health prober (no key, no probe), and would answer every request routed to it with a 401 from the upstream. The diagnostic names the provider and the secret module (`secret module 'busbar-secret-env'`), never the value.",
-        "Fix the reference so it resolves (set the variable, mount the file, install and trust the secret plugin), or — if this upstream genuinely takes NO credential, such as a local ollama or vLLM — declare that explicitly with `api_key: none`, which starts the lane with no credential and sends no auth header. `--validate` reports the same refusal before you deploy.";
+        "A provider's `api_key` secret reference could not be resolved — an unset environment variable, a missing file, a value or file that is empty or whitespace-only, an unknown module, or a secret plugin that failed — so busbar refuses to start. It does not fall back to an empty credential: that lane could never authenticate, would report healthy, would be skipped by the health prober (no key, no probe), and would answer every request routed to it with a 401 from the upstream. The diagnostic names the provider and the secret module (`secret module '<module>'`), never the value.",
+        "Fix the reference so it resolves (set the variable, mount the file, install and trust the secret plugin), or — if this upstream genuinely takes NO credential, such as a local model server — declare that explicitly with `api_key: none`, which starts the lane with no credential and sends no auth header. `--validate` reports the same refusal before you deploy.";
 
     /// A unit's one line carried a class its plane never declared.
     METER_CLASS_UNDECLARED = 8022, Governance, Actionable, "meter-class-undeclared", "1.6.0", false,
@@ -858,6 +858,11 @@ diagnostics! {
         "The oldest audit line no stamp covers yet is older than the alert threshold (ten times audit.seal_every, at least one second). The notary is backing off a failing signer or store, or it has stopped. Lines are durable and linked; a crash now leaves a longer unstamped tail for the next process on this host to seal or report.",
         "Look for BUSBAR-2049 just before this line and act on its reason. The gauge audit_unstamped_age_ms shows the current age.";
 
+    TERMINAL_AUDIT_STAGE_FAILED = 2051, Audit, Actionable, "terminal-audit-stage-failed", "1.6.0", false,
+        "A request terminal audit original could not be staged",
+        "The journal refused the terminal audit original before native confirmation. The request fails instead of reporting success without its audit evidence; an already streaming response terminates with an error. The journal and audit chain positions do not advance for the refused original. The counter busbar_audit_stage_failures_total counts these failures.",
+        "Check store availability and journal custody pressure. A closed journal can also indicate shutdown. Do not assume an upstream operation was undone when its terminal audit failed.";
+
     PLANE_AUDITLOG_WRITE_FAILED = 2044, Audit, Actionable, "plane-auditlog-write-failed", "1.6.0", false,
         "Admin audit record could not be written through the durable journal seam (evidence lost)",
         "The admin audit record could NOT be written through the durable journal seam, so this mutation is being served but its evidence is being lost on that path. The chain position is unchanged, so the chain stays contiguous — what is missing is this one record, not the ones after it. This can recur per mutation during a store outage, so it warns on the transition into the failing state and holds subsequent occurrences at debug.",
@@ -935,7 +940,7 @@ diagnostics! {
     /// An admin `plane_record_write` named a record kind the kernel keeps its own records under; the write is refused.
     PLANE_RECORD_WRITE_KERNEL_KIND = 7107, Plane, Actionable, "plane-record-write-kernel-kind", "1.6.0", false,
         "An admin plane record write named a kernel record kind (the write is refused)",
-        "`POST /api/v1/admin/plane-record-write` named a record kind the kernel keeps its own records under (`audit`, `usage_residual`, `demotion`, `trust_decision` or `ticket`). A plane may declare one of these (plane-mcp declares `demotion`), but the rows under it are the kernel's own, for example its durable demotion record of a quarantined upstream, and no write made in a plane's name may alter them. busbar answers `403 forbidden` naming the kind, writes nothing, and seals the refusal on the administrative audit ring as `rejected`.",
+        "`POST /api/v1/admin/plane-record-write` named a record kind the kernel keeps its own records under (`audit`, `usage_residual`, `demotion`, `trust_decision` or `ticket`). A plane may declare one of these (for example `demotion`), but the rows under it are the kernel's own, for example its durable demotion record of a quarantined upstream, and no write made in a plane's name may alter them. busbar answers `403 forbidden` naming the kind, writes nothing, and seals the refusal on the administrative audit ring as `rejected`.",
         "Do not write kernel records through the plane record verb. To lift a quarantine, approve the counterparty with `POST /api/v1/admin/trust/approve`, which clears its durable demotion. Write a plane's own records under a kind that is not the kernel's.";
 
     /// A plane's JUDGE intent ran with no destination judge installed: core answers `DEST_INTERNAL` (fail closed).
@@ -1216,8 +1221,8 @@ diagnostics! {
     /// The jemalloc idle-purge fallback could not start; a fully idle process may hold freed RSS.
     JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE = 9010, Boot, Actionable, "jemalloc-idle-purge-fallback-unavailable", "1.6.0", false,
         "jemalloc idle-purge fallback unavailable (idle RSS may not return to the OS)",
-        "The fallback idle-purge helper (for targets where jemalloc's background purge threads are compiled out, e.g. static-musl or macOS) could not start — its worker thread failed to spawn, or it could not read `opt.dirty_decay_ms`. A fully IDLE process may therefore hold freed-but-unpurged dirty pages and its RSS can ratchet at the last burst's peak until traffic resumes. Request behavior is unaffected.",
-        "Usually benign — RSS is reclaimed the moment traffic resumes, and under load the helper does nothing. If steady idle RSS on a musl/macOS build matters, investigate the logged spawn/mallctl error; the gateway serves normally regardless.";
+        "The fallback idle-purge helper (for targets where jemalloc's background purge threads are compiled out, e.g. macOS) could not start — its worker thread failed to spawn, or it could not read `opt.dirty_decay_ms`. A fully IDLE process may therefore hold freed-but-unpurged dirty pages and its RSS can ratchet at the last burst's peak until traffic resumes. Request behavior is unaffected.",
+        "Usually benign — RSS is reclaimed the moment traffic resumes, and under load the helper does nothing. If steady idle RSS on a macOS build matters, investigate the logged spawn/mallctl error; the gateway serves normally regardless.";
 
     /// `--generate-signing-key` could not obtain OS entropy to mint an ed25519 key.
     SIGNING_KEY_GENERATION_FAILED = 9011, Boot, Actionable, "signing-key-generation-failed", "1.6.0", false,
@@ -1469,7 +1474,7 @@ diagnostics! {
     CONFIG_STORE_INVALID = 3120, Config, Fatal, "config-store-invalid", "1.6.0", false,
         "The store block is missing or names no module",
         "Busbar keeps keys, budgets, audit and configuration overlays in the store named by top-level `store:`. The block is missing or its `module:` is empty. 1.6.0 has no default store: a 1.5.5 config.yaml with no `store:` block ran on the store built into 1.5.5, and the one-time upgrade writes that block into it, so a config.yaml stamped `config_version: 1` must name its store itself.",
-        "Add `store: { module: <store plugin> }` (for example `sqlite` with a `db_path` setting). For what 1.5.5 did with no block (state kept in RAM, lost on restart), name the in-memory store."
+        "Add `store: { module: <store plugin> }` (naming a store module and its `settings:`; see that plugin's own documentation). For what 1.5.5 did with no block (state kept in RAM, lost on restart), name the compiled-in `memory` store."
         => config_store_invalid(detail) "{detail}",
         example "store:\n  module: \"\"",
         detail "store.module must be non-empty; name the configured Store plugin";
@@ -1484,7 +1489,7 @@ diagnostics! {
 
     CONFIG_METADATA_HOST_ENTRY_INVALID = 3122, Config, Fatal, "config-metadata-host-entry-invalid", "1.6.0", false,
         "A metadata host list entry can never match",
-        "`security.blocked_metadata_hosts` and `security.allow_metadata_hosts` are matched by exact IP or hostname. An entry with a CIDR (`/`) or one that maps to no host would silently never match, leaving the protection it was meant to add (or remove) a no-op.",
+        "`security.blocked_metadata_hosts` is matched by exact IP or hostname. An entry with a CIDR (`/`) or one that maps to no host would silently never match, leaving the protection it was meant to add a no-op.",
         "List exact IPs or hostnames, for example `169.254.169.254`, not `169.254.0.0/16`."
         => config_metadata_host_entry_invalid(detail) "{detail}",
         example "security:\n  blocked_metadata_hosts: [169.254.0.0/16]",
@@ -1501,7 +1506,7 @@ diagnostics! {
     CONFIG_PROVIDER_DESTINATION_BLOCKED = 3124, Config, Fatal, "config-provider-destination-blocked", "1.6.0", false,
         "A provider URL targets a blocked cloud-metadata host",
         "A provider's `base_url`, `base_url` + `path`, `base_url` + `path_base` or `token_url` resolves to a cloud-metadata (IMDS) endpoint on `security.blocked_metadata_hosts`. Busbar would send credentials there, so it refuses the configuration.",
-        "Point the provider at its real API host. If the host is deliberately reachable, list it under `security.allow_metadata_hosts`."
+        "Point the provider at its real API host. No setting admits a cloud-metadata host (BUSBAR-3136), so do not try to allow-list it; if the credential is for a cloud API, use that platform's workload identity."
         => config_provider_destination_blocked(detail) "{detail}",
         example "providers:\n  internal:\n    base_url: http://169.254.169.254",
         detail "provider 'internal' base_url 'http://169.254.169.254' targets a blocked cloud-metadata host '169.254.169.254' (cloud-metadata/IMDS endpoints are denied; ...)";
@@ -1557,7 +1562,7 @@ diagnostics! {
     CONFIG_EXPORT_INVALID = 3131, Config, Fatal, "config-export-invalid", "1.6.0", false,
         "An export sink definition is invalid",
         "An entry under `export:` cannot deliver what it promises: an unknown module, settings the module refuses, a stream or field that does not exist, has no producer or that the module cannot carry, a duplicate, an empty list, a pinned field left out, or `durable: true` that this release does not implement.",
-        "Fix the sink the message names; the message lists the valid streams and fields. docs/export.md documents every stream."
+        "Fix the sink the message names; the message lists the valid streams and fields. The `export` section of docs/configuration.md describes the sinks, and docs/export/busbar.content.v1.schema.json is the content schema."
         => config_export_invalid(detail) "{detail}",
         example "export:\n  siem:\n    module: otlp\n    streams: [audit]",
         detail "export.siem.streams: `audit` is NOT a stream — it was a use case, not a data type";
@@ -1565,7 +1570,7 @@ diagnostics! {
     CONFIG_DESTINATION_REFUSED = 3132, Config, Fatal, "config-destination-refused", "1.6.0", false,
         "An outbound destination is refused by the egress policy",
         "A configured outbound URL (an upstream, a token endpoint, a sink) is not one busbar will send to: it is malformed, uses plaintext for a public host, or targets a blocked cloud-metadata host.",
-        "Use an `https://` URL for a public host, fix the URL the message names, or list a deliberately reachable metadata host under `security.allow_metadata_hosts`."
+        "Use an `https://` URL for a public host, fix the URL the message names, or point the URL at its real host: no setting admits a cloud-metadata host (BUSBAR-3136)."
         => config_destination_refused(detail) "{detail}",
         example "providers:\n  remote: { base_url: http://api.example.com }",
         detail "provider 'remote' base_url must use a secure connection for a public host; plaintext is permitted only for a private/loopback local-model upstream";
@@ -1902,10 +1907,11 @@ diagnostics! {
         "New governed requests are refused with a 503: either the gateway is shutting down (cause=drain, reason drain, retry on another instance) or the number of finished governed requests whose spend still awaits settlement in the store reached its cap (cause=custody_full, reason durability_unavailable, Retry-After 1). Running requests and streams are never refused, and every refusal is audited on its unit. Logged once per episode; an Info line follows when the backlog falls below 90% of the cap.",
         "For custody_full, check the store's latency and throughput: settlement is slower than governed arrival. For drain, route traffic to another instance until this one restarts.";
 
-    /// The store refused a whole unit checkpoint batch; the rest of that flush uses smaller batches.
+    /// The store refused a whole unit checkpoint or recovery batch; the rest of that flush uses smaller
+    /// batches.
     UNIT_FLUSH_BATCH_REDUCED = 8031, Governance, Actionable, "unit-flush-batch-reduced", "1.6.0", false,
         "A unit checkpoint flush batch was refused whole; smaller batches were used",
-        "The settlement flusher writes finished and running governed units to the store in batches, one write per batch. The store refused a whole batch with no effect (for example a candidate above its size limit) while this writer still held its authority, so the flusher halved the batch size for the rest of that batch of up to 128 items and retried each half. Nothing is lost or written twice. The b field is the batch size it ended with. Logged at most once per batch.",
+        "The settlement flusher writes finished and running governed units, and the recovery records that settle them, to the store in batches, one write per batch. The store refused a whole batch with no effect (for example a candidate above its size limit) while this writer still held its authority, so the flusher halved the batch size for the rest of that batch of up to 128 items and retried each half. Nothing is lost or written twice. The b field is the batch size it ended with. Logged at most once per batch.",
         "None if it is rare. If it repeats on every flush, the store's per-write limit is below the flusher's batch of 128 items: raise the store's candidate size limit, or expect settlement to take more round trips.";
 
     /// A writer that never retired was closed, but its shutdown.drain_incomplete record could not be queued.

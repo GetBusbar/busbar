@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Current-format import preparation. Historical profiles and upgrade routing
-//! live in busbar-migrations, which depends on this facade; kernel never imports it.
+//! Current-format import preparation over the persistence facade.
 
 pub mod candidate_codec;
+pub mod r0;
 pub mod records;
 pub mod target;
 

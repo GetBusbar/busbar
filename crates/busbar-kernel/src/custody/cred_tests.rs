@@ -12,8 +12,8 @@ use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::fail::failed::{F_BUSY, F_UNAVAILABLE};
 use busbar_plugin_abi::fail::refused::R_DENIED;
 use busbar_plugin_abi::host_side::caller::BoxFut;
-use busbar_plugin_loader::ports::auth::OutboundAnswer;
-use busbar_plugin_loader::ports::PortError;
+use busbar_ports::auth::OutboundAnswer;
+use busbar_ports::PortError;
 
 use super::{CredCache, CredEvent, CredGet, CredKey, CredPolicy, CredentialCache};
 use crate::retry::Retry;

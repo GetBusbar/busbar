@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! The per-(pool, destination) circuit-breaker state machine.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use busbar_contract::json::JsonValueMutTrait;
 use busbar_kernel_audit::{AuditChain, AuditKeySet, AuditSigningKey};
 
 fn example(page: &str, index: usize) -> Value {
@@ -12,7 +13,7 @@ fn example(page: &str, index: usize) -> Value {
         .split("```")
         .next()
         .unwrap();
-    serde_json::from_str(body).unwrap()
+    json::parse_value(body.as_bytes()).unwrap()
 }
 
 fn signer() -> AuditSigningKey {
@@ -22,18 +23,18 @@ fn signer() -> AuditSigningKey {
 fn keys() -> Value {
     let mut keys = AuditKeySet::new();
     keys.insert(AuditVerifyingKey::from_hex(&signer().public_key_hex()).unwrap());
-    serde_json::from_str(&busbar_kernel_audit::expose::keys_body(&keys)).unwrap()
+    json::parse_value(busbar_kernel_audit::expose::keys_body(&keys).as_bytes()).unwrap()
 }
 
 fn sign(record: &mut Value) {
     let hash = record_digest(record, DIGEST_RECIPE).unwrap();
-    record["hash"] = json!(hash);
-    record["signature"] = json!(signer().sign_digest(&hash));
-    record["key_id"] = json!(signer().key_id());
+    record["hash"] = json::json!(hash);
+    record["signature"] = json::json!(signer().sign_digest(&hash));
+    record["key_id"] = json::json!(signer().key_id());
 }
 
 fn head(record: &Value) -> Value {
-    json!({
+    json::json!({
         "recipe": DIGEST_RECIPE,
         "signature_domain": SIGNATURE_DOMAIN,
         "algorithm": SIGNATURE_ALGORITHM,
@@ -54,16 +55,16 @@ fn chain() -> (Value, Value, Value) {
     let mut records = Vec::new();
     for seq in 1..=3 {
         let mut record = range["records"][0].clone();
-        record["seq"] = json!(seq.to_string());
-        record["prev_hash"] = json!(previous);
+        record["seq"] = json::json!(seq.to_string());
+        record["prev_hash"] = json::json!(previous);
         sign(&mut record);
         previous = text(&record, "hash").unwrap().to_owned();
         records.push(record);
     }
     let head = head(records.last().unwrap());
-    range["to"] = json!(3);
+    range["to"] = json::json!(3);
     range["anchor"] = head["head"].clone();
-    range["records"] = json!(records);
+    range["records"] = json::json!(records);
     (keys(), range, head)
 }
 
@@ -162,18 +163,19 @@ fn current_producer_output_verifies_with_wide_numbers_and_repeated_groups() {
     record.key_id = Some(signer().key_id().into());
     let records = vec![record];
     let chain = AuditChain::resume(&records);
-    let range = serde_json::from_str(&busbar_kernel_audit::expose::range_body(
-        &chain, &records, 1, 1,
-    ))
+    let range = json::parse_value(
+        busbar_kernel_audit::expose::range_body(&chain, &records, 1, 1).as_bytes(),
+    )
     .unwrap();
-    let head = serde_json::from_str(&busbar_kernel_audit::expose::head_body(&chain)).unwrap();
+    let head =
+        json::parse_value(busbar_kernel_audit::expose::head_body(&chain).as_bytes()).unwrap();
     assert!(verify(&keys(), &range, Some(&head)).is_ok());
 }
 
 #[test]
 fn a_signed_window_does_not_claim_external_anchoring_or_freshness() {
     let (keys, mut range, head) = chain();
-    range["from"] = json!(2);
+    range["from"] = json::json!(2);
     range["records"].as_array_mut().unwrap().remove(0);
     let report = verify(&keys, &range, None).unwrap();
     assert_eq!(report["result"], "signed-consistent-window");
@@ -190,7 +192,7 @@ fn a_signed_window_does_not_claim_external_anchoring_or_freshness() {
 fn tamper_deletion_reorder_and_broken_link_are_refused() {
     let (keys, range, _) = chain();
     let mut tamper = range.clone();
-    tamper["records"][1]["op_class"] = json!("changed");
+    tamper["records"][1]["op_class"] = json::json!("changed");
     assert!(verify(&keys, &tamper, None).is_err());
     let mut deletion = range.clone();
     deletion["records"].as_array_mut().unwrap().remove(1);
@@ -199,7 +201,7 @@ fn tamper_deletion_reorder_and_broken_link_are_refused() {
     reorder["records"].as_array_mut().unwrap().swap(1, 2);
     assert!(verify(&keys, &reorder, None).is_err());
     let mut link = range;
-    link["records"][1]["prev_hash"] = json!("00".repeat(32));
+    link["records"][1]["prev_hash"] = json::json!("00".repeat(32));
     sign(&mut link["records"][1]);
     assert!(verify(&keys, &link, None).is_err());
 }
@@ -212,7 +214,7 @@ fn incomplete_fetch_is_not_reported_as_tampering() {
         verify(&keys, &range, None).unwrap_err(),
         "the requested fetch is incomplete or contains extra records"
     );
-    range["records"] = json!([]);
+    range["records"] = json::json!([]);
     assert!(verify(&keys, &range, None).is_err());
 }
 
@@ -220,7 +222,7 @@ fn incomplete_fetch_is_not_reported_as_tampering() {
 fn a_rewritten_truncation_envelope_needs_an_independently_retained_head() {
     let (keys, mut range, trusted) = chain();
     range["records"].as_array_mut().unwrap().pop();
-    range["to"] = json!(2);
+    range["to"] = json::json!(2);
     range["anchor"] = head(&range["records"][1])["head"].clone();
     assert!(verify(&keys, &range, None).is_ok());
     assert!(verify(&keys, &range, Some(&trusted)).is_err());
@@ -229,7 +231,7 @@ fn a_rewritten_truncation_envelope_needs_an_independently_retained_head() {
 #[test]
 fn a_resigned_rewrite_cannot_match_the_retained_terminal_head() {
     let (keys, mut range, trusted) = chain();
-    range["records"][2]["op_class"] = json!("rewritten");
+    range["records"][2]["op_class"] = json::json!("rewritten");
     sign(&mut range["records"][2]);
     range["anchor"] = head(&range["records"][2])["head"].clone();
     assert!(verify(&keys, &range, None).is_ok());
@@ -241,15 +243,15 @@ fn wrong_key_bad_signature_unsigned_and_forged_anchor_metadata_are_refused() {
     let (keys, range, trusted) = chain();
     assert!(verify(&example(V4, 2), &range, None).is_err());
     let mut altered = range.clone();
-    altered["records"][0]["signature"] = json!("00".repeat(64));
+    altered["records"][0]["signature"] = json::json!("00".repeat(64));
     assert!(verify(&keys, &altered, None).is_err());
-    altered["records"][0]["signature"] = Value::Null;
+    altered["records"][0]["signature"] = Value::new();
     assert!(verify(&keys, &altered, None).is_err());
     let mut altered = range.clone();
-    altered["anchor"]["wall"] = json!(1);
+    altered["anchor"]["wall"] = json::json!(1);
     assert!(verify(&keys, &altered, None).is_err());
     let mut altered = trusted;
-    altered["head"]["seq"] = json!(2);
+    altered["head"]["seq"] = json::json!(2);
     assert!(verify(&keys, &range, Some(&altered)).is_err());
 }
 
@@ -258,14 +260,14 @@ fn unknown_versions_domains_algorithms_and_key_identifiers_are_refused() {
     let (keys, range, _) = chain();
     for member in ["recipe", "signature_domain", "algorithm"] {
         let mut bad = range.clone();
-        bad[member] = json!("unknown");
+        bad[member] = json::json!("unknown");
         assert!(verify(&keys, &bad, None).is_err());
     }
     let mut bad = range.clone();
-    bad["records"][0]["recipe"] = json!("busbar.audit.digest.v99");
+    bad["records"][0]["recipe"] = json::json!("busbar.audit.digest.v99");
     assert!(verify(&keys, &bad, None).is_err());
     let mut bad = keys;
-    bad["keys"][0]["key_id"] = json!("00".repeat(8));
+    bad["keys"][0]["key_id"] = json::json!("00".repeat(8));
     assert!(verify(&bad, &range, None).is_err());
 }
 
@@ -273,20 +275,20 @@ fn unknown_versions_domains_algorithms_and_key_identifiers_are_refused() {
 fn malformed_numbers_group_counts_and_genesis_are_refused() {
     let (keys, range, _) = chain();
     for value in [
-        json!(7),
-        json!("07"),
-        json!("+7"),
-        json!("18446744073709551616"),
+        json::json!(7),
+        json::json!("07"),
+        json::json!("+7"),
+        json::json!("18446744073709551616"),
     ] {
         let mut bad = range.clone();
         bad["records"][0]["node"] = value;
         assert!(verify(&keys, &bad, None).is_err());
     }
     let mut bad = range.clone();
-    bad["records"][0]["children_count"] = json!("1");
+    bad["records"][0]["children_count"] = json::json!("1");
     assert!(verify(&keys, &bad, None).is_err());
     let mut bad = range;
-    bad["records"][0]["prev_hash"] = json!("00".repeat(32));
+    bad["records"][0]["prev_hash"] = json::json!("00".repeat(32));
     sign(&mut bad["records"][0]);
     assert!(verify(&keys, &bad, None).is_err());
 }
@@ -295,7 +297,7 @@ fn malformed_numbers_group_counts_and_genesis_are_refused() {
 fn mixed_v2_v4_records_and_a_rotated_trusted_key_verify() {
     let (mut keys, mut range, _) = chain();
     let mut old = example(V2, 0)["records"][0].clone();
-    old["recipe"] = json!(DIGEST_RECIPE_V2);
+    old["recipe"] = json::json!(DIGEST_RECIPE_V2);
     range["records"][0] = old;
     keys["keys"]
         .as_array_mut()
@@ -314,10 +316,10 @@ fn mixed_v2_v4_records_and_a_rotated_trusted_key_verify() {
 fn absent_or_weak_trusted_keys_cannot_authenticate_a_range() {
     let (keys, range, _) = chain();
     let mut bad = keys.clone();
-    bad["keys"] = json!([]);
+    bad["keys"] = json::json!([]);
     assert!(verify(&bad, &range, None).is_err());
     bad = keys.clone();
-    bad["keys"][0]["public_key"] = json!(format!("01{}", "00".repeat(31)));
+    bad["keys"][0]["public_key"] = json::json!(format!("01{}", "00".repeat(31)));
     assert!(verify(&bad, &range, None).is_err());
     bad = keys;
     let duplicate = bad["keys"][0].clone();
@@ -344,7 +346,7 @@ fn file_options_run_offline_and_refuse_missing_or_repeated_trust_inputs() {
     std::fs::create_dir(&files.0).unwrap();
     let (keys, range, head) = chain();
     for (name, body) in [("keys", keys), ("range", range), ("head", head)] {
-        std::fs::write(files.0.join(name), serde_json::to_vec(&body).unwrap()).unwrap();
+        std::fs::write(files.0.join(name), json::to_vec(&body).unwrap()).unwrap();
     }
     let args = vec![
         "--keys".into(),
@@ -368,14 +370,14 @@ fn file_options_run_offline_and_refuse_missing_or_repeated_trust_inputs() {
 fn keyed_recipe_rejects_noncanonical_presence_and_key_spelling() {
     let (_, range, _) = chain();
     let mut record = range["records"][0].clone();
-    record["recipe"] = json!(DIGEST_RECIPE);
+    record["recipe"] = json::json!(DIGEST_RECIPE);
     for (present, key) in [
         ("0", "".to_string()),
         ("1", "00".repeat(20)),
         ("1", "4a".repeat(20)),
     ] {
-        record["rate_card_key_present"] = json!(present);
-        record["rate_card_version"] = json!(key);
+        record["rate_card_key_present"] = json::json!(present);
+        record["rate_card_version"] = json::json!(key);
         assert!(record_digest(&record, DIGEST_RECIPE).is_ok());
     }
     for (present, key) in [
@@ -388,8 +390,8 @@ fn keyed_recipe_rejects_noncanonical_presence_and_key_spelling() {
         ("1", "0".repeat(41)),
         ("1", "é".repeat(20)),
     ] {
-        record["rate_card_key_present"] = json!(present);
-        record["rate_card_version"] = json!(key);
+        record["rate_card_key_present"] = json::json!(present);
+        record["rate_card_version"] = json::json!(key);
         assert!(record_digest(&record, DIGEST_RECIPE).is_err());
     }
 }
@@ -405,9 +407,9 @@ fn mixed_v2_v4_v5_window_verifies_without_rewriting_old_signed_record() {
         .push(example(V2, 2)["keys"][0].clone());
     range["records"][1]["prev_hash"] = original["hash"].clone();
     sign(&mut range["records"][1]);
-    range["records"][2]["recipe"] = json!(DIGEST_RECIPE);
-    range["records"][2]["rate_card_key_present"] = json!("1");
-    range["records"][2]["rate_card_version"] = json!("00".repeat(20));
+    range["records"][2]["recipe"] = json::json!(DIGEST_RECIPE);
+    range["records"][2]["rate_card_key_present"] = json::json!("1");
+    range["records"][2]["rate_card_version"] = json::json!("00".repeat(20));
     range["records"][2]["prev_hash"] = range["records"][1]["hash"].clone();
     sign(&mut range["records"][2]);
     let trusted = head(&range["records"][2]);
@@ -421,7 +423,7 @@ fn mixed_v2_v4_v5_window_verifies_without_rewriting_old_signed_record() {
         "a record recipe is absent"
     );
 
-    range["recipe"] = json!(DIGEST_RECIPE_V2);
+    range["recipe"] = json::json!(DIGEST_RECIPE_V2);
     let report = verify(&keys, &range, Some(&trusted)).unwrap();
     assert_eq!(report["result"], "complete-through-trusted-head");
     assert_eq!(report["records"], 3);
@@ -441,16 +443,16 @@ fn mixed_v5_v6_v5_exact_quantity_chain_verifies_with_explicit_dispatch() {
     let mut previous = String::new();
     for index in 0..3 {
         let record = &mut range["records"][index];
-        record["recipe"] = json!(if index == 1 {
+        record["recipe"] = json::json!(if index == 1 {
             DIGEST_RECIPE_V6
         } else {
             DIGEST_RECIPE
         });
-        record["rate_card_key_present"] = json!("0");
-        record["rate_card_version"] = json!("");
-        record["prev_hash"] = json!(previous);
-        record["lines_count"] = json!("1");
-        record["lines"] = json!([{
+        record["rate_card_key_present"] = json::json!("0");
+        record["rate_card_version"] = json::json!("");
+        record["prev_hash"] = json::json!(previous);
+        record["lines_count"] = json::json!("1");
+        record["lines"] = json::json!([{
             "class": "input",
             "quantity": if index == 1 { "27.5" } else { "27" },
             "source": "Count",
@@ -459,12 +461,12 @@ fn mixed_v5_v6_v5_exact_quantity_chain_verifies_with_explicit_dispatch() {
         sign(record);
         previous = record["hash"].as_str().unwrap().to_owned();
     }
-    range["recipe"] = json!(DIGEST_RECIPE);
+    range["recipe"] = json::json!(DIGEST_RECIPE);
     let trusted = head(&range["records"][2]);
     range["anchor"] = trusted["head"].clone();
     assert_eq!(verify(&keys, &range, Some(&trusted)).unwrap()["records"], 3);
     let original = range["records"][0].clone();
-    range["records"][1]["lines"][0]["quantity"] = json!("27.50");
+    range["records"][1]["lines"][0]["quantity"] = json::json!("27.50");
     assert_eq!(
         record_digest(&range["records"][1], DIGEST_RECIPE).unwrap_err(),
         "noncanonical exact audit quantity"
@@ -571,12 +573,12 @@ fn v7_records_verify_against_the_published_page() {
         records.push(record);
     }
     let chain = AuditChain::resume(&records);
-    let range: Value = serde_json::from_str(&busbar_kernel_audit::expose::range_body(
-        &chain, &records, 1, 2,
-    ))
+    let range: Value = json::parse_value(
+        busbar_kernel_audit::expose::range_body(&chain, &records, 1, 2).as_bytes(),
+    )
     .unwrap();
     let head: Value =
-        serde_json::from_str(&busbar_kernel_audit::expose::head_body(&chain)).unwrap();
+        json::parse_value(busbar_kernel_audit::expose::head_body(&chain).as_bytes()).unwrap();
     assert_eq!(range["recipe"], DIGEST_RECIPE_V7);
     assert_eq!(range["records"][1]["recipe"], DIGEST_RECIPE_V7);
     let report = verify(&keys(), &range, Some(&head)).unwrap();
@@ -613,13 +615,13 @@ fn v7_records_verify_against_the_published_page() {
     );
 
     let mut tampered = range.clone();
-    tampered["records"][0]["attribution"] = json!("team\u{1f}default\u{1f}other");
+    tampered["records"][0]["attribution"] = json::json!("team\u{1f}default\u{1f}other");
     assert!(
         verify(&keys(), &tampered, Some(&head)).is_err(),
         "the attribution is digested"
     );
     let mut tampered = range;
-    tampered["records"][1]["attempts"][0]["outcome"] = json!("ok");
+    tampered["records"][1]["attempts"][0]["outcome"] = json::json!("ok");
     assert!(
         verify(&keys(), &tampered, Some(&head)).is_err(),
         "an attempt is digested"

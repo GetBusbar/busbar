@@ -191,7 +191,7 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
         [(
             "editor".into(),
             busbar_kernel::config::RoleBindingCfg {
-                verbs: Some(serde_json::json!(["put_config_settings"])),
+                verbs: Some(busbar_contract::json::json!(["put_config_settings"])),
                 ..Default::default()
             },
         )]

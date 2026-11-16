@@ -192,9 +192,6 @@ pub use crate::read_sized_field;
 
 extern "Rust" {
     fn __busbar_kernel_root(seal: crate::caps::KernelSeal) -> Box<dyn std::any::Any + Send + Sync>;
-    fn __busbar_migrations_root(
-        seal: crate::caps::MigrationSeal,
-    ) -> Box<dyn std::any::Any + Send + Sync>;
     fn __busbar_persistence_root(
         seal: crate::caps::SlotSeal,
     ) -> Box<dyn std::any::Any + Send + Sync>;
@@ -209,15 +206,6 @@ pub(crate) fn kernel_root(seal: crate::caps::KernelSeal) -> Box<dyn std::any::An
     // definition agree. The definition takes the seal by value and returns an owned box; it
     // touches no other state.
     unsafe { __busbar_kernel_root(seal) }
-}
-
-#[inline]
-pub(crate) fn migration_root(
-    seal: crate::caps::MigrationSeal,
-) -> Box<dyn std::any::Any + Send + Sync> {
-    // SAFETY: busbar-migrations defines this Rust-ABI symbol exactly once with
-    // this signature and private return holder, just like the kernel root above.
-    unsafe { __busbar_migrations_root(seal) }
 }
 
 #[inline]

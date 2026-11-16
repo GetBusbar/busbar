@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K6; blocked (re-checked on dev 2026-11-16): the K6 credential cache / dialect-auth core arms need kernel wiring that is not on dev"]
+#[ignore = "owner: W1-K6; re-checked 2026-11-16, W2-SW-AUTH: the cache is on dev (busbar-kernel custody/cred.rs, with the single-flight, refresh-ahead, failure-window, cap and max-hold rules unit-tested in custody/cred_tests.rs) but nothing outside tests constructs a CredCache or calls auth_bindings::upstream_credential (no production caller; the live outbound path predates the AuthPort), so the end-to-end arms wait on the auth switch-over (draft MR !2481); (h), (l) and (m) also need the auth-oauth and auth-header images and a counting allocator"]
 fn credential_cache_core_arms() {
     todo!("owner: W1-K6 (C-CRED-CACHE)")
 }

@@ -5,6 +5,7 @@ use super::{
     application_with_document,
     browser::{location, percent_decode, query_param, send, Jar},
 };
+use busbar_contract::json::JsonValueTrait as _;
 use busbar_core_oauth2::config::OauthAsCfg;
 use std::sync::Arc;
 
@@ -60,7 +61,7 @@ pub(super) async fn serve(
 async fn register_client(origin: &str, redirect: &str, scopes: &str) -> String {
     let response = reqwest::Client::new()
         .post(format!("{origin}/register"))
-        .json(&serde_json::json!({
+        .json(&busbar_contract::json::json!({
             "redirect_uris":[redirect], "token_endpoint_auth_method":"none",
             "response_types":["code"], "grant_types":["authorization_code","refresh_token"],
             "scope":scopes,
@@ -71,7 +72,7 @@ async fn register_client(origin: &str, redirect: &str, scopes: &str) -> String {
     let status = response.status();
     let body = response.text().await.expect("registration body");
     assert_eq!(status, 201, "the real registration succeeds: {body}");
-    serde_json::from_str::<serde_json::Value>(&body).expect("registration JSON")["client_id"]
+    busbar_contract::json::parse_value(body.as_bytes()).expect("registration JSON")["client_id"]
         .as_str()
         .expect("registered client id")
         .to_owned()

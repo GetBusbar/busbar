@@ -37,12 +37,13 @@ pub mod admission;
 )]
 pub mod auth_bindings;
 pub mod boot;
+/// The boot's configuration reader rules and its one application build.
+pub(crate) mod boot_app;
 pub mod card_history;
 pub mod cli;
 // The one cold module (LINT-RULES LR-167): refusal text and rare first-sight paths the request-path
 // modules beside it call out of line.
 pub(crate) mod cold;
-pub mod config_migrate;
 pub mod connector;
 pub mod credentials;
 // busbar:request-path
@@ -193,7 +194,8 @@ pub(crate) mod loader;
 pub(crate) mod measurements;
 /// The migrate-on-boot seam: step 1 (the stamp) and step 5 (the write and re-exec).
 pub(crate) mod migrate;
-pub mod migration_secrets;
+/// Migrate-on-boot steps 4 and 5S/5C: core's records step over the opened store.
+pub(crate) mod migrate_records;
 /// The boot's MIN-3 registry: Need handlers, image admission, the boot walk (ROOT-BOOT).
 pub(crate) mod min3_boot;
 /// K9: each MIN-3 plane seat's egress walk and channel carrier, composed at boot from the configured upstreams.
@@ -262,6 +264,8 @@ pub mod principal_transition;
 pub(crate) mod records_capture;
 pub mod registry;
 // busbar:request-path
+/// The launch variables 1.6.0 retired: the BUSBAR-3029 "set but ignored" notice.
+pub(crate) mod retired_env;
 pub(crate) mod secret_custody;
 #[cfg_attr(
     not(test),
@@ -281,7 +285,6 @@ pub(crate) mod secret_custody;
 pub mod serve;
 pub mod settings_public;
 pub mod shutdown;
-pub mod startup_upgrade;
 // busbar:request-path
 #[cfg_attr(
     not(test),

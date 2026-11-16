@@ -38,7 +38,7 @@ pub(super) enum Member<'a> {
 
 /// Whether `bytes` is one JSON object of the given shape (and nothing after it).
 pub(super) fn check(bytes: &[u8], level: &Level<'_>) -> bool {
-    let mut de = serde_json::Deserializer::from_slice(bytes);
+    let mut de = busbar_contract::json::Deserializer::from_slice(bytes);
     level.deserialize(&mut de).is_ok() && de.end().is_ok()
 }
 

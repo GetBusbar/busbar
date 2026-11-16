@@ -3,6 +3,7 @@
 
 use busbar_contract::caps::Pass;
 use busbar_contract::caps::{Audit as AuditStep, MeterClassId};
+use busbar_contract::json;
 use busbar_contract::json::JsonValueTrait as _;
 
 use busbar_kernel_audit::journal::{from_journal_body, journal_body, JOURNAL_TAG};
@@ -286,8 +287,8 @@ fn v7_frames_whole_and_fractional_quantities() {
         "a torn v7 tail"
     );
 
-    let body: busbar_contract::json::Value = busbar_contract::json::parse_str(
-        &busbar_kernel_audit::expose::range_body(&chain, &records, 1, 3),
+    let body: json::Value = json::parse_value(
+        busbar_kernel_audit::expose::range_body(&chain, &records, 1, 3).as_bytes(),
     )
     .unwrap();
     assert_eq!(body["recipe"], "busbar.audit.digest.v7");
@@ -409,8 +410,9 @@ fn v7_records_tail_is_sealed_only_when_kept() {
     );
     AuditChain::verify_chain(&[bare.clone(), kept.clone(), labels_only.clone()]).unwrap();
 
-    let body: busbar_contract::json::Value = busbar_contract::json::parse_str(
-        &busbar_kernel_audit::expose::range_body(&chain, &[bare, kept, labels_only], 1, 3),
+    let body: json::Value = json::parse_value(
+        busbar_kernel_audit::expose::range_body(&chain, &[bare, kept, labels_only], 1, 3)
+            .as_bytes(),
     )
     .unwrap();
     let first = &body["records"][0];

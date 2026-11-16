@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! One object-safety fixture per kind trait.
 
 use busbar_contract::bounded::PlaneAlloc;
@@ -58,7 +61,7 @@ fn the_remaining_kinds_shapes_are_constructible() {
         state: ChallengeState(vec![2]),
         rounds_left: 1,
     };
-    let _: SecretRef = serde_json::from_value(serde_json::json!({
+    let _: SecretRef = busbar_contract::json::from_value(&busbar_contract::json::json!({
         "module":"fixture-source", "settings":{"slot":"fixture-key"}
     }))
     .unwrap();

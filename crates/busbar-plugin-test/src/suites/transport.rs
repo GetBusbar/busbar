@@ -6,8 +6,8 @@
 //!
 //! Cases covered (IF §14, L9's suite): describe, `check` and `open` through the registry; C-ALPN (the cached
 //! `offer` per role, none for a role the instance does not declare, the case's ALPN among the offer); the scripted
-//! `begin` + `ingest` cases (stream count, C-TOKEN-PAD through the adapter's decode, C-MSG-FLAGS shape); EOF;
-//! C-TRANSPORT-REFUSE (`emit(E_REFUSE)` before and after a head, a status outside 400..=599 REFUSED R_INVALID, no
+//! `begin` + (ROLE_CLIENT) `emit(E_HEAD)` on stream 0 + `ingest` cases (stream count, C-TOKEN-PAD through the
+//! adapter's decode, C-MSG-FLAGS shape); EOF; C-TRANSPORT-REFUSE (`emit(E_REFUSE)` before and after a head, a status outside 400..=599 REFUSED R_INVALID, no
 //! head, body, upgrade or open in the answer); C-TRANSPORT-CLOSE (`emit(E_CLOSE)` for every reason answers only
 //! Write or SendTo and at most one Close); C-TRANSPORT-BACKPRESSURE (STREAM_FULL only from `emit`, STREAM_WRITABLE
 //! only from ingest, timer, datagram and event; neither in a refuse or close answer); C-DTLS-FP (a datagram
@@ -17,18 +17,17 @@ use std::collections::BTreeSet;
 
 use busbar_plugin_abi::fail::refused::R_INVALID;
 use busbar_plugin_abi::plugin::Plugin;
+use busbar_plugin_abi::records::{tag as head_tag, Reply, Writer};
 use busbar_plugin_abi::transport::{
-    CR_CAPACITY_EXHAUSTED, CR_DRAIN, CR_NORMAL, CR_REVOKED, CR_TIMEOUT, E_CLOSE, E_REFUSE,
+    CR_CAPACITY_EXHAUSTED, CR_DRAIN, CR_NORMAL, CR_REVOKED, CR_TIMEOUT, E_CLOSE, E_HEAD, E_REFUSE,
     E_REFUSE_HEAD_SENT, ROLE_CLIENT, ROLE_DATAGRAM, ROLE_SERVER,
 };
 use busbar_plugin_abi::types::KindCode;
-use busbar_plugin_loader::ports::transport::{
-    ConnIn, TransportOut, TransportPort, TransportSession,
-};
-use busbar_plugin_loader::ports::PortError;
+use busbar_ports::transport::{ConnIn, TransportOut, TransportPort, TransportSession};
+use busbar_ports::PortError;
 
 use super::harness::Harness;
-use super::TransportCase;
+use super::TransportConnCase;
 use crate::fake_needs::FakeNeeds;
 
 /// What one answer's sink saw, owned so it outlives the call.
@@ -71,17 +70,18 @@ impl Tally {
     }
 }
 
-fn conn(role: u32, alpn: &str) -> ConnIn<'_> {
+fn conn<'a>(case: &TransportConnCase<'a>) -> ConnIn<'a> {
+    let role = case.case.role;
     ConnIn {
         role,
-        flags: 0,
-        alpn,
+        flags: case.flags,
+        alpn: case.case.alpn,
         sni: "",
         peer: "192.0.2.1:50000",
         local: "192.0.2.2:8443",
         tls_peer_cert: &[],
-        leftover: &[],
-        head: &[],
+        leftover: case.leftover,
+        head: case.head,
         local_fingerprint: if role == ROLE_DATAGRAM {
             "sha-256 00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF"
         } else {
@@ -120,6 +120,56 @@ fn ingest(port: &dyn TransportPort, s: &mut TransportSession, bytes: &[u8]) -> T
     tally
 }
 
+/// The suite's default ROLE_CLIENT head: what core emits for a body-less GET `/` dial of `peer.test` (IF §8.7
+/// round 22: H_METHOD, H_PATH, H_AUTHORITY, H_SCHEME, no PAIR, no H_BUDGET_NS, no H_BODY_LEN).
+fn default_dial_head() -> Reply {
+    let mut head = Reply::new();
+    let written = head
+        .put_text(head_tag::H_METHOD, "GET")
+        .and_then(|()| head.put_text(head_tag::H_PATH, "/"))
+        .and_then(|()| head.put_text(head_tag::H_AUTHORITY, "peer.test"))
+        .and_then(|()| head.put_text(head_tag::H_SCHEME, "https"));
+    assert!(
+        written.is_ok(),
+        "transport suite: the default dial head does not fit"
+    );
+    head
+}
+
+/// ROLE_CLIENT: core opens a stream with `emit(E_HEAD)` on stream 0 (IF §8.7). The answer may name at most one
+/// opened stream, and STREAM_FULL only for that stream; STREAM_WRITABLE is never an `emit` answer.
+fn open_client(port: &dyn TransportPort, s: &mut TransportSession, head: &[u8], n: usize) -> Tally {
+    let mut tally = Tally::default();
+    if let Err(e) = port.emit(s, 0, E_HEAD, 0, head, &mut |o| tally.note(&o)) {
+        panic!("case {n}: ROLE_CLIENT emit(E_HEAD) on stream 0 failed: {e:?}");
+    }
+    assert!(
+        tally.opened.len() <= 1,
+        "case {n}: emit(E_HEAD) opened {} streams {:?}, at most one is valid",
+        tally.opened.len(),
+        tally.opened
+    );
+    assert!(
+        tally.opened.iter().all(|&s| s != 0),
+        "case {n}: emit(E_HEAD) opened stream 0"
+    );
+    assert!(
+        tally.full.iter().all(|s| tally.opened.contains(s)),
+        "case {n}: C-TRANSPORT-BACKPRESSURE: emit(E_HEAD) answered STREAM_FULL {:?} for a stream it did not open",
+        tally.full
+    );
+    assert!(
+        tally.writable.is_empty(),
+        "case {n}: C-TRANSPORT-BACKPRESSURE: STREAM_WRITABLE is not an emit answer"
+    );
+    assert!(
+        tally.closes <= 1,
+        "case {n}: emit(E_HEAD) answered CLOSE {} times",
+        tally.closes
+    );
+    tally
+}
+
 /// An `emit` that must answer only goodbye or refusal bytes: no stream records, no flow records, no upgrade.
 fn emit_terminal(
     port: &dyn TransportPort,
@@ -146,7 +196,7 @@ fn assert_terminal(what: &str, t: &Tally) {
     );
 }
 
-pub(super) fn run(plugin: &'static Plugin, config: &[u8], cases: &[TransportCase<'_>]) {
+pub(super) fn run(plugin: &'static Plugin, config: &[u8], cases: &[TransportConnCase<'_>]) {
     let h = Harness::admit(plugin, FakeNeeds::default())
         .unwrap_or_else(|r| panic!("transport suite: admission refused: {r:?}"));
     assert!(
@@ -217,7 +267,9 @@ pub(super) fn run(plugin: &'static Plugin, config: &[u8], cases: &[TransportCase
         );
     }
 
-    for (n, case) in cases.iter().enumerate() {
+    let default_head = default_dial_head();
+    for (n, conn_case) in cases.iter().enumerate() {
+        let case = &conn_case.case;
         let offer = port.alpn(case.role);
         if !case.alpn.is_empty() {
             assert!(
@@ -228,14 +280,22 @@ pub(super) fn run(plugin: &'static Plugin, config: &[u8], cases: &[TransportCase
             );
         }
 
-        // Scripted input: begin, every chunk, then EOF.
-        let c = conn(case.role, case.alpn);
+        // Scripted input: begin, on ROLE_CLIENT the E_HEAD that opens the stream, every chunk, then EOF.
+        let c = conn(conn_case);
         let (mut session, opened) = begin(&*port, &c);
         assert!(
             opened.full.is_empty() && opened.writable.is_empty(),
             "case {n}: begin answered a flow record"
         );
         let mut streams = opened.streams;
+        if case.role == ROLE_CLIENT {
+            let head = if conn_case.dial_head.is_empty() {
+                default_head.as_bytes()
+            } else {
+                conn_case.dial_head
+            };
+            streams.extend(open_client(&*port, &mut session, head, n).streams);
+        }
         for chunk in case.input {
             streams.extend(ingest(&*port, &mut session, chunk).streams);
         }

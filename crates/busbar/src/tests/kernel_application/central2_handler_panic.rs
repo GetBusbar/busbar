@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 use crate::root::test_plugins as plugins;
+use busbar_contract::json;
 use std::sync::Arc;
 #[tokio::test]
 async fn a_panicking_handler_fails_only_its_own_request() {
@@ -175,7 +176,8 @@ async fn a_panicking_handler_fails_only_its_own_request() {
         ct.starts_with("application/json"),
         "content-type was `{ct}`"
     );
-    let v: serde_json::Value = r.json().await.expect("the 500 body is JSON");
+    let v: json::Value =
+        json::parse_value(&r.bytes().await.unwrap()).expect("the 500 body is JSON");
     assert_eq!(
         v["error"]["type"], "api_error",
         "the kernel's standard dialect-native error body, got {v}"
@@ -201,7 +203,7 @@ async fn a_panicking_handler_fails_only_its_own_request() {
         .to_str()
         .unwrap()
         .starts_with("application/json"));
-    let envelope: serde_json::Value = response.json().await.unwrap();
+    let envelope: json::Value = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(envelope["error"]["code"], "internal");
     let next = client
         .get(format!("http://{admin_addr}/api/v1/admin/keys"))

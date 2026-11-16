@@ -13,10 +13,10 @@ use busbar_plugin_abi::plane::{
     P_CHANNEL, P_ERROR,
 };
 use busbar_plugin_abi::records::{tag as g, Records, Reply, Writer};
-use busbar_plugin_loader::ports::plane::{
+use busbar_ports::plane::{
     PlaneIn, PlaneOut, PlanePort, PlaneSession, RouteInfo, TargetIn, UsageClass,
 };
-use busbar_plugin_loader::ports::{CallCx, PortError};
+use busbar_ports::{CallCx, PortError};
 
 use super::{decode_tick, demux, Attached, ChannelAttach, ChannelHost, Held};
 use crate::plane_driver::port_intents::Resolver;

@@ -35,18 +35,19 @@ use busbar_plugin_abi::types::KindCode;
 
 use crate::adapters::auth::AuthCore;
 use crate::admit::Admitted;
-use crate::binder::ConfigBinder;
 use crate::chains::{self, OwnedSpec};
-use crate::encode::plane;
-use crate::ports::auth::{AuthPort, IssuedShape};
-use crate::ports::export::ExportPort;
-use crate::ports::hook::HookPort;
-use crate::ports::plane::PlanePort;
-use crate::ports::secret::{SecretPort, SugarDecl};
-use crate::ports::store::StoreHandle;
-use crate::ports::transport::TransportPort;
 use crate::refusal::{Refusal, RefusalCode};
 use busbar_ffi::kind as k;
+use busbar_ports::auth::{AuthPort, IssuedShape};
+use busbar_ports::binder::ConfigBinder;
+use busbar_ports::codec::plane;
+use busbar_ports::export::ExportPort;
+use busbar_ports::hook::HookPort;
+use busbar_ports::plane::PlanePort;
+use busbar_ports::secret::{SecretPort, SugarDecl};
+use busbar_ports::store::StoreHandle;
+use busbar_ports::transport::TransportPort;
+use busbar_ports::PluginCode;
 
 pub struct Registry<N: Needs> {
     pub(crate) host: &'static Host,
@@ -709,7 +710,7 @@ impl<N: Needs> Registry<N> {
                 .collect();
             let adapter =
                 crate::adapters::transport::TransportAdapter::open(proxy, opened.errors, protocols)
-                    .map_err(crate::ports::open_error)?;
+                    .map_err(crate::answer::open_error)?;
             self.remember(&spec, KindCode::Transport);
             let port: Arc<dyn TransportPort> = Arc::new(adapter);
             Ok(port)
@@ -980,7 +981,7 @@ impl<N: Needs> Registry<N> {
                 error: None,
             })?;
         let _unbound = chains::Unbind::new(Arc::clone(&self.binder), id);
-        let config: serde_json::Value = serde_json::from_slice(&bound).unwrap_or_default();
+        let config: json::Value = json::parse_value(&bound).unwrap_or_default();
         let mut handles = Vec::new();
         secret_handles(&config, &mut handles);
         let mut out = Vec::new();
@@ -1047,6 +1048,17 @@ pub struct Described {
     pub metrics: Vec<MetricInfo>,
     /// Round 34: Some when D_ERRORS was present and refused (`Registry::add`); the image runs without codes.
     pub error_codes_refused: Option<ErrorCodesRefused>,
+}
+
+impl Described {
+    /// Exact describe texts, in image order. Admission validates D_UPSTREAM_PATH before exposing it.
+    pub fn paths(&self, wanted: u16) -> impl Iterator<Item = &str> {
+        self.items.iter().filter_map(move |(tag, body)| {
+            (*tag == wanted)
+                .then(|| core::str::from_utf8(body).ok())
+                .flatten()
+        })
+    }
 }
 
 /// Round 34: the one schema for the WARN, the audit `data` and `image.admission.error_codes_refused`.
@@ -1131,21 +1143,6 @@ pub enum ErrorBook {
     Refused,
     /// No D_ERRORS.
     None,
-}
-
-/// The resolved code, `Copy` over `&'static`, so carrying it does no refcount RMW (B-SYNC REFUSED arm unchanged).
-/// `Display` = `BUSBAR-{plugin}-{number:04}`; it always matches `^BUSBAR-[a-z][a-z0-9-]{0,63}-[0-9]{4}$` and can
-/// never start like a core `BUSBAR-[0-9]{4}` code.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PluginCode {
-    pub plugin: &'static str,
-    pub number: u16,
-}
-
-impl core::fmt::Display for PluginCode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "BUSBAR-{}-{:04}", self.plugin, self.number)
-    }
 }
 
 impl ErrorBook {
@@ -1843,7 +1840,7 @@ fn decode_kind_items(
     match described.kind {
         KindCode::Secret => {
             let who: Arc<str> = Arc::from(identity);
-            out.sugars = crate::encode::secret::decode_sugars(describe)
+            out.sugars = busbar_ports::codec::secret::decode_sugars(describe)
                 .map_err(|e| bad("describe.sugar", e))?
                 .into_iter()
                 .map(|mut sugar| {
@@ -1853,7 +1850,7 @@ fn decode_kind_items(
                 .collect();
         }
         KindCode::Auth => {
-            out.issued = crate::encode::auth::decode_issued_shape(describe)
+            out.issued = busbar_ports::codec::auth::decode_issued_shape(describe)
                 .map_err(|e| bad("describe.issued_shape", e))?
                 .into_iter()
                 .collect();
@@ -1875,10 +1872,11 @@ fn decode_kind_items(
                 .collect();
         }
         KindCode::Hook => {
-            crate::encode::hook::decode_words(describe).map_err(|e| bad("describe.word", e))?;
+            busbar_ports::codec::hook::decode_words(describe)
+                .map_err(|e| bad("describe.word", e))?;
         }
         KindCode::Export => {
-            crate::encode::export::decode_delivery(describe, described.methods)
+            busbar_ports::codec::export::decode_delivery(describe, described.methods)
                 .map_err(|e| bad("describe.delivery", e))?;
         }
         KindCode::Store | KindCode::Transport => {}
@@ -1946,17 +1944,146 @@ fn not_this_kind() -> OpenError {
 }
 
 /// Every `{"$secret": n}` handle in a bound config.
-fn secret_handles(v: &serde_json::Value, out: &mut Vec<u32>) {
-    match v {
-        serde_json::Value::Object(map) => {
-            if let Some(n) = map.get("$secret").and_then(serde_json::Value::as_u64) {
+fn secret_handles(v: &json::Value, out: &mut Vec<u32>) {
+    match v.get_type() {
+        json::JsonType::Object => {
+            let Some(map) = v.as_object() else { return };
+            if let Some(n) = map.get(&"$secret").and_then(json::Value::as_u64) {
                 out.extend(u32::try_from(n));
             } else {
-                map.values().for_each(|v| secret_handles(v, out));
+                map.iter().for_each(|(_, v)| secret_handles(v, out));
             }
         }
-        serde_json::Value::Array(items) => items.iter().for_each(|v| secret_handles(v, out)),
+        json::JsonType::Array => {
+            if let Some(items) = v.as_array() {
+                items.iter().for_each(|v| secret_handles(v, out));
+            }
+        }
         _ => {}
+    }
+}
+
+/// C-NEED-DECODE `bad_endpoint_records_are_invalid` (TRANSPORT-SECURITY-POLICY §8 test 10, IF §3 round 32; moved
+/// here from busbar-plugin-test `c_need_decode`, whose case index points at this module): a CHECK answer's
+/// ENDPOINT records decode in answer order; more than 16, a dest over 2,048 bytes or not UTF-8, an op other than
+/// OPEN/FETCH, an egress class above LOOPBACK_ALLOWED, the retired bit 0x200 or any other stray bit is INVALID,
+/// which refuses CONFIG naming the instance.
+#[cfg(test)]
+mod endpoint_decode_tests {
+    use super::*;
+    use busbar_plugin_abi::records::{Reply, Writer};
+
+    const NAME: &str = "store-x";
+
+    fn flags(tls: u32, class: u32) -> u32 {
+        tls | (class << 16)
+    }
+
+    fn answer(endpoints: &[(u32, u32, &[u8])]) -> Reply {
+        let mut out = Reply::new();
+        out.put_text(tag::TEXT, "a record of another tag is not an endpoint")
+            .expect("the test answer fits");
+        for &(op, flags, dest) in endpoints {
+            out.put_pod_tail(tag::ENDPOINT, &EndpointRec { op, flags }, dest)
+                .expect("the test answer fits");
+        }
+        out
+    }
+
+    /// The CONFIG refusal's text for `endpoints`; anything else fails the test.
+    fn invalid(endpoints: &[(u32, u32, &[u8])]) -> String {
+        match decode_endpoints(answer(endpoints).as_bytes(), NAME) {
+            Err(OpenError::Config { code, text, .. }) => {
+                assert_eq!(code, refused::R_CONFIG, "{text}");
+                assert!(
+                    text.starts_with("store-x: the plugin declared an invalid ENDPOINT ("),
+                    "the refusal names the instance: {text}"
+                );
+                text
+            }
+            other => panic!("an invalid ENDPOINT refuses CONFIG, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bad_endpoint_records_are_invalid() {
+        let db = flags(need_flag::TLS_REQUIRED, egress::OPERATOR_INFRASTRUCTURE);
+        let collector = flags(need_flag::TLS_NONE, egress::LOOPBACK_ALLOWED);
+        let decoded = decode_endpoints(
+            answer(&[
+                (op::OPEN, db, &b"db.internal:5432"[..]),
+                (
+                    op::FETCH,
+                    collector,
+                    &b"http://127.0.0.1:4318/v1/traces"[..],
+                ),
+            ])
+            .as_bytes(),
+            NAME,
+        )
+        .expect("two well-formed endpoints decode");
+        assert_eq!(
+            decoded,
+            vec![
+                DeclaredEndpoint {
+                    op: op::OPEN,
+                    flags: db,
+                    dest: "db.internal:5432".into(),
+                },
+                DeclaredEndpoint {
+                    op: op::FETCH,
+                    flags: collector,
+                    dest: "http://127.0.0.1:4318/v1/traces".into(),
+                },
+            ],
+            "in answer order, as declared"
+        );
+
+        // Sixteen is the bound; the seventeenth is INVALID.
+        let sixteen = [(op::OPEN, db, &b"h:1"[..]); 16];
+        assert_eq!(
+            decode_endpoints(answer(&sixteen).as_bytes(), NAME)
+                .expect("sixteen endpoints decode")
+                .len(),
+            16
+        );
+        let seventeen = [(op::OPEN, db, &b"h:1"[..]); 17];
+        assert!(invalid(&seventeen).contains("more than 16"));
+
+        // 2,048 dest bytes is the bound; one more is INVALID, and so is a dest that is not UTF-8.
+        let longest = [b'a'; 2_048];
+        assert_eq!(
+            decode_endpoints(answer(&[(op::OPEN, db, &longest[..])]).as_bytes(), NAME)
+                .expect("a 2,048-byte dest decodes")
+                .len(),
+            1
+        );
+        let over = [b'a'; 2_049];
+        assert!(invalid(&[(op::OPEN, db, &over[..])]).contains("dest over 2,048 bytes"));
+        assert!(invalid(&[(op::OPEN, db, &b"\xff\xfe:1"[..])]).contains("dest not UTF-8"));
+
+        // An op other than OPEN or FETCH.
+        for unknown in [0, 2, 0xFF, u32::MAX] {
+            assert!(
+                invalid(&[(unknown, db, &b"h:1"[..])]).contains("(op)"),
+                "op {unknown}"
+            );
+        }
+
+        // An egress class above LOOPBACK_ALLOWED, the retired 0x200 and any other stray bit.
+        for class in egress::LOOPBACK_ALLOWED + 1..=15 {
+            let bad = flags(need_flag::TLS_REQUIRED, class);
+            assert!(
+                invalid(&[(op::OPEN, bad, &b"h:1"[..])]).contains("(flags)"),
+                "class {class}"
+            );
+        }
+        for stray in [0x200, 0x10, 1 << 20, 1 << 31] {
+            assert!(
+                invalid(&[(op::FETCH, db | stray, &b"https://h/"[..])]).contains("(flags)"),
+                "bit {stray:#x}"
+            );
+        }
     }
 }
 

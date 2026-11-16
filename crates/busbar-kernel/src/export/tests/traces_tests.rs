@@ -4,14 +4,14 @@
 use super::*;
 use busbar_contract::abi::export::ExportField;
 use busbar_contract::export_stream::ExportStream;
-use serde_json::Value;
+use busbar_contract::json::{JsonValueTrait as _, Value};
 use tracing_subscriber::layer::SubscriberExt as _;
 
 /// A rendered value, read back as JSON.
 fn json(value: FieldValue<'_>) -> Value {
     let mut out = JsonOut(Vec::new());
     out.value(value);
-    serde_json::from_slice(&out.0).expect("a JSON value")
+    busbar_contract::json::parse_value(&out.0).expect("a JSON value")
 }
 
 /// A span's facts, read back as JSON values.
@@ -25,7 +25,7 @@ fn values(facts: &Fields) -> Vec<(ExportField, Value)> {
 
 /// A full span record, read back as JSON.
 fn span_json(span: Option<&[u8]>) -> Option<Value> {
-    span.map(|bytes| serde_json::from_slice(bytes).expect("a JSON span record"))
+    span.map(|bytes| busbar_contract::json::parse_value(bytes).expect("a JSON span record"))
 }
 
 static SEEN: std::sync::Mutex<Vec<Vec<(ExportField, Value)>>> = std::sync::Mutex::new(Vec::new());
@@ -94,17 +94,19 @@ fn a_traces_record_is_built_to_the_sinks_projection() {
         &mut errors,
     );
     assert!(errors.is_empty(), "{errors:?}");
-    let granted: Value = serde_json::from_slice(&record(sub, &facts, None).line).unwrap();
+    let granted: Value =
+        busbar_contract::json::parse_value(&record(sub, &facts, None).line).unwrap();
     assert_eq!(
         granted,
-        serde_json::json!({"trace_id": "01", "model": "m1"})
+        busbar_contract::json::json!({"trace_id": "01", "model": "m1"})
     );
     let logs_only = crate::export::projection::Projection::for_test(
         &[ExportStream::Logs],
         ExportStream::Logs.default_fields(),
     );
-    let ungranted: Value = serde_json::from_slice(&record(logs_only, &facts, None).line).unwrap();
-    assert_eq!(ungranted, serde_json::json!({}));
+    let ungranted: Value =
+        busbar_contract::json::parse_value(&record(logs_only, &facts, None).line).unwrap();
+    assert_eq!(ungranted, busbar_contract::json::json!({}));
 }
 
 static RECORDED: std::sync::Mutex<Vec<Vec<(ExportField, Value)>>> =
@@ -215,7 +217,7 @@ fn a_span_record_carries_what_the_previous_exporter_sent() {
     let value = |v: &Value, key: &str| -> Value {
         v.as_array()
             .and_then(|a| a.iter().find(|kv| kv["key"] == key))
-            .map_or(Value::Null, |kv| kv["value"].clone())
+            .map_or(Value::new(), |kv| kv["value"].clone())
     };
     let forward = &seen[0];
     assert_eq!(forward["name"], "forward");
@@ -326,14 +328,20 @@ fn trace_wire_keeps_last_attributes_and_typed_nonfinite_floats() {
     assert_eq!(get("repeated"), 2);
     assert_eq!(get("literal"), "NaN");
     for (key, value) in [("nan", "NaN"), ("positive", "inf"), ("negative", "-inf")] {
-        assert_eq!(get(key), serde_json::json!({"$busbar_f64": value}));
+        assert_eq!(
+            get(key),
+            busbar_contract::json::json!({"$busbar_f64": value})
+        );
     }
     let event = seen[0]["events"][0]["attributes"].as_array().unwrap();
     assert_eq!(
         event.iter().find(|a| a["key"] == "positive").unwrap()["value"],
-        serde_json::json!({"$busbar_f64": "inf"})
+        busbar_contract::json::json!({"$busbar_f64": "inf"})
     );
-    assert_eq!(json(FieldValue::F64(1.25)), serde_json::json!(1.25));
+    assert_eq!(
+        json(FieldValue::F64(1.25)),
+        busbar_contract::json::json!(1.25)
+    );
 }
 
 #[test]
@@ -344,10 +352,10 @@ fn duplicate_trace_keys_preserve_first_key_order_and_last_values() {
     bag.push(Key::Static("x"), Attr::I64(3));
     let mut out = JsonOut(Vec::new());
     write_key_values(&mut out, &bag);
-    let result: Value = serde_json::from_slice(&out.0).unwrap();
+    let result: Value = busbar_contract::json::parse_value(&out.0).unwrap();
     assert_eq!(
         result,
-        serde_json::json!([{"key":"x","value":3},{"key":"y","value":2}])
+        busbar_contract::json::json!([{"key":"x","value":3},{"key":"y","value":2}])
     );
 }
 

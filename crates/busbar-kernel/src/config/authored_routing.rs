@@ -9,9 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::marker::PhantomData;
 
+use busbar_contract::json::{json, Value};
 use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 
 use super::PoolsCfg;
 

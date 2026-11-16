@@ -8,7 +8,7 @@
 //! what the port already handled (`SessionError::Port`) charges nothing.
 
 use busbar_plugin_abi::fail::FaultReason;
-use busbar_plugin_loader::ports::plane::PlanePort;
+use busbar_ports::plane::PlanePort;
 
 use super::port_session::{SessionError, Violation};
 

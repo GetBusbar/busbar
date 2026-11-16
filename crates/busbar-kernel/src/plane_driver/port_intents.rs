@@ -37,12 +37,12 @@ use busbar_plugin_abi::plane::{
 };
 use busbar_plugin_abi::records::{commit, tag, RecDelRec, RecPredRec, RecPutRec, Records, Reply};
 use busbar_plugin_abi::types::KindCode;
-use busbar_plugin_loader::encode::plane::{
+use busbar_ports::codec::plane::{
     encode_chain_state, encode_chan_attach, encode_committed, encode_connect_answers,
     encode_entitle_answers, encode_judged, encode_lookup_hits, encode_minted, encode_observed,
     encode_refusal, encode_signed, encode_trust_answers, encode_work_answers, SignedAnswer,
 };
-use busbar_plugin_loader::ports::plane::{ObservedAnswer, TrustAnswer, TrustItem, WorkAnswer};
+use busbar_ports::plane::{ObservedAnswer, TrustAnswer, TrustItem, WorkAnswer};
 use tokio::runtime::Handle;
 
 use super::plane_judge::PlaneJudge;
