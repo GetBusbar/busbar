@@ -258,6 +258,8 @@ pub mod plane_node;
 pub mod plugin_fetch;
 pub mod policy;
 pub mod principal_transition;
+// ADMIN-API-1.6 §3.5: `records.user` and `records.labels`, configured at boot.
+pub(crate) mod records_capture;
 pub mod registry;
 // busbar:request-path
 pub(crate) mod secret_custody;

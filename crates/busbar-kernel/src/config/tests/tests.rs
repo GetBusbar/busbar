@@ -118,6 +118,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         health: HealthDefaultsCfg::default(),
         routing: RoutingCfg::default(),
         telemetry: Default::default(),
+        records: Default::default(),
     }
 }
 

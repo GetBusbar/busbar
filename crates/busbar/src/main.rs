@@ -1101,6 +1101,9 @@ async fn run(
             .as_ref()
             .map(|p| Duration::from_secs(p.retention_seconds)),
     );
+    // ADMIN-API-1.6 §3.5: what unit records keep of the end user and request headers, for the
+    // life of the process.
+    root::records_capture::configure(&deploy.records);
 
     let plugins_cfg = deploy.plugins.clone();
     root::measurements::maintenance(root::boot::admit_recovered_plugins(&plugins_cfg))

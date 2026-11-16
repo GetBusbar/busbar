@@ -109,6 +109,19 @@ pub struct HooksRan {
 
 pub trait HookJournal: Send + Sync {
     fn hooks_ran(&self, record: &HooksRan);
+
+    /// Whether the node keeps the end user on its unit records (`records.user`, ADMIN-API-1.6
+    /// §3.5). `false` (the default) leaves the driver no work for it.
+    fn keeps_end_user(&self) -> bool {
+        false
+    }
+
+    /// The end user the plane projected for `unit`, once, from the unit's first projection.
+    fn end_user(&self, _unit: busbar_contract::UnitKey, _user: &str) {}
+
+    /// The unit's request header fields at Decode, for the record's allow-listed labels
+    /// (`records.labels`, ADMIN-API-1.6 §3.5). A node keeping none returns at once.
+    fn decoded_fields(&self, _unit: busbar_contract::UnitKey, _fields: &[(Vec<u8>, Vec<u8>)]) {}
 }
 
 thread_local! {
@@ -1612,6 +1625,14 @@ impl Projected {
         self.at.view(&self.arena)
     }
 
+    /// The end user the plane stated, read alone: the turns are not projected.
+    fn end_user(&self) -> Option<Cow<'_, str>> {
+        self.at
+            .end_user
+            .as_ref()
+            .map(|cut| text_at(&self.arena, cut))
+    }
+
     /// Take a re-projection's answer as current, and hand back the superseded arena wiped, as
     /// the next re-projection's spare.
     fn accept(&mut self, mut arena: ProjectArena, at: ProjectAt) -> ProjectArena {
@@ -1923,7 +1944,47 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             .scope(scope, self.run_request_stage(token, &mut ran))
             .await;
         self.report_hooks(ran);
+        if stage.is_ok() {
+            self.note_unprojected_end_user();
+        }
         stage
+    }
+
+    /// `records.user` (ADMIN-API-1.6 §3.5): the journal to tell the unit's end user to, when the
+    /// node keeps it and has not been told yet. Off, this is the one check a unit pays.
+    fn end_user_wanted(&self) -> Option<&Arc<dyn HookJournal>> {
+        let journal = self.driver.hook_journal.as_ref()?;
+        (journal.keeps_end_user() && !self.lock().end_user_noted).then_some(journal)
+    }
+
+    /// Tell the node the end user the unit's first projection stated; a projection that states
+    /// none keeps none. Once per unit.
+    fn note_end_user(&self, journal: &dyn HookJournal, user: Option<&str>) {
+        let unit = {
+            let mut st = self.lock();
+            if std::mem::replace(&mut st.end_user_noted, true) {
+                return;
+            }
+            st.unit
+        };
+        if let Some(user) = user.filter(|user| !user.is_empty()) {
+            journal.end_user(busbar_contract::UnitKey::new(unit), user);
+        }
+    }
+
+    /// A unit whose request stage projected nothing (no hook bound): project it once for its end
+    /// user alone, when the node keeps it. A projection that fails keeps no user.
+    fn note_unprojected_end_user(&self) {
+        let Some(journal) = self.end_user_wanted() else {
+            return;
+        };
+        if self.arrival.claim == CLAIM_PROBE {
+            return;
+        }
+        let (arena, at) = self.project(self.fresh_arena(), None, false, true);
+        let projected = at.ok().map(|at| Projected { arena, at });
+        let user = projected.as_ref().and_then(Projected::end_user);
+        self.note_end_user(&**journal, user.as_deref());
     }
 
     /// Journal the hooks that ran for the unit, then hand the buffer back as the thread's spare.
@@ -2005,6 +2066,9 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 return Err(stopped);
             }
         };
+        if let (Some(journal), StageView::Projected(projected)) = (self.end_user_wanted(), &cur) {
+            self.note_end_user(&**journal, projected.end_user().as_deref());
+        }
         let mut spare: Option<ProjectArena> = None;
         let pool: Cow<'_, str> = if walk_pool.is_empty() {
             Cow::Owned(cur.pool().into_owned())

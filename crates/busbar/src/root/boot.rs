@@ -2209,6 +2209,17 @@ impl BookPreparation {
         {
             self.governance.bind_deployment_caller_ref(material);
         }
+        // ADMIN-API-1.6 §3.5: `K_user` = HKDF-SHA256(keyset seed, deployment id,
+        // "busbar.records.user.v1"), held as a secret and never served.
+        if let Some(live) = busbar_kernel::persistence::boot_identity::live() {
+            if let Some(key) = durability.record.derived_key(
+                live.deployment_id().as_bytes(),
+                super::records_capture::USER_KEY_INFO,
+            ) {
+                super::records_capture::bind_user_key(key);
+            }
+        }
+        super::records_capture::warn_unkeyed();
         self.shared = Some(Arc::new(std::sync::Mutex::new(
             self.durability.take().unwrap(),
         )));

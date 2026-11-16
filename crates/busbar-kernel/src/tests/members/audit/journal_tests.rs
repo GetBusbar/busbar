@@ -227,6 +227,7 @@ fn v7_frames_whole_and_fractional_quantities() {
                     None,
                 ],
                 attempts_total: 2,
+                records: Default::default(),
             };
             Audit::seal(
                 &mut chain,
@@ -347,7 +348,7 @@ fn v7_records_tail_is_sealed_only_when_kept() {
         3,
     );
 
-    let names = |record| -> Vec<&'static str> {
+    let names = |record: &busbar_kernel_audit::AuditRecord| -> Vec<&'static str> {
         super::digest_fields(record)
             .iter()
             .map(|field| field.name)

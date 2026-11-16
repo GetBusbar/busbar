@@ -1802,6 +1802,33 @@ impl busbar_kernel::plane_driver::HookJournal for NodeEndPost {
             open.sealing.ran.hooks.extend(record.hooks.iter().cloned());
         }
     }
+
+    fn keeps_end_user(&self) -> bool {
+        crate::root::records_capture::keeps_user()
+    }
+
+    /// `records.user` (ADMIN-API-1.6 §3.5): the end user as the record keeps it, a pseudonym or
+    /// the cut plain value, onto the unit's record-to-be.
+    fn end_user(&self, unit: UnitKey, user: &str) {
+        let Some(kept) = crate::root::records_capture::user(user) else {
+            return;
+        };
+        if let Some(open) = self.lock(unit).get_mut(&unit) {
+            open.sealing.ran.records.user = Some(kept);
+        }
+    }
+
+    /// `records.labels` (ADMIN-API-1.6 §3.5): the allow-listed headers, copied at Decode. Off,
+    /// nothing is copied and no lock is taken.
+    fn decoded_fields(&self, unit: UnitKey, fields: &[(Vec<u8>, Vec<u8>)]) {
+        let labels = crate::root::records_capture::labels(fields);
+        if labels.is_empty() {
+            return;
+        }
+        if let Some(open) = self.lock(unit).get_mut(&unit) {
+            open.sealing.ran.records.labels = labels;
+        }
+    }
 }
 
 /// A unit's captured checkpoint facts, borrowed from the open unit: the fields of
@@ -1944,6 +1971,9 @@ struct Ran {
     walked: [Option<Walked>; ATTEMPT_SLOTS],
     /// Every dial made, including those beyond the slots.
     walked_total: u32,
+    /// What `records.user` and `records.labels` keep of the unit (ADMIN-API-1.6 §3.5): empty, with
+    /// no allocation, unless the operator switched them on.
+    records: busbar_kernel_audit::RecordFacts,
 }
 
 /// The drive's clock and the caller it reads the unit's first write and status from (§9).
@@ -2372,6 +2402,7 @@ impl Sealing {
                 total_us: measured.total_us,
                 attempts,
                 attempts_total,
+                records: ran.records,
             },
         };
         let unit = seal.key.get();
