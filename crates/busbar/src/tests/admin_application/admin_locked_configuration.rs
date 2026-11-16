@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait as _};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -104,10 +105,7 @@ async fn test_admin_v1_put_auth_refused_on_locked_config() {
         .put(format!("http://{addr}/api/v1/admin/admin-auth"))
         .header("x-admin-token", "admintok")
         .header("content-type", "application/json")
-        .body(
-            serde_json::json!({"admin_auth": [busbar_kernel::config::operator_provider()]})
-                .to_string(),
-        )
+        .body(json::json!({"admin_auth": [busbar_kernel::config::operator_provider()]}).to_string())
         .send()
         .await
         .unwrap();
@@ -116,7 +114,7 @@ async fn test_admin_v1_put_auth_refused_on_locked_config() {
         400,
         "a locked config must refuse PUT /admin-auth"
     );
-    let body: serde_json::Value = resp.json().await.unwrap();
+    let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["code"], "invalid_request");
     assert_eq!(
         body["error"]["message"].as_str(),
@@ -165,7 +163,7 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
         .expect("the actual OpenAI dialect is linked");
     let definitions = std::collections::HashMap::from([(
         "test-provider".to_string(),
-        serde_json::from_value::<busbar_kernel::config::ProviderDef>(serde_json::json!({
+        json::from_value::<busbar_kernel::config::ProviderDef>(&json::json!({
             "protocol": protocol, "base_url": "http://127.0.0.1:1/",
         }))
         .expect("the actual provider definition parses"),
@@ -234,7 +232,7 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
-    let body = serde_json::json!({
+    let body = json::json!({
         "providers": {
             "test-provider": {"protocol": "acme", "base_url": "http://127.0.0.1:1/"}
         },
@@ -259,7 +257,7 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
         400,
         "a locked config must refuse POST /config/apply"
     );
-    let body: serde_json::Value = resp.json().await.unwrap();
+    let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["code"], "invalid_request");
     assert_eq!(
         body["error"]["message"].as_str(),
@@ -366,12 +364,12 @@ async fn test_admin_v1_config_settings_put_on_locked_config_is_refused() {
 
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
-        .body(serde_json::json!({ "listen": "127.0.0.1:0" }).to_string())
+        .body(json::json!({ "listen": "127.0.0.1:0" }).to_string())
         .send()
         .await
         .unwrap();
     assert_eq!(put.status().as_u16(), 400, "{:?}", put.text().await);
-    let body: serde_json::Value = put.json().await.unwrap();
+    let body = json::parse_value(&put.bytes().await.unwrap()).unwrap();
     let msg = body["error"]["message"].as_str().unwrap_or_default();
     assert_eq!(body["error"]["code"], "invalid_request");
     assert_eq!(
@@ -479,12 +477,12 @@ async fn test_admin_v1_config_settings_put_refuses_locked_store_mutation() {
 
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
-        .body(serde_json::json!({ "listen": "127.0.0.1:0" }).to_string())
+        .body(json::json!({ "listen": "127.0.0.1:0" }).to_string())
         .send()
         .await
         .unwrap();
     assert_eq!(put.status().as_u16(), 400, "{:?}", put.text().await);
-    let body: serde_json::Value = put.json().await.unwrap();
+    let body = json::parse_value(&put.bytes().await.unwrap()).unwrap();
     let msg = body["error"]["message"].as_str().unwrap_or_default();
     assert_eq!(body["error"]["code"], "invalid_request");
     assert_eq!(
@@ -598,12 +596,12 @@ async fn test_admin_v1_config_settings_put_rejects_retired_persist() {
 
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
-        .body(serde_json::json!({ "persist": "yes" }).to_string())
+        .body(json::json!({ "persist": "yes" }).to_string())
         .send()
         .await
         .unwrap();
     assert_eq!(put.status().as_u16(), 400, "{:?}", put.text().await);
-    let body: serde_json::Value = put.json().await.unwrap();
+    let body = json::parse_value(&put.bytes().await.unwrap()).unwrap();
     let msg = body["error"]["message"].as_str().unwrap_or_default();
     assert!(
         msg.contains("persist") && msg.contains("unknown field"),
@@ -708,12 +706,12 @@ async fn test_admin_v1_config_settings_put_still_rejects_an_unknown_field_includ
 
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
-        .body(serde_json::json!({ "persits": true }).to_string())
+        .body(json::json!({ "persits": true }).to_string())
         .send()
         .await
         .unwrap();
     assert_eq!(put.status().as_u16(), 400, "{:?}", put.text().await);
-    let body: serde_json::Value = put.json().await.unwrap();
+    let body = json::parse_value(&put.bytes().await.unwrap()).unwrap();
     let msg = body["error"]["message"].as_str().unwrap_or_default();
     assert!(
         msg.contains("unknown field"),

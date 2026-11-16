@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use busbar_contract::json;
 use busbar_kernel::audit::amend::{NodeAmendments, Reader};
 use busbar_kernel::persistence::{
     facade::CoreStore,
@@ -99,7 +100,7 @@ async fn application(core: Arc<CoreStore>) -> Arc<busbar_kernel::state::App> {
         .expect("the actual store archive is staged");
     let settings = crate::root::test_plugins::application_store_settings(&directory.0);
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        serde_json::json!({
+        &json::json!({
             "providers": {},
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },

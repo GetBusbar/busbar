@@ -7,7 +7,7 @@
 //! as the native ledger keeps them. Every sum is `checked_add`. Overflow is BOUNDS, never a wrap
 //! or a saturate.
 
-use busbar_contract::abi::sdk::store::cells::{self, table, Cell, HEADLESS};
+use busbar_contract::persistence::cells::{self, table, Cell, HEADLESS};
 use busbar_contract::records::{
     CredentialMeta, CredentialSecret, ScopeRef, SecretForm, VirtualKey,
 };

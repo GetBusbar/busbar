@@ -95,7 +95,7 @@ fn the_authority_elides_the_default_port() {
 }
 
 #[test]
-#[ignore = "owner: W2-SW-TRANSPORT (the transport-grpc, transport-http, transport-ws and auth-sigv4 image arms)"]
+#[ignore = "re-checked 2026-11-16: the transport-grpc, transport-http, transport-ws and auth-sigv4 image arms need those plugin images (repos outside this tree; the sigv4 half goes through the auth port, W2-SW-AUTH !2481) and the connector opening transports through Registry::open_transport, which boot does not do yet (min3_boot configured() has secrets/store/plane only; HOST-LAYERING boot wiring, OUTSTANDING row 7 W2-SW-TRANSPORT)"]
 fn transport_image_arms() {
     todo!("owner: W2-SW-TRANSPORT (C-TRANSPORT-DEFAULTS image arms)")
 }

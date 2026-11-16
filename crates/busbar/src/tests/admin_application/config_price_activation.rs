@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 use axum::http::StatusCode;
+use busbar_contract::json::{self, JsonValueTrait as _};
 use busbar_contract::persistence::{
     Address, AttemptId, BackendInfo, Call, ClockObservation, DatasetId, Decision, Failure,
     Mutation, Page, PersistenceBackend, PreparedCandidate, Read, ReadResult, Scan,
@@ -16,7 +17,7 @@ const CANDIDATE_BODY_CAP: usize = 5_000_123;
 use crate::root::test_plugins as plugins;
 async fn put(addr: std::net::SocketAddr, fee: i64) -> reqwest::Response {
     reqwest::Client::new().put(format!("http://{addr}/api/v1/admin/config/settings"))
-        .json(&serde_json::json!({"per_request_fee": fee, "limits": {"request_body_max_bytes": CANDIDATE_BODY_CAP}}))
+        .json(&json::json!({"per_request_fee": fee, "limits": {"request_body_max_bytes": CANDIDATE_BODY_CAP}}))
         .send().await.unwrap()
 }
 async fn reload(addr: std::net::SocketAddr) -> reqwest::Response {
@@ -530,7 +531,7 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
         assert_eq!(reload(addr).await.status(), StatusCode::OK);
         let nonprice = reqwest::Client::new()
             .put(format!("http://{addr}/api/v1/admin/config/settings"))
-            .json(&serde_json::json!({"limits": {"request_body_max_bytes": NONPRICE_BODY_CAP}}))
+            .json(&json::json!({"limits": {"request_body_max_bytes": NONPRICE_BODY_CAP}}))
             .send()
             .await
             .unwrap();
@@ -921,7 +922,7 @@ async fn pending_activation_and_canceled_handler_keep_the_old_generation_until_c
             .uri("/api/v1/admin/config/settings")
             .header("content-type", "application/json")
             .body(axum::body::Body::from(
-                serde_json::json!({"per_request_fee": PENDING_ACTIVATION_FEE,
+                json::json!({"per_request_fee": PENDING_ACTIVATION_FEE,
                 "limits": {"request_body_max_bytes": CANDIDATE_BODY_CAP}})
                 .to_string(),
             ))
@@ -1307,7 +1308,7 @@ struct LivePrice {
     epoch: u64,
 }
 fn status_phase(bytes: &[u8]) -> String {
-    serde_json::from_slice::<serde_json::Value>(bytes).expect("native price status JSON")["phase"]
+    json::parse_value(bytes).expect("native price status JSON")["phase"]
         .as_str()
         .expect("native price status phase")
         .to_owned()

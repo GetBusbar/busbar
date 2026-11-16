@@ -9,7 +9,7 @@ use busbar_contract::plane::PlaneDeclaration;
 use busbar_kernel_audit::{
     attribution, Audit, AuditChain, AuditInputs, AuditKeySet, AuditRecord, Recipe, UnitFacts,
 };
-use serde_json::Value;
+use json::Value;
 
 use crate::root::durability::tests::{audit_inputs, audit_pass, NativeFixture};
 use crate::root::durability::{Durability, AUDIT_RING};
@@ -88,7 +88,7 @@ impl AuditView for Memory {
 
 async fn page(view: &dyn AuditView, query: &str) -> (u16, Value) {
     let answer = records_answer(view, &no_plane, &format!("/api/v1/admin/records{query}")).await;
-    let body = serde_json::from_slice(&answer.body).expect("the answer is JSON");
+    let body = json::parse_value(&answer.body).expect("the answer is JSON");
     (answer.status, body)
 }
 

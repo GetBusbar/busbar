@@ -27,7 +27,7 @@ use busbar_kernel::appbuild::boot_walk::{
 };
 use busbar_kernel::channels::signals::SignalRegistry;
 use busbar_kernel::channels::SessionSignals;
-use busbar_kernel::config::{PluginsCfg, RootCfg};
+use busbar_kernel::config::{AtRestCfg, PluginsCfg, RootCfg};
 use busbar_kernel::directory::{KernelDirectory, LateDirectory, LogEvents};
 use busbar_kernel::host_services::{DestJudge, KernelServices};
 use busbar_kernel::ingress::replay::StoreReplay;
@@ -706,6 +706,8 @@ struct Steps<'r> {
     signing_key: Option<SecretRef>,
     /// The process's secret kind: the open secret instances and the custody that resolves through them.
     secrets: &'static BootSecrets,
+    /// `credentials.at_rest`: what the recoverable gate seals with, resolved before the store opens (2b).
+    at_rest: Option<AtRestCfg>,
     /// K9: what every seat's egress walk and carrier are composed over (the boot's one upstream table).
     seat: SeatShared,
     /// The seats' probe targets, held for their probers.
@@ -855,6 +857,18 @@ impl BootSteps for Steps<'_> {
                     })
             }),
             KindCode::Plane => Box::pin(async move { self.open_plane(spec).await.map(|()| None) }),
+            KindCode::Store => Box::pin(async move {
+                // The secret instances are open (2a): the gate's key is published before the store's open asks.
+                let secrets = self.secrets;
+                publish_at_rest(self.at_rest.as_ref(), |what, reference| async move {
+                    secrets
+                        .resolve_ref(Instant::now() + CORE_SECRET_DEADLINE, &reference)
+                        .await
+                        .map_err(|denied| format!("{what} could not be resolved ({denied:?})"))
+                })
+                .await;
+                self.inner.open(index).await.map(Some)
+            }),
             _ => {
                 let opened = self.inner.open(index);
                 Box::pin(async move { opened.await.map(Some) })
@@ -951,6 +965,37 @@ async fn core_secrets_of(cfg: &RootCfg, secrets: &BootSecrets) -> Result<CoreSec
     Ok(out)
 }
 
+/// THE RECOVERABLE GATE's key on this path (MIGRATE-ON-BOOT §3 step 2 (a)): the walk opens every secret instance
+/// (2a) before the store (2b), so `credentials.at_rest` is resolved through them here, parsed exactly as the records
+/// step parses it, and published for `root::migrate::admit_for_host` before the store's open asks. `resolve` is the
+/// walk's core-secret resolution (by reference, the text naming only `what`).
+async fn publish_at_rest<F, Fut>(at_rest: Option<&AtRestCfg>, resolve: F)
+where
+    F: Fn(&'static str, SecretRef) -> Fut,
+    Fut: std::future::Future<Output = Result<SecureVec, String>>,
+{
+    let verdict = match at_rest {
+        None => Ok(false),
+        Some(keys) => at_rest_resolves(keys, resolve).await,
+    };
+    busbar_kernel::appbuild::publish_bootstrap_at_rest(verdict);
+}
+
+/// Whether `keys` resolve and parse as at-rest keys; `Err` the first refusal's text.
+async fn at_rest_resolves<F, Fut>(keys: &AtRestCfg, resolve: F) -> Result<bool, String>
+where
+    F: Fn(&'static str, SecretRef) -> Fut,
+    Fut: std::future::Future<Output = Result<SecureVec, String>>,
+{
+    let key = resolve("the at-rest key", keys.key.clone()).await?;
+    let previous = match &keys.previous {
+        Some(previous) => Some(resolve("the previous at-rest key", previous.clone()).await?),
+        None => None,
+    };
+    busbar_kernel::appbuild::records_keys_from(Some(&*key), previous.as_deref(), None)
+        .map(|parsed| parsed.at_rest.is_some())
+}
+
 /// Boot through the MIN-3 registry, before any listener serves. `Ok(false)`: the configured store is not a MIN-3
 /// image, so the old path boots (nothing here ran past admission). `Ok(true)`: every instance opened in plan
 /// order, core's own secrets are resolved and the process holds the registry ([`registry`], [`seats`]).
@@ -1037,6 +1082,7 @@ pub(crate) async fn run(
         shared: Arc::clone(&shared),
         signing_key: cfg.auth.as_ref().and_then(|auth| auth.signing_key.clone()),
         secrets: built.secrets,
+        at_rest: cfg.credentials.at_rest.clone(),
         seat,
         probes: Mutex::default(),
     };

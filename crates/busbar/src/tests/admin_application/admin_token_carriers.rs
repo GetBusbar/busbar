@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json;
+
 const X_ADMIN_TOKEN: &str = "x-admin-token";
 
 #[tokio::test]
@@ -211,7 +213,7 @@ async fn test_admin_token_not_acceptable_via_vendor_carriers() {
         let r_post = client
             .post(&url)
             .header(carrier, "admintok")
-            .json(&serde_json::json!({}))
+            .json(&json::json!({}))
             .send()
             .await
             .unwrap();

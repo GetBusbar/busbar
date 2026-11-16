@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use busbar_contract::json::{self, JsonValueTrait as _};
 
 #[tokio::test]
 async fn credential_applied_response_and_restart_receipt_are_machine_readable() {
@@ -11,7 +12,7 @@ async fn credential_applied_response_and_restart_receipt_are_machine_readable() 
         let body = axum::body::to_bytes(response.into_body(), 4096)
             .await
             .unwrap();
-        let doc: Value = serde_json::from_slice(&body).unwrap();
+        let doc = json::parse_value(&body).unwrap();
         assert_eq!(doc["error"]["code"], "mutation_applied");
         assert_eq!(doc["effect"], "applied");
         assert_eq!(doc["operation"], operation);
@@ -30,7 +31,7 @@ async fn credential_applied_response_and_restart_receipt_are_machine_readable() 
     let body = axum::body::to_bytes(response.into_body(), 4096)
         .await
         .unwrap();
-    let doc: Value = serde_json::from_slice(&body).unwrap();
+    let doc = json::parse_value(&body).unwrap();
     assert_eq!(doc["effect"], "applied");
     assert_eq!(doc["recovery"], "rotate_with_new_action");
     assert_eq!(doc["resource"], "key:public-id");

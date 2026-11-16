@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use busbar_contract::json;
 use tracing_subscriber::layer::SubscriberExt as _;
 
 #[derive(Clone, Default)]
@@ -73,7 +74,7 @@ async fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
         .expect("the actual linked OpenAI provider");
     let definitions = std::collections::HashMap::from([(
         "test-provider".to_string(),
-        serde_json::from_value::<busbar_kernel::config::ProviderDef>(serde_json::json!({
+        json::from_value::<busbar_kernel::config::ProviderDef>(&json::json!({
             "protocol":protocol,"base_url":"http://127.0.0.1:1/"
         }))
         .expect("actual provider definition"),
@@ -135,7 +136,7 @@ async fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
     let unknown_status = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name":"k-typo","allowed_pools":["smart","smrt"]}))
+        .json(&json::json!({"name":"k-typo","allowed_pools":["smart","smrt"]}))
         .send()
         .await
         .unwrap()
@@ -144,7 +145,7 @@ async fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
     let known_status = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name":"k-ok","allowed_pools":["smart"]}))
+        .json(&json::json!({"name":"k-ok","allowed_pools":["smart"]}))
         .send()
         .await
         .unwrap()

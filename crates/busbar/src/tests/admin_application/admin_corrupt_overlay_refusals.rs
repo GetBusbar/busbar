@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use busbar_contract::json;
 use busbar_contract::Secret;
 use busbar_kernel::audit_ring;
 use busbar_kernel::persistence::scoped::ScopedStore;
@@ -116,7 +117,7 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
 
     admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
-        .body(serde_json::json!({ "per_request_fee": 42 }).to_string())
+        .body(json::json!({ "per_request_fee": 42 }).to_string())
         .send()
         .await
         .unwrap();
@@ -271,11 +272,11 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
 
     admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
-        .body(serde_json::json!({ "per_request_fee": 42 }).to_string())
+        .body(json::json!({ "per_request_fee": 42 }).to_string())
         .send()
         .await
         .unwrap();
-    let mut doc: serde_json::Value = serde_json::from_slice(
+    let mut doc = json::parse_value(
         &overlay
             .read_bytes_async()
             .await
@@ -283,8 +284,8 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
             .expect("the actual overlay has a generation"),
     )
     .unwrap();
-    doc["version"] = serde_json::json!(busbar_kernel::config::overlay::OVERLAY_VERSION + 1);
-    let payload = serde_json::to_vec(&doc).unwrap();
+    doc["version"] = json::json!(busbar_kernel::config::overlay::OVERLAY_VERSION + 1);
+    let payload = json::to_vec(&doc).unwrap();
     assert!(
         payload.len() <= busbar_contract::MAX_RECORD_BYTES,
         "the existing one-chunk test generation stays bounded"
@@ -294,8 +295,7 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
         .await
         .unwrap()
         .expect("the actual head exists");
-    let mut head: serde_json::Value =
-        serde_json::from_slice(head.expose(&busbar_kernel::seal::lend())).unwrap();
+    let mut head = json::parse_value(head.expose(&busbar_kernel::seal::lend())).unwrap();
     let records = calls.page(OVERLAY_SCHEMA, &[], None).await.unwrap().rows;
     let chunks: Vec<_> = records
         .into_iter()
@@ -311,10 +311,10 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
         .put(OVERLAY_SCHEMA, &chunks[0].0, value)
         .await
         .unwrap();
-    head["length"] = serde_json::json!(payload.len());
+    head["length"] = json::json!(payload.len());
     head["digest"] =
-        serde_json::json!(hex::decode(busbar_contract::redacted::sha256_hex(&payload)).unwrap());
-    let value = Secret::new(serde_json::to_vec(&head).unwrap());
+        json::json!(hex::decode(busbar_contract::redacted::sha256_hex(&payload)).unwrap());
+    let value = Secret::new(json::to_vec(&head).unwrap());
     calls.put(OVERLAY_SCHEMA, b"head", value).await.unwrap();
     assert!(overlay
         .read_required_async()

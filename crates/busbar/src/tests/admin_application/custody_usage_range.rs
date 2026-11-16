@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait as _};
 use busbar_contract::records::{MeteringDelta, VirtualKey, UNIT_INPUT};
 use busbar_kernel::cost::CostModel;
 use busbar_kernel::governance::{Adjustment, GovState};
@@ -210,7 +211,7 @@ impl Fixture {
             .expect("valid correction");
     }
 
-    async fn read(&self) -> Result<serde_json::Value, reqwest::Error> {
+    async fn read(&self) -> Result<json::Value, reqwest::Error> {
         let (_data, admin, _handle) =
             busbar_kernel::build_split_routers_with_limits(self.app.clone(), 1 << 20, 0, false);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -224,21 +225,21 @@ impl Fixture {
         ))
         .await?
         .error_for_status()?
-        .json()
+        .bytes()
         .await;
         serving.abort();
-        result
+        result.map(|body| json::parse_value(&body).expect("the usage view is JSON"))
     }
 }
 
-fn assert_totals(view: &serde_json::Value, count: u64) {
+fn assert_totals(view: &json::Value, count: u64) {
     assert_eq!(view["total"]["tokens_input"].as_u64(), Some(count));
     assert_eq!(view["total"]["spend_micros"].as_u64(), Some(0));
     assert_eq!(view["by_model"].as_array().unwrap().len(), 1);
     assert_eq!(view["by_model"][0]["tokens_input"].as_u64(), Some(count));
     assert_eq!(view["by_key"].as_array().unwrap().len(), 1);
     assert_eq!(view["by_key"][0]["tokens_input"].as_u64(), Some(count));
-    let json = serde_json::to_value(view).expect("usage wire view");
+    let json = json::to_value(view).expect("usage wire view");
     assert_eq!(json["total"]["tokens_input"].as_u64(), Some(count));
 }
 

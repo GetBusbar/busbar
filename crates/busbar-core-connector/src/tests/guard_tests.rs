@@ -1060,3 +1060,34 @@ fn a_republished_own_set_is_seen_by_every_clone() {
         "the old set is gone"
     );
 }
+
+/// A DNS answer carrying a tunnel must receive the same refusal as its embedded IPv4.
+#[test]
+fn tunnel_dns_answers_keep_metadata_and_private_refusals_distinct() {
+    let guard = Guard::default();
+    for (literal, expected) in [
+        ("2002:a9fe:a9fe::", Some(DEST_METADATA)),
+        ("2002:7f00:1::", Some(DEST_INTERNAL)),
+        ("2002:a01:203::", Some(DEST_INTERNAL)),
+        ("2002:808:808::", None),
+        ("2001:0:4136:e378:8000:63bf:5601:5601", Some(DEST_METADATA)),
+        ("2001:0:4136:e378:8000:63bf:80ff:fffe", Some(DEST_INTERNAL)),
+        ("2001:0:4136:e378:8000:63bf:f5fe:fdfc", Some(DEST_INTERNAL)),
+        ("2001:0:4136:e378:8000:63bf:f7f7:f7f7", None),
+    ] {
+        let addr = ip(literal);
+        let result = guard.judge_answer("svc.test", &[addr], C);
+        match expected {
+            Some(verdict) => assert_eq!(
+                result,
+                Err(Refusal {
+                    verdict,
+                    host: "svc.test".into(),
+                    addr: Some(addr),
+                }),
+                "{literal}"
+            ),
+            None => assert_eq!(result, Ok(()), "{literal}"),
+        }
+    }
+}

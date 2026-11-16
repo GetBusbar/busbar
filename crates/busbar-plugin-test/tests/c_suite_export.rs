@@ -13,3 +13,14 @@ use crate::min3_export::PLUGIN;
 fn the_export_suite_passes_over_a_plugin_built_sink() {
     suites::export(PLUGIN.plugin(), b"{}", FakeNeeds::new());
 }
+
+/// A metrics-only exporter (STREAM_METRICS and M_RENDER, the SDK's default `deliver`) passes too: core never
+/// pushes on the metrics stream, so the suite requires no delivery of it.
+#[test]
+fn the_export_suite_passes_over_a_metrics_only_exporter() {
+    suites::export(
+        crate::min3_export_metrics::PLUGIN.plugin(),
+        b"{}",
+        FakeNeeds::new(),
+    );
+}

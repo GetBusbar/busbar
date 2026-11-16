@@ -32,6 +32,7 @@ pub trait Shape {
     /// `members` of a pick, as the unit's hooks leave them: the walk's own pool (`primary`) or a
     fn shape(
         &self,
+        pool: &str,
         members: Vec<Member>,
         primary: bool,
     ) -> Option<(Vec<Member>, Vec<DestinationId>)>;
@@ -399,7 +400,7 @@ impl Walk {
         let Some(shape) = shape else {
             return Ok((admissible, Vec::new()));
         };
-        shape.shape(admissible, primary).ok_or_else(|| {
+        shape.shape(&pool.name, admissible, primary).ok_or_else(|| {
             let shed = Shed::restrict_no_lane();
             self.phase = Phase::Shed(shed.clone());
             shed
