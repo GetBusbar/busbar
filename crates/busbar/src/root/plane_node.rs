@@ -1369,13 +1369,11 @@ impl SessionSlot<'_> {
                 reason: busbar_contract::caps::ReasonCode::ClientGone,
             }));
         if let Some(reason) = refusal_reason(outcome) {
-            busbar_kernel::telemetry::unit_refusal_on(
-                self.money.as_ref().map_or_else(
-                    busbar_kernel::plane_driver::dispatch::fallback_key,
-                    |(_, facts)| facts.plane.plane_key(),
-                ),
-                reason.as_str(),
-            );
+            let instance: &str = match self.money.as_ref() {
+                Some((_, facts)) => facts.plane.plane_key(),
+                None => busbar_kernel::plane_driver::dispatch::fallback_key(),
+            };
+            busbar_kernel::telemetry::unit_refusal_on(instance, reason.as_str());
         }
         let ended = self.own.take().map(|own| {
             own.finish(
