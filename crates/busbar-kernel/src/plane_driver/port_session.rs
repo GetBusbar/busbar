@@ -53,9 +53,13 @@ pub trait Calls {
         sink: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<(), PortError>;
 
-    fn end(
+    fn end(&self, s: Self::Session, sink: &mut dyn FnMut(PlaneOut<'_>)) -> Result<(), PortError>;
+
+    fn render(
         &self,
-        s: Self::Session,
+        req: &PlaneIn<'_>,
+        what: u32,
+        arg: &[u8],
         sink: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<(), PortError>;
 
@@ -104,6 +108,16 @@ impl Calls for dyn PlanePort {
         PlanePort::end(self, s, sink)
     }
 
+    fn render(
+        &self,
+        req: &PlaneIn<'_>,
+        what: u32,
+        arg: &[u8],
+        sink: &mut dyn FnMut(PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        PlanePort::render(self, req, what, arg, sink)
+    }
+
     fn upstream(
         &self,
         s: &mut PlaneSession,
@@ -121,6 +135,7 @@ pub enum Origin {
     Piece(u32),
     Upstream,
     Rewrite,
+    Render,
     End,
 }
 
@@ -148,14 +163,22 @@ pub enum SessionError {
     Over,
     /// The answer carries an item a later slice drives.
     NotDriven,
+    /// Core could not encode the call's argument.
+    Encode,
 }
 
 /// One item the client sees, in the order the plane wrote it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToClient {
-    Head { status: u16, fields: HeadFields },
+    Head {
+        status: u16,
+        fields: HeadFields,
+    },
     Body(Vec<u8>),
-    Msg { flags: u32, bytes: Vec<u8> },
+    Msg {
+        flags: u32,
+        bytes: Vec<u8>,
+    },
     /// The client trailer fields: one `emit(E_TRAILERS)`; trailers-only on HTTP/2 when no `Body` preceded it.
     Trailers(HeadFields),
     End,
@@ -475,6 +498,32 @@ pub fn run_local<K: Calls + ?Sized>(
     }
     client.extend(last.client);
     Ok(Local { client })
+}
+
+/// `render` (IF §8.8): the plane's rendering of a core decision, `RESPOND PAIR* BODY? (TRAILERS PAIR*)? END`.
+/// Anything else in the answer (a forward, an intent, accounting) is a contract break: `NotDriven`.
+pub fn render<K: Calls + ?Sized>(
+    calls: &K,
+    req: &PlaneIn<'_>,
+    what: u32,
+    arg: &[u8],
+    effects: &dyn Effects,
+) -> Result<Vec<ToClient>, SessionError> {
+    let mut once = Once::default();
+    let mut answer = Answer::default();
+    calls
+        .render(req, what, arg, &mut |out| {
+            answer.take(out, Origin::Render, &mut once, effects);
+        })
+        .map_err(SessionError::Port)?;
+    if let Some(v) = answer.violation {
+        return Err(SessionError::Violation(v));
+    }
+    let answer = answer.seal();
+    if answer.forward.is_some() || answer.later || answer.finish {
+        return Err(SessionError::NotDriven);
+    }
+    Ok(answer.client)
 }
 
 /// Applies `items` to the client. False when the client stopped taking bytes.

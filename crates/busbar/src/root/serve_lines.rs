@@ -347,6 +347,10 @@ where
     let open_driver = Arc::clone(&driver);
     let code = run_io(PORT_LINE_CARRIER, reader, writer, stop, move |caller| {
         let principal = crate::root::off_path::serve_lines::session_principal(&gov);
+        let line_caller = busbar_kernel::plane_driver::port::LineCaller {
+            principal: Arc::from(principal.as_str()),
+            authenticated: gov.key().is_some(),
+        };
         let sink = Arc::clone(&caller);
         let carrier = open_driver.open_carrier(
             &principal,
@@ -359,8 +363,12 @@ where
             let request_id = requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let driver = Arc::clone(&answer_driver);
             let caller = Arc::clone(&caller);
+            let line_caller = line_caller.clone();
             async move {
-                match driver.answer_line(carrier, request_id, line).await {
+                match driver
+                    .answer_line(carrier, request_id, line, &line_caller)
+                    .await
+                {
                     Ok(mut body) if !body.is_empty() => {
                         terminate(&mut body);
                         let _ = caller.out.send(body);
