@@ -365,7 +365,7 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
             Validation / MalformedIfMatch,
             NotFound / UnknownResource,
             Conflict / BaseDefined,
-            Conflict / InvalidConfig,
+            Validation / InvalidConfig,
             VersionConflict / StaleIfMatch,
         ],
         (Delete, "/hooks/{name}/attachments/{target}") => de![
@@ -373,7 +373,7 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
             Validation / MalformedIfMatch,
             NotFound / UnknownResource,
             Conflict / BaseDefined,
-            Conflict / InvalidConfig,
+            Validation / InvalidConfig,
             VersionConflict / StaleIfMatch,
         ],
         (Patch, "/hooks/{name}/settings") => de![

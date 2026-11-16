@@ -244,14 +244,14 @@ async fn attach_base_defined_409() {
 }
 
 #[tokio::test]
-async fn attach_unconfigured_instance_409() {
+async fn attach_unconfigured_instance_400() {
     isolated!(CHILD, WITNESS, witness = "hook attachment");
     let s = serve("hook-attach-unconfigured", false).await;
     s.register("h1").await;
     let refused = s
         .attach("h1", "tools.nowhere", serde_json::json!("last"))
         .await;
-    assert_eq!(refused.status().as_u16(), 409);
+    assert_eq!(refused.status().as_u16(), 400);
     let body: serde_json::Value = refused.json().await.unwrap();
     assert_eq!(body["error"]["reason"], "invalid_config");
     let no_pool = s

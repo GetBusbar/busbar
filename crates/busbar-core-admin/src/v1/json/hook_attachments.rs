@@ -97,13 +97,13 @@ impl Point {
                 Some(Cond::UnknownResource),
             ),
             Self::Section(section) => (
-                AdminError::Conflict(format!(
+                AdminError::Validation(format!(
                     "no plane section `{section}` is configured; nothing to attach to"
                 )),
                 Some(Cond::InvalidConfig),
             ),
             Self::Instance(section, instance) => (
-                AdminError::Conflict(format!(
+                AdminError::Validation(format!(
                     "`{section}` has no configured instance `{instance}`; nothing to attach to"
                 )),
                 Some(Cond::InvalidConfig),
