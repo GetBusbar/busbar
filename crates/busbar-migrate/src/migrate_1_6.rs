@@ -251,7 +251,7 @@ type WriteRate = (&'static str, Option<(Value, String)>);
 /// The entry's cache-write rate as an exact `UnitRate` value and its rendering: `cache_write_utok`
 /// when present (never falling back), else `input_utok`. `Ok(None)`: not an exact rate (the units
 /// stay unpriced). A template slot refuses by 1t: the rate would be computed from it.
-fn write_unit_rate(lane: &str, entry: &Pairs) -> Result<WriteRate, Refusal> {
+fn write_unit_rate(lane: &str, entry: &Pairs, missing: &[&str]) -> Result<WriteRate, Refusal> {
     let key = if entry.contains_key("cache_write_utok") {
         "cache_write_utok"
     } else {
@@ -261,7 +261,21 @@ fn write_unit_rate(lane: &str, entry: &Pairs) -> Result<WriteRate, Refusal> {
         return Ok((key, None));
     };
     if is_template(source) {
-        return Err(computed(&format!("rate_card.{lane}.{key}")));
+        let source_path = format!("rate_card.{lane}.{key}");
+        let destinations = missing
+            .iter()
+            .map(|unit| format!("`rate_card.{lane}.units.{unit}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut refusal = computed(&source_path);
+        if let Refusal::Config(reason) = &mut refusal {
+            reason.push_str(&format!(
+                "; add {destinations}, each at the same rate as `{source_path}` in \
+             micro-units per unit, keeping the template as a quoted decimal reference \
+             (open-unit rates require an exact decimal string, not a bare float)"
+            ));
+        }
+        return Err(refusal);
     }
     let rate = source
         .as_f64()
@@ -320,7 +334,7 @@ fn price_open_units(
         let write_rate = if written.is_empty() {
             None
         } else {
-            Some(write_unit_rate(lane, entry)?)
+            Some(write_unit_rate(lane, entry, &written)?)
         };
         let units = entry.entry_or_insert_with("units", || Value::Map(Pairs::new()));
         let Value::Map(units) = units else {

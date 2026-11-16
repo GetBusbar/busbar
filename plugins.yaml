@@ -52,7 +52,7 @@
 #                  does [none]. Each is a `retired.<kind>.<word>` row of the root migration table
 #                  (`[package.metadata.busbar.migration]` in dist/default/Cargo.toml), beside the plugin's
 #                  `manifest.<alias>` / `asset.<alias>` rows; boot refuses a retired spelling and
-#                  `busbar --migrate-config` rewrites it to the alias (BUSBAR-1.6.0.md §2)
+#                  the first 1.6.0 boot rewrites it to the alias (BUSBAR-1.6.0.md §2)
 #   pending_crate  registered repository whose crates have not moved in yet [false].
 #                  the fleet tool's plugin check skips its crate-shaped checks until seeded.
 #   lang           rust | c [rust]. `c`: the plugin is C sources in `<kind>-<name>/`, built from
@@ -87,7 +87,7 @@ archived_repos:
   - busbar-transport-stdio
 
 # THE ROOT MIGRATION TABLE'S FROZEN TEXT (BUSBAR-1.6.0.md §2): operator-visible
-# 1.5.5 text naming plugins that are not in the build, which `busbar --migrate-config` and the boot
+# 1.5.5 text naming plugins that are not in the build, which the first-boot config upgrade and the boot
 # refusals print. These rows, then every entry's `retired:` rows, are the root migration table,
 # `[package.metadata.busbar.migration]` (dist/default/Cargo.toml), which the composition root hands to the
 # kernel; crates/busbar/src/root/tests/migration_table.rs renders it from here and is red on drift (printing the
@@ -112,7 +112,7 @@ migration:
   # v1.5.5:crates/busbar/src/config_validate/mod.rs:1656 (the empty `store.module` refusal)
   module_examples: "sqlite | postgres | valkey"
   # The store a config with no `store:` block ran on, which the empty-`store.module` refusal names and
-  # `--migrate-config` writes in. v1.5.5:crates/busbar/src/config/mod.rs:3026 (GOVERNANCE_STORE_MEMORY);
+  # the first-boot upgrade writes in. v1.5.5:crates/busbar/src/config/mod.rs:3026 (GOVERNANCE_STORE_MEMORY);
   # v1.5.5:crates/busbar/src/config_validate/mod.rs:1655
   store_1_5_default: memory
   # The browser-login button brands, in 1.5.5's match order: `<match tokens> : <label> : <icon ref>`, the

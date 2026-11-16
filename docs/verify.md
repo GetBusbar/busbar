@@ -5,14 +5,18 @@ Each check below names the key it relies on and what it proves.
 
 **What protects you, and what doesn't.** These signatures protect you only if you check them. If you
 pull `latest` or download a binary without verifying it, you are trusting the registries. The
-installer (`install.sh`) runs the binary check below for you.
+installer served from `getbusbar.com` runs the binary check below for you.
+
+<!-- docs-truth: install.sh is not in this repository (README.md uses getbusbar.com/install.sh); the claim that it verifies the binary cannot be checked from here. Confirm at the release-candidate pass. -->
+
+<!-- docs-truth: pending the 1.6.0 key ceremony (#1713): release/allowed_signers is comment-only until the owner names the release keys, and the publish gate refuses to release while the file differs from the owner's own trust file. The keys, key names and "take effect with 1.6.0" text below describe what ships once that lands. -->
 
 ## The keys
 
 | Key | Signs | Where it lives | Where you get it |
 |---|---|---|---|
 | **Release key** `busbar-release-2026a`, plus backup `-2026b` | `SHA256SUMS`, `SHA256SUMS.plugins`, `IMAGES`, `release-evidence.json` (OpenSSH signatures, namespace `busbar-release`), and the version tag `v<V>` (namespace `git`) | A FIDO2 hardware key the founder holds; it needs a physical touch. The backup is in a safe | [`release/allowed_signers`](../release/allowed_signers), `https://getbusbar.com/keys/allowed_signers`, and SECURITY.md. All three must match |
-| **Plugin root keys** `busbar-plugins-root` and `busbar-plugins-2026a` (ECDSA P-256) | Plugin **keys documents** only: each names the current plugin release signer, with an expiry and a version that only rises, and carries signed revocations | `busbar-plugins-root`: Cloud KMS at the HSM protection level, non-exportable. `busbar-plugins-2026a`: PIV slot 9C of the founder's YubiKey (PIN and touch on every signature) | **Compiled into the busbar binary** (`BUSBAR_RELEASE_PUBKEY` in [`.cargo/config.toml`](../.cargo/config.toml), embedded verbatim, so `strings busbar \| grep busbar-plugins-` shows it) |
+| **Plugin root keys** `busbar-plugins-root` and `busbar-plugins-2026a` (ECDSA P-256) | Plugin **keys documents** only: each names the current plugin release signer, with an expiry and a version that only rises, and carries signed revocations | `busbar-plugins-root`: Cloud KMS at the HSM protection level, non-exportable. `busbar-plugins-2026a`: PIV slot 9C of the founder's YubiKey (PIN and touch on every signature) | **Compiled into the busbar binary** at build time from the `BUSBAR_RELEASE_PUBKEY` build input (a CI repository variable, not a committed file; [`.cargo/config.toml`](../.cargo/config.toml) says so), embedded verbatim, so `strings busbar \| grep busbar-plugins-` shows it. Take the list to compare against from the release notes |
 | **Plugin release signer** (named by the current keys document) | One **release manifest** per release, listing every first-party plugin artefact (name, version, target, SHA-256) | 1.6.0: an interim P-256 key in our CI's secret store, vouched for by a keys document that expires after 90 days. It is replaced by our CI's release-signing feature through a new keys document, with no new busbar binary | Inside every plugin tarball, in the keys document a root signed ([design](design/release-trust.md)) |
 
 **One key, separate namespaces, never interchangeable.** The release key signs release *files* only
@@ -70,7 +74,7 @@ Releases up to 1.5.5 were tagged without a signature.
 
 ## The release index
 
-the first-boot migration reads `plugin-index.json` to rewrite a 1.5.5 configuration's
+The first-boot migration reads `plugin-index.json` to rewrite a 1.5.5 configuration's
 `plugins.fetch` pins and to find the release of a plugin built for this core. Each release publishes
 it as an asset of its own GitHub Release, the URL the binary fetches by default:
 
@@ -135,9 +139,9 @@ ssh-keygen -Y verify -f allowed_signers -I busbar-release -n busbar-release -s S
 sha256sum -c SHA256SUMS --ignore-missing
 # and the plugin's chain (root -> keys document -> release manifest -> plugin), with the same code
 # the loader runs:
-busbar-plugin-pack verify busbar-store-sqlite-1.6.0-x86_64-unknown-linux-gnu.tar.gz \
-  --keys "$(sed -n 's/^BUSBAR_RELEASE_PUBKEY = "\(.*\)"/\1/p' .cargo/config.toml)" \
-  --target x86_64-unknown-linux-gnu --name busbar-store-sqlite --version 1.6.0
+busbar-plugin-pack verify <plugin>-1.6.0-x86_64-unknown-linux-gnu.tar.gz \
+  --keys "<root key list from the release notes>" \
+  --target x86_64-unknown-linux-gnu --name <plugin> --version 1.6.0
 ```
 
 `busbar-plugin-pack` is built from this repository:
@@ -180,7 +184,7 @@ you downloaded and this repository's public files:
 git clone https://github.com/GetBusbar/busbar && cd busbar && git checkout v$V
 python3 scripts/verify-artifact.py --archive busbar-x86_64-unknown-linux-gnu.tar.gz \
   --target x86_64-unknown-linux-gnu --version $V --repo-root . \
-  --pubkey "$(sed -n 's/^BUSBAR_RELEASE_PUBKEY = "\(.*\)"/\1/p' .cargo/config.toml)"
+  --pubkey "<release public key, 64 hex, from the release notes>"
 ```
 
 It exits 0 only when every applicable row passed. There is no skip: a row whose input you did not

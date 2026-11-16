@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! The overlap predicate is reflexive, symmetric and total over the cross-product of forms.
 
 use busbar_contract::grammar::{PathSeg, Selector, SelectorFamily, SelectorForm};

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! ADMIN-API r5 section 2 (MR2): an admin credential is a virtual key with an `admin` grant, the
 //! admin chain's `keys` position admits it, and its verbs are judged per verb.
 

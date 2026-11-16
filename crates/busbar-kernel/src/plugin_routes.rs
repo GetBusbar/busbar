@@ -18,6 +18,8 @@ const PLUGIN_REQUEST_HEADERS_TRUNCATED_MARKER: &str = "x-busbar-headers-truncate
 fn reserved_exact_paths() -> [&'static str; 5] {
     [
         "/healthz",
+        "/livez",
+        "/readyz",
         "/stats",
         "/v1/models",
         "/v1beta/models",

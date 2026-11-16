@@ -22,6 +22,10 @@ job waits for it, then they run in parallel.
 | `repo-checks` | `ci/hop` (no entry hops off its thread) and `tools/ci-checks`: the migration text and overlay checks, the fleet manifest, export streams and the LOC report | yes |
 | `core-source-checks` | `tools/ci-checks` source scans (C-TRANSPORT, C-NO-LICENCE, the plugin-word scan) | not yet: each turns blocking when the task that owns it lands |
 | `ffi` | `cargo clippy -p busbar-ffi -- -D warnings` on its default and full feature sets, then the slot model under loom (`--cfg loom`) | yes |
+| `unsafe-count` | the per-crate `unsafe` count against the forbid baseline; the report is published with each release tag | yes |
+| `miri` | the unit tests of `busbar-ffi`, the one crate that holds `unsafe`, under Miri (default features and `host`) | no: it reports and gates nothing yet |
+| `fuzz` | every `cargo-fuzz` target for a bounded time, on `dev` and the nightly; it starts when the tree gains a `fuzz/` workspace, which core does not have yet | no: it reports and gates nothing yet |
+| `coverage` | statement coverage of the workspace tests (`cargo llvm-cov`), on `dev` and the nightly, published as a report | no: a report, never a gate |
 | `c-header` | the generated static asserts of `busbar_plugin.h` and its C fixture under `-std=c11 -Wall -Werror`, with two compilers | yes |
 | `conformance` | core's own conformance suites (`ci/conformance.yml`) | yes |
 | `red-proof` | on a commit whose message carries `[red-proof <crate>::<test>]` (not on `dev`): that one test must compile and then fail (nextest exit 100) | yes |
@@ -31,12 +35,12 @@ job waits for it, then they run in parallel.
 | Job | When | What it runs |
 |---|---|---|
 | `qa` | nightly schedule `qa-nightly`, or a pipeline started by hand | release and debug builds of `busbar`, every conformance suite against them, and the kernel's loom tests in release mode |
-| `oracle` | the QA pipeline (`ci/qa.yml`) | the black-box comparison of this build against the published 1.5.5 binary |
+| `oracle` | every `dev` pipeline (`ci/qa.yml`), or by hand with `BUSBAR_ORACLE=1` | the black-box comparison of this build against the published 1.5.5 binary. It reports differences and gates nothing: it is `allow_failure`, and each difference is decided at the upgrade review |
 | `bench` | `bench/*` branches | the benchmark suites |
 
 ## On a release tag
 
-Nothing is published unless every check of the pipeline passed.
+Nothing is published unless every blocking check of the pipeline passed.
 
 - `release-build`, `release-build-arm`: the release binary of `crates/busbar` for each architecture,
   with a CycloneDX SBOM (`cargo cyclonedx`).
@@ -54,7 +58,5 @@ Nothing is published unless every check of the pipeline passed.
 These are known gaps, also listed in the
 [security posture](security/1.6.0-security-posture.md) (section 4.2):
 
-- No statement-coverage report is produced or published.
-- No fuzz target runs in CI.
-- Neither Miri nor a sanitizer runs over the crates that hold `unsafe` code (`busbar-ffi` is held by
-  clippy with warnings denied and by its loom model).
+- Statement coverage, Miri and fuzzing run as non-blocking jobs (above); none of them gates a merge or a release yet, and there is no fuzz target in core yet.
+- No sanitizer runs over `busbar-ffi`; it is held by clippy with warnings denied, its loom model and Miri.

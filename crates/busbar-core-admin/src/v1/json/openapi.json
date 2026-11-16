@@ -10002,7 +10002,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -10186,7 +10186,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -11925,7 +11925,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -12128,7 +12128,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -12571,7 +12571,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -12802,7 +12802,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -13050,7 +13050,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -13521,7 +13521,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -14624,7 +14624,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -14841,7 +14841,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -14867,7 +14867,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -15108,7 +15108,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -15364,7 +15364,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -15647,7 +15647,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -15931,7 +15931,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -16424,7 +16424,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -16641,7 +16641,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -16667,7 +16667,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -16908,7 +16908,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -17164,7 +17164,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -17403,7 +17403,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -18648,7 +18648,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -23553,7 +23553,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }
@@ -24900,7 +24900,7 @@
               "ETag": {
                 "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
                 "schema": {
-                  "pattern": "^\"[0-9]+\"$",
+                  "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$",
                   "type": "string"
                 }
               }

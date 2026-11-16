@@ -447,6 +447,12 @@ pub fn plan(inputs: &Inputs<'_>) -> Result<Plan, Refusal> {
         Some(selected) => Some(overlay::read(selected, inputs.ignore_overlay)?),
         None => None,
     };
+    // Refuse existing conflicts before boot opens or converts the store. Step 5 repeats
+    // these checks under its lock because another writer can change the files meanwhile.
+    files::backup_absent_or_equal(&backup_path(inputs.path), source.as_bytes())?;
+    if let Some(read) = &read {
+        overlay::backup_absent_or_equal(read)?;
+    }
     match &read {
         Some(read) => {
             report.push(read.line());
@@ -464,6 +470,9 @@ pub fn plan(inputs: &Inputs<'_>) -> Result<Plan, Refusal> {
         &mut report,
     )?;
     judge(&chained, inputs.facts, inputs.check)?;
+    if let Some(catalog) = &chained.catalog {
+        catalog::check_destination(catalog)?;
+    }
     Ok(Plan {
         path: inputs.path.to_path_buf(),
         from,

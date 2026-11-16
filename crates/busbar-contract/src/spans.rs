@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! The closed JSON span grammar, on the plugin surface.
 
 pub use crate::json_grammar::{
