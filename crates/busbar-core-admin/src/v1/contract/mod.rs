@@ -207,6 +207,9 @@ impl From<busbar_kernel::config::transaction::TxnError> for AdminError {
                 needed: Scope::Full,
             },
             busbar_kernel::config::transaction::TxnError::Internal => AdminError::Internal,
+            busbar_kernel::config::transaction::TxnError::Unavailable(msg) => {
+                AdminError::Unavailable(msg)
+            }
         }
     }
 }
@@ -241,6 +244,10 @@ pub struct InfoView {
     /// `false` = the config is LOCKED (`config.locked: true`) and admin-API config mutations are
     /// refused. Lets tooling tell an operator whether runtime changes are accepted and durable.
     pub config_persistence: bool,
+    /// The durable config generation (ADMIN-API-1.6 6.1): advanced in the Store before every
+    /// publication, so it never repeats across restarts. The ETag of every config resource is
+    /// `"<deployment_id>.<config_generation>"`.
+    pub config_generation: u64,
     /// Monotonic config version: `0` at boot, +1 per API config apply. Drift-detection: re-read and
     /// compare to tell whether the running config changed. Process-local (resets on restart).
     pub config_version: u64,
@@ -906,6 +913,8 @@ pub struct EffectiveConfigView {
     /// The monotonic config version at the time of this read (see `InfoView.config_version`), so a
     /// drift-detection read gets the config AND its version in one call.
     pub version: u64,
+    /// The durable config generation at the time of this read (see `InfoView.config_generation`).
+    pub config_generation: u64,
     pub auth: AuthView,
     pub pools: Vec<PoolView>,
     pub models: Vec<ModelView>,

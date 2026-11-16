@@ -2140,6 +2140,21 @@ impl BookPreparation {
             node,
             deployment_id,
         );
+        // ADMIN-API-1.6 6.1: boot publishes through the same compare-and-set as every later
+        // publication, so a restart never repeats a generation the previous process served.
+        if let Some(live) = busbar_kernel::persistence::boot_identity::live() {
+            let prior = app
+                .config_generation
+                .load(std::sync::atomic::Ordering::Acquire);
+            let generation = live.advance_generation(prior).await.map_err(|why| {
+                format!(
+                    "{}: {why}",
+                    busbar_kernel::config::transaction::GENERATION_REFUSED
+                )
+            })?;
+            app.config_generation
+                .store(generation, std::sync::atomic::Ordering::Release);
+        }
         self.phase = BookPhase::OpenJournal;
         self.journal = Some(
             RuntimeJournal::open(

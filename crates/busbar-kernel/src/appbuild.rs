@@ -2569,6 +2569,14 @@ async fn build_app_native(
     app.config_pending_restart = prior
         .map(|app| app.config_pending_restart.clone())
         .unwrap_or_default();
+    if let Some(prior) = prior {
+        app.config_generation = Arc::clone(&prior.config_generation);
+    }
+    app.require_if_match = cfg
+        .auth
+        .as_ref()
+        .and_then(|a| a.policy.require_if_match)
+        .unwrap_or(false);
     Ok((
         app,
         rotate_gov_credentials,

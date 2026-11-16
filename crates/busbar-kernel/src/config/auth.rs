@@ -378,6 +378,9 @@ pub struct AuthPolicyCfg {
     /// may hold on one node. Absent ⇒ 256. A key over it is refused 429 with `Retry-After`; other
     /// keys are unaffected. At least 1 (enforced at validate, fail boot).
     pub max_outstanding_tickets_per_key: Option<u32>,
+    /// ADMIN-API-1.6 6.2: when `true`, a guarded config mutation without `If-Match` is refused 428
+    /// (`invalid_request` / `if_match_required`). Absent or `false` ⇒ a missing `If-Match` is accepted.
+    pub require_if_match: Option<bool>,
 }
 
 /// Per-provider browser-login parameters (`identity-providers.<name>.browser_login:`). PRESENCE of

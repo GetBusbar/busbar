@@ -145,6 +145,10 @@ impl AdminService {
             },
             config_persistence: self.app.overlay_path.is_some(),
             config_version: self.app.config_version,
+            config_generation: self
+                .app
+                .config_generation
+                .load(std::sync::atomic::Ordering::Acquire),
             overlay_ignored: busbar_kernel::appbuild::booted_with_ignore_overlay(),
             deployment_id: live.map(|l| l.deployment_id().to_string()),
             node_id: live.map(|l| l.node_id()),
@@ -1166,6 +1170,10 @@ impl AdminService {
     pub(crate) async fn get_config(&self) -> Result<EffectiveConfigView, AdminError> {
         Ok(EffectiveConfigView {
             version: self.app.config_version,
+            config_generation: self
+                .app
+                .config_generation
+                .load(std::sync::atomic::Ordering::Acquire),
             auth: self.get_auth().await?,
             pools: self.list_pools().await?.items,
             models: self.list_models().await?.items,

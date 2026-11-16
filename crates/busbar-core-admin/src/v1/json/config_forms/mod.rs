@@ -117,7 +117,8 @@ pub(super) fn schema_document() -> Value {
             "default_ttl":nullable(json!({"type":"string"})),
             "max_ttl":nullable(json!({"type":"string"})),
             "mint_ceilings":dictionary(reference("MintCeiling")),
-            "max_outstanding_tickets_per_key":nullable(json!({"type":"integer","minimum":1}))
+            "max_outstanding_tickets_per_key":nullable(json!({"type":"integer","minimum":1})),
+            "require_if_match":nullable(json!({"type":"boolean"}))
         })),
     );
     let verb_names: Vec<_> = crate::verb::admin_rows().map(|row| row.name).collect();

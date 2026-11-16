@@ -353,6 +353,12 @@ pub struct App {
     /// tooling can tell whether the running config changed since a prior read. Process-local (resets on
     /// restart).
     pub config_version: u64,
+    /// The DURABLE config generation (ADMIN-API-1.6 6.1): the Store row `busbar.config.generation.v1`,
+    /// advanced by compare-and-set to `max(stored, prior) + 1` before every publication, so it never
+    /// repeats across restarts (unlike `config_version`). One cell is shared by every snapshot of a handle.
+    pub config_generation: Arc<std::sync::atomic::AtomicU64>,
+    /// `auth.policy.require_if_match`: a guarded config mutation without `If-Match` is 428.
+    pub require_if_match: bool,
     /// Anti-sprawl cap on keys BOUND TO ONE GROUP.
     /// Because a `user:<sub>` leaf IS the principal, this is effectively "max keys per principal".
     /// `0` = unlimited (default). Enforced at `POST /keys`; carried on the snapshot so a config apply
@@ -778,6 +784,8 @@ impl App {
             providers_path,
             overlay_path,
             config_version,
+            config_generation: Arc::default(),
+            require_if_match: false,
             max_keys_per_principal,
             max_auto_provisioned_groups,
             governance,
@@ -1087,6 +1095,26 @@ impl AppHandle {
         self.current.load()
     }
 
+    /// ADMIN-API-1.6 6.1: before a publication, advance the durable generation and set it on the
+    /// shared cell. A failed put refuses the publication. Without a boot identity (no Store: tests,
+    /// ephemeral) the generation is process-local and still monotonic.
+    async fn advance_generation(&self) -> Result<(), String> {
+        let cell = self.load().config_generation.clone();
+        let prior = cell.load(std::sync::atomic::Ordering::Acquire);
+        match crate::persistence::boot_identity::live() {
+            Some(live) => {
+                let generation = live.advance_generation(prior).await.map_err(|why| {
+                    format!("{}: {why}", crate::config::transaction::GENERATION_REFUSED)
+                })?;
+                cell.store(generation, std::sync::atomic::Ordering::Release);
+            }
+            None => {
+                cell.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            }
+        }
+        Ok(())
+    }
+
     pub async fn swap(&self, next: Arc<App>) {
         let _application = self.application.lock().await;
         self.swap_with_commit(next.clone(), None, || Ok(None), &mut false)
@@ -1180,6 +1208,7 @@ impl AppHandle {
         let _application = self.application.lock().await;
         persist()?;
         let mut publication = UnpublishedOverlay::new(self.load().overlay_path.clone());
+        self.advance_generation().await?;
         self.swap_with_commit(next.clone(), None, || Ok(None), &mut publication.published)?;
         self.finish_apply(&next).await;
         Ok(())
@@ -1228,6 +1257,7 @@ impl AppHandle {
                 "App generation changed during rate preparation; reload before retrying".into(),
             );
         }
+        self.advance_generation().await?;
         let confirmed = prepared.confirm_activation().await?;
         self.swap_with_commit(
             next.clone(),

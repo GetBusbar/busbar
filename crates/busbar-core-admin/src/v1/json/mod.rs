@@ -48,6 +48,7 @@ impl AdminTransport for JsonV1 {
         let router = Router::new()
             .route("/info", get(info))
             .route("/telemetry", get(telemetry::get))
+            .route("/operations/{key}", get(generation::get_operation))
             .route("/pools", get(list_pools))
             .route("/pools/{name}", get(get_pool))
             .route("/models", get(list_models))
@@ -121,6 +122,8 @@ impl AdminTransport for JsonV1 {
             .route("/signing-key/rotate", post(crate::keys::rotate_signing_key))
             .fallback(plane_serve_or_not_found)
             .method_not_allowed_fallback(|| async { err_json(&AdminError::MethodNotAllowed) });
+
+        let router = router.layer(axum::middleware::from_fn(generation::preconditions));
 
         #[cfg(test)]
         let router = router.layer(axum::middleware::from_fn(record_declared_error));
@@ -647,6 +650,7 @@ pub use plane_input_schemas::install_plane_input_schemas;
 mod config_forms;
 #[cfg(feature = "openapi-schema")]
 mod contract_metadata;
+mod generation;
 mod handlers;
 #[cfg(feature = "openapi-schema")]
 mod replay_metadata;

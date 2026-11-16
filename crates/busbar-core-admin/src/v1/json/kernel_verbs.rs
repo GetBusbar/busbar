@@ -338,6 +338,35 @@ pub(crate) enum AuditRecipeElement {
     _Members(BTreeMap<String, AuditRecipeScalar>),
 }
 
+/// `GET /operations/{key}`: one idempotent operation record.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct OperationView {
+    idempotency_key: String,
+    principal: String,
+    operation_id: String,
+    /// One of `applied`, `rejected` or `in_flight`.
+    state: OperationState,
+    status: Option<u16>,
+    request_sha256: String,
+    received_at: u64,
+    completed_at: Option<u64>,
+    config_generation: Option<u64>,
+    audit_seq: Option<u64>,
+    /// The stored response body; `null` while in flight.
+    response: Value,
+}
+
+/// Where an idempotent operation stands.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum OperationState {
+    _Applied,
+    _Rejected,
+    _InFlight,
+}
+
 /// `GET /audit/keys`: the public keys the chain is signed with.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
@@ -1242,6 +1271,33 @@ fn doc_for(
             schema_of(gen.subschema_for::<AuditChainKeysView>()),
             "The published verifying keys (empty when the node signs nothing)",
         ),
+        KernelVerb::GetOperationsKey => VerbDoc {
+            summary: "One idempotent operation, by its Idempotency-Key",
+            description: "The caller's own operation under `Idempotency-Key`: `state` is one of \
+                `applied`, `rejected` or `in_flight`, with the status, the request digest, the \
+                times, the config generation it ran under, and the stored response. A 404 means \
+                the key is unknown or past retention. `?principal=` reads another principal's \
+                operation and needs the `full` scope."
+                .to_string(),
+            success: Success::Json(
+                schema_of(gen.subschema_for::<OperationView>()),
+                "The operation record",
+            ),
+            request: None,
+            query: vec![
+                json!({"name": "key", "in": "path", "required": true,
+                       "schema": {"type": "string", "minLength": 1, "maxLength": 128}}),
+                json!({"name": "principal", "in": "query", "required": false,
+                       "schema": {"type": "string"}}),
+            ],
+            errors: vec![
+                (
+                    "404",
+                    "`not_found`: the key is unknown or past retention".to_string(),
+                ),
+                unavailable_503("the Store could not read the operation"),
+            ],
+        },
         _ => return None,
     })
 }
