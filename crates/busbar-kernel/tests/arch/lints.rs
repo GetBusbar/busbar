@@ -935,8 +935,8 @@ fn added(
 
 #[test]
 fn one_impl_trait_move_needs_no_admission() {
-    let before = BTreeMap::from([("old/ports.rs".into(), vec!["AuthPort".into()])]);
-    let now = BTreeMap::from([("new/auth.rs".into(), vec!["AuthPort".into()])]);
+    let before = BTreeMap::from([("old/ports.rs".into(), BTreeSet::from(["AuthPort".into()]))]);
+    let now = BTreeMap::from([("new/auth.rs".into(), BTreeSet::from(["AuthPort".into()]))]);
     let mut failures = Vec::new();
     added(&now, &before, &BTreeMap::new(), "traits", &mut failures);
     assert!(failures.is_empty(), "a trait move is not a new trait: {failures:?}");
@@ -944,10 +944,10 @@ fn one_impl_trait_move_needs_no_admission() {
 
 #[test]
 fn one_impl_retained_trait_does_not_authorize_another_definition() {
-    let before = BTreeMap::from([("old/ports.rs".into(), vec!["AuthPort".into()])]);
+    let before = BTreeMap::from([("old/ports.rs".into(), BTreeSet::from(["AuthPort".into()]))]);
     let now = BTreeMap::from([
-        ("old/ports.rs".into(), vec!["AuthPort".into()]),
-        ("new/auth.rs".into(), vec!["AuthPort".into()]),
+        ("old/ports.rs".into(), BTreeSet::from(["AuthPort".into()])),
+        ("new/auth.rs".into(), BTreeSet::from(["AuthPort".into()])),
     ]);
     let mut failures = Vec::new();
     added(&now, &before, &BTreeMap::new(), "traits", &mut failures);
