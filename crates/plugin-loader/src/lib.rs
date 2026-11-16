@@ -275,14 +275,12 @@ pub mod adapters;
 #[deny(unsafe_code)]
 pub mod admit;
 #[deny(unsafe_code)]
-pub mod binder;
+pub mod answer;
 mod chains;
 #[deny(unsafe_code)]
-pub mod encode;
 #[deny(unsafe_code)]
 pub mod instance;
 #[deny(unsafe_code)]
-pub mod ports;
 #[deny(unsafe_code)]
 pub mod refusal;
 #[deny(unsafe_code)]

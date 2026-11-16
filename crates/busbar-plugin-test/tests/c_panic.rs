@@ -17,11 +17,11 @@ use std::time::{Duration, Instant};
 use busbar_plugin_abi::fail::{CallError, FaultReason};
 use busbar_plugin_abi::host_side::caller::CallStack;
 use busbar_plugin_loader::instance::OpenError;
-use busbar_plugin_loader::ports::export::{Delivered, ExportPort};
-use busbar_plugin_loader::ports::{CallCx, PortError};
 use busbar_plugin_loader::refusal::RefusalCode;
 use busbar_plugin_test::fake_needs::FakeNeeds;
 use busbar_plugin_test::suites::harness::Harness;
+use busbar_ports::export::{Delivered, ExportPort};
+use busbar_ports::{CallCx, PortError};
 
 #[test]
 #[ignore = "blocked (re-checked 2026-11-16) on #271 and on the missing MIN-3 migrate entry: a panic in `cancel` or `close` is not FAULT + quarantine, because busbar-ffi host.rs `Drop for Chain`/`Drop for Session` (cancel) and `Drop for Instance` (close) call the plugin outside `driver::step` and discard its Status (`let _ = cancel_raw(..)`, `let _ = close(..)`), so nothing reaches `report_fault` (busbar-ffi is owner-pinned, unsafe.yaml); and `migrate` has no MIN-3 entry on the branch (busbar-ffi header.rs `entries()` = describe/open/resume/cancel/close; plugin-loader registry.rs `migrate` is the 1.x door path). Describe, open (start and resume) and kind-method (sync, async start, async resume) panics run as the sibling tests below; cancel and close panics' no-abort half is c_panic_cancel's sibling"]

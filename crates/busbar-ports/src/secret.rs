@@ -8,7 +8,7 @@ use std::sync::Arc;
 use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::host_side::caller::BoxFut;
 
-use crate::ports::{CallCx, PortError};
+use crate::{CallCx, PortError};
 
 // The IF types `value` as `zeroize::Zeroizing<Vec<u8>>`; the workspace bans `Zeroizing` crate-wide
 // (clippy-crate-wide/clippy.toml, owner 2026-11-14), so the stub uses its named replacement `SecureVec`.

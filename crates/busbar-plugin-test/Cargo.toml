@@ -98,6 +98,7 @@ target-http = ["target", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "t
 test-seal = ["busbar-contract/test-seal"]
 
 [dependencies]
+busbar-ports = { path = "../busbar-ports" }
 zeroize = { workspace = true }
 busbar-contract = { path = "../busbar-contract", features = ["test-support", "abi-scan"] }
 busbar-plugin-loader = { path = "../plugin-loader", features = ["test-support"] }

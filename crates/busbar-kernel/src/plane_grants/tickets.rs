@@ -14,7 +14,7 @@ use base64::Engine;
 use busbar_contract::crypto;
 use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
-use busbar_plugin_loader::ports::auth::Identity;
+use busbar_ports::auth::Identity;
 
 use super::{core_caller, core_name, TicketAdmitted, TicketDenied, TicketMint, Tickets};
 use crate::plugin_records::{

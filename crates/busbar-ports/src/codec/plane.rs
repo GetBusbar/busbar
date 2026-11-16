@@ -12,7 +12,7 @@ use busbar_plugin_abi::records::{
 use busbar_plugin_abi::types::Pair;
 use zeroize::Zeroize;
 
-use crate::ports::plane::{ObservedAnswer, TrustAnswer, WorkAnswer};
+use crate::plane::{ObservedAnswer, TrustAnswer, WorkAnswer};
 
 /// Round 13: the D_PROVIDER_SCHEMA text (at most one; a second is RecErr), or None.
 pub fn decode_provider_schema<'o>(describe: Records<'o>) -> Result<Option<&'o str>, RecErr> {
@@ -635,7 +635,7 @@ mod tests {
     use busbar_plugin_abi::types::{Bytes, Str};
 
     use super::*;
-    use crate::ports::plane::TrustItem;
+    use crate::plane::TrustItem;
 
     fn recs(bytes: &[u8]) -> Vec<Rec<'_>> {
         Records::new(bytes)

@@ -13,7 +13,7 @@ use busbar_plugin_abi::host_side::answer::Answer;
 use busbar_plugin_abi::kinds::store::store as wire;
 use busbar_plugin_abi::records::{RecErr, Reply, Writer};
 use busbar_plugin_abi::types::Status;
-use busbar_plugin_loader::encode::store::decode_decision;
+use busbar_ports::codec::store::decode_decision;
 
 const AUTHORITY: [u8; 16] = [6; 16];
 

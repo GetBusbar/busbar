@@ -14,10 +14,10 @@ use busbar_plugin_abi::fail::CallError;
 use busbar_plugin_abi::host_side::caller::CallStack;
 use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::instance::{OpenedPort, Reconfigured};
-use busbar_plugin_loader::ports::secret::SecretPort;
-use busbar_plugin_loader::ports::{CallCx, PortError};
 use busbar_plugin_test::fake_needs::FakeNeeds;
 use busbar_plugin_test::suites::harness::Harness;
+use busbar_ports::secret::SecretPort;
+use busbar_ports::{CallCx, PortError};
 
 use crate::min3_second as fx;
 
