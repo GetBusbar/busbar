@@ -228,21 +228,20 @@ pub fn decode_login_identity(records: Records<'_>) -> Result<Identity, RecErr> {
     }
 }
 
-/// Round 24: Clone, so a verdict-cache lead hands its outcome to its followers (§12.28 rule 4).
+/// The raw answer of exactly one plugin verify invocation. Host policy decides subsequent steps.
 #[derive(Clone, Debug)]
-pub enum Verdict {
+pub enum VerifyAnswer {
     Identity(Identity),
     NotMine,
-    Rejected { code: u32, text: Box<str> },
+    Refused { code: u32, text: Box<str> },
+    IssuedWanted(Box<str>),
+    KeysStale,
 }
 
-/// Sync plugins finish without boxing; verify_io plugins, sync plugins that answered ISSUED_WANTED (the
-/// adapter looks the credential up through IssuedCredentials §12.8 and calls verify again), sync answers with
-/// REPLAY (the claim is a store round trip), and KEYS_STALE refusals (single-flight `refresh`, then verify once
-/// more; rate limit and single-flight owned by the adapter's `KeyRefresh` state, §12.11) return the box.
+/// Sync verification returns inline; verify_io drives exactly one plugin invocation.
 pub enum Verify<'a> {
-    Done(Result<Verdict, PortError>),
-    Io(BoxFut<'a, Result<Verdict, PortError>>),
+    Done(Result<VerifyAnswer, PortError>),
+    Io(BoxFut<'a, Result<VerifyAnswer, PortError>>),
 }
 
 pub enum LoginIn<'a> {
@@ -309,7 +308,7 @@ pub trait AuthPort: Send + Sync + 'static {
     fn cred_headers(&self) -> &[Box<str>];
     /// D_ISSUED_KIND, if declared.
     fn issued_kind(&self) -> Option<&str>;
-    fn verify<'a>(&'a self, cx: CallCx, req: &'a AuthIn<'a>) -> Verify<'a>;
+    fn verify<'a>(&'a self, cx: CallCx, req: &AuthIn<'_>, issued: Option<&[u8]>) -> Verify<'a>;
     fn login<'a>(
         &'a self,
         cx: CallCx,
