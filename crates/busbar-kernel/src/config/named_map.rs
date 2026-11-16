@@ -271,11 +271,9 @@ impl PlaneDefinition<'_> {
         validate: impl FnOnce() -> Result<(), String>,
     ) -> Result<(), String> {
         let section = self.section;
-        // `json::to_yaml` reads the facade tree (#162); the definition is still a serde_json
-        // tree here, so carry it across as its exact JSON text (number lexemes kept).
-        let entry = serde_json::to_vec(def)
+        // `json::to_yaml` reads the facade tree (#162).
+        let entry = busbar_contract::json::to_value(def)
             .map_err(|e| e.to_string())
-            .and_then(|text| busbar_contract::json::parse_value(&text).map_err(|e| e.to_string()))
             .and_then(|def| busbar_contract::json::to_yaml(&def))
             .map_err(|e| format!("`{section}.{name}`: {e}"))?;
         crate::config::plane_sections::validate_plane_entry(
