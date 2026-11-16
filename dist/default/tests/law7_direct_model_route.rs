@@ -6,6 +6,7 @@
 
 mod common;
 
+use busbar_contract::json;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -13,8 +14,8 @@ use std::time::{Duration, Instant};
 
 const ADMIN_TOKEN: &str = "law7-direct-model-route-admin";
 
-fn upstream_answer() -> serde_json::Value {
-    serde_json::json!({
+fn upstream_answer() -> json::Value {
+    json::json!({
         "id": "msg_law7_direct",
         "type": "message",
         "role": "assistant",
@@ -229,7 +230,7 @@ fn a_direct_routing_config_is_served_as_one_naming_the_planes_verb() {
         "the direct route is served by the plane its `models:` selects: {direct:?}"
     );
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&direct.1).ok(),
+        json::parse_value(direct.1.as_bytes()).ok(),
         Some(upstream_answer()),
         "the far end's message, as 1.5.5 relayed it: {direct:?}"
     );

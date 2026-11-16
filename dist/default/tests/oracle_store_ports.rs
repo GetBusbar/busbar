@@ -4,6 +4,8 @@
 use std::path::Path;
 use std::process::Command;
 
+use busbar_contract::json::{self, JsonValueTrait};
+
 fn root() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
@@ -26,8 +28,10 @@ fn env_for(pg: u16, my: u16, vk: u16) -> (String, String) {
 }
 
 fn pinned() -> Vec<u16> {
-    let cells: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(root().join("testing/shadow-oracle/cells.json")).expect("cells"),
+    let cells = json::parse_value(
+        std::fs::read_to_string(root().join("testing/shadow-oracle/cells.json"))
+            .expect("cells")
+            .as_bytes(),
     )
     .expect("cells.json parses");
     cells["cells"]
