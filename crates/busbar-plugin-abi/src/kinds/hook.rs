@@ -210,7 +210,7 @@ crate::kind! {
                 > + Send
                 + 'a {
                     use crate::host_side::proxy;
-                    proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_ON_IO), req, |req, lease| {
+                    proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_ON_IO), req, move |req, lease| {
                         let (bufs, at) = proxy::staged(req);
                         self.live
                             .start2(

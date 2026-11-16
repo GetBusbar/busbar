@@ -197,7 +197,7 @@ crate::kind! {
                     use crate::host_side::proxy;
                     #[allow(unused_imports)]
                     use crate::plugin::__rt::Arg;
-                    proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_DELIVER), req, |req, lease| {
+                    proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_DELIVER), req, move |req, lease| {
                         let _ = req;
                         let (bufs, at) = proxy::staged(req);
                         self.live
@@ -238,7 +238,7 @@ crate::kind! {
                     use crate::host_side::proxy;
                     #[allow(unused_imports)]
                     use crate::plugin::__rt::Arg;
-                    proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_CONFIRM), req, |req, lease| {
+                    proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_CONFIRM), req, move |req, lease| {
                         let _ = req;
                         self.live
                             .start1(
