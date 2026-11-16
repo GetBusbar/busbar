@@ -280,6 +280,10 @@
             "description": "Whether an admin credential chain is configured. `false` = the empty chain = open dev posture.",
             "type": "boolean"
           },
+          "default": {
+            "description": "Whether the chain is the default one (`auth.admin_auth` absent): the operator credential\nwhen one is admitted, then `keys`.",
+            "type": "boolean"
+          },
           "modules": {
             "description": "The active admin-plane guard module names, the `admin_auth` chain verbatim, reported in order. Empty when the admin plane is open.",
             "items": {
@@ -290,7 +294,33 @@
         },
         "required": [
           "configured",
-          "modules"
+          "modules",
+          "default"
+        ],
+        "type": "object"
+      },
+      "AdminReq": {
+        "additionalProperties": false,
+        "description": "`POST /keys` `admin`: the grant that makes the key an admin credential.",
+        "properties": {
+          "scope": {
+            "description": "`read-only` or `full`: the ceiling of every verb the key holds.",
+            "type": "string"
+          },
+          "verbs": {
+            "default": null,
+            "description": "The verbs held, each from the closed verb table. Absent or empty = every verb within `scope`.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "scope"
         ],
         "type": "object"
       },
@@ -752,6 +782,11 @@
         ],
         "type": "object"
       },
+      "AuditData": {
+        "additionalProperties": true,
+        "description": "Members typed per action (the `x-busbar-audit-actions` catalogue); `{}` when the action has none.",
+        "type": "object"
+      },
       "AuditEntry": {
         "description": "One admin audit record. `outcome` is a stable token tooling can branch on. The record is\nHASH-CHAINED for tamper-EVIDENCE: `hash` is the SHA-256 of bytes fixed by this record's own\n`scheme` (the recipe is on `hash`), and `prev_hash` is the preceding entry's `hash`. Recomputing\nthe chain detects any altered/reordered/deleted entry (detection, not prevention; a compromised\nhost can still rewrite the whole chain; prevention is shipping the log off-box to a SIEM).",
         "properties": {
@@ -759,8 +794,50 @@
             "description": "The action, `noun.verb` (e.g. `hook.register`, `hook.delete`).",
             "type": "string"
           },
+          "config_generation": {
+            "default": null,
+            "description": "The config generation after the change, as a decimal string: on every applied row of a\nconfig-changing request, null otherwise.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/AuditData",
+            "default": {},
+            "description": "Members typed per action. Always an object; `{}` when the action has none."
+          },
           "hash": {
-            "description": "The tamper-evidence digest: lowercase hex SHA-256 over the bytes this record's `scheme` names.\nIntegers are written in decimal ASCII and strings as their UTF-8 bytes unless stated.\n\nScheme 1: `prev_hash|seq|ts|action|resource|outcome|principal`, the fields joined by `|`\n(1.5.5's formula).\n\nScheme 2: `prev_hash|seq` as in scheme 1, then one zero byte (0x00), then `ts`, `action`,\n`resource`, `outcome` and `principal`, each as its byte length (8 bytes, big-endian) followed\nby its bytes; `ts` is its 8-byte big-endian value, so its length is 8.",
+            "description": "The tamper-evidence digest: lowercase hex SHA-256 over the bytes this record's `scheme` names.\nIntegers are written in decimal ASCII and strings as their UTF-8 bytes unless stated.\n\nScheme 1: `prev_hash|seq|ts|action|resource|outcome|principal`, the fields joined by `|`\n(1.5.5's formula).\n\nScheme 2: `prev_hash|seq` as in scheme 1, then one zero byte (0x00), then `ts`, `action`,\n`resource`, `outcome` and `principal`, each as its byte length (8 bytes, big-endian) followed\nby its bytes; `ts` is its 8-byte big-endian value, so its length is 8.\n\nScheme 3 (ADMIN-API-1.6 section 7.2): `prev_hash|seq` as before, then the row suffix: one 0x03\nbyte, `ts` as scheme 2 writes it, `action`, `resource`, `outcome` and `principal` each\nlength-prefixed, then `config_generation`, `request_id`, `idempotency_key`, `kind` and\n`instance` (each length-prefixed: a single 0x00 byte when absent, 0x01 and the bytes when\npresent), `sections_changed` (an 8-byte big-endian count, then each name length-prefixed),\n`severity` and `message` (length-prefixed) and `data` as one length-prefixed field holding its\ncanonical JSON (members in ascending order of their names' UTF-8 bytes, no whitespace,\nminimal string escapes), so every member of `data` is inside the digest.",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "default": null,
+            "description": "The request's `Idempotency-Key`, null when it carried none.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "instance": {
+            "default": null,
+            "description": "The instance an engine event is about.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "default": null,
+            "description": "The engine kind of the instance an engine event is about.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "default": "",
+            "description": "Core-written text for the row; empty for rows from before scheme 3.",
             "type": "string"
           },
           "outcome": {
@@ -775,20 +852,36 @@
             "description": "WHO: the authenticated principal id that attempted the mutation (`admin` for the operator\ntoken; a virtual-key id or an external module's principal id otherwise; `anonymous` for the\nexplicit open admin posture). Attribution, never a credential.",
             "type": "string"
           },
+          "request_id": {
+            "default": null,
+            "description": "The admin request's id (its `X-Request-Id`), null for a row no request caused.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "resource": {
             "description": "The resource acted on (e.g. `hook:compress`). Never a secret.",
             "type": "string"
           },
           "scheme": {
             "default": 1,
-            "description": "WHICH RECIPE `hash` was sealed under: 1 (the 1.5.5 pipe join) or 2 (length-prefixed fields);\nboth are stated on `hash`. A record is sealed under 1 when its `action`, `resource` and\n`outcome` carry no `|`, and under 2 otherwise, so its fields always read back exactly. A\nrecord without this field is scheme 1. A verifier checks each record under its own scheme.",
+            "description": "WHICH RECIPE `hash` was sealed under: 1 (the 1.5.5 pipe join), 2 (length-prefixed fields) or 3 (the row fields);\nall are stated on `hash`. A record is sealed under 3 when it is written through the row path\n(`AUDIT.record_by` and `emit_row_now`: every admin request's rows), under 1 otherwise when its\n`action`, `resource` and `outcome` carry no `|`, and under 2 when they do, so its fields always\nread back exactly. A\nrecord without this field is scheme 1. A verifier checks each record under its own scheme.",
             "format": "uint8",
             "maximum": 255,
             "minimum": 0,
             "type": "integer"
           },
+          "sections_changed": {
+            "default": [],
+            "description": "The config sections the change touched (empty when it touched none, or none is known).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "seq": {
-            "description": "Monotonic sequence number (1-based), unique within a process lifetime.",
+            "description": "Monotonic sequence number (1-based). It continues across restart: the chain is one durable log.",
             "format": "uint64",
             "minimum": 0,
             "type": "integer",
@@ -797,6 +890,11 @@
               "integer_format": "uint64",
               "representation": "json-integer-token"
             }
+          },
+          "severity": {
+            "default": "info",
+            "description": "`info`, `warning` or `error`.",
+            "type": "string"
           },
           "ts": {
             "description": "Unix seconds when the mutation was attempted.",
@@ -819,7 +917,16 @@
           "principal",
           "prev_hash",
           "hash",
-          "scheme"
+          "scheme",
+          "config_generation",
+          "sections_changed",
+          "request_id",
+          "idempotency_key",
+          "kind",
+          "instance",
+          "severity",
+          "message",
+          "data"
         ],
         "type": "object"
       },
@@ -872,7 +979,7 @@
             ]
           },
           "semantics": {
-            "description": "`live_offset`: concurrent appends/evictions may duplicate or skip rows across pages.",
+            "description": "`live_offset` (legacy): concurrent appends/evictions may duplicate or skip rows across pages.\n`keyset`: a page resumes strictly after the last `seq`, so no row is duplicated or skipped.",
             "type": "string"
           },
           "truncated": {
@@ -1011,7 +1118,7 @@
             "type": "array"
           },
           "hook_plugins": {
-            "description": "Hook plugins baked into this binary (e.g. `[\"ranking\", \"complexity\"]`).",
+            "description": "Hook plugins baked into this binary (e.g. `[]`).",
             "items": {
               "type": "string"
             },
@@ -2109,7 +2216,7 @@
             "type": "array"
           },
           "settings": {
-            "description": "The current effective root-section overlay (only the fields the operator has set; base\n`config.yaml` stands for the rest). An arbitrary JSON object (the `RootSettings` projection),\nREDACTED by `service::redact_settings_bags`: every opaque `settings:` bag inside it (today\n`store.settings`, whose `url` is a credential in busbar's own docs) appears as\n`settings_keys`: sorted key names, no values. Same on the GET and on the PUT echo.\n\nThis field NAME is frozen wire and is the response ENVELOPE member, not a plugin settings\nbag; the redaction applies to the bags nested INSIDE it."
+            "description": "The current effective root-section overlay (only the fields the operator has set; base\n`config.yaml` stands for the rest). An arbitrary JSON object (the `RootSettings` projection),\nPROJECTED by `service::redact_settings_bags` through the secret rule (`v1/secret_rule.rs`): every\nsecret position (a secret-named field, an undeclared key of a `settings:` bag) is\n`{set, secret_ref}`, never a value or a hash. Same on the GET and on the PUT echo.\n\nThis field NAME is frozen wire and is the response ENVELOPE member, not a plugin settings\nbag; the redaction applies to the bags nested INSIDE it."
           },
           "settings_source": {
             "description": "desired_root_overlay on GET; settings never represents the full applied configuration.",
@@ -2360,6 +2467,17 @@
         "additionalProperties": false,
         "description": "`POST /keys` body (1.5.0 signed-token keys): PURE AUTH + a signed expiring token. A minted\nkey is a busbar-signed `{sub, exp, kid}` token, returned ONCE. No rpm/tpm/budget on a key - all\nenforcement flows through the bound `group`. `#[serde(deny_unknown_fields)]` so the removed\n1.4.x fields (max_budget_cents/rpm_limit/tpm_limit/budget_period) fail loudly.",
         "properties": {
+          "admin": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AdminReq"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Make this key an ADMIN credential (ADMIN-API r5 section 2.1): a scope ceiling and the verbs\nheld. Only a `full` principal may mint one, and an admin key carries no other grant."
+          },
           "allowed_pools": {
             "default": null,
             "description": "Pools this key may target. OMITTED = ALL pools; an explicit `[]` = NO pools.",
@@ -2443,6 +2561,17 @@
       "CreatedKeyView": {
         "description": "`POST /keys` (mint): the key metadata plus the ONCE-shown signed token, and (when an AWS SigV4\ncredential was requested) the AccessKeyId + secret access key. The AWS fields are absent on a\nbearer-only mint.",
         "properties": {
+          "admin": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/KeyAdminView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The admin grant (ADMIN-API r5 section 2.1): `{scope, verbs, verbs_all}`; `null` on a data-plane key."
+          },
           "allowed_pools": {
             "items": {
               "type": "string"
@@ -2466,6 +2595,12 @@
               "null"
             ]
           },
+          "binding_mode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "created_at": {
             "format": "uint64",
             "minimum": 0,
@@ -2476,8 +2611,32 @@
               "representation": "json-integer-token"
             }
           },
+          "credentials": {
+            "description": "The request-signing credential index: public ids only, never a secret.",
+            "items": {
+              "$ref": "#/components/schemas/KeyCredentialView"
+            },
+            "type": "array"
+          },
+          "deleted_at": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x-busbar-exact-number": {
+              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
+              "integer_format": "uint64",
+              "representation": "json-integer-token"
+            }
+          },
           "enabled": {
             "type": "boolean"
+          },
+          "etag": {
+            "description": "The key's ETag over its stored row (`If-Match` takes it). It never moves for a last-used\nflush or a denylist sync; a rename, a rotation or any other edit of the row moves it.",
+            "type": "string"
           },
           "expires_at": {
             "description": "Unix-seconds expiry of the signed token.",
@@ -2503,14 +2662,51 @@
           "id": {
             "type": "string"
           },
+          "idp_subject": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "labels": {
             "additionalProperties": {
               "type": "string"
             },
             "type": "object"
           },
+          "minted_by": {
+            "description": "The principal that minted the key (an app-admin's id); `null` for a self-minted key.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "minted_via": {
+            "description": "The identity-provider instance that minted a self-serve key.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "name": {
             "type": "string"
+          },
+          "origin": {
+            "description": "`\"created\"`, or `{\"migrated_from\": \"1.5.5\"}` for a key the migration carried over."
+          },
+          "revocation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/KeyRevocationView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why and when the key was revoked; `null` unless `state` is `revoked`."
+          },
+          "rotation": {
+            "$ref": "#/components/schemas/KeyRotationView"
           },
           "state": {
             "description": "Same field as `KeyView.state`; a fresh mint is always `\"active\"` (enabled, not\nrevoked, not deleted).",
@@ -2530,6 +2726,17 @@
           "created_at",
           "labels",
           "state",
+          "etag",
+          "minted_by",
+          "minted_via",
+          "idp_subject",
+          "binding_mode",
+          "admin",
+          "revocation",
+          "deleted_at",
+          "rotation",
+          "credentials",
+          "origin",
           "token",
           "expires_at",
           "group_provisioned"
@@ -2652,6 +2859,17 @@
           "auth": {
             "$ref": "#/components/schemas/AuthView"
           },
+          "config_generation": {
+            "description": "The durable config generation at the time of this read (see `InfoView.config_generation`).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer",
+            "x-busbar-exact-number": {
+              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
+              "integer_format": "uint64",
+              "representation": "json-integer-token"
+            }
+          },
           "global_hooks": {
             "description": "Names fired on EVERY request: the hooks attached at the reserved all-pools key `pools.hooks:`\nin `config.yaml` (the 1.5.3 replacement for the DELETED `global_hooks:` key; that key no\nlonger parses), plus any hook this API declares with `global: true`. The response FIELD name\nstays `global_hooks`; only the config-file spelling changed.",
             "items": {
@@ -2704,6 +2922,7 @@
         },
         "required": [
           "version",
+          "config_generation",
           "auth",
           "pools",
           "models",
@@ -3545,7 +3764,7 @@
             ]
           },
           "kinds_revision": {
-            "description": "The `/kinds` ETag (ADMIN-API-1.6 §5.1): a digest over every (category, kind, instance, image, instance config digest), kept once per generation. It moves whenever a kind or an instance is added, removed or reconfigured.",
+            "description": "The `/kinds` ETag (ADMIN-API-1.6 §5.1): a digest over every (category, kind, instance,\nimage, instance config digest), kept once per generation. It moves whenever a kind or an\ninstance is added, removed or reconfigured.",
             "type": "string"
           },
           "node_id": {
@@ -3824,6 +4043,67 @@
         ],
         "type": "object"
       },
+      "KeyAdminView": {
+        "description": "`KeyView.admin`: the grant that makes a key an admin credential.",
+        "properties": {
+          "scope": {
+            "description": "`read-only` or `full`: the ceiling of every verb the key holds.",
+            "type": "string"
+          },
+          "verbs": {
+            "description": "The verbs held by name; empty when `verbs_all`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "verbs_all": {
+            "description": "Whether the key holds every verb within `scope`.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "scope",
+          "verbs",
+          "verbs_all"
+        ],
+        "type": "object"
+      },
+      "KeyCredentialView": {
+        "description": "One entry of `KeyView.credentials`.",
+        "properties": {
+          "created_at": {
+            "description": "Unix seconds.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer",
+            "x-busbar-exact-number": {
+              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
+              "integer_format": "uint64",
+              "representation": "json-integer-token"
+            }
+          },
+          "kind": {
+            "type": "string"
+          },
+          "public_id": {
+            "type": "string"
+          },
+          "slot": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "public_id",
+          "kind",
+          "slot",
+          "created_at"
+        ],
+        "type": "object"
+      },
       "KeyMeteringView": {
         "description": "`GET /keys/{id}/usage`: the key's all-time attribution counters (a 1.5.0 key bucket accrues in\nthe `total` window; limits live on the bound group's own windows) plus the fraction of the\ntightest `requests`/`tokens` limit across the group chain remaining (`null` = no such limit).",
         "properties": {
@@ -3936,6 +4216,61 @@
         "required": [
           "items",
           "next_cursor"
+        ],
+        "type": "object"
+      },
+      "KeyRevocationView": {
+        "description": "`KeyView.revocation`.",
+        "properties": {
+          "at": {
+            "description": "Unix seconds.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer",
+            "x-busbar-exact-number": {
+              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
+              "integer_format": "uint64",
+              "representation": "json-integer-token"
+            }
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason",
+          "at"
+        ],
+        "type": "object"
+      },
+      "KeyRotationView": {
+        "description": "`KeyView.rotation`: `generation` and `count` are decimal strings.",
+        "properties": {
+          "count": {
+            "type": "string"
+          },
+          "generation": {
+            "type": "string"
+          },
+          "rotated_at": {
+            "description": "Unix seconds of the last rotation; `null` until the key is first rotated.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x-busbar-exact-number": {
+              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
+              "integer_format": "uint64",
+              "representation": "json-integer-token"
+            }
+          }
+        },
+        "required": [
+          "generation",
+          "rotated_at",
+          "count"
         ],
         "type": "object"
       },
@@ -4052,12 +4387,29 @@
       "KeyView": {
         "description": "Virtual-key metadata: the `key_meta()` shape returned by `GET /keys/{id}`, `PATCH /keys/{id}`,\nand as each item of `GET /keys`. Never the secret or its hash. 1.5.0: keys are PURE AUTH, no\ninline limits; `allowed_pools` is `null` = all pools, `[]` = no pools; `group` names the\nbound `groups:` entry (`null` = unlimited).",
         "properties": {
+          "admin": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/KeyAdminView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The admin grant (ADMIN-API r5 section 2.1): `{scope, verbs, verbs_all}`; `null` on a data-plane key."
+          },
           "allowed_pools": {
             "items": {
               "type": "string"
             },
             "type": [
               "array",
+              "null"
+            ]
+          },
+          "binding_mode": {
+            "type": [
+              "string",
               "null"
             ]
           },
@@ -4071,8 +4423,46 @@
               "representation": "json-integer-token"
             }
           },
+          "credentials": {
+            "description": "The request-signing credential index: public ids only, never a secret.",
+            "items": {
+              "$ref": "#/components/schemas/KeyCredentialView"
+            },
+            "type": "array"
+          },
+          "deleted_at": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x-busbar-exact-number": {
+              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
+              "integer_format": "uint64",
+              "representation": "json-integer-token"
+            }
+          },
           "enabled": {
             "type": "boolean"
+          },
+          "etag": {
+            "description": "The key's ETag over its stored row (`If-Match` takes it). It never moves for a last-used\nflush or a denylist sync; a rename, a rotation or any other edit of the row moves it.",
+            "type": "string"
+          },
+          "expires_at": {
+            "description": "Unix seconds the key expires; `null` = never. Once passed, `state` is `\"expired\"`.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x-busbar-exact-number": {
+              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
+              "integer_format": "uint64",
+              "representation": "json-integer-token"
+            }
           },
           "group": {
             "type": [
@@ -4083,17 +4473,54 @@
           "id": {
             "type": "string"
           },
+          "idp_subject": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "labels": {
             "additionalProperties": {
               "type": "string"
             },
             "type": "object"
           },
+          "minted_by": {
+            "description": "The principal that minted the key (an app-admin's id); `null` for a self-minted key.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "minted_via": {
+            "description": "The identity-provider instance that minted a self-serve key.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "name": {
             "type": "string"
           },
+          "origin": {
+            "description": "`\"created\"`, or `{\"migrated_from\": \"1.5.5\"}` for a key the migration carried over."
+          },
+          "revocation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/KeyRevocationView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why and when the key was revoked; `null` unless `state` is `revoked`."
+          },
+          "rotation": {
+            "$ref": "#/components/schemas/KeyRotationView"
+          },
           "state": {
-            "description": "`enabled` alone cannot distinguish a reversible pause from either of the two permanent\ndispositions. `PATCH {enabled:false}`, `POST /keys/{id}/revoke`, and `DELETE /keys/{id}` all\nused to leave `enabled: false` with nothing else to tell them apart. One of exactly four\nvalues, additive and derived (never independently settable):\n- `\"active\"`: enabled, not revoked, not deleted.\n- `\"disabled\"`: `PATCH {enabled:false}`. Reversible: `PATCH {enabled:true}` restores it.\n- `\"revoked\"`: `POST /keys/{id}/revoke`. Permanent: denylisted, but the binding row (and\n  `GET /keys/{id}`) stays live for audit/usage attribution.\n- `\"tombstoned\"`: `DELETE /keys/{id}`. Permanent: denylisted AND hard-deleted; the row is\n  kept only so id-attributed billing/audit history keeps resolving. Omitted from a plain\n  `GET /keys` by default; visible there with `?include=tombstoned`.",
+            "description": "`enabled` alone cannot distinguish a reversible pause from either of the two permanent\ndispositions. `PATCH {enabled:false}`, `POST /keys/{id}/revoke`, and `DELETE /keys/{id}` all\nused to leave `enabled: false` with nothing else to tell them apart. One of exactly five\nvalues, additive and derived (never independently settable):\n- `\"active\"`: enabled, not revoked, not deleted.\n- `\"disabled\"`: `PATCH {enabled:false}`. Reversible: `PATCH {enabled:true}` restores it.\n- `\"revoked\"`: `POST /keys/{id}/revoke`. Permanent: denylisted, but the binding row (and\n  `GET /keys/{id}`) stays live for audit/usage attribution.\n- `\"expired\"`: `expires_at` has passed.\n- `\"tombstoned\"`: `DELETE /keys/{id}`. Permanent: denylisted AND hard-deleted; the row is\n  kept only so id-attributed billing/audit history keeps resolving. Omitted from a plain\n  `GET /keys` by default; visible there with `?include=tombstoned`.",
             "type": "string"
           }
         },
@@ -4105,7 +4532,19 @@
           "enabled",
           "created_at",
           "labels",
-          "state"
+          "state",
+          "expires_at",
+          "etag",
+          "minted_by",
+          "minted_via",
+          "idp_subject",
+          "binding_mode",
+          "admin",
+          "revocation",
+          "deleted_at",
+          "rotation",
+          "credentials",
+          "origin"
         ],
         "type": "object"
       },
@@ -5201,9 +5640,9 @@
       "OperationState": {
         "description": "Where an idempotent operation stands.",
         "enum": [
-          "applied",
-          "rejected",
-          "in_flight"
+          "__applied",
+          "__rejected",
+          "__in_flight"
         ],
         "type": "string"
       },
@@ -5414,30 +5853,6 @@
           "module schema and SecretRef resolution",
           "runtime acknowledgement; config generation must remain unchanged during the push"
         ]
-      },
-      "PendingRestartRemovalView": {
-        "description": "Restart metadata returned when a stored removal cannot take full effect in this process.",
-        "properties": {
-          "note": {
-            "description": "The operator-facing explanation of the pending restart.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "reload_to_apply": {
-            "description": "The boot-bound changes that require a process restart to take effect.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "note",
-          "reload_to_apply"
-        ],
-        "type": "object"
       },
       "PlaneRecordWriteReq": {
         "description": "`POST /plane-record-write`: one plane record, upserted by `(kind, id)`.",
@@ -5900,7 +6315,7 @@
             ]
           },
           "loader": {
-            "description": "`\"compiled-in\"` or `\"plugin\"` (a dlopen'd dynamic-library plugin: auth, hook, and store\nkinds alike as of 1.5.0's signed plugin ABI).",
+            "description": "`\"compiled-in\"` or `\"plugin\"` (a dlopen'd dynamic-library plugin: auth, hook, and store\nkinds alike as of 1.5.0's signed plugin ABI). The operator credential's auth row reads\n`\"installed\"`: it is an admitted plugin row, linked or dropped, never a built-in.",
             "type": "string"
           },
           "name": {
@@ -6228,12 +6643,29 @@
       "RotatedKeyView": {
         "description": "`POST /keys/{id}/rotate`: the key metadata plus the ONCE-shown fresh CREDENTIAL. Exactly one of\n`token`+`expires_at` (a 1.5.0 signed-token key: a new token at a new binding generation, every\nprior token now rejected) or `secret` (a legacy hashed-secret key) is present.",
         "properties": {
+          "admin": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/KeyAdminView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The admin grant (ADMIN-API r5 section 2.1): `{scope, verbs, verbs_all}`; `null` on a data-plane key."
+          },
           "allowed_pools": {
             "items": {
               "type": "string"
             },
             "type": [
               "array",
+              "null"
+            ]
+          },
+          "binding_mode": {
+            "type": [
+              "string",
               "null"
             ]
           },
@@ -6247,8 +6679,32 @@
               "representation": "json-integer-token"
             }
           },
+          "credentials": {
+            "description": "The request-signing credential index: public ids only, never a secret.",
+            "items": {
+              "$ref": "#/components/schemas/KeyCredentialView"
+            },
+            "type": "array"
+          },
+          "deleted_at": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x-busbar-exact-number": {
+              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
+              "integer_format": "uint64",
+              "representation": "json-integer-token"
+            }
+          },
           "enabled": {
             "type": "boolean"
+          },
+          "etag": {
+            "description": "The key's ETag over its stored row (`If-Match` takes it). It never moves for a last-used\nflush or a denylist sync; a rename, a rotation or any other edit of the row moves it.",
+            "type": "string"
           },
           "expires_at": {
             "description": "Unix-seconds expiry of the re-minted signed token (present with `token`).",
@@ -6273,14 +6729,51 @@
           "id": {
             "type": "string"
           },
+          "idp_subject": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "labels": {
             "additionalProperties": {
               "type": "string"
             },
             "type": "object"
           },
+          "minted_by": {
+            "description": "The principal that minted the key (an app-admin's id); `null` for a self-minted key.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "minted_via": {
+            "description": "The identity-provider instance that minted a self-serve key.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "name": {
             "type": "string"
+          },
+          "origin": {
+            "description": "`\"created\"`, or `{\"migrated_from\": \"1.5.5\"}` for a key the migration carried over."
+          },
+          "revocation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/KeyRevocationView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why and when the key was revoked; `null` unless `state` is `revoked`."
+          },
+          "rotation": {
+            "$ref": "#/components/schemas/KeyRotationView"
           },
           "secret": {
             "description": "The fresh bearer secret, shown EXACTLY once (legacy hashed-secret keys only).",
@@ -6309,7 +6802,18 @@
           "enabled",
           "created_at",
           "labels",
-          "state"
+          "state",
+          "etag",
+          "minted_by",
+          "minted_via",
+          "idp_subject",
+          "binding_mode",
+          "admin",
+          "revocation",
+          "deleted_at",
+          "rotation",
+          "credentials",
+          "origin"
         ],
         "type": "object"
       },
@@ -11902,7 +12406,7 @@
                 }
               }
             },
-            "description": "`version_conflict`: stale `If-Match` (re-read and retry)",
+            "description": "`conflict`: the operator credential is operator file policy; set or change it in config.yaml and POST /config/reload | `version_conflict`: stale `If-Match` (re-read and retry)",
             "headers": {
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
@@ -13295,7 +13799,7 @@
                 }
               }
             },
-            "description": "`version_conflict`: stale `If-Match` (re-read and retry) | `conflict`: restart-only change on an in-memory Store (set it in config.yaml or configure a durable store)",
+            "description": "`version_conflict`: stale `If-Match` (re-read and retry) | `conflict`: restart-only change on an in-memory Store (set it in config.yaml or configure a durable store), the operator credential is operator file policy; set or change it in config.yaml and POST /config/reload, raising `max_admin_scope` is refused over the admin API; the trust ceiling is operator file policy; lower it here, raise it in config.yaml",
             "headers": {
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
@@ -13725,6 +14229,25 @@
               }
             },
             "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)",
+            "headers": {
+              "Cache-Control": {
+                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`conflict`: the operator credential is operator file policy; set or change it in config.yaml and POST /config/reload",
             "headers": {
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
@@ -21071,14 +21594,6 @@
         "operationId": "GetKindsKindInstances",
         "parameters": [
           {
-            "in": "path",
-            "name": "kind",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
             "description": "Opaque continuation cursor from `next_cursor`.",
             "in": "query",
             "name": "cursor",
@@ -21259,24 +21774,6 @@
       "get": {
         "description": "Exactly the list-row members and `config` (under the secret rule: a secret position is `{set, secret_ref}`), `config_schema` (the image's schema, with `x-sensitive` beside `x-busbar-secret`), `state` and `state_schema` (the instance's own answer; core writes nothing into them), `runtime` (what core holds about a plugin instance; null for a core instance), `health`, `links`, `views` and `actions`.",
         "operationId": "GetKindsKindInstancesId",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "kind",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -21287,25 +21784,6 @@
               }
             },
             "description": "The instance",
-            "headers": {
-              "Cache-Control": {
-                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
-                "schema": {
-                  "const": "no-store",
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Malformed admin request path, query or body (invalid_request). Request values and parser diagnostics are not echoed.",
             "headers": {
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
@@ -21438,30 +21916,6 @@
         "description": "`{fields, rows, next_cursor, as_of}`: each row a positional array in `fields` order, each cell in its type's one wire encoding. `filter=<field>:<value>` (repeatable) is an exact match on a dimension or id field. Times are in milliseconds, steps in seconds.",
         "operationId": "GetKindsKindInstancesIdViewsView",
         "parameters": [
-          {
-            "in": "path",
-            "name": "kind",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "view",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
           {
             "description": "Window start, Unix milliseconds.",
             "in": "query",
@@ -23165,7 +23619,7 @@
                 }
               }
             },
-            "description": "`not_found`: the key is unknown or past retention",
+            "description": "`not_found`: unknown resource",
             "headers": {
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
@@ -23270,9 +23724,7 @@
                 "root",
                 "plugin_versions",
                 "identity-providers",
-                "export",
-                "tools",
-                "agents"
+                "export"
               ],
               "type": "string"
             }
@@ -23322,7 +23774,7 @@
                 }
               }
             },
-            "description": "`invalid_request`: unknown overlay section (expected one of `groups`, `hooks`, `root`, `plugin_versions`, `identity-providers`, `export`, `tools`, `agents`), malformed `If-Match` header, ephemeral busbar: no disk config to read, merge onto, or revert to, invalid config; nothing changed",
+            "description": "`invalid_request`: unknown overlay section (expected one of `groups`, `hooks`, `root`, `plugin_versions`, `identity-providers`, `export`), malformed `If-Match` header, ephemeral busbar: no disk config to read, merge onto, or revert to, invalid config; nothing changed",
             "headers": {
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
@@ -23508,14 +23960,14 @@
             "bearerAuth": []
           }
         ],
-        "summary": "DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions|identity-providers|export|tools|agents). Per-section reset: the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)",
+        "summary": "DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions|identity-providers|export). Per-section reset: the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)",
         "x-busbar-required-scope": "full",
         "x-busbar-verb": "delete_overlay_section"
       }
     },
     "/api/v1/admin/plane-record-write": {
       "post": {
-        "description": "Upserted by `(kind, id)` through the plane-facing store the planes persist through, and only for a `kind` the named plane declares in its `record_kinds` (`GET /plane-facts` lists them). `body` is stored as its JSON bytes and never decoded by the store; `terminal` is the retention disposition. Honors an `Idempotency-Key` header (per-principal, ~10min replay): a retry with the same key and body answers the first answer.",
+        "description": "Upserted by `(kind, id)` through the plane-facing store the planes persist through, and only for a `kind` the named plane declares in its `record_kinds` (the plane instance's `runtime.plane.facts` lists them). `body` is stored as its JSON bytes and never decoded by the store; `terminal` is the retention disposition. Honors an `Idempotency-Key` header (per-principal, ~10min replay): a retry with the same key and body answers the first answer.",
         "operationId": "PostPlaneRecordWrite",
         "parameters": [
           {
@@ -27001,7 +27453,7 @@
                 }
               }
             },
-            "description": "`invalid_request`: invalid query-parameter value",
+            "description": "`invalid_request`: invalid query-parameter value, malformed pagination `cursor`",
             "headers": {
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
@@ -27346,6 +27798,32 @@
                 "schema": {
                   "const": "no-store",
                   "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the read. The body is the admin error envelope with code `unavailable`",
+            "headers": {
+              "Cache-Control": {
+                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              },
+              "Retry-After": {
+                "description": "Delay in seconds when supplied by the listener's rate/backpressure refusal; absence makes no retry promise.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
                 }
               }
             }
@@ -27824,7 +28302,7 @@
           "properties": {
             "admin_auth": {
               "default": [
-                "admin-tokens"
+                "keys"
               ],
               "items": {
                 "type": "string"
@@ -27934,6 +28412,16 @@
                 "$ref": "#/$defs/MintCeiling"
               },
               "type": "object"
+            },
+            "require_if_match": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "self_mint": {
               "anyOf": [
@@ -29849,299 +30337,9 @@
           ]
         },
         "OAuthAS": {
-          "additionalProperties": false,
-          "description": "Actual raw OAuthAS host input. Absent/null disables the server. Omitted signing_key deliberately generates an ephemeral boot key, invalidating issued tokens after restart. This is independent of identity-provider module settings and is not an admin credential issuer promise.",
-          "properties": {
-            "access_token_ttl_secs": {
-              "anyOf": [
-                {
-                  "maximum": 86400,
-                  "minimum": 1,
-                  "type": "integer",
-                  "x-busbar-integer-token": "unsigned"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "x-busbar-effective-default": 600
-            },
-            "clients": {
-              "default": [],
-              "items": {
-                "additionalProperties": false,
-                "properties": {
-                  "client_id": {
-                    "type": "string"
-                  },
-                  "device_authorization": {
-                    "default": false,
-                    "type": "boolean"
-                  },
-                  "jwks": {
-                    "additionalProperties": false,
-                    "properties": {
-                      "keys": {
-                        "items": {
-                          "additionalProperties": true,
-                          "properties": {
-                            "alg": {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ],
-                              "default": null
-                            },
-                            "crv": {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ],
-                              "default": null
-                            },
-                            "d": {
-                              "description": "Private key material is refused by the owner. Only absent/null is valid user input.",
-                              "type": "null"
-                            },
-                            "e": {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ],
-                              "default": null
-                            },
-                            "kid": {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ],
-                              "default": null
-                            },
-                            "kty": {
-                              "enum": [
-                                "EC",
-                                "RSA"
-                              ]
-                            },
-                            "n": {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ],
-                              "default": null
-                            },
-                            "x": {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ],
-                              "default": null
-                            },
-                            "y": {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ],
-                              "default": null
-                            }
-                          },
-                          "required": [
-                            "kty"
-                          ],
-                          "type": "object",
-                          "x-busbar-runtime-validation": [
-                            "only EC P-256/ES256 or RSA/PS256 public keys; correct coordinate/modulus/exponent encoding",
-                            "all keys of one client share one algorithm; no private d value"
-                          ]
-                        },
-                        "minItems": 1,
-                        "type": "array"
-                      }
-                    },
-                    "required": [
-                      "keys"
-                    ],
-                    "type": "object"
-                  },
-                  "redirect_uris": {
-                    "default": [],
-                    "items": {
-                      "type": "string"
-                    },
-                    "type": "array"
-                  }
-                },
-                "required": [
-                  "client_id",
-                  "jwks"
-                ],
-                "type": "object"
-              },
-              "type": "array"
-            },
-            "default_grant": {
-              "default": [],
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "fapi2": {
-              "default": false,
-              "type": "boolean"
-            },
-            "issuer": {
-              "description": "Canonical absolute HTTP(S) issuer; owner trims surrounding whitespace and refuses query, fragment or trailing slash.",
-              "type": "string"
-            },
-            "key_id": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null
-            },
-            "refresh_token_ttl_secs": {
-              "anyOf": [
-                {
-                  "maximum": 31536000,
-                  "minimum": 1,
-                  "type": "integer",
-                  "x-busbar-integer-token": "unsigned"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "x-busbar-effective-default": 2592000
-            },
-            "signing_key": {
-              "anyOf": [
-                {
-                  "oneOf": [
-                    {
-                      "const": "none"
-                    },
-                    {
-                      "additionalProperties": false,
-                      "properties": {
-                        "module": {
-                          "pattern": "\\S",
-                          "type": "string"
-                        },
-                        "settings": {
-                          "type": "object"
-                        }
-                      },
-                      "required": [
-                        "module"
-                      ],
-                      "type": "object"
-                    },
-                    {
-                      "additionalProperties": false,
-                      "properties": {
-                        "template": {
-                          "additionalProperties": false,
-                          "properties": {
-                            "source": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "module": {
-                                  "pattern": "\\S",
-                                  "type": "string"
-                                },
-                                "setting": {
-                                  "pattern": "\\S",
-                                  "type": "string"
-                                }
-                              },
-                              "required": [
-                                "module",
-                                "setting"
-                              ],
-                              "type": "object"
-                            },
-                            "text": {
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "text",
-                            "source"
-                          ],
-                          "type": "object"
-                        }
-                      },
-                      "required": [
-                        "template"
-                      ],
-                      "type": "object"
-                    }
-                  ],
-                  "writeOnly": true
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null
-            }
-          },
-          "required": [
-            "issuer"
-          ],
-          "type": "object",
-          "x-busbar-edit": {
-            "activation": "follow actual mutation restart/activation receipt; configured presence alone is not live AS proof",
-            "operation": "PUT /api/v1/admin/config/settings document_patch",
-            "private_values": "signing_key is explicit keep/set/remove/reset; sanitized configured readback is never a full replacement",
-            "root": "/oauth_as",
-            "source_fence": "configuration.source_revision and config ETag"
-          },
-          "x-busbar-input-owner": "busbar-core-oauth2::config::OauthAsCfg/AsIdentity",
-          "x-busbar-runtime-validation": [
-            "issuer URL identity and legal RFC6749 scope tokens",
-            "unique nonempty client IDs, redirect URI semantics and device-grant exception",
-            "public key encoding, algorithm and minimum RSA strength",
-            "SecretRef resolution and ES256 signing-key decoding",
-            "canonical configuration validation/current semantic security policy"
-          ],
-          "x-busbar-settings-profile": "integer-token-v1"
+          "description": "This build has no installed OAuth authorization-server input owner. Do not invent OAuth fields or send a configured block.",
+          "not": {},
+          "x-busbar-supported": false
         },
         "PluginFetch": {
           "anyOf": [
@@ -31386,7 +31584,29 @@
           "type": "object"
         },
         "RoleBinding": {
+          "additionalProperties": false,
+          "patternProperties": {
+            "^allowed_(?!pools$)[\\s\\S]+s$": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
           "properties": {
+            "admin_scope": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "read-only",
+                    "full"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "allowed_pools": {
               "anyOf": [
                 {
@@ -31433,11 +31653,6 @@
                       "post_config_validate",
                       "get_config_versions",
                       "get_config_versions_v",
-                      "get_export",
-                      "delete_export_name",
-                      "get_export_name",
-                      "put_export_name",
-                      "patch_export_name_settings",
                       "get_groups",
                       "post_groups",
                       "delete_groups_name",
@@ -31454,11 +31669,6 @@
                       "get_hooks_name_schema",
                       "patch_hooks_name_settings",
                       "get_hooks_name_status",
-                      "get_identity_providers",
-                      "delete_identity_providers_name",
-                      "get_identity_providers_name",
-                      "put_identity_providers_name",
-                      "patch_identity_providers_name_settings",
                       "get_info",
                       "get_keys",
                       "post_keys",
@@ -31468,7 +31678,6 @@
                       "post_keys_id_revoke",
                       "post_keys_id_rotate",
                       "get_keys_id_usage",
-                      "get_models",
                       "get_openapi_json",
                       "delete_overlay_section",
                       "get_plugins",
@@ -31478,14 +31687,10 @@
                       "post_plugins_rollback",
                       "delete_plugins_file",
                       "get_plugins_file_schema",
-                      "get_pools",
-                      "get_pools_name",
-                      "get_providers",
                       "post_restart",
                       "post_signing_key_rotate",
                       "get_usage",
                       "verify",
-                      "plane_facts",
                       "plane_record_write",
                       "chain_break",
                       "store_restore",
@@ -31494,6 +31699,15 @@
                       "amend_rate_history",
                       "recovery_list",
                       "recovery_resolve",
+                      "get_operations_key",
+                      "get_whoami",
+                      "put_hooks_name_attachments_target",
+                      "delete_hooks_name_attachments_target",
+                      "get_config_tree",
+                      "get_kinds",
+                      "get_kind_instances",
+                      "get_kind_instance",
+                      "get_kind_instance_view",
                       "get_trust",
                       "trust_approve",
                       "trust_revoke",
@@ -31504,7 +31718,8 @@
                       "get_ledger_openapi_json",
                       "get_audit_head",
                       "get_audit_range",
-                      "get_audit_keys"
+                      "get_audit_keys",
+                      "get_records"
                     ]
                   },
                   "type": "array"

@@ -5085,8 +5085,16 @@ pub(crate) async fn openapi(State(handle): State<Arc<AppHandle>>) -> Response {
 }
 
 pub(super) async fn render_openapi(configured: impl Fn(&str) -> bool + Send + 'static) -> Response {
+    render_openapi_of(openapi_json, configured).await
+}
+
+/// [`render_openapi`] over the document `committed` produces.
+pub(super) async fn render_openapi_of(
+    committed: impl FnOnce() -> String + Send + 'static,
+    configured: impl Fn(&str) -> bool + Send + 'static,
+) -> Response {
     let served = tokio::task::spawn_blocking(move || {
-        let committed = openapi_json();
+        let committed = committed();
         openapi_for_configured_planes(&committed, configured).unwrap_or(committed)
     })
     .await;

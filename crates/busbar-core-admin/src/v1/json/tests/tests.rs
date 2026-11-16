@@ -602,6 +602,7 @@ fn openapi_summaries_do_not_advertise_forbidden_body_fields() {
     }
     known.sort();
     known.dedup();
+    let mut advertised: Vec<String> = Vec::new();
 
     for (path, methods) in paths {
         for (method, op) in methods.as_object().expect("methods") {
@@ -631,6 +632,10 @@ fn openapi_summaries_do_not_advertise_forbidden_body_fields() {
                     "restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_require_mtls, store)",
                     "",
                 )
+            } else if reference == "PutAuthBody" {
+                // "at runtime" is the lifecycle clause (live now, not at the next boot); `runtime` is also
+                // a field of an unrelated config form. Exclude only that exact clause.
+                summary.replace("admin_auth chain at runtime,", "admin_auth chain,")
             } else {
                 summary.to_owned()
             };
@@ -642,13 +647,15 @@ fn openapi_summaries_do_not_advertise_forbidden_body_fields() {
                 let named = summary
                     .split(|c: char| !c.is_alphanumeric() && c != '_')
                     .any(|w| w == name);
-                assert!(
-                    !named,
-                    "{method} {path} summary advertises `{name}`, which {reference} forbids: {summary}"
-                );
+                if named {
+                    advertised.push(format!(
+                        "{method} {path} summary advertises `{name}`, which {reference} forbids: {summary}"
+                    ));
+                }
             }
         }
     }
+    assert!(advertised.is_empty(), "{}", advertised.join("\n"));
 }
 
 #[test]
@@ -704,12 +711,25 @@ async fn openapi_builds_the_served_document_off_the_async_worker() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn openapi_still_serves_the_document_filtered_to_the_configured_planes() {
-    let expected =
-        super::handlers::openapi_for_configured_planes(&super::handlers::openapi_json(), |_| false)
-            .expect("the committed document marks plane operations");
+    // The generating test binary installs no plane, so the committed document marks none; mark one
+    // operation as a plane's, exactly as the generator marks an installed plane's operations.
+    fn marked() -> String {
+        let mut doc: serde_json::Value =
+            serde_json::from_str(&super::handlers::openapi_json()).unwrap();
+        doc["paths"]["/api/v1/admin/info"]["get"]["x-busbar-plane"] = json!("examples");
+        serde_json::to_string_pretty(&doc).unwrap()
+    }
+    let expected = super::handlers::openapi_for_configured_planes(&marked(), |_| false)
+        .expect("a document that marks a plane operation is filtered");
     let doc: serde_json::Value = serde_json::from_str(&expected).unwrap();
     assert!(doc["paths"].get("/api/v1/admin/keys").is_some());
-    let resp = super::handlers::render_openapi(|_| false).await;
+    assert!(doc["paths"].get("/api/v1/admin/info").is_none());
+    assert!(
+        super::handlers::openapi_for_configured_planes(&marked(), |section| section == "examples")
+            .is_none(),
+        "a configured plane keeps its operations"
+    );
+    let resp = super::handlers::render_openapi_of(marked, |_| false).await;
     assert_eq!(resp.status(), StatusCode::OK);
     use http_body_util::BodyExt;
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
@@ -750,12 +770,31 @@ async fn inspect_plugin_unpacks_the_candidate_off_the_async_worker() {
     );
 }
 
+/// The two named-definition view schemas as the document generator emits them (same generator
+/// settings). `openapi_doc()` only carries them when a plane with a named-definition list is
+/// installed, and the generating test binary installs none.
+#[cfg(feature = "openapi-schema")]
+fn named_view_schemas() -> serde_json::Value {
+    let mut generator = schemars::generate::SchemaSettings::draft2020_12()
+        .with(|s| {
+            s.definitions_path = "/components/schemas".into();
+            s.meta_schema = None;
+        })
+        .for_serialize()
+        .into_generator();
+    generator.subschema_for::<crate::v1::contract::NamedDefView>();
+    generator.subschema_for::<named_map::MutatedDefView>();
+    serde_json::Value::Object(generator.definitions().clone())
+}
+
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn openapi_existing_sdk_routes_named_mutations_include_restart_metadata() {
     let doc = openapi_doc();
-    let schemas = &doc["components"]["schemas"];
-    for section in busbar_kernel::config::named_map::NamedMapSection::sections() {
+    let schemas = &named_view_schemas();
+    // The per-kind admin routes of identity-providers and export are gone (ADMIN-API-1.6: /kinds);
+    // the sections that still route are the planes'.
+    for section in named_map::routed_sections() {
         let root = section.path_root();
         for (suffix, method, expected) in [
             // GET reports the same installed definition/restart metadata as mutations.

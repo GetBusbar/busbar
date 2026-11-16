@@ -742,7 +742,7 @@ fn doc_for(
             ),
             request: None,
             query: Vec::new(),
-            errors: Vec::new(),
+            errors: vec![unavailable_503("the node could not take the read")],
         },
 
         KernelVerb::ChainBreak => VerbDoc {
