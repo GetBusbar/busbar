@@ -115,7 +115,6 @@ struct Shared {
     records: Records,
     push: LatePush,
     signals: Arc<SignalRegistry>,
-    next_instance: AtomicU64,
     /// The observation custody every seat's OBS_SCOPE and OBSERVE run on (units register as requests bill).
     observations: ObsCustody,
     /// The core store (filled at the deployment point) and the governance binder (filled when governance
@@ -220,7 +219,6 @@ impl Shared {
             records,
             push,
             signals: SignalRegistry::new(),
-            next_instance: AtomicU64::new(1),
             observations: ObsCustody::new(Arc::new(busbar_kernel::store::now_ms)),
             work: Arc::new(StoreWork::new(
                 work_store.clone(),
@@ -698,22 +696,27 @@ impl Steps<'_> {
             Arc::from(spec.name),
             busbar_contract::abi::mechanism::KindCode::Plane,
         );
-        let driver = PortDriver::open(
-            self.inner.registry,
-            spec,
+        let prepared = self.inner.registry.reserve(spec)?;
+        let who = Namespace {
+            plugin: Arc::from(prepared.identity()),
+            name: Arc::from(prepared.name()),
+            instance: prepared.id(),
+            slot: prepared.slot(),
+        };
+        let port = self
+            .inner
+            .registry
+            .open_plane_reserved(prepared, self.inner.needs)
+            .await?;
+        let driver = PortDriver::new(
+            port,
             services,
             caller,
             Arc::new(busbar_kernel::refusal::CoreRefusals::new()),
             // The operator's `routes.<id>.auth` choice arrives with the K7 config (slice 9 leaves it unset).
             &|_| None,
         )
-        .await?;
-        let who = Namespace {
-            plugin: Arc::from(spec.identity),
-            name: Arc::from(spec.name),
-            instance: self.shared.next_instance.fetch_add(1, Ordering::Relaxed),
-            slot: 0,
-        };
+        .map_err(|error| OpenError::Unknown(format!("plane route declaration refused: {error}")))?;
         // Tickets: the host key is resolved here (the secret instances are open, step 2a), so the gate and the
         // MINT store are built whole, with the key, before the seat exists.
         let signing = match &self.signing_key {
