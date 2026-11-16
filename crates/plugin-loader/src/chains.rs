@@ -117,7 +117,7 @@ use crate::instance::{
 };
 use crate::refusal::{Refusal, RefusalCode};
 use busbar_ports::binder::{BindError, ConfigBinder};
-use busbar_ports::codec::settled::decode_settled;
+use busbar_ports::codec::settled::{decode_settled, settled_limits};
 
 /// An `open` chain may run this long end to end (its NEEDs included): the first poll is bounded by the §10.6
 /// ceiling, the rest by the Need handlers' own timeouts and the step cap.
@@ -802,6 +802,7 @@ impl Registry {
             unbind,
             ..
         } = p;
+        let limits = settled_limits(s.limits, &answer.answer());
         let parts = InstanceParts {
             image,
             identity,
@@ -810,7 +811,7 @@ impl Registry {
             slot: lease.slot(),
             cell: Arc::clone(lease.cell()),
             epoch: lease.epoch(),
-            limits: s.limits,
+            limits,
             max_out: self.max_out_of(&described),
             methods: described.methods,
             facts: described.facts,

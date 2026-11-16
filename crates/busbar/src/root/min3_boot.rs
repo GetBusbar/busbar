@@ -501,12 +501,10 @@ pub(crate) struct PlaneImage {
 /// (IF §12.23 rule 1: "no config word is added"), so each admitted plane image is one instance. Its name is the
 /// image's alias, so an instance keeps today's plane name (ADMIN-API A-1), else its identity. Its config is the
 /// document's top-level section of that name, the plane's 1.x bag, which its own `migrate` converts (IF §12.10 item
-/// 2), else `{}`. The config grammar has no `planes.<name>` block yet (K7 owns it); when it lands, it replaces this
-/// rule here and nowhere else. Two images answering one name are refused.
+/// 2), else `{}`. The config grammar has no `planes.<name>` block, so a plane runs at the kind's default limits. Two images answering one name are refused.
 fn plane_instances(
     images: &[PlaneImage],
     sections: &std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
-    limits: &dyn Fn(&str) -> busbar_plugin_abi::host_side::caller::InstanceLimits,
 ) -> Result<Vec<Configured>, String> {
     let mut out: Vec<Configured> = Vec::with_capacity(images.len());
     for image in images {
@@ -529,7 +527,7 @@ fn plane_instances(
         out.push(Configured {
             kind: KindCode::Plane,
             identity: image.identity.clone(),
-            limits: limits(&name),
+            limits: busbar_plugin_abi::host_side::caller::InstanceLimits::default(),
             name,
             config,
         });
@@ -577,7 +575,6 @@ fn configured(cfg: &RootCfg, planes: &[PlaneImage]) -> Result<Vec<Configured>, S
     out.extend(plane_instances(
         planes,
         &super::door_steps::raw_sections(cfg),
-        &|name| instance_limits(cfg, "planes", name),
     )?);
     Ok(out)
 }

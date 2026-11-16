@@ -4,57 +4,10 @@
 use super::*;
 use busbar_plugin_abi::host_side::caller::Accept;
 
-fn limits(yaml: &str) -> Result<InstanceLimitsCfg, String> {
-    let doc: LimitsDoc = busbar_contract::yaml::from_str(yaml).map_err(|e| e.to_string())?;
-    doc.resolve("store.main")
-}
-
 fn transport(yaml: &str) -> Result<InsecureTransport, String> {
     let doc: InsecureTransportDoc =
         busbar_contract::yaml::from_str(yaml).map_err(|e| e.to_string())?;
     doc.resolve("auth.corp-ldap")
-}
-
-#[test]
-fn limits_parse_every_key() {
-    let l = limits(
-        "{ timeout_ms: 10000, connect_timeout_ms: 3000, max_inflight: 64, stream_stall_ms: 5000 }",
-    )
-    .expect("parses");
-    assert_eq!(
-        l,
-        InstanceLimitsCfg {
-            timeout_ms: 10_000,
-            connect_timeout_ms: 3_000,
-            max_inflight: 64,
-            stream_stall_ms: 5_000
-        }
-    );
-    assert_eq!(limits("{}").expect("empty"), InstanceLimitsCfg::default());
-}
-
-#[test]
-fn limits_bounds_refuse_naming_the_key() {
-    let err = limits("{ timeout_ms: 600001 }").expect_err("over 600,000 ms");
-    assert!(err.contains("store.main.limits.timeout_ms"), "{err}");
-    let err = limits("{ connect_timeout_ms: 700000 }").expect_err("over 600,000 ms");
-    assert!(err.contains("limits.connect_timeout_ms"), "{err}");
-    let err = limits("{ max_inflight: 65536 }").expect_err("over 65,535");
-    assert!(err.contains("limits.max_inflight"), "{err}");
-    assert_eq!(
-        limits("{ max_inflight: 65535 }")
-            .expect("limit")
-            .max_inflight,
-        65_535
-    );
-    let err = limits("{ stream_stall_ms: 999 }").expect_err("under 1,000");
-    assert!(err.contains("limits.stream_stall_ms"), "{err}");
-}
-
-#[test]
-fn limits_has_no_plaintext_key() {
-    let err = limits("{ plaintext: deny }").expect_err("the row is deleted");
-    assert!(err.contains("unknown field"), "{err}");
 }
 
 #[test]
@@ -133,65 +86,10 @@ fn deploy(yaml: &str) -> crate::config::DeployCfg {
         .unwrap_or_else(|e| panic!("the config parses: {e}"))
 }
 
-fn key(section: &str, name: &str) -> (Box<str>, Box<str>) {
-    (section.into(), name.into())
-}
-
-const EVERY_KIND: &str = r#"
-providers: {}
-models: {}
-store:
-  module: postgres
-  settings: { url: "postgres://db.internal/busbar" }
-  limits: { timeout_ms: 5000, max_inflight: 32 }
-secrets:
-  vault:
-    settings: { addr: "https://vault.internal:8200" }
-    limits: { connect_timeout_ms: 2000 }
-identity-providers:
-  corp-ldap:
-    module: ldap
-    limits: { timeout_ms: 10000 }
-hooks:
-  pii:
-    module: pii-scan
-    limits: { max_inflight: 4 }
-export:
-  traces:
-    module: otlp
-    limits: { timeout_ms: 3000 }
-"#;
-
-/// IF §12.22: `limits` sits beside `module` in an instance block of any kind and is parsed per (section, name).
-#[test]
-fn parse_min3_reads_limits_beside_module_on_every_instance_kind() {
-    let min3 = parse_min3(&deploy(EVERY_KIND)).expect("in bounds");
-    let at = |section: &str, name: &str| min3.limits.get(&key(section, name)).copied();
-    assert_eq!(
-        at("store", "store"),
-        Some(InstanceLimitsCfg {
-            timeout_ms: 5_000,
-            max_inflight: 32,
-            ..InstanceLimitsCfg::default()
-        })
-    );
-    assert_eq!(
-        at("secrets", "vault").map(|l| l.connect_timeout_ms),
-        Some(2_000)
-    );
-    assert_eq!(
-        at("identity-providers", "corp-ldap").map(|l| l.timeout_ms),
-        Some(10_000)
-    );
-    assert_eq!(at("hooks", "pii").map(|l| l.max_inflight), Some(4));
-    assert_eq!(at("export", "traces").map(|l| l.timeout_ms), Some(3_000));
-    assert_eq!(min3.limits.len(), 5);
-}
-
-/// IF §12.22 and TRANSPORT-SECURITY-POLICY §4: every refusal names the instance's path in the file and the key;
+/// TRANSPORT-SECURITY-POLICY §4: every refusal names the instance's path in the file and the key;
 /// an `insecure_transport` refusal is BUSBAR-3163. One load reports every instance's refusal.
 #[test]
-fn limits_and_insecure_transport_refusals_name_the_instance_path() {
+fn insecure_transport_refusals_name_the_instance_path() {
     let refused = parse_min3(&deploy(
         r#"
 providers: {}
@@ -199,11 +97,6 @@ models: {}
 store:
   module: postgres
   insecure_transport: { accept: plaintext }
-secrets:
-  far:
-    limits: { timeout_ms: 700000 }
-  plain:
-    limits: { plaintext: deny }
 hooks:
   web:
     module: webrequest
@@ -216,14 +109,6 @@ export:
     ))
     .err()
     .expect("refused");
-    let has = |want: &str| refused.iter().any(|r| r.contains(want));
-    assert!(has("secrets.far.limits.timeout_ms"), "{refused:?}");
-    assert!(
-        refused
-            .iter()
-            .any(|r| r.contains("secrets.plain.limits") && r.contains("plaintext")),
-        "{refused:?}"
-    );
     for want in [
         "BUSBAR-3163: store.insecure_transport.reason",
         "BUSBAR-3163: hooks.web.insecure_transport.accept",
@@ -236,8 +121,8 @@ export:
     }
 }
 
-/// Policy §4: the acceptance lands in the instance's `InstanceLimits.accept` beside its limits, and neither key
-/// reaches the plugin: the bag it is bound from is `settings` alone.
+/// Policy §4: the acceptance lands in the instance's `InstanceLimits.accept`, and the key
+/// never reaches the plugin: the bag it is bound from is `settings` alone.
 #[test]
 fn insecure_transport_is_the_instance_s_accept_and_never_its_settings() {
     let deploy = deploy(
@@ -247,7 +132,6 @@ models: {}
 store:
   module: postgres
   settings: { url: "postgres://db.internal/busbar?sslmode=disable" }
-  limits: { timeout_ms: 4000 }
   insecure_transport: { accept: plaintext, reason: "pg sidecar on the pod network, INFRA-142" }
 secrets:
   vault:
@@ -257,7 +141,7 @@ secrets:
     let cfg = crate::config::resolve(&deploy, &std::collections::HashMap::new()).expect("resolves");
     let store = crate::appbuild::instance_limits(&cfg, "store", "store");
     assert_eq!(store.accept, Accept(Accept::PLAINTEXT));
-    assert_eq!(store.timeout_ms, 4_000);
+    assert_eq!(store.timeout_ms, 0, "no limits key: the kind's default");
     let vault = crate::appbuild::instance_limits(&cfg, "secrets", "vault");
     assert_eq!(
         vault.accept,
@@ -271,7 +155,7 @@ secrets:
     assert_eq!(
         cfg.store.as_ref().expect("store").settings.key_names(),
         ["url"],
-        "limits and insecure_transport are stripped before binding"
+        "insecure_transport is stripped before binding"
     );
 }
 
@@ -405,4 +289,73 @@ export:
     );
     let min3 = parse_min3(&deploy).expect("nothing to refuse");
     assert!(min3 == Min3Config::default(), "no MIN-3 key was written");
+}
+
+/// `<kind>.<name>.limits` is not a config key: an instance block of every kind that carries it is refused as an
+/// unknown field naming `limits` (an instance runs at its kind's defaults; `insecure_transport` stays).
+#[test]
+fn a_limits_key_on_any_instance_is_refused_as_unknown() {
+    for (kind, block) in [
+        (
+            "store",
+            "store:\n  module: sqlite\n  limits: { timeout_ms: 5000 }\n",
+        ),
+        (
+            "secrets",
+            "secrets:\n  vault:\n    limits: { connect_timeout_ms: 2000 }\n",
+        ),
+        (
+            "identity-providers",
+            "identity-providers:\n  corp-ldap:\n    module: ldap\n    limits: { max_inflight: 4 }\n",
+        ),
+        (
+            "hooks",
+            "hooks:\n  pii:\n    module: pii-scan\n    limits: { stream_stall_ms: 5000 }\n",
+        ),
+        (
+            "export",
+            "export:\n  traces:\n    module: otlp\n    limits: { timeout_ms: 3000 }\n",
+        ),
+    ] {
+        let yaml = format!("providers: {{}}\nmodels: {{}}\n{block}");
+        let refused = crate::config::deploy_from_yaml_str(&yaml, &crate::config::Grammar::empty())
+            .err()
+            .unwrap_or_else(|| panic!("{kind}: `limits` is accepted"));
+        let text = refused.to_string();
+        assert!(
+            text.contains("limits") && text.contains("unknown field"),
+            "{kind}: {text}"
+        );
+    }
+}
+
+/// A 1.5.5-shaped config still parses with the key gone: the hook keeps its 1.5.5 `timeout_ms`, and
+/// `insecure_transport` (kept) lands in the instance's `accept` while every number stays the kind's default.
+#[test]
+fn a_1_5_5_shaped_config_with_hook_timeout_ms_parses_and_instances_run_at_kind_defaults() {
+    let deploy = deploy(
+        r#"
+providers: {}
+models: {}
+store:
+  module: sqlite
+  settings: { db_path: /var/lib/busbar/busbar.db }
+hooks:
+  pii:
+    module: pii-scan
+    timeout_ms: 20
+"#,
+    );
+    assert_eq!(deploy.hooks["pii"].timeout_ms, Some(20));
+    let cfg = crate::config::resolve(&deploy, &std::collections::HashMap::new()).expect("resolves");
+    let store = crate::appbuild::instance_limits(&cfg, "store", "store");
+    assert_eq!(
+        (
+            store.timeout_ms,
+            store.connect_timeout_ms,
+            store.max_inflight
+        ),
+        (0, 0, 0),
+        "0 is the kind's default in every number"
+    );
 }

@@ -176,14 +176,12 @@ fn each_admitted_plane_image_is_one_instance_named_by_its_alias_with_its_section
         )
         .unwrap(),
     );
-    let limits = |_: &str| busbar_plugin_abi::host_side::caller::InstanceLimits::default();
     let planes = plane_instances(
         &[
             plane("busbar-plane-mcp", "mcp"),
             plane("busbar-plane-x", ""),
         ],
         &sections,
-        &limits,
     )
     .unwrap();
     assert_eq!(planes.len(), 2);
@@ -207,14 +205,12 @@ fn each_admitted_plane_image_is_one_instance_named_by_its_alias_with_its_section
 
 #[test]
 fn two_plane_images_answering_one_instance_name_are_refused() {
-    let limits = |_: &str| busbar_plugin_abi::host_side::caller::InstanceLimits::default();
     let refusal = plane_instances(
         &[
             plane("busbar-plane-a", "dup"),
             plane("busbar-plane-b", "dup"),
         ],
         &std::collections::BTreeMap::new(),
-        &limits,
     )
     .err()
     .expect("one instance name, two images");
