@@ -105,8 +105,10 @@ The config migration:
 
 ### Retired environment variables
 
-1.6.0 no longer reads these at runtime. The first 1.6.0 boot copies their values into config, so
-keep them set for that boot and remove them afterwards.
+1.6.0 no longer reads these at runtime. Run the explicit configuration migration with the original
+environment before starting 1.6. It captures the supported values in the generated configuration.
+Review that output, then remove the retired variables from the normal service environment.
+Startup does not import them.
 
 | Retired env var | Config key |
 |---|---|
@@ -121,7 +123,8 @@ keep them set for that boot and remove them afterwards.
 
 **Containers.** The 1.5.x image set `BUSBAR_PROVIDERS=/etc/busbar/providers.yaml`; the 1.6.0 image
 does not. With `config.yaml` at the default `/etc/busbar/config.yaml` nothing changes. If you
-mounted it elsewhere, set `BUSBAR_PROVIDERS` for the first boot or put `providers.yaml` beside it.
+mounted it elsewhere, set `providers_file:`, pass `--providers`, or put `providers.yaml` beside it.
+Keep the old `BUSBAR_PROVIDERS` value only for the explicit migration command.
 
 `BUSBAR_CONFIG_OVERLAY` selects old file-overlay migration input only; serving never reads it.
 The old `config.overlay` file/boolean field is refused by `--validate` (the current reader), which
