@@ -10,9 +10,11 @@ use std::sync::Mutex;
 
 use busbar_plugin_abi::fail::refused::{R_DENIED, R_UNSUPPORTED};
 use busbar_plugin_abi::plane::{
-    CommittedRec, LookupHit, WorkAns, DEST_INTERNAL, FROM_CORE, JUDGE_REFUSE_PRIVATE,
-    JUDGE_RESOLVE, LK_CALLER, LK_PREFIX, P_COMMITTED, P_ENTITLE, P_JUDGED, P_LOOKUP,
-    P_STORE_FAILED, P_WORK, WORK_OPEN,
+    CommittedRec, ConnectAns, LookupHit, MintedRec, SignedRec, WorkAns, CONNECT_BEGIN,
+    CONNECT_STATUS, CONN_READY, CONN_REFUSED, DEST_INTERNAL, FROM_CORE, JUDGE_REFUSE_PRIVATE,
+    JUDGE_RESOLVE, LK_CALLER, LK_PREFIX, MINT_ONCE, P_COMMITTED, P_CONNECT, P_ENTITLE, P_JUDGED,
+    P_LOOKUP, P_MINTED, P_SIGNED, P_STORE_FAILED, P_WORK, SIGN_JWS_COMPACT, SIGN_JWS_DETACHED,
+    WORK_OPEN,
 };
 use busbar_plugin_abi::records::{commit, tag as g, RecPredRec, RecPutRec, Records, Reply, Writer};
 use busbar_plugin_loader::ports::plane::{PlaneIn, PlaneOut, TargetIn};
@@ -20,6 +22,7 @@ use busbar_plugin_loader::ports::PortError;
 
 use super::{Hit, IntentHost, Looked, Resolver, WorkIntent, WorkOutcome};
 use crate::plane_driver::port_session::{Calls, Effects, SessionError, Task, ToClient, Violation};
+use crate::plane_grants::{SignedJws, TicketMint};
 use crate::plugin_records::{CommitOp, CommitOutcome, RecordsDenied, Scope};
 
 /// One scripted sink item, owned.
@@ -62,6 +65,17 @@ enum It {
         key: Vec<u8>,
     },
     Entitle(&'static str),
+    Mint {
+        flags: u32,
+        record: Option<&'static [u8]>,
+    },
+    Sign {
+        flags: u32,
+    },
+    Connect {
+        op: u32,
+        return_to: Option<&'static str>,
+    },
     Judge {
         dest: &'static str,
         class: u32,
@@ -112,6 +126,26 @@ fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
             }),
             It::Signal { flags, key } => sink(PlaneOut::Signal { flags: *flags, key }),
             It::Entitle(grant) => sink(PlaneOut::Entitle { check: 3, grant }),
+            It::Mint { flags, record } => sink(PlaneOut::Mint {
+                check: 5,
+                flags: *flags,
+                ttl_s: 60,
+                scope: Some("realtime"),
+                audience: Some("ticket"),
+                prefix: Some("ek_"),
+                record: *record,
+            }),
+            It::Sign { flags } => sink(PlaneOut::Sign {
+                check: 6,
+                flags: *flags,
+                payload: b"card",
+            }),
+            It::Connect { op, return_to } => sink(PlaneOut::Connect {
+                check: 7,
+                op: *op,
+                upstream: "github",
+                return_to: *return_to,
+            }),
             It::Judge { dest, class, flags } => sink(PlaneOut::Judge {
                 check: 4,
                 class: *class,
@@ -237,6 +271,8 @@ struct Host {
     work: Option<WorkOutcome>,
     granted: Vec<&'static str>,
     verdict: u32,
+    refuse: Option<u32>,
+    conn_state: u32,
 }
 
 impl Host {
@@ -345,6 +381,53 @@ impl IntentHost for Host {
     fn judge(&self, dest: &str, class: u32, flags: u32) -> u32 {
         self.note(format!("judge {dest} class={class} flags={flags}"));
         self.verdict
+    }
+
+    fn mint(&self, m: TicketMint<'_>) -> Result<(Box<str>, u64), u32> {
+        self.note(format!(
+            "mint subject={} scope={} aud={} ttl={} once={} prefix={} record={}",
+            m.subject,
+            m.scope,
+            m.audience,
+            m.ttl_s,
+            m.once,
+            m.prefix,
+            m.record.len()
+        ));
+        match self.refuse {
+            Some(code) => Err(code),
+            None => Ok((format!("{}bbt1.xyz", m.prefix).into(), 1234)),
+        }
+    }
+
+    fn sign(&self, payload: &[u8], detached: bool) -> Result<SignedJws, u32> {
+        self.note(format!(
+            "sign {} detached={detached}",
+            String::from_utf8_lossy(payload)
+        ));
+        match self.refuse {
+            Some(code) => Err(code),
+            None if detached => Ok(SignedJws::Detached {
+                protected: "PROT".into(),
+                signature: "SIG".into(),
+            }),
+            None => Ok(SignedJws::Compact("h.p.s".into())),
+        }
+    }
+
+    fn connect(
+        &self,
+        op: u32,
+        subject: &str,
+        upstream: &str,
+        return_to: Option<&str>,
+    ) -> (u32, Option<Box<str>>) {
+        self.note(format!(
+            "connect op={op} subject={subject} upstream={upstream} return_to={return_to:?}"
+        ));
+        let url = (op == CONNECT_BEGIN && self.conn_state == CONN_READY)
+            .then(|| Box::from("https://idp.example/consent"));
+        (self.conn_state, url)
     }
 }
 
@@ -927,4 +1010,203 @@ fn entitle_and_judge_pieces_follow_the_lookup_piece_in_the_if_order() {
     run_as(&script, &Host::default(), b"ID").unwrap();
     let kinds: Vec<u32> = script.got().iter().map(|p| p.1).collect();
     assert_eq!(kinds, [P_LOOKUP, P_ENTITLE, P_JUDGED]);
+}
+
+fn only_piece(script: &Script, flags: u32) -> Vec<u8> {
+    let got = script.got();
+    assert_eq!(got.len(), 1, "one piece for the whole kind");
+    assert_eq!((got[0].0, got[0].1), (FROM_CORE, flags));
+    got[0].2.clone()
+}
+
+#[test]
+fn mint_seals_a_ticket_for_the_verified_subject_and_answers_minted_with_its_text_and_expiry() {
+    let script = Script {
+        request: vec![It::Mint {
+            flags: MINT_ONCE,
+            record: Some(b"rec"),
+        }],
+        ..Script::default()
+    };
+    let host = Host::default();
+    run_as(&script, &host, b"ID").unwrap();
+    assert_eq!(
+        host.seen(),
+        ["mint subject=alice scope=realtime aud=ticket ttl=60 once=true prefix=ek_ record=3"]
+    );
+    let bytes = only_piece(&script, P_MINTED);
+    let rec = Records::new(&bytes).next().unwrap().unwrap();
+    assert_eq!(rec.tag, busbar_plugin_abi::plane::tag::MINTED);
+    let (ans, text) = rec.pod_tail::<MintedRec>().unwrap();
+    assert_eq!(
+        (ans.check, ans.status, ans.expires_at_s, text),
+        (5, 0, 1234, &b"ek_bbt1.xyz"[..])
+    );
+}
+
+#[test]
+fn mint_with_no_verified_subject_is_denied_and_the_host_is_never_asked() {
+    let script = Script {
+        request: vec![It::Mint {
+            flags: 0,
+            record: None,
+        }],
+        ..Script::default()
+    };
+    let host = Host::default();
+    run(&script, &host, None).unwrap();
+    assert!(host.seen().is_empty());
+    let bytes = only_piece(&script, P_MINTED);
+    let rec = Records::new(&bytes).next().unwrap().unwrap();
+    let (ans, text) = rec.pod_tail::<MintedRec>().unwrap();
+    assert_eq!((ans.status, ans.expires_at_s, text.len()), (R_DENIED, 0, 0));
+}
+
+#[test]
+fn a_mint_the_host_refuses_answers_its_generic_code_and_no_ticket() {
+    let script = Script {
+        request: vec![It::Mint {
+            flags: 0,
+            record: None,
+        }],
+        ..Script::default()
+    };
+    let host = Host {
+        refuse: Some(R_UNSUPPORTED),
+        ..Host::default()
+    };
+    run_as(&script, &host, b"ID").unwrap();
+    let bytes = only_piece(&script, P_MINTED);
+    let rec = Records::new(&bytes).next().unwrap().unwrap();
+    let (ans, text) = rec.pod_tail::<MintedRec>().unwrap();
+    assert_eq!((ans.status, text.len()), (R_UNSUPPORTED, 0));
+}
+
+#[test]
+fn sign_answers_a_compact_jws_or_the_detached_pieces_or_a_refusal() {
+    let signed = |flags: u32, refuse: Option<u32>| {
+        let script = Script {
+            request: vec![It::Sign { flags }],
+            ..Script::default()
+        };
+        let host = Host {
+            refuse,
+            ..Host::default()
+        };
+        run(&script, &host, None).unwrap();
+        (host.seen(), only_piece(&script, P_SIGNED))
+    };
+    let (seen, bytes) = signed(SIGN_JWS_COMPACT, None);
+    assert_eq!(seen, ["sign card detached=false"]);
+    let rec = Records::new(&bytes).next().unwrap().unwrap();
+    assert_eq!(rec.tag, busbar_plugin_abi::plane::tag::SIGNED);
+    let (ans, tail) = rec.pod_tail::<SignedRec>().unwrap();
+    assert_eq!((ans.check, ans.status, tail), (6, 0, &b"h.p.s"[..]));
+
+    let (seen, bytes) = signed(SIGN_JWS_DETACHED, None);
+    assert_eq!(seen, ["sign card detached=true"]);
+    let rec = Records::new(&bytes).next().unwrap().unwrap();
+    let (ans, tail) = rec.pod_tail::<SignedRec>().unwrap();
+    assert_eq!(ans.status, 0);
+    let nested: Vec<(u16, String)> = Records::new(tail)
+        .map(|r| {
+            let r = r.unwrap();
+            (r.tag, r.text().unwrap().to_owned())
+        })
+        .collect();
+    assert_eq!(
+        nested,
+        [
+            (
+                busbar_plugin_abi::plane::tag::SG_PROTECTED,
+                "PROT".to_owned()
+            ),
+            (
+                busbar_plugin_abi::plane::tag::SG_SIGNATURE,
+                "SIG".to_owned()
+            )
+        ]
+    );
+
+    let (_, bytes) = signed(SIGN_JWS_COMPACT, Some(R_UNSUPPORTED));
+    let rec = Records::new(&bytes).next().unwrap().unwrap();
+    let (ans, tail) = rec.pod_tail::<SignedRec>().unwrap();
+    assert_eq!((ans.status, tail.len()), (R_UNSUPPORTED, 0));
+}
+
+#[test]
+fn connect_runs_as_the_verified_subject_and_answers_the_state_and_the_begin_url() {
+    let connect = |op: u32, subject: bool| {
+        let script = Script {
+            request: vec![It::Connect {
+                op,
+                return_to: Some("/done"),
+            }],
+            ..Script::default()
+        };
+        let host = Host {
+            conn_state: CONN_READY,
+            ..Host::default()
+        };
+        if subject {
+            run_as(&script, &host, b"ID").unwrap();
+        } else {
+            run(&script, &host, None).unwrap();
+        }
+        (host.seen(), only_piece(&script, P_CONNECT))
+    };
+    let (seen, bytes) = connect(CONNECT_BEGIN, true);
+    assert_eq!(
+        seen,
+        ["connect op=1 subject=alice upstream=github return_to=Some(\"/done\")"]
+    );
+    let rec = Records::new(&bytes).next().unwrap().unwrap();
+    assert_eq!(rec.tag, busbar_plugin_abi::plane::tag::CONNECT_ANS);
+    let (ans, url) = rec.pod_tail::<ConnectAns>().unwrap();
+    assert_eq!(
+        (ans.check, ans.state, url),
+        (7, CONN_READY, &b"https://idp.example/consent"[..])
+    );
+
+    // STATUS carries no URL.
+    let (_, bytes) = connect(CONNECT_STATUS, true);
+    let rec = Records::new(&bytes).next().unwrap().unwrap();
+    let (ans, url) = rec.pod_tail::<ConnectAns>().unwrap();
+    assert_eq!((ans.state, url.len()), (CONN_READY, 0));
+
+    // No verified subject: refused here, the host never asked.
+    let (seen, bytes) = connect(CONNECT_BEGIN, false);
+    assert!(seen.is_empty());
+    let rec = Records::new(&bytes).next().unwrap().unwrap();
+    let (ans, url) = rec.pod_tail::<ConnectAns>().unwrap();
+    assert_eq!((ans.state, url.len()), (CONN_REFUSED, 0));
+}
+
+#[test]
+fn minted_signed_and_connect_pieces_come_after_entitle_and_judged_in_the_if_order() {
+    let script = Script {
+        request: vec![
+            It::Connect {
+                op: CONNECT_STATUS,
+                return_to: None,
+            },
+            It::Sign {
+                flags: SIGN_JWS_COMPACT,
+            },
+            It::Mint {
+                flags: 0,
+                record: None,
+            },
+            It::Judge {
+                dest: "example.com",
+                class: 0,
+                flags: 0,
+            },
+            It::Entitle("g"),
+        ],
+        ..Script::default()
+    };
+    run_as(&script, &Host::default(), b"ID").unwrap();
+    let kinds: Vec<u32> = script.got().iter().map(|p| p.1).collect();
+    assert_eq!(kinds, [P_ENTITLE, P_JUDGED, P_MINTED, P_SIGNED, P_CONNECT]);
 }
