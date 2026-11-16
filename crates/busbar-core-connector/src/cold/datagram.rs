@@ -73,13 +73,13 @@ pub(crate) fn line_kinds_differ(i: usize, caller: &str, upstream: &str) -> Strin
 /// `dtls`: the certificate could not be minted; its text.
 #[cold]
 pub(crate) fn certificate_failed(e: &dyn Display) -> Failure {
-    Failure::Certificate(e.to_string())
+    Failure::Certificate(format!("{e}"))
 }
 
 /// `dtls`: a refused SRTP profile fails the association, naming it.
 #[cold]
 pub(crate) fn profile_refused(profile: &dyn Display) -> Failure {
-    Failure::Profile(profile.to_string())
+    Failure::Profile(format!("{profile}"))
 }
 
 /// `dtls`: an output the engine never owes fails the association, naming it.
@@ -91,7 +91,7 @@ pub(crate) fn output_unowed(output: &dyn Debug) -> Failure {
 /// `dtls`: a failure of the DTLS layer itself, with its text.
 #[cold]
 pub(crate) fn dtls_failed(e: &dyn Display) -> Failure {
-    Failure::Dtls(e.to_string())
+    Failure::Dtls(format!("{e}"))
 }
 
 impl PathBook {

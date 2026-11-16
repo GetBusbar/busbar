@@ -17,7 +17,7 @@ use busbar_plugin_abi::host_side::needs::NeedErr;
 use busbar_plugin_abi::need::need_flag::TLS_NONE;
 
 /// The audit action of a Need refused by the transport-security gate.
-pub const REFUSED_ACTION: &str = "egress.insecure_transport_refused";
+const REFUSED_ACTION: &str = "egress.insecure_transport_refused";
 
 /// The most (instance, endpoint) pairs the once-per-endpoint log remembers.
 const REMEMBERED: usize = 4096;
