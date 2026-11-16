@@ -178,7 +178,7 @@ impl<'de> serde::Deserialize<'de> for AuditData {
         let value = <sonic_rs::Value as serde::Deserialize>::deserialize(deserializer)?;
         let text = sonic_rs::to_string(&value).map_err(serde::de::Error::custom)?;
         Self::from_json(&text)
-            .map_err(|()| serde::de::Error::custom("`data` must be a JSON object"))
+            .map_err(|NotAnObject| serde::de::Error::custom("`data` must be a JSON object"))
     }
 }
 

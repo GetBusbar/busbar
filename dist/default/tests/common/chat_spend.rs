@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use busbar_contract::json::{self, JsonValueTrait};
+use serde_json::Value;
 
 pub const ADMIN_TOKEN: &str = "chat-spend-admin";
 
@@ -26,7 +27,7 @@ pub fn chat_upstream_sequence(usages: Vec<Value>) -> u16 {
     let port = listener.local_addr().expect("its address").port();
     let served = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let body = |usage: &Value| {
-        json!({
+        serde_json::json!({
             "id": "chatcmpl-cache-write", "object": "chat.completion", "created": 1,
             "model": "test-model",
             "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"},
@@ -99,7 +100,7 @@ pub fn serve(doc: &mut busbar_contract::yaml::Value, data: u16, admin: u16, sign
         "auth",
         &format!(
             "{{chain: [keys], signing_key: {{file: {}}}, admin_auth: [admin-tokens]}}",
-            serde_json::to_string(&signing.display().to_string()).unwrap()
+            json::to_string(&signing.display().to_string()).unwrap()
         ),
     );
     let advanced = root.entry_or_insert_with("advanced", || Yaml::Map(Pairs::new()));
@@ -229,10 +230,10 @@ impl Gateway {
         }
     }
 
-    fn usage_total(&self) -> Value {
+    fn usage_total(&self) -> json::Value {
         let (status, body) = self.admin("GET", "/api/v1/admin/usage", None);
         assert_eq!(status, 200, "admin usage: {body}");
-        let usage: Value = serde_json::from_str(&body).expect("admin usage is JSON");
+        let usage = json::parse_value(body.as_bytes()).expect("admin usage is JSON");
         usage["total"].clone()
     }
 }
