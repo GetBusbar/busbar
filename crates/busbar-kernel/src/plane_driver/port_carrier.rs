@@ -37,7 +37,7 @@ use busbar_plugin_loader::encode::plane::encode_refusal;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
-use super::port_channels::{Channels, Held, UpstreamHost};
+use super::port_channels::{Channels, UpstreamHost};
 use super::port_intents::{Detach, Namespace, Resolver};
 use super::port_serve::{absorb, Books, Ran};
 use super::port_session::{hand_out, Answer, Calls, Effects, SessionError, Task};

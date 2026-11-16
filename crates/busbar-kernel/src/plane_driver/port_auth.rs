@@ -47,7 +47,7 @@ pub fn effective_classes(mask: u32, configured: Option<u32>) -> Result<u32, Clas
         Some(set) if set != 0 && set & !mask == 0 => Ok(set),
         Some(_) => Err(ClassConfig),
         None => {
-            let lowest = mask & mask.wrapping_neg();
+            let lowest = mask.isolate_lowest_one();
             let both = AUTH_PRINCIPAL | AUTH_TICKET;
             Ok(if mask & both == both {
                 lowest | AUTH_TICKET
@@ -103,7 +103,7 @@ pub fn classify(effective: u32, bearer: Option<&str>, tickets: &dyn TicketDoor) 
             AUTH_PRINCIPAL
         };
     }
-    effective & effective.wrapping_neg()
+    effective.isolate_lowest_one()
 }
 
 /// The `Authorization: Bearer` credential among `headers` (name case-insensitive, scheme case-insensitive).

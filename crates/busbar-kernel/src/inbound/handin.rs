@@ -32,16 +32,16 @@ impl Head {
                 })
                 .cloned(),
         );
-        let keys: Vec<&str> = strips
-            .iter()
-            .filter(|strip| strip.place == StripPlace::Query)
-            .map(|strip| strip.name.as_ref())
-            .collect();
-        if !keys.is_empty() {
+        let is_key = |key: &str| {
+            strips
+                .iter()
+                .any(|strip| strip.place == StripPlace::Query && &*strip.name == key)
+        };
+        if strips.iter().any(|strip| strip.place == StripPlace::Query) {
             if let Some(stripped) = head
                 .query
                 .as_deref()
-                .and_then(|query| crate::auth::without_query_keys_text(query, &keys))
+                .and_then(|query| crate::auth::without_query_text_where(query, &is_key))
             {
                 let original =
                     std::mem::replace(&mut head.query, (!stripped.is_empty()).then_some(stripped));

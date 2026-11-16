@@ -143,11 +143,6 @@ impl EntryId {
     /// The versioned metering provenance prefix. Other historical version names remain legacy.
     pub const METERING_VERSION_PREFIX: &'static str = "busbar.card.entry.v1:";
 
-    /// The exact entry identity as a metering row's existing `pricing_version` field.
-    pub fn metering_version(&self) -> String {
-        format!("{}{self}", Self::METERING_VERSION_PREFIX)
-    }
-
     /// Parse an exact metering identity. `None` denotes a legacy name; `Some(None)` denotes a
     pub fn parse_metering_version(version: &str) -> Option<Option<Self>> {
         version
