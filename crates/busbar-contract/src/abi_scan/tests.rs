@@ -148,3 +148,23 @@ fn the_raw_back_doors_are_flagged_in_a_test_file() {
         ]
     );
 }
+
+#[test]
+fn dependency_sources_under_a_repository_local_cargo_home_are_not_scanned() {
+    // CI keeps CARGO_HOME inside the checkout (`.cargo-home`, so the runner can cache it): the registry and
+    // git checkouts under it are third-party crates, not this repository's test-reachable code.
+    let t = Tree::new(
+        "cargo-home",
+        &[
+            (".cargo-home/git/checkouts/dep-1/abc/tests/a.rs", UNSAFE_FN),
+            (
+                ".cargo-home/registry/src/index/dep-2/src/lib.rs",
+                "#[cfg(test)]\nmod t;\n",
+            ),
+            (".cargo-home/registry/src/index/dep-2/src/t.rs", UNSAFE_FN),
+            (".cargo/registry/src/index/dep-3/tests/b.rs", UNSAFE_FN),
+            ("c/tests/a.rs", UNSAFE_FN),
+        ],
+    );
+    assert_eq!(t.findings(), [("c/tests/a.rs".to_string(), Rule::Unsafe)]);
+}
