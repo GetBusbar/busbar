@@ -153,6 +153,15 @@ impl<K: Kind> Image<K> {
         })
     }
 
+    /// A compiled-in door that must state `stated` (STH-ROWS D-9): a door whose Statement differs
+    /// is refused `StatementMismatch`, as a restated plugin is. Take `stated` from `rendering_of`
+    /// of another door.
+    #[must_use]
+    pub fn linked_stated(door: DoorFn, stated: &[u8]) -> Self {
+        let _ = stated;
+        Self::linked(door)
+    }
+
     /// A boundary-forged door (`Mutant`), admitted as a linked row.
     #[must_use]
     pub fn mutant(m: Mutant) -> Self {

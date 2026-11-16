@@ -915,3 +915,18 @@ fn an_images_declared_diagnostic_reaches_the_hosts_sink_once() {
     );
     assert!(env.metrics().is_empty() && env.dropped().is_empty());
 }
+
+#[test]
+fn a_linked_door_is_refused_when_it_states_another_plugins_statement() {
+    let other = busbar_plugin_test::rendering_of(store_door::door).expect("the store door renders");
+    let wrong = host().open(
+        Image::<Transport>::linked_stated(transport_door::door, &other),
+        "linked-stated",
+        b"{}",
+    );
+    assert!(
+        matches!(wrong, Err(Refused::Load(LoadError::StatementMismatch))),
+        "{:?}",
+        wrong.err()
+    );
+}
