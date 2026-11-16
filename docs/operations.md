@@ -258,7 +258,7 @@ recommended.
 | Endpoint | Auth | Meaning |
 |---|---|---|
 | `GET /healthz` | open | `200 ok` if **any** lane is usable. `503` when no lane is usable, when plugin dispatch is halted, or, with no LLM plane configured, when another configured plane is not open (`plane '<key>' configured but not open`). Use for readiness probes. |
-| `GET /metrics` | virtual key | Prometheus exposition. OPT-IN: mounted only when an `export:` instance of the Prometheus-exposition kind is configured (with its required `settings.buffer_seconds`; see that export plugin's own documentation); otherwise the path 404s like any other. Requires a valid key with a non-empty `auth.chain`, open under `chain: []`. Restrict at the network layer if unauthenticated scraping is needed. |
+| `GET /metrics` | virtual key | Prometheus exposition. Data listener: OPT-IN, mounted only when an `export:` instance of the Prometheus-exposition kind is configured (with its required `settings.buffer_seconds`; see that export plugin's own documentation); otherwise the path 404s like any other. The admin listener serves its own `/metrics` regardless (see below). Requires a valid key with a non-empty `auth.chain`, open under `chain: []`. Restrict at the network layer if unauthenticated scraping is needed. |
 | `GET /stats` | virtual key | Per-lane health snapshot + pool membership, JSON. |
 
 `/stats` returns, per lane: `model`, `provider`, `max_concurrent`, `inflight`, `free_slots`, `available` (free permits for a bounded lane,
@@ -366,7 +366,7 @@ upgrade and loses nothing.
 
 ## Metrics to watch
 
-All metrics are Prometheus counters/histograms exposed at `/metrics`, which is opt-in: with no metrics export instance (an `export:` entry of the Prometheus-exposition kind) busbar records nothing and does not mount the endpoint. Its `settings.buffer_seconds` (required when you opt in) sets how many seconds of observations are retained. Quantiles cover that window, `_sum`/`_count` stay cumulative, and memory is bounded by the window rather than by uptime.
+All metrics are Prometheus counters/histograms exposed at `/metrics`, which is opt-in: the data-listener `/metrics` is mounted only when a metrics export instance (an `export:` entry of the Prometheus-exposition kind) is configured. The in-process registry itself is governed by `telemetry.enabled` (default `true`) whatever `export:` holds, and the admin listener always serves its own `GET /metrics` and `GET /metrics/hooks` (admin credential; Prometheus text, OpenMetrics or JSON by `Accept`; `503 telemetry_disabled` when `telemetry.enabled` is `false`). Observations are retained for `telemetry.retention_seconds` (default 300); an export instance's `settings.buffer_seconds` (required for that instance) can only raise that retention. Quantiles cover that window, `_sum`/`_count` stay cumulative, and memory is bounded by the window rather than by uptime.
 
 | Metric | Type | Labels | Watch for |
 |---|---|---|---|
@@ -802,6 +802,7 @@ remain explicitly refused.
 | Route | Listener | Access and purpose |
 | --- | --- | --- |
 | `/api/v1/admin/*` | Separate administration listener, default `127.0.0.1:8081` | Configured admin authentication; exposed binds require mTLS unless explicitly waived |
+| `/metrics`, `/metrics/hooks` | Administration listener (always); `/metrics` also on the data listener when a metrics export instance is configured | Admin listener: admin credential, `503 telemetry_disabled` when `telemetry.enabled` is false. Data listener: virtual key, see above |
 | `/healthz` | Data and administration listeners | HTTP authentication exempt; listener TLS/mTLS still applies. Readiness reports dispatch health and usable upstream lanes |
 
 An upstream outage can make `/healthz` return 503 while the process is healthy. Use it for readiness, not a restart-triggering liveness check. A TCP probe of the data listener is independent of upstream health but proves only that the socket accepts a connection; it does not detect every application deadlock. `busbar --validate` checks configuration and plugin preflight, not the running process.
