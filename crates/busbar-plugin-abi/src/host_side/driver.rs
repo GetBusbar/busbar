@@ -113,3 +113,353 @@ impl<'a, N: Needs> Driver<'a, N> {
 // RawCancel, tok: Token, needed: bool, bufs: ChainBufs }` with its Drop rule (IF §10.5) land with W1-H1: they
 // are crate-private with no caller in wave 0 (dead code), `SlotLease` is a plugin-loader type, the Send/Sync
 // impls are rule-2 items, and `RawResume`/`RawCancel` are raw entry fn-pointer types.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::records::{Reply, Writer};
+    use zerocopy::IntoBytes;
+
+    /// A NEED body: the Pod (lens filled in) and its four arguments back to back.
+    fn body(
+        op: u32,
+        flags: u32,
+        a: u64,
+        b: u64,
+        secret: u32,
+        trust: u32,
+        args: [&[u8]; 4],
+    ) -> Vec<u8> {
+        let rec = NeedRec {
+            op,
+            flags,
+            a,
+            b,
+            secret,
+            trust,
+            lens: args.map(|arg| arg.len() as u32),
+        };
+        let mut bytes = rec.as_bytes().to_vec();
+        for arg in args {
+            bytes.extend_from_slice(arg);
+        }
+        bytes
+    }
+    const E: &[u8] = &[];
+
+    const DEST: &[u8] = b"db:5432";
+
+    #[test]
+    fn open_rows() {
+        let ok = |flags: u32, secret: u32, trust: u32, args: [&[u8]; 4]| {
+            decode_need_owned(op::OPEN, flags, 0, 0, secret, trust, args)
+        };
+        let plain = [DEST, E, E, E];
+        assert!(matches!(
+            ok(0, 0, 0, plain),
+            Ok(Shape::Open(TlsKind::None, 0))
+        ));
+        assert!(matches!(
+            ok(1 | (3 << 16), 0, 2, [DEST, &b"db"[..], &b"h2"[..], E]),
+            Ok(Shape::Open(TlsKind::Required, 3))
+        ));
+        assert!(matches!(
+            ok(2, 5, 0, plain),
+            Ok(Shape::Open(TlsKind::Mutual, 0))
+        ));
+        assert!(matches!(
+            ok(3, 0, 0, plain),
+            Ok(Shape::Open(TlsKind::Inband(false), 0))
+        ));
+        assert!(matches!(
+            ok(3, 4, 0, plain),
+            Ok(Shape::Open(TlsKind::Inband(true), 0))
+        ));
+        let bad: [(u32, u32, u32, [&[u8]; 4], &str); 11] = [
+            (2, 0, 0, plain, "MUTUAL without a cert"),
+            (4, 0, 0, plain, "a mode past INBAND"),
+            (5 << 16, 0, 0, plain, "an egress class past 4"),
+            (0x200, 0, 0, plain, "the retired unverified bit"),
+            (0x100, 0, 0, plain, "REUSABLE is CLOSE's"),
+            (0, 1, 0, plain, "a cert on a plaintext dial"),
+            (
+                0,
+                0,
+                0,
+                [DEST, &b"sni"[..], E, E],
+                "SNI on a plaintext dial",
+            ),
+            (0, 0, 0, [E; 4], "no dest"),
+            (0, 0, 0, [&[0xFF][..], E, E, E], "a dest that is not UTF-8"),
+            (0, 0, 0, [DEST, E, E, &b"x"[..]], "an unused argument"),
+            (1, 3, 0, plain, "a cert on REQUIRED"),
+        ];
+        for (flags, secret, trust, args, why) in bad {
+            assert_eq!(
+                ok(flags, secret, trust, args).err(),
+                Some(NeedErr::Invalid),
+                "{why}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_need_whose_lengths_do_not_add_up_is_invalid() {
+        let mut bytes = body(op::SECRET, 0, 0, 0, 1, 0, [E; 4]);
+        bytes.push(0);
+        assert_eq!(
+            decode_need(&bytes).err(),
+            Some(NeedErr::Invalid),
+            "a trailing byte"
+        );
+        let mut rec = NeedRec::read_from_prefix(&body(op::WRITE, 0, 1, 0, 0, 0, [b"abc", E, E, E]))
+            .map(|(rec, _)| rec)
+            .expect("pod");
+        rec.lens[0] = 9;
+        let mut short = rec.as_bytes().to_vec();
+        short.extend_from_slice(b"abc");
+        assert_eq!(
+            decode_need(&short).err(),
+            Some(NeedErr::Invalid),
+            "an argument past the body"
+        );
+        assert_eq!(
+            decode_need(&[0u8; 8]).err(),
+            Some(NeedErr::Invalid),
+            "shorter than NeedRec"
+        );
+        assert_eq!(
+            decode_need(&body(0, 0, 0, 0, 0, 0, [E; 4])).err(),
+            Some(NeedErr::Invalid),
+            "op 0"
+        );
+        assert_eq!(
+            decode_need(&body(10, 0, 0, 0, 0, 0, [E; 4])).err(),
+            Some(NeedErr::Invalid),
+            "op 10"
+        );
+    }
+
+    #[test]
+    fn the_need_row_is_the_kind_table() {
+        use KindCode::*;
+        let row = |kind, open| {
+            let r = NeedRow::of(kind, open);
+            [
+                op::OPEN,
+                op::STARTTLS,
+                op::WRITE,
+                op::READ,
+                op::CLOSE,
+                op::FETCH,
+                op::SECRET,
+                op::RECORD,
+                op::DIRECTORY,
+            ]
+            .map(|op| r.allows(op))
+        };
+        let (y, n) = (true, false);
+        assert_eq!(row(Store, false), [y, y, y, y, y, n, y, n, n]);
+        assert_eq!(row(Secret, false), [y, y, y, y, y, y, y, n, n]);
+        assert_eq!(row(Auth, false), [y, y, y, y, y, y, y, y, n]);
+        assert_eq!(row(Hook, false), [n, n, n, n, n, y, y, y, n]);
+        assert_eq!(row(Export, false), [y, y, y, y, y, y, y, n, n]);
+        assert_eq!(row(Plane, false), [n, n, n, n, n, y, y, y, n]);
+        assert_eq!(row(Transport, false), [n; 9]);
+        assert_eq!(row(Transport, true), [n, n, n, n, n, n, y, n, n]);
+        for kind in KindCode::ALL {
+            if kind != Transport {
+                assert_eq!(
+                    NeedRow::of(kind, true),
+                    NeedRow::of(kind, false),
+                    "{kind:?}: open uses the kind's row"
+                );
+            }
+        }
+        assert!(
+            NeedRow::of(Auth, false)
+                .with_directory()
+                .allows(op::DIRECTORY)
+        );
+        assert!((0..32).all(|op| !NeedRow::EMPTY.allows(op)));
+        assert!(!NeedRow::of(Auth, false).allows(0) && !NeedRow::of(Auth, false).allows(16));
+    }
+
+    #[test]
+    fn a_need_answer_is_checked_before_any_need_runs() {
+        let row = NeedRow::of(KindCode::Secret, false);
+        let tok: Token = (1 << 32) | 3;
+        let answer = |token: Option<u64>, needs: &[u32], extra: Option<u16>| {
+            let mut r = Reply::new();
+            for &op in needs {
+                r.put(tag::NEED, &body(op, 0, 0, 0, 1, 0, [E; 4]))
+                    .expect("need");
+            }
+            if let Some(token) = token {
+                r.put_pod(tag::TOKEN, &TokenRec { token }).expect("token");
+            }
+            if let Some(t) = extra {
+                r.put(t, b"x").expect("extra");
+            }
+            r.as_bytes().to_vec()
+        };
+        assert_eq!(
+            check_need_answer(&answer(Some(tok), &[op::SECRET; 2], None), tok, row),
+            Ok(2)
+        );
+        assert_eq!(
+            check_need_answer(&answer(None, &[op::SECRET], None), tok, row),
+            Err(FaultReason::MissingToken)
+        );
+        assert_eq!(
+            check_need_answer(&answer(Some(tok + 1), &[op::SECRET], None), tok, row),
+            Err(FaultReason::BadToken),
+            "a TOKEN that is not this chain's"
+        );
+        assert_eq!(
+            check_need_answer(&answer(Some(tok), &[op::RECORD], None), tok, row),
+            Err(FaultReason::NeedNotAllowed(op::RECORD))
+        );
+        assert_eq!(
+            check_need_answer(&answer(Some(tok), &[], None), tok, row),
+            Err(FaultReason::BadRecords(RecErr::Size)),
+            "a NEED answer with no NEED"
+        );
+        assert_eq!(
+            check_need_answer(&answer(Some(tok), &[op::SECRET; 65], None), tok, row),
+            Err(FaultReason::BadRecords(RecErr::Size)),
+            "65 NEEDs"
+        );
+        assert_eq!(
+            check_need_answer(
+                &answer(Some(tok), &[op::SECRET], Some(tag::ERROR)),
+                tok,
+                row
+            ),
+            Err(FaultReason::UnknownTag(tag::ERROR))
+        );
+        let mut two = answer(Some(tok), &[op::SECRET], None);
+        two.extend(answer(Some(tok), &[], None));
+        assert_eq!(
+            check_need_answer(&two, tok, row),
+            Err(FaultReason::BadToken),
+            "two TOKENs"
+        );
+    }
+
+    #[test]
+    fn the_chain_guard_is_send() {
+        struct NoNeeds;
+        impl Needs for NoNeeds {
+            async fn open(
+                &self,
+                _: &Caller<'_>,
+                _: OpenNeed<'_>,
+                _: &mut NeedOut<'_>,
+            ) -> Result<(), NeedErr> {
+                Err(NeedErr::Denied)
+            }
+            async fn starttls(
+                &self,
+                _: &Caller<'_>,
+                _: ConnId,
+                _: TlsMode<'_>,
+                _: &mut NeedOut<'_>,
+            ) -> Result<(), NeedErr> {
+                Err(NeedErr::Denied)
+            }
+            async fn write(
+                &self,
+                _: &Caller<'_>,
+                _: ConnId,
+                _: &[u8],
+                _: &mut NeedOut<'_>,
+            ) -> Result<(), NeedErr> {
+                Err(NeedErr::Denied)
+            }
+            async fn read(
+                &self,
+                _: &Caller<'_>,
+                _: ConnId,
+                _: u32,
+                _: &mut NeedOut<'_>,
+            ) -> Result<(), NeedErr> {
+                Err(NeedErr::Denied)
+            }
+            async fn close(&self, _: &Caller<'_>, _: ConnId, _: bool) {}
+            async fn fetch(
+                &self,
+                _: &Caller<'_>,
+                _: FetchNeed<'_>,
+                _: &mut NeedOut<'_>,
+            ) -> Result<(), NeedErr> {
+                Err(NeedErr::Denied)
+            }
+            async fn secret(
+                &self,
+                _: &Caller<'_>,
+                _: u32,
+                _: &mut NeedOut<'_>,
+            ) -> Result<(), NeedErr> {
+                Err(NeedErr::Denied)
+            }
+            async fn record(
+                &self,
+                _: &Caller<'_>,
+                _: RecordNeed<'_>,
+                _: &mut NeedOut<'_>,
+            ) -> Result<(), NeedErr> {
+                Err(NeedErr::Denied)
+            }
+            async fn directory(
+                &self,
+                _: &Caller<'_>,
+                _: DirNeed<'_>,
+                _: &mut NeedOut<'_>,
+            ) -> Result<(), NeedErr> {
+                Err(NeedErr::Denied)
+            }
+            fn release(&self, _: &Caller<'_>) {}
+        }
+        fn send<T: Send>() {}
+        send::<ChainGuard<'static, 'static, NoNeeds, busbar_ffi::kind::Secret>>();
+        send::<First<'static, busbar_ffi::kind::Store>>();
+        send::<Finished<busbar_ffi::kind::Plane>>();
+    }
+
+    /// The decoded shape, for the row tests above.
+    #[derive(Debug)]
+    enum TlsKind {
+        None,
+        Required,
+        Mutual,
+        Inband(bool),
+    }
+    #[derive(Debug)]
+    enum Shape {
+        Open(TlsKind, u32),
+    }
+    fn decode_need_owned(
+        op: u32,
+        flags: u32,
+        a: u64,
+        b: u64,
+        secret: u32,
+        trust: u32,
+        args: [&[u8]; 4],
+    ) -> Result<Shape, NeedErr> {
+        let bytes = body(op, flags, a, b, secret, trust, args);
+        match decode_need(&bytes)? {
+            Need::Open(OpenNeed { tls, egress, .. }) => Ok(Shape::Open(
+                match tls {
+                    TlsMode::None => TlsKind::None,
+                    TlsMode::Required { .. } => TlsKind::Required,
+                    TlsMode::Mutual { .. } => TlsKind::Mutual,
+                    TlsMode::Inband { cert, .. } => TlsKind::Inband(cert.is_some()),
+                },
+                egress,
+            )),
+            _ => Err(NeedErr::Invalid),
+        }
+    }
+}

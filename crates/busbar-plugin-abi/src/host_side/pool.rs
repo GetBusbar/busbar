@@ -155,3 +155,255 @@ impl ChainBufs {
         todo!()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::records::{Records, tag};
+
+    /// A pool of its own, so counters and queues are this test's alone.
+    fn pool(inflight: u32) -> &'static Pool {
+        Box::leak(Box::new(Pool::new(PoolCaps { inflight })))
+    }
+
+    fn all_zero(bytes: &[u8]) -> bool {
+        bytes.iter().all(|&b| b == 0)
+    }
+
+    #[test]
+    fn a_fresh_buffer_is_class_zero_empty_and_all_zero() {
+        let pool = pool(4);
+        let buf = pool.acquire(1 << 20);
+        assert!(buf.is_held());
+        assert_eq!(buf.capacity(), CLASSES[0]);
+        assert!(buf.bytes().is_empty());
+        assert!(
+            all_zero(buf.whole()),
+            "a miss is allocated zeroed over its whole capacity"
+        );
+        assert_eq!(pool.misses(), 1);
+        let empty = PooledOut::default();
+        assert!(!empty.is_held());
+        assert_eq!(empty.capacity(), 0);
+        assert!(empty.bytes().is_empty() && empty.whole().is_empty());
+    }
+
+    #[test]
+    fn a_released_buffer_comes_back_zeroed_from_its_own_queue() {
+        let pool = pool(4);
+        let mut buf = pool.acquire(1 << 20);
+        buf.put(tag::TEXT, b"a credential that must not outlive the call")
+            .expect("fits");
+        assert!(!buf.bytes().is_empty());
+        drop(buf);
+        let again = pool.acquire(1 << 20);
+        assert_eq!(
+            pool.misses(),
+            1,
+            "the second acquire reused the released block"
+        );
+        assert!(again.bytes().is_empty());
+        assert!(all_zero(again.whole()), "release zeroed every written byte");
+    }
+
+    #[test]
+    fn growth_walks_the_classes_copies_what_was_written_and_frees_only_zeroed_blocks() {
+        let pool = pool(4);
+        let mut buf = pool.acquire(64 << 20);
+        let chunk = vec![0xA5u8; 60 << 10];
+        let mut written = 0usize;
+        let mut caps = Vec::new();
+        while buf.capacity() < CLASSES[3] {
+            buf.put(tag::TEXT, &chunk).expect("under max_out");
+            written += 1;
+            caps.push(buf.capacity());
+            let len = buf.bytes().len();
+            assert!(
+                all_zero(&buf.whole()[len..]),
+                "past the written bytes the block is zero"
+            );
+        }
+        assert!(caps.contains(&CLASSES[1]) && caps.contains(&CLASSES[2]));
+        let texts = Records::new(buf.bytes())
+            .map(|rec| rec.expect("framed"))
+            .filter(|rec| rec.tag == tag::TEXT && rec.body == chunk.as_slice())
+            .count();
+        assert_eq!(texts, written, "every record survived every copy");
+        // Each outgrown block went back to its own class queue, zeroed.
+        for (class, &size) in CLASSES.iter().enumerate().take(3) {
+            let reused = pool.take(size, 1 << 20);
+            assert_eq!(reused.cap(), size);
+            assert!(
+                all_zero(&reused.buf),
+                "class {class} block was zeroed before release"
+            );
+        }
+    }
+
+    #[test]
+    fn a_write_past_max_out_is_full_and_changes_nothing() {
+        let pool = pool(4);
+        let mut buf = pool.acquire(CLASSES[0]);
+        buf.put(tag::TEXT, &[1u8; 3000])
+            .expect("fits the first block");
+        let before = buf.bytes().to_vec();
+        assert!(
+            buf.put(tag::TEXT, &[2u8; 3000]).is_err(),
+            "max_out is 4 KiB"
+        );
+        assert_eq!(buf.bytes(), before.as_slice());
+        assert_eq!(buf.capacity(), CLASSES[0], "no growth over max_out");
+    }
+
+    #[test]
+    fn a_full_queue_frees_the_block_and_counts_it() {
+        let pool = pool(1); // class 0 holds 4
+        let bufs: Vec<PooledOut> = (0..5).map(|_| pool.acquire(1 << 20)).collect();
+        drop(bufs);
+        assert_eq!(pool.drops(), 1);
+        assert_eq!(pool.misses(), 5);
+    }
+
+    #[test]
+    fn reset_zeroes_what_was_written_and_empties() {
+        let pool = pool(4);
+        let mut buf = pool.acquire(1 << 20);
+        buf.put(tag::TEXT, b"secret").expect("fits");
+        buf.reset();
+        assert!(buf.bytes().is_empty());
+        assert!(all_zero(buf.whole()));
+        assert_eq!(buf.capacity(), CLASSES[0]);
+    }
+
+    #[test]
+    fn truncate_zeroes_the_cut_tail() {
+        let pool = pool(4);
+        let mut buf = pool.acquire(1 << 20);
+        buf.put(tag::TEXT, b"keep").expect("fits");
+        let keep = buf.written();
+        buf.put(tag::TEXT, b"drop this credential").expect("fits");
+        buf.truncate(keep);
+        assert_eq!(buf.written(), keep);
+        assert!(all_zero(&buf.whole()[keep..]));
+    }
+
+    #[test]
+    fn nested_and_framed_writes_parse_back() {
+        let pool = pool(4);
+        let mut buf = pool.acquire(1 << 20);
+        buf.put_pair(tag::PAIR, "name", b"value").expect("pair");
+        buf.put_fact(7, 9).expect("fact");
+        buf.put_metric(3, 1, 2.5, &["a", "b"]).expect("metric");
+        buf.put_nested(tag::TEXT, |n| n.put(tag::TEXT, b"inner"))
+            .expect("nested");
+        let tags: Vec<u16> = Records::new(buf.bytes())
+            .map(|rec| rec.expect("framed").tag)
+            .collect();
+        assert_eq!(tags, [tag::PAIR, tag::FACT, tag::METRIC, tag::TEXT]);
+        let pair = Records::new(buf.bytes())
+            .next()
+            .and_then(Result::ok)
+            .and_then(|rec| rec.pair().ok());
+        assert_eq!(pair, Some(("name", &b"value"[..])));
+    }
+
+    #[test]
+    fn a_lent_buffer_comes_back_with_its_capacity() {
+        let mut buf = Pool::global().acquire(1 << 20);
+        let cap = buf.capacity();
+        assert_eq!(buf.lend(|lease| lease.len()), Some(0));
+        assert_eq!(buf.capacity(), cap);
+        assert!(buf.bytes().is_empty());
+        assert!(all_zero(buf.whole()));
+        assert_eq!(
+            PooledOut::default().lend(|_| ()),
+            None,
+            "an empty handle lends nothing"
+        );
+    }
+
+    #[test]
+    fn sync_buffers_are_reset_after_every_call_and_after_an_unwind() {
+        sync_bufs(1 << 20, |args, out| {
+            args.put(tag::TEXT, b"hook view").expect("fits");
+            out.put(tag::TEXT, b"a credential").expect("fits");
+        });
+        sync_bufs(1 << 20, |args, out| {
+            assert!(args.bytes().is_empty() && out.bytes().is_empty());
+            assert!(all_zero(args.whole()) && all_zero(out.whole()));
+        });
+        let unwound = std::panic::catch_unwind(|| {
+            sync_bufs(1 << 20, |_, out| {
+                out.put(tag::TEXT, b"written before the panic")
+                    .expect("fits");
+                panic!("a host-side panic mid-call");
+            })
+        });
+        assert!(unwound.is_err());
+        sync_bufs(1 << 20, |_, out| {
+            assert!(
+                out.bytes().is_empty() && all_zero(out.whole()),
+                "reset on unwind too"
+            );
+        });
+    }
+
+    #[test]
+    fn a_nested_sync_call_gets_fresh_buffers() {
+        sync_bufs(1 << 20, |_, outer| {
+            outer.put(tag::TEXT, b"outer").expect("fits");
+            sync_bufs(1 << 20, |_, inner| {
+                assert!(inner.bytes().is_empty());
+                inner.put(tag::TEXT, b"inner").expect("fits");
+            });
+            let tags = Records::new(outer.bytes()).count();
+            assert_eq!(tags, 1, "the nested call left the outer buffer intact");
+        });
+    }
+
+    #[test]
+    fn a_sync_buffer_that_grew_past_class_one_is_swapped_for_class_zero() {
+        sync_bufs(64 << 20, |_, out| {
+            out.put(tag::TEXT, &vec![1u8; CLASSES[1] + 1])
+                .expect("grows");
+            assert_eq!(out.capacity(), CLASSES[2]);
+        });
+        sync_bufs(64 << 20, |_, out| {
+            assert_eq!(out.capacity(), CLASSES[0], "no thread pins a large block");
+        });
+    }
+
+    #[test]
+    fn chain_buffers_take_two_then_two_more_on_the_first_need() {
+        let mut bufs = ChainBufs::acquire(1 << 20);
+        assert!(bufs.req.is_held() && bufs.out[0].is_held());
+        assert!(!bufs.out[1].is_held() && !bufs.results.is_held());
+        bufs.on_need(1 << 20);
+        assert!(bufs.out[1].is_held() && bufs.results.is_held());
+        bufs.results.put(tag::TEXT, b"x").expect("fits");
+        bufs.on_need(1 << 20);
+        assert!(!bufs.results.bytes().is_empty(), "on_need is idempotent");
+        let empty = ChainBufs::default();
+        assert!(!empty.req.is_held() && !empty.out[0].is_held());
+    }
+
+    #[test]
+    fn no_uninitialised_storage_in_this_file() {
+        let source = include_str!("pool.rs");
+        let code: String = source
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .take_while(|line| !line.starts_with("#[cfg(test)]"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for banned in [
+            "with_capacity",
+            "set_len",
+            "MaybeUninit",
+            ".reserve(",
+            "realloc",
+        ] {
+            assert!(!code.contains(banned), "pool.rs uses {banned}");
+        }
+    }
+}

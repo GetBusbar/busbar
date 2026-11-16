@@ -248,3 +248,124 @@ pub trait Needs: Send + Sync + 'static {
     /// per chain that made at least one NEED, whatever ended it, and never for a chain that made none (§10.5).
     fn release(&self, cx: &Caller<'_>);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host_side::pool::Pool;
+    use crate::need::op;
+    use zerocopy::FromBytes;
+
+    /// The one NEED_RES record in `buf`: its Pod and its data (data0 then data1).
+    fn record(buf: &PooledOut) -> (NeedResRec, Vec<u8>) {
+        let mut recs = Records::new(buf.bytes());
+        let rec = recs.next().expect("one record").expect("framed");
+        assert!(recs.next().is_none(), "exactly one record");
+        assert_eq!(rec.tag, tag::NEED_RES);
+        let (res, data) = NeedResRec::read_from_prefix(rec.body).expect("NeedResRec");
+        (res, data.to_vec())
+    }
+
+    #[test]
+    fn an_ok_result_keeps_its_values_and_both_parts_in_order() {
+        let mut buf = Pool::global().acquire(1 << 20);
+        let mut out = NeedOut::begin(&mut buf, op::OPEN, 4096).expect("room");
+        out.set(7, 1);
+        out.put0(b"h2").expect("alpn");
+        out.put1(&9u64.to_le_bytes()).expect("pooled id");
+        assert_eq!(
+            out.put0(b"late"),
+            Err(NeedErr::Invalid),
+            "switching is one-way"
+        );
+        out.finish(need_status::OK);
+        let (res, data) = record(&buf);
+        assert_eq!((res.op, res.status, res.a, res.b), (op::OPEN, 0, 7, 1));
+        assert_eq!(res.lens, [2, 8]);
+        assert_eq!(&data[..2], b"h2");
+        assert_eq!(&data[2..10], &9u64.to_le_bytes());
+        assert_eq!(buf.bytes().len() % 8, 0, "padded to 8");
+    }
+
+    #[test]
+    fn a_failed_result_keeps_only_its_status_and_zeroes_the_data() {
+        let mut buf = Pool::global().acquire(1 << 20);
+        let mut out = NeedOut::begin(&mut buf, op::SECRET, 4096).expect("room");
+        out.set(1, 2);
+        out.put0(b"a half-written secret").expect("data");
+        out.finish(need_status::DENIED);
+        let (res, data) = record(&buf);
+        assert_eq!(
+            (res.status, res.a, res.b, res.lens),
+            (need_status::DENIED, 0, 0, [0, 0])
+        );
+        assert!(data.is_empty());
+        let len = buf.bytes().len();
+        assert!(
+            buf.whole()[len..].iter().all(|&b| b == 0),
+            "the dropped data is zero"
+        );
+    }
+
+    #[test]
+    fn the_op_cap_counts_padding_and_answers_limit() {
+        let mut buf = Pool::global().acquire(1 << 20);
+        let mut out = NeedOut::begin(&mut buf, op::READ, 16).expect("room");
+        out.put0(&[1u8; 9]).expect("9 bytes pad to 16");
+        assert_eq!(out.put0(&[1u8; 8]), Err(NeedErr::Limit));
+        out.put0(&[1u8; 7]).expect("16 exactly");
+        assert_eq!(out.put0(&[1u8]), Err(NeedErr::Limit));
+        out.finish(need_status::OK);
+        assert_eq!(record(&buf).0.lens, [16, 0]);
+    }
+
+    #[test]
+    fn pairs_are_nested_records_and_spare_reads_land_in_place() {
+        let mut buf = Pool::global().acquire(1 << 20);
+        let mut out = NeedOut::begin(&mut buf, op::FETCH, 1 << 16).expect("room");
+        let spare = out.spare0(5);
+        assert_eq!(spare.len(), 5);
+        spare.copy_from_slice(b"body!");
+        out.commit0(4);
+        out.pair1("content-type", b"text/plain").expect("header");
+        out.pair1("x-a", b"").expect("header");
+        assert!(out.spare0(3).is_empty(), "no data0 once data1 started");
+        out.finish(need_status::OK);
+        let (res, data) = record(&buf);
+        assert_eq!(res.lens[0], 4);
+        assert_eq!(&data[..4], b"body");
+        let headers: Vec<(String, Vec<u8>)> = Records::new(&data[4..4 + res.lens[1] as usize])
+            .map(|rec| {
+                let rec = rec.expect("framed");
+                assert_eq!(rec.tag, tag::PAIR);
+                let (name, value) = rec.pair().expect("pair");
+                (name.to_owned(), value.to_vec())
+            })
+            .collect();
+        assert_eq!(
+            headers,
+            [
+                ("content-type".to_owned(), b"text/plain".to_vec()),
+                ("x-a".to_owned(), Vec::new())
+            ]
+        );
+    }
+
+    #[test]
+    fn every_handler_error_has_its_status() {
+        let all = [
+            (NeedErr::Denied, need_status::DENIED),
+            (NeedErr::Unavailable, need_status::UNAVAILABLE),
+            (NeedErr::Timeout, need_status::TIMEOUT),
+            (NeedErr::Absent, need_status::ABSENT),
+            (NeedErr::Taken, need_status::TAKEN),
+            (NeedErr::Limit, need_status::LIMIT),
+            (NeedErr::Tls, need_status::TLS),
+            (NeedErr::Closed, need_status::CLOSED),
+            (NeedErr::Invalid, need_status::INVALID),
+        ];
+        for (err, status) in all {
+            assert_eq!(status_of(err), status);
+        }
+    }
+}

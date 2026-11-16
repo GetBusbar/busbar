@@ -310,3 +310,82 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod stack_tests {
+    use super::*;
+
+    #[test]
+    fn a_stack_holds_four_ids_and_refuses_a_fifth() {
+        let mut stack = CallStack::default();
+        assert!(
+            !stack.contains(0),
+            "an empty stack holds nothing, not even id 0"
+        );
+        for id in 1..=4 {
+            stack = stack.push(id).expect("room for four");
+            assert!(stack.contains(id));
+        }
+        assert_eq!(stack.depth, 4);
+        assert_eq!(stack.ids, [1, 2, 3, 4]);
+        assert!(stack.push(5).is_none(), "depth 4 is full");
+        assert!(!stack.contains(5));
+    }
+
+    #[test]
+    fn contains_reads_only_the_live_depth() {
+        let stack = CallStack {
+            ids: [7, 8, 9, 10],
+            depth: 2,
+        };
+        assert!(stack.contains(7) && stack.contains(8));
+        assert!(
+            !stack.contains(9) && !stack.contains(10),
+            "ids past depth are dead"
+        );
+        let corrupt = CallStack {
+            ids: [1, 2, 3, 4],
+            depth: 200,
+        };
+        assert!(corrupt.contains(4), "a depth past 4 reads as 4");
+        assert!(corrupt.push(5).is_none());
+    }
+
+    #[test]
+    fn chain_ids_are_never_zero_and_never_repeat_on_a_thread() {
+        let first = next_chain();
+        let second = next_chain();
+        assert_ne!(first, 0);
+        assert_ne!(first, second);
+        assert_eq!(first >> 32, second >> 32, "one ordinal per thread");
+        assert_eq!(second, first + 1);
+    }
+
+    #[test]
+    fn chain_ids_never_collide_across_threads() {
+        let ids: Vec<Vec<u64>> = (0..8)
+            .map(|_| std::thread::spawn(|| (0..1_000).map(|_| next_chain()).collect::<Vec<_>>()))
+            .map(|t| t.join().expect("thread"))
+            .collect();
+        let mut all: Vec<u64> = ids.into_iter().flatten().collect();
+        let n = all.len();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), n, "every chain id is unique");
+        assert!(
+            all.iter().all(|&id| id >> 32 != 0),
+            "every id carries a non-zero ordinal"
+        );
+    }
+
+    #[test]
+    fn a_wrapping_counter_takes_a_fresh_ordinal() {
+        let before = next_chain();
+        COUNTER.set(u32::MAX - 1);
+        let last = next_chain();
+        assert_eq!(last, ((before >> 32) << 32) | u64::from(u32::MAX - 1));
+        let wrapped = next_chain();
+        assert_ne!(wrapped >> 32, before >> 32, "a fresh ordinal");
+        assert_eq!(wrapped & 0xFFFF_FFFF, 0);
+    }
+}

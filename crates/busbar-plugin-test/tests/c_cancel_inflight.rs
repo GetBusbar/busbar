@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-H1"]
+#[ignore = "owner: W1-H1 (blocked: the registry open and reconfigure futures, W1-L2)"]
 fn every_poll_boundary_drop_cancels_or_closes_exactly_once() {
     todo!("owner: W1-H1 (C-CANCEL-INFLIGHT)")
 }
