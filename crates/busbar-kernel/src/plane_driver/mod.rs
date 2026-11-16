@@ -21,6 +21,7 @@ pub mod port_carrier;
 pub mod port_channels;
 pub mod port_charge;
 pub mod port_egress;
+pub mod port_fetch;
 pub mod port_intents;
 pub mod port_money;
 pub mod port_observations;
