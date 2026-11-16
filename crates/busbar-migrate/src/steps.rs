@@ -7,9 +7,7 @@
 use std::path::Path;
 
 use crate::templates::Template;
-use crate::{
-    absent_store, allow_dest, catalog, legacy_markers, migrate_1_6, overlay, patch, Facts, Refusal,
-};
+use crate::{absent_store, catalog, legacy_markers, migrate_1_6, overlay, patch, Facts, Refusal};
 
 /// What a step reads beside the text, and what it plans besides it.
 pub(crate) struct Work<'a> {
@@ -73,14 +71,6 @@ fn v0(text: &str, work: &mut Work<'_>) -> Result<String, Refusal> {
         work.facts,
         work.report,
     )?;
-    let providers = catalog::effective(work.path, template.resolved(), work.facts)?;
-    allow_dest::run(
-        root,
-        template.resolved(),
-        Some(&providers),
-        work.facts.resolve,
-        work.report,
-    );
     let patched = patch::rewrite(text, template.tree(), &after, "config.yaml")?;
     if patched != text {
         template.parity(&patched, &after, work.facts.env, "config.yaml")?;
