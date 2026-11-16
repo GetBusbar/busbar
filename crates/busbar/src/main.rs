@@ -1696,6 +1696,8 @@ async fn run(
             app_handle.clone(),
         ));
     }
+    // Durable plane WORK binds a principal's recovery standing through governance from here on.
+    root::min3_boot::attach_governance(app_handle.clone());
 
     #[cfg(distribution_root)]
     if let Some(book) = &book {

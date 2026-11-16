@@ -1361,6 +1361,13 @@ impl KernelServices {
         self
     }
 
+    /// The destination judge this host runs `dest.judge` under, if one is installed: the plane port's JUDGE
+    /// intents ask the same guard.
+    #[must_use]
+    pub fn dest_judge(&self) -> Option<Arc<dyn DestJudge>> {
+        self.judge.clone()
+    }
+
     #[must_use]
     pub fn with_credentials(mut self, credentials: Arc<dyn CredentialRead>) -> Self {
         self.credentials = Some(credentials);

@@ -44,8 +44,14 @@ fn shared() -> Shared {
 #[test]
 fn every_seat_is_given_the_services_the_boot_can_build_and_no_more() {
     let services = plane_services(&shared(), None);
-    assert!(services.judge.is_some(), "JUDGE answers, fail closed without a judge");
-    assert!(services.observations.is_some(), "OBS_SCOPE and OBSERVE have their custody");
+    assert!(
+        services.judge.is_some(),
+        "JUDGE answers, fail closed without a judge"
+    );
+    assert!(
+        services.observations.is_some(),
+        "OBS_SCOPE and OBSERVE have their custody"
+    );
     assert!(services.tickets.is_some(), "MINT has the late ticket store");
     // Not built at boot: each answers its fail-closed value until its owner installs it.
     assert!(services.entitlements.is_none());
@@ -69,7 +75,10 @@ fn tickets_are_shut_until_the_signing_key_resolves_and_open_for_every_seat_after
     let shared = shared();
     let services = plane_services(&shared, None);
     let tickets = services.tickets.unwrap();
-    assert!(!tickets.is_ticket("bbt1.abc"), "no host key yet: nothing is a ticket");
+    assert!(
+        !tickets.is_ticket("bbt1.abc"),
+        "no host key yet: nothing is a ticket"
+    );
     shared.tickets.install(Arc::new(Open));
     assert!(
         tickets.is_ticket("bbt1.abc"),
