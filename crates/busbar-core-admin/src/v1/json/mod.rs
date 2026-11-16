@@ -63,6 +63,11 @@ impl AdminTransport for JsonV1 {
             .route("/hooks/{name}/settings", patch(patch_hook_settings))
             .route("/hooks/{name}/schema", get(hook_schema))
             .route("/hooks/{name}/status", get(hook_status))
+            .route(
+                "/hooks/{name}/attachments/{target}",
+                axum::routing::put(hook_attachments::put_attachment)
+                    .delete(hook_attachments::delete_attachment),
+            )
             .merge(named_map::routes());
 
         let router = mount_plane_admin_routes(router);
@@ -652,6 +657,8 @@ mod config_forms;
 #[cfg(feature = "openapi-schema")]
 mod contract_metadata;
 mod generation;
+mod hook_attachments;
+pub(crate) use hook_attachments::attachments_of;
 mod handlers;
 #[cfg(feature = "openapi-schema")]
 mod replay_metadata;
@@ -682,6 +689,10 @@ mod envelope_reasons;
 #[cfg(test)]
 #[path = "tests/operator_file_policy_tests.rs"]
 mod operator_file_policy_tests;
+
+#[cfg(test)]
+#[path = "tests/hook_attachment_tests.rs"]
+mod hook_attachment_tests;
 
 #[cfg(feature = "test-support")]
 pub use handlers::credential_flush_response_for_test;

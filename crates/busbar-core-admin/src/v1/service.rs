@@ -1281,6 +1281,7 @@ pub(crate) fn project_hook_view(name: &str, cfg: &HookCfg, global_hooks: &[Strin
             global: cfg.global || global_hooks.iter().any(|n| n == name),
             default: cfg.default,
             groups: cfg.groups.clone(),
+            attachments: Vec::new(),
         }
     }
 }

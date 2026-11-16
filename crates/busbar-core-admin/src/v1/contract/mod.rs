@@ -464,6 +464,47 @@ pub struct HookView {
     /// empty meaning ALL callers (unscoped). The other half of "when does this hook run", and the
     /// same writable-but-unreadable gap `phase` had.
     pub groups: Vec<String>,
+    /// Hook attach points (§8): every list this hook is attached to, with its place in the list.
+    /// `instance` is the plane instance for a plane-section attach point, else null.
+    pub attachments: Vec<HookAttachment>,
+}
+
+/// One place a hook is attached (ADMIN-API-1.6 §8). `target` is `pools` (every pool),
+/// `pools.<pool>`, `<section>` (a plane section's own list) or `<section>.<instance>` (one plane
+/// instance's list); the same string is the `{target}` of `PUT|DELETE /hooks/{name}/attachments/{target}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub struct HookAttachment {
+    pub target: String,
+    /// The plane instance, for `<section>.<instance>`; null for `pools` and `pools.<pool>`.
+    pub instance: Option<String>,
+    /// Zero-based place in the target's list; the list is the firing order.
+    pub position: u32,
+}
+
+/// The `PUT /hooks/{name}/attachments/{target}` body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct HookAttachRequest {
+    pub position: HookPosition,
+}
+
+/// Where in the target's list: the word `last`, or a zero-based place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+#[serde(untagged)]
+pub enum HookPosition {
+    Word(HookPositionWord),
+    Index(u32),
+}
+
+/// The one word a position may be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum HookPositionWord {
+    Last,
 }
 
 pub use busbar_kernel::api::NamedDefView;

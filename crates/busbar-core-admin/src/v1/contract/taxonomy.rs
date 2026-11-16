@@ -360,6 +360,22 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
             Conflict / BaseDefined,
             VersionConflict / StaleIfMatch,
         ],
+        (Put, "/hooks/{name}/attachments/{target}") => de![
+            Validation / MalformedBody,
+            Validation / MalformedIfMatch,
+            NotFound / UnknownResource,
+            Conflict / BaseDefined,
+            Validation / InvalidConfig,
+            VersionConflict / StaleIfMatch,
+        ],
+        (Delete, "/hooks/{name}/attachments/{target}") => de![
+            Validation / MalformedBody,
+            Validation / MalformedIfMatch,
+            NotFound / UnknownResource,
+            Conflict / BaseDefined,
+            Validation / InvalidConfig,
+            VersionConflict / StaleIfMatch,
+        ],
         (Patch, "/hooks/{name}/settings") => de![
             Validation / MalformedBody,
             Validation / MalformedIfMatch,
