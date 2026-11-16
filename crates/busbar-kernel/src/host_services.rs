@@ -3,7 +3,7 @@
 
 use foldhash::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use busbar_contract::abi::host::service::{self as svc, ItemSpan, MAX_SPANS};
@@ -141,7 +141,7 @@ impl std::fmt::Display for DestRefusal {
 impl std::error::Error for DestRefusal {}
 
 pub trait NestRoute: Send + Sync {
-    fn nest(&self, nest: Nest, done: NestDone);
+    fn nest(&self, context: InvocationContext, nest: Nest, done: NestDone);
 }
 
 /// One nested unit, as the kernel hands it to the root.
@@ -357,36 +357,7 @@ impl Drop for Unrun {
     }
 }
 
-struct OwedNest {
-    later: Option<Later>,
-    pool: Arc<crate::pump::NestedPool>,
-    permit: Option<crate::pump::NestedPermit>,
-}
-
-impl OwedNest {
-    fn answer(mut self, reply: NestReply) {
-        self.release();
-        if let Some(later) = self.later.take() {
-            later(nested_answer(reply));
-        }
-    }
-
-    fn release(&mut self) {
-        if let Some(p) = self.permit.take() {
-            self.pool.leave(p);
-        }
-    }
-}
-
-impl Drop for OwedNest {
-    fn drop(&mut self) {
-        self.release();
-        if let Some(later) = self.later.take() {
-            later(failed(NEST_DROPPED));
-        }
-    }
-}
-
+#[cfg(test)]
 fn nested_answer(reply: NestReply) -> Stored {
     let (status, fields, body) = match reply {
         NestReply::Answered {
@@ -986,22 +957,22 @@ pub struct KernelServices {
     record_bootstrap: Mutex<Option<crate::host_record_bootstrap::Bootstrap>>,
     native_record_bootstrap: Mutex<HashMap<Arc<str>, crate::host_record_bootstrap::Bootstrap>>,
     plane_cleanup: Mutex<Vec<std::sync::Weak<crate::plane_driver::PlaneDriver>>>,
-    records: OnceLock<Records>,
-    persistence: OnceLock<Arc<crate::persistence::facade::CoreStore>>,
+    records: Option<Records>,
+    persistence: Option<Arc<crate::persistence::facade::CoreStore>>,
     native_claims: NativeClaims,
-    pool: OnceLock<Arc<dyn Offload>>,
+    pool: Option<Arc<dyn Offload>>,
     pending: Arc<PendingRecords>,
     units: Arc<crate::host_units::UnitRecords>,
     batcher: Arc<WriteBehind>,
 
     chains: Arc<crate::host_chains::ChainBook>,
-    signer: OnceLock<Arc<dyn SignKey>>,
+    signer: Option<Arc<dyn SignKey>>,
     trust: Arc<TrustBook>,
 
     trust_resync: Arc<(std::sync::atomic::AtomicU64, std::sync::atomic::AtomicBool)>,
 
     judge: Option<Arc<dyn DestJudge>>,
-    demotions: OnceLock<Demotions>,
+    demotions: Option<Demotions>,
 
     work: Arc<WorkBook>,
     recovery: recovery_runtime::RecoveryRuntime,
@@ -1009,9 +980,7 @@ pub struct KernelServices {
 
     bounds_of: Mutex<HashMap<Arc<str>, WorkBounds>>,
 
-    nest: OnceLock<Arc<dyn NestRoute>>,
-
-    standing: OnceLock<Standing>,
+    standing: Option<Standing>,
     nested: Arc<crate::pump::NestedPool>,
 
     disk: Arc<crate::host_disk::DiskLane>,
@@ -1022,7 +991,7 @@ pub struct KernelServices {
 
     credentials: Option<Arc<dyn CredentialRead>>,
 
-    tickets: OnceLock<Arc<dyn TicketPress>>,
+    tickets: Option<Arc<dyn TicketPress>>,
 }
 
 /// All policy and I/O dependencies supplied by the S7 composition root.
@@ -1032,7 +1001,7 @@ pub struct CoreServicesInputs {
     pub pool: Arc<dyn Offload>,
     pub signer: Option<Arc<dyn SignKey>>,
     pub demotions: Arc<DemotionRecord>,
-    pub demotion_owner: Arc<str>,
+    pub demotion_owner: Option<Arc<str>>,
     pub tickets: Option<Arc<dyn TicketPress>>,
     pub standing: Standing,
     pub judge: Arc<dyn DestJudge>,
@@ -1085,7 +1054,7 @@ fn trust_decision_answer(result: Result<KeyRow, TrustRefused>) -> Stored {
 
 struct Demotions {
     record: Arc<DemotionRecord>,
-    default_instance: Arc<str>,
+    default_instance: Option<Arc<str>>,
 }
 
 struct TrustResync(Arc<(std::sync::atomic::AtomicU64, std::sync::atomic::AtomicBool)>);
@@ -1113,20 +1082,48 @@ impl std::fmt::Debug for KernelServices {
 
 impl KernelServices {
     pub fn from_inputs(inputs: CoreServicesInputs) -> Self {
-        let mut services = Self::new();
-        services.persistence = OnceLock::from(inputs.persistence);
-        services.pool = OnceLock::from(inputs.pool);
-        services.signer = inputs.signer.map(OnceLock::from).unwrap_or_default();
-        services.demotions = OnceLock::from(Demotions {
-            record: inputs.demotions,
-            default_instance: inputs.demotion_owner,
-        });
-        services.tickets = inputs.tickets.map(OnceLock::from).unwrap_or_default();
-        services.standing = OnceLock::from(inputs.standing);
-        services.judge = Some(inputs.judge);
-        services.credentials = Some(inputs.credentials);
-        services.disk = inputs.disk;
-        services
+        Self {
+            observations: observations_runtime::ObservationRuntime::default(),
+            origin: crate::off_path::host_services::boot_instant(),
+            wall_ms: Arc::new(crate::store::now_ms),
+            mono_ns: None,
+            instances: Mutex::default(),
+            trust_decisions: Mutex::default(),
+            record_bootstrap: Mutex::default(),
+            native_record_bootstrap: Mutex::default(),
+            plane_cleanup: Mutex::default(),
+            records: None,
+            persistence: Some(inputs.persistence),
+            native_claims: Arc::default(),
+            pool: Some(inputs.pool),
+            pending: Arc::default(),
+            units: Arc::default(),
+            batcher: Arc::default(),
+            chains: Arc::default(),
+            signer: inputs.signer,
+            trust: Arc::default(),
+            trust_resync: Arc::default(),
+            judge: Some(inputs.judge),
+            demotions: Some(Demotions {
+                record: inputs.demotions,
+                default_instance: inputs.demotion_owner,
+            }),
+            work: Arc::default(),
+            recovery: recovery_runtime::RecoveryRuntime::default(),
+            work_bounds: WorkBounds::default(),
+            bounds_of: Mutex::default(),
+            standing: Some(inputs.standing),
+            nested: Arc::new(crate::pump::NestedPool::new(
+                NEST_CONCURRENCY,
+                NEST_DEPTH_MAX as usize + 1,
+            )),
+            disk: inputs.disk,
+            sessions: crate::channels::line_carriers::LineCarriers::new(),
+            verify: crate::host_verify::VerifyBook::default(),
+            outbound: crate::host_outbound::Custody::default(),
+            credentials: Some(inputs.credentials),
+            tickets: inputs.tickets,
+        }
     }
 
     #[must_use]
@@ -1141,25 +1138,24 @@ impl KernelServices {
             record_bootstrap: Mutex::default(),
             native_record_bootstrap: Mutex::default(),
             plane_cleanup: Mutex::default(),
-            records: OnceLock::new(),
-            persistence: OnceLock::new(),
+            records: None,
+            persistence: None,
             native_claims: Arc::default(),
-            pool: OnceLock::new(),
+            pool: None,
             pending: Arc::default(),
             units: Arc::default(),
             batcher: Arc::default(),
             chains: Arc::default(),
-            signer: OnceLock::new(),
+            signer: None,
             trust: Arc::default(),
             trust_resync: Arc::default(),
             judge: None,
-            demotions: OnceLock::new(),
+            demotions: None,
             work: Arc::default(),
             recovery: recovery_runtime::RecoveryRuntime::default(),
             work_bounds: WorkBounds::default(),
             bounds_of: Mutex::default(),
-            nest: OnceLock::new(),
-            standing: OnceLock::new(),
+            standing: None,
             nested: Arc::new(crate::pump::NestedPool::new(
                 NEST_CONCURRENCY,
                 NEST_DEPTH_MAX as usize + 1,
@@ -1169,7 +1165,7 @@ impl KernelServices {
             verify: crate::host_verify::VerifyBook::default(),
             outbound: crate::host_outbound::Custody::default(),
             credentials: None,
-            tickets: OnceLock::new(),
+            tickets: None,
         }
     }
 
@@ -1231,7 +1227,7 @@ impl KernelServices {
                 return Err("record bootstrap requires a cold, unadmitted host");
             }
         }
-        let store = self.persistence.get().ok_or(NO_STORE)?;
+        let store = self.persistence.as_ref().ok_or(NO_STORE)?;
         let grant = crate::host_record_bootstrap::Bootstrap::consume(
             receipt,
             expected_store_fingerprint,
@@ -1278,10 +1274,6 @@ impl KernelServices {
         grant.bind_caller(caller)
     }
 
-    pub fn attach_tickets(&self, press: Arc<dyn TicketPress>) -> bool {
-        self.tickets.set(press).is_ok()
-    }
-
     #[must_use]
     pub fn ticket_prefix_of(&self, instance: &str) -> Option<String> {
         let instances = self.lock_instances();
@@ -1306,17 +1298,19 @@ impl KernelServices {
         &self.sessions
     }
 
-    pub(crate) fn dispatch_hook_child(&self, nest: Nest, done: NestDone) {
-        let Some(route) = self.nest.get() else {
-            done(NestReply::Unserved(NO_NEST_ROUTE));
-            return;
-        };
-        self.dispatch_child(route, nest, done);
-    }
-
-    fn dispatch_child(&self, route: &Arc<dyn NestRoute>, nest: Nest, done: NestDone) {
+    fn dispatch_child(
+        &self,
+        context: InvocationContext,
+        route: &Arc<dyn NestRoute>,
+        nest: Nest,
+        done: NestDone,
+    ) {
         let permit = match self.nested.enter(nest.depth as usize) {
             Ok(permit) => permit,
+            Err(busbar_contract::caps::ReasonCode::InFlightCap) => {
+                done(NestReply::Unserved(NEST_FULL));
+                return;
+            }
             Err(_) => {
                 done(NestReply::Unserved(NEST_TOO_DEEP));
                 return;
@@ -1350,15 +1344,15 @@ impl KernelServices {
             permit: Some(permit),
             done: Some(done),
         };
-        route.nest(nest, Box::new(move |answer| held.answer(answer)));
-    }
-
-    pub fn attach_nest(&self, route: Arc<dyn NestRoute>) -> bool {
-        self.nest.set(route).is_ok()
-    }
-
-    pub fn attach_standing(&self, standing: Standing) -> bool {
-        self.standing.set(standing).is_ok()
+        let retained = context.clone();
+        route.nest(
+            context,
+            nest,
+            Box::new(move |answer| {
+                let _context = retained;
+                held.answer(answer);
+            }),
+        );
     }
 
     #[must_use]
@@ -1426,23 +1420,34 @@ impl KernelServices {
     }
 
     #[must_use]
-    pub fn with_records(self, reads: Arc<dyn RecordRows>) -> Self {
-        self.attach_records(reads);
+    pub fn with_records(mut self, reads: Arc<dyn RecordRows>) -> Self {
+        self.records = Some(Records { reads });
         self
     }
 
-    pub(crate) fn attach_records(&self, reads: Arc<dyn RecordRows>) -> bool {
-        self.records.set(Records { reads }).is_ok()
+    /// Supply persistence while the service is still exclusively owned.
+    #[must_use]
+    pub fn with_persistence(mut self, store: Arc<crate::persistence::facade::CoreStore>) -> Self {
+        self.persistence = Some(store);
+        self
     }
 
-    /// Attach the canonical host persistence owner before admitting instances.
-    /// All native record operations use this attachment without a legacy bridge.
-    pub fn attach_persistence(&self, store: Arc<crate::persistence::facade::CoreStore>) -> bool {
-        self.persistence.set(store).is_ok()
+    #[must_use]
+    pub fn with_standing(mut self, standing: Standing) -> Self {
+        self.standing = Some(standing);
+        self
+    }
+
+    #[must_use]
+    pub fn with_tickets(mut self, tickets: Arc<dyn TicketPress>) -> Self {
+        self.tickets = Some(tickets);
+        self
     }
 
     pub fn native_first_start(&self) -> Option<Arc<crate::persistence::first_start::FirstStart>> {
-        self.persistence.get().and_then(|store| store.first_start())
+        self.persistence
+            .as_ref()
+            .and_then(|store| store.first_start())
     }
 
     /// Only the selected initial caller may initialize records during READY. Native
@@ -1485,7 +1490,7 @@ impl KernelServices {
     }
 
     fn native_work_writer(&self, caller: &Caller) -> Result<Option<NativeWorkWriter>, Stored> {
-        let Some(store) = self.persistence.get() else {
+        let Some(store) = self.persistence.as_ref() else {
             return Ok(None);
         };
         if self.facts(caller).is_none() {
@@ -1493,7 +1498,7 @@ impl KernelServices {
         }
         let pool = self
             .pool
-            .get()
+            .as_ref()
             .cloned()
             .ok_or_else(|| Stored::refused(NO_POOL))?;
         Ok(Some(NativeWorkWriter {
@@ -1511,7 +1516,7 @@ impl KernelServices {
         caller: &Caller,
         kind: &str,
     ) -> Result<Option<NativeRecordScope>, Stored> {
-        let Some(store) = self.persistence.get() else {
+        let Some(store) = self.persistence.as_ref() else {
             return Ok(None);
         };
         let facts = self
@@ -1548,13 +1553,13 @@ impl KernelServices {
 
     #[must_use]
     pub fn with_pool(mut self, pool: Arc<dyn Offload>) -> Self {
-        self.pool = OnceLock::from(pool);
+        self.pool = Some(pool);
         self
     }
 
     #[must_use]
     pub fn with_signer(mut self, signer: Arc<dyn SignKey>) -> Self {
-        self.signer = OnceLock::from(signer);
+        self.signer = Some(signer);
         self
     }
 
@@ -1564,32 +1569,15 @@ impl KernelServices {
         demotions: Arc<DemotionRecord>,
         default_instance: &str,
     ) -> Self {
-        self.demotions = OnceLock::from(Demotions {
+        self.demotions = Some(Demotions {
             record: demotions,
-            default_instance: crate::off_path::host_services::intern(default_instance),
+            default_instance: Some(crate::off_path::host_services::intern(default_instance)),
         });
         self
     }
 
-    pub fn attach_pool(&self, pool: Arc<dyn Offload>) -> bool {
-        self.pool.set(pool).is_ok()
-    }
-
-    pub fn attach_signer(&self, signer: Arc<dyn SignKey>) -> bool {
-        self.signer.set(signer).is_ok()
-    }
-
-    pub fn attach_demotions(&self, demotions: Arc<DemotionRecord>, default_instance: &str) -> bool {
-        self.demotions
-            .set(Demotions {
-                record: demotions,
-                default_instance: crate::off_path::host_services::intern(default_instance),
-            })
-            .is_ok()
-    }
-
     fn pool(&self) -> Option<&dyn Offload> {
-        self.pool.get().map(|p| &**p)
+        self.pool.as_ref().map(|p| &**p)
     }
 
     #[must_use]
@@ -1659,10 +1647,10 @@ impl KernelServices {
         }
         let key = crate::off_path::host_services::intern(instance);
 
-        let (snapshot, default) = match self.demotions.get() {
+        let (snapshot, default) = match self.demotions.as_ref() {
             Some(d) => (
                 Some(d.record.snapshot().await.map_err(trust_unread)?),
-                *d.default_instance == *instance,
+                d.default_instance.as_deref() == Some(instance),
             ),
             None => (None, false),
         };
@@ -1726,7 +1714,7 @@ impl KernelServices {
             }
         }
         let prefix = demotion_key(instance, "");
-        if let Some(store) = self.persistence.get() {
+        if let Some(store) = self.persistence.as_ref() {
             for schema in &facts.record_kinds {
                 store
                     .register_claim_scope(instance, schema.as_str())
@@ -1820,8 +1808,8 @@ impl KernelServices {
         let clear = if fact.item.is_none() && ruling == Ruling::Approve {
             let default = self
                 .demotions
-                .get()
-                .is_some_and(|d| *d.default_instance == *fact.instance);
+                .as_ref()
+                .is_some_and(|d| d.default_instance.as_deref() == Some(fact.instance.as_ref()));
             crate::off_path::host_services::decision_clears(
                 &fact.instance,
                 &fact.counterparty,
@@ -1834,7 +1822,7 @@ impl KernelServices {
             permit,
             fact,
             clear,
-            record: self.demotions.get().map(|d| Arc::clone(&d.record)),
+            record: self.demotions.as_ref().map(|d| Arc::clone(&d.record)),
         })
     }
 
@@ -1888,7 +1876,7 @@ impl KernelServices {
         };
         let now = (self.wall_ms)() / 1000;
 
-        let principal = match (record.principal.as_ref(), self.standing.get()) {
+        let principal = match (record.principal.as_ref(), self.standing.as_ref()) {
             (Some(admitted), Some(standing)) => match standing(admitted, now) {
                 Some(live) => Some(live),
                 None => return false,
@@ -1902,7 +1890,7 @@ impl KernelServices {
         let Some(record) = unit.and_then(|u| self.units.get(u)) else {
             return false;
         };
-        match (record.principal.as_ref(), self.standing.get()) {
+        match (record.principal.as_ref(), self.standing.as_ref()) {
             (Some(admitted), Some(standing)) => {
                 standing(admitted, (self.wall_ms)() / 1000).is_some()
             }
@@ -1923,7 +1911,7 @@ impl KernelServices {
         value: RecordBytes,
         acked: Acked,
     ) -> Result<(), &'static str> {
-        let native = self.persistence.get();
+        let native = self.persistence.as_ref();
         let native_facts = if native.is_some() {
             Some(self.facts(caller).ok_or(NOT_ADMITTED)?)
         } else {
@@ -2019,10 +2007,10 @@ impl KernelServices {
 
     #[must_use]
     pub fn supports_record_transactions(&self) -> bool {
-        self.persistence.get().is_some()
+        self.persistence.as_ref().is_some()
             || self
                 .records
-                .get()
+                .as_ref()
                 .is_some_and(|r| r.reads.supports_record_transaction())
     }
 
@@ -2048,7 +2036,7 @@ impl KernelServices {
         let scope =
             crate::host_chains::scope_of(scope).ok_or(crate::host_chains::CHAIN_SCOPE_UNFIT)?;
         let scope = scope.to_string();
-        if self.persistence.get().is_some() {
+        if self.persistence.as_ref().is_some() {
             let rows = self
                 .native_records(caller, schema.as_str())
                 .map_err(|stored| stored.error)?
@@ -2064,7 +2052,7 @@ impl KernelServices {
             }));
             return Ok(());
         }
-        let records = self.records.get().ok_or(NO_STORE)?;
+        let records = self.records.as_ref().ok_or(NO_STORE)?;
         let pool = self.pool().ok_or(NO_POOL)?;
         if !records.reads.supports_record_transaction() {
             return Err("record transactions are unsupported");
@@ -2093,8 +2081,8 @@ impl KernelServices {
         };
         use busbar_contract::host_records::conditional::{Mutation, Predicate, Request, VERSION};
         let facts = self.facts(caller).ok_or(NOT_A_KIND)?;
-        let native = self.persistence.get();
-        let records = self.records.get();
+        let native = self.persistence.as_ref();
+        let records = self.records.as_ref();
         let pool = self.pool().ok_or(NO_POOL)?;
         if native.is_none()
             && !records.is_some_and(|records| records.reads.supports_record_transaction())
@@ -2302,7 +2290,7 @@ impl KernelServices {
     }
 
     pub fn flush_tick(&self) {
-        if let Some(store) = self.persistence.get() {
+        if let Some(store) = self.persistence.as_ref() {
             if let Some(pool) = self.pool() {
                 if self.batcher.start() {
                     self.start_native_flush(store, pool);
@@ -2310,7 +2298,7 @@ impl KernelServices {
             }
             return;
         }
-        if let (Some(records), Some(pool)) = (self.records.get(), self.pool()) {
+        if let (Some(records), Some(pool)) = (self.records.as_ref(), self.pool()) {
             if self.batcher.start() {
                 self.start_flush(records, pool);
             }
@@ -2382,7 +2370,7 @@ impl KernelServices {
     /// Advance one registered claim scope through the existing bounded async
     /// host lane. The attachment retains its cursor if this task is cancelled.
     pub(crate) fn sweep_claims_tick(&self) {
-        let (Some(store), Some(pool)) = (self.persistence.get(), self.pool()) else {
+        let (Some(store), Some(pool)) = (self.persistence.as_ref(), self.pool()) else {
             return;
         };
         let store = Arc::clone(store);
@@ -2398,7 +2386,7 @@ impl KernelServices {
 
     pub fn trust_resync_tick(&self) {
         use std::sync::atomic::Ordering;
-        let (Some(d), Some(pool)) = (self.demotions.get(), self.pool()) else {
+        let (Some(d), Some(pool)) = (self.demotions.as_ref(), self.pool()) else {
             return;
         };
         let now = (self.wall_ms)() / 1000;
@@ -2488,7 +2476,7 @@ impl KernelServices {
         let schema = self.declared(caller, kind)?;
         let records = self
             .records
-            .get()
+            .as_ref()
             .ok_or_else(|| Stored::refused(NO_STORE))?;
         let pool = self.pool().ok_or_else(|| Stored::refused(NO_POOL))?;
         Ok((schema, records, pool))
@@ -2936,7 +2924,7 @@ impl HostServices for KernelServices {
         ttl_ms: u64,
         later: Later,
     ) -> Ran {
-        if let Some(store) = self.persistence.get() {
+        if let Some(store) = self.persistence.as_ref() {
             let schema = match self.native_records(caller, kind) {
                 Err(refused) => return Ran::Now(refused),
                 Ok(scope) => scope.map(|scope| scope.schema),
@@ -3069,7 +3057,7 @@ impl HostServices for KernelServices {
         let mut stored = Stored::ready(0);
         let Some(kid) = self
             .signer
-            .get()
+            .as_ref()
             .and_then(|s| s.sign(&signing.domain, data, &mut stored.bytes))
         else {
             return Stored::refused(NO_KEY);
@@ -3086,7 +3074,7 @@ impl HostServices for KernelServices {
     }
 
     fn trust_sight(&self, caller: &Caller, counterparty: &str, hash: &str, later: Later) -> Ran {
-        let durable = match (self.demotions.get(), self.pool()) {
+        let durable = match (self.demotions.as_ref(), self.pool()) {
             (Some(_), None) => return Ran::Now(Stored::refused(NO_POOL)),
             (Some(d), Some(pool)) => Some((d, pool)),
             (None, _) => None,
@@ -3128,7 +3116,7 @@ impl HostServices for KernelServices {
         let record = Arc::clone(&d.record);
         let key = demotion_key(caller.namespace(), counterparty);
 
-        let unprefixed = (*caller.namespace() == d.default_instance)
+        let unprefixed = (d.default_instance.as_ref() == Some(caller.namespace()))
             .then(|| crate::cold::host::services_counterparty_row(counterparty));
         let owed = TrustSightOwed {
             permit: Some(permit),
@@ -3294,7 +3282,7 @@ impl HostServices for KernelServices {
         let Some(facts) = self.facts(caller).filter(|f| f.ticket_prefix.is_some()) else {
             return Ran::Now(Stored::refused(TICKET_NO_PREFIX));
         };
-        let Some(press) = self.tickets.get().cloned() else {
+        let Some(press) = self.tickets.as_ref().cloned() else {
             return Ran::Now(Stored::refused(TICKET_NO_PRESS));
         };
         let Some(pool) = self.pool() else {
@@ -3490,7 +3478,7 @@ impl HostServices for KernelServices {
                     permit.demoted();
                 }
                 let Some((fact, record)) =
-                    demotion.zip(self.demotions.get().map(|d| Arc::clone(&d.record)))
+                    demotion.zip(self.demotions.as_ref().map(|d| Arc::clone(&d.record)))
                 else {
                     return Ran::Now(Stored::ready(sight_code(sight)));
                 };
@@ -3573,42 +3561,10 @@ impl HostServices for KernelServices {
         }
     }
 
-    fn unit_nest(&self, caller: &Caller, unit: Option<u64>, ask: NestAsk, later: Later) -> Ran {
-        if self.facts(caller).is_none() {
-            return Ran::Now(Stored::refused(NOT_ADMITTED));
-        }
-
-        let Some((parent, record)) = unit.and_then(|u| Some((u, self.units.get(u)?))) else {
-            return Ran::Now(Stored::refused(NEST_NO_UNIT));
-        };
-        let Some(route) = self.nest.get() else {
-            return Ran::Now(Stored::refused(NO_NEST_ROUTE));
-        };
-        let depth = record.depth.saturating_add(1);
-        let permit = match self.nested.enter(depth as usize) {
-            Ok(p) => p,
-            Err(busbar_contract::caps::ReasonCode::InFlightCap) => {
-                return Ran::Now(Stored::refused(NEST_FULL));
-            }
-            Err(_) => return Ran::Now(Stored::refused(NEST_TOO_DEEP)),
-        };
-        let owed = OwedNest {
-            later: Some(later),
-            pool: Arc::clone(&self.nested),
-            permit: Some(permit),
-        };
-        route.nest(
-            Nest {
-                parent,
-                depth,
-                principal: record.principal.clone(),
-                ancestry: self.units.child_ancestry(parent),
-                constraints: None,
-                ask,
-            },
-            Box::new(move |reply| owed.answer(reply)),
-        );
-        Ran::Later
+    fn unit_nest(&self, _caller: &Caller, _unit: Option<u64>, _ask: NestAsk, _later: Later) -> Ran {
+        // The legacy crossing has no invocation authority. MIN-3 dispatch uses
+        // InvocationContext; numeric request IDs cannot recover that authority.
+        Ran::Now(Stored::refused(NEST_NO_UNIT))
     }
 
     fn work_open(

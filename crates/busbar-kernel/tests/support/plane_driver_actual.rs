@@ -1753,11 +1753,11 @@ async fn actual_store() -> Arc<busbar_kernel::persistence::facade::CoreStore> {
 }
 
 fn host_over(store: Arc<busbar_kernel::persistence::facade::CoreStore>) -> KernelServices {
-    let host = KernelServices::new().with_pool(Arc::new(BlockingPool::new(
+    let mut host = KernelServices::new().with_pool(Arc::new(BlockingPool::new(
         tokio::runtime::Handle::current(),
         1024,
     )));
-    assert!(host.attach_persistence(store));
+    host = host.with_persistence(store);
     host
 }
 

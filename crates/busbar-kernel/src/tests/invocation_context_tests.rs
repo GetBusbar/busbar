@@ -7,7 +7,7 @@ use futures::FutureExt;
 #[derive(Default)]
 struct HeldRoute(Mutex<Option<NestDone>>);
 impl NestRoute for HeldRoute {
-    fn nest(&self, _: Nest, done: NestDone) {
+    fn nest(&self, _context: InvocationContext, _: Nest, done: NestDone) {
         *self.0.lock().unwrap() = Some(done);
     }
 }

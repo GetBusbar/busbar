@@ -7,6 +7,25 @@ use std::sync::Arc;
 
 /// Root constructs this only after its immutable dispatch snapshot is complete.
 /// The route owns that snapshot; instances in it retain only core services.
+/// Core persistence cannot be installed after a service has been shared.
+///
+/// ```compile_fail,E0599
+/// use busbar_kernel::{host_services::KernelServices, persistence::facade::CoreStore};
+/// use std::sync::Arc;
+/// fn attach(host: &KernelServices, store: Arc<CoreStore>) {
+///     host.attach_persistence(store);
+/// }
+/// ```
+///
+/// The same constructor-only rule applies to executors.
+///
+/// ```compile_fail,E0599
+/// use busbar_kernel::host_services::{KernelServices, Offload};
+/// use std::sync::Arc;
+/// fn attach(host: &KernelServices, pool: Arc<dyn Offload>) {
+///     host.attach_pool(pool);
+/// }
+/// ```
 pub struct ServingGeneration {
     core: Arc<KernelServices>,
     route: Arc<dyn NestRoute>,
@@ -58,6 +77,25 @@ impl InvocationContext {
         &self.generation
     }
 
+    pub fn unit(&self) -> u64 {
+        self.unit
+    }
+
+    /// Hook child operations carry the same checked parent and generation.
+    pub(crate) fn dispatch_hook_child(
+        &self,
+        nest: Nest,
+        done: NestDone,
+    ) -> Result<(), &'static str> {
+        if nest.parent != self.unit || !self.accepts(&self.caller) {
+            return Err(NEST_NO_UNIT);
+        }
+        self.generation
+            .core
+            .dispatch_child(self.clone(), &self.generation.route, nest, done);
+        Ok(())
+    }
+
     pub fn accepts(&self, caller: &Caller) -> bool {
         self.caller.incarnation() == caller.incarnation()
             && self.generation.core.facts(caller).is_some()
@@ -75,6 +113,7 @@ impl InvocationContext {
         }
         let retained = self.clone();
         self.generation.core.dispatch_child(
+            self.clone(),
             &self.generation.route,
             Nest {
                 parent: self.unit,

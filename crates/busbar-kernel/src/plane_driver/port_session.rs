@@ -957,6 +957,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         body: &[u8],
         effects: &dyn Effects,
     ) -> Result<(Self, Answer), SessionError> {
+        let invocation = effects.invocation().cloned();
         let mut once = Once::default();
         let mut answer = Answer::default();
         let session = calls
@@ -965,7 +966,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             })
             .map_err(SessionError::Port)?;
         let mut task = Self {
-            invocation: effects.invocation().cloned(),
+            invocation,
             calls,
             session: Some(session),
             once,
@@ -983,6 +984,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         target: &TargetIn<'_>,
         effects: &dyn Effects,
     ) -> Result<(Self, Answer), SessionError> {
+        let invocation = effects.invocation().cloned();
         let mut once = Once::default();
         let mut answer = Answer::default();
         let session = calls
@@ -991,7 +993,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             })
             .map_err(SessionError::Port)?;
         let mut task = Self {
-            invocation: effects.invocation().cloned(),
+            invocation,
             calls,
             session: Some(session),
             once,

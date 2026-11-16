@@ -133,8 +133,8 @@ async fn services_over(
 ) -> (Arc<KernelServices>, Arc<CoreStore>) {
     let backend = super::real_store::native_backend().await;
     let store = super::real_store::core_over(decorate(backend)).await;
-    let s = KernelServices::new().with_pool(pool);
-    assert!(s.attach_persistence(store.clone()));
+    let mut s = KernelServices::new().with_pool(pool);
+    s = s.with_persistence(store.clone());
     s.admit(
         "inst",
         InstanceFacts {
@@ -286,8 +286,8 @@ async fn a_claim_is_spent_in_the_store_before_it_answers() {
     );
     assert!(matches!(ran, Ran::Later));
     assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(svc::CLAIM_WON));
-    let fresh = KernelServices::new().with_pool(Arc::new(Threads));
-    assert!(fresh.attach_persistence(store.clone()));
+    let mut fresh = KernelServices::new().with_pool(Arc::new(Threads));
+    fresh = fresh.with_persistence(store.clone());
     fresh
         .admit(
             "inst",
