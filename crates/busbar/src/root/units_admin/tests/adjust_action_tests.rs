@@ -2,13 +2,14 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use busbar_contract::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn request(action: &str) -> super::super::super::AdminRequest {
     super::super::super::AdminRequest {
         method: "POST".into(), path: "/api/v1/admin/adjust".into(), credential: None,
         headers: vec![("idempotency-key".into(), action.into())],
-        body: serde_json::to_vec(&serde_json::json!({
+        body: json::to_vec(&json::json!({
             "key": "key", "lane": "lane", "entry": busbar_kernel::cost::EntryKey::new(300, [7; 8], 1).hex(),
             "card_epoch_ms": 350, "pool": "pool", "delta": {"input": "-0.000001"},
             "reason": "private operator explanation"
@@ -58,7 +59,7 @@ async fn adjustment_lost_response_replays_durable_action_without_second_delta() 
     let replay = ask(&unit, "actor-a").await;
     assert_eq!(replay.body, discarded.body);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    let receipt: serde_json::Value = serde_json::from_slice(&replay.body).unwrap();
+    let receipt: json::Value = json::parse_value(&replay.body).unwrap();
     assert_eq!(receipt["effect"], "applied");
     assert_eq!(receipt["actor"], "actor-a");
     assert_eq!(receipt["target"], "key");
@@ -117,7 +118,7 @@ async fn adjustment_unknown_effect_remains_in_custody_without_reapplying() {
             super::super::super::adjustment_audit_outcome(Some(&answer), false),
             busbar_kernel::audit_ring::OUTCOME_DEGRADED
         );
-        let doc: serde_json::Value = serde_json::from_slice(&answer.body).unwrap();
+        let doc: json::Value = json::parse_value(&answer.body).unwrap();
         assert_eq!(doc["effect"], "unknown");
     }
     assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -126,12 +127,12 @@ async fn adjustment_unknown_effect_remains_in_custody_without_reapplying() {
 #[test]
 fn exact_adjustment_rejects_excess_precision_and_blank_reason_before_effect() {
     let unit = request("precision");
-    let mut body: serde_json::Value = serde_json::from_slice(&unit.body).unwrap();
-    body["delta"]["input"] = serde_json::json!("0.0000001");
-    assert!(parse_correction(&serde_json::to_vec(&body).unwrap(), &|_| true, true).is_err());
-    body["delta"]["input"] = serde_json::json!("-0.000001");
-    body["reason"] = serde_json::json!(" ");
-    assert!(parse_correction(&serde_json::to_vec(&body).unwrap(), &|_| true, true).is_err());
+    let mut body: json::Value = json::parse_value(&unit.body).unwrap();
+    body["delta"]["input"] = json::json!("0.0000001");
+    assert!(parse_correction(&json::to_vec(&body).unwrap(), &|_| true, true).is_err());
+    body["delta"]["input"] = json::json!("-0.000001");
+    body["reason"] = json::json!(" ");
+    assert!(parse_correction(&json::to_vec(&body).unwrap(), &|_| true, true).is_err());
 }
 
 #[test]

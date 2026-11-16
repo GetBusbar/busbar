@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::{future::Future, pin::Pin};
 
 use super::AdminAnswer;
+use busbar_contract::json::{self, JsonValueTrait};
 use busbar_core_admin::GovernanceError;
 use busbar_kernel::governance::AdjustRefused;
 
@@ -94,11 +95,10 @@ pub(crate) async fn adjust_effect(
     if scope != busbar_contract::authz::Scope::Full {
         return Err(GovernanceError::Validation);
     }
-    let doc: serde_json::Value =
-        serde_json::from_slice(body).map_err(|_| GovernanceError::Validation)?;
+    let doc: json::Value = json::parse_value(body).map_err(|_| GovernanceError::Validation)?;
     let Some(pool) = doc
         .get("pool")
-        .and_then(serde_json::Value::as_str)
+        .and_then(json::Value::as_str)
         .filter(|s| !s.trim().is_empty())
     else {
         return Ok(super::error_answer_with_message(
@@ -123,12 +123,11 @@ fn parse_correction(
     pool_known: &(dyn Fn(&str) -> bool + Sync),
     exact: bool,
 ) -> Result<Correction, GovernanceError> {
-    let doc: serde_json::Value =
-        serde_json::from_slice(body).map_err(|_| GovernanceError::Validation)?;
+    let doc: json::Value = json::parse_value(body).map_err(|_| GovernanceError::Validation)?;
     let obj = doc.as_object().ok_or(GovernanceError::Validation)?;
     let text = |key: &str| {
-        obj.get(key)
-            .and_then(serde_json::Value::as_str)
+        obj.get(&key)
+            .and_then(json::Value::as_str)
             .filter(|s| !s.trim().is_empty())
             .ok_or(GovernanceError::Validation)
     };
@@ -142,7 +141,7 @@ fn parse_correction(
         .ok_or(GovernanceError::Validation)?;
     let card_epoch_ms = obj
         .get("card_epoch_ms")
-        .and_then(serde_json::Value::as_u64)
+        .and_then(json::Value::as_u64)
         .ok_or(GovernanceError::Validation)?;
     let pool = text("pool")?;
     if !pool_known(pool) {
@@ -150,15 +149,15 @@ fn parse_correction(
     }
     let mut delta = BTreeMap::new();
     for (class, n) in obj
-        .get("delta")
-        .and_then(serde_json::Value::as_object)
+        .get(&"delta")
+        .and_then(json::Value::as_object)
         .filter(|m| !m.is_empty())
         .ok_or(GovernanceError::Validation)?
     {
         let n = if exact {
-            let decimal = match n {
-                serde_json::Value::String(value) => value.clone(),
-                serde_json::Value::Number(value) => value.to_string(),
+            let decimal = match (n.as_str(), n.is_number()) {
+                (Some(value), _) => value.to_string(),
+                (None, true) => json::number_text(n).ok_or(GovernanceError::Validation)?,
                 _ => return Err(GovernanceError::Validation),
             };
             busbar_contract::Count::parse(&decimal).map_err(|_| GovernanceError::Validation)?
@@ -168,7 +167,7 @@ fn parse_correction(
             ))
             .map_err(|_| GovernanceError::Validation)?
         };
-        delta.insert(class.clone(), n);
+        delta.insert(class.to_string(), n);
     }
     Ok(Correction {
         key: key.to_string(),
@@ -204,7 +203,7 @@ async fn apply_correction(
             "`entry` names {entry}, which is not a known rate-card history key"
         ))),
         Ok(Err(Refused::Ledger(why))) => Ok(refused(&why.to_string())),
-        Ok(Ok(())) => serde_json::to_vec(&serde_json::json!({
+        Ok(Ok(())) => json::to_vec(&json::json!({
             "applied": true,
             "retry": "nonretryable_without_idempotency_key",
             "key": correction.key,
@@ -249,7 +248,7 @@ mod key_tests {
                 Ok(Ok(()))
             })
         });
-        let body = serde_json::to_vec(&serde_json::json!({
+        let body = json::to_vec(&json::json!({
             "key": "key", "lane": "lane", "entry": entry.hex(), "card_epoch_ms": 350,
             "pool": "pool", "delta": {"input": 1}, "reason": "correct a count"
         }))
@@ -264,7 +263,7 @@ mod key_tests {
         .unwrap();
         assert_eq!(answer.status, 200);
         assert_eq!(*seen.lock().unwrap(), vec![entry]);
-        let reply: serde_json::Value = serde_json::from_slice(&answer.body).unwrap();
+        let reply: json::Value = json::parse_value(&answer.body).unwrap();
         assert_eq!(reply["entry"], entry.hex());
     }
 
@@ -272,12 +271,12 @@ mod key_tests {
     async fn an_adjustment_refuses_ordinal_and_malformed_tokens_before_the_ledger() {
         let adjuster: UsageAdjuster = Arc::new(|_| panic!("invalid entry reached the ledger"));
         for entry in [
-            serde_json::json!(1),
-            serde_json::json!("1"),
-            serde_json::json!("not-a-key"),
-            serde_json::json!("g".repeat(40)),
+            json::json!(1),
+            json::json!("1"),
+            json::json!("not-a-key"),
+            json::json!("g".repeat(40)),
         ] {
-            let body = serde_json::to_vec(&serde_json::json!({
+            let body = json::to_vec(&json::json!({
                 "key": "key", "lane": "lane", "entry": entry, "card_epoch_ms": 350,
                 "pool": "pool", "delta": {"input": 1}, "reason": "correct a count"
             }))

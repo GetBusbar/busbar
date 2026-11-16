@@ -830,18 +830,19 @@ async fn amend_rate_history_effect(
     attribution: &AmendAttribution,
 ) -> Result<AdminAnswer, busbar_core_admin::GovernanceError> {
     use busbar_contract::abi::sdk::digest::sha256;
+    use busbar_contract::json::{self, JsonValueTrait};
     use busbar_core_admin::GovernanceError;
 
-    let doc: serde_json::Value =
-        serde_json::from_slice(body).map_err(|_| GovernanceError::Validation)?;
+    let doc: json::Value = json::parse_value(body).map_err(|_| GovernanceError::Validation)?;
     let obj = doc.as_object().ok_or(GovernanceError::Validation)?;
 
     let effective_from = obj
-        .get("effective_from")
-        .and_then(serde_json::Value::as_u64)
+        .get(&"effective_from")
+        .and_then(json::Value::as_u64)
         .ok_or(GovernanceError::Validation)?;
-    let effective_until = match obj.get("effective_until") {
-        None | Some(serde_json::Value::Null) => None,
+    let effective_until = match obj.get(&"effective_until") {
+        None => None,
+        Some(v) if v.is_null() => None,
         Some(v) => Some(v.as_u64().ok_or(GovernanceError::Validation)?),
     };
     if effective_until.is_some_and(|until| until <= effective_from) {
@@ -861,18 +862,19 @@ async fn amend_rate_history_effect(
     }
 
     let reason = obj
-        .get("reason")
-        .and_then(serde_json::Value::as_str)
+        .get(&"reason")
+        .and_then(json::Value::as_str)
         .filter(|s| !s.is_empty())
         .ok_or(GovernanceError::Validation)?;
     let reason_hash: [u8; 32] = sha256(reason.as_bytes());
 
-    if obj.contains_key("currency") {
+    if obj.contains_key(&"currency") {
         return Err(GovernanceError::Validation);
     }
 
-    let per_request_fee = match obj.get("per_request_fee") {
-        None | Some(serde_json::Value::Null) => None,
+    let per_request_fee = match obj.get(&"per_request_fee") {
+        None => None,
+        Some(v) if v.is_null() => None,
         Some(v) => {
             let fee = v.as_i64().ok_or(GovernanceError::Validation)?;
             if fee < 0 {
@@ -882,22 +884,24 @@ async fn amend_rate_history_effect(
         }
     };
     let mut entries: Vec<(busbar_kernel_ledger::cost::LaneClass, u64)> = Vec::new();
-    if let Some(rates) = obj.get("rates") {
+    if let Some(rates) = obj.get(&"rates") {
         for row in rates.as_array().ok_or(GovernanceError::Validation)? {
             let r = row.as_object().ok_or(GovernanceError::Validation)?;
             let lane = r
-                .get("lane")
-                .and_then(serde_json::Value::as_str)
+                .get(&"lane")
+                .and_then(json::Value::as_str)
                 .filter(|s| !s.is_empty())
                 .ok_or(GovernanceError::Validation)?;
             let class = r
-                .get("class")
-                .and_then(serde_json::Value::as_str)
+                .get(&"class")
+                .and_then(json::Value::as_str)
                 .filter(|s| !s.is_empty())
                 .ok_or(GovernanceError::Validation)?;
 
-            let nanos = match r.get("micro_per_unit") {
-                Some(serde_json::Value::Number(n)) => exact_nano_rate(&n.to_string()),
+            let nanos = match r.get(&"micro_per_unit") {
+                Some(n) if n.is_number() => {
+                    json::number_text(n).and_then(|text| exact_nano_rate(&text))
+                }
                 _ => None,
             }
             .ok_or(GovernanceError::Validation)?;
@@ -1398,29 +1402,35 @@ fn exact_nano_rate(text: &str) -> Option<u64> {
 
 /// The correction's canonical bytes, as the policy journal keeps them. The reason is named by its
 /// SHA-256 (`reason_sha256`), never its text: the API keeps the hash, not the operator's words.
-fn canonical_amend_payload(obj: &serde_json::Map<String, serde_json::Value>) -> Vec<u8> {
+fn canonical_amend_payload(obj: &busbar_contract::json::Map) -> Vec<u8> {
+    use busbar_contract::json::{self, JsonValueTrait};
     let mut payload = String::from("busbar/amend-rate-history/v2\n");
 
     for key in ["effective_from", "effective_until", "per_request_fee"] {
-        push_payload_field(&mut payload, key, obj.get(key));
+        push_payload_field(&mut payload, key, obj.get(&key));
     }
     let reason = obj
-        .get("reason")
-        .and_then(serde_json::Value::as_str)
+        .get(&"reason")
+        .and_then(json::Value::as_str)
         .unwrap_or_default();
-    let reason_sha256 = serde_json::Value::String(hex::encode(
-        busbar_contract::abi::sdk::digest::sha256(reason.as_bytes()),
-    ));
+    let reason_sha256 = json::Value::from(
+        hex::encode(busbar_contract::abi::sdk::digest::sha256(reason.as_bytes())).as_str(),
+    );
     push_payload_field(&mut payload, "reason_sha256", Some(&reason_sha256));
-    push_payload_field(&mut payload, "rates", obj.get("rates"));
+    push_payload_field(&mut payload, "rates", obj.get(&"rates"));
     payload.into_bytes()
 }
 
-fn push_payload_field(payload: &mut String, key: &str, value: Option<&serde_json::Value>) {
+fn push_payload_field(
+    payload: &mut String,
+    key: &str,
+    value: Option<&busbar_contract::json::Value>,
+) {
     payload.push_str(key);
     payload.push('=');
-    let value = value.unwrap_or(&serde_json::Value::Null);
-    payload.push_str(&serde_json::to_string(value).unwrap_or_default());
+    let null = busbar_contract::json::Value::new();
+    let value = value.unwrap_or(&null);
+    payload.push_str(&busbar_contract::json::to_string(value).unwrap_or_default());
     payload.push('\n');
 }
 
