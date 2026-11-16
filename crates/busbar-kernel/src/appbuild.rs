@@ -1723,6 +1723,7 @@ async fn build_app_native(
         .unwrap_or_default();
     let configured_card = config::card::CardFields::of_root(&cfg);
     let grammar = cfg.grammar.clone();
+    let restart_candidate = config::restart::Root::capture(&cfg, &plugins_cfg);
     let configured_view = Arc::new(config::readback::ConfiguredView::from_root(
         &cfg,
         &plugins_cfg,
@@ -2710,6 +2711,35 @@ async fn build_app_native(
     app.config_pending_restart = prior
         .map(|app| app.config_pending_restart.clone())
         .unwrap_or_default();
+    app.boot_restart_root = prior.and_then(|app| app.boot_restart_root.clone());
+    app.boot_restart_source = prior.and_then(|app| app.boot_restart_source.clone());
+    if let Some(boot) = &app.boot_restart_root {
+        app.config_pending_restart
+            .extend(restart_candidate.changed(boot));
+    } else {
+        app.boot_restart_root = Some(Arc::new(restart_candidate));
+    }
+    if let Some(prior) = prior {
+        app.config_pending_restart
+            .extend(crate::plugin_routes::paths_awaiting_restart(
+                &app.plugin_routes,
+                &prior.plugin_routes,
+                &app.boot_route_paths,
+            ));
+        let exports: std::collections::BTreeSet<_> = app
+            .export_defs
+            .keys()
+            .chain(prior.export_defs.keys())
+            .cloned()
+            .collect();
+        for name in exports {
+            if crate::export::plugin::requires_restart(&name, app.export_defs.get(&name)) {
+                app.config_pending_restart.push(format!("export.{name}"));
+            }
+        }
+    }
+    app.config_pending_restart.sort();
+    app.config_pending_restart.dedup();
     if let Some(prior) = prior {
         app.config_generation = Arc::clone(&prior.config_generation);
     }
