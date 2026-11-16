@@ -26,7 +26,6 @@
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::root::door_steps::exhaustion_of;
 use axum::body::Body;
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
 use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
@@ -357,7 +356,7 @@ fn open_unit(
     let Some(app) = app_of(&ctx.engine) else {
         return Ok(None);
     };
-    let mode = exhaustion_of(&app, &key);
+    let mode = busbar_kernel::config::groups::ExhaustionMode::FinishUnit;
     billing
         .open(Admit {
             instance: &seat.instance,

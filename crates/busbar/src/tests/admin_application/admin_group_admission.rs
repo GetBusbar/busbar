@@ -11,8 +11,6 @@ fn budget_limit(cents: u64) -> busbar_kernel::config::groups::LimitCfg {
         scope: None,
         on_exhaust: None,
         downgrade_to: None,
-        admission: None,
-        on_exhaustion: None,
     }
 }
 
@@ -33,8 +31,6 @@ async fn test_patch_key_three_state_group_and_enabled() {
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
-                admission: None,
-                on_exhaustion: None,
             }],
             ..Default::default()
         },

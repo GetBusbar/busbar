@@ -15,8 +15,6 @@ fn budget_limit(cents: u64) -> busbar_kernel::config::groups::LimitCfg {
         scope: None,
         on_exhaust: None,
         downgrade_to: None,
-        admission: None,
-        on_exhaustion: None,
     }
 }
 
@@ -37,8 +35,6 @@ async fn test_create_key_budget_group_and_labels_roundtrip_and_missing_group_400
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
-                admission: None,
-                on_exhaustion: None,
             }],
             ..Default::default()
         },

@@ -30,8 +30,6 @@ fn raw_cost(rate: f64, fee: i64) -> CostModel {
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
-                admission: None,
-                on_exhaustion: None,
             }],
             ..Default::default()
         },
@@ -422,8 +420,6 @@ fn scoped_pool_and_ancestor_buckets_keep_exact_raw_counts_and_partial_correction
         scope: pool.map(ScopeRef::pool),
         on_exhaust: None,
         downgrade_to: None,
-        admission: None,
-        on_exhaustion: None,
     };
     let groups = BTreeMap::from([
         (
