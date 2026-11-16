@@ -5,7 +5,7 @@ use super::*;
 use crate::callback_waker::Probe;
 
 #[test]
-fn every_busy_line_poll_owns_raw_wakers_before_taking_state() {
+fn every_busy_line_poll_retains_a_waiter_until_notification() {
     let line = Arc::new(Line {
         state: Mutex::new(State {
             conn: None,
@@ -53,6 +53,8 @@ fn every_busy_line_poll_owns_raw_wakers_before_taking_state() {
             &mut cx
         )
         .is_pending());
+    drop(waker);
+    assert_eq!(probe.live.load(Ordering::SeqCst), 1);
     let missed = { std::mem::take(&mut line.state().missed) };
     assert_eq!(
         missed.len(),
@@ -61,7 +63,7 @@ fn every_busy_line_poll_owns_raw_wakers_before_taking_state() {
     );
     wake(missed);
     line.fan.forget(EXCHANGE_STREAM);
-    assert!(probe.clones.load(Ordering::SeqCst) >= 5);
+    assert_eq!(probe.live.load(Ordering::SeqCst), 0);
     assert_eq!(probe.wakes.load(Ordering::SeqCst), 1);
     assert!(probe.drops.load(Ordering::SeqCst) > 0);
     probe.assert_unlocked();
