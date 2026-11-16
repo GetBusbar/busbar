@@ -366,7 +366,7 @@ async fn checkpoint_persist_opens_no_journal_replay() {
 }
 
 async fn assert_recovered_audit(book: &TestBook, report: &UnitCheckpoint) {
-    let audit = book
+    let (_node_seq, audit) = book
         .evidence
         .find_audit(report.unit, 7)
         .await
@@ -407,13 +407,14 @@ async fn recovered_audit_reappend_preserves_wal_custody_position() {
         .recover_audit(&report)
         .await
         .unwrap();
-    let audit = book
+    let (found_node_seq, audit) = book
         .evidence
         .find_audit(report.unit, 7)
         .await
         .unwrap()
         .unwrap();
     let node_seq = book.evidence.append_audit(audit.clone()).await.unwrap();
+    assert_eq!(node_seq, found_node_seq);
     assert_ne!(
         node_seq, 0,
         "an existing original must retain its WAL position"
