@@ -127,7 +127,7 @@ fn unanswered<O>(name: &str, budget: Duration, a: Answered<O>) -> String {
 /// A hook's failure text as the operator's log may carry it. The text is the plugin's own: it
 /// is not trusted to be free of line breaks or terminal escapes, nor to be short.
 fn failure_text(raw: &str) -> String {
-    raw.to_string()
+    wire::sanitize_cap_counted(raw, wire::REJECT_MESSAGE_MAX_CHARS).0
 }
 
 /// The hook's reject message, sanitised and capped as 1.5.5 did, with a cut reported against
