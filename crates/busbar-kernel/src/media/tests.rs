@@ -11,7 +11,7 @@ use busbar_plugin_abi::host_side::caller::BoxFut;
 use busbar_plugin_abi::records::{tag, Records, Reply, Writer};
 use futures::executor::block_on;
 
-use super::{resolve, DialOpening, Lines, Media, MediaCarrier, MediaLeg, MediaRendezvous};
+use super::{resolve, Carried, DialOpening, Lines, Media, MediaCarrier, MediaLeg, MediaRendezvous};
 use crate::plugin_records::RecordsDenied;
 
 fn lines(media: &[&str], channels: &[&str]) -> Lines {
@@ -75,7 +75,7 @@ impl MediaCarrier for Carrier {
         &'a self,
         _route: u32,
         offer: &'a str,
-    ) -> BoxFut<'a, Result<(Box<str>, Box<dyn MediaLeg>), RecordsDenied>> {
+    ) -> BoxFut<'a, Result<Carried, RecordsDenied>> {
         assert_eq!(offer, "caller-offer");
         let leg = self.leg();
         Box::pin(async move { Ok(("caller-answer".into(), leg)) })
@@ -84,7 +84,7 @@ impl MediaCarrier for Carrier {
         &'a self,
         route: u32,
         opening: &'a [u8],
-    ) -> BoxFut<'a, Result<(Box<str>, Box<dyn MediaLeg>), RecordsDenied>> {
+    ) -> BoxFut<'a, Result<Carried, RecordsDenied>> {
         self.dialled.lock().unwrap().push((route, opening.to_vec()));
         let leg = self.leg();
         Box::pin(async move { Ok(("local-offer".into(), leg)) })

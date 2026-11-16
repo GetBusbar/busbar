@@ -53,6 +53,9 @@ pub trait MediaLeg: Send + Sync + 'static {
     fn close(&self);
 }
 
+/// A carrier's answer: the transport's RENDEZVOUS text and the leg it began.
+pub type Carried = (Box<str>, Box<dyn MediaLeg>);
+
 /// The connector's datagram carriers. `accept` binds the route's media listener and begins
 /// `ROLE_DATAGRAM, CONN_ACCEPT` with the offer; `dial` begins `ROLE_DATAGRAM, CONN_DIAL` with `ConnInfo.head` =
 /// `opening`, which core has already checked. Each answers the transport's RENDEZVOUS text and the leg.
@@ -61,12 +64,12 @@ pub trait MediaCarrier: Send + Sync + 'static {
         &'a self,
         route: u32,
         offer: &'a str,
-    ) -> BoxFut<'a, Result<(Box<str>, Box<dyn MediaLeg>), RecordsDenied>>;
+    ) -> BoxFut<'a, Result<Carried, RecordsDenied>>;
     fn dial<'a>(
         &'a self,
         route: u32,
         opening: &'a [u8],
-    ) -> BoxFut<'a, Result<(Box<str>, Box<dyn MediaLeg>), RecordsDenied>>;
+    ) -> BoxFut<'a, Result<Carried, RecordsDenied>>;
 }
 
 /// Core's rendezvous over a connector's carriers: the only way a [`MediaBridge`] is made.
@@ -86,8 +89,17 @@ impl<C: MediaCarrier> MediaRendezvous for Media<C> {
         route: u32,
         offer: &'a str,
     ) -> BoxFut<'a, Result<(Box<str>, MediaBridge), RecordsDenied>> {
-        let _ = (&self.carrier, route, offer);
-        todo!()
+        Box::pin(async move {
+            let (answer, leg) = self.carrier.accept(route, offer).await?;
+            Ok((
+                answer,
+                MediaBridge {
+                    leg,
+                    dialled: None,
+                    refused: None,
+                },
+            ))
+        })
     }
 
     fn dial<'a>(
@@ -95,8 +107,19 @@ impl<C: MediaCarrier> MediaRendezvous for Media<C> {
         route: u32,
         opening: &'a [u8],
     ) -> BoxFut<'a, Result<(Box<str>, MediaBridge), RecordsDenied>> {
-        let _ = (&self.carrier, route, opening);
-        todo!()
+        Box::pin(async move {
+            // Checked before the carrier: an opening that states nothing is never dialled.
+            let offered = Lines::read(opening)?;
+            let (offer, leg) = self.carrier.dial(route, opening).await?;
+            Ok((
+                offer,
+                MediaBridge {
+                    leg,
+                    dialled: Some(offered),
+                    refused: None,
+                },
+            ))
+        })
     }
 }
 
@@ -116,8 +139,16 @@ impl MediaBridge {
     /// Waits until the caller's lines have settled (today's `wait_opening`, datagram.rs:2815-2842); a closed leg
     /// or one with no line and no channel = `Unavailable`. A dialled bridge answers `Invalid`.
     pub fn opening(&self) -> BoxFut<'_, Result<Box<[u8]>, RecordsDenied>> {
-        let _ = (&self.leg, &self.dialled);
-        todo!()
+        Box::pin(async move {
+            if self.dialled.is_some() {
+                return Err(RecordsDenied::Invalid);
+            }
+            let caller = self.leg.settled().await?;
+            if caller.is_empty() {
+                return Err(RecordsDenied::Unavailable);
+            }
+            caller.write()
+        })
     }
     /// RV_REMOTE: the far end's answer for a dialled session. Round 27: once the transport has taken the answer,
     /// the answered leg's media lines must mirror the opening's `media` lines (same count, same kind at every
@@ -125,12 +156,26 @@ impl MediaBridge {
     /// otherwise the dialled session is closed and `remote` returns `Invalid` (the plane gets P_RV_FAILED with a
     /// REFUSAL whose text is `mirrored`'s, e.g. "line 0 is `audio` on the caller's leg and `video` upstream").
     pub fn remote<'a>(&'a mut self, description: &'a str) -> BoxFut<'a, Result<(), RecordsDenied>> {
-        let _ = (&self.refused, description);
-        todo!()
+        Box::pin(async move {
+            // An accepted leg has no answer to take; a refused dial is closed for good.
+            let Some(offered) = self.dialled.as_ref() else {
+                return Err(RecordsDenied::Invalid);
+            };
+            if self.refused.is_some() {
+                return Err(RecordsDenied::Invalid);
+            }
+            let answered = self.leg.answer(description).await?;
+            if let Err(text) = offered.mirrored_by(&answered) {
+                self.leg.close();
+                self.refused = Some(text);
+                return Err(RecordsDenied::Invalid);
+            }
+            Ok(())
+        })
     }
     /// The text of `remote`'s refusal (the P_RV_FAILED REFUSAL text), once it closed the session.
     pub fn refusal(&self) -> Option<&str> {
-        todo!()
+        self.refused.as_deref()
     }
 }
 
