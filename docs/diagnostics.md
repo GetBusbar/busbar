@@ -2614,9 +2614,9 @@ A graceful-shutdown signal handler (SIGINT/ctrl_c, SIGTERM on unix, or CTRL_CLOS
 - **Since:** 1.6.0
 - **Slug:** `jemalloc-idle-purge-fallback-unavailable`
 
-The fallback idle-purge helper (for targets where jemalloc's background purge threads are compiled out, e.g. static-musl or macOS) could not start — its worker thread failed to spawn, or it could not read `opt.dirty_decay_ms`. A fully IDLE process may therefore hold freed-but-unpurged dirty pages and its RSS can ratchet at the last burst's peak until traffic resumes. Request behavior is unaffected.
+The fallback idle-purge helper (for targets where jemalloc's background purge threads are compiled out, e.g. macOS) could not start — its worker thread failed to spawn, or it could not read `opt.dirty_decay_ms`. A fully IDLE process may therefore hold freed-but-unpurged dirty pages and its RSS can ratchet at the last burst's peak until traffic resumes. Request behavior is unaffected.
 
-**What to do:** Usually benign — RSS is reclaimed the moment traffic resumes, and under load the helper does nothing. If steady idle RSS on a musl/macOS build matters, investigate the logged spawn/mallctl error; the gateway serves normally regardless.
+**What to do:** Usually benign — RSS is reclaimed the moment traffic resumes, and under load the helper does nothing. If steady idle RSS on a macOS build matters, investigate the logged spawn/mallctl error; the gateway serves normally regardless.
 
 <a id="signing-key-generation-failed"></a>
 ### BUSBAR-9011 — --generate-signing-key could not mint a key (OS entropy source unavailable)
