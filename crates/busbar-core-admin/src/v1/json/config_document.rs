@@ -579,6 +579,8 @@ fn restart_paths(paths: &[String]) -> Vec<String> {
         "/advanced/worker_threads",
         "/advanced/upstream_http1_only",
         "/advanced/upstream_h2_prior_knowledge",
+        "/advanced/shutdown/drain_timeout",
+        "/advanced/governance/max_pending_checkpoints",
     ];
     paths
         .iter()
@@ -802,6 +804,19 @@ mod tests {
             restart_paths(&paths),
             ["/advanced/worker_threads", "/store/settings", "/listen"]
         );
+    }
+
+    #[test]
+    fn shutdown_and_admission_caps_require_durable_restart_edits() {
+        for path in [
+            "/advanced/shutdown/drain_timeout",
+            "/advanced/governance/max_pending_checkpoints",
+            "/advanced/shutdown",
+            "/advanced/governance",
+        ] {
+            assert_eq!(restart_paths(&[path.to_owned()]), [path]);
+        }
+        assert!(restart_paths(&["/providers/example/timeout".to_owned()]).is_empty());
     }
 
     #[cfg(feature = "openapi-schema")]

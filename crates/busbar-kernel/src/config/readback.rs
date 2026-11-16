@@ -36,6 +36,7 @@ impl ConfiguredView {
         deploy: &super::DeployCfg,
         catalog: &std::collections::HashMap<String, super::ProviderDef>,
     ) {
+        super::restart::capture_documents(app, deploy);
         app.document_source_fingerprints = deploy.document_source_fingerprints;
         let Some(view) = app.configured_view.as_mut() else {
             return;

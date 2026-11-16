@@ -2047,3 +2047,11 @@ association is installed and released on failed installation or close. An
 association expires after **300 seconds**, even when its transport supplies no
 deadline. Exhaustion refuses association admission. Expiry closes the association;
 clients must establish a new one.
+
+Root data and admin stream listeners retain the connector's **1,024 concurrent
+connection** limit. Framed request-body collection uses the same read bounds as
+the admin HTTP listener: at least **1 KiB/s** averaged over the read after a
+**10-second** grace period, plus a total read deadline derived from the current
+translation-body byte cap divided by 1 KiB/s. The inter-piece timeout still
+applies. Periodic small pieces cannot reset the total deadline or bypass the
+throughput floor; a violation refuses the request as deadline exceeded.
