@@ -1946,7 +1946,19 @@ fn judge_operator(cfg: &RootCfg, errors: &mut Vec<String>, advisories: &mut Advi
         refuse(errors, text);
     }
 
-    if cfg.admin_auth.iter().any(|name| name.trim().is_empty()) {
+    // J38 (OPERATOR-FROM-ADMITTED-AUTH r3.1): no operator row plus no admin_auth is refused. The
+    // `[keys]` default (ADMIN-API MR2) stands only when something configures keys: the data-plane
+    // chain names `keys`. A bare `[keys]` with no operator row and no keys chain is that default.
+    let keys_chain = cfg.auth.as_ref().is_some_and(|auth| {
+        auth.chain
+            .iter()
+            .any(|e| e.module == crate::config::KEYS_MODULE)
+    });
+    let keys_default_only = no_operator
+        && !keys_chain
+        && cfg.admin_auth.len() == 1
+        && cfg.admin_auth[0] == crate::config::KEYS_MODULE;
+    if keys_default_only || cfg.admin_auth.iter().any(|name| name.trim().is_empty()) {
         refuse(errors, operator::no_default_admin_chain());
     }
 

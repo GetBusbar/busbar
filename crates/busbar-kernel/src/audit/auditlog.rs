@@ -1636,8 +1636,10 @@ pub async fn register_test_audit_stream(app: &Arc<crate::state::App>) {
         .expect("native audit test setup drains");
 }
 
-#[cfg(test)]
-pub(crate) async fn ensure_global_audit_stream_registered() {
+/// Register the process-wide audit stream over a fresh in-memory store (once), so rows written by a
+/// test reach the ring.
+#[cfg(any(test, feature = "test-support"))]
+pub async fn ensure_global_audit_stream_registered() {
     static REGISTERED: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
     REGISTERED
         .get_or_init(|| async {

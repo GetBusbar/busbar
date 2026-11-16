@@ -22,6 +22,11 @@ extern crate self as busbar_kernel;
 pub(crate) use alloc_gate_instrument::CountingJemalloc;
 
 #[cfg(all(test, not(target_env = "msvc")))]
+#[global_allocator]
+static GLOBAL: CountingJemalloc = CountingJemalloc;
+
+#[cfg(all(test, not(target_env = "msvc")))]
+#[allow(unsafe_code)]
 #[path = "tests/alloc_gate_instrument.rs"]
 mod alloc_gate_instrument;
 
@@ -632,7 +637,7 @@ pub fn boot_route_paths_of(app: &state::App) -> Vec<String> {
     app.boot_route_paths.iter().cloned().collect()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[path = "tests/real_store.rs"]
 pub(crate) mod real_store;
 

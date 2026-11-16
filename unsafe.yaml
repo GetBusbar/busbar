@@ -219,6 +219,7 @@ interim:
   crates/busbar-kernel/src/plane_driver/tests/route_tests.rs: { tokens: 2, by: "W3-D-BINARY" }
   crates/busbar-kernel/src/plane_driver/tests/serve_tests.rs: { tokens: 7, by: "W3-D-BINARY" }
   crates/busbar-kernel/src/seal.rs: { tokens: 2, by: "W3-D-CONTRACT (boot OnceLock seals)" }
+  crates/busbar-kernel/src/tests/alloc_gate_instrument.rs: { tokens: 5, by: "W1-U1 (§4.3, §4.4)" }
   crates/busbar-kernel/src/tests/host_disk_export_tests.rs: { tokens: 14, by: "W1-U1 (§4.3, §4.4)" }
   crates/busbar-kernel/tests/host_projection_wipe.rs: { tokens: 6, by: "W1-U1 (§4.3, §4.4)" }
   crates/busbar-kernel/tests/support/plane_driver_actual.rs: { tokens: 34, by: "W3-D-BINARY" }

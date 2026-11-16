@@ -622,6 +622,7 @@ mod tests {
     async fn raising_a_provider_ceiling_through_the_document_door_is_refused_and_audited() {
         use crate::v1::contract::taxonomy::Cond;
         busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
+        busbar_kernel::audit::auditlog::ensure_global_audit_stream_registered().await;
         let live = corp("read-only");
         assert!(trust_ceiling_rejection(&live, &corp("read-only"), "ceiling-admin").is_none());
         assert!(trust_ceiling_rejection(&corp("full"), &live, "ceiling-admin").is_none());
@@ -640,6 +641,9 @@ mod tests {
         )
         .expect("a new provider cannot start above the default read-only ceiling");
         assert_eq!(new_cond, Cond::TrustCeilingRaise);
+        busbar_kernel::audit::auditlog::flush_pending()
+            .await
+            .expect("the rejected rows reach the audit ring");
         let rows = busbar_kernel::audit::auditlog::AUDIT_LOG.list_filtered(
             0,
             busbar_kernel::audit_ring::MAX_AUDIT_ENTRIES,
