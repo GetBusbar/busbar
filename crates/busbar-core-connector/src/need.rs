@@ -475,7 +475,7 @@ where
     R: PluginRecords,
     D: PluginDirectory,
     I: NeedIo,
-    Z: Resolve,
+    Z: Resolve + 'static,
 {
     async fn open(
         &self,
