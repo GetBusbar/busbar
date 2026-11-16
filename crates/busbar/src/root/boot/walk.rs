@@ -136,12 +136,52 @@ pub async fn walk<S: BootSteps>(
     plan: &BootPlan,
     steps: &S,
 ) -> Result<Booted<S::Opened>, BootRefused> {
+    bootstrap(plan, steps).await?.finish(steps).await
+}
+
+/// Completed S5/S6 owners and the validated remainder. Constructing this value has
+/// published and rechecked the deployment identity, but has opened no 2c instance.
+/// Root may retain it while reading overlays and constructing complete S7 services.
+pub struct Bootstrap<O> {
+    opened: Vec<(u32, BootPhase, O)>,
+    deployment: [u8; 16],
+    rest: Vec<u32>,
+}
+
+impl<O: Send> Bootstrap<O> {
+    /// Consume the stage exactly once after the caller has prepared serving dependencies.
+    pub async fn finish<S: BootSteps<Opened = O>>(
+        self,
+        steps: &S,
+    ) -> Result<Booted<O>, BootRefused> {
+        let Self {
+            mut opened,
+            deployment,
+            rest,
+        } = self;
+        for index in rest {
+            let port = steps.open(index).await.map_err(|error| BootRefused::Open {
+                index,
+                phase: BootPhase::Rest,
+                error: Box::new(error),
+            })?;
+            opened.push((index, BootPhase::Rest, port));
+        }
+        Ok(Booted { opened, deployment })
+    }
+}
+
+pub async fn bootstrap<S: BootSteps>(
+    plan: &BootPlan,
+    steps: &S,
+) -> Result<Bootstrap<S::Opened>, BootRefused> {
     in_phase_order(plan)?;
-    let mut opened: Vec<(u32, BootPhase, S::Opened)> = Vec::with_capacity(plan.steps.len());
-    let mut deployment = None;
+    let mut opened = Vec::new();
+    let mut rest = Vec::new();
     for &(index, phase) in &plan.steps {
-        if phase == BootPhase::Rest && deployment.is_none() {
-            deployment = Some(deployment_point(steps, &opened).await?);
+        if phase == BootPhase::Rest {
+            rest.push(index);
+            continue;
         }
         let port = steps.open(index).await.map_err(|error| BootRefused::Open {
             index,
@@ -150,11 +190,12 @@ pub async fn walk<S: BootSteps>(
         })?;
         opened.push((index, phase, port));
     }
-    let deployment = match deployment {
-        Some(id) => id,
-        None => deployment_point(steps, &opened).await?,
-    };
-    Ok(Booted { opened, deployment })
+    let deployment = deployment_point(steps, &opened).await?;
+    Ok(Bootstrap {
+        opened,
+        deployment,
+        rest,
+    })
 }
 
 /// Round 29: read the id through the store, publish it, then re-check every 2a/2b instance in plan order.
