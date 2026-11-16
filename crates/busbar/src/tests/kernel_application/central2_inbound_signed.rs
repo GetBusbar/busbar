@@ -131,7 +131,7 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
             "auth": { "chain": ["keys"], "admin_auth": [], "signing_key": { "file": signing } },
             "store": { "module": module, "settings": settings },
             "credentials": { "at_rest": { "key": { "file": at_rest } } },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )

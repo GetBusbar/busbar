@@ -57,7 +57,7 @@ async fn served(tag: &str) -> Served {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
         "plugins": crate::root::test_plugins::config_document(&plugin_config),
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({

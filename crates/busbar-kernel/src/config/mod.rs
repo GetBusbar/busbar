@@ -2119,7 +2119,6 @@ pub fn resolve(
             allow_all_metadata: security.allow_all_metadata,
             guard: Destinations {
                 block_private_addresses: deploy.advanced.block_private_addresses,
-                allow: deploy.advanced.allow_destinations.clone(),
                 ..Destinations::default()
             },
             outbound_tls: deploy.advanced.tls.clone(),

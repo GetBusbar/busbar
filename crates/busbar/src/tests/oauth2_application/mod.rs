@@ -202,7 +202,7 @@ async fn build_application(
             "providers": {},
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         })
     });
     document["store"] = serde_json::json!({"module":module,"settings":settings});

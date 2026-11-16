@@ -267,7 +267,7 @@ async fn admin_corpus_reconciles_with_the_served_router() {
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        document["advanced"] = serde_json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             document,
             &crate::root::boot::axis_test_grammar(),
@@ -639,7 +639,7 @@ async fn served_openapi_lists_only_the_configured_planes() {
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        document["advanced"] = serde_json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             document,
             &crate::root::boot::axis_test_grammar(),
@@ -808,7 +808,7 @@ async fn named_map_section_routes_answer_wrong_method_unknown_name_and_bad_body(
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        document["advanced"] = serde_json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             document,
             &crate::root::boot::axis_test_grammar(),

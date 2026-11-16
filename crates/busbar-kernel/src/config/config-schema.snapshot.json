@@ -9,10 +9,6 @@
     "AdvancedCfg": {
       "deny_unknown_fields": true,
       "fields": {
-        "allow_destinations": {
-          "optional": true,
-          "type": "Vec<String>"
-        },
         "block_private_addresses": {
           "optional": true,
           "type": "bool"

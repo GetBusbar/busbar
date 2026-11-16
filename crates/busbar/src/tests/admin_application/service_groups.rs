@@ -95,7 +95,7 @@ async fn list_groups_projects_the_limit_tree() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -219,7 +219,7 @@ async fn list_groups_is_cursor_paginated() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -367,7 +367,7 @@ async fn get_group_by_name_and_not_found() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -479,7 +479,7 @@ async fn build_with_group_creates_leaf_and_rebuilds_cost() {
             "groups": groups,
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -573,7 +573,7 @@ async fn build_with_group_rejects_dangling_parent() {
             "groups": groups,
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -662,7 +662,7 @@ async fn build_with_group_rejects_empty_name() {
             "groups": groups,
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -747,7 +747,7 @@ async fn build_with_group_name_length_boundary_is_exact() {
             "groups": groups,
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -833,7 +833,7 @@ async fn healthz_returns_a_real_response_not_the_default() {
             "groups": groups,
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )

@@ -189,7 +189,7 @@ async fn keys_chain_preserves_carriers_disable_revoke_and_metering_controls() {
             "role_bindings": {} },
         "per_request_fee": 1,
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
@@ -350,7 +350,7 @@ async fn open_chain_with_operator_is_anonymous_keyless_and_unmetered() {
             "role_bindings": {} },
         "per_request_fee": 1,
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
@@ -466,7 +466,7 @@ async fn open_chain_without_operator_still_inserts_default_context() {
                 "role_bindings": {} },
             "per_request_fee": 1,
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -594,7 +594,7 @@ async fn ordinary_oidc_chain_keeps_grants_carriers_and_native_refusals() {
             "role_bindings": {"ordinary-oidc":{"bound":{}}} },
         "per_request_fee": 1,
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
@@ -724,7 +724,7 @@ async fn ordinary_oidc_chain_without_operator_ignores_persisted_keys() {
             "role_bindings": {"ordinary-oidc":{"bound":{}}} },
         "per_request_fee": 1,
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())

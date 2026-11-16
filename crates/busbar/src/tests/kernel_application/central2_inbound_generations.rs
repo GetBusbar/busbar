@@ -46,7 +46,7 @@ async fn actual_inbound_generation_keeps_only_original_request_authority() {
             "models": {},
             "auth": { "chain": ["keys"], "admin_auth": [], "signing_key": { "file": signing } },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )

@@ -915,7 +915,6 @@ fn guarded(blocked: &[&str]) -> std::sync::Arc<dyn busbar_core_connector::DialJu
     let destinations = busbar_kernel::config::Destinations {
         block_private_addresses: true,
         blocked: blocked.iter().map(|b| (*b).to_owned()).collect(),
-        ..busbar_kernel::config::Destinations::default()
     };
     busbar_core_connector::process::judge(
         busbar_core_connector::process::dest_judge(&destinations).expect("a valid guard"),

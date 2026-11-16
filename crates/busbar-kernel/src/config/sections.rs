@@ -209,21 +209,12 @@ pub struct AdvancedCfg {
     /// `proxy::wire::maybe_attach_route_policy` — neither is rebuilt by a config apply.
     #[serde(default)]
     pub response_headers: ResponseHeadersCfg,
-    /// The destination guard refuses a provider dial, or
-    /// an outbound connection whose target came from
-    /// request data or the network, when it is, or resolves to, a private, loopback, link-local,
-    /// CGNAT or unique-local address, unless `allow_destinations` names it; judged after resolution
-    /// and dialled at the judged address. Operator infrastructure (a database, secret service or
-    /// directory a plugin's config names) is allowed private and loopback (§5 egress-class table).
-    /// Default `true`. Cloud metadata is refused for every target, in every class, and stays
-    /// refused when `false`; no entry of `allow_destinations` admits it (an entry naming it is
-    /// refused at boot, BUSBAR-3134). BOOT-TIME (the connector is built once).
+    /// The destination guard refuses ordinary private-address dials by default. A core-selected
+    /// registration may carry its own `allow_private`; configured providers retain reach only to
+    /// their own base/token origins. Operator-infrastructure Needs retain their declared-target
+    /// policy. Metadata, own-listener protection and TLS policy remain enforced. BOOT-TIME.
     #[serde(default = "default_block_private_addresses")]
     pub block_private_addresses: bool,
-    /// Destinations always allowed, checked before any refusal: an exact host, a `*.domain`
-    /// wildcard (names under it, never the apex), an IP, or a CIDR. Default empty. BOOT-TIME.
-    #[serde(default)]
-    pub allow_destinations: Vec<String>,
     /// The ingresses and load balancers that may state a client's address for it (an IP or a
     /// CIDR each, read by the destination guard's CIDR reader). Their `forwarded_header` is
     /// honoured; nobody else's is. Default empty: the socket peer is the client. BOOT-TIME.
@@ -307,8 +298,6 @@ pub(crate) fn default_block_private_addresses() -> bool {
 pub struct Destinations {
     /// `advanced.block_private_addresses`.
     pub block_private_addresses: bool,
-    /// `advanced.allow_destinations`, as written (each entry validated by the guard at boot).
-    pub allow: Vec<String>,
     /// `security.blocked_metadata_hosts`: extra refusals inside the one guard.
     pub blocked: Vec<String>,
 }
@@ -337,7 +326,6 @@ impl Default for AdvancedCfg {
             upstream_h2_prior_knowledge: false,
             response_headers: ResponseHeadersCfg::default(),
             block_private_addresses: DEFAULT_BLOCK_PRIVATE_ADDRESSES,
-            allow_destinations: Vec::new(),
             tls: super::tls::OutboundTlsCfg::default(),
             proxy_resolution: super::tls::ProxyResolution::Local,
             trusted_proxies: Vec::new(),

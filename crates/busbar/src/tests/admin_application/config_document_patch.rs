@@ -156,7 +156,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
         "store": {"module": module, "settings": plugins::application_store_settings(&directory)},
         "plugins": plugins::config_document(&plugin_config),
         "limits": {"request_body_max_bytes": BASE_CAP},
-        "advanced": {"allow_destinations": ["127.0.0.1"]},
+        "advanced": {},
     });
     if phase == "sequences" || phase.starts_with("source-") {
         let key = directory.join("hidden-provider-key");
@@ -912,7 +912,7 @@ pub(super) async fn ephemeral_admin(
         "store": {"module": module, "settings": plugins::application_store_settings(&directory)},
         "plugins": plugins::config_document(&plugin_config),
         "limits": {"request_body_max_bytes": BASE_CAP},
-        "advanced": {"allow_destinations": ["127.0.0.1"]},
+        "advanced": {},
     });
     let config_path = directory.join("config.yaml");
     let providers_path = directory.join("providers.yaml");

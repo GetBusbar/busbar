@@ -73,7 +73,7 @@ impl Fixture {
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
             "rate_card": { (LANE): {"input_utok":0.0,"output_utok":0.0,"cache_read_utok":0.0,"cache_write_utok":0.0} },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         });
         let provider_defs = super::admin_usage_history::complete_usage_fixture(
             &mut document,

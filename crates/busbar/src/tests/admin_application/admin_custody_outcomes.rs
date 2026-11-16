@@ -261,7 +261,7 @@ async fn app() -> (
         "providers":{},"models":{},
         "identity-providers":{"custody-auth":{"module":oidc_module,"max_admin_scope":"full","settings":common::credentials::settings("api://admin-custody")}},
         "auth":{"chain":[],"admin_auth":["custody-auth"],"signing_key":{"file":signing},"role_bindings":{"custody-auth":{"custodians":{"admin_scope":"full"}}}},
-        "store":{"module":module,"settings":settings},"advanced":{"allow_destinations":["127.0.0.1"]}
+        "store":{"module":module,"settings":settings},"advanced":{}
     }), &crate::root::boot::axis_test_grammar()).unwrap();
     let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
     let mut plugin_config = busbar_kernel::config::PluginsCfg {
