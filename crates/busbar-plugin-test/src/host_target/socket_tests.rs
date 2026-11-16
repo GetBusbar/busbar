@@ -7,6 +7,7 @@ use busbar_plugin_abi::host_side::caller::{CallStack, Caller, InstanceLimits};
 use busbar_plugin_abi::host_side::needs::{ConnId, NeedErr, Needs, OpenNeed, TlsMode};
 use busbar_plugin_abi::need::open_flag;
 use busbar_plugin_abi::types::KindCode;
+use std::future::Future;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -23,7 +24,7 @@ fn limits() -> Limits {
 fn caller(chain: u64) -> Caller<'static> {
     Caller {
         plugin: "socket-test",
-        kind: KindCode::STORE,
+        kind: KindCode::Store,
         name: "db",
         instance: 1,
         slot: 0,
@@ -236,4 +237,398 @@ fn targets_refuse_non_loopback_and_invalid_limits() {
     let mut bad = limits();
     bad.live = 0;
     assert!(SocketTargets::new(bad).is_err());
+}
+
+fn certificate() -> (String, String) {
+    let busbar_contract::crypto::testing::rcgen::CertifiedKey { cert, signing_key } =
+        busbar_contract::crypto::testing::rcgen::generate_simple_self_signed(vec![
+            "localhost".into()
+        ])
+        .unwrap();
+    (cert.pem(), signing_key.serialize_pem())
+}
+async fn tls_echo(
+    pem: &str,
+    key: &str,
+    inband: bool,
+    alpn: Vec<Vec<u8>>,
+) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
+    let chain = CertificateDer::pem_slice_iter(pem.as_bytes())
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let key = PrivateKeyDer::from_pem_slice(key.as_bytes()).unwrap();
+    let config = busbar_contract::crypto::tls::server_config(move |builder| {
+        let mut config = builder.with_no_client_auth().with_single_cert(chain, key)?;
+        config.alpn_protocols = alpn;
+        Ok(config)
+    })
+    .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let acceptor = tokio_rustls::TlsAcceptor::from(config.clone());
+            tokio::spawn(async move {
+                if inband {
+                    let mut request = [0; 4];
+                    if stream.read_exact(&mut request).await.is_err() {
+                        return;
+                    }
+                    assert_eq!(&request, b"TLS?");
+                    stream.write_all(b"OK").await.unwrap();
+                }
+                let Ok(mut stream) = acceptor.accept(stream).await else {
+                    return;
+                };
+                let mut bytes = [0; 1024];
+                while let Ok(n) = stream.read(&mut bytes).await {
+                    if n == 0 {
+                        break;
+                    }
+                    if stream.write_all(&bytes[..n]).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    (addr, task)
+}
+fn tls_host(addr: std::net::SocketAddr, pem: &str, name: &str, alpn: Vec<String>) -> FakeNeeds {
+    let mut targets = SocketTargets::new(limits()).unwrap();
+    targets
+        .allow(
+            "db",
+            addr,
+            Security::Tls(crate::sockets::TlsProfile {
+                server_name: name.into(),
+                alpn,
+                trust: crate::sockets::TrustSource::Explicit {
+                    roots_pem: pem.into(),
+                },
+                client: None,
+            }),
+        )
+        .unwrap();
+    FakeNeeds::new().with_sockets(targets).unwrap()
+}
+fn tls_open<'a>(dest: &'a str, name: &'a str, alpn: &'a str) -> OpenNeed<'a> {
+    OpenNeed {
+        dest,
+        tls: TlsMode::Required {
+            sni: name,
+            alpn,
+            trust: 0,
+        },
+        egress: 2,
+    }
+}
+#[test]
+fn verified_tls_rejects_wrong_roots_names_and_alpn() {
+    run(async {
+        let (pem, key) = certificate();
+        let (other, _) = certificate();
+        let (addr, server) = tls_echo(&pem, &key, false, vec![]).await;
+        let dest = addr.to_string();
+        for (roots, name, alpn, works) in [
+            (&pem, "localhost", "", true),
+            (&other, "localhost", "", false),
+            (&pem, "wrong.example", "", false),
+            (&pem, "localhost", "required-protocol", false),
+        ] {
+            let needs = tls_host(
+                addr,
+                roots,
+                name,
+                if alpn.is_empty() {
+                    vec![]
+                } else {
+                    vec![alpn.into()]
+                },
+            );
+            let cx = caller(1);
+            let got = needs.open_answer(&cx, tls_open(&dest, name, alpn)).await;
+            if works {
+                let a = got.unwrap();
+                needs
+                    .write_answer(&cx, ConnId(a.id), b"secret challenge")
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    needs
+                        .read_answer(&cx, ConnId(a.id), 32)
+                        .await
+                        .unwrap()
+                        .bytes
+                        .as_slice(),
+                    b"secret challenge"
+                );
+            } else {
+                assert!(matches!(got, Err(NeedErr::Tls)));
+            }
+            needs.release(&cx);
+            needs.socket_report().unwrap().finish().unwrap();
+        }
+        server.abort();
+    });
+}
+#[test]
+fn inband_tls_is_verified_before_reuse_and_mismatches_discard() {
+    run(async {
+        let (pem, key) = certificate();
+        let (addr, server) = tls_echo(&pem, &key, true, vec![]).await;
+        let needs = tls_host(addr, &pem, "localhost", vec![]);
+        let dest = addr.to_string();
+        let cx = caller(1);
+        let n = OpenNeed {
+            dest: &dest,
+            tls: TlsMode::Inband {
+                sni: "localhost",
+                alpn: "",
+                trust: 0,
+                cert: None,
+            },
+            egress: 2,
+        };
+        let a = needs.open_answer(&cx, n).await.unwrap();
+        assert_eq!(a.flags & (open_flag::REUSED | open_flag::TLS_DONE), 0);
+        needs
+            .write_answer(&cx, ConnId(a.id), b"TLS?")
+            .await
+            .unwrap();
+        assert_eq!(
+            needs
+                .read_answer(&cx, ConnId(a.id), 2)
+                .await
+                .unwrap()
+                .bytes
+                .as_slice(),
+            b"OK"
+        );
+        let host = needs.socket_report().unwrap();
+        host.starttls(
+            &cx,
+            a.id,
+            TlsMode::Required {
+                sni: "localhost",
+                alpn: "",
+                trust: 0,
+            },
+        )
+        .await
+        .unwrap();
+        needs.close(&cx, ConnId(a.id), true).await;
+        needs.release(&cx);
+        let cx = caller(2);
+        let b = needs.open_answer(&cx, n).await.unwrap();
+        assert_eq!(a.pooled, b.pooled);
+        assert_eq!(
+            b.flags & (open_flag::REUSED | open_flag::TLS_DONE),
+            open_flag::REUSED | open_flag::TLS_DONE
+        );
+        needs
+            .write_answer(&cx, ConnId(b.id), b"already encrypted")
+            .await
+            .unwrap();
+        assert_eq!(
+            needs
+                .read_answer(&cx, ConnId(b.id), 32)
+                .await
+                .unwrap()
+                .bytes
+                .as_slice(),
+            b"already encrypted"
+        );
+        needs.close(&cx, ConnId(b.id), false).await;
+        let c = needs.open_answer(&cx, n).await.unwrap();
+        assert!(matches!(
+            host.starttls(
+                &cx,
+                c.id,
+                TlsMode::Required {
+                    sni: "wrong",
+                    alpn: "",
+                    trust: 0
+                }
+            )
+            .await,
+            Err(NeedErr::Invalid)
+        ));
+        needs.release(&cx);
+        host.finish().unwrap();
+        server.abort();
+    });
+}
+#[test]
+fn instance_binder_maps_identical_handles_to_its_own_trust_and_revokes_on_unbind() {
+    run(async {
+        use crate::suites::harness::MemBinder;
+        use busbar_plugin_loader::binder::ConfigBinder;
+        use std::sync::Arc;
+        let (pem, key) = certificate();
+        let (other, _) = certificate();
+        let (addr, server) = tls_echo(&pem, &key, false, vec![]).await;
+        let mut targets = SocketTargets::new(limits()).unwrap();
+        targets
+            .allow(
+                "db",
+                addr,
+                Security::Tls(crate::sockets::TlsProfile {
+                    server_name: "localhost".into(),
+                    alpn: vec![],
+                    trust: crate::sockets::TrustSource::Bound {
+                        pointer: "/ca".into(),
+                    },
+                    client: None,
+                }),
+            )
+            .unwrap();
+        let needs = Arc::new(FakeNeeds::new().with_sockets(targets).unwrap());
+        let binder = MemBinder::over(needs.clone());
+        let json = |pem: &str| {
+            busbar_contract::json::to_vec(&std::collections::BTreeMap::from([("ca", pem)])).unwrap()
+        };
+        let first = binder
+            .bind(1, &json(&pem), &[], &["/ca"], &[], &[])
+            .unwrap();
+        let second = binder
+            .bind(2, &json(&other), &[], &["/ca"], &[], &[])
+            .unwrap();
+        assert_eq!(first, second, "both config views hold handle 1");
+        let dest = addr.to_string();
+        let n = OpenNeed {
+            dest: &dest,
+            tls: TlsMode::Required {
+                sni: "localhost",
+                alpn: "",
+                trust: 1,
+            },
+            egress: 2,
+        };
+        let cx = caller(1);
+        let a = needs.open_answer(&cx, n).await.unwrap();
+        let mut other_cx = caller(2);
+        other_cx.instance = 2;
+        assert!(matches!(
+            needs.open_answer(&other_cx, n).await,
+            Err(NeedErr::Tls)
+        ));
+        let bad = OpenNeed {
+            tls: TlsMode::Required {
+                sni: "localhost",
+                alpn: "",
+                trust: 2,
+            },
+            ..n
+        };
+        assert!(matches!(
+            needs.open_answer(&cx, bad).await,
+            Err(NeedErr::Denied)
+        ));
+        binder.unbind(1);
+        assert!(matches!(
+            needs.write_answer(&cx, ConnId(a.id), b"revoked").await,
+            Err(NeedErr::Invalid)
+        ));
+        needs.release(&cx);
+        needs.release(&other_cx);
+        needs.socket_report().unwrap().finish().unwrap();
+        server.abort();
+    });
+}
+#[test]
+fn dropped_operation_and_release_during_tls_leave_no_capacity_lease() {
+    run(async {
+        let (addr, server) = echo().await;
+        let needs = host(addr);
+        let cx = caller(1);
+        let a = needs
+            .open_answer(&cx, open(&addr.to_string()))
+            .await
+            .unwrap();
+        {
+            let pending = needs.read_answer(&cx, ConnId(a.id), 1);
+            tokio::pin!(pending);
+            assert!(
+                std::future::poll_fn(|cx| std::task::Poll::Ready(pending.as_mut().poll(cx)))
+                    .await
+                    .is_pending()
+            );
+        }
+        needs.release(&cx);
+        needs.socket_report().unwrap().finish().unwrap();
+        server.abort();
+        let (pem, _) = certificate();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let needs = tls_host(addr, &pem, "localhost", vec![]);
+        let dest = addr.to_string();
+        let cx = caller(3);
+        let pending = needs.open_answer(&cx, tls_open(&dest, "localhost", ""));
+        tokio::pin!(pending);
+        let accepted = tokio::select! {result=&mut pending=>panic!("TLS unexpectedly completed: {}",result.is_ok()),result=listener.accept()=>result.unwrap()};
+        needs.release(&cx);
+        assert!(matches!(pending.await, Err(NeedErr::Closed)));
+        drop(accepted);
+        needs.socket_report().unwrap().finish().unwrap();
+    });
+}
+#[test]
+fn bounded_reads_eof_capacity_and_required_finish() {
+    run(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            socket.write_all(b"abcdef").await.unwrap();
+            socket.shutdown().await.unwrap();
+        });
+        let needs = host(addr);
+        let cx = caller(1);
+        let a = needs
+            .open_answer(&cx, open(&addr.to_string()))
+            .await
+            .unwrap();
+        assert!(needs.socket_report().unwrap().finish().is_err());
+        assert!(matches!(
+            needs.read_answer(&cx, ConnId(a.id), 1025).await,
+            Err(NeedErr::Limit)
+        ));
+        let mut bytes = Vec::new();
+        loop {
+            let read = needs.read_answer(&cx, ConnId(a.id), 2).await.unwrap();
+            if read.eof {
+                break;
+            }
+            assert!(read.bytes.len() <= 2);
+            bytes.extend_from_slice(read.bytes.as_slice());
+        }
+        assert_eq!(bytes, b"abcdef");
+        needs.release(&cx);
+        needs.socket_report().unwrap().finish().unwrap();
+        server.await.unwrap();
+    });
+}
+#[test]
+fn unserved_failure_cannot_be_hidden_by_omitting_finish() {
+    assert!(std::panic::catch_unwind(|| {
+        let targets = SocketTargets::new(limits()).unwrap();
+        targets.failure("test-unserved");
+    })
+    .is_err());
+    let targets = SocketTargets::new(limits()).unwrap();
+    targets.expect_failure("test-unserved", 1);
+    assert!(targets.finish().is_err());
+    targets.failure("test-unserved");
+    targets.finish().unwrap();
+    assert!(std::panic::catch_unwind(|| {
+        let targets = SocketTargets::new(limits()).unwrap();
+        targets.expect_failure("test-unserved", 1);
+        targets.failure("test-unserved");
+        targets.failure("test-unserved");
+        assert!(targets.finish().is_err());
+    })
+    .is_err());
 }
