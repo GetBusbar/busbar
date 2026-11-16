@@ -502,6 +502,62 @@ fn restart_paths(paths: &[String]) -> Vec<String> {
 mod tests {
     use super::*;
 
+    fn providers(body: &str) -> busbar_kernel::config::IdentityProviders {
+        busbar_kernel::config::deploy_from_yaml_str(
+            &format!("identity-providers:\n{body}"),
+            &busbar_kernel::config::Grammar::empty(),
+        )
+        .expect("the identity-providers block parses")
+        .identity_providers
+    }
+
+    fn corp(scope: &str) -> busbar_kernel::config::IdentityProviders {
+        providers(&format!(
+            "  corp:\n    module: corp-idp\n    max_admin_scope: {scope}\n"
+        ))
+    }
+
+    /// S2-ADM-05: the refusal to raise `max_admin_scope` lived only on the removed named-map
+    /// PUT/PATCH. `PUT /config/settings` must refuse the same raise (409 `trust_ceiling_raise`) and
+    /// leave a `rejected` audit row naming the provider.
+    #[tokio::test]
+    async fn raising_a_provider_ceiling_through_the_document_door_is_refused_and_audited() {
+        use crate::v1::contract::taxonomy::Cond;
+        busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
+        let live = corp("read-only");
+        assert!(trust_ceiling_rejection(&live, &corp("read-only"), "ceiling-admin").is_none());
+        assert!(trust_ceiling_rejection(&corp("full"), &live, "ceiling-admin").is_none());
+        let (error, cond) = trust_ceiling_rejection(&live, &corp("full"), "ceiling-admin")
+            .expect("raising read-only to full is refused");
+        assert_eq!(cond, Cond::TrustCeilingRaise);
+        assert!(
+            matches!(&error, AdminError::Conflict(text)
+                if text.contains("identity-providers.corp.max_admin_scope")),
+            "the refusal names the provider: {error:?}"
+        );
+        let (_, new_cond) = trust_ceiling_rejection(
+            &live,
+            &providers("  fresh:\n    module: corp-idp\n    max_admin_scope: full\n"),
+            "ceiling-admin",
+        )
+        .expect("a new provider cannot start above the default read-only ceiling");
+        assert_eq!(new_cond, Cond::TrustCeilingRaise);
+        let rows = busbar_kernel::audit::auditlog::AUDIT_LOG.list_filtered(
+            0,
+            busbar_kernel::audit_ring::MAX_AUDIT_ENTRIES,
+            Some("config.document"),
+            None,
+        );
+        for resource in ["identity-providers:corp", "identity-providers:fresh"] {
+            assert!(
+                rows.iter().any(|row| row.resource == resource
+                    && row.outcome == "rejected"
+                    && row.principal == "ceiling-admin"),
+                "a rejected audit row names {resource}"
+            );
+        }
+    }
+
     #[test]
     fn document_request_refuses_retired_persist_in_every_form() {
         for value in [json!(true), json!(false), json!(null), json!("yes")] {
