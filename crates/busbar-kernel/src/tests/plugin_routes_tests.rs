@@ -101,6 +101,8 @@ fn granted_public_route_is_not_hardcoded_to_an_exporter_path() {
     );
     assert!(build_route_table(vec![granted("/api/admin")]).is_err());
     assert!(build_route_table(vec![granted("/healthz")]).is_err());
+    assert!(build_route_table(vec![granted("/livez")]).is_err());
+    assert!(build_route_table(vec![granted("/readyz")]).is_err());
     assert!(build_route_table(vec![decl(
         "neutral",
         RouteKind::Export,
