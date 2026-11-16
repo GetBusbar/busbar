@@ -196,6 +196,10 @@ mod failed_policy_tests;
 #[path = "tests/reads_request_tests.rs"]
 mod reads_request_tests;
 
+#[cfg(test)]
+#[path = "tests/rewrite_fallback_tests.rs"]
+mod rewrite_fallback_tests;
+
 pub type TapEntry = (
     std::time::Duration,
     bool,
