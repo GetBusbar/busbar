@@ -56,61 +56,62 @@ pub async fn stats(
 
     let lanes: Vec<Value> = (0..view.lane_count())
         .filter(|&i| lane_visible(i))
-        .map(|i| {
-            let snap = app.store.snapshot(i, t);
-
-            let (availability, recovery_hint_ms) = match snap.availability {
-                Ok(()) => ("available", Value::Null),
-                Err(reason) => (
-                    reason.variant_name(),
-                    match reason.recovery_hint_ms(t) {
-                        Some(ms) => json!(ms),
-                        None => Value::Null,
-                    },
-                ),
-            };
-            let breaker_state = match snap.breaker_state {
-                busbar_kernel::store::BreakerState::Closed => "closed",
-                busbar_kernel::store::BreakerState::Open { .. } => "open",
-                busbar_kernel::store::BreakerState::HalfOpen => "half_open",
-            };
-            json!({
-                "model": snap.member,
-                "provider": snap.route,
-                "max_concurrent": snap.max_concurrent,
-                // Alias of `max_concurrent` under a shorter field name (the lane's concurrency
-                // limit). Kept alongside `max_concurrent` for backward compatibility: an unbounded
-                // lane reports the semaphore's max permit count, a bounded lane its configured cap.
-                "limit": snap.max_concurrent,
-                "inflight": snap.inflight,
-                "free_slots": snap.free_slots,
-                // Bug 1 capacity signal: a saturated lane is now externally distinguishable from an
-                // idle or unbounded one. `available` is the free permit count for a bounded lane, or
-                // the string "unbounded" when `max_concurrent` is omitted; `at_capacity` is true iff
-                // a bounded lane is at its limit (available == 0) and is therefore shedding/spilling.
-                "available": match snap.available {
-                    Some(n) => json!(n),
-                    None => json!("unbounded"),
-                },
-                "at_capacity": snap.at_capacity,
-                // Unified availability signal + independent breaker axis.
-                "availability": availability,
-                "recovery_hint_ms": recovery_hint_ms,
-                "breaker_state": breaker_state,
-                "ok": snap.ok,
-                "err": snap.err,
-                "client_fault": snap.client_fault,
-                "usable": snap.usable,
-                "dead": snap.dead,
-                "dead_reason": snap.dead_reason,
-                "cooldown_remaining_s": snap.cooldown_remaining_s,
-                "streak": snap.streak,
-                "budget": snap.budget,
-            })
-        })
+        .map(|i| lane_body(app.store.snapshot(i, t), t))
         .collect();
 
     Json(json!({ "pools": pools, "lanes": lanes })).into_response()
+}
+
+/// One lane's `/stats` record.
+pub(crate) fn lane_body(snap: busbar_kernel::store::LaneSnapshot, t: u64) -> Value {
+    let (availability, recovery_hint_ms) = match snap.availability {
+        Ok(()) => ("available", Value::Null),
+        Err(reason) => (
+            reason.variant_name(),
+            match reason.recovery_hint_ms(t) {
+                Some(ms) => json!(ms),
+                None => Value::Null,
+            },
+        ),
+    };
+    let breaker_state = match snap.breaker_state {
+        busbar_kernel::store::BreakerState::Closed => "closed",
+        busbar_kernel::store::BreakerState::Open { .. } => "open",
+        busbar_kernel::store::BreakerState::HalfOpen => "half_open",
+    };
+    json!({
+        "model": snap.member,
+        "provider": snap.route,
+        "max_concurrent": snap.max_concurrent,
+        // Alias of `max_concurrent` under a shorter field name (the lane's concurrency
+        // limit). Kept alongside `max_concurrent` for backward compatibility: an unbounded
+        // lane reports the semaphore's max permit count, a bounded lane its configured cap.
+        "limit": snap.max_concurrent,
+        "inflight": snap.inflight,
+        "free_slots": snap.free_slots,
+        // Bug 1 capacity signal: a saturated lane is now externally distinguishable from an
+        // idle or unbounded one. `available` is the free permit count for a bounded lane, or
+        // the string "unbounded" when `max_concurrent` is omitted; `at_capacity` is true iff
+        // a bounded lane is at its limit (available == 0) and is therefore shedding/spilling.
+        "available": match snap.available {
+            Some(n) => json!(n),
+            None => json!("unbounded"),
+        },
+        "at_capacity": snap.at_capacity,
+        // Unified availability signal + independent breaker axis.
+        "availability": availability,
+        "recovery_hint_ms": recovery_hint_ms,
+        "breaker_state": breaker_state,
+        "ok": snap.ok,
+        "err": snap.err,
+        "client_fault": snap.client_fault,
+        "usable": snap.usable,
+        "dead": snap.dead,
+        "dead_reason": snap.dead_reason,
+        "cooldown_remaining_s": snap.cooldown_remaining_s,
+        "streak": snap.streak,
+        "budget": snap.budget,
+    })
 }
 
 /// `qualifier` is the door's card qualifier (`DoorFacts.plane`), not a plane key: the catalogue is
