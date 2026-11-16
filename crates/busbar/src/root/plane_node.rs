@@ -340,10 +340,10 @@ impl Node {
             matches!(&ended, Ended::Settled { end, .. } if end.outcome().is_completed());
         let receipt = self.seal_end_ack(principal, arrived, card, ended, seal, lines);
         match receipt {
-            Some(receipt) => receipt.confirm_terminal(self.ticket_custody.clone(), key, completed),
-            None => {
+            Ok(receipt) => receipt.confirm_terminal(self.ticket_custody.clone(), key, completed),
+            Err(error) => {
                 self.ticket_custody.terminal(key, false);
-                None
+                Some(TerminalConfirmation::failed(error))
             }
         }
     }
@@ -356,13 +356,19 @@ impl Node {
         ended: busbar_kernel::teller::Ended,
         seal: Sealing,
         lines: Vec<RecordLine>,
-    ) -> Option<StagedAudit> {
-        let book = self.book.get()?;
+    ) -> Result<StagedAudit, busbar_contract::caps::DurabilityLost> {
+        let lost = || {
+            busbar_contract::caps::DurabilityLost::observed(
+                &self.durability_token,
+                busbar_contract::caps::StepName::Audit,
+            )
+        };
+        let book = self.book.get().ok_or_else(lost)?;
         let busbar_kernel::teller::Ended::Settled { end, .. } = ended else {
-            return None;
+            return Err(lost());
         };
         let outcome = end.outcome();
-        end.into_posted().ok()?;
+        end.into_posted().map_err(|_| lost())?;
         seal.seal(
             book,
             self.sealing.get().copied(),
@@ -376,7 +382,6 @@ impl Node {
             None,
             String::new(),
         )
-        .ok()
     }
 
     pub(crate) fn sweep(&self, now: Arrived) -> usize {
@@ -871,9 +876,9 @@ impl Node {
             Ok(receipt) => {
                 receipt.confirm_terminal(self.ticket_custody.clone(), key, outcome.is_completed())
             }
-            Err(_) => {
+            Err(error) => {
                 self.ticket_custody.terminal(key, false);
-                None
+                Some(TerminalConfirmation::failed(error))
             }
         }
     }
@@ -1202,9 +1207,9 @@ impl LateAccrual {
         };
         match acknowledged {
             Ok(receipt) => receipt.confirm_terminal(custody, key, posted && completed),
-            Err(_) => {
+            Err(error) => {
                 custody.terminal(key, false);
-                None
+                Some(TerminalConfirmation::failed(error))
             }
         }
     }
@@ -2105,7 +2110,7 @@ impl Accruing {
 // awaited, or its awaiter cancelled mid-confirm) is restarted in one detached
 // task, so cancellation never abandons its original. `confirm` is cancel-safe.
 struct TerminalConfirmation {
-    inner: Option<Confirm>,
+    inner: Result<Option<Confirm>, String>,
 }
 
 struct Confirm {
@@ -2128,15 +2133,21 @@ impl Confirm {
 }
 
 impl TerminalConfirmation {
+    fn failed(error: busbar_contract::caps::DurabilityLost) -> Self {
+        Self {
+            inner: Err(crate::root::cold::terminal_audit_stage_failed(&error)),
+        }
+    }
+
     async fn wait(mut self) -> Result<(), String> {
-        let Some(inner) = self.inner.as_ref() else {
+        let Some(inner) = self.inner.as_ref().map_err(Clone::clone)? else {
             return Ok(());
         };
         let confirmed = inner.audit.journal.confirm(&inner.audit.run).await;
         if confirmed.is_ok() {
             crate::root::durability::records_pulse().notify_waiters();
         }
-        let Some(inner) = self.inner.take() else {
+        let Ok(Some(inner)) = std::mem::replace(&mut self.inner, Ok(None)) else {
             return Ok(());
         };
         inner
@@ -2148,7 +2159,7 @@ impl TerminalConfirmation {
 
 impl Drop for TerminalConfirmation {
     fn drop(&mut self) {
-        let Some(inner) = self.inner.take() else {
+        let Ok(Some(inner)) = std::mem::replace(&mut self.inner, Ok(None)) else {
             return;
         };
         match tokio::runtime::Handle::try_current() {
@@ -2181,12 +2192,12 @@ impl StagedAudit {
             return None;
         }
         Some(TerminalConfirmation {
-            inner: Some(Confirm {
+            inner: Ok(Some(Confirm {
                 audit: self,
                 custody,
                 key,
                 completed,
-            }),
+            })),
         })
     }
 }

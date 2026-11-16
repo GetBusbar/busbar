@@ -858,6 +858,11 @@ diagnostics! {
         "The oldest audit line no stamp covers yet is older than the alert threshold (ten times audit.seal_every, at least one second). The notary is backing off a failing signer or store, or it has stopped. Lines are durable and linked; a crash now leaves a longer unstamped tail for the next process on this host to seal or report.",
         "Look for BUSBAR-2049 just before this line and act on its reason. The gauge audit_unstamped_age_ms shows the current age.";
 
+    TERMINAL_AUDIT_STAGE_FAILED = 2051, Audit, Actionable, "terminal-audit-stage-failed", "1.6.0", false,
+        "A request terminal audit original could not be staged",
+        "The journal refused the terminal audit original before native confirmation. The request fails instead of reporting success without its audit evidence; an already streaming response terminates with an error. The journal and audit chain positions do not advance for the refused original. The counter busbar_audit_stage_failures_total counts these failures.",
+        "Check store availability and journal custody pressure. A closed journal can also indicate shutdown. Do not assume an upstream operation was undone when its terminal audit failed.";
+
     PLANE_AUDITLOG_WRITE_FAILED = 2044, Audit, Actionable, "plane-auditlog-write-failed", "1.6.0", false,
         "Admin audit record could not be written through the durable journal seam (evidence lost)",
         "The admin audit record could NOT be written through the durable journal seam, so this mutation is being served but its evidence is being lost on that path. The chain position is unchanged, so the chain stays contiguous — what is missing is this one record, not the ones after it. This can recur per mutation during a store outage, so it warns on the transition into the failing state and holds subsequent occurrences at debug.",
