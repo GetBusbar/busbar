@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::root::test_plugins as plugins;
+use busbar_contract::json::{self, JsonValueTrait as _};
 use std::sync::Arc;
 
 #[tokio::test]
@@ -688,8 +689,7 @@ async fn test_admin_prefix_is_boundary_safe() {
     .await
     .expect("the actual refusal body is bounded")
     .unwrap();
-    let body: serde_json::Value =
-        serde_json::from_slice(&bytes).expect("actual refusal body is JSON");
+    let body: json::Value = json::parse_value(&bytes).expect("actual refusal body is JSON");
     assert_eq!(
         status, 401,
         "an /apix path must be a normal data auth refusal: {body}"
@@ -795,16 +795,20 @@ async fn test_unauthorized_body_carries_no_busbar_vocabulary_on_the_live_stack()
         rotate.await;
     }
     let app = Arc::new(app);
-    fn collect_strings<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>) {
-        match value {
-            serde_json::Value::String(s) => out.push(s),
-            serde_json::Value::Array(items) => {
-                for item in items {
+    fn collect_strings<'a>(value: &'a json::Value, out: &mut Vec<&'a str>) {
+        match value.get_type() {
+            json::JsonType::String => out.extend(value.as_str()),
+            json::JsonType::Array => {
+                for item in value.as_array().into_iter().flat_map(|items| items.iter()) {
                     collect_strings(item, out);
                 }
             }
-            serde_json::Value::Object(fields) => {
-                for item in fields.values() {
+            json::JsonType::Object => {
+                for (_, item) in value
+                    .as_object()
+                    .into_iter()
+                    .flat_map(|fields| fields.iter())
+                {
                     collect_strings(item, out);
                 }
             }
@@ -849,8 +853,7 @@ async fn test_unauthorized_body_carries_no_busbar_vocabulary_on_the_live_stack()
         .await
         .expect("the actual refusal body is bounded")
         .unwrap();
-        let body: serde_json::Value =
-            serde_json::from_slice(&bytes).expect("actual refusal body is JSON");
+        let body: json::Value = json::parse_value(&bytes).expect("actual refusal body is JSON");
         assert!(
             status == 401 || status == 403,
             "{path} must be refused by the actual auth gate: {body}"

@@ -5,6 +5,7 @@ use crate::root::test_plugins as plugins;
 use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD};
 use busbar_contract::abi::host::service::{UnitRef, FLOW_STOP, REFUSE_STOPPED};
 use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
+use busbar_contract::json;
 use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
 use busbar_kernel::inbound::{Call, Head, Listener, ListenerScope, Refusal, Refuse};
 use std::sync::Arc;
@@ -340,20 +341,17 @@ async fn actual_inbound_refusals_preserve_builder_bytes_unit_retirement_and_real
             let mut challenge = format!("Bearer resource_metadata=\"{METADATA}\"");
             let body = if token.is_some() {
                 challenge.push_str(", error=\"invalid_token\", error_description=\"Authentication is required for this resource.\"");
-                serde_json::json!({
+                json::json!({
                     "error": "invalid_token",
                     "error_description": "Authentication is required for this resource.",
                 })
             } else {
-                serde_json::json!({"error": "unauthorized"})
+                json::json!({"error": "unauthorized"})
             };
             assert!(got.fields.iter().any(|(name, value)| {
                 name == "www-authenticate" && value == challenge.as_bytes()
             }));
-            assert_eq!(
-                serde_json::from_slice::<serde_json::Value>(&got.body).unwrap(),
-                body
-            );
+            assert_eq!(json::parse_value(&got.body).unwrap(), body);
             assert!(inbound.unit_secret(7, stopped.unit.id).is_none());
             assert_eq!(captured.0.lock().unwrap().len(), before + 1);
         }
