@@ -124,7 +124,7 @@ pub enum Refused {
 }
 
 /// Verify, then claim the replay key; admitted only when both succeed.
-pub async fn admit<V: IngressVerifier, G: ReplayGuard>(
+pub async fn admit<V: IngressVerifier + ?Sized, G: ReplayGuard + ?Sized>(
     verifier: &V,
     guard: &G,
     plane: &Caller<'_>,

@@ -1,16 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The HTTP mount of the MIN-3 plane instances (PLANE-DRIVER.md slice 9, PLANE-BOOT-MOUNT). Every data route a
-//! plane declares (`PortRoutes.data`, slice 8) becomes one [`PlaneRouteSpec`] per HTTP verb of its method mask;
-//! the handler turns the request into a [`ServeIn`], runs [`PortDriver::serve`] (admission, the whole session,
-//! the books) and renders the client items it answers as one response.
+//! The HTTP mount of the MIN-3 plane instances (PLANE-DRIVER.md slice 9, PLANE-BOOT-MOUNT, PLANE-SERVICES). Every
+//! data route a plane declares (`PortRoutes.data`, slice 8) becomes one [`PlaneRouteSpec`] per HTTP verb of its
+//! method mask; the handler turns the request into a [`ServeIn`], runs [`PortDriver::serve`] (admission, the whole
+//! session, the books) and renders the client items it answers as one response.
 //!
-//! Not mounted here, each owned by a later step (PLANE-BOOT-MOUNT.md): ROUTE_ADMIN (the admin router and its
-//! scope middleware), ROUTE_UPGRADE (the §12.27 upgrade sequence), ROUTE_CATALOG (the model list), and a streamed
-//! reply (the items are joined into one body). A request is not a billed unit on this path yet (`unit: None`: audit
-//! rows only) and a FORWARD has no walk (`upstream: None`: the session fails `NotDriven`) until the egress half of
-//! slice 5 lands.
+//! - ROUTE_CATALOG routes are mounted like any data route; the principal's model list is handed to the plane's
+//!   `render(RENDER_CATALOG)` (`ServeIn.models`, core's `catalog_names`). A request with no governance context lists
+//!   nothing (fail closed), never every model.
+//! - A route the data chain does not gate (OPTIONAL, or PRINCIPAL beside TICKET) takes the principal its credential
+//!   names, resolved here through the same chain ([`chain_principal`]); an anonymous request stays anonymous and a
+//!   credential the chain refuses is a refusal of the route's class.
+//! - AUTH_SIGNED_INGRESS runs the Standard Webhooks check and the replay claim ([`signed_of`]) before admission. The
+//!   route's webhook secret has no configured source yet, so a signed route admits nothing until one is stated.
+//! - ROUTE_ADMIN is served on the admin listener, not here (`port_admin`, installed at boot).
+//!
+//! Not mounted, owned by a later step: ROUTE_UPGRADE (the §12.27 upgrade sequence adopts the connection's stream; the
+//! buffered `serve` cannot carry it), and a streamed reply (the items are joined into one body). A request is not a
+//! billed unit on this path yet (`unit: None`: audit rows only) and a FORWARD has no walk (`upstream: None`: the
+//! session fails `NotDriven`) until the egress half of slice 5 lands.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -21,13 +30,24 @@ use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
 use busbar_contract::abi::transport::route::{
     METHOD_DELETE, METHOD_GET, METHOD_PATCH, METHOD_POST, METHOD_PUT,
 };
+use busbar_contract::secret_ref::SecretRef;
+use busbar_kernel::auth::{AuthPrincipal, ChainHead, IdentityRefusal};
+use busbar_kernel::governance::GovCtx;
+use busbar_kernel::ingress::signed_ingress;
+use busbar_kernel::plane_driver::dispatch::LaneQualifier;
 use busbar_kernel::plane_driver::port::{HttpIn, PortSeat, ServeIn, Served};
+use busbar_kernel::plane_driver::port_admin;
 use busbar_kernel::plane_driver::port_auth::{subject_identity, Credentials, Principal};
+use busbar_kernel::plane_driver::port_intents::Namespace;
 use busbar_kernel::plane_driver::port_routes::Mounted;
 use busbar_kernel::plane_driver::port_session::ToClient;
-use busbar_kernel::plane_driver::HeadFields;
+use busbar_kernel::plane_grants::{IngressVerifier, ReplayGuard};
 use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneResponse, PlaneRouteFuture, PlaneRouteSpec};
+use busbar_kernel::state::{App, AppHandle};
+use busbar_plugin_abi::fail::refused::R_BAD_CREDENTIAL;
 use busbar_plugin_abi::plane::AUTH_PRINCIPAL;
+use busbar_plugin_abi::plane::{AUTH_OPTIONAL, AUTH_SIGNED_INGRESS};
+use busbar_plugin_abi::types::{Bytes as WireBytes, Pair, Str};
 
 /// The request ids this mount hands the planes: unique inside the process, never zero.
 static REQUEST_IDS: AtomicU64 = AtomicU64::new(1);
@@ -74,28 +94,8 @@ pub(crate) fn bearer_of(headers: &HeaderMap, cred_header: Option<&str>) -> Optio
     }
 }
 
-/// The status, head fields and joined body of the client items. No head = the plane wrote no answer: 502 with
-/// nothing, never a 200 nobody stated. Trailers and the end mark carry nothing on a buffered reply.
-pub(crate) fn parts_of(items: Vec<ToClient>) -> (u16, HeadFields, Vec<u8>) {
-    let mut head = None;
-    let mut body = Vec::new();
-    for item in items {
-        match item {
-            ToClient::Head { status, fields } => {
-                head.get_or_insert((status, fields));
-            }
-            ToClient::Body(bytes) | ToClient::Msg { bytes, .. } => body.extend_from_slice(&bytes),
-            ToClient::Trailers(_) | ToClient::End => {}
-        }
-    }
-    match head {
-        Some((status, fields)) => (status, fields, body),
-        None => (502, Vec::new(), Vec::new()),
-    }
-}
-
 fn response_of(items: Vec<ToClient>) -> PlaneResponse {
-    let (status, fields, body) = parts_of(items);
+    let (status, fields, body) = port_admin::joined(items);
     let mut response = PlaneResponse::new(Body::from(body));
     *response.status_mut() = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
     for (name, value) in fields {
@@ -130,34 +130,177 @@ fn http_in(ctx: &PlaneReqCtx) -> HttpIn {
     }
 }
 
-async fn answer(seat: &PortSeat, route: &Mounted, ctx: PlaneReqCtx) -> PlaneResponse {
-    // The data chain's verdict, when the route sat behind it: the verified principal's id is its subject.
-    let principal: Option<Arc<str>> = ctx
-        .principal
-        .as_ref()
-        .and_then(|p| p.0.as_ref())
-        .map(|p| Arc::from(p.id.as_str()));
-    let identity = principal.as_deref().map(subject_identity);
+/// What the credential of a request named, for a route the data chain does not gate.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Seen {
+    /// No credential, or an open chain: the identity is empty.
+    Anonymous,
+    /// The chain identified it: the principal's id is the subject.
+    Verified(Arc<str>),
+    /// A credential the chain (or the governance binding) refused.
+    Rejected,
+}
+
+/// The chain's verdict, as the principal the route is handed.
+pub(crate) fn seen_of(resolved: Result<(AuthPrincipal, GovCtx), IdentityRefusal>) -> Seen {
+    match resolved {
+        Ok((AuthPrincipal(Some(principal)), _)) => Seen::Verified(Arc::from(principal.id.as_str())),
+        Ok((AuthPrincipal(None), _)) => Seen::Anonymous,
+        Err(_) => Seen::Rejected,
+    }
+}
+
+/// Whether the mount resolves the credential itself: the route is not gated by the data chain (`auth_of`) and its
+/// class set can take a principal (OPTIONAL, or a PRINCIPAL per-request pick beside TICKET or OPTIONAL).
+pub(crate) fn resolves_credential(effective: u32) -> bool {
+    effective != AUTH_PRINCIPAL && effective & (AUTH_PRINCIPAL | AUTH_OPTIONAL) != 0
+}
+
+fn app_of(engine: &Arc<dyn std::any::Any + Send + Sync>) -> Option<Arc<App>> {
+    match Arc::clone(engine).downcast::<App>() {
+        Ok(app) => Some(app),
+        Err(engine) => Some(engine.downcast::<AppHandle>().ok()?.load()),
+    }
+}
+
+/// The principal `bearer` names under the data auth chain, for a route the chain did not gate. No credential, or a
+/// chain with nothing configured, is anonymous.
+async fn chain_principal(ctx: &PlaneReqCtx, bearer: Option<&str>) -> Seen {
+    let Some(token) = bearer else {
+        return Seen::Anonymous;
+    };
+    let Some(app) = app_of(&ctx.engine) else {
+        return Seen::Rejected;
+    };
+    if app.auth.is_open() {
+        return Seen::Anonymous;
+    }
+    let target = ctx
+        .uri
+        .path_and_query()
+        .map_or_else(|| ctx.uri.path(), |pq| pq.as_str());
+    let head = ChainHead::of_parts(ctx.method.as_str(), target, &ctx.headers);
+    let verdict = busbar_kernel::auth::AuthMiddleware::run_chain_on_request_path(
+        &app.auth,
+        Some(token.to_owned()),
+        head,
+        app.governance.clone(),
+        None,
+    )
+    .await;
+    seen_of(busbar_kernel::auth::resolve_data_plane_identity(
+        &app, verdict,
+    ))
+}
+
+/// What a signed route needs, built at boot from the process's custody: the Standard Webhooks verifier, the replay
+/// guard, and the webhook secret of (plane instance, route) the operator configured.
+pub(crate) struct Ingress {
+    pub(crate) verifier: Arc<dyn IngressVerifier>,
+    pub(crate) replay: Arc<dyn ReplayGuard>,
+    pub(crate) secrets: Arc<dyn Fn(&str, u32) -> Option<SecretRef> + Send + Sync>,
+}
+
+/// The route's signature check for `PlaneIn`'s admission: `None` when the route is not AUTH_SIGNED_INGRESS (no
+/// check ran), `Some(true)` only for a verified first sighting, else `Some(false)`. A route with no configured
+/// secret is `Some(false)`: nothing is admitted unsigned.
+pub(crate) async fn signed_of(
+    ingress: &Ingress,
+    who: &Namespace,
+    route: &Mounted,
+    headers: &[(String, Vec<u8>)],
+    body: &[u8],
+    now_s: u64,
+) -> Option<bool> {
+    if route.effective != AUTH_SIGNED_INGRESS {
+        return None;
+    }
+    let Some(secret) = (ingress.secrets)(&who.name, route.route) else {
+        return Some(false);
+    };
+    let pairs: Vec<Pair<'_>> = headers
+        .iter()
+        .map(|(name, value)| Pair {
+            name: Str::new(name),
+            value: WireBytes::new(value),
+        })
+        .collect();
+    let admitted = signed_ingress::admit(
+        &*ingress.verifier,
+        &*ingress.replay,
+        &who.caller(),
+        &secret,
+        &pairs,
+        body,
+        now_s,
+    )
+    .await;
+    Some(admitted.is_ok())
+}
+
+/// The model names a ROUTE_CATALOG route lists: the governed principal's view. A request that carries no governance
+/// context lists nothing.
+fn models_of(ctx: &PlaneReqCtx) -> Vec<String> {
+    let (Some(app), Some(gov)) = (app_of(&ctx.engine), ctx.gov.as_ref()) else {
+        return Vec::new();
+    };
+    busbar_kernel::endpoints::catalog_names(&app, gov, &LaneQualifier::default())
+}
+
+async fn answer(
+    seat: &PortSeat,
+    route: &Mounted,
+    ingress: Option<&Ingress>,
+    ctx: PlaneReqCtx,
+) -> PlaneResponse {
     let bearer = bearer_of(&ctx.headers, route.cred_header.as_deref());
+    // The data chain's verdict, when the route sat behind it: the verified principal's id is its subject. A route
+    // the chain did not gate resolves its credential here.
+    let seen = match ctx.principal.as_ref().and_then(|p| p.0.as_ref()) {
+        Some(p) => Seen::Verified(Arc::from(p.id.as_str())),
+        None if resolves_credential(route.effective) => {
+            chain_principal(&ctx, bearer.as_deref()).await
+        }
+        None => Seen::Anonymous,
+    };
+    let (principal, identity) = match &seen {
+        Seen::Verified(id) => (Some(Arc::clone(id)), Some(subject_identity(id))),
+        Seen::Anonymous | Seen::Rejected => (None, None),
+    };
+    let http = http_in(&ctx);
+    let now_s = busbar_kernel::store::now();
+    let signed = match ingress {
+        Some(ingress) => {
+            signed_of(ingress, &seat.who, route, &http.headers, &http.body, now_s).await
+        }
+        None => None,
+    };
     let creds = Credentials {
         bearer: bearer.as_deref(),
-        principal: match &identity {
-            Some(records) => Principal::Verified(records),
-            None => Principal::Anonymous,
+        principal: match (&seen, &identity) {
+            (Seen::Verified(_), Some(records)) => Principal::Verified(records),
+            (Seen::Rejected, _) => Principal::Rejected(R_BAD_CREDENTIAL),
+            _ => Principal::Anonymous,
         },
         operator: false,
-        signed: None,
+        signed,
+    };
+    let models = if route.catalog {
+        models_of(&ctx)
+    } else {
+        Vec::new()
     };
     let input = ServeIn {
         route: route.route,
-        http: http_in(&ctx),
+        http,
         creds,
         audience: seat.audience.as_deref().unwrap_or_default(),
-        now_s: busbar_kernel::store::now(),
+        now_s,
         principal,
         unit: None,
         upstream: None,
         intents: Arc::clone(&seat.intents),
+        models,
     };
     match seat.driver.serve(input).await {
         Ok(Served::Refused(items)) => response_of(items),
@@ -169,14 +312,16 @@ async fn answer(seat: &PortSeat, route: &Mounted, ctx: PlaneReqCtx) -> PlaneResp
     }
 }
 
-/// One spec per (data route, verb) of every seat. A catalog route is not mounted (see the module docs).
-pub(crate) fn routes(seats: &[PortSeat]) -> Vec<PlaneRouteSpec> {
+/// One spec per (data route, verb) of every seat, catalog routes included. `ingress` is what an
+/// AUTH_SIGNED_INGRESS route verifies with (`None` = no route can be admitted as signed).
+pub(crate) fn routes(seats: &[PortSeat], ingress: Option<Arc<Ingress>>) -> Vec<PlaneRouteSpec> {
     let mut out = Vec::new();
     for seat in seats {
-        for route in seat.driver.routes().data.iter().filter(|m| !m.catalog) {
+        for route in seat.driver.routes().data.iter() {
             for method in methods_of(route.methods) {
                 let seat = seat.clone();
                 let mounted = route.clone();
+                let ingress = ingress.clone();
                 out.push(PlaneRouteSpec {
                     path: route.pattern.to_string(),
                     method,
@@ -184,7 +329,10 @@ pub(crate) fn routes(seats: &[PortSeat]) -> Vec<PlaneRouteSpec> {
                     handler: Arc::new(move |ctx: PlaneReqCtx| -> PlaneRouteFuture {
                         let seat = seat.clone();
                         let mounted = mounted.clone();
-                        Box::pin(async move { answer(&seat, &mounted, ctx).await })
+                        let ingress = ingress.clone();
+                        Box::pin(
+                            async move { answer(&seat, &mounted, ingress.as_deref(), ctx).await },
+                        )
                     }),
                 });
             }

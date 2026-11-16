@@ -28,9 +28,18 @@ fn a_request_names_the_admin_route_its_method_and_path_match() {
         admin(1, METHOD_GET | METHOD_POST, "/admin/connections/{id}"),
         admin(2, METHOD_GET, "/admin/health"),
     ];
-    assert_eq!(matching(&routes, "GET", "/admin/connections/c1").map(|m| m.route), Some(1));
-    assert_eq!(matching(&routes, "POST", "/admin/connections/c1").map(|m| m.route), Some(1));
-    assert_eq!(matching(&routes, "GET", "/admin/health").map(|m| m.route), Some(2));
+    assert_eq!(
+        matching(&routes, "GET", "/admin/connections/c1").map(|m| m.route),
+        Some(1)
+    );
+    assert_eq!(
+        matching(&routes, "POST", "/admin/connections/c1").map(|m| m.route),
+        Some(1)
+    );
+    assert_eq!(
+        matching(&routes, "GET", "/admin/health").map(|m| m.route),
+        Some(2)
+    );
     // The method is not in the route's mask, the path is another's, a segment is missing or extra.
     assert_eq!(matching(&routes, "POST", "/admin/health"), None);
     assert_eq!(matching(&routes, "DELETE", "/admin/connections/c1"), None);
@@ -61,7 +70,10 @@ fn the_client_items_make_one_answer_and_no_head_is_a_bad_gateway() {
     ];
     let (status, fields, body) = joined(items);
     assert_eq!(status, 202);
-    assert_eq!(fields, vec![(b"content-type".to_vec(), b"application/json".to_vec())]);
+    assert_eq!(
+        fields,
+        vec![(b"content-type".to_vec(), b"application/json".to_vec())]
+    );
     assert_eq!(body, b"{\"a\":1}");
     assert_eq!(joined(vec![ToClient::End]), (502, Vec::new(), Vec::new()));
 }

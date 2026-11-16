@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use busbar_contract::secret_ref::Sugars;
+use busbar_contract::secret_ref::{SecretRef, Sugars};
 use busbar_contract::secure::SecureVec;
 use busbar_core_connector::guard::Guard;
 use busbar_core_connector::need::{HostNeeds, NeedLimits};
@@ -31,6 +31,7 @@ use busbar_kernel::config::{PluginsCfg, RootCfg};
 use busbar_kernel::directory::{KernelDirectory, LateDirectory, LogEvents};
 use busbar_kernel::host_services::{DestJudge, KernelServices};
 use busbar_kernel::ingress::replay::StoreReplay;
+use busbar_kernel::ingress::signed_ingress::{RouteSecrets, StandardWebhooks};
 use busbar_kernel::issued::IssuedCredentials;
 use busbar_kernel::persistence::boot_identity::BootIdentity;
 use busbar_kernel::persistence::startup::Startup;
@@ -59,6 +60,7 @@ use busbar_plugin_loader::instance::{
 };
 use busbar_plugin_loader::ports::store::StoreHandle;
 
+use super::port_mount::Ingress;
 use super::secret_custody::{self, BootCustody, BootRefs};
 
 /// The records every Need handler, the replay guard and the plane driver share: filled once the store is open.
@@ -293,6 +295,8 @@ pub(crate) struct Booted {
     pub(crate) startup: Mutex<Option<Startup>>,
     /// Durable WORK: the governance binder, filled when governance attaches ([`attach_governance`]).
     work_binder: LateBinder,
+    /// The records the signed-ingress replay claims are written through.
+    records: Records,
 }
 
 static BOOTED: OnceLock<Booted> = OnceLock::new();
@@ -344,6 +348,34 @@ pub(crate) fn attach_governance(handle: Arc<busbar_kernel::state::AppHandle>) {
     if let Some(booted) = booted() {
         booted.work_binder.install(governed_binder(handle));
     }
+}
+
+/// Webhook secrets by reference, through custody (a route's secret resolves like any other reference: by reference,
+/// an empty call stack, no source named in an error). A reference that does not resolve verifies nothing.
+struct CustodySecrets;
+
+impl RouteSecrets for CustodySecrets {
+    fn resolve<'a>(&'a self, reference: &'a SecretRef) -> BoxFut<'a, Option<SecureVec>> {
+        Box::pin(async move {
+            secret_custody::the()
+                .resolve_ref(Instant::now() + CORE_SECRET_DEADLINE, reference)
+                .await
+                .ok()
+        })
+    }
+}
+
+/// What the plane routes of class AUTH_SIGNED_INGRESS verify with (IF §12.11, TRANSPORT-SECURITY-POLICY): core's
+/// Standard Webhooks verifier over custody and the replay claim in the core store. The IF names no config key for a
+/// route's webhook secret and K7's `Min3Config` carries none yet, so no route has one: every signed route answers
+/// `R_BAD_CREDENTIAL` until the operator's `routes.<id>` block supplies it (the same answer the unwired route gave).
+pub(crate) fn signed_ingress() -> Option<Arc<Ingress>> {
+    let booted = booted()?;
+    Some(Arc::new(Ingress {
+        verifier: Arc::new(StandardWebhooks::new(CustodySecrets)),
+        replay: Arc::new(StoreReplay::new(booted.records.clone())),
+        secrets: Arc::new(|_: &str, _: u32| None),
+    }))
 }
 
 /// The MIN-3 images the plugins directory's scan holds. The scan verified each one; admission re-verifies the
@@ -827,12 +859,15 @@ pub(crate) async fn run(
         .into_inner()
         .unwrap_or_else(PoisonError::into_inner);
     let ticking = seats.clone();
+    // The admin listener serves the planes' ROUTE_ADMIN routes from here on.
+    busbar_kernel::plane_driver::port_admin::install(seats.clone());
     let installed = BOOTED.set(Booted {
         registry: built.registry,
         seats,
         core,
         deployment: walked.deployment,
         work_binder: shared.work_binder.clone(),
+        records: built.records.clone(),
         startup: Mutex::new(
             startup
                 .lock()

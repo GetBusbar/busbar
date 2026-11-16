@@ -25,7 +25,8 @@ use crate::channels::line_carriers::{CarrierSink, LineCarriers};
 use crate::host_services::KernelServices;
 
 use super::port_auth::{
-    admit, refuse, subject_identity, Admitted, Credentials, NoTickets, Principal, TicketDoor,
+    admit, catalog, refuse, subject_identity, Admitted, Credentials, NoTickets, Principal,
+    TicketDoor,
 };
 use super::port_channels::{decode_tick, TickOut};
 use super::port_intents::{IntentHost, Namespace, Resolver};
@@ -261,6 +262,7 @@ impl PortDriver {
             .data
             .iter()
             .chain(&self.routes.upgrade)
+            .chain(&self.routes.admin)
             .find(|m| m.route == input.route)
             .cloned()
             .ok_or(ServeError::NoRoute)?;
@@ -280,6 +282,7 @@ impl PortDriver {
             unit,
             upstream,
             intents,
+            models,
             ..
         } = input;
         let port = Arc::clone(&self.port);
@@ -301,6 +304,7 @@ impl PortDriver {
                 unit,
                 upstream,
                 &*intents,
+                &models,
             )
         })
         .await
@@ -547,6 +551,9 @@ pub struct ServeIn<'a> {
     pub upstream: Option<(Box<dyn Members + Send>, Box<dyn UpSend + Send>)>,
     /// What the plane's intents run against.
     pub intents: Arc<dyn IntentHost>,
+    /// The model names a ROUTE_CATALOG route lists (the principal's view, `endpoints::catalog_names`); empty for any
+    /// other route.
+    pub models: Vec<String>,
 }
 
 /// How a request ended, for the route layer.
@@ -581,6 +588,7 @@ fn serve_blocking(
     unit: Option<Unit>,
     upstream: Option<(Box<dyn Members + Send>, Box<dyn UpSend + Send>)>,
     intents: &dyn IntentHost,
+    models: &[String],
 ) -> Result<Served, ServeError> {
     let effects = LineEffects { carriers, owner };
     let headers: Vec<Pair<'_>> = http
@@ -614,6 +622,17 @@ fn serve_blocking(
         }
     };
     let req = build(admitted.auth, &admitted.identity, admitted.ticket_record());
+    if route.catalog {
+        // A ROUTE_CATALOG route lists models: the plane renders core's list in its dialect, no session runs.
+        let names: Vec<&str> = models.iter().map(String::as_str).collect();
+        return match catalog(port, &req, &names, &effects) {
+            Ok(client) => Ok(Served::Ran(Ran {
+                client,
+                ..Ran::default()
+            })),
+            Err(error) => Err(ServeError::Session(error)),
+        };
+    }
     let resolver = match principal.as_deref() {
         Some(subject) => Resolver::new(intents, None).with_principal(subject, &admitted.identity),
         None => Resolver::new(intents, None),

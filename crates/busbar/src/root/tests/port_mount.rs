@@ -73,7 +73,7 @@ fn client_items_become_one_response_in_the_order_the_plane_wrote_them() {
         },
         ToClient::End,
     ];
-    let (status, fields, body) = parts_of(items);
+    let (status, fields, body) = port_admin::joined(items);
     assert_eq!(status, 201);
     assert_eq!(fields, [(b"content-type".to_vec(), b"text/plain".to_vec())]);
     assert_eq!(body, b"hello");
@@ -81,7 +81,8 @@ fn client_items_become_one_response_in_the_order_the_plane_wrote_them() {
 
 #[test]
 fn a_session_that_wrote_no_head_is_a_gateway_failure_not_a_200() {
-    let (status, fields, body) = parts_of(vec![ToClient::Body(b"x".to_vec()), ToClient::End]);
+    let (status, fields, body) =
+        port_admin::joined(vec![ToClient::Body(b"x".to_vec()), ToClient::End]);
     assert_eq!((status, fields.len(), body), (502, 0, Vec::new()));
 }
 
@@ -123,14 +124,19 @@ mod optional_principal {
     }
 
     #[test]
-    fn only_a_route_with_optional_and_no_principal_class_resolves_a_credential_itself() {
-        use busbar_plugin_abi::plane::{AUTH_OPTIONAL, AUTH_PRINCIPAL, AUTH_PUBLIC};
-        assert!(resolves_optional(AUTH_OPTIONAL));
-        assert!(resolves_optional(AUTH_OPTIONAL | AUTH_PUBLIC));
-        // PRINCIPAL runs behind the data chain (auth_of); PUBLIC never authenticates.
-        assert!(!resolves_optional(AUTH_PRINCIPAL));
-        assert!(!resolves_optional(AUTH_PRINCIPAL | AUTH_OPTIONAL));
-        assert!(!resolves_optional(AUTH_PUBLIC));
+    fn a_route_the_data_chain_does_not_gate_resolves_the_credential_itself() {
+        use busbar_plugin_abi::plane::{AUTH_OPTIONAL, AUTH_PRINCIPAL, AUTH_PUBLIC, AUTH_TICKET};
+        // OPTIONAL takes the principal when a credential names one; PRINCIPAL beside another class is chosen per
+        // request (a ticket or a key), so the key must be resolved here, as the chain does not gate the route.
+        assert!(resolves_credential(AUTH_OPTIONAL));
+        assert!(resolves_credential(AUTH_OPTIONAL | AUTH_PUBLIC));
+        assert!(resolves_credential(AUTH_PRINCIPAL | AUTH_OPTIONAL));
+        assert!(resolves_credential(AUTH_PRINCIPAL | AUTH_TICKET));
+        // PRINCIPAL alone runs behind the data chain (`auth_of`); PUBLIC and TICKET never need a key.
+        assert!(!resolves_credential(AUTH_PRINCIPAL));
+        assert!(!resolves_credential(AUTH_PUBLIC));
+        assert!(!resolves_credential(AUTH_TICKET));
+        assert!(!resolves_credential(AUTH_PUBLIC | AUTH_TICKET));
     }
 }
 
@@ -168,7 +174,9 @@ mod signed_ingress {
             _: &'a [u8],
             _: u64,
         ) -> BoxFut<'a, Result<bool, RecordsDenied>> {
-            Box::pin(core::future::ready(Ok(self.0.swap(false, Ordering::SeqCst))))
+            Box::pin(core::future::ready(Ok(self
+                .0
+                .swap(false, Ordering::SeqCst))))
         }
     }
 
@@ -224,7 +232,13 @@ mod signed_ingress {
 
     #[tokio::test]
     async fn a_bad_signature_or_a_route_with_no_secret_is_not_admitted() {
-        assert_eq!(check(&ingress(false, true), AUTH_SIGNED_INGRESS).await, Some(false));
-        assert_eq!(check(&ingress(true, false), AUTH_SIGNED_INGRESS).await, Some(false));
+        assert_eq!(
+            check(&ingress(false, true), AUTH_SIGNED_INGRESS).await,
+            Some(false)
+        );
+        assert_eq!(
+            check(&ingress(true, false), AUTH_SIGNED_INGRESS).await,
+            Some(false)
+        );
     }
 }

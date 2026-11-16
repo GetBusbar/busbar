@@ -23,6 +23,7 @@ use crate::v1::contract::{
 };
 
 pub(crate) use busbar_kernel::audit_ring as audit;
+use busbar_kernel::plane_driver::port_admin;
 use busbar_kernel::state::AppHandle;
 
 #[cfg(feature = "openapi-schema")]
@@ -268,11 +269,60 @@ async fn plane_serve_or_not_found(
     State(handle): State<Arc<AppHandle>>,
     req: axum::extract::Request,
 ) -> Response {
+    let (parts, body) = req.into_parts();
+    // A MIN-3 plane instance's ROUTE_ADMIN route: the operator chain admitted this request already.
+    if port_admin::serves(parts.method.as_str(), parts.uri.path()) {
+        return port_admin_response(parts, body).await;
+    }
+    let req = axum::extract::Request::from_parts(parts, body);
     let tables = handle.load().serve_tables.clone();
     tables
         .answer(req)
         .await
         .unwrap_or_else(|| err_json(&AdminError::not_found("resource")))
+}
+
+/// The most body bytes a plane admin request may carry.
+const PLANE_ADMIN_BODY_MAX: usize = 1 << 20;
+
+/// The answer of the MIN-3 plane instance whose admin route the request names (see `port_admin`).
+async fn port_admin_response(
+    parts: axum::http::request::Parts,
+    body: axum::body::Body,
+) -> Response {
+    let Ok(body) = axum::body::to_bytes(body, PLANE_ADMIN_BODY_MAX).await else {
+        return err_json(&AdminError::Validation(
+            "the request body is over the plane admin limit".to_owned(),
+        ));
+    };
+    static REQUEST_IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let request = port_admin::AdminRequest {
+        method: parts.method.as_str().to_owned(),
+        path: parts.uri.path().to_owned(),
+        query: parts.uri.query().unwrap_or_default().to_owned(),
+        headers: parts
+            .headers
+            .iter()
+            .map(|(name, value)| (name.as_str().to_owned(), value.as_bytes().to_vec()))
+            .collect(),
+        body: body.to_vec(),
+        request_id: REQUEST_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        now_s: busbar_kernel::store::now(),
+    };
+    let Some((status, fields, body)) = port_admin::answer(request).await else {
+        return err_json(&AdminError::not_found("resource"));
+    };
+    let mut response = Response::new(axum::body::Body::from(body));
+    *response.status_mut() = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+    for (name, value) in fields {
+        if let (Ok(name), Ok(value)) = (
+            axum::http::HeaderName::from_bytes(&name),
+            axum::http::HeaderValue::from_bytes(&value),
+        ) {
+            response.headers_mut().append(name, value);
+        }
+    }
+    response
 }
 
 pub(crate) fn unconfigured_plane(

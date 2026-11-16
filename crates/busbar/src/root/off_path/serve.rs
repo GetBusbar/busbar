@@ -3583,7 +3583,10 @@ pub(crate) fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
         })
         .collect();
     // The MIN-3 plane instances serve their data routes through their ports (PLANE-BOOT-MOUNT).
-    tail.extend(crate::root::port_mount::routes(&served.ports));
+    tail.extend(crate::root::port_mount::routes(
+        &served.ports,
+        crate::root::min3_boot::signed_ingress(),
+    ));
     tail
 }
 
