@@ -358,6 +358,25 @@ fn key_meta(k: &VirtualKey) -> Value {
     meta
 }
 
+/// The shape `issue_aws_credential` mints with (IF §12.8): the declaring auth plugin's D_ISSUED_SHAPE, read from
+/// the kernel's `IssuedShapes`, never from the plugin's statement marks. No admitted plugin declaring `kind`
+/// answers core's refusal text. Minting is unchanged: CSPRNG through `busbar_crypto`, every symbol after the
+/// prefix with equal weight.
+pub fn issued_shape(
+    shapes: &busbar_kernel::issued::IssuedShapes,
+    kind: &str,
+) -> Result<busbar_contract::auth_calls::IssuedShape, String> {
+    shapes
+        .for_issuing(kind)
+        .map(|s| busbar_contract::auth_calls::IssuedShape {
+            id_prefix: s.id_prefix.to_string(),
+            id_len: s.id_len,
+            id_alphabet: s.id_alphabet.to_string(),
+            secret_len: s.secret_len,
+            secret_alphabet: s.secret_alphabet.to_string(),
+        })
+}
+
 type Revocations = std::collections::BTreeMap<String, (String, u64)>;
 
 async fn revocations_of(
