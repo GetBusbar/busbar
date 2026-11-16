@@ -137,6 +137,7 @@ pub enum KernelVerb {
     GetInfo,
     GetOperationsKey,
     GetWhoami,
+    GetConfigTree,
     GetUsage,
     GetOpenapiJson,
 
@@ -320,6 +321,7 @@ pub const TABLE: &[VerbRow] = table! {
     New GetWhoami "GET" "/api/v1/admin/whoami" "get_whoami";
     New PutHooksNameAttachmentsTarget "PUT" "/api/v1/admin/hooks/{name}/attachments/{target}" "put_hooks_name_attachments_target";
     New DeleteHooksNameAttachmentsTarget "DELETE" "/api/v1/admin/hooks/{name}/attachments/{target}" "delete_hooks_name_attachments_target";
+    New GetConfigTree "GET" "/api/v1/admin/config/tree" "get_config_tree";
     New GetTrust "GET" "/api/v1/admin/trust" "get_trust";
     New TrustApprove "POST" "/api/v1/admin/trust/approve" "trust_approve";
     New TrustRevoke "POST" "/api/v1/admin/trust/revoke" "trust_revoke";

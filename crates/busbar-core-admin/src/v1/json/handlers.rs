@@ -2905,6 +2905,15 @@ async fn current_root_settings(
     (root, revision, status)
 }
 
+/// The shorthand the running generation admits, which the secret rule reads `{word: value}`
+/// references against.
+fn settings_sugars(app: &busbar_kernel::state::App) -> busbar_contract::secret_ref::Sugars {
+    app.grammar
+        .get()
+        .map(|grammar| grammar.sugars.clone())
+        .unwrap_or_default()
+}
+
 pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) -> Response {
     let dispatch = tracing::dispatcher::get_default(|d| d.clone());
     let read = config_transaction(&handle, move |txn| {
@@ -2927,6 +2936,7 @@ pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) ->
     let settings = crate::v1::service::redact_settings_bags(
         serde_json::to_value(root.authoring(&busbar_kernel::seal::acquire()))
             .unwrap_or_else(|_| json!({})),
+        &settings_sugars(&current),
     );
     with_config_etag(
         ok_json(
@@ -2934,7 +2944,7 @@ pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) ->
             &json!({
                 "applied": false,
                 "config_version": current.config_version,
-                // already reduced every bag inside `settings` to its key names.
+                // already projected every secret position inside `settings` to {set, secret_ref}.
                 "settings": settings,
                 "settings_source": "desired_root_overlay",
                 "desired_revision": desired_revision,
@@ -3131,6 +3141,7 @@ pub(crate) async fn put_config_settings(
             let settings = crate::v1::service::redact_settings_bags(
                 serde_json::to_value(merged.authoring(&busbar_kernel::seal::acquire()))
                     .unwrap_or_else(|_| json!({})),
+                &settings_sugars(&installed),
             );
             with_config_etag(
                 ok_json(
@@ -3138,7 +3149,7 @@ pub(crate) async fn put_config_settings(
                     &json!({
                         "applied": true,
                         "config_version": installed.config_version,
-                        // above has already reduced every bag inside `settings` to its key names.
+                        // above has already projected every secret position inside `settings` to {set, secret_ref}.
                         "settings": settings,
                         "configuration": configuration,
                         "reload_to_apply": reload_to_apply,

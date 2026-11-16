@@ -98,6 +98,7 @@ impl AdminTransport for JsonV1 {
             .route("/config", get(get_config))
             .route("/audit", get(get_audit))
             .route(PATH_CONFIG_VALIDATE, post(validate_config))
+            .route("/config/tree", get(config_tree::get))
             .route("/config/versions", get(list_config_versions))
             .route("/config/versions/{v}", get(get_config_version))
             .route("/config/diff", get(config_diff))
@@ -613,6 +614,7 @@ fn with_config_etag(mut resp: Response, version: u64) -> Response {
 }
 
 mod config_document;
+mod config_tree;
 mod plane_input_schemas;
 pub use plane_input_schemas::install_plane_input_schemas;
 #[cfg(feature = "openapi-schema")]
