@@ -218,12 +218,15 @@ pub(super) fn kind_tag(kind: u32) -> Option<u8> {
     }
 }
 
+/// One row a transaction read or writes: its table, its key and its value.
+type TxRow = (&'static str, Vec<u8>, Option<Secret<Vec<u8>>>);
+
 /// One optimistic attempt: every address read is pinned (`Exact` or `Absent`) by the one commit, so a concurrent
 /// writer of any of them turns the commit into a ConditionConflict and the op decides again.
 pub(super) struct Tx<'s> {
     scope: &'s ScopedStore,
-    seen: Vec<(&'static str, Vec<u8>, Option<Secret<Vec<u8>>>)>,
-    writes: Vec<(&'static str, Vec<u8>, Option<Secret<Vec<u8>>>)>,
+    seen: Vec<TxRow>,
+    writes: Vec<TxRow>,
     ranges: Vec<Mutation>,
 }
 

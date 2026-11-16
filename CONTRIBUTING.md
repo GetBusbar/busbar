@@ -10,6 +10,22 @@ By contributing, you agree your contributions are licensed under the project's
   [Apache-2.0](LICENSE) license.
 - Security issues go through [SECURITY.md](SECURITY.md), **not** public issues.
 
+## Build and test on a fresh checkout
+
+The toolchain is pinned by `rust-toolchain.toml`; `rustup` installs it on the first `cargo` call in the
+checkout. A C compiler (`cc`) is needed to build the crypto backend (AWS-LC). Then:
+
+```bash
+cargo build --locked -p busbar --bin busbar          # the core binary, target/debug/busbar
+cargo test --locked -p <crate>                        # one crate's tests
+cargo install cargo-nextest --locked                  # the runner CI uses
+cargo nextest run --locked --workspace --features busbar-kernel/openapi-schema,busbar-core-admin/openapi-schema
+cargo test --locked --workspace --doc --features busbar-kernel/openapi-schema,busbar-core-admin/openapi-schema
+```
+
+The last two are what CI's `test` job runs. [What CI checks](docs/ci.md) lists every check a change
+is held to, on every change and on a release.
+
 ## How a change lands
 
 1. Branch `lane-<name>` from `origin/dev`. `predev` is retired.
@@ -40,9 +56,10 @@ By contributing, you agree your contributions are licensed under the project's
   how the compiler proves every failure mode is handled. A backend is ejected for upstream faults,
   never for a client-supplied 4xx.
 - `git -C` only, no `git stash`, no force-push except `--force-with-lease` on your own branch.
-- Fixing a defect: read
-  [docs/testing.md § The remediation contract](docs/testing.md#the-remediation-contract). Fix the
-  class at its choke point with one class-level test, and name the RED-before in the PR.
+- Fixing a defect: a finding with a sibling is a missing choke point, not one bug. Fix the class at its
+  choke point (the one place every sibling passes through), route every sibling through it, attach ONE
+  class-level test there, and name the RED-before in the PR. A later sibling of an already fixed family
+  means the class was never fixed: build the choke point that should have been built.
 - Bring unresolved design questions to the owner with the current code and a concrete proposal.
 
 ## Cutting a release

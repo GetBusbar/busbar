@@ -83,6 +83,7 @@ pub enum CustodyDenied {
 ///    before a renewal and fails after it, or v1 kept in instance state since `open` (connection credentials, an
 ///    outbound key), still has v1 masked. The generation before that is dropped (zeroized); never more than two. `resolve_ref` registers in no instance's set
 ///    (it has no instance; kernel-internal secrets for an instance use the kernel slots, §12.16).
+///
 /// Not dyn: `resolve` is RPITIT (I5: no SECRET step boxes); HostNeeds and every other consumer is generic over
 /// `C: SecretCustody`. A cache hit returns a clone of the cached Arc (no allocation). `generation(who, handle)`
 /// changes whenever step 5 stores a new value for that handle; the connector's `CertDigests` cache (§13) compares

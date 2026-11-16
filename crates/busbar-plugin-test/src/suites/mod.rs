@@ -76,8 +76,17 @@ pub fn store(plugin: &'static Plugin, config: &[u8], needs: FakeNeeds) {
     store::run(plugin, config, needs);
 }
 
-pub fn secret(plugin: &'static Plugin, config: &[u8], needs: FakeNeeds, known: &[(&[u8], &[u8])]) {
-    secret::run(plugin, config, needs, known);
+/// known: (reference, value) pairs the instance must answer; absent: at least one reference, well-formed in the
+/// plugin's own reference grammar, that names nothing and must be REFUSED R_NOT_FOUND (the suite does not assume
+/// a reference shape). Fetches an absent reference makes are scripted in `needs` like any other.
+pub fn secret(
+    plugin: &'static Plugin,
+    config: &[u8],
+    needs: FakeNeeds,
+    known: &[(&[u8], &[u8])],
+    absent: &[&[u8]],
+) {
+    secret::run(plugin, config, needs, known, absent);
 }
 
 pub fn auth(plugin: &'static Plugin, config: &[u8], needs: FakeNeeds, cases: &[AuthCase<'_>]) {

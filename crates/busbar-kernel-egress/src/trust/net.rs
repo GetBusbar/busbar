@@ -74,7 +74,7 @@ pub fn split_url(url: &str) -> Result<(bool, String, u16, String), AddressRefusa
 /// The URL as a refusal may repeat it, through core's one redactor (`abi::host::scrub::mask_url`, IF §12.16):
 /// everything an authority put before its last `@` replaced by the scrub mask.
 pub fn redact_userinfo(url: &str) -> String {
-    busbar_plugin_abi::host_side::scrub::mask_url(url).into_owned()
+    crate::cold::redact_userinfo(url)
 }
 
 /// A provider BASE URL with its authority's userinfo removed (`scheme://user:pass@host:port/path` ->

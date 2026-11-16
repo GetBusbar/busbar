@@ -314,10 +314,15 @@ fn judge(tree: &Tree, now: &Register, bases: &[AtBase]) -> Vec<String> {
             _ => {}
         }
     }
-    for root in now.interim_roots.keys() {
+    for (root, row) in &now.interim_roots {
         if !tree.roots.contains(root) {
             failures.push(format!(
                 "unsafe: the interim_roots row {root} names no package root; remove it"
+            ));
+        }
+        if row.by.trim().is_empty() {
+            failures.push(format!(
+                "unsafe: the interim_roots row {root} names no deleting package"
             ));
         }
     }
@@ -420,7 +425,7 @@ mod manifest {
                 table = None;
                 for kind in ["dev-dependencies.", "build-dependencies.", "dependencies."] {
                     if let Some((before, name)) = split_table(header, kind) {
-                        section = before.clone();
+                        section.clone_from(&before);
                         out.push((before, name, String::new()));
                         table = Some(out.len() - 1);
                         break;

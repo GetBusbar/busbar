@@ -7,3 +7,4 @@
 pub(crate) mod chain;
 pub(crate) mod keys;
 pub(crate) mod login;
+pub(crate) mod sight;

@@ -222,10 +222,7 @@ static NO_MEASUREMENT_CARD: RateCard = RateCard {
 /// Host-reserved lane prefix. Configured legacy identifiers must not contain control characters.
 pub const MEASUREMENT_LANE_PREFIX: &str = "\u{1e}measurement:";
 
-/// Encode a host-bound plugin kind and configured namespace without delimiter collisions.
-pub fn measurement_lane(kind: &str, namespace: &str) -> String {
-    format!("{MEASUREMENT_LANE_PREFIX}{}:{kind}{namespace}", kind.len())
-}
+pub use crate::off_path::rate::measurement_lane;
 
 /// Decode a common measurement lane without treating its owner as a plane or provider.
 pub fn split_measurement_lane(lane: &str) -> Option<(&str, &str)> {
