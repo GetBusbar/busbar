@@ -114,6 +114,43 @@ impl RecoveryWork {
     }
 }
 
+/// The process-local set of work rows a recovery session holds, for a work custody outside the admitted
+/// instances (the MIN-3 plane instances' `plane_driver::port_work::StoreWork`): an entry leaves the set when its
+/// [`RecoveryWork`] drops, so one row is polled by at most one session per process (IF §12.24 step 3).
+#[derive(Clone, Default)]
+pub struct ActiveSet(ActiveWork);
+
+impl ActiveSet {
+    /// Takes `reference` of `instance` for one recovery session; false when one already holds it.
+    pub(crate) fn claim(
+        &self,
+        instance: &Arc<str>,
+        reference: crate::host_work::Reference,
+    ) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert((Arc::clone(instance), reference))
+    }
+
+    /// The recovery item of a claimed row: it releases the claim when it drops.
+    pub(crate) fn item(
+        &self,
+        instance: Arc<str>,
+        reference: crate::host_work::Reference,
+        binding: crate::host_work::RecoveryBinding,
+        target: String,
+    ) -> RecoveryWork {
+        RecoveryWork {
+            instance,
+            reference,
+            binding,
+            target,
+            active: Arc::clone(&self.0),
+        }
+    }
+}
+
 impl KernelServices {
     /// Composition-root scheduler lifetime, never a plugin callable service.
     pub fn set_recovery_scheduler_ready(&self, ready: bool) {

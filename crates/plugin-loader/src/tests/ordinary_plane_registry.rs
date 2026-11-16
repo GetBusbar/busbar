@@ -88,3 +88,54 @@ fn plane_supported_abi_is_the_plane_kinds_one_version() {
     assert!(crate::registry::supported_abi("store").is_some());
     assert_eq!(crate::registry::supported_abi("nonsense"), None);
 }
+
+/// A MIN-3 plane image's bytes: its one stamp names kind PLANE (IF §7.4), with other bytes around it.
+fn min3_plane_lib() -> Vec<u8> {
+    use busbar_plugin_abi::stamp::{emit, Spec};
+    use busbar_plugin_abi::types::KindCode;
+    let stamp = emit(&Spec {
+        kind: KindCode::Plane,
+        kind_abi: 1,
+        layout: busbar_plugin_abi::plane::FP,
+        out_of_process: false,
+        engine_min: None,
+        engine_max: None,
+        name: "busbar-plane-delta",
+        version: "1.6.0",
+        build_id: None,
+        crypto: "host",
+    })
+    .0;
+    let mut lib = b"\x7fELF min3 plane ".to_vec();
+    lib.extend_from_slice(&stamp);
+    lib.extend_from_slice(b" tail");
+    lib
+}
+
+/// W2-SW-PLANE: a MIN-3 plane image states no Statement and exports no `busbar_plugin_door`; the MIN-3 registry
+/// admits it (root `min3_boot::admit_images`), so the door axis leaves it alone instead of refusing the boot.
+#[test]
+fn a_min3_plane_image_is_left_to_the_min3_registry_not_refused_at_the_door_axis() {
+    let release = SigningKey::from_bytes(&[1u8; 32]);
+    let dir = plane_tmpdir("min3");
+    let lib = min3_plane_lib();
+    let m = sign(
+        &release,
+        plane_manifest("busbar-plane-delta", "delta", "busbar"),
+        &lib,
+    );
+    write_plane_tarball(&dir, "plane.tar.gz", &m, &lib);
+
+    let reg =
+        crate::registry::scan_and_validate(&dir, &first_party_only_policy(&release)).expect("scan");
+    let set = reg
+        .open_planes(&[])
+        .expect("a MIN-3 plane image does not refuse the door axis");
+    assert!(
+        set.doors
+            .iter()
+            .all(|door| door.name != "busbar-plane-delta"),
+        "a MIN-3 plane is not a door candidate"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

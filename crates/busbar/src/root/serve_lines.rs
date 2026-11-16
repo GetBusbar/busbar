@@ -196,8 +196,21 @@ where
     W: AsyncWrite + Unpin + Send + 'static,
     S: std::future::Future<Output = ()>,
 {
-    if let Some(seat) = served.ports.iter().find(|p| p.driver.serves_lines()) {
-        return serve_port_lines(seat.clone(), app, reader, writer, stop).await;
+    let serving: Vec<(&str, bool)> = served
+        .ports
+        .iter()
+        .map(|seat| (seat.instance.as_str(), seat.driver.serves_lines()))
+        .collect();
+    match one_line_plane(&serving) {
+        Ok(Some(at)) => {
+            let seat = served.ports[at].clone();
+            return serve_port_lines(seat, app, reader, writer, stop).await;
+        }
+        Ok(None) => {}
+        Err(refusal) => {
+            eprintln!("busbar: {PORT_LINE_CARRIER} serve refused to start: {refusal}");
+            return 1;
+        }
     }
     let Some(carrier) = carrier() else {
         eprintln!("busbar: no linked transport carries lines: nothing to serve on stdin");
@@ -303,7 +316,20 @@ where
 /// The label a MIN-3 line session is bound and logged under: the process's own stdin/stdout (IF §12.23).
 const PORT_LINE_CARRIER: &str = "stdio";
 
-/// IF §12.23 over the plane port: the one `ROUTE_LINE` plane's lines go to `PortDriver::answer_line` with the
+/// IF §12.23 rule 1: the one served plane instance declaring ROUTE_LINE (`serving` = each instance's configured
+/// name and whether it declares one), by its place. None = no line serving; two or more refuse the start, naming both.
+pub(crate) fn one_line_plane(serving: &[(&str, bool)]) -> Result<Option<usize>, String> {
+    let mut lines = serving.iter().enumerate().filter(|(_, (_, line))| *line);
+    match (lines.next(), lines.next()) {
+        (Some((_, (one, _))), Some((_, (other, _)))) => Err(format!(
+            "the plane instances `{one}` and `{other}` both open a session on their first line, and the \
+             process's own stdin/stdout carries one"
+        )),
+        (one, _) => Ok(one.map(|(at, _)| at)),
+    }
+}
+
+/// IF §12.23 over the plane port: the one `ROUTE_LINE` plane's lines go to `PortSeat::answer_line` with the
 /// carrier id in `PlaneReq.carrier`; on EOF, a write failure or shutdown core stops reading, ends the in-flight
 /// lines, closes the writer, and then calls `admin(ADMIN_CARRIER_END)` once.
 async fn serve_port_lines<R, W, S>(
@@ -345,6 +371,7 @@ where
     let opened: Arc<std::sync::OnceLock<std::num::NonZeroU64>> = Arc::default();
     let opened_here = Arc::clone(&opened);
     let open_driver = Arc::clone(&driver);
+    let answer_seat = seat.clone();
     let code = run_io(PORT_LINE_CARRIER, reader, writer, stop, move |caller| {
         let principal = crate::root::off_path::serve_lines::session_principal(&gov);
         let line_caller = busbar_kernel::plane_driver::port::LineCaller {
@@ -358,14 +385,13 @@ where
         );
         let _ = opened_here.set(carrier);
         let requests = std::sync::atomic::AtomicU64::new(1);
-        let answer_driver = Arc::clone(&open_driver);
         let answer = move |line: Vec<u8>| {
             let request_id = requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let driver = Arc::clone(&answer_driver);
+            let seat = answer_seat.clone();
             let caller = Arc::clone(&caller);
             let line_caller = line_caller.clone();
             async move {
-                match driver
+                match seat
                     .answer_line(carrier, request_id, line, &line_caller)
                     .await
                 {
