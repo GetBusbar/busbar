@@ -146,8 +146,8 @@ fn a_planned_document_the_strict_parse_refuses_is_config_with_the_upgrade_line()
 fn a_backup_with_other_bytes_refuses_the_write() {
     let scratch = Scratch::new();
     let path = scratch.deployment(CONFIG_1_5_5);
-    std::fs::write(backup_path(&path), "listen: elsewhere\n").unwrap();
     let plan = plan(&Inputs::new(&path, &facts(), &accept)).unwrap();
+    std::fs::write(backup_path(&path), "listen: elsewhere\n").unwrap();
     let refused = write(&plan, &accept).unwrap_err();
     assert_eq!(refused.word(), "CONFIG");
     assert!(
@@ -155,6 +155,19 @@ fn a_backup_with_other_bytes_refuses_the_write() {
         "{refused}"
     );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), CONFIG_1_5_5);
+}
+
+#[test]
+fn a_conflicting_config_backup_refuses_before_store_migration() {
+    let scratch = Scratch::new();
+    let path = scratch.deployment(CONFIG_1_5_5);
+    let backup = backup_path(&path);
+    std::fs::write(&backup, "listen: elsewhere\n").unwrap();
+    let refused = plan(&Inputs::new(&path, &facts(), &accept)).unwrap_err();
+    assert_eq!(refused.word(), "CONFIG");
+    assert!(refused.to_string().contains("config.yaml.1.5.5"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), CONFIG_1_5_5);
+    assert_eq!(std::fs::read_to_string(backup).unwrap(), "listen: elsewhere\n");
 }
 
 /// (e): a crash after the backup link and before the rename leaves the original config.yaml and an
