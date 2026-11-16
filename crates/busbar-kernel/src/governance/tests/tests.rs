@@ -130,6 +130,9 @@ use super::*;
 #[path = "ordinary_flush_unknown_cases.rs"]
 mod ordinary_flush_unknown_cases;
 
+#[path = "group_limit_removed_keys_cases.rs"]
+mod group_limit_removed_keys_cases;
+
 fn sample_key(id: &str, hash: &str) -> VirtualKey {
     VirtualKey {
         id: id.to_string(),

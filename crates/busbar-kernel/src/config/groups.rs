@@ -658,3 +658,7 @@ impl Serialize for LimitCfg {
 #[cfg(test)]
 #[path = "tests/groups.rs"]
 mod limit_grammar_tests;
+
+#[cfg(test)]
+#[path = "tests/group_limit_removed_keys.rs"]
+mod group_limit_removed_keys;

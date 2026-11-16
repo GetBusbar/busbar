@@ -5300,6 +5300,10 @@ fn empty_chain_refusal(operator: &str) -> AdminError {
 #[path = "tests/patch_tests.rs"]
 mod patch_tests;
 
+#[cfg(test)]
+#[path = "tests/group_limit_removed_keys.rs"]
+mod group_limit_removed_keys;
+
 #[cfg(feature = "test-support")]
 pub fn credential_flush_response_for_test(
     result: Result<u64, String>,
