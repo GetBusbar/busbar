@@ -16,6 +16,7 @@ pub mod plane_judge;
 pub mod port;
 pub mod port_auth;
 pub mod port_channels;
+pub mod port_egress;
 pub mod port_intents;
 pub mod port_money;
 pub mod port_probes;

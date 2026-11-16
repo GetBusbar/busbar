@@ -28,7 +28,9 @@ use std::sync::{Arc, OnceLock};
 use super::port_auth::{plain_refusal, TicketDoor};
 use super::port_intents::{Detach, Namespace, Resolver};
 use super::port_money::{AuditRow, PortMoney};
-use super::port_session::{Answer, Calls, Effects, Forward, SessionError, Task, ToClient};
+use super::port_session::{
+    hand_out, Answer, Calls, Effects, Forward, SessionError, Task, ToClient,
+};
 use super::port_upstream::{run_attempts, Attempted, Members, UpSend, Wants};
 use super::usage::{Ending, SessionUsage};
 use super::AuditSink;
@@ -238,6 +240,7 @@ fn drive_task<K: Calls + ?Sized>(
     let mut forward = None;
     let answers = task.resolve(first, drive.resolver, drive.effects)?;
     absorb(&mut ran, &mut forward, answers, drive.books);
+    hand_out(drive.effects, &mut ran.client);
     if let Some(forward) = forward {
         let (Some(members), Some(send)) = (drive.members.as_deref_mut(), drive.send.as_deref_mut())
         else {
@@ -262,6 +265,7 @@ fn drive_task<K: Calls + ?Sized>(
                 ..
             } => {
                 ran.client.extend(client);
+                hand_out(drive.effects, &mut ran.client);
                 ran.member = Some(member);
                 ran.attempts = attempts;
             }
@@ -280,6 +284,7 @@ fn drive_task<K: Calls + ?Sized>(
     }
     absorb(&mut ran, &mut None, vec![last], drive.books);
     ran.usage = task.usage().clone();
+    hand_out(drive.effects, &mut ran.client);
     drive.books.ended(Ending::End, &ran.usage);
     Ok(ran)
 }

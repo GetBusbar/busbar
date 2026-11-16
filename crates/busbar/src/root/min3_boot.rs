@@ -488,6 +488,9 @@ impl Steps<'_> {
                 audience: audience_of(spec.config_json),
                 intents: Arc::new(intents),
                 who,
+                // The MIN-3 pools (K9 `upstreams`) do not compose an `Egress` at boot yet: no walk, so a FORWARD
+                // fails `NotDriven`. `PortEgress` is what lands here.
+                upstream: None,
             });
         Ok(())
     }

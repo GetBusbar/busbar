@@ -28,13 +28,15 @@ use super::port_auth::{
     admit, refuse, subject_identity, Admitted, Credentials, NoTickets, Principal, TicketDoor,
 };
 use super::port_channels::{decode_tick, TickOut};
+use super::port_egress::{PortUpstream, SessionFacts};
 use super::port_intents::{IntentHost, Namespace, Resolver};
 use super::port_money::write_audit;
 use super::port_money::PortMoney;
 use super::port_routes::{admin_catalog, admin_hydrate, plan, Mounted, PortRoutes};
 use super::port_serve::{run_session, AuditOnly, Books, Drive, Ran, UnitBooks};
-use super::port_session::{run_local, Effects, SessionError, ToClient};
+use super::port_session::{run_local, ClientSink, Effects, SessionError, ToClient};
 use super::port_upstream::{Members, UpSend};
+
 use super::{AuditSink, CoreAudit};
 use crate::push::PushQueue;
 use crate::refusal::{ClientRefusal, RefusalMap};
@@ -71,6 +73,23 @@ impl Effects for LineEffects<'_> {
     }
 }
 
+/// A served request's effects: the line carriers' emits, and the client's streamed items when the route layer
+/// gave a sink.
+struct ServeEffects<'a> {
+    lines: LineEffects<'a>,
+    client: Option<Arc<dyn ClientSink>>,
+}
+
+impl Effects for ServeEffects<'_> {
+    fn emit(&self, carrier: u64, bytes: &[u8]) {
+        self.lines.emit(carrier, bytes);
+    }
+
+    fn client(&self) -> Option<&dyn ClientSink> {
+        self.client.as_deref()
+    }
+}
+
 /// The response line without its terminator: the to-client BODY bytes. RESPOND's status, the head and the end
 /// carry nothing on a line; empty writes nothing. A message item has no line form.
 fn line_of(items: Vec<ToClient>) -> Result<Vec<u8>, LineRefused> {
@@ -104,6 +123,9 @@ pub struct PortSeat {
     pub intents: Arc<dyn IntentHost>,
     /// The instance's record namespace (§12.5): the caller its pushes are queued under.
     pub who: Namespace,
+    /// The egress walk a FORWARD runs over (`PortEgress`); `None` = this instance forwards nothing yet (its
+    /// pool is not configured: a FORWARD fails `NotDriven`).
+    pub upstream: Option<Arc<dyn PortUpstream>>,
 }
 
 impl PortSeat {
@@ -279,6 +301,7 @@ impl PortDriver {
             principal,
             unit,
             upstream,
+            client,
             intents,
             ..
         } = input;
@@ -300,6 +323,7 @@ impl PortDriver {
                 principal,
                 unit,
                 upstream,
+                client,
                 &*intents,
             )
         })
@@ -544,7 +568,9 @@ pub struct ServeIn<'a> {
     /// The unit the request bills to; `None` = not a billed unit (audit rows only).
     pub unit: Option<Unit>,
     /// The member walk and the far end for a FORWARD; `None` = the route never forwards.
-    pub upstream: Option<(Box<dyn Members + Send>, Box<dyn UpSend + Send>)>,
+    pub upstream: Option<Arc<dyn PortUpstream>>,
+    /// Where the client's items go as they are decided (a streamed reply); `None` = they are collected in [`Ran`].
+    pub client: Option<Arc<dyn ClientSink>>,
     /// What the plane's intents run against.
     pub intents: Arc<dyn IntentHost>,
 }
@@ -579,10 +605,14 @@ fn serve_blocking(
     http: HttpIn,
     principal: Option<Arc<str>>,
     unit: Option<Unit>,
-    upstream: Option<(Box<dyn Members + Send>, Box<dyn UpSend + Send>)>,
+    upstream: Option<Arc<dyn PortUpstream>>,
+    client: Option<Arc<dyn ClientSink>>,
     intents: &dyn IntentHost,
 ) -> Result<Served, ServeError> {
-    let effects = LineEffects { carriers, owner };
+    let effects = ServeEffects {
+        lines: LineEffects { carriers, owner },
+        client,
+    };
     let headers: Vec<Pair<'_>> = http
         .headers
         .iter()
@@ -620,10 +650,6 @@ fn serve_blocking(
     }
     .with_route(route.route);
     let dialect = port.dialects().first().map_or("", |d| &**d);
-    let (mut members, mut send) = match upstream {
-        Some((members, send)) => (Some(members), Some(send)),
-        None => (None, None),
-    };
     let ran = {
         let unit_books = unit
             .as_ref()
@@ -636,20 +662,37 @@ fn serve_blocking(
             Some(books) => books,
             None => &audit_books,
         };
-        run_session(
-            port,
-            &req,
-            &http.body,
-            Drive {
-                resolver: &resolver,
-                members: members.as_deref_mut().map(|m| m as &mut dyn Members),
-                send: send.as_deref_mut().map(|s| s as &mut dyn UpSend),
-                dialect,
-                refusals,
-                effects: &effects,
-                books,
-            },
-        )
+        let go = |members: Option<&mut dyn Members>, send: Option<&mut dyn UpSend>| {
+            run_session(
+                port,
+                &req,
+                &http.body,
+                Drive {
+                    resolver: &resolver,
+                    members,
+                    send,
+                    dialect,
+                    refusals,
+                    effects: &effects,
+                    books,
+                },
+            )
+        };
+        match &upstream {
+            Some(upstream) => {
+                let facts = SessionFacts {
+                    unit: unit
+                        .as_ref()
+                        .map_or(busbar_contract::UnitKey::new(0), |u| u.ctx.key),
+                };
+                let mut ran = None;
+                upstream.walk(facts, &mut |members, send| {
+                    ran = Some(go(Some(members), Some(send)));
+                });
+                ran.unwrap_or(Err(SessionError::NotDriven))
+            }
+            None => go(None, None),
+        }
     };
     match ran {
         Ok(ran) => Ok(Served::Ran(ran)),

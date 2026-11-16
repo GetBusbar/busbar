@@ -332,6 +332,28 @@ pub struct Answer {
 pub trait Effects {
     /// `PlaneOut::Emit`: bytes for a line carrier (§12.23).
     fn emit(&self, carrier: u64, bytes: &[u8]);
+
+    /// Where the client's items go as the plane writes them (a streamed reply). `None` = they are collected and
+    /// returned when the session ends.
+    fn client(&self) -> Option<&dyn ClientSink> {
+        None
+    }
+}
+
+/// The client side of a streamed reply: items are handed over as they are decided, in the order the plane wrote
+/// them, instead of being joined into one answer.
+pub trait ClientSink: Send + Sync {
+    /// Takes `items`. `false` = the client went away: nothing more is wanted, and the far end is let go.
+    fn items(&self, items: Vec<ToClient>) -> bool;
+}
+
+/// Hands `items` to the effects' [`ClientSink`] when it has one (leaving `items` empty), else keeps them.
+/// `false` = the client went away.
+pub fn hand_out(effects: &dyn Effects, items: &mut Vec<ToClient>) -> bool {
+    match effects.client() {
+        Some(sink) if !items.is_empty() => sink.items(std::mem::take(items)),
+        _ => true,
+    }
 }
 
 /// The once rules of one session.
