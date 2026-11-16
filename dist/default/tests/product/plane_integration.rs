@@ -35,6 +35,7 @@ mod linked {
 }
 
 use crate::root::test_plugins as plugins;
+use busbar_contract::json::{self, JsonValueTrait};
 use busbar_kernel::config::RootCfg;
 use busbar_kernel::plane_driver::registry::{BuildCtx, PlaneDecl};
 use std::sync::Arc;
@@ -283,11 +284,13 @@ async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dia
         "a mounted door plane must refuse in JSON-RPC 2.0, the only wire format it speaks; got {v}"
     );
     assert!(
-        v.pointer("/error/code").and_then(|c| c.as_i64()).is_some(),
+        json::pointer(&v, "/error/code")
+            .and_then(|c| c.as_i64())
+            .is_some(),
         "a JSON-RPC refusal carries a numeric `error.code`; got {v}"
     );
     assert!(
-        v.pointer("/error/type").is_none(),
+        json::pointer(&v, "/error/type").is_none(),
         "`error.type` is the fallback dialect's envelope member — the vendor shape must not survive \
          on a mounted plane; got {v}"
     );
@@ -393,7 +396,7 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
          shape; got {sibling}"
     );
     assert!(
-        sibling.pointer("/error/message").is_some(),
+        json::pointer(&sibling, "/error/message").is_some(),
         "the residual plane still answers a legible native envelope; got {sibling}"
     );
 }
@@ -826,7 +829,7 @@ mod metrics_scrape {
         let door_status = client
             .post(format!("{base}{door_mount}"))
             .header("authorization", &door_bearer)
-            .json(&serde_json::json!({
+            .json(&json::json!({
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "tools/list",
@@ -841,7 +844,7 @@ mod metrics_scrape {
         let agents_status = client
             .post(format!("{base}{agents_mount}/agents/planner"))
             .header("authorization", &traffic_bearer)
-            .json(&serde_json::json!({
+            .json(&json::json!({
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "message/send",
@@ -1152,7 +1155,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
         }
     }
 
-    let body = serde_json::json!({
+    let body = json::json!({
         "model": "pa",
         "messages": [{"role": "user", "content": "hi"}],
         "max_tokens": 16
@@ -1386,7 +1389,7 @@ async fn oversized_413_body(
     app: Arc<busbar_kernel::state::App>,
     sections: &str,
     path: &str,
-) -> serde_json::Value {
+) -> json::Value {
     let (plain_bearer, door_bearer) = plane_bearers(&app, sections, "plane-body-limit").await;
     let mount = jsonrpc_mount(door_plane(), sections);
     let bearer = if path == mount || path.starts_with(&format!("{mount}/")) {
@@ -1417,7 +1420,7 @@ async fn oversized_413_body(
         "{path}: {}",
         String::from_utf8_lossy(&bytes)
     );
-    serde_json::from_slice(&bytes).expect("the refusal is JSON")
+    json::parse_value(&bytes).expect("the refusal is JSON")
 }
 
 async fn plane_router(
