@@ -896,3 +896,53 @@ fn a_tail_row_never_grows_a_tail() {
 fn the_media_row_refuses_a_transport_s_door() {
     let _ = Mutant::of(transport_door::door).no_streaming_types();
 }
+
+#[test]
+fn an_images_declared_diagnostic_reaches_the_hosts_sink_once() {
+    let env = busbar_plugin_test::Envelopes::new();
+    let h = host().sink(env.clone());
+    let mut t = open_secret(&h, secret_door::NOTES);
+    assert_eq!(resolved(&mut t), secret_door::NOTES, "RESOLVE answers");
+    assert_eq!(
+        env.diags(),
+        vec![busbar_plugin_test::DiagRecord {
+            id: 0,
+            name: b"fixture-note".to_vec(),
+            severity: 1,
+            text: b"the fixture was asked to note".to_vec(),
+        }],
+        "the declared diagnostic is recorded once, as production's sink sees it"
+    );
+    assert!(env.metrics().is_empty() && env.dropped().is_empty());
+}
+
+#[test]
+fn a_linked_door_is_refused_when_it_states_another_plugins_statement() {
+    let other = busbar_plugin_test::rendering_of(store_door::door).expect("the store door renders");
+    let wrong = host().open(
+        Image::<Transport>::linked_stated(transport_door::door, &other),
+        "linked-stated",
+        b"{}",
+    );
+    assert!(
+        matches!(wrong, Err(Refused::Load(LoadError::StatementMismatch))),
+        "{:?}",
+        wrong.err()
+    );
+}
+
+/// STH-ROWS D-7: a plugin repository's `busbar-plugin-test` dev edge, with `test-seal` on it,
+/// opens a host with no second `busbar-contract` edge and no seal in its own code.
+#[cfg(feature = "test-seal")]
+#[test]
+fn the_facade_hands_out_a_sealed_host_only_under_test_seal() {
+    let h = busbar_plugin_test::host();
+    let t = h
+        .open(
+            Image::<Transport>::linked(transport_door::door),
+            "facade-host",
+            b"{}",
+        )
+        .expect("the facade's host opens a linked fixture");
+    drop(t);
+}
