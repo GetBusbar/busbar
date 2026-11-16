@@ -36,3 +36,32 @@ pub(crate) fn within<R>(slot: u32, f: impl FnOnce() -> R) -> R {
     OWNER.with(|owner| owner.set(saved));
     answer
 }
+
+/// Restores the thread's `OWNER` when an entry returns or unwinds.
+pub(crate) struct Owning(u32);
+
+impl Owning {
+    /// Marks `slot` as the entry running on this thread until the returned value drops.
+    pub(crate) fn set(slot: u32) -> Owning {
+        Owning(OWNER.with(|owner| owner.replace(slot)))
+    }
+}
+
+impl Drop for Owning {
+    fn drop(&mut self) {
+        OWNER.with(|owner| owner.set(self.0));
+    }
+}
+
+/// The host entry guard (IF §10.7, I10): runs `call` inline on this thread as the entry `entry` of `slot`, with
+/// `out` lent to the plugin for it, inside the watchdog word of the slot and with `OWNER` set so every log line
+/// is attributed and scrubbed. Every driver step takes this path; the loader's cold entries (describe) call it
+/// directly. None: busbar-ffi's ACTIVE stack is full, a host fault (no sink, no quarantine).
+pub fn guard<R>(
+    slot: u32,
+    entry: u8,
+    out: &mut crate::host_side::pool::PooledOut,
+    call: impl FnOnce(&mut busbar_ffi::host::OutLease) -> R,
+) -> Option<R> {
+    crate::host_side::driver::step(slot, entry, out, call)
+}
