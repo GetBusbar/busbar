@@ -137,9 +137,17 @@ deny = [
     { crate = "elliptic-curve" }, { crate = "sha3" }, { crate = "md5" },
     { crate = "str0m-aws-lc-rs" }, { crate = "str0m-rust-crypto" }, { crate = "str0m-openssl" },
     { crate = "str0m-apple-crypto" }, { crate = "str0m-wincrypto" },
+    # THE JSON SEAM (DEP-3, SERDE-JSON-EXIT r2 §3): JSON is sonic-rs through busbar_contract::json, so no
+    # other JSON parser enters any graph. The serde_json row (wrappers jsonschema, jsonschema-value,
+    # referencing, schemars, oauth-as) and its feature rows land with S2-JSON-DENY, once no
+    # first-party crate names serde_json.
+    { crate = "simd-json", reason = "JSON is sonic-rs (DEP-3)" },
+    { crate = "json", reason = "JSON is sonic-rs (DEP-3)" },
 ]
 features = [
     { crate = "reqwest", deny = ["http3", "native-tls", "default-tls"] },
+    # SERDE-JSON-EXIT r2 §3: jsonschema reads numbers in binary64 (json::SchemaCheck through parse_foreign).
+    { crate = "jsonschema", deny = ["arbitrary-precision"] },
 ]
 # THE ACCEPTED DUPLICATES: each version here is one a parent forces and busbar cannot collapse.
 skip = [
