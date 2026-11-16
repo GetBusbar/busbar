@@ -358,9 +358,12 @@ pub(crate) fn undeclared_in(
     section: &str,
     owner: &str,
     declared: &[String],
-    _sugars: &busbar_contract::secret_ref::Sugars,
+    sugars: &busbar_contract::secret_ref::Sugars,
 ) -> Option<String> {
-    let tree = serde_json::to_value(value).ok()?;
+    let mut tree = serde_json::to_value(value).ok()?;
+    if let Err(why) = busbar_contract::plugin_settings::canonicalize(&mut tree, sugars) {
+        return Some(format!("{section}: {why}"));
+    }
     busbar_contract::secret_fields::undeclared_reference(&tree, declared).map(|at| {
         busbar_contract::secret_fields::undeclared_refusal(&format!("{section}.{at}"), owner)
     })
