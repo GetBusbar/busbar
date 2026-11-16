@@ -418,12 +418,7 @@ impl Keys {
     pub(crate) fn from_bootstrap() -> Self {
         let keys = busbar_kernel::appbuild::take_bootstrap_records_keys().or_else(|| {
             let core = &crate::root::min3_boot::booted()?.core;
-            busbar_kernel::appbuild::records_keys_from(
-                core.at_rest_key.as_deref(),
-                core.at_rest_previous.as_deref(),
-                core.signing_key.as_deref(),
-            )
-            .ok()
+            busbar_kernel::appbuild::records_keys_from(core.signing_key.as_deref()).ok()
         });
         Self {
             seed: keys

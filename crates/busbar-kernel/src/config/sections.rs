@@ -57,9 +57,6 @@ pub struct StoreCfg {
     /// The module's own opaque settings, passed through verbatim as its config JSON.
     #[serde(default)]
     pub settings: busbar_contract::plugin_settings::Settings,
-    /// `limits` beside `module` (IF §12.22), as written: parsed and stripped by [`super::min3::parse_min3`].
-    #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
-    pub limits: Option<busbar_contract::yaml::Value>,
     /// `insecure_transport` beside `module` (TRANSPORT-SECURITY-POLICY §4), as written: parsed
     /// and stripped by [`super::min3::parse_min3`].
     #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
@@ -76,14 +73,11 @@ impl StoreCfg {
             module: &'a String,
             settings: F0,
             #[serde(skip_serializing_if = "Option::is_none")]
-            limits: Option<&'a busbar_contract::yaml::Value>,
-            #[serde(skip_serializing_if = "Option::is_none")]
             insecure_transport: Option<&'a busbar_contract::yaml::Value>,
         }
         View {
             module: &self.module,
             settings: self.settings.authoring(seal),
-            limits: self.limits.as_ref(),
             insecure_transport: self.insecure_transport.as_ref(),
         }
     }
@@ -112,9 +106,6 @@ pub struct SecretModuleCfg {
     /// built-in env/file modules before it crosses the ABI.
     #[serde(default)]
     pub settings: busbar_contract::plugin_settings::Settings,
-    /// `limits` beside the settings (IF §12.22), as written: parsed and stripped by [`super::min3::parse_min3`].
-    #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
-    pub limits: Option<busbar_contract::yaml::Value>,
     /// `insecure_transport` beside the settings (TRANSPORT-SECURITY-POLICY §4), as written: parsed
     /// and stripped by [`super::min3::parse_min3`].
     #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
@@ -131,14 +122,11 @@ impl SecretModuleCfg {
             module: &'a str,
             settings: F0,
             #[serde(skip_serializing_if = "Option::is_none")]
-            limits: Option<&'a busbar_contract::yaml::Value>,
-            #[serde(skip_serializing_if = "Option::is_none")]
             insecure_transport: Option<&'a busbar_contract::yaml::Value>,
         }
         View {
             module: &self.module,
             settings: self.settings.authoring(seal),
-            limits: self.limits.as_ref(),
             insecure_transport: self.insecure_transport.as_ref(),
         }
     }
@@ -214,49 +202,6 @@ pub struct AdvancedCfg {
     /// does not resolve here is the proxy's to check). BOOT-TIME.
     #[serde(default, skip_serializing_if = "is_local_resolution")]
     pub proxy_resolution: super::tls::ProxyResolution,
-    /// `advanced.shutdown`: the shutdown drain (SHUTDOWN-HANG F4). BOOT-TIME.
-    #[serde(default, skip_serializing_if = "AdvancedShutdownCfg::is_default")]
-    pub shutdown: AdvancedShutdownCfg,
-    /// `advanced.governance`: governed-admission custody (SHUTDOWN-HANG F4a). BOOT-TIME.
-    #[serde(default, skip_serializing_if = "AdvancedGovernanceCfg::is_default")]
-    pub governance: AdvancedGovernanceCfg,
-}
-
-/// `advanced.shutdown:`. A 1.5.5 config does not set it.
-#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct AdvancedShutdownCfg {
-    /// The drain budget from the first shutdown signal to exit, a duration (`<n><s|m|h|d>`):
-    /// default `20s`, at least `1s`. A value that does not parse, or is below `1s`, refuses boot
-    /// (BUSBAR-3117); it is never clamped. A quarter of it is the reserve the drain keeps for
-    /// settling, sealing, the journal flush and retirement.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub drain_timeout: Option<String>,
-}
-
-impl AdvancedShutdownCfg {
-    pub(crate) fn is_default(&self) -> bool {
-        self.drain_timeout.is_none()
-    }
-}
-
-/// `advanced.governance:`. A 1.5.5 config does not set it.
-#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct AdvancedGovernanceCfg {
-    /// The most finished governed requests whose spend may await settlement in the store before
-    /// new governed admission is refused with `503 durability_unavailable` (`Retry-After: 1`):
-    /// an integer, at least 1; default 1,000 per second of `advanced.shutdown.drain_timeout`
-    /// (20,000 at the default 20 s). Running requests never count. Below 1 refuses boot
-    /// (BUSBAR-3117); it is never clamped.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_pending_checkpoints: Option<u64>,
-}
-
-impl AdvancedGovernanceCfg {
-    pub(crate) fn is_default(&self) -> bool {
-        self.max_pending_checkpoints.is_none()
-    }
 }
 
 fn is_local_resolution(r: &super::tls::ProxyResolution) -> bool {
@@ -308,8 +253,6 @@ impl Default for AdvancedCfg {
             proxy_resolution: super::tls::ProxyResolution::Local,
             trusted_proxies: Vec::new(),
             forwarded_header: None,
-            shutdown: AdvancedShutdownCfg::default(),
-            governance: AdvancedGovernanceCfg::default(),
         }
     }
 }
@@ -614,9 +557,6 @@ pub struct ExportDefCfg {
     /// typed per module by busbar-core's `resolve_export`, so a typo inside it still fails boot loudly.
     #[serde(default)]
     pub settings: busbar_contract::plugin_settings::Settings,
-    /// `limits` beside `module` (IF §12.22), as written: parsed and stripped by [`super::min3::parse_min3`].
-    #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
-    pub limits: Option<busbar_contract::yaml::Value>,
     /// `insecure_transport` beside `module` (TRANSPORT-SECURITY-POLICY §4), as written: parsed
     /// and stripped by [`super::min3::parse_min3`].
     #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
@@ -636,8 +576,6 @@ impl ExportDefCfg {
             durable: &'a bool,
             settings: F0,
             #[serde(skip_serializing_if = "Option::is_none")]
-            limits: Option<&'a busbar_contract::yaml::Value>,
-            #[serde(skip_serializing_if = "Option::is_none")]
             insecure_transport: Option<&'a busbar_contract::yaml::Value>,
         }
         View {
@@ -646,7 +584,6 @@ impl ExportDefCfg {
             fields: &self.fields,
             durable: &self.durable,
             settings: self.settings.authoring(seal),
-            limits: self.limits.as_ref(),
             insecure_transport: self.insecure_transport.as_ref(),
         }
     }

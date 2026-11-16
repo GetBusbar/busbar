@@ -147,12 +147,8 @@ fn ranked_policy_is_content_blind() {
     } = &ranked;
     assert!(!*send_prompt && !*send_user && on_error_chain.is_empty());
 
-    let gate = crate::plane_driver::hooks::policy::HookPolicy::policy(
-        Arc::new(Idle),
-        "cheapest",
-        &[],
-        None,
-    );
+    let gate =
+        crate::plane_driver::hooks::policy::HookPolicy::policy(Arc::new(Idle), "cheapest", &[]);
     assert!(!gate.content_blind());
     assert!(
         over(gate, false, false).reads_request(),

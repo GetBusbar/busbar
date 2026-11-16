@@ -125,7 +125,6 @@ impl ConfiguredView {
         put!("admin_tls", tls_view(cfg.admin_tls.as_ref()));
         put!("per_request_fee", cfg.per_request_fee);
         put!("rate_card", cfg.rate_card);
-        put!("plugin_rate_cards", cfg.plugin_rate_cards);
         put!("groups", cfg.groups);
         put!(
             "security",
@@ -151,7 +150,6 @@ impl ConfiguredView {
             fields!(
                 upstream_request_timeout_secs,
                 request_body_max_bytes,
-                datagram_line_memory_bytes,
                 pool_max_idle_per_host,
                 pool_idle_timeout_secs,
                 max_inbound_concurrent,
@@ -209,7 +207,6 @@ impl ConfiguredView {
                 "other_fields": "hidden",
             })
         );
-        put!("credentials", presence(cfg.credentials.at_rest.is_some()));
         put!("oauth_as", presence(cfg.oauth_as.is_some()));
 
         put!("export", exporters_view(&cfg.export_defs, sources));
@@ -248,7 +245,6 @@ impl ConfiguredView {
             "max_concurrent": m.max_concurrent, "default_max_tokens": m.default_max_tokens,
             "upstream_model": m.upstream_model, "attempt_timeout_ms": m.attempt_timeout_ms,
             "reasoning": m.reasoning, "prompt_caching": m.prompt_caching,
-            "protocol": m.protocol,
         }))).collect();
         put!("models", models);
         put!(
@@ -276,11 +272,6 @@ impl ConfiguredView {
                     })).collect::<Vec<_>>(),
                 },
                 "fetch": {"count": plugins.fetch.len(), "values": "hidden"},
-                "logs": {
-                    "dir": plugins.logs.dir, "level": plugins.logs.level,
-                    "levels": plugins.logs.levels, "rotate_mb": plugins.logs.rotate_mb,
-                    "keep": plugins.logs.keep,
-                },
             })
         );
         Self {

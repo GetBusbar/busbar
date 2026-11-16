@@ -6,7 +6,6 @@ use busbar_kernel::config::{HookCfg, HookKind, PromptAccess, UserAccess};
 
 fn hook(module: &str, kind: HookKind, global: bool) -> HookCfg {
     HookCfg {
-        child_dispatch: None,
         kind,
         plugin: module.to_string(),
         timeout_ms: 5,

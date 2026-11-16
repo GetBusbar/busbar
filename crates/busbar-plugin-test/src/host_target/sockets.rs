@@ -12,8 +12,10 @@ use std::time::{Duration, Instant};
 use busbar_contract::crypto::tls;
 use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::host_side::caller::Caller;
-use busbar_plugin_abi::host_side::needs::{NeedErr, OpenNeed, TlsMode};
+pub use busbar_plugin_abi::host_side::caller::InstanceLimits;
+pub use busbar_plugin_abi::host_side::needs::{NeedErr, OpenNeed, TlsMode};
 use busbar_plugin_abi::need::open_flag;
+pub use busbar_plugin_abi::types::KindCode;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -853,3 +855,11 @@ fn event(s: &mut State, owner: Owner, slot: &Slot, outcome: SocketOutcome) {
         outcome,
     });
 }
+
+#[cfg(test)]
+#[path = "socket_session_tests.rs"]
+mod session_tests;
+
+#[path = "socket_session.rs"]
+mod session;
+pub use session::{SocketCaller, SocketSession};

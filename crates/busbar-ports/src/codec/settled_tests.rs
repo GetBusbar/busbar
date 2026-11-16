@@ -179,3 +179,27 @@ fn config_and_core_cfg_values_are_utf8_and_names_follow_the_grammar() {
     w.put_pod_tail(tag::CORE_CFG, &head, b"abc").unwrap();
     assert_eq!(settled(&w).err(), Some(RecErr::Size));
 }
+
+#[test]
+fn a_settled_limits_value_is_applied_in_memory_clamped_and_never_over_a_set_number() {
+    let base = InstanceLimits {
+        max_inflight: 4,
+        ..InstanceLimits::default()
+    };
+    let got = with_limits_json(
+        base,
+        br#"{"timeout_ms": 700000, "connect_timeout_ms": 1500, "max_inflight": 9, "plaintext": "deny"}"#,
+    );
+    assert_eq!(
+        (got.timeout_ms, got.connect_timeout_ms, got.max_inflight),
+        (MAX_LIMIT_MS, 1_500, 4),
+        "clamped to 600,000 ms; a number the instance already carries is kept"
+    );
+    let big = with_limits_json(InstanceLimits::default(), br#"{"max_inflight": 70000}"#);
+    assert_eq!(big.max_inflight, MAX_INFLIGHT);
+    assert_eq!(
+        with_limits_json(InstanceLimits::default(), b"[1]"),
+        InstanceLimits::default(),
+        "not an object: unchanged"
+    );
+}

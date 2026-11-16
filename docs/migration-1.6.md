@@ -295,3 +295,12 @@ A legacy A2A `client_identity: {cert: ..., key: ...}` is refused without modifyi
 Direct contract plugins must rebuild against the current 1.6 SDK. The retired host policy
 callback has been removed; principal scope decisions use the plane `ENTITLE` intent. Admission
 rejects artifacts carrying an earlier common host-table layout fingerprint.
+
+### Removed pre-release limits and drain settings
+
+The pre-release `limits.migration_index_bytes`, `limits.migration_value_bytes`,
+`limits.datagram_line_memory_bytes`, `advanced.shutdown`, and `advanced.governance`
+keys are refused. The current startup Store frame bound is fixed at 64 MiB;
+datagram LINE pairings retain their former unlimited default. The shutdown drain
+budget is fixed at 20 seconds and the governed settlement backlog cap at 20,000.
+Released 1.5.5 configurations do not contain these pre-release settings.

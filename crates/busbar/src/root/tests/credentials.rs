@@ -32,9 +32,6 @@ async fn gov_with_key(name: &str) -> (Arc<GovState>, String, String) {
             busbar_kernel::governance::signing::DEFAULT_KID,
         ),
     ));
-    gov.set_at_rest_keys(Some(busbar_kernel::governance::at_rest::AtRestKeys::new(
-        &[3u8; 32], None,
-    )));
     let shape = busbar_contract::auth_calls::IssuedShape {
         id_prefix: "AKIA".into(),
         id_len: 20,

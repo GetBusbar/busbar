@@ -4,7 +4,7 @@
 //! Tests for `crates/busbar-contract/src/signal.rs`.
 
 use super::*;
-use crate::json::{JsonContainerTrait as _, JsonValueTrait as _};
+use crate::json::JsonContainerTrait as _;
 
 /// Signal names accepted by configuration agree with their serialized spelling.
 #[test]

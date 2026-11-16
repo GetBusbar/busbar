@@ -17,8 +17,6 @@ use busbar_plugin_abi::host_side::answer::Answer;
 use busbar_plugin_abi::kinds::store::store as wire;
 use busbar_plugin_abi::records::{tag, Full, Pod, Rec, RecErr, Records, Writer};
 
-type Seal = dyn KernelSeal + Send + Sync;
-
 /// The wire guard of an optional UTC interval; zero = unguarded.
 fn guard(time: Option<owned::TimeGuard>) -> wire::TimeGuard {
     let time = time.unwrap_or(owned::TimeGuard {
@@ -109,7 +107,12 @@ pub fn encode_scan(w: &mut impl Writer, s: &Scan) -> Result<(), Full> {
 }
 
 /// One FENCE or PREDICATE record.
-fn condition(w: &mut impl Writer, record: u16, p: &Predicate, seal: &Seal) -> Result<(), Full> {
+fn condition(
+    w: &mut impl Writer,
+    record: u16,
+    p: &Predicate,
+    seal: &(dyn KernelSeal + Send + Sync),
+) -> Result<(), Full> {
     let none: &[u8] = &[];
     let (kind, expected): (u32, &[u8]) = match &p.expected {
         ExpectedValue::Absent => (wire::PREDICATE_ABSENT, none),
@@ -124,7 +127,11 @@ fn condition(w: &mut impl Writer, record: u16, p: &Predicate, seal: &Seal) -> Re
 }
 
 /// One MUTATION record; a DeleteRange carries its prefix as the key and its length in `exact_length`.
-fn mutation(w: &mut impl Writer, m: &Mutation, seal: &Seal) -> Result<(), Full> {
+fn mutation(
+    w: &mut impl Writer,
+    m: &Mutation,
+    seal: &(dyn KernelSeal + Send + Sync),
+) -> Result<(), Full> {
     let none: &[u8] = &[];
     let (kind, namespace, key, value, exact_length): (u32, [u8; 16], &[u8], &[u8], u64) = match m {
         Mutation::Put { address, value } => (

@@ -4244,7 +4244,7 @@ fn authenticated_route_preserves_declared_record_reads_but_no_connector_or_exten
 }
 
 /// The boot's `migrate.admit` answer in this test binary: two recoverable rows can be sealed, any
-/// other count cannot (the seam's real answer is core's, from `credentials.at_rest`).
+/// other count cannot (the seam's real answer is core's, from `auth.signing_key`).
 fn fixture_admit(recoverable: u64) -> Result<(), &'static str> {
     if recoverable == 2 {
         Ok(())

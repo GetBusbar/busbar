@@ -207,6 +207,5 @@ fn model_cfg_for_provider(provider: &str) -> busbar_kernel::config::ModelCfg {
         attempt_timeout_ms: None,
         reasoning: None,
         prompt_caching: None,
-        protocol: None,
     }
 }

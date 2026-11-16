@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod card;
 pub mod measurement_rates;
-pub use measurement_rates::{validate_plugin_rate_coverage, PluginRateCards};
+pub use measurement_rates::PluginRateCards;
 pub mod overlay;
 mod overlay_native;
 mod overlay_store;
@@ -44,7 +44,6 @@ pub mod transaction;
 pub use grammar::{Grammar, GrammarField, GrammarRefusal};
 pub use prepass::{deploy_from_deserializer, deploy_from_yaml_str, deploy_from_yaml_value};
 
-pub use credentials::{AtRestCfg, CredentialsCfg};
 pub use groups::GroupCfg;
 pub use groups::LimitCfg;
 pub use secret::SecretRef;
@@ -386,9 +385,6 @@ pub struct RootCfg {
     /// accepted by `resolve`, so a value here is a block the owner has already validated, with the
     /// secret references the owner listed in it.
     pub oauth_as: Option<crate::oauth_as::seam::CheckedAsBlock>,
-    /// The `credentials:` block, carried through `resolve` verbatim: the at-rest key references,
-    /// resolved at boot and at reload ([`CredentialsCfg`]).
-    pub credentials: CredentialsCfg,
     /// EVERY REGISTERED PLANE'S DECLARED SECTION this document writes, by config section, carried
     /// through `resolve` VERBATIM.
     ///
@@ -432,8 +428,6 @@ pub struct RootCfg {
     /// plane's own card rides in it under plane-qualified keys
     /// (`busbar_kernel_ledger::cost::compose_plane_cards`); with none, it is `rate_card:` verbatim.
     pub rate_card: Option<std::collections::BTreeMap<String, RateEntryCfg>>,
-    /// Exact host-owned rates for common plugin measurements, by kind, configured namespace, class.
-    pub plugin_rate_cards: PluginRateCards,
     /// Flat cents charged per request (default 0).
     pub per_request_fee: i64,
     /// Every other plane's own fees, by plane registry key. See `DeployCfg::plane_fees`.
@@ -953,10 +947,6 @@ pub struct DeployCfg {
     /// absent means nothing is built: see `crate::oauth_as`.
     #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
     pub oauth_as: Option<busbar_contract::yaml::Value>,
-    /// `credentials:` — how a recoverable credential is kept at rest ([`CredentialsCfg`]): the
-    /// `at_rest` key it is sealed under, and the `previous` one a rotation still opens.
-    #[serde(default, deserialize_with = "credentials::deserialize_section")]
-    pub credentials: CredentialsCfg,
     /// TLS/mTLS for the management-surface listener (only meaningful with `admin_listen`). Its own
     /// cert + optional `client_ca_file`, so the management surface can require client certificates
     /// without forcing them on data-plane clients. A network-exposed `admin_listen` REQUIRES
@@ -1015,9 +1005,6 @@ pub struct DeployCfg {
     /// The numbers are ABSTRACT cost units (no currency, no FX).
     #[serde(default)]
     pub rate_card: Option<std::collections::BTreeMap<String, RateEntryCfg>>,
-    /// Common measurement rates: kind -> configured instance namespace -> declared class.
-    #[serde(default)]
-    pub plugin_rate_cards: PluginRateCards,
     /// Flat cents (abstract minor units) charged per request for budget accounting. Default 0.
     #[serde(default = "default_per_request_fee")]
     pub per_request_fee: i64,
@@ -1191,29 +1178,6 @@ pub struct PluginsCfg {
     /// Signature verification remains the trust gate; sha256 is integrity/cache only. Default empty.
     #[serde(default)]
     pub fetch: Vec<PluginFetch>,
-    /// PLUGIN LOGS (`plugins.logs:`): every plugin instance logs to its own file, which the host
-    /// writes from what the plugin reported on its replies (`BUSBAR-1.6.0.md` decision #85).
-    #[serde(default)]
-    pub logs: PluginLogsCfg,
-}
-
-/// `plugins.logs:` — `dir` (default `logs/plugins`), `level` (default `info`), per-instance
-/// `levels`, `rotate_mb` (unset: never rotate; the host's rename rotation) and `keep` (default 5).
-/// Every default and every refusal is the plugin log configuration's own; the binary resolves this
-/// block at boot, so a bad value fails the boot naming its key.
-#[cfg_attr(
-    feature = "openapi-schema",
-    derive(schemars::JsonSchema, serde::Serialize)
-)]
-#[derive(Deserialize, Clone, Default, Debug, PartialEq)]
-#[serde(deny_unknown_fields, default)]
-pub struct PluginLogsCfg {
-    pub dir: Option<String>,
-    pub level: Option<String>,
-    #[serde(default)]
-    pub levels: std::collections::BTreeMap<String, String>,
-    pub rotate_mb: Option<u64>,
-    pub keep: Option<u32>,
 }
 
 /// One `plugins.fetch:` entry — an UNTAGGED enum discriminated by which key is present. `github` is a
@@ -1373,7 +1337,6 @@ impl Default for PluginsCfg {
             min_versions: std::collections::BTreeMap::new(),
             first_party_floors: std::collections::BTreeMap::new(),
             fetch: Vec::new(),
-            logs: PluginLogsCfg::default(),
         }
     }
 }
@@ -1479,9 +1442,8 @@ pub use busbar_kernel::config::sections::{store_required, SecretModuleCfg, Store
 
 pub use busbar_kernel::config::sections::{
     default_response_headers_route_policy, default_response_headers_server_timing, AdvancedCfg,
-    AdvancedGovernanceCfg, AdvancedShutdownCfg, AuditCfg, ResponseHeadersCfg,
-    DEFAULT_AUDIT_SEAL_EVERY_MS, DEFAULT_RESPONSE_HEADERS_ROUTE_POLICY,
-    DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
+    AuditCfg, ResponseHeadersCfg, DEFAULT_AUDIT_SEAL_EVERY_MS,
+    DEFAULT_RESPONSE_HEADERS_ROUTE_POLICY, DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
 };
 
 pub use busbar_kernel::config::sections::{
@@ -1653,14 +1615,7 @@ fn hook_cfg_from_def(def: &HookDefCfg) -> Result<HookCfg, String> {
             "a hook definition must name a non-empty `module:` (a `kind: hook` plugin)".to_string(),
         );
     }
-    if let Some(grant) = &def.child_dispatch {
-        grant.validate().map_err(str::to_owned)?;
-        if def.kind == Some(HookKind::Tap) {
-            return Err("child dispatch requires a gate hook".into());
-        }
-    }
     Ok(HookCfg {
-        child_dispatch: def.child_dispatch.clone(),
         kind: def.kind.unwrap_or(HookKind::Gate),
         plugin,
         timeout_ms: def.timeout_ms.unwrap_or(DEFAULT_POLICY_TIMEOUT_MS),
@@ -1694,9 +1649,6 @@ pub fn resolve(
     defs: &HashMap<String, ProviderDef>,
 ) -> Result<RootCfg, Vec<String>> {
     let mut errors = Vec::new();
-    if let Err(error) = measurement_rates::validate(&deploy.plugin_rate_cards) {
-        errors.push(coded::config_rate_card_invalid(error).into());
-    }
     for name in deploy
         .rate_card
         .iter()
@@ -2100,7 +2052,6 @@ pub fn resolve(
             public_url: deploy.public_url.clone(),
             endpoint_resources,
             oauth_as,
-            credentials: deploy.credentials.clone(),
 
             plane_defs: raw_judged
                 .into_iter()
@@ -2123,7 +2074,6 @@ pub fn resolve(
             admin_auth: admin_auth_names,
             groups: deploy.groups.clone(),
             rate_card: compose_plane_cards(deploy.rate_card.as_ref(), &deploy.plane_rate_cards),
-            plugin_rate_cards: deploy.plugin_rate_cards.clone(),
             per_request_fee: deploy.per_request_fee,
             plane_fees: deploy.plane_fees.clone(),
             store: deploy.store.clone(),
@@ -2215,7 +2165,6 @@ mod shipped_structured_outputs_tests;
 mod provider_debug_redaction_tests;
 
 pub mod auth;
-pub mod credentials;
 pub mod hooks;
 pub mod limits;
 pub mod min3;
@@ -2256,7 +2205,6 @@ impl std::fmt::Debug for RootCfg {
             .field("public_url", &"<redacted>")
             .field("endpoint_resources", &self.endpoint_resources)
             .field("oauth_as", &self.oauth_as)
-            .field("credentials", &self.credentials)
             .field("plane_defs", &self.plane_defs)
             .field("tls", &self.tls)
             .field("admin_listen", &self.admin_listen)
@@ -2270,7 +2218,6 @@ impl std::fmt::Debug for RootCfg {
             .field("admin_auth", &self.admin_auth)
             .field("groups", &self.groups)
             .field("rate_card", &self.rate_card)
-            .field("plugin_rate_cards", &self.plugin_rate_cards)
             .field("per_request_fee", &self.per_request_fee)
             .field("plane_fees", &self.plane_fees)
             .field("store", &self.store)
@@ -2308,7 +2255,6 @@ impl std::fmt::Debug for DeployCfg {
             .field("providers_file", &self.providers_file)
             .field("endpoint", &self.endpoint)
             .field("oauth_as", &self.oauth_as)
-            .field("credentials", &self.credentials)
             .field("admin_tls", &self.admin_tls)
             .field("admin_require_mtls", &self.admin_require_mtls)
             .field("auth", &self.auth)
@@ -2319,7 +2265,6 @@ impl std::fmt::Debug for DeployCfg {
             .field("hooks", &self.hooks)
             .field("groups", &self.groups)
             .field("rate_card", &self.rate_card)
-            .field("plugin_rate_cards", &self.plugin_rate_cards)
             .field("per_request_fee", &self.per_request_fee)
             .field("plane_rate_cards", &self.plane_rate_cards)
             .field("plane_fees", &self.plane_fees)

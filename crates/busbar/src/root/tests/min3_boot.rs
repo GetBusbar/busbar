@@ -176,14 +176,12 @@ fn each_admitted_plane_image_is_one_instance_named_by_its_alias_with_its_section
         )
         .unwrap(),
     );
-    let limits = |_: &str| busbar_plugin_abi::host_side::caller::InstanceLimits::default();
     let planes = plane_instances(
         &[
             plane("busbar-plane-mcp", "mcp"),
             plane("busbar-plane-x", ""),
         ],
         &sections,
-        &limits,
     )
     .unwrap();
     assert_eq!(planes.len(), 2);
@@ -207,14 +205,12 @@ fn each_admitted_plane_image_is_one_instance_named_by_its_alias_with_its_section
 
 #[test]
 fn two_plane_images_answering_one_instance_name_are_refused() {
-    let limits = |_: &str| busbar_plugin_abi::host_side::caller::InstanceLimits::default();
     let refusal = plane_instances(
         &[
             plane("busbar-plane-a", "dup"),
             plane("busbar-plane-b", "dup"),
         ],
         &std::collections::BTreeMap::new(),
-        &limits,
     )
     .err()
     .expect("one instance name, two images");
@@ -261,10 +257,7 @@ fn the_boot_types_only_the_declared_registration_table() {
 #[tokio::test]
 async fn the_recoverable_gate_sees_the_walks_at_rest_key_while_the_store_opens() {
     use crate::root::migrate::admit_for_host;
-    let configured = AtRestCfg {
-        key: SecretRef::None,
-        previous: None,
-    };
+    let configured = SecretRef::None;
     let hex = "ab".repeat(32);
     publish_at_rest(Some(&configured), |_, _| {
         let hex = hex.clone();
@@ -279,7 +272,7 @@ async fn the_recoverable_gate_sees_the_walks_at_rest_key_while_the_store_opens()
 
     publish_at_rest(None, |_, _| async { Err("nothing is resolved".to_owned()) }).await;
     let no_key = admit_for_host(3).unwrap_err();
-    assert!(no_key.contains("Add an at-rest"), "{no_key}");
+    assert!(no_key.contains("Set `auth.signing_key`"), "{no_key}");
 
     publish_at_rest(Some(&configured), |what, _| async move {
         Err(format!("{what} could not be resolved (Denied)"))
@@ -287,7 +280,7 @@ async fn the_recoverable_gate_sees_the_walks_at_rest_key_while_the_store_opens()
     .await;
     assert_eq!(
         admit_for_host(3),
-        Err("CONFIG: the at-rest key could not be resolved (Denied)".to_owned())
+        Err("CONFIG: the signing key could not be resolved (Denied)".to_owned())
     );
     assert_eq!(admit_for_host(0), Ok(()), "no recoverable row asks nothing");
 }

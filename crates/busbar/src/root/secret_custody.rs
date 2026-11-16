@@ -204,7 +204,7 @@ impl BootSecrets {
         self.view.get(name).map(|source| source.port)
     }
 
-    /// A kernel-internal secret (admin token, signing key, at-rest keys, mTLS material): by reference, with an
+    /// A kernel-internal secret (admin token, signing key, mTLS material): by reference, with an
     /// empty call stack. Errors carry no source name and no text (§12.2 step 4).
     pub(crate) async fn resolve_ref(
         &self,

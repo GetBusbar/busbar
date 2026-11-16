@@ -1189,16 +1189,6 @@ pub(crate) fn install_start(
 ) -> Option<&'static crate::root::loader::PluginRegistry> {
     let StartScan { plugins, scanned } = scan;
     if let Some(plugins) = &plugins {
-        let l = &plugins.logs;
-        if let Ok(logs) = crate::root::loader::dispatch::PluginLogConfig::from_words(
-            l.dir.as_deref(),
-            l.level.as_deref(),
-            &l.levels,
-            l.rotate_mb,
-            l.keep,
-        ) {
-            let _ = LOGS.set(logs);
-        }
         plugins.warn_invalid_floors();
     }
     let rows = linked_exports(linked.export_doors).unwrap_or_else(|refusal| {
@@ -1869,23 +1859,6 @@ pub(crate) fn plugin_logs() -> &'static crate::root::loader::dispatch::PluginLog
         crate::root::loader::dispatch::PluginLogConfig::from_words(None, None, &none, None, None)
             .expect("the plugins.logs defaults resolve")
     })
-}
-
-pub(crate) fn follow_plugin_logs(
-    logs: &crate::root::loader::dispatch::PluginLogConfig,
-    plugins: &busbar_kernel::config::PluginsCfg,
-) {
-    let l = &plugins.logs;
-    match crate::root::loader::dispatch::PluginLogConfig::from_words(
-        l.dir.as_deref(),
-        l.level.as_deref(),
-        &l.levels,
-        l.rotate_mb,
-        l.keep,
-    ) {
-        Ok(next) => logs.reconfigure(&next),
-        Err(e) => tracing::warn!(error = %e, "plugins.logs kept its words across a config apply"),
-    }
 }
 
 pub(crate) fn door_planes() -> &'static [(String, DoorPlane)] {

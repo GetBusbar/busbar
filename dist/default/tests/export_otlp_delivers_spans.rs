@@ -61,7 +61,6 @@ plugins:
   dir: '{plugins}'
   trust:
     allow_untrusted: true
-  logs: {{ dir: '{logs}' }}
 export:
   trace: {{ module: otlp, settings: {{ url: "http://127.0.0.1:{collector}/v1/traces" }} }}
 providers:
@@ -72,7 +71,6 @@ models:
     provider: mock
 "#,
             plugins = dir.join("plugins").display(),
-            logs = dir.join("plugin-logs").display(),
         ),
     )
     .unwrap();
@@ -146,6 +144,7 @@ fn the_shipped_binary_posts_its_spans_to_an_otlp_collector() {
     let log = std::fs::File::create(&log_path).unwrap();
     let mut child = Reap(
         Command::new(common::boot::exe())
+            .current_dir(&dir)
             .env("BUSBAR_CONFIG", dir.join("config.yaml"))
             .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
             .env("MOCK_KEY", "x")
@@ -191,7 +190,7 @@ fn the_shipped_binary_posts_its_spans_to_an_otlp_collector() {
     }
     let log = read_log();
 
-    let sink_log = std::fs::read_to_string(dir.join("plugin-logs").join("export.trace.log"))
+    let sink_log = std::fs::read_to_string(dir.join("logs/plugins").join("export.trace.log"))
         .unwrap_or_default();
     let _ = std::fs::remove_dir_all(&dir);
 

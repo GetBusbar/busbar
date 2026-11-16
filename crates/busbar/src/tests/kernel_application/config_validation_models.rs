@@ -42,7 +42,6 @@ fn make_root_cfg(
         admin_auth: config::default_admin_auth_names(),
         groups: std::collections::BTreeMap::new(),
         rate_card: None,
-        plugin_rate_cards: Default::default(),
         per_request_fee: 0,
         plane_fees: Default::default(),
         store: Some(config::StoreCfg {
@@ -130,7 +129,6 @@ fn make_model_unbounded(provider: &str) -> config::ModelCfg {
     config::ModelCfg {
         reasoning: None,
         prompt_caching: None,
-        protocol: None,
         max_requests: -1,
         provider: provider.into(),
         max_concurrent: None,

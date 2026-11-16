@@ -4,7 +4,7 @@
 //! The envelope reader, at the unit. The socket-level batteries of each protocol that reads an
 
 use super::*;
-use crate::json::{self, JsonContainerTrait as _, JsonValueTrait as _};
+use crate::json;
 
 #[test]
 fn exponent_shifts_preserve_sign_carry_borrow_and_unbounded_digits() {
@@ -159,7 +159,7 @@ fn an_envelope_defect_is_judged_before_the_id_so_a_notification_shaped_one_is_st
 fn the_error_envelope_always_carries_an_id_member_even_when_it_is_null() {
     let body = error_body(json::Value::new(), INVALID_REQUEST, "no", None);
     assert!(
-        body.as_object().expect("object").contains_key("id"),
+        body.as_object().expect("object").contains_key(&"id"),
         "the `id` member was omitted: {body}"
     );
     assert_eq!(body["id"], json::Value::new());

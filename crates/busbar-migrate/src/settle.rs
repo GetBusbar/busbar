@@ -7,11 +7,8 @@
 //! index (never the plugin's identity). On an unstamped boot this is step 5; on a stamped boot or a
 //! reload it is the seam's patch-writer edit of the same answer.
 //!
-//! Filing rules: TRUST_APPROVAL files `trust.<instance>.<name>`,
-//! ROUTE_MEDIA `routes.<name>.media`; a name two instances state with equal values is one entry, a
-//! different value or a clash with what the operator wrote refuses CONFIG naming the instance
-//! indices. LIMITS fills the instance's own `limits` (empty name, once; an operator key wins and the
-//! fragment's value is dropped with a report line). LIFT (empty name, one JSON pointer, once per
+//! UPSTREAM fragments are retired by UPSTREAMS-DECLARED r3. LIMITS (empty name, once) is validated and filed nowhere (the plugin's answer is applied in
+//! memory at its open); TRUST_APPROVAL and ROUTE_MEDIA are filed nowhere either (no key in the grammar). LIFT (empty name, one JSON pointer, once per
 //! pointer) moves a literal secret out of the settings bag into a planned 0600 secret file under the
 //! config directory and leaves a `{file: <path>}` reference; the value never enters a report. Any
 //! other section, and any fragment at all on a stamped boot (a current config moves nothing), refuses
@@ -196,77 +193,6 @@ fn pointer_mut<'v>(root: &'v mut Value, pointer: &str) -> Option<&'v mut Value> 
     Some(at)
 }
 
-fn valid_name(name: &str) -> bool {
-    (1..=64).contains(&name.len())
-        && name.bytes().all(|b| {
-            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'.' | b'-')
-        })
-}
-
-/// Where a named fragment lands: the document path, the section's word for the report.
-fn target(frag: &CoreCfg, instance: &str, index: u32) -> Result<Vec<String>, Refusal> {
-    let (head, ok): (Vec<&str>, bool) = match frag.section {
-        section::TRUST_APPROVAL => (vec!["trust", instance], valid_name(&frag.name)),
-        section::ROUTE_MEDIA => (
-            vec!["routes"],
-            !frag.name.is_empty() && frag.name.bytes().all(|b| b.is_ascii_digit()),
-        ),
-        _ => (Vec::new(), false),
-    };
-    if !ok {
-        return Err(refuse(
-            index,
-            &format!(
-                "core config section {} carries the name `{}`, which that section does not accept",
-                frag.section, frag.name
-            ),
-        ));
-    }
-    let mut path: Vec<String> = head.into_iter().map(str::to_owned).collect();
-    path.push(frag.name.clone());
-    if frag.section == section::ROUTE_MEDIA {
-        path.push("media".to_owned());
-    }
-    Ok(path)
-}
-
-/// Put `value` at `path`, creating the mappings on the way; `Ok(false)` when an equal value is
-/// already there; CONFIG when the operator's value differs.
-fn put(root: &mut Pairs, path: &[String], value: &Value, index: u32) -> Result<bool, Refusal> {
-    let shown = path.join(".");
-    let clash = || {
-        refuse(
-            index,
-            &format!("`{shown}` is already written by the operator with another value"),
-        )
-    };
-    let Some((last, parents)) = path.split_last() else {
-        return Ok(false);
-    };
-    let mut at: &mut Pairs = root;
-    for (depth, key) in parents.iter().enumerate() {
-        if at.get_key(key.as_str()).is_none() {
-            if depth == 0 {
-                schema_insert(at, key, Value::Map(Pairs::new()));
-            } else {
-                at.insert_key(key.as_str(), Value::Map(Pairs::new()));
-            }
-        }
-        at = match at.get_key_mut(key.as_str()) {
-            Some(Value::Map(inner)) => inner,
-            _ => return Err(clash()),
-        };
-    }
-    match at.get_key(last.as_str()) {
-        Some(existing) if yaml::same_tree(existing, value) => Ok(false),
-        Some(_) => Err(clash()),
-        None => {
-            at.insert_key(last.as_str(), value.clone());
-            Ok(true)
-        }
-    }
-}
-
 /// The directory beside config.yaml that lifted secrets are written in.
 fn secret_path(dir: &Path, instance: &[String], pointer: &str) -> Result<PathBuf, Refusal> {
     let digest = busbar_contract::crypto::sha256(pointer.as_bytes());
@@ -343,30 +269,13 @@ fn settle_block(
                     ));
                 }
                 limits_seen = true;
-                let Value::Map(fragment) = &frag.value else {
+                if !matches!(&frag.value, Value::Map(_)) {
                     return Err(refuse(index, "`limits` is not a mapping"));
-                };
-                let Value::Map(limits) =
-                    block.entry_or_insert_with("limits", || Value::Map(Pairs::new()))
-                else {
-                    return Err(refuse(index, &format!("`{shown}.limits` is not a mapping")));
-                };
-                for (key, value) in fragment {
-                    let held = limits
-                        .iter()
-                        .find(|(held_key, _)| held_key == key)
-                        .map(|(_, held)| held.clone());
-                    match held {
-                        None => limits.push((key.clone(), value.clone())),
-                        Some(held) if yaml::same_tree(&held, value) => {}
-                        Some(_) => report.push(format!(
-                            "{shown}.limits.{}: the operator's value is kept, and instance \
-                             {index}'s old setting is dropped (operator config is never \
-                             overwritten)",
-                            key.as_text().unwrap_or("?")
-                        )),
-                    }
                 }
+                report.push(format!(
+                    "{shown}: instance {index}'s old limits are not filed: the instance runs at its \
+                     kind's defaults, with the plugin's own answer applied in memory at its open"
+                ));
             }
             section::LIFT => {
                 let (Some(pointer), true) = (frag.value.as_text(), frag.name.is_empty()) else {
@@ -425,33 +334,6 @@ fn settle_block(
     Ok(())
 }
 
-/// File one named fragment (TRUST_APPROVAL, ROUTE_MEDIA) of `index`: one entry when another
-/// instance stated it with an equal value, CONFIG naming both indices when the values differ.
-fn file_named(
-    root: &mut Pairs,
-    filed: &mut Vec<(String, Value, u32)>,
-    frag: &CoreCfg,
-    instance: &str,
-    index: u32,
-    report: &mut Vec<String>,
-) -> Result<(), Refusal> {
-    let path = target(frag, instance, index)?;
-    let id = path.join(".");
-    if let Some((_, held, other)) = filed.iter().find(|(held_id, _, _)| *held_id == id) {
-        if yaml::same_tree(held, &frag.value) {
-            return Ok(());
-        }
-        return Err(Refusal::Config(format!(
-            "instance {other} and instance {index} state `{id}` with different values"
-        )));
-    }
-    if put(root, &path, &frag.value, index)? {
-        report.push(format!("{id}: filed from instance {index}'s old settings"));
-    }
-    filed.push((id, frag.value.clone(), index));
-    Ok(())
-}
-
 /// Apply `settled` to `text` (config.yaml, after the chain): each instance's bag replaced, its
 /// CORE_CFG filed, its LIFT pointers lifted. `stamped` is a stamped boot or a reload: no fragment is
 /// then accepted. Nothing is written; the secret files are the caller's to write ([`write_secrets`]).
@@ -492,7 +374,6 @@ pub fn apply_settled(
             secrets,
         });
     };
-    let mut filed: Vec<(String, Value, u32)> = Vec::new();
     for answer in settled {
         let index = answer.index;
         if stamped && !answer.core_cfg.is_empty() {
@@ -516,12 +397,15 @@ pub fn apply_settled(
             )
         })?;
         settle_block(block, answer, &dir, &mut report, &mut secrets)?;
-        let instance = answer.path.last().map_or("", String::as_str);
         for frag in &answer.core_cfg {
             match frag.section {
                 section::LIMITS | section::LIFT => {}
                 section::TRUST_APPROVAL | section::ROUTE_MEDIA => {
-                    file_named(root, &mut filed, frag, instance, index, &mut report)?;
+                    report.push(format!(
+                        "{shown}: instance {index}'s core config section {} is not filed: \
+                         the grammar has no key for it",
+                        frag.section
+                    ));
                 }
                 other => {
                     return Err(refuse(

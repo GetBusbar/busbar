@@ -117,7 +117,7 @@ use crate::instance::{
 };
 use crate::refusal::{Refusal, RefusalCode};
 use busbar_ports::binder::{BindError, ConfigBinder};
-use busbar_ports::codec::settled::for_purpose;
+use busbar_ports::codec::settled::{for_purpose, settled_limits};
 
 /// An `open` chain may run this long end to end (its NEEDs included): the first poll is bounded by the §10.6
 /// ceiling, the rest by the Need handlers' own timeouts and the step cap.
@@ -386,7 +386,7 @@ pub(crate) fn plan_order(
         for dep in deps(store)? {
             visit(dep, kinds, deps, &mut path, &mut placed, &mut plan)?;
         }
-        // Core's own sections the store boot needs (admin token, signing key, at-rest keys): the secret instances
+        // Core's own sections the store boot needs (admin token, signing key): the secret instances
         // they name open in 2a too, after the store's own, each with its own dependencies first. A root that is
         // not a secret instance, or is already placed, is skipped by `visit`.
         for &root in roots {
@@ -808,6 +808,7 @@ impl Registry {
             unbind,
             ..
         } = p;
+        let limits = settled_limits(s.limits, &answer.answer());
         let parts = InstanceParts {
             image,
             identity,
@@ -816,7 +817,7 @@ impl Registry {
             slot: lease.slot(),
             cell: Arc::clone(lease.cell()),
             epoch: lease.epoch(),
-            limits: s.limits,
+            limits,
             max_out: self.max_out_of(&described),
             methods: described.methods,
             facts: described.facts,

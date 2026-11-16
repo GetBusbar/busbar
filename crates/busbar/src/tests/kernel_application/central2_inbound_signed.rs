@@ -122,16 +122,13 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
     let signing = directory.join("signing-key");
     std::fs::write(&signing, hex::encode([9u8; 32]))
         .expect("write the actual configured signing key");
-    let at_rest = directory.join("at-rest-key");
-    std::fs::write(&at_rest, hex::encode([17u8; 32])).expect("write actual at-rest key");
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {},
             "models": {},
             "auth": { "chain": ["keys"], "admin_auth": [], "signing_key": { "file": signing } },
             "store": { "module": module, "settings": settings },
-            "credentials": { "at_rest": { "key": { "file": at_rest } } },
-            "advanced": {  },
+            "advanced": { "allow_destinations": ["127.0.0.1"] },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
