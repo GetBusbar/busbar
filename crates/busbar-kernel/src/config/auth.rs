@@ -69,6 +69,13 @@ pub struct IdentityProviderCfg {
     /// The module's own opaque settings (pushed to the auth plugin verbatim).
     #[serde(default)]
     pub settings: busbar_contract::plugin_settings::Settings,
+    /// `limits` beside `module` (IF §12.22), as written: parsed and stripped by [`super::min3::parse_min3`].
+    #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
+    pub limits: Option<busbar_contract::yaml::Value>,
+    /// `insecure_transport` beside `module` (TRANSPORT-SECURITY-POLICY §4), as written: parsed and stripped by
+    /// [`super::min3::parse_min3`].
+    #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
+    pub insecure_transport: Option<busbar_contract::yaml::Value>,
 }
 impl IdentityProviderCfg {
     /// Borrow the exact authoring representation under concrete kernel authority.
@@ -83,6 +90,10 @@ impl IdentityProviderCfg {
             token: F0,
             browser_login: F1,
             settings: F2,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            limits: Option<&'a busbar_contract::yaml::Value>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            insecure_transport: Option<&'a busbar_contract::yaml::Value>,
         }
         View {
             module: &self.module,
@@ -93,6 +104,8 @@ impl IdentityProviderCfg {
                 .as_ref()
                 .map(|value| value.authoring(seal)),
             settings: self.settings.authoring(seal),
+            limits: self.limits.as_ref(),
+            insecure_transport: self.insecure_transport.as_ref(),
         }
     }
 }

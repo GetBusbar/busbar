@@ -158,23 +158,26 @@ pub fn plan(
     Ok(table)
 }
 
-/// The request core originates to deliver a durable-work poll (§12.24): a GET on the recovery route (its pattern is
-/// the poll path a WORK_OPEN target matched), `RQ_RECOVERY`, `work` = the reference WORK_OPEN answered, identity =
-/// the principal restored from the work row. It has no client; the caller discards the client side.
+/// The request core originates to deliver a durable-work poll (§12.24 step 3): a GET on the recovery route the
+/// WORK_OPEN target matched, with that target's path and query, `RQ_RECOVERY`, `work` = the reference WORK_OPEN
+/// answered, identity = the principal restored from the work row. It has no client; the caller discards the client
+/// side.
 #[must_use]
 pub fn recovery_request<'a>(
     route: &'a Mounted,
     work: &'a str,
     identity: &'a [u8],
+    target: &'a str,
     request_id: u64,
 ) -> PlaneIn<'a> {
+    let (path, query) = target_parts(target);
     PlaneIn {
         route: route.route,
         flags: RQ_RECOVERY,
         auth: route.effective,
         method: "GET",
-        path: &route.pattern,
-        query: "",
+        path,
+        query,
         headers: &[],
         identity,
         request_id,
@@ -182,6 +185,24 @@ pub fn recovery_request<'a>(
         work,
         ticket_record: &[],
     }
+}
+
+/// A WORK target's path and query (no fragment): `/jobs/1?cursor=2` is (`/jobs/1`, `cursor=2`).
+#[must_use]
+pub fn target_parts(target: &str) -> (&str, &str) {
+    let target = target.split('#').next().unwrap_or_default();
+    target.split_once('?').unwrap_or((target, ""))
+}
+
+/// The recovery route a WORK target's path lies on (the same match WORK_OPEN was admitted under), if any.
+#[must_use]
+pub fn recovery_route<'r>(routes: &'r PortRoutes, target: &str) -> Option<&'r Mounted> {
+    use busbar_contract::abi::transport::route::{path_matches, PATH_PATTERN};
+    let (path, _) = target_parts(target);
+    routes
+        .recovery
+        .iter()
+        .find(|route| path_matches(PATH_PATTERN, &route.pattern, path))
 }
 
 fn admin_cx() -> CallCx {

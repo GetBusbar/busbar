@@ -204,6 +204,7 @@ pub fn model_request_finished(
     pool: &str,
     status: u16,
     seconds: f64,
+    unit_id: Option<&dyn std::fmt::Display>,
 ) {
     let outcome = model_request_finished_in(&app.tslots, ingress_protocol, pool, status, seconds);
 
@@ -211,7 +212,9 @@ pub fn model_request_finished(
         .export_projections
         .wants_stream(busbar_contract::export_stream::ExportStream::Logs)
     {
+        let correlation_id = unit_id.map(ToString::to_string);
         crate::export::deliver_request_log(&crate::export::RequestLogFacts {
+            correlation_id: correlation_id.as_deref(),
             ts: busbar_kernel::store::now(),
             ingress_protocol,
             pool,

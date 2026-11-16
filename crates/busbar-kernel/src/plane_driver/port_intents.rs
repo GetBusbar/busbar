@@ -1353,6 +1353,12 @@ pub trait DurableWork: Send + Sync + 'static {
         principal: &'a [u8],
         reference: &'a str,
     ) -> BoxFut<'a, Result<(), u32>>;
+    /// The scheduler side (§12.24 step 3): live rows of this instance not held by a running recovery session. Each
+    /// `RecoveryWork` releases its hold when it drops.
+    fn recoverable<'a>(
+        &'a self,
+        plane: &'a Caller<'_>,
+    ) -> BoxFut<'a, Result<Vec<crate::host_services::RecoveryWork>, &'static str>>;
 }
 
 /// The production [`WorkDecider`] (§12.24): the checks core owns, then [`DurableWork`]. OPEN needs a target on one

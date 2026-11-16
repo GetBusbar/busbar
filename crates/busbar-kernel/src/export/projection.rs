@@ -54,7 +54,14 @@ pub(crate) fn produced_fields(stream: ExportStream) -> &'static [ExportField] {
     match stream {
         ExportStream::Metrics => &[],
 
-        ExportStream::Logs => &[F::Ts, F::IngressProtocol, F::Pool, F::Outcome, F::LatencyMs],
+        ExportStream::Logs => &[
+            F::CorrelationId,
+            F::Ts,
+            F::IngressProtocol,
+            F::Pool,
+            F::Outcome,
+            F::LatencyMs,
+        ],
 
         ExportStream::Traces => &[],
 

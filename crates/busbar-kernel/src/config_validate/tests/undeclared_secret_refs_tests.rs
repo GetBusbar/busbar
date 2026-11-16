@@ -31,6 +31,8 @@ fn store_with(settings: serde_json::Value) -> crate::config::RootCfg {
     cfg.store = Some(crate::config::StoreCfg {
         module: "fixture-owner".into(),
         settings: serde_json::from_value(settings).expect("object settings"),
+        limits: None,
+        insecure_transport: None,
     });
     cfg.grammar = crate::config::GrammarField::bound(crate::config::Grammar::empty());
     cfg
@@ -88,6 +90,8 @@ fn identity_provider_reference_fields_require_the_owners_declaration() {
                 "endpoint": reference("endpoint"),
             }))
             .unwrap(),
+            limits: None,
+            insecure_transport: None,
         },
     );
     let e = check(&cfg, &["credential"], &[]).expect_err("refused");

@@ -515,8 +515,8 @@ pub struct RootCfg {
     /// The grammar the deployment document was read under, copied by [`resolve`]: what every
     /// check of this configuration reads its secret shorthand by. Never persisted.
     pub grammar: grammar::GrammarField,
-    /// The MIN-3 keys (`upstreams`, `routes`, per-instance `limits`, `provisioning`; ABI-MIN3-INTERFACE §12).
-    /// W0-ABI: always the empty default; W1-K7 fills it in [`resolve`] through [`min3::parse_min3`].
+    /// The MIN-3 keys (`upstreams`, `routes`, per-instance `limits` and `insecure_transport`, `provisioning`;
+    /// ABI-MIN3-INTERFACE §12), parsed in [`resolve`] through [`min3::parse_min3`].
     pub min3: min3::Min3Config,
 }
 
@@ -1050,6 +1050,13 @@ pub struct DeployCfg {
     /// secret plugin opens with `{}`. Mirrors `store.settings` for the store plugin.
     #[serde(default)]
     pub secrets: std::collections::BTreeMap<String, SecretModuleCfg>,
+    /// The top-level `upstreams:` section (IF §12.1, §12.18; 1.6.0, additive): upstream name → entry (`url:` or
+    /// `command:`, optional `tls:`, `auth:`, `upstream_credentials:`). Kept as written; [`min3::parse_min3`]
+    /// parses each entry's binding keys and [`crate::upstreams::ConfiguredUpstreams::from_config`] types the
+    /// entries, at load (refusals) and at boot (the table every plane seat reads). A 1.5.x plane's `migrate`
+    /// writes its members here (CORE_CFG(UPSTREAM)). Absent = no upstream.
+    #[serde(default)]
+    pub upstreams: Option<serde_json::Map<String, serde_json::Value>>,
     /// Internal tuning knobs (the `advanced:` block).
     #[serde(default)]
     pub advanced: AdvancedCfg,
@@ -2065,6 +2072,8 @@ pub fn resolve(
             }
         });
 
+    let min3 = resolve_min3(deploy, &mut errors);
+
     if errors.is_empty() {
         let security = deploy.security.clone().unwrap_or_default();
         Ok(RootCfg {
@@ -2128,11 +2137,43 @@ pub fn resolve(
             export_defs: deploy.export.clone(),
             plane_sections,
             grammar: deploy.grammar.clone(),
-            min3: min3::Min3Config::default(),
+            min3,
         })
     } else {
         Err(errors)
     }
+}
+
+/// The MIN-3 keys of `deploy` ([`min3::parse_min3`]), with W1-K6's `upstream_credentials` hook called and the
+/// `upstreams:` entries typed once ([`crate::upstreams::ConfiguredUpstreams::from_config`]), so a bad entry refuses
+/// the load (and `--validate`) rather than first at boot. Every refusal joins `errors`: a BUSBAR-3163 text as it
+/// is, any other as CONFIG_SECTION_INVALID. Refused = the empty config (the load fails on `errors` anyway).
+fn resolve_min3(deploy: &DeployCfg, errors: &mut Vec<String>) -> min3::Min3Config {
+    let code = |text: String| -> String {
+        if text.starts_with("BUSBAR-") {
+            text
+        } else {
+            coded::config_section_invalid(text).into()
+        }
+    };
+    let parsed = match min3::parse_min3(deploy) {
+        Ok(parsed) => parsed,
+        Err(refused) => {
+            errors.extend(refused.into_iter().map(code));
+            return min3::Min3Config::default();
+        }
+    };
+    if let Err(refused) = min3::check_upstream_credentials(&parsed) {
+        errors.extend(refused.into_iter().map(code));
+    }
+    if let Err(refused) = crate::upstreams::ConfiguredUpstreams::from_config(
+        &parsed.upstream_section,
+        &parsed.upstreams,
+        &crate::plugin_config::upstream_anchor,
+    ) {
+        errors.extend(refused.into_iter().map(code));
+    }
+    parsed
 }
 
 #[cfg(test)]
@@ -2276,6 +2317,13 @@ impl std::fmt::Debug for DeployCfg {
             .field("declared_raw", &self.declared_raw)
             .field("store", &self.store)
             .field("secrets", &self.secrets)
+            .field(
+                "upstreams",
+                &self
+                    .upstreams
+                    .as_ref()
+                    .map(|section| section.keys().collect::<Vec<_>>()),
+            )
             .field("advanced", &self.advanced)
             .field("export", &self.export)
             .field("declared", &self.declared)
