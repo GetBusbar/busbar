@@ -134,37 +134,37 @@ fn invalid(what: &str) -> Response {
 }
 
 impl TreeQuery {
-    fn read(q: &HashMap<String, String>) -> Result<Self, Response> {
+    fn read(q: &HashMap<String, String>) -> Result<Self, Box<Response>> {
         if let Some(unknown) = q.keys().find(|k| !PARAMS.contains(&k.as_str())) {
-            return Err(invalid(&format!(
+            return Err(Box::new(invalid(&format!(
                 "{unknown}: /config/tree takes view, layer and section"
-            )));
+            ))));
         }
         let view = match q.get("view").map(String::as_str) {
             None | Some("effective") => View::Effective,
             Some("declared") => View::Declared,
-            Some(_) => return Err(invalid("view: expected declared|effective")),
+            Some(_) => return Err(Box::new(invalid("view: expected declared|effective"))),
         };
         let layer = match q.get("layer").map(String::as_str) {
             None | Some("merged") => Layer::Merged,
             Some("base") => Layer::Base,
             Some("overlay") => Layer::Overlay,
-            Some(_) => return Err(invalid("layer: expected base|overlay|merged")),
+            Some(_) => return Err(Box::new(invalid("layer: expected base|overlay|merged"))),
         };
         if view == View::Effective && layer != Layer::Merged {
-            return Err(invalid(
+            return Err(Box::new(invalid(
                 "layer: the effective view is the resolved generation and has no layers; use \
                  view=declared to read the base or overlay layer",
-            ));
+            )));
         }
         let section = match q.get("section") {
             None => None,
             Some(dotted) => {
                 let path: Vec<String> = dotted.split('.').map(str::to_owned).collect();
                 if path.iter().any(String::is_empty) {
-                    return Err(invalid(
+                    return Err(Box::new(invalid(
                         "section: expected a dotted key such as limits.request_body_max_bytes",
-                    ));
+                    )));
                 }
                 Some(path)
             }
@@ -184,7 +184,7 @@ pub(crate) async fn get(
 ) -> Response {
     let query = match TreeQuery::read(&q) {
         Ok(query) => query,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let app = super::response_snapshot(handle.load()).await;
     let sugars = app

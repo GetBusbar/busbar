@@ -304,7 +304,7 @@ fn flatten_openapi(
     pointer: String,
     out: &mut std::collections::BTreeMap<String, String>,
 ) {
-    use busbar_contract::json::{JsonContainerTrait, JsonValueTrait};
+    use busbar_contract::json::JsonContainerTrait;
     if let Some(members) = value.as_object() {
         if members.is_empty() {
             out.insert(pointer, "{}".to_string());

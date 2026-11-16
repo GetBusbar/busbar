@@ -822,7 +822,10 @@ impl Line {
 
     /// The dial target the line's connection names, if it still holds one.
     pub(crate) fn target(&self) -> Option<String> {
-        self.fact(|c| c.target().to_owned(), |s| s.target.clone())
+        self.fact(
+            |c| crate::off_path::conns::owned(c.target()),
+            |s| s.target.clone(),
+        )
     }
 
     /// Upgrade this line's connection to connection security (a secure upgrade on an open dialled

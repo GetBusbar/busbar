@@ -968,7 +968,7 @@ impl Default for Buffers {
 /// The host's monotonic clock, nanoseconds since this process first read it, plus one (never `0`:
 #[must_use]
 pub fn now_ns() -> u64 {
-    u64::try_from(epoch().elapsed().as_nanos())
+    u64::try_from(crate::off_path::framing::since_epoch().as_nanos())
         .unwrap_or(u64::MAX)
         .saturating_add(1)
 }
@@ -992,9 +992,7 @@ pub fn instant_of(ns: u64) -> Instant {
 }
 
 fn unix_ns() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
+    crate::off_path::framing::unix_ns()
 }
 
 /// Where one connection's framing stands with its entry.
@@ -1473,7 +1471,7 @@ fn protocol_names(mut b: &[u8]) -> Option<Vec<Vec<u8>>> {
         if len == 0 || rest.len() < len {
             return None;
         }
-        names.push(rest[..len].to_vec());
+        names.push(crate::off_path::conns::owned_bytes(&rest[..len]));
         b = &rest[len..];
     }
     Some(names)
@@ -1902,9 +1900,9 @@ impl Framing {
         };
         let op = Ticketed::Begin {
             side,
-            target: target.to_owned(),
+            target: crate::off_path::conns::owned(target),
             established: established.clone(),
-            opening: opening.to_vec(),
+            opening: crate::off_path::framing::owned_opening(opening),
             binding,
             guests,
         };

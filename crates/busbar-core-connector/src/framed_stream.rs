@@ -118,7 +118,7 @@ impl FramedStream {
             class: 0,
         }));
         let established = Established {
-            claim: Some(claim.to_string()),
+            claim: Some(crate::off_path::conns::owned(claim)),
             scheme,
             ..Established::default()
         };
@@ -297,7 +297,7 @@ fn opening_fields(block: &[u8]) -> Result<Vec<HeadWords>, Refused> {
             ));
         }
         read += name.len() + fields::SEPARATOR.len() + value.len() + fields::LINE_END.len();
-        out.push((name.to_vec(), value.to_vec()));
+        out.push(crate::off_path::framing::owned_field(name, value));
     }
     if read != block.len() {
         return Err(fault(
@@ -317,7 +317,7 @@ fn neutral_opening_fields(block: &[u8]) -> Result<Vec<HeadWords>, Refused> {
             return Err(fault("the opening field block has an empty name"));
         }
         read += name.len() + fields::SEPARATOR.len() + value.len() + fields::LINE_END.len();
-        out.push((name.to_vec(), value.to_vec()));
+        out.push(crate::off_path::framing::owned_field(name, value));
     }
     if read != block.len() {
         return Err(fault("the opening field block is incomplete"));
@@ -357,7 +357,10 @@ pub fn field_lines(block: &[u8]) -> Result<Vec<HeadWords>, Refused> {
             .iter()
             .rposition(|b| *b != b' ' && *b != b'\t')
             .map_or(start, |e| e + 1);
-        out.push((name.to_vec(), value[start..end.max(start)].to_vec()));
+        out.push(crate::off_path::framing::owned_field(
+            name,
+            &value[start..end.max(start)],
+        ));
     }
     Ok(out)
 }
@@ -437,13 +440,7 @@ impl StreamHolds {
     /// Every stream whose deadline is at or before `now`, ascending; each leaves the held set (the
     /// stream is reset, so it is not reported twice).
     pub fn take_stalled(&mut self, now: std::time::Instant) -> Vec<u64> {
-        let mut due: Vec<u64> = self
-            .held
-            .iter()
-            .filter(|(_, deadline)| **deadline <= now)
-            .map(|(stream, _)| *stream)
-            .collect();
-        due.sort_unstable();
+        let due = crate::off_path::framing::stalled_streams(self.held.iter(), now);
         for stream in &due {
             self.held.remove(stream);
         }

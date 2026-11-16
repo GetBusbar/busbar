@@ -370,8 +370,8 @@ impl Visit for Fields {
     fn record_str(&mut self, field: &Field, value: &str) {
         match field.name() {
             "instance" => self.instance = Some(value.to_owned()),
-            "code" => self.code = value.to_owned(),
-            "message" => self.message = value.to_owned(),
+            "code" => value.clone_into(&mut self.code),
+            "message" => value.clone_into(&mut self.message),
             _ => {}
         }
     }

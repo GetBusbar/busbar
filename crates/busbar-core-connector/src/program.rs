@@ -644,7 +644,7 @@ impl Member {
                 queued: 0,
                 ended: None,
                 end_read: false,
-                unsent: (!first.is_empty()).then(|| first.to_vec()),
+                unsent: (!first.is_empty()).then(|| crate::off_path::conns::owned_bytes(first)),
                 mid_frame,
             },
         );
@@ -843,7 +843,8 @@ impl Member {
                 .facts()
                 .claims
                 .first()
-                .map(|c| (*c).to_owned()),
+                .copied()
+                .map(crate::off_path::conns::owned),
         })
     }
 

@@ -325,8 +325,8 @@ fn candidate(index: u32, flags: u32, priced: bool) -> OwnedCandidate {
         rec: rec(index, flags),
         model: ["model-a", "model-b", "model-c", "model-d"][index as usize % 4],
         provider: ["prov-a", "prov-b", "prov-c", "prov-d"][index as usize % 4],
-        tier: (index % 2 == 0).then_some("premium"),
-        tags: if index % 2 == 0 {
+        tier: (index.is_multiple_of(2)).then_some("premium"),
+        tags: if index.is_multiple_of(2) {
             vec!["fast", "eu"]
         } else {
             Vec::new()

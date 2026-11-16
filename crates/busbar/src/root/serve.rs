@@ -2353,7 +2353,7 @@ impl DataRoutes {
         } else {
             served.live.current()
         };
-        let started = std::time::Instant::now();
+        let started = busbar_core_connector::framer::now();
         caller.began(started);
         let claim = arrival.claim;
         let app_for_metrics = Arc::clone(&app);
@@ -2507,7 +2507,9 @@ impl DataRoutes {
                     served.dialects.get(dialect as usize).copied().unwrap_or(""),
                     pool,
                     u16::try_from(status).unwrap_or(u16::MAX),
-                    started.elapsed().as_secs_f64(),
+                    busbar_core_connector::framer::now()
+                        .saturating_duration_since(started)
+                        .as_secs_f64(),
                 );
             }
         }
@@ -3220,7 +3222,12 @@ impl CallerEnd for IngressCaller {
                 == 0
         {
             if let Some(began) = self.began.get() {
-                let ns = u64::try_from(began.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                let ns = u64::try_from(
+                    busbar_core_connector::framer::now()
+                        .saturating_duration_since(*began)
+                        .as_nanos(),
+                )
+                .unwrap_or(u64::MAX);
                 self.first_write_ns
                     .store(ns.max(1), std::sync::atomic::Ordering::Relaxed);
             }

@@ -160,7 +160,7 @@ pub(super) async fn put(
     .await
     {
         Ok((installed, _)) => installed,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let (configuration, reload_to_apply) = configuration_and_restart(&installed);
     with_config_etag(
@@ -188,7 +188,7 @@ pub(super) async fn apply(
     expected: Option<u64>,
     audit: EditAudit,
     plan: Planner,
-) -> Result<(Arc<App>, bool), Response> {
+) -> Result<(Arc<App>, bool), Box<Response>> {
     let EditAudit {
         action,
         resource,
@@ -379,11 +379,11 @@ pub(super) async fn apply(
         }
         Ok(Err((error, cond))) => {
             super::audit::AUDIT.record_by(action, &resource, super::audit::OUTCOME_REJECTED, actor);
-            Err(super::err_json_cond(&error, cond))
+            Err(Box::new(super::err_json_cond(&error, cond)))
         }
         Err(error) => {
             super::audit::AUDIT.record_by(action, &resource, super::audit::OUTCOME_REJECTED, actor);
-            Err(err_json(&error))
+            Err(Box::new(err_json(&error)))
         }
     }
 }

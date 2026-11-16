@@ -221,3 +221,9 @@ pub(crate) fn copied_fields(fields: &[(&str, &[u8])]) -> Vec<(String, Vec<u8>)> 
         .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
         .collect()
 }
+
+/// An owned copy of `bytes` (a dial's method or head target words), once, as the connection is
+/// dialled or opened.
+pub(crate) fn owned_bytes(bytes: &[u8]) -> Vec<u8> {
+    bytes.to_vec()
+}

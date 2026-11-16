@@ -15,3 +15,40 @@ static EPOCH: OnceLock<Instant> = OnceLock::new();
 pub(crate) fn epoch() -> Instant {
     *EPOCH.get_or_init(Instant::now)
 }
+
+/// The OS monotonic clock read, as the time since [`epoch`]: the one place the host clock is read
+/// for `framer::now_ns`.
+pub(crate) fn since_epoch() -> std::time::Duration {
+    epoch().elapsed()
+}
+
+/// The OS wall clock, nanoseconds since the Unix epoch (`0` before it): read once as a framing
+/// begins.
+pub(crate) fn unix_ns() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
+}
+
+/// One field of an opening block, owned: kept once per stream, as its opening is read.
+pub(crate) fn owned_field(name: &[u8], value: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    (name.to_vec(), value.to_vec())
+}
+
+/// The streams whose stall deadline has passed at `now`, ascending: taken once per tick.
+pub(crate) fn stalled_streams<'a>(
+    held: impl Iterator<Item = (&'a u64, &'a std::time::Instant)>,
+    now: std::time::Instant,
+) -> Vec<u64> {
+    let mut due: Vec<u64> = held
+        .filter(|(_, deadline)| **deadline <= now)
+        .map(|(stream, _)| *stream)
+        .collect();
+    due.sort_unstable();
+    due
+}
+
+/// A framing's opening field block, owned: kept once, as the framing begins.
+pub(crate) fn owned_opening(opening: &[(String, Vec<u8>)]) -> Vec<(String, Vec<u8>)> {
+    opening.to_vec()
+}

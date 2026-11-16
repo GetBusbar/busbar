@@ -327,7 +327,7 @@ fn feed_upstream(
     encode_upstream_head(&mut head, 200, &[], None, None)
         .expect("plane suite: the upstream head fits a reply");
     let mut step = |session: &mut PlaneSession, told: &mut Told, flags: u32, bytes: &[u8]| {
-        let mut next = Told::default();
+        let next = Told::default();
         must(
             "piece(FROM_UPSTREAM)",
             port.piece(
@@ -415,7 +415,7 @@ fn drive(
                 .map_or(&[], |script| *script);
             told.exchanges.clear();
             feed_upstream(port, &mut session, core, &mut told, exchange, script, index);
-            pending.extend(told.exchanges.drain(..));
+            pending.append(&mut told.exchanges);
         }
         if told.retry {
             attempt += 1;
