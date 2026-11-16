@@ -2744,7 +2744,6 @@ fn reload_to_apply_fields(req: &busbar_kernel::config::overlay::RootSettings) ->
             datagram_line_memory_bytes: _,
             max_auto_provisioned_groups: _,
 
-            hook_content_max_bytes: _,
             hard_down_cooldown_secs: _,
             upstream_error_body_max_bytes: _,
             tls_handshake_timeout_secs: _,
@@ -5300,6 +5299,10 @@ fn empty_chain_refusal(operator: &str) -> AdminError {
 #[cfg(test)]
 #[path = "tests/patch_tests.rs"]
 mod patch_tests;
+
+#[cfg(test)]
+#[path = "tests/group_limit_removed_keys.rs"]
+mod group_limit_removed_keys;
 
 #[cfg(feature = "test-support")]
 pub fn credential_flush_response_for_test(
