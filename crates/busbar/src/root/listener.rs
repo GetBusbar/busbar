@@ -760,6 +760,7 @@ impl Served {
                 body_read_timeout(),
                 drain.stop,
                 Some(peer),
+                tls_peer_cert,
             )
             .await;
             return;

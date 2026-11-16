@@ -225,8 +225,9 @@ pub(crate) async fn open_secret_steps<N: busbar_plugin_abi::host_side::needs::Ne
         if *kind != busbar_plugin_abi::types::KindCode::Secret {
             continue;
         }
-        let port = registry.open_secret(spec, needs).await?;
-        let instance = next_instance_id();
+        let prepared = registry.reserve(spec)?;
+        let instance = prepared.id();
+        let port = registry.open_secret_reserved(prepared, needs).await?;
         if let Some(old) = secrets
             .table()
             .opened(spec.name, SecretSource { instance, port })
@@ -236,12 +237,6 @@ pub(crate) async fn open_secret_steps<N: busbar_plugin_abi::host_side::needs::Ne
         opened += 1;
     }
     Ok(opened)
-}
-
-/// A process-unique, non-zero runtime id for an opened secret instance.
-fn next_instance_id() -> u64 {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 #[cfg(test)]
