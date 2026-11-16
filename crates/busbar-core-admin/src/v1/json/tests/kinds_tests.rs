@@ -7,6 +7,67 @@ use super::*;
 use busbar_contract::json::json;
 
 #[test]
+fn discovery_categories_preserve_names_and_order() {
+    assert_eq!(
+        CATEGORIES,
+        [
+            "plane",
+            "auth",
+            "store",
+            "secret",
+            "export",
+            "hook",
+            "transport",
+            "core"
+        ]
+    );
+    for (kind, expected) in [
+        (Kind::Plane, "plane"),
+        (Kind::Transport, "transport"),
+        (Kind::Auth, "auth"),
+        (Kind::Store, "store"),
+        (Kind::Secret, "secret"),
+        (Kind::Hook, "hook"),
+        (Kind::Export, "export"),
+    ] {
+        assert_eq!(category_of(kind), expected);
+        assert!(CATEGORIES.contains(&expected));
+    }
+    assert!(!CATEGORIES.contains(&"unknown"));
+    assert!(KindCode::ALL.iter().all(|kind| kind.word() != "core"));
+}
+
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn discovery_category_schemas_match_runtime_categories() {
+    let expected = json!([
+        "plane",
+        "auth",
+        "store",
+        "secret",
+        "export",
+        "hook",
+        "transport",
+        "core"
+    ]);
+    let parameters: Vec<Value> = doc::query(&["category"]);
+    assert_eq!(parameters.len(), 1);
+    assert_eq!(parameters[0]["schema"]["enum"], expected);
+    assert_eq!(parameters[0]["schema"]["type"], "string");
+
+    let schema = <doc::KindsPage as schemars::JsonSchema>::json_schema(
+        &mut schemars::SchemaGenerator::default(),
+    );
+    let bytes = busbar_contract::json::to_vec(&schema).expect("encode discovery schema");
+    let schema: Value = busbar_contract::json::parse(&bytes).expect("parse discovery schema");
+    assert_eq!(
+        schema["properties"]["items"]["items"]["properties"]["category"]["enum"],
+        expected
+    );
+    assert_eq!(json!(CATEGORIES), expected);
+}
+
+#[test]
 fn links_from_schema_refs() {
     let schema = json!({
         "type": "object",
