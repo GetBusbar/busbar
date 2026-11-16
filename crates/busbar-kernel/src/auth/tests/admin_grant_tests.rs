@@ -127,14 +127,14 @@ fn admin_auth_absent_defaults_to_tokens_and_keys() {
         names.iter().all(|n| !n.trim().is_empty()),
         "never the empty word: {names:?}"
     );
-    let absent: crate::config::auth::AuthDeployCfg = serde_json::from_str("{}").unwrap();
+    let absent: crate::config::auth::AuthDeployCfg = busbar_contract::json::parse_str("{}").unwrap();
     assert_eq!(absent.admin_auth, names);
 }
 
 #[test]
 fn explicit_admin_auth_not_extended() {
     let explicit: crate::config::auth::AuthDeployCfg =
-        serde_json::from_str(r#"{"admin_auth":["only-this"]}"#).unwrap();
+        busbar_contract::json::parse_str(r#"{"admin_auth":["only-this"]}"#).unwrap();
     assert_eq!(explicit.admin_auth, vec!["only-this".to_string()]);
 }
 

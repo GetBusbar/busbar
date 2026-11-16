@@ -98,7 +98,7 @@ pub fn render(
         fields,
         body: Vec::with_capacity(128),
     };
-    serde_json::to_writer(&mut rendered.body, &body).expect("the challenge is a JSON value");
+    busbar_contract::json::to_writer(&mut rendered.body, &body).expect("the challenge is a JSON value");
     rendered
 }
 

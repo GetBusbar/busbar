@@ -6,7 +6,7 @@ use busbar_contract::spans::{exceeds_max_depth, MAX_JSON_DEPTH};
 
 /// Read one JSON document into `T`, numbers in binary64 (`u64`, `i64` or `f64`), as the kernel
 /// always has. The workspace's sonic-rs carries `arbitrary_precision` for `busbar_contract::json`,
-/// under which sonic's own `from_slice` hands `deserialize_any` (a `serde_json::Value`, an untagged
+/// under which sonic's own `from_slice` hands `deserialize_any` (a dynamic JSON tree, an untagged
 /// or flattened field) the exact-number token map instead of a number. Exact reads go through the
 /// facade.
 #[inline]

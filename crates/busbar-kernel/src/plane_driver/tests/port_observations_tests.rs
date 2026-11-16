@@ -214,7 +214,7 @@ async fn create_requires_the_classes_priced_then_observe_settles_once_and_close_
         .observe(&who.caller(), &owner, &observation(id, OBS_FINAL, &counts))
         .await;
     assert_eq!(first.0, OBS_ACCEPTED);
-    let receipt: Receipt = serde_json::from_slice(&first.1).unwrap();
+    let receipt: Receipt = busbar_contract::json::parse(&first.1).unwrap();
     assert!(!receipt.duplicate);
     let again = f
         .custody
@@ -222,7 +222,7 @@ async fn create_requires_the_classes_priced_then_observe_settles_once_and_close_
         .await;
     assert_eq!(again.0, OBS_ACCEPTED);
     assert!(
-        serde_json::from_slice::<Receipt>(&again.1)
+        busbar_contract::json::parse::<Receipt>(&again.1)
             .unwrap()
             .duplicate
     );

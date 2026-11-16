@@ -4,6 +4,8 @@
 use super::*;
 use crate::audit::{digest, frame_prelude, Framing};
 use crate::store::plane_view::decode;
+use busbar_contract::json;
+use busbar_contract::json::JsonValueTrait as _;
 
 fn assert_roundtrip(seq: u64, prev_hash: &str, ts: u64, act: &str, res: &str, out: &str, pr: &str) {
     let mut input = frame_prelude(Framing::PipeSeparated, prev_hash, None, seq);
@@ -962,7 +964,7 @@ async fn a_live_admin_record_with_a_bar_in_a_field_recomputes_under_its_declared
     assert_eq!(e.hash, busbar_contract::redacted::sha256_hex(&sealed));
 }
 
-fn hash_by_the_published_recipe(served: &serde_json::Value) -> String {
+fn hash_by_the_published_recipe(served: &json::Value) -> String {
     use crate::hashing::Sha256;
     let text = |k: &str| served[k].as_str().expect("a served text field").to_string();
     let num = |k: &str| served[k].as_u64().expect("a served integer field");
@@ -1037,14 +1039,14 @@ async fn every_served_audit_record_recomputes_by_the_published_recipe() {
     flush_pending()
         .await
         .expect("all native audit originals confirmed");
-    let served = serde_json::to_value(AUDIT_LOG.list_filtered(
+    let served = json::to_value(&AUDIT_LOG.list_filtered(
         0,
         crate::audit_ring::MAX_AUDIT_ENTRIES,
         None,
         None,
     ))
     .expect("the served page serializes");
-    let mine: Vec<&serde_json::Value> = served
+    let mine: Vec<&json::Value> = served
         .as_array()
         .expect("a list")
         .iter()
@@ -1066,7 +1068,7 @@ async fn every_served_audit_record_recomputes_by_the_published_recipe() {
             "the served hash is the published recipe's: {e}"
         );
         let entry: AuditEntry =
-            serde_json::from_value(e.clone()).expect("a served entry reads back");
+            json::from_value(e).expect("a served entry reads back");
         assert_eq!(
             digest(&entry),
             published,
@@ -1305,7 +1307,7 @@ async fn a_1_5_5_audit_table_reads_back_whole_and_the_next_record_continues_its_
             r#"{{"seq":{seq},"ts":{ts},"action":"{act}","resource":"{res}","outcome":"{out}","principal":"{pr}","prev_hash":"{prev}","hash":"{hash}"}}"#
         );
         let row: busbar_contract::records::AuditRecord =
-            serde_json::from_str(&json).expect("a 1.5.5 row decodes as this build's record");
+            busbar_contract::json::parse_str(&json).expect("a 1.5.5 row decodes as this build's record");
         seed_legacy(&store, &row).await;
         legacy.push(row);
         prev = hash;
@@ -1582,8 +1584,8 @@ fn accepted_event_projection_preserves_pinned_identity_and_bounds_disclosure() {
         recorded_here: true,
         ..Default::default()
     };
-    let parsed = |rendered: crate::export::projection::Rendered| -> serde_json::Value {
-        serde_json::from_slice(&rendered.line).unwrap()
+    let parsed = |rendered: crate::export::projection::Rendered| -> json::Value {
+        json::parse_value(&rendered.line).unwrap()
     };
     let full = parsed(project_audit_event(
         Projection::for_test(
@@ -1622,7 +1624,7 @@ fn accepted_event_projection_preserves_pinned_identity_and_bounds_disclosure() {
     ));
     assert_eq!(
         logs,
-        serde_json::json!({}),
+        json::json!({}),
         "a log-only grant discloses no event fields"
     );
 }

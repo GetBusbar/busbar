@@ -888,7 +888,7 @@ pub(crate) mod resolution {
         super::policy_timeout(hook.timeout_ms).hash(&mut h);
         settings.hash(&mut h);
         hook.signals.hash(&mut h);
-        serde_json::to_writer(HashWriter(&mut h), &hook.child_dispatch).ok()?;
+        busbar_contract::json::to_writer(HashWriter(&mut h), &hook.child_dispatch).ok()?;
         Some(h.finish())
     }
 

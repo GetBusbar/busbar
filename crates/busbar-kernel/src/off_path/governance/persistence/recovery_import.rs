@@ -75,7 +75,7 @@ impl ChildDescriptor {
         }
     }
     fn decode(bytes: &Secret<Vec<u8>>, disposition: [u8; 32]) -> Result<Self, RecoveryError> {
-        let descriptor: Self = serde_json::from_slice(bytes.expose(&crate::seal::lend()))
+        let descriptor: Self = json::parse(bytes.expose(&crate::seal::lend()))
             .map_err(|e| invalid_from(&e))?;
         if descriptor != Self::new(disposition, descriptor.context.created_at_ms) {
             return Err(invalid(
@@ -170,7 +170,7 @@ impl StoreRecovery {
                 mutations: vec![Mutation::Put {
                     address: context_address.clone(),
                     value: Secret::new(
-                        serde_json::to_vec(&descriptor).map_err(|e| invalid_from(&e))?,
+                        json::to_vec(&descriptor).map_err(|e| invalid_from(&e))?,
                     ),
                 }],
                 time: None,

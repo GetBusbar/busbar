@@ -250,12 +250,12 @@ impl CardFields {
             planes,
             plugin_rate_cards: self.plugin_rate_cards.clone(),
         };
-        serde_json::to_vec(&stored).unwrap_or_default()
+        busbar_contract::json::to_vec(&stored).unwrap_or_default()
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
         let stored: StoredCard =
-            serde_json::from_slice(bytes).map_err(|e| format!("not a stored rate card: {e}"))?;
+            busbar_contract::json::parse_foreign(bytes).map_err(|e| format!("not a stored rate card: {e}"))?;
         let mut card = CardFields {
             rate_card: stored.rate_card,
             per_request_fee: stored.per_request_fee,

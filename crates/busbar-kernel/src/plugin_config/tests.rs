@@ -9,7 +9,7 @@ use std::sync::Arc;
 use busbar_contract::abi::mechanism::door::REWRITE_SUGAR;
 use busbar_contract::secret_ref::{SecretRef, Sugars};
 use busbar_contract::secure::SecureVec;
-use serde_json::{json, Value};
+use busbar_contract::json::{json, Value};
 
 use super::{BindError, Binder, BoxFut, ConfigBinder, RefSource, MAX_BINDINGS};
 
@@ -39,11 +39,11 @@ fn binder(value: &'static str) -> Binder {
 }
 
 fn bytes(v: &Value) -> Vec<u8> {
-    serde_json::to_vec(v).expect("json")
+    busbar_contract::json::to_vec(v).expect("json")
 }
 
 fn read(b: &[u8]) -> Value {
-    serde_json::from_slice(b).expect("json")
+    busbar_contract::json::parse_value(b).expect("json")
 }
 
 fn run<F: std::future::Future>(f: F) -> F::Output {
@@ -294,12 +294,12 @@ fn unix_paths_are_the_operator_written_paths_only() {
     assert!(!b.unix_path(1, "/var/run/docker.sock"));
     assert!(!b.unix_path(2, "/srv/data.db"), "unknown instance");
 
-    let mut many = serde_json::Map::new();
+    let mut many = busbar_contract::json::Map::new();
     for i in 0..17 {
-        many.insert(format!("p{i}"), Value::String(format!("/sock/{i}")));
+        many.insert(&format!("p{i}"), Value::from(format!("/sock/{i}").as_str()));
     }
     assert!(matches!(
-        b.bind(1, &bytes(&Value::Object(many)), &[], &[], &[], &[]),
+        b.bind(1, &bytes(&Value::from(many)), &[], &[], &[], &[]),
         Err(BindError::TooMany)
     ));
 }

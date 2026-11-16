@@ -411,7 +411,7 @@ struct PersistedAuditBody {
     content: Vec<u8>,
 }
 fn decode_audit_body(body: &[u8]) -> RecordStoreResult<NeutralBody> {
-    let value: PersistedAuditBody = serde_json::from_slice(body)
+    let value: PersistedAuditBody = busbar_contract::json::parse(body)
         .map_err(|_| RecordStoreError("unknown or damaged native audit body".into()))?;
     Ok(NeutralBody {
         seq: value.seq,

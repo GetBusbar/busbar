@@ -21,6 +21,7 @@ use crate::{
 };
 use busbar_contract::{
     caps::{DurableWrite, Grant},
+    json,
     persistence::{
         Address, Decision, ExpectedValue, NamespaceId, Predicate, Read, ReadResult, Scan,
     },
@@ -217,7 +218,7 @@ fn body(candidate: &Candidate) -> Result<Vec<u8>, RecoveryError> {
     // through a separate encoding that is then copied in.
     let at = body.len();
     body.extend_from_slice(&0u64.to_le_bytes());
-    serde_json::to_writer(&mut body, candidate).map_err(|e| invalid_from(&e))?;
+    json::to_writer(&mut body, candidate).map_err(|e| invalid_from(&e))?;
     let len = (body.len() - at - 8) as u64;
     body[at..at + 8].copy_from_slice(&len.to_le_bytes());
     Ok(body)
@@ -237,7 +238,7 @@ fn candidate(record: &JournalRecord) -> Result<Option<Candidate>, RecoveryError>
     if !reader.is_done() {
         return Err(invalid("trailing recovery candidate bytes"));
     }
-    serde_json::from_slice(encoded)
+    json::parse(encoded)
         .map(Some)
         .map_err(|e| invalid_from(&e))
 }
@@ -252,7 +253,7 @@ pub(crate) fn legacy_head_address(
         .try_into()
         .map_err(|_| invalid("invalid historical recovery operation identity"))?;
     let head: Head =
-        serde_json::from_slice(value).map_err(|_| invalid("invalid historical recovery head"))?;
+        json::parse(value).map_err(|_| invalid("invalid historical recovery head"))?;
     if head.version != 1 || head.node == 0 || head.sequence == 0 {
         return Err(invalid("invalid historical recovery head"));
     }
@@ -325,7 +326,7 @@ async fn head(
         return Ok(None);
     };
     let decoded: Head =
-        serde_json::from_slice(raw.expose(&crate::seal::lend())).map_err(|e| invalid_from(&e))?;
+        json::parse(raw.expose(&crate::seal::lend())).map_err(|e| invalid_from(&e))?;
     if decoded.version != 1 || decoded.node == 0 || decoded.sequence == 0 {
         return Err(invalid("invalid recovery selection head"));
     }
@@ -381,7 +382,7 @@ async fn bucket_heads(
                 return Err(invalid("invalid recovery head identity"));
             }
             let operation = at.key[16..].try_into().map_err(|e| invalid_from(&e))?;
-            let tip: Head = serde_json::from_slice(value.expose(&crate::seal::lend()))
+            let tip: Head = json::parse(value.expose(&crate::seal::lend()))
                 .map_err(|e| invalid_from(&e))?;
             if tip.version != 1 || tip.node == 0 || tip.sequence == 0 {
                 return Err(invalid("invalid recovery head"));
@@ -1205,7 +1206,7 @@ impl StoreRecovery {
                 .predecessor
                 .clone()
                 .map_or(ExpectedValue::Absent, ExpectedValue::Exact),
-            value: Secret::new(serde_json::to_vec(&pending.head).map_err(|e| invalid_from(&e))?),
+            value: Secret::new(json::to_vec(&pending.head).map_err(|e| invalid_from(&e))?),
         };
         // Built and submitted under the journal's publication driver against its
         // live head (or the exact retained proof). The proof is saved into this
@@ -1494,7 +1495,7 @@ impl StoreRecovery {
             operation_id: resolution.operation_id,
             address: address(&resolution.operation_id),
             expected: ExpectedValue::Exact(pending.predecessor.clone()),
-            value: Secret::new(serde_json::to_vec(&pending.target).map_err(|e| invalid_from(&e))?),
+            value: Secret::new(json::to_vec(&pending.target).map_err(|e| invalid_from(&e))?),
         };
         // As for `persist_at`: under the publication driver, proof retained in
         // this adoption entry before any native claim.

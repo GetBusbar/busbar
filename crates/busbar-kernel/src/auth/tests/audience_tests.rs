@@ -3,10 +3,11 @@
 
 use super::{inspect_bearer, Binding};
 use base64::Engine as _;
+use busbar_contract::json;
 
 const RESOURCE: &str = "https://gateway.example.com/plane";
 
-fn jwt(claims: serde_json::Value) -> String {
+fn jwt(claims: json::Value) -> String {
     let b64 = |v: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v);
     format!(
         "{}.{}.{}",
@@ -28,13 +29,13 @@ fn a_busbar_token_is_deferred_to_the_verifier() {
 #[test]
 fn a_jwt_naming_this_resource_is_bound_in_both_aud_forms() {
     assert_eq!(
-        inspect_bearer(&jwt(serde_json::json!({ "aud": RESOURCE })), RESOURCE),
+        inspect_bearer(&jwt(json::json!({ "aud": RESOURCE })), RESOURCE),
         Binding::Bound,
         "the single-string aud form"
     );
     assert_eq!(
         inspect_bearer(
-            &jwt(serde_json::json!({ "aud": ["https://other.example/api", RESOURCE] })),
+            &jwt(json::json!({ "aud": ["https://other.example/api", RESOURCE] })),
             RESOURCE
         ),
         Binding::Bound,
@@ -47,20 +48,20 @@ fn a_token_minted_for_somebody_else_is_refused() {
     for (label, claims) in [
         (
             "a different resource entirely",
-            serde_json::json!({ "aud": "https://wiki.example.com" }),
+            json::json!({ "aud": "https://wiki.example.com" }),
         ),
         (
             "an array that does not contain us",
-            serde_json::json!({ "aud": ["https://wiki.example.com", "https://ci.example.com"] }),
+            json::json!({ "aud": ["https://wiki.example.com", "https://ci.example.com"] }),
         ),
-        ("no aud claim at all", serde_json::json!({ "sub": "alice" })),
+        ("no aud claim at all", json::json!({ "sub": "alice" })),
         (
             "an aud of the wrong JSON type",
-            serde_json::json!({ "aud": 42 }),
+            json::json!({ "aud": 42 }),
         ),
         (
             "an empty aud array",
-            serde_json::json!({ "aud": Vec::<String>::new() }),
+            json::json!({ "aud": Vec::<String>::new() }),
         ),
     ] {
         assert_eq!(
@@ -83,7 +84,7 @@ fn near_miss_audiences_are_not_treated_as_this_resource() {
         "https://gateway.example.com.evil.test/plane",
     ] {
         assert_eq!(
-            inspect_bearer(&jwt(serde_json::json!({ "aud": near })), RESOURCE),
+            inspect_bearer(&jwt(json::json!({ "aud": near })), RESOURCE),
             Binding::Mismatch,
             "`{near}` is not `{RESOURCE}` and must not be accepted as it"
         );

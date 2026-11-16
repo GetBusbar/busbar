@@ -245,14 +245,14 @@ impl DemotionRecord {
                 let value = value.expose(&seal);
                 match key.first() {
                     Some(b'D') => {
-                        let row: DemotionRow = serde_json::from_slice(value).map_err(error)?;
+                        let row: DemotionRow = busbar_contract::json::parse(value).map_err(error)?;
                         if key != demotion_key(&row.upstream) {
                             return Err("trust persistence: demotion identity mismatch".into());
                         }
                         snapshot.demotions.push(row);
                     }
                     Some(b'R') => {
-                        let row: RulingRow = serde_json::from_slice(value).map_err(error)?;
+                        let row: RulingRow = busbar_contract::json::parse(value).map_err(error)?;
                         if key != decision_key(&row)? {
                             return Err("trust persistence: ruling identity mismatch".into());
                         }
@@ -284,7 +284,7 @@ fn put(key: Vec<u8>, value: &impl serde::Serialize) -> Result<scoped::Mutation, 
     Ok(scoped::Mutation::Put {
         schema: SCHEMA.into(),
         key,
-        value: Secret::new(serde_json::to_vec(value).map_err(error)?),
+        value: Secret::new(busbar_contract::json::to_vec(value).map_err(error)?),
     })
 }
 pub(crate) async fn settle(
@@ -316,14 +316,14 @@ pub fn migration_trust_rows(
 ) -> Result<(busbar_contract::persistence::Address, Secret<Vec<u8>>), String> {
     let key = match kind {
         "demotion" => {
-            let row: DemotionRow = serde_json::from_slice(body).map_err(error)?;
+            let row: DemotionRow = busbar_contract::json::parse(body).map_err(error)?;
             if row.upstream.is_empty() || row.upstream != id {
                 return Err("trust migration: demotion identity mismatch".into());
             }
             demotion_key(&row.upstream)
         }
         "trust_decision" => {
-            let row: RulingRow = serde_json::from_slice(body).map_err(error)?;
+            let row: RulingRow = busbar_contract::json::parse(body).map_err(error)?;
             if row.instance.is_empty()
                 || row.counterparty.is_empty()
                 || row.item.as_ref().is_some_and(String::is_empty)

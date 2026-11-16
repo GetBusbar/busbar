@@ -18,6 +18,7 @@ use busbar_contract::persistence::{
     control, Address, BackendInfo, Call, ClockObservation, DatasetId, Decision, Durability,
     ExpectedValue, Mutation, Page, PersistenceBackend, PreparedCandidate, Read, ReadResult, Scan,
 };
+use busbar_contract::json::{self, JsonValueTrait as _};
 use busbar_contract::{Count, Secret};
 use busbar_kernel_audit::{AuditKeySet, AuditSigningKey, AuditVerifyingKey};
 use busbar_kernel_wal::{Entry, RecordClass};
@@ -574,7 +575,7 @@ fn selected_revision(backend: &Mem) -> Option<u64> {
         .rows
         .iter()
         .find(|(at, _)| at.key.starts_with(UNITCP))?;
-    let head: serde_json::Value = serde_json::from_slice(raw.expose(&crate::seal::lend())).unwrap();
+    let head: json::Value = json::parse_value(raw.expose(&crate::seal::lend())).unwrap();
     head["revision"].as_u64()
 }
 fn selected_raw(backend: &Mem) -> Option<Secret<Vec<u8>>> {

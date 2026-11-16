@@ -35,7 +35,7 @@ pools:
     hooks: [local-gate, {strategy: fastest}, shared-gate]
 "#;
     let parsed = parsed_pools(text);
-    let raw = serde_json::to_value(capture(text, &parsed).unwrap()).unwrap();
+    let raw = busbar_contract::json::to_value(&capture(text, &parsed).unwrap()).unwrap();
     assert_eq!(raw["state"], "available");
     let pool = &raw["definitions"]["west/~"];
     assert_eq!(pool["path"], "/pools/west~1~0");
@@ -69,14 +69,14 @@ pools:
 #[test]
 fn authored_routing_distinguishes_absent_null_and_empty_lists() {
     let text = "pools:\n  absent: {}\n  nulls: {members: null, hooks: null}\n  empty: {members: [], hooks: []}\n  null_pool: null\n";
-    let raw = serde_json::to_value(capture(text, &parsed_pools(text)).unwrap()).unwrap();
+    let raw = busbar_contract::json::to_value(&capture(text, &parsed_pools(text)).unwrap()).unwrap();
     for (pool, state) in [("absent", "absent"), ("nulls", "null"), ("empty", "list")] {
         assert_eq!(raw["definitions"][pool]["members"]["state"], state);
         assert_eq!(raw["definitions"][pool]["hooks"]["state"], state);
     }
     assert_eq!(raw["definitions"]["null_pool"]["state"], "null");
     let absent =
-        serde_json::to_value(capture("providers: {}\nmodels: {}\n", &PoolsCfg::default()).unwrap())
+        busbar_contract::json::to_value(&capture("providers: {}\nmodels: {}\n", &PoolsCfg::default()).unwrap())
             .unwrap();
     assert_eq!(absent["section_state"], "absent");
 }
@@ -86,14 +86,14 @@ fn authored_routing_ignores_unrelated_values_without_changing_boot_acceptance() 
     let text = "providers: {}\nmodels: {}\npublic_url: 184467440737095516160000000000000000000000000000000001\nsecrets:\n  vault:\n    settings:\n      token: PRIVATE_UNRELATED_CANARY\n";
     let deploy = super::super::deploy_from_yaml_str(text, &crate::config::Grammar::empty())
         .expect("normal boot parser remains authoritative");
-    let view = serde_json::to_value(deploy.authored_routing.as_ref().unwrap()).unwrap();
+    let view = busbar_contract::json::to_value(deploy.authored_routing.as_ref().unwrap()).unwrap();
     assert_eq!(view["section_state"], "absent");
     assert!(!view.to_string().contains("PRIVATE_UNRELATED_CANARY"));
     assert!(!view.to_string().contains("18446744073709551616"));
     // Projection failures stay optional; callers never turn them into boot errors.
     assert!(capture("pools: [not-a-map]", &PoolsCfg::default()).is_none());
     let generic = super::super::deploy_from_deserializer(
-        serde_json::json!({"providers":{},"models":{}}),
+        &json!({"providers":{},"models":{}}),
         &crate::config::Grammar::empty(),
     )
     .unwrap();

@@ -56,7 +56,7 @@ fn secrets_block_rejects_non_secret_kind() {
 }
 
 fn host_reference_input(reference: crate::config::SecretRef) -> crate::config::RootCfg {
-    let deploy: crate::config::DeployCfg = serde_json::from_value(serde_json::json!({
+    let deploy: crate::config::DeployCfg = busbar_contract::json::from_value(&busbar_contract::json::json!({
         "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
         "store": {"module": "inert-store-metadata"},
     }))

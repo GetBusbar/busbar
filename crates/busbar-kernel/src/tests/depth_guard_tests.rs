@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
 
 #[test]
 fn rejects_pathologically_nested_input_without_overflow() {
@@ -14,7 +15,7 @@ fn rejects_pathologically_nested_input_without_overflow() {
         s.push(']');
     }
     assert!(
-        parse::<serde_json::Value>(s.as_bytes()).is_err(),
+        parse::<json::Value>(s.as_bytes()).is_err(),
         "deeply-nested body must be rejected"
     );
     assert!(exceeds_max_depth(s.as_bytes(), MAX_JSON_DEPTH));
@@ -24,7 +25,7 @@ fn rejects_pathologically_nested_input_without_overflow() {
 fn accepts_realistic_depth_and_counts_correctly() {
     let body = br#"{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"hi [bracket] {brace} in a string is not depth"}]}]}"#;
     assert!(!exceeds_max_depth(body, MAX_JSON_DEPTH));
-    assert!(parse::<serde_json::Value>(body).is_ok());
+    assert!(parse::<json::Value>(body).is_ok());
 
     assert!(!exceeds_max_depth(br#"{"k":"[[[[[[[[[[ {{{{{{ ]]]]]"}"#, 8));
 
@@ -43,9 +44,12 @@ fn the_host_seam_holds_the_shared_floor_and_every_shared_verdict() {
                 env!("CARGO_MANIFEST_DIR"),
                 "/../busbar-contract/tests/fixtures/json-depth.json"
             );
-            let doc: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(path).expect("fixture readable"))
-                    .expect("fixture is JSON");
+            let doc: json::Value = json::parse_value(
+                std::fs::read_to_string(path)
+                    .expect("fixture readable")
+                    .as_bytes(),
+            )
+            .expect("fixture is JSON");
             assert_eq!(doc["max_json_depth"], MAX_JSON_DEPTH as u64);
             for case in doc["cases"].as_array().expect("cases") {
                 let text = match case["raw"].as_str() {
@@ -70,12 +74,12 @@ fn the_host_seam_holds_the_shared_floor_and_every_shared_verdict() {
                 };
                 let accepted = case["accepted"].as_bool().expect("verdict");
                 assert_eq!(
-                    parse::<serde_json::Value>(text.as_bytes()).is_ok(),
+                    parse::<json::Value>(text.as_bytes()).is_ok(),
                     accepted,
                     "{case}"
                 );
                 assert_eq!(
-                    parse_str::<serde_json::Value>(&text).is_ok(),
+                    parse_str::<json::Value>(&text).is_ok(),
                     accepted,
                     "{case}"
                 );

@@ -119,7 +119,7 @@ fn common_rates_are_a_host_root_setting_and_overlay_replaces_the_map() {
         125
     );
     let overlay: RootSettings =
-        serde_json::from_str(r#"{"plugin_rate_cards":{"export":{"log":{"records":0}}}}"#).unwrap();
+        busbar_contract::json::parse_foreign(br#"{"plugin_rate_cards":{"export":{"log":{"records":0}}}}"#).unwrap();
     overlay.apply_to_deploy(&mut deploy);
     assert!(!deploy.plugin_rate_cards.contains_key("hook"));
     assert_eq!(

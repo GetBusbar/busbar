@@ -43,7 +43,7 @@ impl From<crate::persistence::observations::Error> for ObservationRuntimeError {
 /// Stable, collision-free identity for a dated enforcement cell.
 pub(crate) fn budget_id(bucket: &str, window: u64) -> String {
     // JSON array framing distinguishes arbitrary bucket strings and window boundaries.
-    serde_json::to_string(&(bucket, window)).expect("strings and integers serialize")
+    busbar_contract::json::to_string(&(bucket, window)).expect("strings and integers serialize")
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -128,7 +128,7 @@ impl PlaneMoney {
             return;
         };
         for budget in binding.budgets {
-            let Ok((id, window)) = serde_json::from_str::<(String, u64)>(&budget.id) else {
+            let Ok((id, window)) = busbar_contract::json::parse_str::<(String, u64)>(&budget.id) else {
                 continue;
             };
             let total = store.budget(&budget.id).await.unwrap_or_else(|_| {
