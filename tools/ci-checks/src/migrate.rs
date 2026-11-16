@@ -30,9 +30,6 @@ use super::{
 /// The retired flag's spelling; no production text names it.
 pub(crate) const FLAG: &str = "--migrate-config";
 
-/// Deleted whole at C3 (§A9 item 8); not product code after C1.
-const RETIRING: &str = "busbar-migrations";
-
 /// The host of the retired flag's plugin migrations.
 pub(crate) const ROOT_HOST: &str = "RootHost";
 
@@ -61,8 +58,7 @@ pub(crate) const ANCHORS: [(&str, &str, &str); 3] = [
 pub(crate) fn flag_text(root: &Path) -> Result<Vec<String>, String> {
     let mut files = Vec::new();
     for dir in sorted_entries(&root.join("crates"))? {
-        let retiring = dir.file_name().is_some_and(|name| name == RETIRING);
-        if !retiring && dir.is_dir() {
+        if dir.is_dir() {
             rust_files(&dir, &mut files)?;
         }
     }
@@ -225,8 +221,7 @@ pub(crate) fn retired_words(root: &Path) -> Result<Vec<String>, String> {
     }
     let mut files = Vec::new();
     for dir in sorted_entries(&root.join("crates"))? {
-        let retiring = dir.file_name().is_some_and(|name| name == RETIRING);
-        if !retiring && dir.is_dir() {
+        if dir.is_dir() {
             rust_files(&dir, &mut files)?;
         }
     }
