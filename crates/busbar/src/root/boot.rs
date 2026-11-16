@@ -2561,3 +2561,5 @@ pub(crate) mod images;
 pub(crate) mod store;
 
 pub(crate) mod process;
+
+pub(crate) mod inputs;
