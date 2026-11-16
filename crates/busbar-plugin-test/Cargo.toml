@@ -38,6 +38,10 @@ name = "framer_target"
 path = "tests/fixtures/framer_target.rs"
 
 [[test]]
+name = "canary_scan"
+path = "tests/canary_scan.rs"
+
+[[test]]
 name = "host"
 path = "tests/host.rs"
 

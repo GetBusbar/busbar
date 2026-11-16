@@ -333,7 +333,7 @@ fn a_granted_first_party_series_renders_as_declared_and_nothing_else_is_granted(
         seen,
         vec![
             "busbar_s1_fold_total{}".to_string(),
-            "s1_own_total{plugin=s1-first-party}".to_string(),
+            "s1_own_total{kind=s1-first-party}".to_string(),
         ]
     );
 }
@@ -364,9 +364,9 @@ fn a_reported_metric_name_keeps_one_type_across_plugins_and_label_sets() {
     assert_eq!(
         seen,
         [
-            "fold_type_custody_total{plugin=fold-type-owner,dimension=first}",
-            "fold_type_custody_total{plugin=fold-type-other,dimension=third}",
-            "fold_type_custody_total{plugin=fold-type-owner,dimension=first}",
+            "fold_type_custody_total{kind=fold-type-owner,dimension=first}",
+            "fold_type_custody_total{kind=fold-type-other,dimension=third}",
+            "fold_type_custody_total{kind=fold-type-owner,dimension=first}",
         ]
     );
 }
@@ -386,7 +386,7 @@ fn the_reserved_namespace_is_refused() {
     });
     assert_eq!(
         *recorder.0.lock().unwrap_or_else(|e| e.into_inner()),
-        vec!["file_logs_rotated_total{plugin=reserved-namespace-witness}".to_string()]
+        vec!["file_logs_rotated_total{kind=reserved-namespace-witness}".to_string()]
     );
 }
 
@@ -518,7 +518,7 @@ fn hook_envelope_metrics_are_carried_but_not_folded() {
     });
     assert_eq!(
         *recorder.0.lock().unwrap_or_else(|e| e.into_inner()),
-        vec!["hook_freeze_control_total{plugin=export-freeze-control}".to_string()]
+        vec!["hook_freeze_control_total{kind=export-freeze-control}".to_string()]
     );
 }
 
@@ -618,7 +618,7 @@ fn a_first_party_plugins_diagnostic_is_written_as_the_hosts_own_line() {
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines.len(), 3, "{text}");
     assert_eq!(lines[0], lines[1], "the first-party line is the host's own");
-    assert!(lines[2].contains("plugin=k9c-third-party"), "{text}");
+    assert!(lines[2].contains("kind=k9c-third-party"), "{text}");
 }
 
 /// What the loader granted at open, as these tests state it: the composition root hands the

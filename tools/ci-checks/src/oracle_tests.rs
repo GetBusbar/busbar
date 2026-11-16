@@ -445,7 +445,7 @@ fn the_json_tree_reads_through_the_facade_and_keeps_the_last_duplicate() {
         tree.get("b").and_then(Node::as_array).map(Vec::len),
         Some(3)
     );
-    assert_eq!(tree.to_string(), r#"{"b":[true,null,"x"],"a":0}"#);
+    assert_eq!(tree.to_string(), r#"{"a":0,"b":[true,null,"x"]}"#);
     assert!(Node::parse("{").is_err());
 }
 

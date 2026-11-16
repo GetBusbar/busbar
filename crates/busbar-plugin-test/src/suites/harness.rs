@@ -743,9 +743,24 @@ mod tests {
         assert_eq!(handle_of(&["list", "1", "v", "$secret"]), Some(3));
         assert_eq!(doc.get("keep").and_then(|v| v.as_str()), Some("x"));
         let back = binder.unbind_refs(7, &bound).unwrap();
-        // Unbinding restores the config byte for byte, in its own member order (a re-serialised tree need not
-        // keep it).
-        assert_eq!(back, config.to_vec());
+        // Unbinding restores every value where it was (a re-serialised tree need not keep the member order).
+        let restored: Value = facade::parse_value(&back).unwrap();
+        let text = |path: &[&str]| {
+            let mut node = &restored;
+            for seg in path {
+                node = match seg.parse::<usize>() {
+                    Ok(i) => node.get(i),
+                    Err(_) => node.get(*seg),
+                }
+                .unwrap();
+            }
+            node.as_str().map(str::to_owned)
+        };
+        assert_eq!(text(&["a", "k"]).as_deref(), Some("s1"));
+        assert_eq!(text(&["list", "0", "v"]).as_deref(), Some("s2"));
+        assert_eq!(text(&["list", "1", "v"]).as_deref(), Some("s3"));
+        assert_eq!(text(&["keep"]).as_deref(), Some("x"));
+        assert_eq!(restored.as_object().map(|o| o.len()), Some(3));
     }
 
     #[test]

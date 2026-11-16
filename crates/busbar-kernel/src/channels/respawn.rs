@@ -32,7 +32,12 @@ pub fn delay(n: usize) -> Option<Duration> {
     if n == 0 {
         return Some(Duration::ZERO);
     }
-    SCHEDULE.build().nth(n - 1)
+    // backon multiplies in `f32`, so its 200 ms comes out as 200.000003 ms: the schedule is whole milliseconds.
+    SCHEDULE.build().nth(n - 1).map(|d| {
+        Duration::from_millis(
+            u64::try_from((d.as_nanos() + 500_000) / 1_000_000).unwrap_or(u64::MAX),
+        )
+    })
 }
 
 /// What the next attach may do.
