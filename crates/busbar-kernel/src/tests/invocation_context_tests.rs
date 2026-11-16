@@ -34,6 +34,9 @@ fn invocation_refuses_missing_unit_and_another_instance() {
     assert!(InvocationContext::new(generation.clone(), owner.clone(), 7).is_err());
     core.units()
         .admitted(7, crate::host_units::UnitRecord::default());
+    assert!(InvocationContext::new(generation.clone(), owner.clone(), 7).is_err(), "numeric unit alone grants no invocation authority");
+    core.units().admitted_for(7, &owner, crate::host_units::UnitRecord::default());
+    assert!(InvocationContext::new(generation.clone(), caller("plane"), 7).is_err(), "another incarnation of the same named plane cannot take a unit");
     let context = InvocationContext::new(generation, owner.clone(), 7).unwrap();
     assert!(context.accepts(&owner));
     assert!(!context.accepts(&caller("elsewhere")));
@@ -52,12 +55,11 @@ fn pending_nested_dispatch_keeps_its_original_generation_until_reply() {
         .now_or_never()
         .unwrap()
         .unwrap();
-    core.units()
-        .admitted(7, crate::host_units::UnitRecord::default());
     let route = Arc::new(HeldRoute::default());
     let generation = Arc::new(ServingGeneration::new(core.clone(), route.clone()));
     let old = Arc::downgrade(&generation);
     let owner = caller("plane");
+    core.units().admitted_for(7, &owner, crate::host_units::UnitRecord::default());
     let context = InvocationContext::new(generation.clone(), owner.clone(), 7).unwrap();
     context
         .nest(
