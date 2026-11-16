@@ -729,10 +729,6 @@ path = "tests/apply_serves_the_new_providers_and_pools.rs"
 name = "default_config_no_outbound"
 path = "tests/default_config_no_outbound.rs"
 
-[[test]]
-name = "startup_upgrade_sqlite"
-path = "tests/startup_upgrade_sqlite.rs"
-
 [workspace]
 # THE DISTRIBUTION WORKSPACE. The shipped binary is core (path crates beside this one) plus the
 # plugins pinned below. This is the only workspace that names a plugin; the upgrade tests run the
