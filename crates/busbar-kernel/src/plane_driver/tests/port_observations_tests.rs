@@ -96,11 +96,7 @@ struct Fixture {
 
 async fn fixture() -> Fixture {
     let core = Arc::new(attach(Arc::new(Backend::default())).await);
-    let gov = Arc::new(
-        GovState::new_with_core(core, None, None)
-            .await
-            .unwrap(),
-    );
+    let gov = Arc::new(GovState::new_with_core(core, None, None).await.unwrap());
     let money = Arc::new(PlaneMoney::new(gov.clone(), Arc::new(Post)));
     let key = Arc::new(VirtualKey {
         id: "owner".into(),
@@ -145,12 +141,16 @@ async fn fixture() -> Fixture {
     }
 }
 
-fn observation<'a>(scope: [u8; 32], state: u32, counts: &'a [(&'a str, u64, u32)]) -> ObservationIn<'a> {
+fn observation<'a>(
+    scope: [u8; 32],
+    state: u32,
+    counts: &'a [(&'a str, u64, u32)],
+) -> ObservationIn<'a> {
     ObservationIn {
         scope,
         event: b"event",
         component: b"part",
-        revision: Some((&[1], 1)),
+        revision: Some((&[1u8][..], 1)),
         state,
         counts,
         rated_subject: 0,
@@ -171,7 +171,11 @@ async fn a_principal_with_no_unit_in_flight_has_no_custody() {
     );
     let counts = [("work_units", 20, 0)];
     let (status, receipt) = custody
-        .observe(&who.caller(), &owner, &observation([7; 32], OBS_FINAL, &counts))
+        .observe(
+            &who.caller(),
+            &owner,
+            &observation([7; 32], OBS_FINAL, &counts),
+        )
         .await;
     assert_eq!(status, OBS_REFUSED);
     assert!(receipt.is_empty());
@@ -217,7 +221,11 @@ async fn create_requires_the_classes_priced_then_observe_settles_once_and_close_
         .observe(&who.caller(), &owner, &observation(id, OBS_FINAL, &counts))
         .await;
     assert_eq!(again.0, OBS_ACCEPTED);
-    assert!(serde_json::from_slice::<Receipt>(&again.1).unwrap().duplicate);
+    assert!(
+        serde_json::from_slice::<Receipt>(&again.1)
+            .unwrap()
+            .duplicate
+    );
 
     assert_eq!(
         f.custody
@@ -273,7 +281,11 @@ async fn custody_is_the_verified_principals_and_the_instances_only() {
     );
     assert_eq!(
         f.custody
-            .observe(&who.caller(), &mallory, &observation([1; 32], OBS_PROVISIONAL, &counts))
+            .observe(
+                &who.caller(),
+                &mallory,
+                &observation([1; 32], OBS_PROVISIONAL, &counts)
+            )
             .await
             .0,
         OBS_REFUSED
@@ -285,7 +297,13 @@ async fn custody_is_the_verified_principals_and_the_instances_only() {
     };
     assert_eq!(
         f.custody
-            .scope(&other.caller(), &subject_identity("owner"), OBS_CREATE, None, &[])
+            .scope(
+                &other.caller(),
+                &subject_identity("owner"),
+                OBS_CREATE,
+                None,
+                &[]
+            )
             .await,
         (OBS_REFUSED, None)
     );
@@ -333,7 +351,8 @@ async fn a_class_the_unit_does_not_name_is_refused_and_so_is_an_unknown_state() 
 }
 
 #[tokio::test]
-async fn ending_the_request_releases_the_unit_and_a_policy_naming_another_instance_is_not_registered() {
+async fn ending_the_request_releases_the_unit_and_a_policy_naming_another_instance_is_not_registered(
+) {
     let f = fixture().await;
     let who = who();
     let owner = subject_identity("owner");

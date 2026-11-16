@@ -184,7 +184,7 @@ impl StoreWork {
 }
 
 /// The ID_SUBJECT text of the request's identity records: the principal a WORK row binds to.
-fn subject_of(identity: &[u8]) -> Option<&str> {
+pub(crate) fn subject_of(identity: &[u8]) -> Option<&str> {
     let mut records = Records::new(identity);
     while let Some(Ok(rec)) = records.next_rec() {
         if rec.tag == g::ID_SUBJECT {
