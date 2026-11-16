@@ -1653,16 +1653,18 @@ fn evaluate_against_with_evidence(
             "library hash does not match the manifest".into(),
         ));
     }
+    let mut expired_seal = false;
     if let Some(seal) = crate::release_trust::wire::read_seal(&manifest.signature) {
         let malformed = |why| {
             Rejected::new(
                 RejectKind::Tampered,
-                format!("malformed release seal: {why}"),
+                format!("release seal refused (release-seal-malformed): {why}"),
             )
         };
         let (keys, targets) = seal.map_err(malformed)?;
-        crate::release_trust::wire::read_keys(&keys).map_err(malformed)?;
-        crate::release_trust::wire::read_targets(&targets).map_err(malformed)?;
+        let keys = crate::release_trust::wire::read_keys(&keys).map_err(malformed)?;
+        let targets = crate::release_trust::wire::read_targets(&targets).map_err(malformed)?;
+        expired_seal = keys.doc.expires <= checks.now || targets.doc.expires <= checks.now;
     }
     let mut verification = Verification::default();
     let trusted_or_untrusted: Result<bool, Untrusted> = if manifest.publisher
@@ -1673,6 +1675,36 @@ fn evaluate_against_with_evidence(
                 RejectKind::RetiredKey,
                 format!("retired Busbar key {key}: {why}"),
             ));
+        }
+        // Expiry cannot hide an authenticated revocation or rollback refusal.
+        if checks.enforce_expiry && expired_seal {
+            let installed = crate::release_trust::Checks {
+                enforce_expiry: false,
+                ..checks
+            };
+            if let Err(FirstPartyUnverified::Release {
+                refusal,
+                trusted_keys,
+            }) = first_party_signer_evidence(
+                manifest,
+                bytes,
+                &roots,
+                installed,
+                crate::release_trust::PLUGIN_TARGET,
+            ) {
+                if let Some(kind) = hard_seal_refusal(&refusal) {
+                    return Err(Rejected {
+                        trusted_keys,
+                        ..Rejected::new(
+                            kind,
+                            format!(
+                                "Busbar release proof refused ({}): {refusal}",
+                                refusal.code()
+                            ),
+                        )
+                    });
+                }
+            }
         }
         match first_party_signer_evidence(
             manifest,

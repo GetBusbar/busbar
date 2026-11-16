@@ -25,6 +25,11 @@ impl PluginRows for PluginRegistry {
         PluginRegistry::resolve(self, name_or_alias).map(|image| image.verification.clone())
     }
 
+    fn signature_present(&self, name_or_alias: &str) -> bool {
+        PluginRegistry::resolve(self, name_or_alias)
+            .is_some_and(|image| !image.linked() && !image.manifest.signature.is_empty())
+    }
+
     fn unresolved_reason(&self, name_or_alias: &str) -> Option<Skipped> {
         PluginRegistry::unresolved_reason(self, name_or_alias).map(skipped)
     }
