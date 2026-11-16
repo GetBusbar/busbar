@@ -932,6 +932,18 @@ diagnostics! {
         "A plane asked core to judge a destination (the JUDGE intent) and the process has no destination judge installed, so core answered `DEST_INTERNAL` (fail closed) for it, and every later JUDGE answers the same until a judge is installed. The plane never learns an address, and a plane that dials nothing is unaffected. busbar logs this once per process.",
         "Install the destination judge the process builds at boot (the egress guard that backs `dest.judge`), then restart. Until then a plane that depends on JUDGE refuses the destinations it would have judged.";
 
+    /// A plane reported USAGE for a class its Statement never declared; core drops it and audits `plane_usage_undeclared`.
+    PLANE_USAGE_UNDECLARED = 7110, Plane, Actionable, "plane-usage-undeclared", "1.6.0", false,
+        "A plane reported usage for a class it never declared (the usage is dropped)",
+        "A plane instance reported USAGE (or an expected or observed count) under a billable class its Statement does not declare (`D_USAGE_CLASS`). busbar drops the count: nothing is checkpointed or billed for it, and the unit's other classes are unaffected. Each drop is audited as `plane_usage_undeclared` (verdict `degraded`) under the request's principal, naming the unit and the class.",
+        "Fix the plane to report only classes it declares, or declare the class in the plane's Statement and rebuild it. Until then the dropped usage is not billed.";
+
+    /// A plane reported USAGE with more than six decimal places; core rounds it half-even to micro-units and audits `plane_usage_rounded`.
+    PLANE_USAGE_ROUNDED = 7111, Plane, BenignRecurring, "plane-usage-rounded", "1.6.0", false,
+        "A plane reported usage with a scale past micro-units (the quantity is rounded)",
+        "A plane instance reported USAGE with a scale above 6. The ledger counts in micro-units, so busbar rounded the quantity half-even to six decimal places before checkpointing or billing it. Each rounding is audited as `plane_usage_rounded` (verdict `degraded`) under the request's principal, naming the unit and the class.",
+        "None needed for a plane that reports at most nine decimal places and tolerates micro-unit rounding. If the rounding matters, have the plane report in a coarser unit so the quantity fits six decimal places.";
+
     TRUST_VERIFY_REFUSED_ON_DRIFT = 7097, Plane, BenignRecurring, "trust-verify-refused-on-drift", "1.6.0", true,
         "Verify-on-call refused a call because the upstream's advertised surface drifted — RETIRED",
         "RETIRED. Nothing emits this code: the verify-on-call gate that refused a drifted call is deleted (Q128 p8#3); a registration whose upstream drifted is demoted by the trust book.",

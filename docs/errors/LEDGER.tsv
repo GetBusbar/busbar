@@ -283,3 +283,5 @@ BUSBAR-9024	expired-writers-remaining	1.6.0
 BUSBAR-9201	composition-transport-unprovided	1.6.0
 BUSBAR-3170	config-grammar-changed	1.6.0
 BUSBAR-8031	unit-flush-batch-reduced	1.6.0
+BUSBAR-7110	plane-usage-undeclared	1.6.0
+BUSBAR-7111	plane-usage-rounded	1.6.0

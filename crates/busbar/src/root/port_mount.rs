@@ -23,9 +23,10 @@
 //! A request is not a billed unit on this path yet (`unit: None`: audit rows only), and a FORWARD walks only when
 //! the seat carries a `PortEgress` (`PortSeat::upstream`).
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use crate::root::door_steps::exhaustion_of;
 use axum::body::Body;
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
 use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
@@ -34,12 +35,13 @@ use busbar_contract::abi::transport::route::{
 };
 use busbar_contract::secret_ref::SecretRef;
 use busbar_kernel::auth::{AuthPrincipal, ChainHead, IdentityRefusal};
-use busbar_kernel::governance::GovCtx;
+use busbar_kernel::governance::{GovCtx, LimitBlocked};
 use busbar_kernel::ingress::signed_ingress;
 use busbar_kernel::plane_driver::dispatch::LaneQualifier;
-use busbar_kernel::plane_driver::port::{HttpIn, PortSeat, ServeError, ServeIn, Served};
+use busbar_kernel::plane_driver::port::{HttpIn, PortSeat, ServeError, ServeIn, Served, Unit};
 use busbar_kernel::plane_driver::port_admin;
 use busbar_kernel::plane_driver::port_auth::{subject_identity, Credentials, Principal};
+use busbar_kernel::plane_driver::port_billing::{end_of, Admit, PortBilling};
 use busbar_kernel::plane_driver::port_intents::Namespace;
 use busbar_kernel::plane_driver::port_routes::Mounted;
 use busbar_kernel::plane_driver::port_session::{ClientSink, ToClient};
@@ -322,12 +324,112 @@ fn models_of(ctx: &PlaneReqCtx) -> Vec<String> {
     busbar_kernel::endpoints::catalog_names(&app, gov, &LaneQualifier::default())
 }
 
+/// A request the governance book refused to admit: the status its limit maps to, the wait it names (if any).
+pub(crate) fn blocked_response(blocked: &LimitBlocked) -> PlaneResponse {
+    let (status, _, message, retry_after) = busbar_kernel::ingress::limit_refusal("", blocked);
+    let mut response = PlaneResponse::new(Body::from(message));
+    *response.status_mut() = status;
+    if let Some(seconds) = retry_after {
+        if let Ok(value) = HeaderValue::from_str(&seconds.to_string()) {
+            response.headers_mut().insert(header::RETRY_AFTER, value);
+        }
+    }
+    response
+}
+
+/// The request as a billed unit: admitted through its resolved key's budget chain and opened on the plane money.
+/// `None` = not billed (no billing installed, no governed key on the request, or no app generation to price
+/// under): the request runs with audit rows only.
+fn open_unit(
+    seat: &PortSeat,
+    billing: Option<&PortBilling>,
+    ctx: &PlaneReqCtx,
+) -> Result<Option<Unit>, LimitBlocked> {
+    let Some(billing) = billing else {
+        return Ok(None);
+    };
+    let Some(key) = ctx.gov.as_ref().and_then(|gov| gov.key.clone()) else {
+        return Ok(None);
+    };
+    let Some(app) = app_of(&ctx.engine) else {
+        return Ok(None);
+    };
+    let mode = exhaustion_of(&app, &key);
+    billing
+        .open(Admit {
+            instance: &seat.instance,
+            classes: seat.driver.usage_classes(),
+            key,
+            cost: Arc::clone(&app.cost),
+            mode,
+            arrived: busbar_kernel::store::now(),
+        })
+        .map(Some)
+}
+
+/// A unit's settlement, owed once whatever becomes of the request: dropped unfinished (a panic, a cancelled
+/// task) it settles as a gateway failure that ran nothing, so the unit never stays open and its hold never leaks.
+struct Settle {
+    billing: PortBilling,
+    key: busbar_contract::UnitKey,
+    done: bool,
+}
+
+impl Settle {
+    fn finish(mut self, status: u16, ran: bool) {
+        self.done = true;
+        self.billing
+            .settle(self.key, end_of(u32::from(status), ran));
+    }
+}
+
+impl Drop for Settle {
+    fn drop(&mut self) {
+        if !self.done {
+            self.billing.settle(self.key, end_of(502, false));
+        }
+    }
+}
+
+/// The client sink that also remembers the status of the head the plane wrote, so the unit settles by what the
+/// client was answered (0 = no head was written).
+struct Counted {
+    inner: Pipe,
+    status: Arc<AtomicU16>,
+}
+
+impl ClientSink for Counted {
+    fn items(&self, items: Vec<ToClient>) -> bool {
+        for item in &items {
+            if let ToClient::Head { status, .. } = item {
+                let _ =
+                    self.status
+                        .compare_exchange(0, *status, Ordering::Relaxed, Ordering::Relaxed);
+            }
+        }
+        self.inner.items(items)
+    }
+}
+
 async fn answer(
     seat: &PortSeat,
     route: &Mounted,
     ingress: Option<&Ingress>,
+    billing: Option<&PortBilling>,
     ctx: PlaneReqCtx,
 ) -> PlaneResponse {
+    let unit = match open_unit(seat, billing, &ctx) {
+        Ok(unit) => unit,
+        Err(blocked) => return blocked_response(&blocked),
+    };
+    let settle = match (&unit, billing) {
+        (Some(unit), Some(billing)) => Some(Settle {
+            billing: billing.clone(),
+            key: unit.ctx.key,
+            done: false,
+        }),
+        _ => None,
+    };
     let bearer = bearer_of(&ctx.headers, route.cred_header.as_deref());
     // The data chain's verdict, when the route sat behind it: the verified principal's id is its subject. A route
     // the chain did not gate resolves its credential here.
@@ -357,9 +459,13 @@ async fn answer(
     };
     let (head_tx, mut head_rx) = oneshot::channel();
     let (body_tx, body_rx) = mpsc::unbounded_channel();
-    let pipe = Pipe {
-        head: Mutex::new(Some(head_tx)),
-        body: body_tx,
+    let status = Arc::new(AtomicU16::new(0));
+    let pipe = Counted {
+        inner: Pipe {
+            head: Mutex::new(Some(head_tx)),
+            body: body_tx,
+        },
+        status: Arc::clone(&status),
     };
     let (seat, route) = (seat.clone(), route.clone());
     // The session outlives this call when its reply streams, so it owns everything it borrows.
@@ -381,7 +487,7 @@ async fn answer(
             audience: seat.audience.as_deref().unwrap_or_default(),
             now_s,
             principal,
-            unit: None,
+            unit,
             upstream: seat.upstream.clone(),
             client: Some(Arc::new(pipe)),
             intents: Arc::clone(&seat.intents),
@@ -390,6 +496,21 @@ async fn answer(
         let served = seat.driver.serve(input).await;
         if let Err(error) = &served {
             tracing::warn!(instance = %seat.instance, route = route.route, ?error, "a plane request failed");
+        }
+        if let Some(settle) = settle {
+            match &served {
+                Ok(Served::Refused(items)) => {
+                    settle.finish(port_admin::joined(items.clone()).0, false)
+                }
+                Ok(Served::Ran(_)) => settle.finish(
+                    match status.load(Ordering::Relaxed) {
+                        0 => 502,
+                        status => status,
+                    },
+                    true,
+                ),
+                Err(_) => settle.finish(502, false),
+            }
         }
         served
     });
@@ -409,7 +530,11 @@ async fn answer(
 
 /// One spec per (data route, verb) of every seat, catalog routes included. `ingress` is what an
 /// AUTH_SIGNED_INGRESS route verifies with (`None` = no route can be admitted as signed).
-pub(crate) fn routes(seats: &[PortSeat], ingress: Option<Arc<Ingress>>) -> Vec<PlaneRouteSpec> {
+pub(crate) fn routes(
+    seats: &[PortSeat],
+    ingress: Option<Arc<Ingress>>,
+    billing: Option<&PortBilling>,
+) -> Vec<PlaneRouteSpec> {
     let mut out = Vec::new();
     for seat in seats {
         for route in seat.driver.routes().data.iter() {
@@ -417,6 +542,7 @@ pub(crate) fn routes(seats: &[PortSeat], ingress: Option<Arc<Ingress>>) -> Vec<P
                 let seat = seat.clone();
                 let mounted = route.clone();
                 let ingress = ingress.clone();
+                let billing = billing.cloned();
                 out.push(PlaneRouteSpec {
                     path: route.pattern.to_string(),
                     method,
@@ -425,9 +551,10 @@ pub(crate) fn routes(seats: &[PortSeat], ingress: Option<Arc<Ingress>>) -> Vec<P
                         let seat = seat.clone();
                         let mounted = mounted.clone();
                         let ingress = ingress.clone();
-                        Box::pin(
-                            async move { answer(&seat, &mounted, ingress.as_deref(), ctx).await },
-                        )
+                        let billing = billing.clone();
+                        Box::pin(async move {
+                            answer(&seat, &mounted, ingress.as_deref(), billing.as_ref(), ctx).await
+                        })
                     }),
                 });
             }

@@ -325,3 +325,24 @@ mod signed_ingress {
         );
     }
 }
+
+#[test]
+fn a_blocked_admission_is_answered_with_its_status_and_the_wait_it_names() {
+    use busbar_kernel::governance::LimitBlocked;
+    let limit = |metric, retry_after| LimitBlocked::Limit {
+        group: "g".into(),
+        metric,
+        window: None,
+        pool: None,
+        downgrade_to: None,
+        retry_after,
+    };
+    let rate = blocked_response(&limit("concurrent", None));
+    assert_eq!(rate.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(rate.headers().get(header::RETRY_AFTER).is_none());
+    let waited = blocked_response(&limit("requests", Some(30)));
+    assert_eq!(waited.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(waited.headers()[header::RETRY_AFTER], "30");
+    let frozen = blocked_response(&LimitBlocked::Disabled("g".into()));
+    assert_eq!(frozen.status(), StatusCode::FORBIDDEN);
+}

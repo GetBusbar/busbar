@@ -493,6 +493,15 @@ pub(crate) async fn compose_served_checked(
     });
     let site = Arc::clone(&post);
     let caller_migration = gov.clone();
+    let port_billing = busbar_kernel::plane_driver::port_billing::PortBilling::new(
+        Arc::new(PlaneMoney::new(
+            Arc::clone(&gov),
+            Arc::clone(&post) as Arc<dyn busbar_kernel::plane_driver::EndPost>,
+        )),
+        Arc::clone(&gov),
+        crate::root::plane_node::node().kernel_and_keys().1,
+        Arc::new(busbar_kernel::plane_driver::CoreAudit),
+    );
     let money = move || {
         Arc::new(PlaneMoney::new(
             Arc::clone(&gov),
@@ -522,6 +531,7 @@ pub(crate) async fn compose_served_checked(
             .await?;
     }
     served.post = Some(post);
+    served.billing = Some(port_billing);
     let binds = check(&served)?;
 
     if !binds.is_empty() {
@@ -3586,6 +3596,7 @@ pub(crate) fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
     tail.extend(crate::root::port_mount::routes(
         &served.ports,
         crate::root::min3_boot::signed_ingress(),
+        served.billing.as_ref(),
     ));
     tail
 }

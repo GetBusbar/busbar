@@ -29,6 +29,7 @@ use super::port_auth::{
     TicketDoor,
 };
 use super::port_channels::{decode_tick, TickOut};
+use super::port_charge::charge;
 use super::port_egress::{PortUpstream, SessionFacts};
 use super::port_intents::{IntentHost, Namespace, Resolver};
 use super::port_money::write_audit;
@@ -198,6 +199,8 @@ pub struct PortDriver {
     line: Option<LineRoute>,
     routes: PortRoutes,
     tickets: Arc<dyn TicketDoor>,
+    /// The declared usage classes (D_USAGE_CLASS) in the Statement's order: a unit count's class indexes them.
+    usage: Arc<[String]>,
 }
 
 impl PortDriver {
@@ -223,6 +226,11 @@ impl PortDriver {
             effective: m.effective,
             path: m.pattern.clone(),
         });
+        let usage: Arc<[String]> = port
+            .usage_classes()
+            .iter()
+            .map(|u| u.class.to_string())
+            .collect();
         Ok(Self {
             port,
             services,
@@ -232,7 +240,14 @@ impl PortDriver {
             line,
             routes,
             tickets: Arc::new(NoTickets),
+            usage,
         })
+    }
+
+    /// The instance's declared usage classes, in the order a unit count's class indexes them.
+    #[must_use]
+    pub fn usage_classes(&self) -> Arc<[String]> {
+        Arc::clone(&self.usage)
     }
 
     /// The routes this instance declares, sorted by where core mounts them.
@@ -537,7 +552,10 @@ fn run_line(
             let refusal = refusal_of(route.id, &error, refusals);
             line_of(refuse(port, &req, &refusal, &effects))
         }
-        Err(error) => Err(LineRefused::Session(error)),
+        Err(error) => {
+            charge(port, &error);
+            Err(LineRefused::Session(error))
+        }
     }
 }
 
@@ -719,7 +737,10 @@ fn serve_blocking(
             let refusal = refusal_of(route.route, &error, refusals);
             Ok(Served::Refused(refuse(port, &req, &refusal, &effects)))
         }
-        Err(error) => Err(ServeError::Session(error)),
+        Err(error) => {
+            charge(port, &error);
+            Err(ServeError::Session(error))
+        }
     }
 }
 #[cfg(test)]
