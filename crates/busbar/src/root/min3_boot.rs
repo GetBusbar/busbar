@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use super::boot::restricted::{BootstrapDirectory, BootstrapRecords};
-use super::boot::walk::{deployment_bytes, BootSteps, DeploymentRead, RegistryBoot};
+use super::boot::walk::{deployment_bytes, BootSteps, DeploymentRead};
 use busbar_contract::secret_ref::{SecretRef, Sugars};
 use busbar_contract::secure::SecureVec;
 use busbar_core_connector::guard::Guard;
@@ -737,8 +737,6 @@ impl BootSteps for BootstrapSteps<'_> {
 struct Steps<'r> {
     registry: &'r MinRegistry,
     instances: &'r [(KindCode, InstanceSpec<'r>)],
-    deployment: &'r DeploymentRead,
-    store_seal: busbar_plugin_loader::instance::StoreSeal,
     services: Option<Arc<KernelServices>>,
     seats: Mutex<Vec<PortSeat>>,
     shared: Arc<Shared>,
@@ -765,16 +763,37 @@ impl Steps<'_> {
         let needs =
             self.built
                 .needs_for(prefix, self.shared.records.clone(), self.directory.clone());
-        RegistryBoot {
-            registry: self.registry,
-            needs: &needs,
-            refs: &refs,
-            store_seal: Arc::clone(&self.store_seal),
-            instances: self.instances,
-            deployment: self.deployment,
+        let Some((kind, spec)) = self.instances.get(index as usize) else {
+            return Err(OpenError::Unknown("unconfigured serving step".into()));
+        };
+        match kind {
+            KindCode::Auth => self
+                .registry
+                .open_auth(spec, &needs, &refs)
+                .await
+                .map(OpenedPort::Auth),
+            KindCode::Hook => self
+                .registry
+                .open_hook(spec, &needs, &refs)
+                .await
+                .map(OpenedPort::Hook),
+            KindCode::Export => self
+                .registry
+                .open_export(spec, &needs, &refs)
+                .await
+                .map(OpenedPort::Export),
+            KindCode::Transport => self
+                .registry
+                .open_transport(spec, &needs, &refs)
+                .await
+                .map(OpenedPort::Transport),
+            KindCode::Plane => self
+                .registry
+                .open_plane(spec, &needs, &refs)
+                .await
+                .map(OpenedPort::Plane),
+            _ => Err(OpenError::Unknown("bootstrap kind in serving step".into())),
         }
-        .open(index)
-        .await
     }
 
     async fn open_plane(&self, spec: &InstanceSpec<'_>) -> Result<(), OpenError> {
@@ -948,17 +967,8 @@ impl BootSteps for Steps<'_> {
         }
     }
 
-    fn deployment<'a>(
-        &'a self,
-        store: &'a Option<OpenedPort>,
-    ) -> BoxFut<'a, Result<[u8; 16], String>> {
-        match store {
-            Some(OpenedPort::Store(port)) => (self.deployment)(port),
-            Some(_) => Box::pin(async { Err("the step-2b instance is not a store".to_owned()) }),
-            None => Box::pin(core::future::ready(Err(
-                "the step-2b instance did not open as a store".to_owned(),
-            ))),
-        }
+    fn deployment<'a>(&'a self, _store: &'a Self::Opened) -> BoxFut<'a, Result<[u8; 16], String>> {
+        Box::pin(async { Err("serving steps have no deployment admission authority".into()) })
     }
 }
 
@@ -1032,9 +1042,18 @@ where
     busbar_kernel::appbuild::records_keys_from(Some(&*key)).map(|parsed| parsed.at_rest.is_some())
 }
 
-/// Boot through the MIN-3 registry, before any listener serves. `Ok(false)`: the configured store is not a MIN-3
-/// image, so the old path boots (nothing here ran past admission). `Ok(true)`: every instance opened in plan
-/// order, core's own secrets are resolved and the process holds the registry ([`registry`], [`seats`]).
+/// S6 owners. No serving instance has opened when this value is returned.
+pub(crate) struct BootstrapReady {
+    built: Built,
+    instances: Vec<Configured>,
+    declared: std::collections::BTreeMap<String, busbar_kernel::upstreams::Declared>,
+    bootstrap: super::boot::walk::Bootstrap<Option<OpenedPort>>,
+    pub(crate) startup: Startup,
+    prefix: Arc<BootSecrets>,
+    converting: bool,
+    normalization_source: Option<(std::path::PathBuf, busbar_contract::secure::SecureString)>,
+}
+
 pub(crate) async fn run(
     process: &busbar_plugin_loader::process::ProcessResources,
     reactor: tokio::runtime::Handle,
@@ -1043,6 +1062,18 @@ pub(crate) async fn run(
     guard: Guard,
     services: Option<Arc<KernelServices>>,
 ) -> Result<bool, String> {
+    let Some(ready) = prepare_bootstrap(process, file_images, cfg, guard).await? else {
+        return Ok(false);
+    };
+    finish(ready, reactor, cfg, services).await
+}
+
+pub(crate) async fn prepare_bootstrap(
+    process: &busbar_plugin_loader::process::ProcessResources,
+    file_images: super::boot::images::FileImages,
+    cfg: &RootCfg,
+    guard: Guard,
+) -> Result<Option<BootstrapReady>, String> {
     let images = file_images.images;
     let transport_images: Vec<String> = images
         .identities()
@@ -1070,7 +1101,7 @@ pub(crate) async fn run(
         .map(|store| store.module.as_str())
         .ok_or_else(busbar_kernel::config::store_required)?;
     if built.registry.identity_of(store_module).is_none() {
-        return Ok(false);
+        return Ok(None);
     }
     let converting = !super::migrate::stamped();
     let normalization_source = super::migrate::normalization_source()?;
@@ -1088,27 +1119,7 @@ pub(crate) async fn run(
     } else {
         declared_planes(&built.registry, &mut instances)?
     };
-    let specs: Vec<(KindCode, InstanceSpec<'_>)> = instances
-        .iter()
-        .map(|one| {
-            (
-                one.kind,
-                InstanceSpec {
-                    purpose: if converting {
-                        busbar_plugin_loader::instance::OpenPurpose::ConvertUnstamped
-                    } else {
-                        busbar_plugin_loader::instance::OpenPurpose::Canonical
-                    },
-                    identity: &one.identity,
-                    name: &one.name,
-                    config_json: &one.config,
-                    limits: one.limits,
-                    public_url: cfg.public_url.as_deref(),
-                    caller_upstreams: &[],
-                },
-            )
-        })
-        .collect();
+    let specs = specifications(&instances, cfg, converting);
     let mut core_modules = busbar_kernel::appbuild::core_secret_modules(cfg);
     core_modules.extend(
         instances
@@ -1139,12 +1150,73 @@ pub(crate) async fn run(
         .map_err(|refused| refused.to_string())?;
     let prefix = bootstrap_steps.prefix();
     drop(bootstrap_steps);
-    let core = startup
+    let startup = startup
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .as_ref()
-        .and_then(Startup::store)
+        .take()
         .ok_or("S6 did not retain the admitted Store")?;
+    drop(specs);
+    Ok(Some(BootstrapReady {
+        built,
+        instances,
+        declared,
+        bootstrap,
+        startup,
+        prefix,
+        converting,
+        normalization_source,
+    }))
+}
+
+fn specifications<'a>(
+    instances: &'a [Configured],
+    cfg: &'a RootCfg,
+    converting: bool,
+) -> Vec<(KindCode, InstanceSpec<'a>)> {
+    instances
+        .iter()
+        .map(|one| {
+            (
+                one.kind,
+                InstanceSpec {
+                    purpose: if converting {
+                        busbar_plugin_loader::instance::OpenPurpose::ConvertUnstamped
+                    } else {
+                        busbar_plugin_loader::instance::OpenPurpose::Canonical
+                    },
+                    identity: &one.identity,
+                    name: &one.name,
+                    config_json: &one.config,
+                    limits: one.limits,
+                    public_url: cfg.public_url.as_deref(),
+                    caller_upstreams: &[],
+                },
+            )
+        })
+        .collect()
+}
+
+pub(crate) async fn finish(
+    ready: BootstrapReady,
+    reactor: tokio::runtime::Handle,
+    cfg: &RootCfg,
+    services: Option<Arc<KernelServices>>,
+) -> Result<bool, String> {
+    let BootstrapReady {
+        built,
+        instances,
+        declared,
+        bootstrap,
+        startup,
+        prefix,
+        converting,
+        normalization_source,
+    } = ready;
+    let core = startup
+        .store()
+        .ok_or("S6 did not retain the admitted Store")?;
+    let startup = Arc::new(Mutex::new(Some(startup)));
+    let specs = specifications(&instances, cfg, converting);
     let records = Arc::new(StoreRecords::new(Arc::clone(&core)));
     let (directory, _holds) =
         KernelDirectory::build(Arc::clone(&core), Arc::new(LogEvents), Vec::new()).await?;
@@ -1168,8 +1240,6 @@ pub(crate) async fn run(
     let steps = Steps {
         registry: &built.registry,
         instances: &specs,
-        deployment: &*reader,
-        store_seal: Arc::new(|| Box::new(busbar_kernel::seal::lend())),
         services,
         seats: Mutex::default(),
         shared: Arc::clone(&shared),
@@ -1239,7 +1309,6 @@ pub(crate) async fn run(
         .ok_or("CONFIG: conversion lost its pending source plan")?;
         drop(steps);
         drop(specs);
-        drop(reader);
         return Err(super::migrate::restart(
             written,
             (opened, admission, core, built, shared),
