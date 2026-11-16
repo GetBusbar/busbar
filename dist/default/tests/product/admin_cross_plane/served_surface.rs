@@ -31,6 +31,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::distribution::admin_cross_plane::v1::contract::ADMIN_PREFIX;
+use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
 use busbar_kernel::config::named_map::NamedMapSection;
 
 type Op = (String, String);
@@ -155,7 +156,7 @@ fn served_admin_operations() -> BTreeMap<Op, Source> {
             continue;
         };
         for spec in admin_routes(decl, &() as &dyn std::any::Any) {
-            let method = serde_json::to_value(spec.method)
+            let method = json::to_value(&spec.method)
                 .ok()
                 .and_then(|m| m.as_str().map(str::to_string))
                 .expect("a route method serializes as its upper-case token");
@@ -203,10 +204,10 @@ fn oracle_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testing/shadow-oracle")
 }
 
-fn read_json(path: std::path::PathBuf) -> serde_json::Value {
+fn read_json(path: std::path::PathBuf) -> json::Value {
     let text =
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
+    json::parse_value(text.as_bytes()).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 }
 
 async fn gov(admin_token: &str) -> std::sync::Arc<busbar_kernel::governance::GovState> {
@@ -390,7 +391,7 @@ async fn admin_corpus_reconciles_with_the_served_router() {
             op_id(&method, &path),
             "admin-bodies.json entry {id} is keyed under a name that is not its operation's"
         );
-        entries.insert((method, path), id.clone());
+        entries.insert((method, path), id.to_string());
     }
     let unbound = unbound_declared_operations();
     assert_eq!(
@@ -553,7 +554,7 @@ fn openapi_documents_every_served_admin_operation() {
     );
 }
 
-async fn served_openapi(app: std::sync::Arc<busbar_kernel::state::App>) -> serde_json::Value {
+async fn served_openapi(app: std::sync::Arc<busbar_kernel::state::App>) -> json::Value {
     let router = crate::distribution::admin_cross_plane::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -565,7 +566,7 @@ async fn served_openapi(app: std::sync::Arc<busbar_kernel::state::App>) -> serde
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 200, "the node serves its document");
-    let doc = resp.json().await.unwrap();
+    let doc = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
     handle.abort();
     doc
 }
@@ -574,33 +575,32 @@ async fn served_openapi(app: std::sync::Arc<busbar_kernel::state::App>) -> serde
 async fn served_openapi_lists_only_the_configured_planes() {
     crate::distribution::admin_cross_plane::ensure_seam();
     let served = served_admin_operations();
-    let plane_paths = |doc: &serde_json::Value, section: &str| -> Vec<String> {
+    let plane_paths = |doc: &json::Value, section: &str| -> Vec<String> {
         let root = abs(&format!("/{section}"));
         doc["paths"]
             .as_object()
             .expect("paths")
-            .keys()
-            .filter(|p| **p == root || p.starts_with(&format!("{root}/")))
-            .cloned()
+            .iter()
+            .map(|(p, _)| p)
+            .filter(|p| *p == root || p.starts_with(&format!("{root}/")))
+            .map(str::to_string)
             .collect()
     };
 
-    fn refs_in(v: &serde_json::Value, out: &mut BTreeSet<String>) {
-        match v {
-            serde_json::Value::Object(m) => {
-                for (k, x) in m {
-                    match (k.as_str(), x.as_str()) {
-                        ("$ref", Some(r)) => {
-                            if let Some(name) = r.strip_prefix("#/components/schemas/") {
-                                out.insert(name.to_string());
-                            }
+    fn refs_in(v: &json::Value, out: &mut BTreeSet<String>) {
+        if let Some(m) = v.as_object() {
+            for (k, x) in m {
+                match (k, x.as_str()) {
+                    ("$ref", Some(r)) => {
+                        if let Some(name) = r.strip_prefix("#/components/schemas/") {
+                            out.insert(name.to_string());
                         }
-                        _ => refs_in(x, out),
                     }
+                    _ => refs_in(x, out),
                 }
             }
-            serde_json::Value::Array(a) => a.iter().for_each(|x| refs_in(x, out)),
-            _ => {}
+        } else if let Some(a) = v.as_array() {
+            a.iter().for_each(|x| refs_in(x, out));
         }
     }
 
@@ -725,8 +725,8 @@ async fn served_openapi_lists_only_the_configured_planes() {
     let mut expected: BTreeSet<String> = golden["body"]["json"]["paths"]
         .as_object()
         .expect("the 1.5.5 golden document's paths")
-        .keys()
-        .cloned()
+        .iter()
+        .map(|(k, _)| k.to_string())
         .collect();
     expected.extend(
         served
@@ -737,8 +737,8 @@ async fn served_openapi_lists_only_the_configured_planes() {
     let got: BTreeSet<String> = doc["paths"]
         .as_object()
         .expect("paths")
-        .keys()
-        .cloned()
+        .iter()
+        .map(|(k, _)| k.to_string())
         .collect();
     assert_eq!(
         got, expected,

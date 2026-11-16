@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
+use busbar_contract::json;
 use busbar_kernel::diagnostics::{
     BOOT_FATAL_ERROR, FIRST_START_EXIT_RETIRED, FIRST_START_EXIT_RETIRE_FAILED,
     FIRST_START_TAKEOVER,
@@ -377,8 +378,7 @@ fn t12a_a_one_shot_fresh_initialization_hands_over_on_return() {
         std::fs::read(found.pop().unwrap()).unwrap()
     };
     let stdout = observed("stdout");
-    let report: serde_json::Value =
-        serde_json::from_slice(&stdout).expect("stdout is exactly the transition report JSON");
+    let report = json::parse_value(&stdout).expect("stdout is exactly the transition report JSON");
     assert_eq!(report["action"], "initialize-fresh");
     assert!(
         !String::from_utf8_lossy(&stdout).contains("diag="),
@@ -405,7 +405,7 @@ fn t12b_a_one_shot_inspect_on_an_empty_namespace_hands_over_on_return() {
     );
     let status = inspect.exits_within(Duration::from_secs(60));
     assert!(status.success(), "{}", inspect.evidence());
-    let _: serde_json::Value = serde_json::from_str(&inspect.stdout()).unwrap_or_else(|e| {
+    let _ = json::parse_value(inspect.stdout().as_bytes()).unwrap_or_else(|e| {
         panic!(
             "stdout is exactly the inspect report JSON ({e});\n{}",
             inspect.evidence()

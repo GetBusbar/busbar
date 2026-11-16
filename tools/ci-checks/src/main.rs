@@ -9,6 +9,9 @@
 //!   `crates/busbar-crypto*` names the `getrandom` crate, except test code: an item or module under a
 //!   test-only `#[cfg(test)]` (read from the syn AST, as bad-patterns does), a `#[test]` fn, or a
 //!   `tests/` tree. A file syn cannot parse is scanned line by line instead, so it is never skipped.
+//! - `no-serde-json`: JSON is sonic-rs through `busbar_contract::json` (DEP-3, #162): no first-party
+//!   Rust file or manifest under `crates/`, `dist/`, `tools/` or `testing/` names serde_json, tests
+//!   included, outside the wave-3 paths `ci/serde-json-w3.allow` lists (`no_serde_json.rs`).
 //! - `crypto-graph`: AWS-LC is the one crypto provider, reached only through the facade (229). In
 //!   the root workspace's feature-resolved graph (`cargo tree`: every feature, target and edge
 //!   kind), `ring`, `sha2`, `ed25519-dalek` and `curve25519-dalek` are built only beneath
@@ -54,14 +57,16 @@ use syn::{
 mod migrate;
 mod migrate_overlay;
 mod migrate_size;
+mod no_serde_json;
 mod oracle;
 mod oracle_judge;
 mod oracle_run;
 mod oracle_selftest;
 
 /// Checks over core's own tree: with no argument every one runs.
-const CHECKS: [&str; 15] = [
+const CHECKS: [&str; 16] = [
     "no-getrandom",
+    "no-serde-json",
     "crypto-graph",
     "fleet-manifest",
     "c-transport",
@@ -129,6 +134,7 @@ fn main() -> ExitCode {
     for name in names {
         let outcome = match name {
             "no-getrandom" => no_getrandom(&root),
+            "no-serde-json" => no_serde_json::no_serde_json(&root),
             "crypto-graph" => crypto_graph(&root),
             "migrate-flag-text" => migrate::flag_text(&root),
             "migrate-retired-words" => migrate::retired_words(&root),

@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K8A"]
+#[ignore = "blocked: needs the plane port driving LOOKUP(LK_CALLER) then a deferred FORWARD with a plane double; suites/plane.rs refuses LK_CALLER/LK_CHAIN (W1-K8A)"]
 fn deferred_forward_and_its_faults() {
     todo!("owner: W1-K8A (C-PLANE-DEFERRED-FORWARD)")
 }

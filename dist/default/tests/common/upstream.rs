@@ -48,7 +48,7 @@ fn read_request_io(conn: &mut impl std::io::Read) -> Option<(String, Vec<u8>)> {
     Some((head, body))
 }
 
-pub fn respond(conn: &mut impl std::io::Write, status: u16, body: &Value) {
+pub fn respond(conn: &mut impl std::io::Write, status: u16, body: &impl std::fmt::Display) {
     let raw = body.to_string();
     let _ = write!(
         conn,

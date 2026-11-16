@@ -13,6 +13,7 @@ mod linked {
 }
 
 use crate::root::test_plugins as plugins;
+use busbar_contract::json::{self, JsonValueTrait};
 use std::sync::Arc;
 
 #[tokio::test]
@@ -117,13 +118,13 @@ async fn an_unmounted_plane_claims_no_path_by_url_shape() {
             decl.key
         );
         assert!(
-            v.pointer("/error/message").is_some(),
+            json::pointer(&v, "/error/message").is_some(),
             "the residual plane answers the widely-understood envelope on `{path}`; got {v}"
         );
     }
 }
 
-async fn oversized_413_body(app: Arc<busbar_kernel::state::App>, path: &str) -> serde_json::Value {
+async fn oversized_413_body(app: Arc<busbar_kernel::state::App>, path: &str) -> json::Value {
     let (router, _) = busbar_kernel::router::build_router_with_limits(app, 64, 16, false);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -146,5 +147,5 @@ async fn oversized_413_body(app: Arc<busbar_kernel::state::App>, path: &str) -> 
         "{path}: {}",
         String::from_utf8_lossy(&bytes)
     );
-    serde_json::from_slice(&bytes).expect("the refusal is JSON")
+    json::parse_value(&bytes).expect("the refusal is JSON")
 }

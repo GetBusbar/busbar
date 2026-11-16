@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K9"]
+#[ignore = "blocked: needs the secret-vault and auth-ldap 1.5.5 fixtures and the C-MIGRATE harness (busbar-migrate settle.rs LIFT) plus a boot; not a dev-dependency of this crate"]
 fn literal_credentials_are_lifted() {
-    todo!("owner: W1-K9 (C-LIFT)")
+    todo!("blocked: needs the secret-vault and auth-ldap 1.5.5 fixtures and the C-MIGRATE harness (busbar-migrate settle.rs LIFT) plus a boot; not a dev-dependency of this crate (C-LIFT)")
 }
