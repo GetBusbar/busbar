@@ -18,6 +18,63 @@ use crate::root::durability::signer::{spawn, SignFailure, Signers};
 const SEED: [u8; 32] = [0x26; 32];
 const DELEGATED: [u8; 32] = [0x62; 32];
 
+#[tokio::test]
+async fn bootstrap_thread_certifies_and_stages_the_exact_chain_position() {
+    use crate::root::durability::tests::{audit_inputs, audit_pass, token, NativeFixture};
+    use crate::root::durability::Durability;
+    use busbar_kernel_audit::notary_key::notary_key_from_journal_body;
+    let fixture = NativeFixture::new(41).await;
+    let book = Arc::new(Mutex::new(fixture.book().await));
+    Durability::seal_unit(&book, audit_inputs(1), audit_pass(), &token())
+        .await
+        .unwrap();
+    let rig = rig(true);
+    let live = LocalSigner::from_seed(&DELEGATED).unwrap();
+    let bootstrap = LocalSigner::from_seed(&SEED).unwrap();
+    let (node, seq, prev) = {
+        let book = book.lock().unwrap();
+        (
+            book.record.node(),
+            book.record.next_seq(),
+            Fingerprint::from_hex(book.record.head()).unwrap(),
+        )
+    };
+    let certificate = rig
+        .signers
+        .seal
+        .submit_certificate(node, seq, prev, live.public_key().clone())
+        .await
+        .unwrap();
+    let prepared =
+        busbar_kernel_audit::AuditChain::prepare_notary_key(node, seq, prev, certificate);
+    let (journal, record, run) = {
+        let mut book = book.lock().unwrap();
+        let (record, run) = book
+            .stage_notary_key(prepared, &audit_pass(), &token())
+            .unwrap();
+        (book.journal.clone(), record, run)
+    };
+    record.verify(bootstrap.public_key()).unwrap();
+    assert_eq!(run.records().len(), 1);
+    let row = &run.records()[0];
+    assert_eq!(
+        notary_key_from_journal_body(&row.body).unwrap(),
+        Some(record.clone())
+    );
+    journal.confirm(&run).await.unwrap();
+    // Confirmation of the original stage is idempotent; retries must not append certificates.
+    journal.confirm(&run).await.unwrap();
+    Durability::seal_unit(&book, audit_inputs(3), audit_pass(), &token())
+        .await
+        .unwrap();
+    let book = book.lock().unwrap();
+    assert_eq!(book.record.next_seq(), seq + 2);
+    assert_eq!(
+        book.audit_records().last().unwrap().prev_hash,
+        record.fingerprint.to_string()
+    );
+}
+
 /// A delegated live signer that records the thread each sign runs on, and can hold a sign until
 /// released.
 struct Recording {
