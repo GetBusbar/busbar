@@ -41,9 +41,9 @@ fn the_wire_rendering_is_the_same_double_the_text_used_to_parse_to() {
         );
 
         assert_eq!(
-            serde_json::to_string(&serde_json::json!({ "seconds": rendered }))
+            crate::json::to_string(&crate::json::json!({ "seconds": rendered }))
                 .expect("a finite number serializes"),
-            serde_json::to_string(&serde_json::json!({ "seconds": parsed }))
+            crate::json::to_string(&crate::json::json!({ "seconds": parsed }))
                 .expect("a finite number serializes"),
         );
     };

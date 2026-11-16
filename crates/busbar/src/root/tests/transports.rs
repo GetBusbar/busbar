@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 #[test]
 fn only_a_unit_that_opens_the_book_has_a_book_step() {
     for unit in crate::ROOT_UNITS {

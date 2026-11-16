@@ -1062,7 +1062,13 @@ fn externalize_secret(
     Ok(())
 }
 
-pub use busbar_contract::json::to_yaml as yaml_value;
+pub fn yaml_value(value: &serde_json::Value) -> Result<Value, String> {
+    // Cross the transitional tree boundary as JSON text: serde's arbitrary-precision
+    // number marker is not sonic's marker and must not become an object in YAML.
+    let value = busbar_contract::json::parse_value(value.to_string().as_bytes())
+        .map_err(|error| error.to_string())?;
+    busbar_contract::json::to_yaml(&value)
+}
 
 fn write_back(
     root: &mut Pairs,

@@ -25,6 +25,24 @@ const ACCEPTED: Custody = Custody {
     recheck_s: 0,
 };
 
+#[test]
+fn retry_wait_keeps_the_host_floor_and_shared_backoff_ceiling() {
+    for hint in [None, Some(0)] {
+        let wait = super::Shared::resend_wait(2, hint);
+        assert!(wait >= Duration::from_millis(100));
+        assert!(wait <= Duration::from_millis(250));
+    }
+    assert!(super::Shared::resend_wait(u32::MAX, None) <= Duration::from_secs(60));
+    assert_eq!(
+        super::Shared::resend_wait(2, Some(2)),
+        Duration::from_secs(2)
+    );
+    assert_eq!(
+        super::Shared::resend_wait(2, Some(301)),
+        Duration::from_secs(300)
+    );
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct Call {
     stream: u32,
@@ -125,6 +143,18 @@ impl ExportPort for Double {
     }
     fn custody_ceiling(&self) -> Option<u32> {
         self.ceiling
+    }
+    fn pending_capacity(&self) -> Option<u64> {
+        None
+    }
+    fn confirm(&self, _cx: CallCx, _delivery: u64) -> BoxFut<'_, Result<Custody, PortError>> {
+        Box::pin(async {
+            Err(PortError::Refused {
+                code: busbar_plugin_abi::fail::refused::R_UNSUPPORTED,
+                text: "the double does not declare confirm".into(),
+                error: None,
+            })
+        })
     }
     fn render(
         &self,
@@ -388,4 +418,32 @@ fn a_scrape_renders_the_lowered_snapshot_at_scope_metrics() {
     assert!(samples[1].2.is_nan());
     assert_eq!(samples[2].0, x::SAMPLE_COUNT);
     assert_eq!(samples[2].1, 3.0);
+}
+
+#[test]
+fn a_terminal_limit_failure_is_not_reoffered() {
+    let (port, rx) = Double::new(&[x::STREAM_LOGS]);
+    port.answer(Err(PortError::Failed {
+        code: busbar_plugin_abi::fail::failed::F_LIMIT,
+        text: "limit".into(),
+        retry_after_s: None,
+        backend_status: None,
+        error: None,
+    }));
+    let door = open(port, Arc::new(Disk::default()));
+    let lines = [super::Line {
+        stream: x::STREAM_LOGS as u8,
+        bytes: busbar_contract::secure::SecureVec::from(b"limit-line".to_vec()),
+        _hold: Box::new(()),
+    }];
+    // Drive the production delivery loop synchronously: no sleeps or timeout-based
+    // assertion can hide a late retry, and the background queue stays empty.
+    door.shared.deliver_set(x::STREAM_LOGS as u8, &lines);
+    assert_eq!(next(&rx).attempt, 1);
+    assert!(
+        rx.try_recv().is_err(),
+        "F_LIMIT is terminal, never a resend"
+    );
+    assert_eq!(door.dropped(), 1);
+    assert_eq!(door.delivered(), 0);
 }

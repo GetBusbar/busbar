@@ -12,6 +12,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use busbar_contract::json::{self, JsonValueMutTrait as _, JsonValueTrait as _};
 use busbar_contract::secure::SecureVec;
 use busbar_ffi::image::Admitted as Header;
 use busbar_ffi::Kind;
@@ -188,6 +189,7 @@ pub(crate) fn decode_described(
             "every REQUIRED method of the kind",
         ));
     }
+    crate::upstream_paths::validate(kind, &items)?;
     Ok(Described {
         kind,
         methods,
@@ -209,38 +211,38 @@ pub(crate) fn frame(items: &[(u16, Vec<u8>)]) -> Vec<u8> {
     out.as_bytes().to_vec()
 }
 
-fn merge(base: &mut serde_json::Value, patch: serde_json::Value) {
-    match patch {
-        serde_json::Value::Object(fields) => {
+fn merge(base: &mut json::Value, patch: &json::Value) {
+    match patch.as_object() {
+        Some(fields) => {
             if !base.is_object() {
-                *base = serde_json::Value::Object(serde_json::Map::new());
+                *base = json::Value::from(json::Map::new());
             }
             if let Some(target) = base.as_object_mut() {
                 for (key, value) in fields {
                     if value.is_null() {
                         target.remove(&key);
                     } else {
-                        merge(target.entry(key).or_insert(serde_json::Value::Null), value);
+                        merge(target.entry(&key).or_insert(json::Value::new()), value);
                     }
                 }
             }
         }
-        other => *base = other,
+        None => *base = patch.clone(),
     }
 }
 
 /// RFC 7386 merge of `patch` (a JSON object) into `base` (the stored config of an instance): absent fields keep
 /// their values, a `null` removes one, objects merge recursively. A patch that is not an object is refused.
 pub(crate) fn merge_patch(base: &[u8], patch: &[u8]) -> Result<Vec<u8>, String> {
-    let mut config: serde_json::Value =
-        serde_json::from_slice(base).map_err(|e| format!("the stored config is not JSON: {e}"))?;
-    let patch: serde_json::Value =
-        serde_json::from_slice(patch).map_err(|e| format!("the pushed patch is not JSON: {e}"))?;
+    let mut config: json::Value =
+        json::parse_value(base).map_err(|e| format!("the stored config is not JSON: {e}"))?;
+    let patch: json::Value =
+        json::parse_value(patch).map_err(|e| format!("the pushed patch is not JSON: {e}"))?;
     if !patch.is_object() {
         return Err("the pushed patch is not a JSON object".to_owned());
     }
-    merge(&mut config, patch);
-    serde_json::to_vec(&config).map_err(|e| e.to_string())
+    merge(&mut config, &patch);
+    json::to_vec(&config).map_err(|e| e.to_string())
 }
 
 /// The depth of the secret-instance chain a store's open may need (r6 §3 step 2a).
@@ -413,9 +415,9 @@ fn bind_error(name: &str, e: BindError) -> OpenError {
 
 /// RFC 6901 `pointer` into `v`: the parent object and the last token.
 fn set_at(
-    v: &mut serde_json::Value,
+    v: &mut json::Value,
     pointer: &str,
-    value: serde_json::Value,
+    value: json::Value,
     name: &str,
 ) -> Result<(), OpenError> {
     let refuse = |why: &str| plan_error(format!("{name}: core cannot write {pointer}: {why}"));
@@ -423,25 +425,28 @@ fn set_at(
         .rsplit_once('/')
         .ok_or_else(|| refuse("not a JSON pointer"))?;
     let key = key.replace("~1", "/").replace("~0", "~");
-    let parent = v
-        .pointer_mut(parent)
-        .ok_or_else(|| refuse("no such parent"))?;
+    let parent = json::pointer_mut(v, parent).ok_or_else(|| refuse("no such parent"))?;
     let object = parent
         .as_object_mut()
         .ok_or_else(|| refuse("the parent is not an object"))?;
     if object.get(&key).is_some_and(|held| !held.is_null()) {
         return Err(refuse("the operator's config already holds that position"));
     }
-    object.insert(key, value);
+    object.insert(&key, value);
     Ok(())
 }
 
 /// How many `{"$dest": n}` handles the bound config holds.
-fn count_dests(v: &serde_json::Value) -> u32 {
-    match v {
-        serde_json::Value::Object(map) if map.contains_key("$dest") => 1,
-        serde_json::Value::Object(map) => map.values().map(count_dests).sum(),
-        serde_json::Value::Array(items) => items.iter().map(count_dests).sum(),
+fn count_dests(v: &json::Value) -> u32 {
+    match v.get_type() {
+        json::JsonType::Object => match v.as_object() {
+            Some(map) if map.contains_key(&"$dest") => 1,
+            Some(map) => map.iter().map(|(_, v)| count_dests(v)).sum(),
+            None => 0,
+        },
+        json::JsonType::Array => v
+            .as_array()
+            .map_or(0, |items| items.iter().map(count_dests).sum()),
         _ => 0,
     }
 }
@@ -533,29 +538,25 @@ impl<N: Needs> Registry<N> {
         let dest_paths = paths(tag::D_DEST_PATH);
         let write_urls = s.public_url.is_some() && !urls.is_empty();
         let (bound, dests) = if write_urls || !ups.is_empty() || !dest_paths.is_empty() {
-            let mut v: serde_json::Value =
-                serde_json::from_slice(resolved.as_slice()).map_err(|e| {
-                    plan_error(format!("{}: the bound config is not JSON: {e}", s.name))
-                })?;
+            let mut v: json::Value = json::parse_value(resolved.as_slice()).map_err(|e| {
+                plan_error(format!("{}: the bound config is not JSON: {e}", s.name))
+            })?;
             if let Some(url) = s.public_url {
                 for p in &urls {
-                    set_at(&mut v, p, serde_json::Value::String(url.to_owned()), s.name)?;
+                    set_at(&mut v, p, json::Value::from(url), s.name)?;
                 }
             }
             for p in &ups {
                 let names = s
                     .caller_upstreams
                     .iter()
-                    .map(|n| serde_json::Value::String(n.to_string()))
-                    .collect();
-                set_at(&mut v, p, serde_json::Value::Array(names), s.name)?;
+                    .map(|n| json::Value::from(n.to_string().as_str()))
+                    .collect::<Vec<json::Value>>();
+                set_at(&mut v, p, json::Value::from(names), s.name)?;
             }
             let dests = count_dests(&v);
             if write_urls || !ups.is_empty() {
-                (
-                    SecureVec::from(serde_json::to_vec(&v).unwrap_or_default()),
-                    dests,
-                )
+                (SecureVec::from(json::to_vec(&v).unwrap_or_default()), dests)
             } else {
                 (resolved, dests)
             }
@@ -879,8 +880,8 @@ mod tests {
         );
     }
 
-    fn json(bytes: &[u8]) -> serde_json::Value {
-        serde_json::from_slice(bytes).unwrap()
+    fn json(bytes: &[u8]) -> busbar_contract::json::Value {
+        busbar_contract::json::parse_value(bytes).unwrap()
     }
 
     #[test]

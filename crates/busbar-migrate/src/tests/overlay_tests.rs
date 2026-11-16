@@ -488,8 +488,8 @@ fn an_overlay_backup_with_other_bytes_refuses_the_write() {
     let scratch = Scratch::new();
     let path = scratch.deployment(BASE);
     let o = scratch.file(DEFAULT_OVERLAY_FILENAME, OVERLAY_G);
-    std::fs::write(overlay_backup(&o), "{}").unwrap();
     let plan = planned(&path).unwrap();
+    std::fs::write(overlay_backup(&o), "{}").unwrap();
     let refused = write(&plan, &accept).unwrap_err();
     assert_eq!(refused.word(), "CONFIG");
     assert!(
@@ -498,6 +498,20 @@ fn an_overlay_backup_with_other_bytes_refuses_the_write() {
     );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), BASE);
     assert_eq!(std::fs::read_to_string(&o).unwrap(), OVERLAY_G);
+}
+
+#[test]
+fn a_conflicting_overlay_backup_refuses_before_store_migration() {
+    let scratch = Scratch::new();
+    let path = scratch.deployment(BASE);
+    let o = scratch.file(DEFAULT_OVERLAY_FILENAME, OVERLAY_G);
+    std::fs::write(overlay_backup(&o), "{}").unwrap();
+    let refused = planned(&path).unwrap_err();
+    assert_eq!(refused.word(), "CONFIG");
+    assert!(refused.to_string().contains("busbar-overlay.json.1.5.5"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), BASE);
+    assert_eq!(std::fs::read_to_string(&o).unwrap(), OVERLAY_G);
+    assert_eq!(std::fs::read_to_string(overlay_backup(&o)).unwrap(), "{}");
 }
 
 /// 5L: a dead holder's T is removed under the lock, and the upgrade completes.

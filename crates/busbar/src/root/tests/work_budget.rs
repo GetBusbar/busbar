@@ -21,6 +21,7 @@
 //! run under any other harness (libtest runs tests on threads of one process, whose concurrent
 //! work would land in these counts).
 
+use busbar_contract::json;
 use busbar_contract::work_count::Tally;
 
 use super::node_rig::{far_end, node_rig, reply, NodeRig, NodeRigOpts, LANE, POOL};
@@ -53,13 +54,13 @@ enum Fixture {
 }
 
 impl Fixture {
-    fn body(self) -> serde_json::Value {
-        let mut v = serde_json::json!({
+    fn body(self) -> json::Value {
+        let mut v = json::json!({
             "model": POOL,
             "messages": [{"role": "user", "content": "hi"}],
         });
         if self == Fixture::StreamedOk {
-            v["stream"] = serde_json::Value::Bool(true);
+            v["stream"] = json::Value::from(true);
         }
         v
     }
@@ -69,7 +70,7 @@ impl Fixture {
         let (content_type, body) = match self {
             Fixture::BufferedOk => (
                 "application/json",
-                serde_json::json!({
+                json::json!({
                     "id": "chatcmpl-root", "object": "chat.completion", "created": 0,
                     "model": LANE,
                     "choices": [{"index": 0, "finish_reason": "stop",
@@ -82,12 +83,12 @@ impl Fixture {
             Fixture::StreamedOk => (
                 "text/event-stream",
                 [
-                    serde_json::json!({"id": "chatcmpl-root", "object": "chat.completion.chunk",
+                    json::json!({"id": "chatcmpl-root", "object": "chat.completion.chunk",
                                        "created": 0, "model": LANE,
                                        "choices": [{"index": 0, "delta": {"role": "assistant",
                                                                           "content": "hello"}}]})
                     .to_string(),
-                    serde_json::json!({"id": "chatcmpl-root", "object": "chat.completion.chunk",
+                    json::json!({"id": "chatcmpl-root", "object": "chat.completion.chunk",
                                        "created": 0, "model": LANE,
                                        "choices": [{"index": 0, "delta": {},
                                                     "finish_reason": "stop"}],

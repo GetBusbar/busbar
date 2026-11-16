@@ -9,6 +9,7 @@ use super::*;
 
 fn key(dest: &str) -> NeedKey {
     NeedKey {
+        instance: busbar_contract::conn::InstanceId(1),
         dest: dest.into(),
         sni: dest.into(),
         alpn: "".into(),
@@ -128,6 +129,28 @@ fn the_cap_returns_the_extra_conn_and_ids_ride_along() {
     assert_eq!(pool.idle(), 0);
 }
 
+/// SEC-M5: authenticated sessions belong to an instance, even at identical endpoints.
+#[test]
+fn pooled_sessions_never_cross_instance_boundaries() {
+    for dest in ["db:5432", "unix:/run/database.sock"] {
+        for tls in [Tls::None, Tls::Direct, Tls::Upgraded] {
+            let pool = NeedPool::with_hasher(4, One);
+            let owner = NeedKey {
+                instance: busbar_contract::conn::InstanceId(1),
+                tls,
+                ..key(dest)
+            };
+            let stranger = NeedKey {
+                instance: busbar_contract::conn::InstanceId(2),
+                ..owner.clone()
+            };
+            pool.put(owner.clone(), pooled(41)).unwrap();
+            assert!(pool.take(&stranger).is_none(), "another instance at {dest}");
+            assert_eq!(pool.take(&owner).unwrap().id, 41, "owner retains reuse");
+        }
+    }
+}
+
 /// C-POOL-KEY round 11, the source check (moved here from busbar-plugin-test `c_pool_key`, whose case index
 /// points at this test): the MIN-3 pool key, [`NeedKey`] (the IF's `PoolKey`), holds `dest`, `sni` and `alpn`
 /// by value with no `u64` hash field, and the production pool, `HostNeeds::pool`, is `NeedPool` over std's
@@ -137,6 +160,7 @@ fn the_cap_returns_the_extra_conn_and_ids_ride_along() {
 #[test]
 fn pool_key_has_no_u64_hash_and_production_uses_random_state() {
     let NeedKey {
+        instance,
         dest,
         sni,
         alpn,
@@ -147,6 +171,7 @@ fn pool_key_has_no_u64_hash_and_production_uses_random_state() {
         waived,
     } = key("a.test:443");
     let _: (
+        busbar_contract::conn::InstanceId,
         Box<str>,
         Box<str>,
         Box<str>,
@@ -155,7 +180,7 @@ fn pool_key_has_no_u64_hash_and_production_uses_random_state() {
         [u8; 32],
         [u8; 32],
         bool,
-    ) = (dest, sni, alpn, class, tls, trust, cert, waived);
+    ) = (instance, dest, sni, alpn, class, tls, trust, cert, waived);
 
     let key_rs = include_str!("../need/key.rs");
     let start = key_rs

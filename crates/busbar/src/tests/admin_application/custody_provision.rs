@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use axum::http::StatusCode;
+use busbar_contract::json;
 use busbar_core_admin::admin_state::AppAdmin as _;
 use busbar_kernel::audit_ring;
 use std::sync::Arc;
@@ -160,7 +161,7 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
 
     let status = client
         .post(format!("http://{address}/api/v1/admin/keys"))
-        .json(&serde_json::json!({"name":"k", "group":PROVISION_FAIL_GROUP,"parent":"team"}))
+        .json(&json::json!({"name":"k", "group":PROVISION_FAIL_GROUP,"parent":"team"}))
         .send()
         .await
         .expect("the actual admin surface answers")
@@ -220,7 +221,7 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
         .len();
     let status = client
         .post(format!("http://{address}/api/v1/admin/keys"))
-        .json(&serde_json::json!({"name":"k", "group":PROVISION_FAIL_GROUP,"parent":"team"}))
+        .json(&json::json!({"name":"k", "group":PROVISION_FAIL_GROUP,"parent":"team"}))
         .send()
         .await
         .expect("the actual admin surface answers")
@@ -373,7 +374,7 @@ async fn auto_provision_stops_at_the_group_ceiling() {
             .header("authorization", format!("Bearer {token}"))
             .header("content-type", "application/json")
             .body(axum::body::Body::from(
-                serde_json::json!({
+                json::json!({
                     "name":name,"group":group,"parent":"team",
                 })
                 .to_string(),

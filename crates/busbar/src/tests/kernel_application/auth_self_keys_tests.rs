@@ -6,6 +6,7 @@ use std::sync::Arc;
 use crate::root::test_plugins as plugins;
 use crate::test_common as common;
 
+use busbar_contract::json::{self, JsonValueTrait as _};
 use busbar_contract::persistence::*;
 
 // Each independent deployment owns a process-local root rate history. Keep
@@ -756,7 +757,7 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
         .await
         .expect("the actual exchange body completes within ten seconds")
         .unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let body: json::Value = json::parse_value(&body).unwrap();
         if self_mint == Some(false) {
             assert_eq!(status, axum::http::StatusCode::FORBIDDEN, "{body}");
             assert!(body.get("api_key").is_none(), "no credential is issued");
@@ -1033,7 +1034,7 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
                 .await
                 .expect("the actual exchange body is bounded")
                 .unwrap();
-                let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                let body: json::Value = json::parse_value(&body).unwrap();
                 if allowed {
                     assert_eq!(status, axum::http::StatusCode::OK, "{body}");
                     Some(body["api_key"].as_str().expect("issued token").to_string())

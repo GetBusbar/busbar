@@ -422,7 +422,7 @@ async fn native_usage(backend: Arc<Backend>, applied_head: bool) -> (RecoveryEve
     source.persist(&initial).await.unwrap();
     let selected = if applied_head {
         let mut custody: crate::governance::raw_recovery::UsageCustody =
-            serde_json::from_slice(&initial.payload).unwrap();
+            json::parse(&initial.payload).unwrap();
         let remainder = GovState::usage_recovery_child(
             "imported",
             0,
@@ -438,7 +438,7 @@ async fn native_usage(backend: Arc<Backend>, applied_head: bool) -> (RecoveryEve
         custody.plain = Default::default();
         custody.handoffs.push(remainder);
         let mut event = transition(&initial, RecoveryState::Applied);
-        event.payload = serde_json::to_vec(&custody).unwrap();
+        event.payload = json::to_vec(&custody).unwrap();
         source.persist(&event).await.unwrap();
         event
     } else {
@@ -850,20 +850,20 @@ async fn selected_parent_requires_exact_child_template_and_immutable_origin() {
     let mut child = intent();
     child.operation_id = [9; 16];
     child.body_fingerprint = [8; 32];
-    let template = serde_json::json!({"physical":[1,2,3]});
+    let template = json::json!({"physical":[1,2,3]});
     let mut parent = intent();
     parent.operation_id = [6; 16];
     parent.payload = b"{\"handoffs\":[]}".to_vec();
     let mut checkpoint = transition(&parent, RecoveryState::Applied);
-    checkpoint.payload=serde_json::to_vec(&serde_json::json!({"handoffs":[{"operation_id":child.operation_id,"kind":child.kind,"body_fingerprint":child.body_fingerprint,"first_sent_at_ms":child.first_sent_at_ms,"payload":serde_json::to_vec(&template).unwrap()}]})).unwrap();
+    checkpoint.payload=json::to_vec(&json::json!({"handoffs":[{"operation_id":child.operation_id,"kind":child.kind,"body_fingerprint":child.body_fingerprint,"first_sent_at_ms":child.first_sent_at_ms,"payload":json::to_vec(&template).unwrap()}]})).unwrap();
     let mut physical = template;
-    physical["origin"] = serde_json::json!({"operation_id":checkpoint.operation_id,"event_fingerprint":checkpoint.fingerprint().unwrap()});
-    child.payload = serde_json::to_vec(&physical).unwrap();
+    physical["origin"] = json::json!({"operation_id":checkpoint.operation_id,"event_fingerprint":checkpoint.fingerprint().unwrap()});
+    child.payload = json::to_vec(&physical).unwrap();
     recovery.persist(&parent).await.unwrap();
     recovery.persist(&checkpoint).await.unwrap();
     let mut changed = child.clone();
-    physical["physical"] = serde_json::json!([1, 2, 99]);
-    changed.payload = serde_json::to_vec(&physical).unwrap();
+    physical["physical"] = json::json!([1, 2, 99]);
+    changed.payload = json::to_vec(&physical).unwrap();
     assert!(matches!(
         recovery.persist(&changed).await,
         Err(RecoveryError::Invalid(_))
@@ -874,9 +874,9 @@ async fn selected_parent_requires_exact_child_template_and_immutable_origin() {
         .is_none());
     recovery.persist(&child).await.unwrap();
     let mut changed_origin = transition(&child, RecoveryState::LandedUnknown);
-    let mut raw: serde_json::Value = serde_json::from_slice(&changed_origin.payload).unwrap();
-    raw["origin"] = serde_json::Value::Null;
-    changed_origin.payload = serde_json::to_vec(&raw).unwrap();
+    let mut raw: json::Value = json::parse_value(&changed_origin.payload).unwrap();
+    raw["origin"] = json::Value::new();
+    changed_origin.payload = json::to_vec(&raw).unwrap();
     assert!(matches!(
         recovery.persist(&changed_origin).await,
         Err(RecoveryError::Invalid(_))
@@ -1059,7 +1059,7 @@ fn recovery_scan_page(request: &Scan) -> Page {
         generation,
         rows: vec![(
             address(&operation),
-            Secret::new(serde_json::to_vec(&head).unwrap()),
+            Secret::new(json::to_vec(&head).unwrap()),
         )],
         next,
     }
@@ -1149,14 +1149,13 @@ async fn heads_refuse_invalid_or_failed_pages_without_partial_results() {
                         5 => page.rows[0].0.key[16] ^= 1,
                         6..=8 => {
                             let mut head: Head =
-                                serde_json::from_slice(page.rows[0].1.expose(&crate::seal::lend()))
-                                    .unwrap();
+                                json::parse(page.rows[0].1.expose(&crate::seal::lend())).unwrap();
                             match fault {
                                 6 => head.version = 2,
                                 7 => head.node = 0,
                                 _ => head.sequence = 0,
                             }
-                            page.rows[0].1 = Secret::new(serde_json::to_vec(&head).unwrap());
+                            page.rows[0].1 = Secret::new(json::to_vec(&head).unwrap());
                         }
                         _ => return Err(Failure::Unknown),
                     }
@@ -1274,15 +1273,15 @@ async fn foreign_parent_and_child(
     let mut child = intent();
     child.operation_id = [9; 16];
     child.body_fingerprint = [8; 32];
-    let template = serde_json::json!({"physical":[1,2,3]});
+    let template = json::json!({"physical":[1,2,3]});
     let mut parent = intent();
     parent.operation_id = [6; 16];
     parent.payload = b"{\"handoffs\":[]}".to_vec();
     let mut checkpoint = transition(&parent, RecoveryState::Applied);
-    checkpoint.payload=serde_json::to_vec(&serde_json::json!({"handoffs":[{"operation_id":child.operation_id,"kind":child.kind,"body_fingerprint":child.body_fingerprint,"first_sent_at_ms":child.first_sent_at_ms,"payload":serde_json::to_vec(&template).unwrap()}]})).unwrap();
+    checkpoint.payload=json::to_vec(&json::json!({"handoffs":[{"operation_id":child.operation_id,"kind":child.kind,"body_fingerprint":child.body_fingerprint,"first_sent_at_ms":child.first_sent_at_ms,"payload":json::to_vec(&template).unwrap()}]})).unwrap();
     let mut physical = template;
-    physical["origin"] = serde_json::json!({"operation_id":checkpoint.operation_id,"event_fingerprint":checkpoint.fingerprint().unwrap()});
-    child.payload = serde_json::to_vec(&physical).unwrap();
+    physical["origin"] = json::json!({"operation_id":checkpoint.operation_id,"event_fingerprint":checkpoint.fingerprint().unwrap()});
+    child.payload = json::to_vec(&physical).unwrap();
     parent_owner.persist(&parent).await.unwrap();
     parent_owner.persist(&checkpoint).await.unwrap();
     child_owner.persist(&child).await.unwrap();

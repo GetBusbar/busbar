@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use busbar_contract::json;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -429,7 +430,7 @@ async fn restart_cannot_turn_recent_wall_time_into_receipt_age_authority() {
         RecoveryState::LandedUnknown
     );
     assert!(!restarted.recovery_sent_here(intent.operation_id));
-    let raw: serde_json::Value = serde_json::from_slice(
+    let raw: json::Value = json::parse_value(
         &restarted
             .recovery_event(intent.operation_id)
             .unwrap()
@@ -555,7 +556,7 @@ async fn selected_parent_checkpoint_reconstructs_exact_missing_usage_child() {
     .unwrap()
     .unwrap();
     let mut custody: super::super::raw_recovery::UsageCustody =
-        serde_json::from_slice(&intent.payload).unwrap();
+        json::parse(&intent.payload).unwrap();
     custody.plain = Default::default();
     custody.handoffs.push(child.clone());
     let applied = first
@@ -565,7 +566,7 @@ async fn selected_parent_checkpoint_reconstructs_exact_missing_usage_child() {
             intent.body_fingerprint,
             RecoveryState::Applied,
             intent.first_sent_at_ms,
-            serde_json::to_vec(&custody).unwrap(),
+            json::to_vec(&custody).unwrap(),
         )
         .unwrap();
     first.keep_recovery_event(&applied).await.unwrap();
@@ -1023,7 +1024,7 @@ async fn foreign_reaffirmation_preserves_original_decision_audit_and_rejects_opp
         .await
         .unwrap();
     let selected = gov.recovery_event(intent.operation_id).unwrap();
-    let raw: serde_json::Value = serde_json::from_slice(&selected.payload).unwrap();
+    let raw: json::Value = json::parse_value(&selected.payload).unwrap();
     assert_eq!(raw["verdict"]["actor"], "original-operator");
     assert_eq!(raw["verdict"]["reason"], "original not-landed verdict");
     assert_eq!(
@@ -1078,7 +1079,7 @@ async fn foreign_settled_child_is_observed_as_receipt_without_adoption_or_repost
     .unwrap()
     .unwrap();
     let mut custody: super::super::raw_recovery::UsageCustody =
-        serde_json::from_slice(&intent.payload).unwrap();
+        json::parse(&intent.payload).unwrap();
     custody.plain = Default::default();
     custody.handoffs.push(child.clone());
     let applied = original
@@ -1088,7 +1089,7 @@ async fn foreign_settled_child_is_observed_as_receipt_without_adoption_or_repost
             intent.body_fingerprint,
             RecoveryState::Applied,
             intent.first_sent_at_ms,
-            serde_json::to_vec(&custody).unwrap(),
+            json::to_vec(&custody).unwrap(),
         )
         .unwrap();
     original.keep_recovery_event(&applied).await.unwrap();
@@ -1334,9 +1335,9 @@ async fn admin_resume_can_advance_a_captured_prerequisite_without_wedging_its_fl
 
     let mut forged = captured;
     let parent = forged.prerequisite.as_mut().unwrap();
-    let mut payload: serde_json::Value = serde_json::from_slice(&parent.payload).unwrap();
-    payload["absorbed_plain"]["requests"] = serde_json::Value::String("-2".into());
-    parent.payload = serde_json::to_vec(&payload).unwrap();
+    let mut payload: json::Value = json::parse_value(&parent.payload).unwrap();
+    payload["absorbed_plain"]["requests"] = json::Value::from("-2");
+    parent.payload = json::to_vec(&payload).unwrap();
     assert!(
         gov.drive_durable_usage_flight(&forged).await.is_err(),
         "a different legal candidate at that revision is not selected ancestry"
@@ -1398,7 +1399,7 @@ async fn reused_host_flushes_fresh_refund_only_after_exact_foreign_settled_subtr
             .unwrap();
         first.keep_recovery_event(&initial).await.unwrap();
         let mut custody: super::super::raw_recovery::UsageCustody =
-            serde_json::from_slice(&initial.payload).unwrap();
+            json::parse(&initial.payload).unwrap();
         store
             .ledger()
             .add_usage_batch_deduped(
@@ -1430,7 +1431,7 @@ async fn reused_host_flushes_fresh_refund_only_after_exact_foreign_settled_subtr
                 initial.body_fingerprint,
                 RecoveryState::Applied,
                 initial.first_sent_at_ms,
-                serde_json::to_vec(&custody).unwrap(),
+                json::to_vec(&custody).unwrap(),
             )
             .unwrap();
         first.keep_recovery_event(&applied).await.unwrap();
@@ -1441,7 +1442,7 @@ async fn reused_host_flushes_fresh_refund_only_after_exact_foreign_settled_subtr
             1 => {}
             2 => {
                 let mut raw: super::super::raw_recovery::UsageCustody =
-                    serde_json::from_slice(&child_initial.payload).unwrap();
+                    json::parse(&child_initial.payload).unwrap();
                 store
                     .ledger()
                     .add_usage_batch_deduped(
@@ -1453,7 +1454,7 @@ async fn reused_host_flushes_fresh_refund_only_after_exact_foreign_settled_subtr
                 raw.plain = Default::default();
                 raw.dated = Default::default();
                 let candidate = child_initial
-                    .checkpoint(RecoveryState::Applied, serde_json::to_vec(&raw).unwrap())
+                    .checkpoint(RecoveryState::Applied, json::to_vec(&raw).unwrap())
                     .unwrap();
                 unselected = Some(
                     candidate
@@ -1465,11 +1466,11 @@ async fn reused_host_flushes_fresh_refund_only_after_exact_foreign_settled_subtr
                 first.drive_raw_recovery(child.operation_id).await.unwrap();
                 if mode == 3 {
                     let mut changed = custody.clone();
-                    let mut payload: serde_json::Value =
-                        serde_json::from_slice(&changed.handoffs[0].payload).unwrap();
-                    payload["plain"]["requests"] = serde_json::Value::String("8".into());
-                    payload["plain"]["billable_requests"] = serde_json::Value::String("8".into());
-                    changed.handoffs[0].payload = serde_json::to_vec(&payload).unwrap();
+                    let mut payload: json::Value =
+                        json::parse_value(&changed.handoffs[0].payload).unwrap();
+                    payload["plain"]["requests"] = json::Value::from("8");
+                    payload["plain"]["billable_requests"] = json::Value::from("8");
+                    changed.handoffs[0].payload = json::to_vec(&payload).unwrap();
                     let checkpoint = first
                         .new_recovery_event(
                             initial.operation_id,
@@ -1477,7 +1478,7 @@ async fn reused_host_flushes_fresh_refund_only_after_exact_foreign_settled_subtr
                             initial.body_fingerprint,
                             RecoveryState::Applied,
                             initial.first_sent_at_ms,
-                            serde_json::to_vec(&changed).unwrap(),
+                            json::to_vec(&changed).unwrap(),
                         )
                         .unwrap();
                     first.keep_recovery_event(&checkpoint).await.unwrap();
@@ -1485,7 +1486,7 @@ async fn reused_host_flushes_fresh_refund_only_after_exact_foreign_settled_subtr
                 if mode == 4 {
                     let child_done = first.recovery_event(child.operation_id).unwrap();
                     let raw: super::super::raw_recovery::UsageCustody =
-                        serde_json::from_slice(&child_done.payload).unwrap();
+                        json::parse(&child_done.payload).unwrap();
                     let grandchild = &raw.handoffs[0];
                     assert_eq!(
                         first.recovery_event(grandchild.operation_id).unwrap().state,
@@ -1597,7 +1598,7 @@ async fn settled_parent_with_handoffs(
         .await
         .unwrap();
     let mut custody: super::super::raw_recovery::UsageCustody =
-        serde_json::from_slice(&intent.payload).unwrap();
+        json::parse(&intent.payload).unwrap();
     custody.plain = Default::default();
     for index in 0..children {
         let child = GovState::usage_recovery_child(
@@ -1620,7 +1621,7 @@ async fn settled_parent_with_handoffs(
             intent.body_fingerprint,
             RecoveryState::Applied,
             intent.first_sent_at_ms,
-            serde_json::to_vec(&custody).unwrap(),
+            json::to_vec(&custody).unwrap(),
         )
         .unwrap();
     gov.keep_recovery_event(&applied).await.unwrap();
@@ -1654,8 +1655,7 @@ async fn new_child_still_selected_after_fast_exit() {
     let store = crate::real_store::core().await;
     let sink = Arc::new(Journal::default());
     let (gov, parent) = settled_parent_with_handoffs(&store, &sink, 1, false).await;
-    let custody: super::super::raw_recovery::UsageCustody =
-        serde_json::from_slice(&parent.payload).unwrap();
+    let custody: super::super::raw_recovery::UsageCustody = json::parse(&parent.payload).unwrap();
     let child = custody.handoffs[0].clone();
     assert!(gov.recovery_event(child.operation_id).is_none());
     sink.persisted_ops.lock().unwrap().clear();

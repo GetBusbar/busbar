@@ -79,12 +79,12 @@ fn encode<T: Serialize>(value: &T) -> RecordStoreResult<Vec<u8>> {
     crate::off_path::governance::runtime::raw_recovery_encode(value).map_err(invalid)
 }
 fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> RecordStoreResult<T> {
-    serde_json::from_slice(bytes).map_err(invalid)
+    busbar_contract::json::parse(bytes).map_err(invalid)
 }
 fn fingerprint<T: Serialize>(kind: &[u8], value: &T) -> RecordStoreResult<[u8; 32]> {
     let mut digest = crate::hashing::Sha256::new();
     digest.update(kind);
-    serde_json::to_writer(DigestWriter(&mut digest), value).map_err(invalid)?;
+    busbar_contract::json::to_writer(DigestWriter(&mut digest), value).map_err(invalid)?;
     Ok(digest.finalize())
 }
 fn usage_fingerprint(custody: &UsageCustody) -> RecordStoreResult<[u8; 32]> {
@@ -1177,7 +1177,7 @@ impl GovState {
 impl RecoveryEvent {
     /// Read typed origin identity without interpreting custody counts or granting ownership.
     pub fn origin_reference(&self) -> Result<Option<RecoveryOrigin>, RecoveryError> {
-        serde_json::from_slice::<Links>(&self.payload)
+        busbar_contract::json::parse::<Links>(&self.payload)
             .map(|links| links.origin)
             .map_err(|error| {
                 rendered_error(
@@ -1200,7 +1200,7 @@ impl RecoveryEvent {
         {
             return Err(invalid("child origin differs from exact parent checkpoint"));
         }
-        let links: Links = serde_json::from_slice(&self.payload).map_err(|error| {
+        let links: Links = busbar_contract::json::parse(&self.payload).map_err(|error| {
             rendered_error(
                 RecoveryError::Invalid,
                 format_args!("invalid parent handoff: {error}"),

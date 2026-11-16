@@ -8,6 +8,7 @@ use crate::governance::GovState;
 use crate::persistence::host_records::tests::{attach, Backend};
 use crate::persistence::observations::ObservationStore;
 use crate::plane_driver::{Checkpoint, EndPost, FeeRefund, MoneySeam, UnitMoney};
+use busbar_contract::json;
 use busbar_contract::{records::VirtualKey, Count};
 use std::collections::BTreeMap;
 
@@ -123,7 +124,7 @@ async fn submit(
         )
         .unwrap();
     let bytes = rx.await.unwrap().unwrap();
-    serde_json::from_slice(extensions::unique(&bytes, wire::RESULT).unwrap().unwrap()).unwrap()
+    json::parse(extensions::unique(&bytes, wire::RESULT).unwrap().unwrap()).unwrap()
 }
 
 #[tokio::test]

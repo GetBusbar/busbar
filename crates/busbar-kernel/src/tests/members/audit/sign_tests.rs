@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_contract::caps::Pass;
+use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
 use busbar_contract::{
     caps::{
         Audit as AuditStep, KernelSeal, LocatorPtr, MeterClassId, Origin, OriginKind, Outcome,
@@ -580,7 +581,7 @@ fn caller_named_text_survives_into_the_published_body() {
 
     let expected = format!("tool{}\"a{}{}b{}nc{}u0001d|e", "\\", "\\", "\\", "\\", "\\");
     assert!(body.contains(&expected), "{body}");
-    let parsed: serde_json::Value = serde_json::from_str(&body).expect("the body is valid JSON");
+    let parsed: json::Value = json::parse_value(body.as_bytes()).expect("the body is valid JSON");
     assert_eq!(
         parsed["records"][0]["op_class"].as_str(),
         Some("tool\"a\\b\nc\u{1}d|e")
@@ -601,11 +602,11 @@ fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
         expose::range_body(&chain, &records, 1, 2),
         expose::keys_body(&keys),
     ] {
-        serde_json::from_str::<serde_json::Value>(&body).expect("every published body is JSON");
+        json::parse_value(body.as_bytes()).expect("every published body is JSON");
     }
 
-    let parsed: serde_json::Value =
-        serde_json::from_str(&expose::range_body(&chain, &records, 1, 2)).expect("JSON");
+    let parsed: json::Value =
+        json::parse_value(expose::range_body(&chain, &records, 1, 2).as_bytes()).expect("JSON");
     assert_eq!(parsed["records"][0]["emission_delta"].as_str(), Some("-7"));
 
     let record = parsed["records"][0]
@@ -613,7 +614,7 @@ fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
         .expect("a published record is an object");
     for stored_price in ["pre_tier", "priced", "amount"] {
         assert!(
-            !record.contains_key(stored_price),
+            !record.contains_key(&stored_price),
             "the published record carries a stored price `{stored_price}`: {record:?}"
         );
     }
@@ -624,7 +625,7 @@ fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
     assert!(!hooks.is_empty(), "the record names the hook that ran");
     for hook in hooks {
         let hook = hook.as_object().expect("a hook is an object");
-        let mut keys: Vec<&str> = hook.keys().map(String::as_str).collect();
+        let mut keys: Vec<&str> = hook.iter().map(|(key, _)| key).collect();
         keys.sort();
         assert_eq!(
             keys,
@@ -633,7 +634,7 @@ fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
         );
         for priced in ["price", "priced", "priced_delta", "cost", "amount"] {
             assert!(
-                !hook.keys().any(|k| k.contains(priced)),
+                !hook.iter().any(|(k, _)| k.contains(priced)),
                 "a hook entry carries a price field `{priced}`: {hook:?}"
             );
         }
@@ -648,7 +649,7 @@ fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
     );
 
     assert_eq!(parsed["records"][0]["seq"].as_str(), Some("1"));
-    assert!(parsed["records"][0]["lines"][0]["quantity"].is_string());
+    assert!(parsed["records"][0]["lines"][0]["quantity"].is_str());
 
     assert_eq!(parsed["from"].as_u64(), Some(1));
     assert_eq!(parsed["to"].as_u64(), Some(2));
@@ -658,12 +659,9 @@ fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
 fn the_body_keeps_the_texts_texts_and_the_numbers_decimal_text() {
     let mut chain = AuditChain::new().signing_with(signer());
     let record = chain.seal(inputs(1), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
-    let parsed: serde_json::Value = serde_json::from_str(&expose::range_body(
-        &chain,
-        std::slice::from_ref(&record),
-        1,
-        1,
-    ))
+    let parsed: json::Value = json::parse_value(
+        expose::range_body(&chain, std::slice::from_ref(&record), 1, 1).as_bytes(),
+    )
     .expect("JSON");
     let published = &parsed["records"][0];
     for field in digest_fields(&record) {
@@ -672,7 +670,7 @@ fn the_body_keeps_the_texts_texts_and_the_numbers_decimal_text() {
         };
         match field.value {
             DigestValue::Text(_) => assert!(
-                published[name].is_string(),
+                published[name].is_str(),
                 "{name} is a recipe text but is not published as a string"
             ),
             DigestValue::Num(n) => assert_eq!(
@@ -694,7 +692,7 @@ fn a_node_above_two_to_the_fifty_three_is_published_exactly() {
         body.contains("\"node\":\"16045690984833335023\","),
         "{body}"
     );
-    let parsed: serde_json::Value = serde_json::from_str(&body).expect("JSON");
+    let parsed: json::Value = json::parse_value(body.as_bytes()).expect("JSON");
     assert_eq!(
         parsed["records"][0]["node"]
             .as_str()
@@ -719,7 +717,7 @@ fn worked_example_inputs() -> AuditInputs {
 
 const WORKED_EXAMPLE_NODE: u64 = 5;
 
-fn spec_json_block(doc: &str, nth: usize) -> serde_json::Value {
+fn spec_json_block(doc: &str, nth: usize) -> json::Value {
     let block = doc
         .split("```json")
         .nth(nth + 1)
@@ -727,7 +725,7 @@ fn spec_json_block(doc: &str, nth: usize) -> serde_json::Value {
         .split("```")
         .next()
         .expect("a fenced block closes");
-    serde_json::from_str(block).expect("the spec's worked example is valid JSON")
+    json::parse_value(block.as_bytes()).expect("the spec's worked example is valid JSON")
 }
 
 #[test]
@@ -756,14 +754,14 @@ fn the_legacy_v4_worked_example_keeps_its_exact_record_hash_and_signature() {
     let mut keys = AuditKeySet::new();
     keys.insert(AuditVerifyingKey::from_hex(&signer().public_key_hex()).expect("a public key"));
 
-    let parse = |body: String| -> serde_json::Value {
-        let mut value: serde_json::Value =
-            serde_json::from_str(&body).expect("a published body is JSON");
+    let parse = |body: String| -> json::Value {
+        let mut value: json::Value =
+            json::parse_value(body.as_bytes()).expect("a published body is JSON");
         assert_eq!(
             value["recipe"], "busbar.audit.digest.v7",
             "the envelope names this build's writer"
         );
-        value["recipe"] = serde_json::json!("busbar.audit.digest.v4");
+        value["recipe"] = json::json!("busbar.audit.digest.v4");
         value
     };
     assert_eq!(

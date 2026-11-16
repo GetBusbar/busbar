@@ -7,6 +7,8 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use busbar_contract::json;
+
 const CHILD: &str = "BUSBAR_ADMIN_GENERATION_CHILD";
 const WITNESS: &str = "actual root generation assertions completed";
 
@@ -164,7 +166,7 @@ async fn generation_etag_moves_on_write_and_if_match_guards() {
     let s = serve("generation-if-match", false).await;
     let before = s.get("/groups").send().await.unwrap();
     let etag = before.headers()["etag"].to_str().unwrap().to_string();
-    let body = serde_json::json!({"name": "user:ann", "config": {"parent": "team"}}).to_string();
+    let body = json::json!({"name": "user:ann", "config": {"parent": "team"}}).to_string();
     let wrote = s
         .send(reqwest::Method::POST, "/groups")
         .body(body)
@@ -182,7 +184,7 @@ async fn generation_etag_moves_on_write_and_if_match_guards() {
         .await
         .unwrap();
     assert_eq!(stale.status().as_u16(), 409);
-    let body: serde_json::Value = stale.json().await.unwrap();
+    let body = json::parse_value(&stale.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["reason"], "stale_if_match");
     let unquoted = s
         .send(reqwest::Method::DELETE, "/overlay/groups")
@@ -205,7 +207,7 @@ async fn require_if_match_428() {
         .await
         .unwrap();
     assert_eq!(refused.status().as_u16(), 428);
-    let body: serde_json::Value = refused.json().await.unwrap();
+    let body = json::parse_value(&refused.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["code"], "invalid_request");
     assert_eq!(body["error"]["reason"], "if_match_required");
     let etag = s.get("/groups").send().await.unwrap().headers()["etag"]
@@ -227,7 +229,7 @@ async fn require_if_match_428() {
 async fn idempotent_replay_every_mutation() {
     isolated!(CHILD, WITNESS, witness = "generation");
     let s = serve("idempotent-replay", false).await;
-    let body = serde_json::json!({"name": "user:zed", "config": {"parent": "team"}}).to_string();
+    let body = json::json!({"name": "user:zed", "config": {"parent": "team"}}).to_string();
     let first = s
         .send(reqwest::Method::POST, "/groups")
         .header("idempotency-key", "grp-1")
@@ -252,21 +254,22 @@ async fn idempotent_replay_every_mutation() {
     let different = s
         .send(reqwest::Method::POST, "/groups")
         .header("idempotency-key", "grp-1")
-        .body(serde_json::json!({"name": "user:other", "config": {"parent": "team"}}).to_string())
+        .body(json::json!({"name": "user:other", "config": {"parent": "team"}}).to_string())
         .send()
         .await
         .unwrap();
     assert_eq!(different.status().as_u16(), 409);
-    let refusal: serde_json::Value = different.json().await.unwrap();
+    let refusal = json::parse_value(&different.bytes().await.unwrap()).unwrap();
     assert_eq!(refusal["error"]["reason"], "idempotency_mismatch");
-    let operation: serde_json::Value = s
+    let operation = s
         .get("/operations/grp-1")
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let operation = json::parse_value(&operation).unwrap();
     assert_eq!(operation["state"], "applied");
     assert_eq!(operation["idempotency_key"], "grp-1");
     let missing = s.get("/operations/never-sent").send().await.unwrap();

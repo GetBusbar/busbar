@@ -591,7 +591,6 @@ dependencies = [
  "foldhash",
  "hex",
  "lexopt",
- "serde_json",
  "zeroize",
 ]
 
@@ -749,9 +748,11 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "rustls",
  "sonic-rs",
  "tikv-jemallocator",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "url",
  "zeroize",

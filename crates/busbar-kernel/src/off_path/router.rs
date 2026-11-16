@@ -38,6 +38,18 @@ pub(crate) fn base_data_router_scoped(
                 RouteMethod::Get,
                 RouteAuth::None,
                 endpoints::healthz,
+            )
+            .route(
+                crate::auth::LIVEZ_PATH,
+                RouteMethod::Get,
+                RouteAuth::None,
+                endpoints::livez,
+            )
+            .route(
+                crate::auth::READYZ_PATH,
+                RouteMethod::Get,
+                RouteAuth::None,
+                endpoints::readyz,
             );
 
         router

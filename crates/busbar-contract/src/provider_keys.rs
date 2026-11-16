@@ -34,7 +34,7 @@
 //! The loader reads this into `PlaneRegistration::provider_keys`; the kernel parses plane-owned
 //! provider values against these neutral shapes and carries the resulting values unread.
 
-use serde_json::{Map, Value};
+use crate::json::{JsonValueMutTrait as _, JsonValueTrait as _, Map, Value};
 
 /// THE STATEMENT-EXTENSIONS KEY a plane states its provider-key descriptor under
 pub const EXT_PROVIDER_KEYS: &str = "provider_keys";
@@ -124,15 +124,15 @@ pub struct ProviderKeys {
 #[must_use]
 pub fn encode(keys: &ProviderKeys) -> Vec<u8> {
     let mut doc = Map::new();
-    doc.insert("catalog".into(), table_value(&keys.catalog));
-    doc.insert("deployment".into(), table_value(&keys.deployment));
-    doc.insert("entry".into(), table_value(&keys.entry));
-    Value::Object(doc).to_string().into_bytes()
+    doc.insert("catalog", table_value(&keys.catalog));
+    doc.insert("deployment", table_value(&keys.deployment));
+    doc.insert("entry", table_value(&keys.entry));
+    Value::from(doc).to_string().into_bytes()
 }
 
 /// The descriptor `bytes` state.
 pub fn decode(bytes: &[u8]) -> Result<ProviderKeys, String> {
-    let doc: Value = serde_json::from_slice(bytes)
+    let doc: Value = crate::json::parse_value(bytes)
         .map_err(|e| format!("the provider keys are not JSON: {e}"))?;
     let doc = members(
         &doc,
@@ -156,53 +156,50 @@ pub fn stated(extensions: &[u8]) -> Result<Option<ProviderKeys>, String> {
 fn table_value(t: &Table) -> Value {
     let mut out = Map::new();
     if let Some(name) = &t.name {
-        out.insert("name".into(), Value::String(name.clone()));
+        out.insert("name", name.as_str());
     }
-    out.insert("deny_unknown".into(), Value::Bool(t.deny_unknown));
-    out.insert(
-        "keys".into(),
-        Value::Array(t.keys.iter().map(key_value).collect()),
-    );
-    Value::Object(out)
+    out.insert("deny_unknown", t.deny_unknown);
+    out.insert("keys", t.keys.iter().map(key_value).collect::<Value>());
+    Value::from(out)
 }
 
 fn key_value(k: &Key) -> Value {
     let mut out = Map::new();
-    out.insert("name".into(), Value::String(k.name.clone()));
-    out.insert("shape".into(), shape_value(&k.shape));
-    out.insert("required".into(), Value::Bool(k.required));
+    out.insert("name", k.name.as_str());
+    out.insert("shape", shape_value(&k.shape));
+    out.insert("required", k.required);
     if let Some(nullable) = k.nullable {
-        out.insert("nullable".into(), Value::Bool(nullable));
+        out.insert("nullable", nullable);
     }
-    Value::Object(out)
+    Value::from(out)
 }
 
 fn shape_value(s: &Shape) -> Value {
     let one = |word: &str, v: Value| {
         let mut out = Map::new();
-        out.insert(word.into(), v);
-        Value::Object(out)
+        out.insert(word, v);
+        Value::from(out)
     };
     match s {
-        Shape::Str => Value::String(SHAPE_STR.into()),
+        Shape::Str => Value::from(SHAPE_STR),
         Shape::OneOf(words) => one(
             SHAPE_ONE_OF,
-            Value::Array(words.iter().cloned().map(Value::String).collect()),
+            words.iter().map(String::as_str).collect::<Value>(),
         ),
-        Shape::Int => Value::String(SHAPE_INT.into()),
-        Shape::Bool => Value::String(SHAPE_BOOL.into()),
+        Shape::Int => Value::from(SHAPE_INT),
+        Shape::Bool => Value::from(SHAPE_BOOL),
         Shape::List(of) => one(SHAPE_LIST, shape_value(of)),
-        Shape::StrMap => Value::String(SHAPE_STR_MAP.into()),
+        Shape::StrMap => Value::from(SHAPE_STR_MAP),
         Shape::Table(t) => one(SHAPE_TABLE, table_value(t)),
     }
 }
 
 /// The members `names` of the object `v`, in that order: every one present, no other.
 fn members<'a>(v: &'a Value, at: &str, names: &[&str]) -> Result<Vec<&'a Value>, String> {
-    let Value::Object(m) = v else {
+    let Some(m) = v.as_object() else {
         return Err(format!("`{at}` is not an object"));
     };
-    if let Some(other) = m.keys().find(|k| !names.contains(&k.as_str())) {
+    if let Some(other) = m.iter().map(|(k, _)| k).find(|k| !names.contains(k)) {
         return Err(format!(
             "`{at}` states `{other}`, which is not one of {names:?}"
         ));
@@ -210,7 +207,7 @@ fn members<'a>(v: &'a Value, at: &str, names: &[&str]) -> Result<Vec<&'a Value>,
     names
         .iter()
         .map(|n| {
-            m.get(*n)
+            m.get(n)
                 .ok_or_else(|| format!("`{at}` does not state `{n}`"))
         })
         .collect()
@@ -223,13 +220,15 @@ fn bool_of(v: &Value, at: &str) -> Result<bool, String> {
 
 fn table_of(v: &Value, at: &str) -> Result<Table, String> {
     let mut base = v.clone();
-    let name = match base.as_object_mut().and_then(|m| m.remove("name")) {
-        Some(Value::String(name)) if !name.is_empty() => Some(name),
+    let name = match base.as_object_mut().and_then(|m| m.remove(&"name")) {
+        Some(name) if name.as_str().is_some_and(|name| !name.is_empty()) => {
+            name.as_str().map(str::to_owned)
+        }
         Some(_) => return Err(format!("`{at}.name` is not a non-empty string")),
         None => None,
     };
     let m = members(&base, at, &["deny_unknown", "keys"])?;
-    let Value::Array(list) = m[1] else {
+    let Some(list) = m[1].as_array() else {
         return Err(format!("`{at}.keys` is not a list"));
     };
     let mut keys: Vec<Key> = Vec::with_capacity(list.len());
@@ -249,7 +248,7 @@ fn table_of(v: &Value, at: &str) -> Result<Table, String> {
 
 fn key_of(v: &Value, at: &str) -> Result<Key, String> {
     let mut base = v.clone();
-    let nullable = match base.as_object_mut().and_then(|m| m.remove("nullable")) {
+    let nullable = match base.as_object_mut().and_then(|m| m.remove(&"nullable")) {
         Some(value) => Some(bool_of(&value, &format!("{at}.nullable"))?),
         None => None,
     };
@@ -273,17 +272,19 @@ fn shape_of(v: &Value, at: &str) -> Result<Shape, String> {
             SHAPE_WORDS.join(", ")
         )
     };
-    match v {
-        Value::String(word) => match word.as_str() {
+    if let Some(word) = v.as_str() {
+        return match word {
             SHAPE_STR => Ok(Shape::Str),
             SHAPE_INT => Ok(Shape::Int),
             SHAPE_BOOL => Ok(Shape::Bool),
             SHAPE_STR_MAP => Ok(Shape::StrMap),
             other => Err(not_neutral(other)),
-        },
-        Value::Object(m) if m.len() == 1 => {
+        };
+    }
+    match v.as_object() {
+        Some(m) if m.len() == 1 => {
             let (word, inner) = m.iter().next().ok_or_else(|| not_neutral(""))?;
-            match word.as_str() {
+            match word {
                 SHAPE_ONE_OF => one_of(inner, at).map(Shape::OneOf),
                 SHAPE_LIST => {
                     shape_of(inner, &format!("{at}.{SHAPE_LIST}")).map(|s| Shape::List(Box::new(s)))
@@ -299,7 +300,7 @@ fn shape_of(v: &Value, at: &str) -> Result<Shape, String> {
 }
 
 fn one_of(v: &Value, at: &str) -> Result<Vec<String>, String> {
-    let Value::Array(list) = v else {
+    let Some(list) = v.as_array() else {
         return Err(format!("`{at}.{}` is not a list", SHAPE_ONE_OF));
     };
     let mut words: Vec<String> = Vec::with_capacity(list.len());

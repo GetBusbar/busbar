@@ -4,6 +4,8 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use busbar_contract::json::{self, JsonValueTrait as _};
+
 use crate::root::test_plugins as plugins;
 
 #[tokio::test]
@@ -128,16 +130,17 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
     let client = reqwest::Client::new();
     let keys_url = format!("http://{addr}/api/v1/admin/keys");
 
-    let created: serde_json::Value = client
+    let created = client
         .post(&keys_url)
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "rotated"}))
+        .json(&json::json!({"name": "rotated"}))
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let created = json::parse_value(&created).unwrap();
     let id = created["id"].as_str().unwrap().to_string();
     let generation = async || {
         gov.all_keys_async()
@@ -167,7 +170,7 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
         .header("x-admin-token", "admintok")
         .header("content-type", "application/json")
         .header("idempotency-key", "stuck-mint")
-        .body(serde_json::json!({"name": "k"}).to_string())
+        .body(json::json!({"name": "k"}).to_string())
         .send()
         .await
         .unwrap();

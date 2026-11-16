@@ -6,9 +6,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use axum::http::StatusCode;
+use busbar_contract::json::{json, JsonValueTrait as _, Value};
 use busbar_contract::persistence::*;
 use busbar_kernel::state::AppHandle;
-use serde_json::{json, Value};
 use tokio::sync::Notify;
 
 use crate::root::test_plugins as plugins;
@@ -112,7 +112,7 @@ impl PersistenceBackend for Store {
             if key && self.refuse_write.load(Ordering::SeqCst) {
                 return Err(Failure::Refused);
             }
-            if self.fail_delete.load(Ordering::SeqCst) && candidate.candidate().mutations.iter().any(|mutation| matches!(mutation, Mutation::Put { address, value } if identity_key(address) && serde_json::from_slice::<Value>(value.expose(&busbar_kernel::seal::lend())).is_ok_and(|row| !row["record"]["deleted_at"].is_null()))) {
+            if self.fail_delete.load(Ordering::SeqCst) && candidate.candidate().mutations.iter().any(|mutation| matches!(mutation, Mutation::Put { address, value } if identity_key(address) && busbar_contract::json::parse_value(value.expose(&busbar_kernel::seal::lend())).is_ok_and(|row| !row["record"]["deleted_at"].is_null()))) {
                 return Err(Failure::Refused);
             }
             if key && self.pause_write.swap(false, Ordering::SeqCst) {
@@ -244,7 +244,8 @@ async fn app() -> (
     );
     let archive_sha256 = busbar_plugin_loader::sign::sha256_hex(&archive);
     std::fs::write(directory.join("store.tar.gz"), archive).unwrap();
-    let settings: Value = crate::root::test_plugins::application_store_settings(&directory);
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(settings.is_object());
     let oidc_path = common::plugins::token_verifier_cdylib_path().expect("actual OIDC artifact");
     let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
@@ -256,7 +257,7 @@ async fn app() -> (
     common::credentials::install_auth_plugin(&directory, &oidc_module, "custody-auth", false);
     let signing = directory.join("signing-key");
     std::fs::write(&signing, hex::encode([9u8; 32])).unwrap();
-    let deploy=busbar_kernel::config::deploy_from_deserializer(json!({
+    let deploy=busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers":{},"models":{},
         "identity-providers":{"custody-auth":{"module":oidc_module,"max_admin_scope":"full","settings":common::credentials::settings("api://admin-custody")}},
         "auth":{"chain":[],"admin_auth":["custody-auth"],"signing_key":{"file":signing},"role_bindings":{"custody-auth":{"custodians":{"admin_scope":"full"}}}},
@@ -379,7 +380,7 @@ fn create_replay_key(header: &str) -> String {
 }
 
 async fn body(response: axum::response::Response) -> Value {
-    serde_json::from_slice(
+    busbar_contract::json::parse_value(
         &axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap(),
@@ -544,7 +545,7 @@ async fn abandoned_rotate_finishes_replay_without_a_second_generation() {
         format!("/{id}/rotate"),
         "custody:rotate",
         Some("rotate"),
-        Value::Null,
+        Value::new(),
     ));
     signal(&store.write.entered).await;
     caller.abort();
@@ -567,7 +568,7 @@ async fn abandoned_rotate_finishes_replay_without_a_second_generation() {
         format!("/{id}/rotate"),
         "custody:rotate",
         Some("rotate"),
-        Value::Null,
+        Value::new(),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -613,7 +614,7 @@ async fn key_mutation_store_failures_each_record_a_refusal() {
         format!("/{id}/rotate"),
         "custody:rotate-error",
         None,
-        Value::Null,
+        Value::new(),
     )
     .await;
     let revoke = request(
@@ -622,7 +623,7 @@ async fn key_mutation_store_failures_each_record_a_refusal() {
         format!("/{id}/revoke"),
         "custody:revoke-error",
         None,
-        Value::Null,
+        Value::new(),
     )
     .await;
     let delete = request(
@@ -631,7 +632,7 @@ async fn key_mutation_store_failures_each_record_a_refusal() {
         format!("/{id}"),
         "custody:delete-error",
         None,
-        Value::Null,
+        Value::new(),
     )
     .await;
     for (actor, action, response) in [
@@ -662,7 +663,7 @@ async fn failed_delete_records_the_revocation_that_already_applied() {
         format!("/{id}"),
         "custody:partial-delete",
         None,
-        Value::Null,
+        Value::new(),
     )
     .await;
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
@@ -777,7 +778,7 @@ async fn lost_rotate_reply_does_not_release_a_committed_claim() {
         format!("/{id}/rotate"),
         "custody:lost-rotate",
         Some("lost"),
-        Value::Null,
+        Value::new(),
     )
     .await;
     assert_eq!(first.status(), StatusCode::INTERNAL_SERVER_ERROR);
@@ -820,7 +821,7 @@ async fn lost_rotate_reply_does_not_release_a_committed_claim() {
         format!("/{id}/rotate"),
         "custody:lost-rotate",
         Some("lost"),
-        Value::Null,
+        Value::new(),
     )
     .await;
     assert_eq!(retry.status(), StatusCode::CONFLICT);
@@ -860,7 +861,7 @@ async fn committed_mint_publishes_without_refresh_and_same_idempotency_cannot_mi
         format!("/{id}"),
         "custody:applied-refresh",
         None,
-        Value::Null,
+        Value::new(),
     )
     .await;
     assert_eq!(listed.status(), StatusCode::OK);

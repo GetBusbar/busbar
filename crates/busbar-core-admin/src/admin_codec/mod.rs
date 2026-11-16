@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! The admin surface's own declarations: its closed verb table, its one claim, and the frozen
 
 #![forbid(unsafe_code)]

@@ -5,8 +5,8 @@
 
 use crate::root::test_plugins as plugins;
 use axum::http::StatusCode;
+use busbar_contract::json::{self, JsonValueTrait as _, Value};
 use busbar_kernel::config::overlay::OverlayStore;
-use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -15,8 +15,9 @@ const PATCH_CAP: usize = 5_000_123;
 const TYPED_CAP: usize = 6_000_123;
 
 fn patch(path: &str, value: Value) -> Value {
-    let set = serde_json::Map::from_iter([(path.to_owned(), value)]);
-    json!({"document_patch": {"set": set, "remove": []}})
+    let mut set = json::Map::new();
+    set.insert(path, value);
+    json::json!({"document_patch": {"set": set, "remove": []}})
 }
 
 async fn put(
@@ -37,7 +38,7 @@ async fn put(
 async fn get(client: &reqwest::Client, endpoint: &str) -> Value {
     let response = client.get(endpoint).send().await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    response.json().await.unwrap()
+    json::parse_value(&response.bytes().await.unwrap()).unwrap()
 }
 
 fn configured_cap(body: &Value) -> usize {
@@ -149,7 +150,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
     let signing_key = directory.join("hidden-signing-reference");
     std::fs::write(&signing_key, hex::encode([9u8; 32])).unwrap();
     let plugin_config = plugins::trusted_config(&directory);
-    let mut document = json!({
+    let mut document = serde_json::json!({
         "providers": {}, "models": {},
         "auth": {"chain": [], "admin_auth": [], "signing_key": {"file": signing_key}},
         "store": {"module": module, "settings": plugins::application_store_settings(&directory)},
@@ -160,12 +161,12 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
     if phase == "sequences" || phase.starts_with("source-") {
         let key = directory.join("hidden-provider-key");
         std::fs::write(&key, "unused-provider-key").unwrap();
-        document["providers"] = json!({"spare": {"api_key": {"file": key}}});
-        document["models"] = json!({
+        document["providers"] = serde_json::json!({"spare": {"api_key": {"file": key}}});
+        document["models"] = serde_json::json!({
             "a": {"provider": "spare"}, "b": {"provider": "spare"},
             "c": {"provider": "spare"}, "d": {"provider": "spare"},
         });
-        document["pools"] = json!({"work": {
+        document["pools"] = serde_json::json!({"work": {
             "members": [{"model": "a", "weight": 1}, {"model": "b", "weight": 2, "tags": ["hidden-routing-tag"]}],
             "hooks": ["weighted"],
         }});
@@ -176,7 +177,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
             .unwrap()
             .remove("hooks");
     } else if phase == "source-init-null" {
-        document["pools"]["work"]["hooks"] = Value::Null;
+        document["pools"]["work"]["hooks"] = serde_json::Value::Null;
     }
     let config_path = directory.join("config.yaml");
     let providers_path = directory.join("providers.yaml");
@@ -280,31 +281,31 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
     let before = get(&client, &endpoint).await;
     let initial_version = before["config_version"].as_u64().unwrap();
     assert_eq!(configured_cap(&before), BASE_CAP);
-    assert_eq!(before["settings"], json!({}));
-    assert!(!serde_json::to_string(&before)
+    assert_eq!(before["settings"], json::json!({}));
+    assert!(!json::to_string(&before)
         .unwrap()
         .contains("hidden-signing-reference"));
 
     if phase == "source-init-absent" || phase == "source-init-null" || phase == "source-root-drift"
     {
-        document["pools"]["work"]["hooks"] = json!(["fastest"]);
+        document["pools"]["work"]["hooks"] = serde_json::json!(["fastest"]);
         let external = serde_json::to_vec_pretty(&document).unwrap();
         std::fs::write(&config_path, &external).unwrap();
         let stable = handle.load();
         let stable_bytes = overlay.read_bytes_async().await.unwrap();
         let requests = if phase == "source-root-drift" {
             vec![
-                patch("/pools/work/hooks", json!(["weighted"])),
-                patch("/pools/work/hooks", Value::Null),
-                json!({"document_patch": {"remove": ["/pools/work/hooks"]}}),
+                patch("/pools/work/hooks", json::json!(["weighted"])),
+                patch("/pools/work/hooks", json::Value::new()),
+                json::json!({"document_patch": {"remove": ["/pools/work/hooks"]}}),
                 patch(
                     "/pools",
-                    json!({"work": {"members": ["a"], "hooks": ["weighted"]}}),
+                    json::json!({"work": {"members": ["a"], "hooks": ["weighted"]}}),
                 ),
-                json!({"document_patch": {}, "reset_document_paths": ["/pools/work/hooks"]}),
+                json::json!({"document_patch": {}, "reset_document_paths": ["/pools/work/hooks"]}),
             ]
         } else {
-            vec![patch("/pools/work/hooks", json!(["weighted"]))]
+            vec![patch("/pools/work/hooks", json::json!(["weighted"]))]
         };
         for request in requests {
             let response = put(&client, &endpoint, initial_version, &request).await;
@@ -330,7 +331,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
             &client,
             &endpoint,
             handle.load().config_version,
-            &patch("/pools/work/hooks", json!(["weighted"])),
+            &patch("/pools/work/hooks", json::json!(["weighted"])),
         )
         .await;
         let status = response.status();
@@ -376,11 +377,11 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
             &client,
             &endpoint,
             initial_version,
-            &patch("/pools/work/members/0/weight", json!(19)),
+            &patch("/pools/work/members/0/weight", json::json!(19)),
         )
         .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
-        let refusal: Value = response.json().await.unwrap();
+        let refusal = json::parse_value(&response.bytes().await.unwrap()).unwrap();
         assert!(!refusal.to_string().contains("hidden-routing-tag"));
         assert!(Arc::ptr_eq(&stable, &handle.load()));
         assert_eq!(overlay.read_bytes_async().await.unwrap(), stable_bytes);
@@ -401,7 +402,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
                 &client,
                 &endpoint,
                 handle.load().config_version,
-                &patch("/pools/work/members/0/weight", json!(weight)),
+                &patch("/pools/work/members/0/weight", json::json!(weight)),
             )
             .await;
             let status = response.status();
@@ -443,19 +444,22 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
         assert_eq!(authored(&before)["members"]["entries"][1]["model"], "b");
         for (request, expected) in [
             (
-                patch("/pools/work/members/-", json!({"model": "c", "weight": 3})),
+                patch(
+                    "/pools/work/members/-",
+                    json::json!({"model": "c", "weight": 3}),
+                ),
                 vec!["a", "b", "c"],
             ),
             (
-                json!({"document_patch": {"set": {"/pools/work/members/2/weight": 7, "/pools/work/members/-": {"model": "d"}}}}),
+                json::json!({"document_patch": {"set": {"/pools/work/members/2/weight": 7, "/pools/work/members/-": {"model": "d"}}}}),
                 vec!["a", "b", "c", "d"],
             ),
             (
-                json!({"document_patch": {"set": {"/pools/work/hooks/0": {"strategy": "fastest"}}, "remove": ["/pools/work/members/0"]}}),
+                json::json!({"document_patch": {"set": {"/pools/work/hooks/0": {"strategy": "fastest"}}, "remove": ["/pools/work/members/0"]}}),
                 vec!["b", "c", "d"],
             ),
             (
-                patch("/pools/work/members/0/weight", json!(9)),
+                patch("/pools/work/members/0/weight", json::json!(9)),
                 vec!["b", "c", "d"],
             ),
         ] {
@@ -468,7 +472,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
                 .to_str()
                 .unwrap()
                 .to_owned();
-            let body: Value = response.json().await.unwrap();
+            let body = json::parse_value(&response.bytes().await.unwrap()).unwrap();
             assert_eq!(status, StatusCode::OK, "sequence response: {body}");
             assert_eq!(
                 etag,
@@ -494,7 +498,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
             &client,
             &endpoint,
             initial_version,
-            &patch("/pools/work/members/0/weight", json!(12)),
+            &patch("/pools/work/members/0/weight", json::json!(12)),
         )
         .await;
         assert_eq!(stale.status(), StatusCode::CONFLICT);
@@ -502,7 +506,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
             &client,
             &endpoint,
             stable.config_version,
-            &json!({"document_patch": {"set": {
+            &json::json!({"document_patch": {"set": {
                 "/pools/work/members/-": {"model": "a"}, "/pools/work/members/99/weight": 13,
             }}}),
         )
@@ -525,7 +529,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
         assert_eq!(view["members"]["entries"][1]["values"]["weight"], 7);
         assert_eq!(
             view["hooks"]["entries"][0]["entry"],
-            json!({"strategy": "fastest"})
+            json::json!({"strategy": "fastest"})
         );
         assert!(!current.to_string().contains("hidden-routing-tag"));
         let loaded = busbar_kernel::load_config_from_disk_with_store(
@@ -557,12 +561,12 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
     }
 
     // Exact additive wire form, using the boot schema's path and value.
-    let request = json!({"document_patch": {
+    let request = json::json!({"document_patch": {
         "set": {"/limits/request_body_max_bytes": 5000123, "/advanced/worker_threads": 3}, "remove": [],
     }, "providers_patch": {"set": {"/spare/base_url": "https://patched.example.com"}}});
     let response = put(&client, &endpoint, initial_version, &request).await;
     assert_eq!(response.status(), StatusCode::OK);
-    let body: Value = response.json().await.unwrap();
+    let body = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(body["persisted"], true);
     if phase == "persistence" {
         let report = &body["configuration"]["plane_refresh"];
@@ -570,7 +574,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
         assert_eq!(report["phase"], "observed");
         assert_eq!(
             report["planes"],
-            json!([
+            json::json!([
                 {"plane":"held-plane", "section":"held-section", "generation":7, "outcome":"retained", "failure":"bootstrap_held"},
                 {"plane":"failed-plane", "section":"failed-section", "generation":9, "outcome":"retained", "failure":"refresh_failed"},
                 {"plane":"installed-plane", "section":"installed-section", "generation":11, "outcome":"installed", "failure":null}
@@ -582,7 +586,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
         );
         assert_eq!(
             body["reload_to_apply"],
-            json!(["/advanced/worker_threads", "held-section"])
+            json::json!(["/advanced/worker_threads", "held-section"])
         );
         assert_eq!(boot_snapshot.plane_refresh.snapshot().phase, "unobserved");
         let installed = handle.load();
@@ -599,7 +603,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
     assert_eq!(body["configuration"]["state"], "restart_pending");
     assert_eq!(
         body["configuration"]["values"]["sections"]["provider_catalog"]["names"],
-        json!(["spare"])
+        json::json!(["spare"])
     );
     assert_eq!(configured_cap(&body), PATCH_CAP);
     assert!(overlay
@@ -620,7 +624,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
     assert_eq!(configured_cap(&after), PATCH_CAP);
     assert_eq!(
         after["settings"],
-        json!({}),
+        json::json!({}),
         "legacy root overrides remain a separate view"
     );
 
@@ -669,7 +673,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
             signing_key.to_string_lossy()
         )
     );
-    assert!(!serde_json::to_string(&get(&client, &endpoint).await)
+    assert!(!json::to_string(&get(&client, &endpoint).await)
         .unwrap()
         .contains("hidden-signing-reference"));
 
@@ -680,7 +684,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
         &client,
         &endpoint,
         handle.load().config_version,
-        &json!({
+        &json::json!({
             "document_patch": {"set": {"/providers_file": "alternate-providers.yaml"}},
             "reset_providers_paths": ["/spare/base_url"],
         }),
@@ -729,16 +733,16 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
             &client,
             &endpoint,
             initial_version,
-            &patch("/limits/request_body_max_bytes", json!(7_000_123)),
+            &patch("/limits/request_body_max_bytes", json::json!(7_000_123)),
         )
         .await;
         assert_eq!(stale.status(), StatusCode::CONFLICT);
         assert!(Arc::ptr_eq(&stable, &handle.load()));
         assert_eq!(overlay.read_bytes_async().await.unwrap(), stable_bytes);
         for invalid in [
-            patch("/limits/request_body_max_bytes", json!("invalid-cap")),
-            patch("/unknown-config-section", json!(true)),
-            json!({"document_patch": {"set": {"/per_request_fee": 13}},
+            patch("/limits/request_body_max_bytes", json::json!("invalid-cap")),
+            patch("/unknown-config-section", json::json!(true)),
+            json::json!({"document_patch": {"set": {"/per_request_fee": 13}},
             "providers_patch": {"remove": ["/spare/protocol"]}}),
         ] {
             let response = put(&client, &endpoint, stable.config_version, &invalid).await;
@@ -758,7 +762,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
             &client,
             &endpoint,
             stable.config_version,
-            &json!({
+            &json::json!({
                 "limits": {"request_body_max_bytes": TYPED_CAP},
             }),
         )
@@ -771,7 +775,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
             &client,
             &endpoint,
             typed_generation.config_version,
-            &patch("/limits/request_body_max_bytes", json!(8_000_123)),
+            &patch("/limits/request_body_max_bytes", json::json!(8_000_123)),
         )
         .await;
         assert_eq!(conflict.status(), StatusCode::CONFLICT);
@@ -784,7 +788,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
             &client,
             &endpoint,
             typed_generation.config_version,
-            &patch("/config/locked", json!(true)),
+            &patch("/config/locked", json::json!(true)),
         )
         .await;
         assert_eq!(lock.status(), StatusCode::OK);
@@ -795,7 +799,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
             &client,
             &endpoint,
             locked.config_version,
-            &patch("/per_request_fee", json!(3)),
+            &patch("/per_request_fee", json::json!(3)),
         )
         .await;
         assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
@@ -867,7 +871,7 @@ pub(super) struct EphemeralAdmin {
     pub(super) overlay: Arc<OverlayStore>,
     pub(super) config_path: std::path::PathBuf,
     pub(super) directory: std::path::PathBuf,
-    pub(super) document: Value,
+    pub(super) document: serde_json::Value,
     server: tokio::task::JoinHandle<()>,
 }
 
@@ -902,7 +906,7 @@ pub(super) async fn ephemeral_admin(
     );
     std::fs::write(directory.join("store.tar.gz"), archive).unwrap();
     let plugin_config = plugins::trusted_config(&directory);
-    let document = json!({
+    let document = serde_json::json!({
         "providers": {}, "models": {},
         "auth": {"chain": [], "admin_auth": []},
         "store": {"module": module, "settings": plugins::application_store_settings(&directory)},
@@ -1013,7 +1017,7 @@ async fn test_admin_v1_config_document_live_edit_not_blamed_for_config_yaml_expo
     let addr = fixture.addr;
     let endpoint = format!("http://{addr}/api/v1/admin/config/settings");
     let mut document = fixture.document.clone();
-    document["export"] = json!({"x": {
+    document["export"] = serde_json::json!({"x": {
         "module": "request-log-file",
         "settings": {"path": fixture.directory.join("x.jsonl").to_string_lossy()},
     }});
@@ -1034,17 +1038,17 @@ async fn test_admin_v1_config_document_live_edit_not_blamed_for_config_yaml_expo
         &client,
         &endpoint,
         fixture.handle.load().config_version,
-        &patch("/limits/request_body_max_bytes", json!(1_048_576)),
+        &patch("/limits/request_body_max_bytes", json::json!(1_048_576)),
     )
     .await;
     let status = response.status();
-    let body: Value = response.json().await.unwrap();
+    let body = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(status, StatusCode::OK, "a live edit is admitted: {body}");
-    assert_eq!(body["applied"], json!(true), "{body}");
+    assert_eq!(body["applied"], json::json!(true), "{body}");
     assert!(
         body["reload_to_apply"]
             .as_array()
-            .is_some_and(|paths| paths.contains(&json!("export.x"))),
+            .is_some_and(|paths| paths.contains(&json::json!("export.x"))),
         "the pending config.yaml export is still reported: {body}"
     );
     drop(fixture);
@@ -1111,17 +1115,17 @@ async fn test_admin_v1_config_settings_unopened_plane_write_refused_on_ephemeral
     for (form, body) in [
         (
             "document",
-            patch("/limits/request_body_max_bytes", json!(PLANE_MARKER)),
+            patch("/limits/request_body_max_bytes", json::json!(PLANE_MARKER)),
         ),
         (
             "typed",
-            json!({"limits": {"request_body_max_bytes": PLANE_MARKER}}),
+            json::json!({"limits": {"request_body_max_bytes": PLANE_MARKER}}),
         ),
     ] {
         let before = fixture.handle.load();
         let response = put(&client, &endpoint, before.config_version, &body).await;
         let status = response.status();
-        let refusal: Value = response.json().await.unwrap();
+        let refusal = json::parse_value(&response.bytes().await.unwrap()).unwrap();
         assert_eq!(
             status,
             StatusCode::CONFLICT,
@@ -1149,17 +1153,20 @@ async fn test_admin_v1_config_settings_unopened_plane_write_refused_on_ephemeral
         &client,
         &endpoint,
         fixture.handle.load().config_version,
-        &patch("/limits/request_body_max_bytes", json!(PLANE_MARKER + 1)),
+        &patch(
+            "/limits/request_body_max_bytes",
+            json::json!(PLANE_MARKER + 1),
+        ),
     )
     .await;
     let status = response.status();
-    let body: Value = response.json().await.unwrap();
+    let body = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(
         status,
         StatusCode::OK,
         "control: a live edit applies: {body}"
     );
-    assert_eq!(body["applied"], json!(true), "{body}");
+    assert_eq!(body["applied"], json::json!(true), "{body}");
     drop(fixture);
     println!("{WITNESS}");
 }

@@ -4,6 +4,8 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use busbar_contract::json::{self, JsonValueTrait as _};
+
 #[tokio::test]
 async fn test_admin_v1_mutation_rate_limit_config_class() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_558CB60B439F";
@@ -48,7 +50,7 @@ async fn test_admin_v1_mutation_rate_limit_config_class() {
             .post(format!("http://{addr}/api/v1/admin/config/rollback"))
             .header("x-admin-token", "admintok")
             .header("content-type", "application/json")
-            .body(serde_json::json!({"version": 424242}).to_string())
+            .body(json::json!({"version": 424242}).to_string())
             .send()
             .await
             .unwrap();
@@ -56,7 +58,7 @@ async fn test_admin_v1_mutation_rate_limit_config_class() {
             404 => continue,
             429 => {
                 assert!(i >= 11, "the budget is 10/min; limited too early at {i}");
-                let body: serde_json::Value = resp.json().await.unwrap();
+                let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
                 assert_eq!(body["error"]["code"], "rate_limited");
                 limited_at = Some(i);
                 break;
@@ -115,7 +117,7 @@ async fn test_admin_v1_put_auth_refuses_clearing_a_protected_chain() {
         .put(format!("http://{addr}/api/v1/admin/admin-auth"))
         .header("x-admin-token", "admintok")
         .header("content-type", "application/json")
-        .body(serde_json::json!({"admin_auth": []}).to_string())
+        .body(json::json!({"admin_auth": []}).to_string())
         .send()
         .await
         .unwrap();
@@ -124,7 +126,7 @@ async fn test_admin_v1_put_auth_refuses_clearing_a_protected_chain() {
         409,
         "protected admin authority cannot be removed through the API"
     );
-    let body: serde_json::Value = r.json().await.unwrap();
+    let body = json::parse_value(&r.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["code"], "conflict", "{body}");
 
     let r = client
@@ -189,7 +191,7 @@ async fn test_admin_v1_config_validate_dry_run() {
         .await
         .unwrap();
     assert_eq!(bad.status().as_u16(), 400);
-    let body: serde_json::Value = bad.json().await.unwrap();
+    let body = json::parse_value(&bad.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["code"], "invalid_request");
 
     let proposed = serde_json::json!({
@@ -210,7 +212,7 @@ async fn test_admin_v1_config_validate_dry_run() {
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 200);
-    let v: serde_json::Value = resp.json().await.unwrap();
+    let v = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
     assert_eq!(v["ok"], false, "config with a dangling provider is invalid");
     let errors = v["errors"].as_array().unwrap();
     assert!(!errors.is_empty(), "invalid config must report errors");
@@ -240,7 +242,7 @@ async fn test_admin_v1_config_validate_dry_run() {
         .await
         .unwrap();
     let st = resp.status().as_u16();
-    let v: serde_json::Value = resp.json().await.unwrap();
+    let v = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
     assert_eq!(st, 200, "{v}");
     assert_eq!(
         v["ok"], false,
@@ -316,7 +318,7 @@ async fn test_admin_v1_config_validate_accepts_1_6_0_additive_top_level_keys() {
         .await
         .unwrap();
     let status = resp.status().as_u16();
-    let body: serde_json::Value = resp.json().await.unwrap();
+    let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
     assert_eq!(
         status, 200,
         "a 1.6.0-additive top-level key must not be refused as a malformed request: {body}"
@@ -499,7 +501,7 @@ async fn test_admin_v1_overlay_reset_unknown_section_400() {
             .unwrap();
         assert_eq!(r.status().as_u16(), 400, "`{bad}` is not a valid section");
         assert_eq!(
-            r.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+            json::parse_value(&r.bytes().await.unwrap()).unwrap()["error"]["code"],
             "invalid_request"
         );
     }

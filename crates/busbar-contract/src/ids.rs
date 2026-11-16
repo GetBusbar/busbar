@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! The open vocabulary: the keys a plugin declares and the kernel dispatches on.
 
 use core::fmt;

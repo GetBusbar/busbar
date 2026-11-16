@@ -97,9 +97,11 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         .expect("the actual linked OpenAI provider dialect");
     let definitions = std::collections::HashMap::from([(
         "test-provider".to_string(),
-        serde_json::from_value::<busbar_kernel::config::ProviderDef>(serde_json::json!({
-            "protocol": protocol, "base_url": "http://127.0.0.1:1/",
-        }))
+        busbar_contract::json::from_value::<busbar_kernel::config::ProviderDef>(
+            &busbar_contract::json::json!({
+                "protocol": protocol, "base_url": "http://127.0.0.1:1/",
+            }),
+        )
         .expect("actual provider definition"),
     )]);
     document["providers"] = serde_json::json!({"test-provider":{"api_key":{"file":upstream_key}}});
@@ -109,7 +111,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
     let providers_path = dir.join("providers.json");
     std::fs::write(
         &providers_path,
-        serde_json::to_vec_pretty(&definitions).unwrap(),
+        busbar_contract::json::to_vec_pretty(&definitions).unwrap(),
     )
     .unwrap();
     std::fs::write(&config_path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
@@ -278,9 +280,11 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
         .expect("the actual linked OpenAI provider dialect");
     let definitions = std::collections::HashMap::from([(
         "test-provider".to_string(),
-        serde_json::from_value::<busbar_kernel::config::ProviderDef>(serde_json::json!({
-            "protocol": protocol, "base_url": "http://127.0.0.1:1/",
-        }))
+        busbar_contract::json::from_value::<busbar_kernel::config::ProviderDef>(
+            &busbar_contract::json::json!({
+                "protocol": protocol, "base_url": "http://127.0.0.1:1/",
+            }),
+        )
         .expect("actual provider definition"),
     )]);
     document["providers"] = serde_json::json!({"test-provider":{"api_key":{"file":upstream_key}}});
@@ -290,7 +294,7 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
     let providers_path = dir.join("providers.json");
     std::fs::write(
         &providers_path,
-        serde_json::to_vec_pretty(&definitions).unwrap(),
+        busbar_contract::json::to_vec_pretty(&definitions).unwrap(),
     )
     .unwrap();
     let mut disk = document.clone();
@@ -399,25 +403,27 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
         "models":{"broken":{"provider":"nope","max_concurrent":1}},
     });
     std::fs::write(&config_path, serde_json::to_vec_pretty(&invalid).unwrap()).unwrap();
-    let before: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/info")))
+    let before = admin(client.get(format!("http://{addr}/api/v1/admin/info")))
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let before = busbar_contract::json::parse_value(&before).unwrap();
     let bad = admin(client.post(format!("http://{addr}/api/v1/admin/config/reload")))
         .send()
         .await
         .unwrap();
     assert_eq!(bad.status().as_u16(), 400, "invalid disk config rejects");
-    let after: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/info")))
+    let after = admin(client.get(format!("http://{addr}/api/v1/admin/info")))
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let after = busbar_contract::json::parse_value(&after).unwrap();
     assert_eq!(
         before["config_version"], after["config_version"],
         "a rejected reload changes nothing"

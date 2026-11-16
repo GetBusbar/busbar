@@ -53,7 +53,7 @@ pub fn metadata_rendered(m: &Metadata<'_>) -> crate::plane_driver::Rendered {
         fields: crate::cold::host::ingress_metadata_fields(),
         body: Vec::with_capacity(128),
     };
-    serde_json::to_writer(&mut rendered.body, &doc).expect("metadata is a JSON value");
+    busbar_contract::json::to_writer(&mut rendered.body, &doc).expect("metadata is a JSON value");
     rendered
 }
 
