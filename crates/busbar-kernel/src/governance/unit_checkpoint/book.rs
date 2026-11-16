@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use busbar_contract::abi::sdk::expiry::Counted;
 
 use super::{RecoveryEvent, UnitCheckpoint, UnitTarget};
+use crate::persistence::journal::runtime::Carried;
 
 type Id = [u8; 16];
 /// bucket -> window -> number of recovered-entry targets naming it.
@@ -50,7 +51,8 @@ pub(super) struct Pending {
     snapshot: UnitCheckpoint,
     persisted: Option<u64>,
     recovered: bool,
-    audit_seq: Option<u64>,
+    /// The unit's live audit line, carried from the root's seal (SHUTDOWN-HANG F1a). RAM only.
+    audit: Option<Carried>,
 }
 
 /// One entry's custody facts at a non-retired exit (SHUTDOWN-HANG §5).
@@ -91,7 +93,7 @@ impl Pending {
             snapshot,
             persisted,
             recovered,
-            audit_seq: None,
+            audit: None,
         }
     }
 
@@ -109,7 +111,12 @@ impl Pending {
     }
 
     pub(super) fn audit_seq(&self) -> Option<u64> {
-        self.audit_seq
+        self.audit.map(|line| line.seq)
+    }
+
+    /// The audit line hint the flusher's removal carries into the audit confirmation.
+    pub(super) fn audit_hint(&self) -> Option<Carried> {
+        self.audit
     }
 }
 
@@ -280,6 +287,10 @@ impl PendingGuard<'_> {
         self.inner.entries.is_empty()
     }
 
+    pub(super) fn len(&self) -> usize {
+        self.inner.entries.len()
+    }
+
     pub(super) fn insert(&mut self, id: Id, entry: Pending) -> Option<Pending> {
         // Index the new entry before unindexing the one it replaces, so a target that stays
         // recovered never reads as unblocked in between.
@@ -330,7 +341,11 @@ impl PendingGuard<'_> {
 
     /// Records the live audit line for `unit` on its single live entry. Zero or several live
     /// entries is a counted miss, never a guess.
-    pub(super) fn note_unit_audit(&mut self, unit: u64, seq: u64) -> Result<(), UnitAuditMiss> {
+    pub(super) fn note_unit_audit(
+        &mut self,
+        unit: u64,
+        line: Carried,
+    ) -> Result<(), UnitAuditMiss> {
         let mut found = None;
         let mut several = false;
         for (_, id) in self
@@ -351,7 +366,7 @@ impl PendingGuard<'_> {
         match found {
             Some(id) if !several => {
                 if let Some(entry) = self.inner.entries.get_mut(&id) {
-                    entry.audit_seq = Some(seq);
+                    entry.audit = Some(line);
                 }
                 Ok(())
             }

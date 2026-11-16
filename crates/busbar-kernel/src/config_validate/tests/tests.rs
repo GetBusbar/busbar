@@ -2045,3 +2045,108 @@ fn no_mint_path_names_remedies_that_exist() {
         );
     }
 }
+
+/// SHUTDOWN-HANG F4/F4a: `advanced.shutdown.drain_timeout` and
+/// `advanced.governance.max_pending_checkpoints` read from YAML, default to 20 s and to 1,000
+/// per second of the budget, and refuse boot (never clamp) when unparseable or out of range.
+#[test]
+fn drain_settings_default_parse_and_refuse_out_of_range() {
+    use crate::config::limits::DrainSettings;
+    use std::time::Duration;
+    let read = |advanced: &str| {
+        let yaml = format!("providers: {{}}\nmodels: {{}}\n{advanced}");
+        let deploy = crate::config::deploy_from_yaml_str(&yaml, &crate::config::Grammar::empty())
+            .expect("the keys have the right types; validation judges the values");
+        let cfg = crate::config::resolve(&deploy, &HashMap::new()).expect("resolve the config");
+        let mut errors = Vec::new();
+        validate_limits(&cfg.limits, &mut errors);
+        (cfg.limits.drain_settings(), errors)
+    };
+
+    let (settings, errors) = read("");
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(
+        settings,
+        Ok(DrainSettings {
+            drain_timeout: Duration::from_secs(20),
+            max_pending_checkpoints: 20_000,
+        }),
+        "a config that sets neither key (every 1.5.5 config) takes the defaults"
+    );
+    assert_eq!(
+        crate::governance::drain::DEFAULT_MAX_PENDING_CHECKPOINTS,
+        20_000
+    );
+
+    let (settings, errors) = read("advanced:\n  shutdown:\n    drain_timeout: 30s\n");
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(
+        settings,
+        Ok(DrainSettings {
+            drain_timeout: Duration::from_secs(30),
+            max_pending_checkpoints: 30_000,
+        }),
+        "the cap's default follows the budget"
+    );
+
+    let (settings, errors) = read(
+        "advanced:\n  shutdown:\n    drain_timeout: 2m\n  governance:\n    max_pending_checkpoints: 7\n",
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(
+        settings,
+        Ok(DrainSettings {
+            drain_timeout: Duration::from_secs(120),
+            max_pending_checkpoints: 7,
+        })
+    );
+
+    let (_, errors) = read("advanced:\n  shutdown:\n    drain_timeout: 1s\n");
+    assert!(
+        errors.is_empty(),
+        "the floor itself is accepted: {errors:?}"
+    );
+
+    for (written, says) in [
+        ("0s", "is below the minimum of 1 s"),
+        ("soon", "is not a duration"),
+        ("1500ms", "is not a duration"),
+        ("20", "is not a duration"),
+    ] {
+        let (settings, errors) = read(&format!(
+            "advanced:\n  shutdown:\n    drain_timeout: \"{written}\"\n"
+        ));
+        assert!(
+            settings.is_err(),
+            "{written}: refused, never clamped to a default"
+        );
+        assert_eq!(errors.len(), 1, "{written}: {errors:?}");
+        assert!(
+            errors[0].contains(&format!("advanced.shutdown.drain_timeout '{written}'"))
+                && errors[0].contains(says)
+                && errors[0].contains("3117"),
+            "{written}: an explained BUSBAR-3117 refusal naming the key; got {errors:?}"
+        );
+    }
+
+    let (settings, errors) = read("advanced:\n  governance:\n    max_pending_checkpoints: 0\n");
+    assert!(settings.is_err());
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].contains("advanced.governance.max_pending_checkpoints is 0")
+            && errors[0].contains("3117"),
+        "{errors:?}"
+    );
+
+    for typo in [
+        "advanced:\n  shutdown:\n    drain_timout: 30s\n",
+        "advanced:\n  governance:\n    max_pending_checkpoint: 5\n",
+        "advanced:\n  governance:\n    max_pending_checkpoints: -1\n",
+    ] {
+        let yaml = format!("providers: {{}}\nmodels: {{}}\n{typo}");
+        assert!(
+            crate::config::deploy_from_yaml_str(&yaml, &crate::config::Grammar::empty()).is_err(),
+            "refused at parse: {typo}"
+        );
+    }
+}

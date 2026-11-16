@@ -1223,6 +1223,12 @@ async fn run(
     let admin_tls_cfg = cfg.admin_tls.clone();
     let req_body_max = cfg.limits.request_body_max_bytes;
     let max_inbound = cfg.limits.max_inbound_concurrent;
+    // `advanced.shutdown.drain_timeout` and `advanced.governance.max_pending_checkpoints`;
+    // validation already refused a value out of range, so this never clamps.
+    let drain_settings = cfg
+        .limits
+        .drain_settings()
+        .unwrap_or_else(|refusals| die_list("shutdown drain settings refused:", refusals));
 
     root::registry::check_or_exit(LINKED.claims);
 
@@ -1726,10 +1732,10 @@ async fn run(
         app_handle.attach_on_swap(spawn);
     }
 
-    // SHUTDOWN-HANG F4: one drain owner holds the budget from the first broadcast to exit.
-    let drain_clock = busbar_kernel::governance::drain::DrainClock::new(
-        busbar_kernel::governance::drain::DEFAULT_DRAIN_TIMEOUT,
-    );
+    // SHUTDOWN-HANG F4: one drain owner holds the budget from the first broadcast to exit. The
+    // budget and the terminal-backlog cap are `drain_settings`, read beside the other limits.
+    let drain_clock =
+        busbar_kernel::governance::drain::DrainClock::new(drain_settings.drain_timeout);
     let drain = root::shutdown::ShutdownDrain::new(Arc::clone(&drain_clock));
     let (shutdown_tx, _keep_open) = tokio::sync::broadcast::channel::<()>(1);
     // Persistence failure can request shutdown before a listener exists. A watch
@@ -1776,6 +1782,10 @@ async fn run(
     let _ = signal_handoff.send(());
 
     let governance = app_handle.load().governance.clone();
+    if let Some(gov) = &governance {
+        gov.admissions()
+            .set_cap(drain_settings.max_pending_checkpoints);
+    }
     let budget_flusher = governance.clone().map(|gov| {
         tokio::spawn(root::measurements::maintenance(
             busbar_kernel::governance::run_budget_flusher(

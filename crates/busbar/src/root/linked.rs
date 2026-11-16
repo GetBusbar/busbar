@@ -659,6 +659,8 @@ pub(crate) const HOST_SERIES: &[&str] = &[
     busbar_kernel::snapshot::PLUGIN_TEXT_CUT_TOTAL,
     busbar_kernel::snapshot::JOURNAL_QUARANTINED_TOTAL,
     busbar_kernel::snapshot::STORE_SLOTS,
+    busbar_kernel::snapshot::UNIT_CHECKPOINTS_TERMINAL,
+    busbar_kernel::snapshot::GOVERNED_ADMISSIONS_LIVE,
     busbar_kernel::snapshot::REQUESTS_TOTAL,
     busbar_kernel::snapshot::BREAKER_TRIPS_TOTAL,
     busbar_kernel::snapshot::FAILOVERS_TOTAL,

@@ -2212,6 +2212,10 @@ impl BookPreparation {
         )));
         let journal = self.journal.as_ref().unwrap().clone();
         let shared = self.shared.as_ref().unwrap();
+        shared
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .audit_hints = Some(Arc::downgrade(&self.governance));
         self.phase = BookPhase::AttachRecovery;
         self.governance
             .attach_recovery_sink(

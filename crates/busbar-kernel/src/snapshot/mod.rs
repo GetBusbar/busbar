@@ -202,6 +202,14 @@ pub const PLUGIN_TEXT_CUT_TOTAL: &str = "busbar_plugin_text_cut_total";
 
 pub const JOURNAL_QUARANTINED_TOTAL: &str = "busbar_journal_quarantined_total";
 
+/// Finished governed units whose spend still awaits settlement in the store (the admission gate's
+/// terminal backlog, SHUTDOWN-HANG F4a); `advanced.governance.max_pending_checkpoints` caps it.
+pub const UNIT_CHECKPOINTS_TERMINAL: &str = "busbar_unit_checkpoints_terminal";
+
+/// Governed admissions alive (an admission grant not yet released after its unit's terminal
+/// checkpoint was staged; SHUTDOWN-HANG F4a).
+pub const GOVERNED_ADMISSIONS_LIVE: &str = "busbar_governed_admissions_live";
+
 /// Store slot-queue gauge; `state` is free, in_flight, in_doubt, resolved_uncollected or reconcile,
 /// and the states add up to `pending_operations` (STORE-TRANSACTIONS §2.7).
 pub const STORE_SLOTS: &str = "busbar_store_slots";
@@ -570,6 +578,16 @@ fn describe() {
         POOL_QUEUED,
         Unit::Count,
         "Per-pool requests currently parked in the on_exhausted queue bounded wait (scrape-time)"
+    );
+    describe_gauge!(
+        UNIT_CHECKPOINTS_TERMINAL,
+        Unit::Count,
+        "Finished governed units whose spend awaits settlement in the store (the admission gate's terminal backlog, capped by advanced.governance.max_pending_checkpoints) (scrape-time)"
+    );
+    describe_gauge!(
+        GOVERNED_ADMISSIONS_LIVE,
+        Unit::Count,
+        "Governed admissions alive: released only after the unit's terminal checkpoint is staged (scrape-time)"
     );
 }
 

@@ -1998,7 +1998,23 @@ advanced:
   allow_destinations: []            # always allowed: hosts, `*.domain` wildcards, IPs, CIDRs
   trusted_proxies: []               # ingresses/load balancers whose forwarded client address is believed (IPs, CIDRs)
   forwarded_header: x-forwarded-for # the one header read from a trusted proxy: x-forwarded-for | forwarded
+  shutdown:
+    drain_timeout: 20s              # the shutdown drain budget, first signal to exit (>= 1s; never clamped)
+  governance:
+    max_pending_checkpoints: 20000  # finished governed requests awaiting settlement before new governed admission waits (>= 1; default 1,000 per second of drain_timeout)
 ```
+
+`shutdown.drain_timeout` bounds the whole shutdown drain, from the first SIGTERM (or admin restart) to
+exit. A quarter of it is a reserve: requests are cut at three quarters, then spend is settled, the
+audit tail sealed, the journal flushed and the writer retired inside the reserve. A second signal ends
+the drain at once. The exit is `0` when the writer retired, `75` when every completed request's spend
+is durable but running requests were cut (each listed on stderr as `open_at_exit`), and `70` when some
+completed spend is not durable (listed on stderr as evidence). `governance.max_pending_checkpoints`
+caps the finished governed requests whose spend still awaits settlement in the store: at the cap, a
+new governed request is refused with `503 durability_unavailable` and `Retry-After: 1` until the
+backlog falls (`busbar_unit_checkpoints_terminal`); running requests never count. Both are
+**boot-time** knobs; a value that does not parse or is out of range refuses boot (BUSBAR-3117) and is
+never clamped.
 
 `trusted_proxies` and `forwarded_header` decide **who sent a request** for the login attempt limiter
 and the admin door. A forwarding header is read only when the socket peer is inside

@@ -291,6 +291,7 @@ The thousands digit is the area.
 | [BUSBAR-8028](/docs/1.6/errors/BUSBAR-8028/) | A plugin's rotated credential could not be applied | 1.6.0 |
 | [BUSBAR-8029](/docs/1.6/errors/BUSBAR-8029/) | A plugin instance's scheduled tick failed | 1.6.0 |
 | [BUSBAR-8030](/docs/1.6/errors/BUSBAR-8030/) | Governed admission paused (draining, or finished requests await settlement) | 1.6.0 |
+| [BUSBAR-8031](/docs/1.6/errors/BUSBAR-8031/) | A unit checkpoint flush batch was refused whole; smaller batches were used | 1.6.0 |
 | [BUSBAR-8101](/docs/1.6/errors/BUSBAR-8101/) | The admin resource named in the request does not exist | 1.6.0 |
 | [BUSBAR-8102](/docs/1.6/errors/BUSBAR-8102/) | The admin request carries no valid admin credential | 1.6.0 |
 | [BUSBAR-8103](/docs/1.6/errors/BUSBAR-8103/) | The admin path does not take this HTTP method | 1.6.0 |

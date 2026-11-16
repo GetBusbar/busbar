@@ -2172,9 +2172,21 @@ impl Sealing {
                 ..busbar_kernel_audit::UnitFacts::default()
             },
         };
+        let unit = seal.key.get();
         let mut book = book.lock().unwrap_or_else(|poison| poison.into_inner());
         let journal = book.journal.clone();
         let (_, run) = book.stage_unit(inputs, seal.pass, token)?;
+        let hints = book.audit_hints.clone();
+        drop(book);
+        // The unit's checkpoint removal reads this one line by the evidence sealed here, not by a
+        // journal scan (SHUTDOWN-HANG F1a). A unit with no checkpoint entry is a counted miss.
+        if let Some(gov) = hints.as_ref().and_then(std::sync::Weak::upgrade) {
+            if gov.unit_checkpoints_enabled() {
+                if let Some(line) = run.carried().next() {
+                    gov.note_unit_audit(unit, line.seq, line.hash).ok();
+                }
+            }
+        }
         Ok(StagedAudit { journal, run })
     }
 }
