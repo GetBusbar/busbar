@@ -177,3 +177,94 @@ async fn synchronous_config_resolution_progresses_on_the_owned_io_executor() {
         b"owned-source-material"
     );
 }
+
+#[tokio::test]
+async fn a_later_open_does_not_change_the_prefix_captured_by_an_existing_need() {
+    let binder: Arc<dyn ConfigBinder> = Arc::new(Binder::new(Arc::new(BootRefs)));
+    let before = BootSecrets::empty(
+        binder,
+        Arc::new(busbar_plugin_loader::instance::SlotTable::new()),
+    );
+    let captured = super::BootCustody(Arc::clone(&before));
+    let after = before
+        .with_opened(
+            "later",
+            SecretSource {
+                instance: 21,
+                port: Port::new("later-material"),
+            },
+        )
+        .unwrap();
+    let reference = source("later", r#"{"key":"value"}"#);
+    assert_eq!(
+        resolved(&before, &reference).await,
+        Err(CustodyDenied::NoSuchSecretSource)
+    );
+    assert_eq!(
+        resolved(&captured.0, &reference).await,
+        Err(CustodyDenied::NoSuchSecretSource)
+    );
+    assert_eq!(
+        resolved(&after, &reference).await.as_deref(),
+        Ok("later-material")
+    );
+    assert!(after
+        .with_opened(
+            "later",
+            SecretSource {
+                instance: 22,
+                port: Port::new("replacement")
+            }
+        )
+        .is_err());
+    assert!(after
+        .with_opened(
+            "another",
+            SecretSource {
+                instance: 21,
+                port: Port::new("same-id")
+            }
+        )
+        .is_err());
+}
+
+#[tokio::test]
+async fn an_immutable_prefix_keeps_cycle_refusal_and_releases_its_ports_on_drop() {
+    use busbar_kernel::custody::SecretCustody;
+    use busbar_plugin_abi::host_side::caller::CallStack;
+    let binder: Arc<dyn ConfigBinder> = Arc::new(Binder::new(Arc::new(BootRefs)));
+    let before = BootSecrets::empty(
+        binder,
+        Arc::new(busbar_plugin_loader::instance::SlotTable::new()),
+    );
+    let port = Port::new("secret-material");
+    let weak = Arc::downgrade(&port);
+    let after = before
+        .with_opened("source", SecretSource { instance: 31, port })
+        .unwrap();
+    let cx = CallCx {
+        deadline: deadline(),
+        request_id: 0,
+        stack: CallStack::default().push(31).unwrap(),
+    };
+    let custody = super::BootCustody(Arc::clone(&after));
+    assert_eq!(
+        custody.resolve_ref(cx, &source("source", "{}")).await,
+        Err(CustodyDenied::Cycle)
+    );
+    let retired = after.without("source");
+    assert_eq!(
+        resolved(&retired, &source("source", "{}")).await,
+        Err(CustodyDenied::NoSuchSecretSource)
+    );
+    drop(after);
+    assert!(
+        weak.upgrade().is_some(),
+        "the captured prefix owns its live source lease"
+    );
+    drop(custody);
+    assert!(
+        weak.upgrade().is_none(),
+        "no leaked BootSecrets keeps the source alive"
+    );
+}
