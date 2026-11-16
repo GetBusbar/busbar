@@ -23,7 +23,12 @@ fn host_vt() -> String {
         env!("CARGO_MANIFEST_DIR"),
         "/../busbar-plugin-abi/src/host_side/host_vt.rs"
     );
-    std::fs::read_to_string(path).expect("host_vt.rs")
+    let source = std::fs::read_to_string(path).expect("host_vt.rs");
+    // The production half: the file's own test module names the banned words it checks for.
+    let end = source
+        .find("#[cfg(test)]\nmod tests")
+        .expect("the test module");
+    source[..end].to_owned()
 }
 
 /// Round 21 (d): `random` goes through `fill_checked`, never the facade's bare `fill`.

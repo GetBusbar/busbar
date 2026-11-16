@@ -23,9 +23,10 @@ name = "transport_fixture"
 path = "tests/fixtures/transport_fixture.rs"
 crate-type = ["cdylib"]
 
-[[example]]
+[[bin]]
 name = "carrier_target"
 path = "tests/fixtures/carrier_target.rs"
+required-features = ["target-http"]
 
 # The stream target's own line framer (its cdylib), and a stream target over it run as a process.
 [[example]]
@@ -33,9 +34,10 @@ name = "framer_fixture"
 path = "tests/fixtures/framer_fixture.rs"
 crate-type = ["cdylib"]
 
-[[example]]
+[[bin]]
 name = "framer_target"
 path = "tests/fixtures/framer_target.rs"
+required-features = ["target"]
 
 [[test]]
 name = "canary_scan"

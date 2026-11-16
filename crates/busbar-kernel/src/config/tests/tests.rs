@@ -1853,7 +1853,11 @@ role_bindings:
     assert_eq!(ad["contractors"].allowed_pools, Some(vec![]));
     assert_eq!(ad["everyone"].allowed_pools, None, "omitted = ALL pools");
 
-    assert_eq!(auth.admin_auth, [crate::config::operator_provider()]);
+    assert_eq!(
+        auth.admin_auth,
+        crate::config::default_admin_auth_names(),
+        "an omitted admin_auth is the default admin chain"
+    );
 }
 
 #[test]

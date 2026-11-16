@@ -249,8 +249,8 @@ pub const fn pack(session: bool, index: u32, generation: u32) -> Token {
 pub const fn unpack(t: Token) -> (bool, u32, u32) {
     (
         t & TOKEN_SESSION != 0,
-        ((t >> 32) as u32) & GEN_MAX,
         t as u32,
+        ((t >> 32) as u32) & GEN_MAX,
     )
 }
 
@@ -383,8 +383,8 @@ mod tests {
     #[test]
     fn tokens_pack_and_unpack() {
         let t = pack(true, 7, 3);
-        assert_eq!(unpack(t), (true, 3, 7));
-        assert_eq!(unpack(pack(false, 0, 1)), (false, 1, 0));
+        assert_eq!(unpack(t), (true, 7, 3));
+        assert_eq!(unpack(pack(false, 0, 1)), (false, 0, 1));
         assert_ne!(pack(false, 0, 1), 0, "a token is never 0");
         assert_eq!(page_of(0), (0, 0));
         assert_eq!(page_of(31), (0, 31));
