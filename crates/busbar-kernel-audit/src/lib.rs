@@ -107,6 +107,8 @@ pub mod stamp;
 // The audit signing capabilities (SEALING-FIX §5.3): consumed once at boot, used on the signer
 // threads only.
 pub mod grant;
+/// Per-boot notary certificates, signed by the Bootstrap capability.
+pub mod notary_key;
 // busbar:request-path
 #[cfg_attr(
     not(test),

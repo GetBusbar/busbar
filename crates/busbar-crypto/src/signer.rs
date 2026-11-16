@@ -145,6 +145,42 @@ impl Signer for LocalSigner {
     }
 }
 
+/// A fresh in-process notary key, private to this boot. The Bootstrap capability certifies its
+/// public key; this type never exposes the seed or the backend signing-key object.
+pub struct DelegatedSigner {
+    local: LocalSigner,
+}
+
+impl DelegatedSigner {
+    /// Generate a key through the linked backend. The backend wipes its temporary seed on both
+    /// success and failure and wipes the retained seed when the key is dropped.
+    pub fn generate() -> Result<Self, Error> {
+        let key = ed25519::SigningKey::generate()?;
+        let public = PublicKey::new(SigAlg::Ed25519, &key.verifying_key().to_bytes());
+        Ok(Self {
+            local: LocalSigner { key, public },
+        })
+    }
+}
+
+impl fmt::Debug for DelegatedSigner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DelegatedSigner")
+            .field("key_id", &self.local.public.key_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Signer for DelegatedSigner {
+    fn public_key(&self) -> &PublicKey {
+        self.local.public_key()
+    }
+
+    fn sign(&self, msg: &[u8], out: &mut Vec<u8>) -> Result<(), SignError> {
+        self.local.sign(msg, out)
+    }
+}
+
 /// Verify a seam signature: `Err(Mismatch)` for a bad signature, `Err(Invalid)` for any encoding
 /// other than the fixed ones (including a high-S P-256 signature).
 pub fn verify(key: &PublicKey, msg: &[u8], sig: &[u8]) -> Result<(), Error> {
