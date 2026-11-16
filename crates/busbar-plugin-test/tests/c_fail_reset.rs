@@ -74,8 +74,10 @@ mod fixture {
             if scope == SCOPE_FULL {
                 // Up to max_out: every record that fits is written; the first that does not is the `Full`
                 // returned (as F_LIMIT, `From<Full> for Fail`).
-                out.put(body, &[0xA5u8; 200])?;
-                return Ok(());
+                let chunk = [0xA5u8; 200];
+                loop {
+                    out.put(body, &chunk)?;
+                }
             }
             out.put_text(busbar_plugin_abi::export::tag::CONTENT_TYPE, "text/plain")?;
             out.put(body, b"ok")?;

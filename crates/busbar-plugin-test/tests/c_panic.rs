@@ -83,10 +83,10 @@ mod fixture {
     impl Open for Panicky {
         async fn open(_h: &'static Host, config: ChainBytes) -> Result<Self, Fail> {
             match config.with(open_mode)?.as_deref() {
-                Some("panic") => Ok(Panicky),
+                Some("panic") => panic!("C-PANIC: open panics in its start step"),
                 Some("resume-panic") => {
                     one_need().await;
-                    Ok(Panicky)
+                    panic!("C-PANIC: open panics in its resume")
                 }
                 _ => Ok(Panicky),
             }
@@ -116,11 +116,11 @@ mod fixture {
             batch: ChainBytes,
         ) -> Result<Reply, Fail> {
             if attempt == ATTEMPT_START_PANIC {
-                return Err(Fail::refused_because(R_CONFIG, "red: no panic yet"));
+                panic!("C-PANIC: deliver panics in its start step");
             }
             if attempt == ATTEMPT_RESUME_PANIC {
                 one_need().await;
-                return Err(Fail::refused_because(R_CONFIG, "red: no panic yet"));
+                panic!("C-PANIC: deliver panics in its resume");
             }
             let accepted = batch.with(|bytes| {
                 Records::new(bytes)
@@ -145,7 +145,7 @@ mod fixture {
             out: &mut Out<'_>,
         ) -> Result<(), Fail> {
             if scope == SCOPE_PANIC {
-                return Err(Fail::refused_because(R_CONFIG, "red: no panic yet"));
+                panic!("C-PANIC: render panics");
             }
             out.put_text(busbar_plugin_abi::export::tag::CONTENT_TYPE, "text/plain")?;
             out.put(busbar_plugin_abi::export::tag::BODY, b"ok")?;
@@ -174,8 +174,8 @@ mod fixture {
                 Ok(())
             }
 
-            fn describe(d: &mut Describe<'_>) {
-                d.schema(r#"{"type":"object"}"#);
+            fn describe(_d: &mut Describe<'_>) {
+                panic!("C-PANIC: describe panics");
             }
         }
 

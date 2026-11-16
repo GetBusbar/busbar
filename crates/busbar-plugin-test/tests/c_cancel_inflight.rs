@@ -131,7 +131,7 @@ impl Needs for YieldNeeds {
         res: &mut NeedOut<'_>,
     ) -> impl Future<Output = Result<(), NeedErr>> + Send {
         Late {
-            parked: true,
+            parked: false,
             answer: Box::pin(<FakeNeeds as Needs>::fetch(&self.inner, cx, n, res)),
         }
     }
