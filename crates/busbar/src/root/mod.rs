@@ -254,6 +254,7 @@ pub mod policy;
 pub mod principal_transition;
 pub mod registry;
 // busbar:request-path
+pub(crate) mod secret_custody;
 #[cfg_attr(
     not(test),
     deny(
