@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use super::*;
 use crate::admin_state::AppAdmin as _;
 use crate::v1::service::manifest_schema;
@@ -2292,11 +2295,10 @@ pub(crate) async fn reload_config(
             installed.record_version(&actor, "config.reload (from disk)");
             let mut body = json!({ "reloaded": true, "config_version": installed.config_version });
 
-            if let Some(note) =
-                super::named_map::restart_note(&[], &installed.planes_awaiting_restart)
-            {
-                body["reload_to_apply"] = json!(installed.planes_awaiting_restart);
-                body["note"] = json!(note);
+            let pending = super::config_document::configuration_and_restart(&installed).1;
+            if !pending.is_empty() {
+                body["reload_to_apply"] = json!(pending);
+                body["note"] = json!("configuration installed; reload_to_apply entries require a process restart before they take effect");
             }
             with_config_etag(ok_json(StatusCode::OK, &body), installed.config_version)
         }
@@ -2602,14 +2604,10 @@ pub(crate) async fn apply_config(
                          by updating config.yaml",
             });
 
-            if let Some(pending) =
-                super::named_map::restart_note(&[], &installed.planes_awaiting_restart)
-            {
-                body["reload_to_apply"] = json!(installed.planes_awaiting_restart);
-                body["note"] = json!(format!(
-                    "live until the next reload/restart returns to disk truth; persist by \
-                     updating config.yaml; {pending}"
-                ));
+            let pending = super::config_document::configuration_and_restart(&installed).1;
+            if !pending.is_empty() {
+                body["reload_to_apply"] = json!(pending);
+                body["note"] = json!("configuration installed; reload_to_apply entries require a process restart before they take effect. Persist by updating config.yaml before restarting; reload/restart returns to disk truth");
             }
             with_config_etag(ok_json(StatusCode::OK, &body), installed.config_version)
         }
@@ -3349,6 +3347,7 @@ pub(crate) async fn plugin_schema(
         );
         if let Some(row) = loadable.as_ref() {
             selection["configuration"] = loaded_plugin_configuration(&current, row);
+            selection["trust"] = json!(loaded_image_trust(&current, row));
         }
         return ok_json(StatusCode::OK, &selection);
     }
@@ -3358,7 +3357,7 @@ pub(crate) async fn plugin_schema(
         }
         return err_json(&AdminError::not_found(format!("plugin `{name}`")));
     };
-    let trust = verdict_trust(&loadable.trust);
+    let trust = loaded_image_trust(&current, &loadable);
     let (schema, schema_error) = manifest_schema(loadable.settings_schema.as_deref());
     ok_json(
         StatusCode::OK,
@@ -3430,10 +3429,10 @@ fn hook_schema_selection(
     restart_required_default: Option<bool>,
 ) -> serde_json::Value {
     if described.is_some() {
-        return json!({ "name": name, "schema": described, "schema_error": null, "trust": trust, "source": "describe", "kind": kind, "restart_required_default": restart_required_default });
+        return json!({ "name": name, "schema": described, "schema_error": null, "trust": crate::v1::contract::PluginTrustView::from_verification(false, if trust == "trusted" {"trusted"} else if trust == "rejected" {"rejected"} else {"unverified"}, &Default::default()), "source": "describe", "kind": kind, "restart_required_default": restart_required_default });
     }
     let (schema, schema_error) = manifest_schema(settings_schema);
-    json!({ "name": name, "schema": schema, "schema_error": schema_error, "trust": trust, "source": fallback_source, "kind": kind, "restart_required_default": restart_required_default })
+    json!({ "name": name, "schema": schema, "schema_error": schema_error, "trust": crate::v1::contract::PluginTrustView::from_verification(false, if trust == "trusted" {"trusted"} else if trust == "rejected" {"rejected"} else {"unverified"}, &Default::default()), "source": fallback_source, "kind": kind, "restart_required_default": restart_required_default })
 }
 
 #[cfg(test)]
@@ -5126,11 +5125,12 @@ pub(crate) fn openapi_for_configured_planes(
     committed: &str,
     configured: impl Fn(&str) -> bool,
 ) -> Option<String> {
-    let mut doc: serde_json::Value = serde_json::from_str(committed).ok()?;
+    use busbar_contract::json::{self, JsonValueMutTrait as _, JsonValueTrait as _};
+    let mut doc = json::parse_value(committed.as_bytes()).ok()?;
     let reachable_before = openapi_reachable_schemas(&doc);
     let mut dropped = false;
     let paths = doc.get_mut("paths")?.as_object_mut()?;
-    for item in paths.values_mut() {
+    for (_, item) in paths.iter_mut() {
         let Some(item) = item.as_object_mut() else {
             continue;
         };
@@ -5152,37 +5152,37 @@ pub(crate) fn openapi_for_configured_planes(
     }
     paths.retain(|_, item| {
         item.as_object()
-            .is_some_and(|o| o.keys().any(|k| !k.starts_with("x-")))
+            .is_some_and(|o| o.iter().any(|(k, _)| !k.starts_with("x-")))
     });
     let reachable_after = openapi_reachable_schemas(&doc);
-    if let Some(schemas) = doc
-        .pointer_mut("/components/schemas")
-        .and_then(|s| s.as_object_mut())
+    if let Some(schemas) =
+        json::pointer_mut(&mut doc, "/components/schemas").and_then(|s| s.as_object_mut())
     {
         schemas
             .retain(|name, _| !reachable_before.contains(name) || reachable_after.contains(name));
     }
-    serde_json::to_string_pretty(&doc)
+    json::to_string_pretty(&doc)
         .ok()
         .map(|text| format!("{text}\n"))
 }
 
-fn openapi_reachable_schemas(doc: &serde_json::Value) -> std::collections::BTreeSet<String> {
-    fn refs(v: &serde_json::Value, out: &mut Vec<String>) {
-        match v {
-            serde_json::Value::Object(map) => {
-                if let Some(r) = map.get("$ref").and_then(|r| r.as_str()) {
-                    if let Some(name) = r.strip_prefix("#/components/schemas/") {
-                        out.push(name.to_string());
-                    }
+fn openapi_reachable_schemas(
+    doc: &busbar_contract::json::Value,
+) -> std::collections::BTreeSet<String> {
+    use busbar_contract::json::{self, JsonValueTrait as _};
+    fn refs(v: &json::Value, out: &mut Vec<String>) {
+        if let Some(map) = v.as_object() {
+            if let Some(r) = map.get(&"$ref").and_then(|r| r.as_str()) {
+                if let Some(name) = r.strip_prefix("#/components/schemas/") {
+                    out.push(name.to_string());
                 }
-                map.values().for_each(|v| refs(v, out));
             }
-            serde_json::Value::Array(items) => items.iter().for_each(|v| refs(v, out)),
-            _ => {}
+            map.iter().for_each(|(_, v)| refs(v, out));
+        } else if let Some(items) = v.as_array() {
+            items.iter().for_each(|v| refs(v, out));
         }
     }
-    let schemas = doc.pointer("/components/schemas");
+    let schemas = json::pointer(doc, "/components/schemas");
     let mut pending = Vec::new();
     if let Some(paths) = doc.get("paths") {
         refs(paths, &mut pending);
@@ -5190,7 +5190,7 @@ fn openapi_reachable_schemas(doc: &serde_json::Value) -> std::collections::BTree
     let mut seen = std::collections::BTreeSet::new();
     while let Some(name) = pending.pop() {
         if seen.insert(name.clone()) {
-            if let Some(schema) = schemas.and_then(|s| s.get(&name)) {
+            if let Some(schema) = schemas.and_then(|s| s.get(name.as_str())) {
                 refs(schema, &mut pending);
             }
         }
@@ -5300,6 +5300,10 @@ fn empty_chain_refusal(operator: &str) -> AdminError {
 #[path = "tests/patch_tests.rs"]
 mod patch_tests;
 
+#[cfg(test)]
+#[path = "tests/group_limit_removed_keys.rs"]
+mod group_limit_removed_keys;
+
 #[cfg(feature = "test-support")]
 pub fn credential_flush_response_for_test(
     result: Result<u64, String>,
@@ -5394,4 +5398,18 @@ mod archive_precondition_contract_tests {
                 .any(|p| p == field));
         }
     }
+}
+
+fn loaded_image_trust(
+    app: &busbar_kernel::state::App,
+    row: &busbar_contract::plugin_rows::Row,
+) -> crate::v1::contract::PluginTrustView {
+    crate::v1::contract::PluginTrustView::from_verification(
+        app.hook_env.registry.signature_present(&row.name),
+        verdict_trust(&row.trust),
+        &app.hook_env
+            .registry
+            .verification(&row.name)
+            .unwrap_or_default(),
+    )
 }

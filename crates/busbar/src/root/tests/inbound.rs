@@ -9,7 +9,7 @@ use busbar_contract::abi::host::service::{
 };
 use busbar_kernel::guest::{GuestList, Matched};
 use busbar_kernel::inbound::{self as kin, Inbound};
-use serde_json::Value;
+use json::Value;
 
 use crate::root::loader::dispatch::auth_handle::{self, RefSpace};
 
@@ -28,8 +28,7 @@ fn captured_rates() -> std::collections::BTreeMap<String, busbar_kernel::config:
         input_utok: 1.0,
         ..Default::default()
     };
-    let free =
-        serde_json::from_value(serde_json::json!(0)).expect("an exact explicit free unit price");
+    let free = json::from_value(&json::json!(0)).expect("an exact explicit free unit price");
     for class in plane.billable_classes {
         if !busbar_contract::records::RESERVED_UNITS.contains(&class.class)
             && !plane.fee_units.contains(&class.class)
@@ -108,7 +107,7 @@ async fn app_generation(
     std::fs::write(&operator_token, "actual-inbound-operator")
         .expect("write the real operator credential");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "public_url": "https://gw.example",
         "providers": {},
         "models": {},
@@ -117,7 +116,7 @@ async fn app_generation(
         "store": { "module": module, "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": {"file": operator_token},
     });
     if reader {
@@ -135,20 +134,20 @@ async fn app_generation(
             "body-cap-reader",
             true,
         );
-        document["identity-providers"]["body-cap-reader"] = serde_json::json!({
+        document["identity-providers"]["body-cap-reader"] = json::json!({
             "module": module,
             "settings": crate::test_common::credentials::settings("api://inbound-body-cap"),
             "max_admin_scope": "read-only",
         });
-        document["auth"]["admin_auth"] = serde_json::json!(["body-cap-reader", operator]);
-        document["auth"]["role_bindings"] = serde_json::json!({
+        document["auth"]["admin_auth"] = json::json!(["body-cap-reader", operator]);
+        document["auth"]["role_bindings"] = json::json!({
             "body-cap-reader": {"readers": {"admin_scope": "read-only"}},
         });
     }
     let mut providers = Default::default();
     if with_llm {
         let dialects: Value =
-            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+            json::parse_value(include_str!("fixtures/plane_node_dialects.json").as_bytes())
                 .expect("the actual linked model dialect fixture reads");
         let dialect = dialects["body_model"]
             .as_object()
@@ -162,16 +161,16 @@ async fn app_generation(
             &crate::root::boot::axis_test_grammar(),
         )
         .expect("the actual context provider has its catalogue declaration");
-        document["providers"] = serde_json::json!({"wire": {
+        document["providers"] = json::json!({"wire": {
             "protocol": dialect, "base_url": "http://127.0.0.1:9", "api_key": {"file": credential}
         }});
-        document["models"] = serde_json::json!({"priced-context": {"provider": "wire"}});
-        document["pools"] = serde_json::json!({});
+        document["models"] = json::json!({"priced-context": {"provider": "wire"}});
+        document["pools"] = json::json!({});
         document["rate_card"] =
-            serde_json::to_value(captured_rates()).expect("the actual complete card serializes");
+            json::to_value(&captured_rates()).expect("the actual complete card serializes");
     }
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the product deployment parses");
@@ -361,7 +360,7 @@ fn golden(name: &str) -> Value {
         env!("CARGO_MANIFEST_DIR")
     );
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
-    serde_json::from_str(&text).expect("a golden cell is JSON")
+    json::parse_value(text.as_bytes()).expect("a golden cell is JSON")
 }
 
 fn field<'a>(r: &'a kin::Refusal, name: &str) -> Option<&'a str> {
@@ -395,7 +394,7 @@ fn differences(r: &kin::Refusal, name: &str) -> Vec<String> {
             }
         }
     }
-    match serde_json::from_slice::<Value>(&r.body) {
+    match json::parse_value(&r.body) {
         Ok(mut body) => {
             if body.get("request_id").is_some() {
                 body["request_id"] = Value::from("<ID>");
@@ -423,7 +422,7 @@ fn crosscut(family: &str) -> Vec<(String, kin::Head, bool)> {
         env!("CARGO_MANIFEST_DIR")
     );
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
-    let cells: Value = serde_json::from_str(&text).expect("the cell catalogue is JSON");
+    let cells: Value = json::parse_value(text.as_bytes()).expect("the cell catalogue is JSON");
     let prefix = format!("http.crosscut|{family}|");
     cells["cells"]
         .as_array()
@@ -464,7 +463,7 @@ fn captured_request(name: &str) -> Value {
         env!("CARGO_MANIFEST_DIR")
     );
     let catalogue: Value =
-        serde_json::from_slice(&std::fs::read(path).expect("the actual request catalogue reads"))
+        json::parse_value(&std::fs::read(path).expect("the actual request catalogue reads"))
             .expect("the request catalogue is JSON");
     catalogue["cells"]
         .as_array()
@@ -572,7 +571,7 @@ fn assert_current_admin_body_cap(response: &kin::Refusal) {
     assert_eq!(field(response, "content-type"), Some("application/json"));
     assert_eq!(field(response, "cache-control"), Some("no-store"));
     let body: Value =
-        serde_json::from_slice(&response.body).expect("the current admin cap response is JSON");
+        json::parse_value(&response.body).expect("the current admin cap response is JSON");
     assert_eq!(body["error"]["code"], "request_too_large");
 }
 

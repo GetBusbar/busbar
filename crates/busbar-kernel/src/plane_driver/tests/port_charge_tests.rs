@@ -10,10 +10,10 @@ use std::sync::Mutex;
 
 use busbar_plugin_abi::fail::FaultReason;
 use busbar_plugin_abi::host_side::caller::BoxFut;
-use busbar_plugin_loader::ports::plane::{
+use busbar_ports::plane::{
     PlaneIn, PlaneOut, PlanePort, PlaneSession, RouteInfo, TargetIn, UsageClass,
 };
-use busbar_plugin_loader::ports::{CallCx, PortError};
+use busbar_ports::{CallCx, PortError};
 
 use super::{charge, fault_of};
 use crate::plane_driver::port_session::{Origin, SessionError, Violation};

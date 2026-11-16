@@ -419,7 +419,9 @@ fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
         if p.is_dir() {
             if !matches!(
                 name.to_str(),
-                Some("target" | ".git" | "vendor" | "node_modules")
+                // `.cargo-home` / `.cargo`: a repository-local CARGO_HOME (CI caches it inside the
+                // checkout), whose registry and git checkouts are third-party sources.
+                Some("target" | ".git" | "vendor" | "node_modules" | ".cargo-home" | ".cargo")
             ) {
                 sources(&p, out);
             }

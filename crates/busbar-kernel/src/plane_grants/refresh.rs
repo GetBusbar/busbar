@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use busbar_plugin_abi::host_side::caller::BoxFut;
-use busbar_plugin_loader::ports::auth::AuthPort;
-use busbar_plugin_loader::ports::{CallCx, PortError};
+use busbar_ports::auth::AuthPort;
+use busbar_ports::{CallCx, PortError};
 use tokio::sync::OnceCell;
 use tokio::time::Instant;
 

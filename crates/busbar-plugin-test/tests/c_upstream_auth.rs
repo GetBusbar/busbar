@@ -9,7 +9,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K8B"]
+#[ignore = "owner: W1-K8B; re-checked 2026-11-16, W2-SW-AUTH: the core arms (d)-(h) are covered by busbar-kernel auth_bindings/tests.rs, but bind_upstreams (auth_bindings/upstream.rs:139) has no production caller, so the kernel config path does not resolve upstream bindings until the auth switch-over (draft MR !2481); (a)-(c), (i) and (l) need the plane-mcp, plane-a2a, auth-header and auth-oauth images (W2-SW-PLANE, #217, draft MR !2480); (j) and (k) need a plane and an auth image to describe through"]
 fn core_config_and_refusal_arms() {
     todo!("owner: W1-K8B (C-UPSTREAM-AUTH)")
 }

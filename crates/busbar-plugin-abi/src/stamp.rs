@@ -15,16 +15,16 @@ use crate::versions::{ENGINE, EngineVersion, MECHANISM};
 #[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct Stamp {
     pub magic: [u8; 16],           //   0  b"BUSBAR\0PLUGSTAMP"
-    pub format: u32, //  16  2 (round 28: the licence fields are gone; scan refuses format 1)
-    pub size: u32,   //  20  272
-    pub kind: u32,   //  24  KindCode
-    pub kind_abi: u32, //  28  versions::<KIND>
-    pub mechanism: u32, //  32  versions::MECHANISM (2)
-    pub flags: u32,  //  36  STAMP_*
-    pub layout: u64, //  40  <kind>::FP
-    pub mechanism_layout: u64, //  48  CORE_FP
-    pub semantic: u64, //  56  == layout (docs are hashed inside FP)
-    pub mechanism_semantic: u64, //  64  == mechanism_layout
+    pub format: u32,               //  16  2 (scan refuses format 1)
+    pub size: u32,                 //  20  272
+    pub kind: u32,                 //  24  KindCode
+    pub kind_abi: u32,             //  28  versions::<KIND>
+    pub mechanism: u32,            //  32  versions::MECHANISM (2)
+    pub flags: u32,                //  36  STAMP_*
+    pub layout: u64,               //  40  <kind>::FP
+    pub mechanism_layout: u64,     //  48  CORE_FP
+    pub semantic: u64,             //  56  == layout (docs are hashed inside FP)
+    pub mechanism_semantic: u64,   //  64  == mechanism_layout
     pub engine_min: EngineVersion, //  72
     pub engine_max: EngineVersion, //  80
     pub name: [u8; 64], //  88  plugin identity (CARGO_PKG_NAME of the logic crate | name: arm | BUSBAR_PLUGIN_NAME)

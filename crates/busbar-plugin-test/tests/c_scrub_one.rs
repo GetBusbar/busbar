@@ -31,7 +31,7 @@ fn the_scrub_set_and_mask_url_agree_and_strip_userinfo_drops_it() {
 }
 
 #[test]
-#[ignore = "owner: W1-C1A"]
+#[ignore = "owner: W1-C1A; blocked (re-checked on dev 2026-11-16): the connector's URL masking (busbar-core-connector off_path/egress.rs redact_userinfo) is its own code, not abi::host::scrub (C1's 'redact_userinfo onto abi::host::scrub' is not on dev; busbar-kernel-egress trust/net.rs already delegates to scrub::mask_url), so the outputs do not agree by construction yet; the arm spans config_validate (busbar-kernel), busbar-kernel-egress and the connector, none a dependency of this crate"]
 fn config_validate_egress_and_connector_masking_agree_on_the_corpus() {
     todo!("owner: W1-C1A (C-SCRUB-ONE)")
 }

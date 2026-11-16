@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 use crate::appbuild::{load_config_from_disk, load_config_from_disk_with_store, AcceptAll};
 use crate::config::overlay::{persist_root_async, RootSettings};
+use busbar_contract::json;
 use busbar_contract::persistence::{
     BackendInfo, Call, ClockObservation, DatasetId, Decision, Failure, Page, PersistenceBackend,
     PreparedCandidate, Read, ReadResult, Scan,
@@ -190,7 +191,7 @@ async fn locked_reload_never_reads_the_overlay_even_when_its_store_is_unreadable
 #[test]
 fn bootstrap_dependency_closure_uses_declared_reference_paths_and_canonical_identities() {
     let deploy = crate::config::deploy_from_deserializer(
-        serde_json::json!({
+        &json::json!({
             "providers": {}, "models": {},
             "auth": {"chain": [], "admin_auth": []},
             "store": {"module": "store-alias", "settings": {
@@ -280,7 +281,7 @@ fn malformed_and_conflicting_bootstrap_pins_cannot_authorize_native_code() {
 #[test]
 fn core_secret_modules_names_each_of_cores_own_references_once_and_not_the_stores() {
     let deploy = crate::config::deploy_from_deserializer(
-        serde_json::json!({
+        &json::json!({
             "providers": {}, "models": {},
             "auth": {"chain": [], "admin_auth": [], "signing_key": {"module": "secret-a", "settings": {}}},
             "store": {"module": "store-x", "settings": {

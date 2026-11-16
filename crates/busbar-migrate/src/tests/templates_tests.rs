@@ -73,6 +73,50 @@ fn a_value_computed_from_a_template_slot_is_refused() {
     assert_eq!(scratch.names(), ["config.yaml", "providers.yaml"]);
 }
 
+#[test]
+fn templated_write_rate_refusal_names_only_missing_units_and_the_selected_source() {
+    for (rates, source, existing) in [
+        ("input_utok: '${RATE}'", "input_utok", ""),
+        (
+            "input_utok: 1, cache_write_utok: '${RATE}'",
+            "cache_write_utok",
+            ", units: {cache_write_12h: 7}",
+        ),
+    ] {
+        let scratch = Scratch::new();
+        let original =
+            format!("rate_card:\n  model: {{{rates}{existing}}}\nstore: {{module: sqlite}}\n");
+        let path = scratch.deployment(&original);
+        let facts = Facts {
+            open_units: vec!["cache_write_30m".to_owned(), "cache_write_12h".to_owned()],
+            ..with_env()
+        };
+        let refused = plan(&Inputs::new(&path, &facts, &accept)).unwrap_err();
+        assert_eq!(refused.word(), "CONFIG");
+        let text = refused.to_string();
+        assert!(
+            text.contains("`rate_card.model.units.cache_write_30m`"),
+            "{text}"
+        );
+        assert_eq!(
+            text.contains("`rate_card.model.units.cache_write_12h`"),
+            existing.is_empty(),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("same rate as `rate_card.model.{source}`")),
+            "{text}"
+        );
+        assert!(text.contains("quoted decimal reference"), "{text}");
+        assert!(
+            !text.contains("${RATE}"),
+            "the authored value is not quoted: {text}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        assert_eq!(scratch.names(), ["config.yaml", "providers.yaml"]);
+    }
+}
+
 /// An unset variable refuses with the interpolation's own text, as 1.5.5 refused to boot.
 #[test]
 fn an_unset_variable_refuses() {

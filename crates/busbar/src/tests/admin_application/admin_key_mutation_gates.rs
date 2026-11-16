@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait as _};
 use busbar_contract::persistence::*;
 use busbar_kernel::governance::NewKeySpec;
 use std::collections::HashSet;
@@ -41,8 +42,7 @@ impl PersistenceBackend for GatedKeyStore {
                 if !identity_key(address) {
                     return None;
                 }
-                let row: serde_json::Value =
-                    serde_json::from_slice(value.expose(&busbar_kernel::seal::lend())).ok()?;
+                let row = json::parse_value(value.expose(&busbar_kernel::seal::lend())).ok()?;
                 row["record"]["id"].as_str().map(str::to_string)
             });
             if gated {
@@ -249,7 +249,7 @@ async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
             .body(r#"{"name": "disconnector"}"#)
             .send()
     };
-    let count_disconnector = |v: &serde_json::Value| -> usize {
+    let count_disconnector = |v: &json::Value| -> usize {
         v["items"]
             .as_array()
             .map(|a| {
@@ -286,15 +286,16 @@ async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
     );
 
     let probe = reqwest::Client::new();
-    let mid: serde_json::Value = probe
+    let mid = probe
         .get(&keys_url)
         .header("x-admin-token", "admintok")
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let mid = json::parse_value(&mid).unwrap();
     assert_eq!(
         count_disconnector(&mid),
         0,
@@ -323,7 +324,7 @@ async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
         retry.status()
     );
     if retry.status().as_u16() == 201 {
-        let replay: serde_json::Value = retry.json().await.unwrap();
+        let replay = json::parse_value(&retry.bytes().await.unwrap()).unwrap();
         assert_eq!(
             replay["id"].as_str(),
             Some(committed_id.as_str()),
@@ -331,15 +332,16 @@ async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
         );
     }
 
-    let keys: serde_json::Value = normal_client
+    let keys = normal_client
         .get(format!("http://{addr}/api/v1/admin/keys"))
         .header("x-admin-token", "admintok")
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let keys = json::parse_value(&keys).unwrap();
     let items = keys["items"].as_array().unwrap();
     let disconnector_count = items
         .iter()
@@ -450,16 +452,17 @@ async fn test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete(
 
     let keys_url = format!("http://{addr}/api/v1/admin/keys");
 
-    let created: serde_json::Value = client
+    let created = client
         .post(&keys_url)
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "r"}))
+        .json(&json::json!({"name": "r"}))
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let created = json::parse_value(&created).unwrap();
     let id = created["id"].as_str().unwrap().to_string();
 
     let rotate_url = format!("{keys_url}/{id}/rotate");
@@ -620,7 +623,7 @@ async fn test_patch_interleaved_with_delete_never_resurrects_key() {
         reqwest::Client::new()
             .patch(&patch_url)
             .header("x-admin-token", "admintok")
-            .json(&serde_json::json!({"enabled": false}))
+            .json(&json::json!({"enabled": false}))
             .send()
             .await
             .unwrap()
@@ -652,15 +655,16 @@ async fn test_patch_interleaved_with_delete_never_resurrects_key() {
     let _ = patch_task.await.unwrap();
     let _ = delete_task.await.unwrap();
 
-    let listed: serde_json::Value = reqwest::Client::new()
+    let listed = reqwest::Client::new()
         .get(format!("http://{addr}/api/v1/admin/keys"))
         .header("x-admin-token", "admintok")
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let listed = json::parse_value(&listed).unwrap();
     assert_eq!(
         listed["items"].as_array().unwrap().len(),
         0,
@@ -815,15 +819,16 @@ async fn test_rotate_interleaved_with_delete_never_resurrects_key() {
     let _ = rotate_task.await.unwrap();
     let _ = delete_task.await.unwrap();
 
-    let listed: serde_json::Value = reqwest::Client::new()
+    let listed = reqwest::Client::new()
         .get(format!("http://{addr}/api/v1/admin/keys"))
         .header("x-admin-token", "admintok")
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let listed = json::parse_value(&listed).unwrap();
     assert_eq!(
         listed["items"].as_array().unwrap().len(),
         0,
@@ -949,7 +954,7 @@ async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
         let _ = reqwest::Client::new()
             .patch(&patch_url)
             .header("x-admin-token", "admintok")
-            .json(&serde_json::json!({"enabled": false}))
+            .json(&json::json!({"enabled": false}))
             .send()
             .await;
     });
@@ -1112,7 +1117,7 @@ async fn a_delete_of_another_key_is_not_held_behind_a_patch_parked_in_the_store(
         reqwest::Client::new()
             .patch(&patch_url)
             .header("x-admin-token", "admintok")
-            .json(&serde_json::json!({"enabled": false}))
+            .json(&json::json!({"enabled": false}))
             .send()
             .await
             .unwrap()

@@ -42,7 +42,7 @@ pub struct Admit<'a> {
     pub key: Arc<VirtualKey>,
     /// The generation's cost model the request was admitted under.
     pub cost: Arc<CostModel>,
-    /// The key's budget mode, resolved from its governing limits.
+    /// The in-flight exhaustion mode: the root always supplies `FinishUnit`.
     pub mode: ExhaustionMode,
     /// The arrival epoch, seconds.
     pub arrived: u64,
@@ -55,6 +55,8 @@ pub struct PortBilling {
     gov: Arc<GovState>,
     keys: Arc<UnitKeyMint>,
     audit: Arc<dyn AuditSink>,
+    /// Where a unit's end user goes (`records.user`, ADMIN-API-1.6 §3.5); `None` keeps none.
+    journal: Option<Arc<dyn super::HookJournal>>,
 }
 
 impl std::fmt::Debug for PortBilling {
@@ -76,7 +78,15 @@ impl PortBilling {
             gov,
             keys,
             audit,
+            journal: None,
         }
+    }
+
+    /// The node's journal, told the end user a plane projects for each unit it opens.
+    #[must_use]
+    pub fn with_journal(mut self, journal: Arc<dyn super::HookJournal>) -> Self {
+        self.journal = Some(journal);
+        self
     }
 
     /// Admits the request and opens it as a unit. A refusal (`LimitBlocked`) opened nothing and charged nothing.
@@ -123,6 +133,7 @@ impl PortBilling {
                 admin_listener: false,
                 kernel_verb_only: false,
             },
+            journal: self.journal.clone(),
         })
     }
 

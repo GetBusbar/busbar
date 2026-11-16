@@ -15,7 +15,8 @@ fn duplicate_lifted_sections_and_policies_are_refused_by_the_live_reader() {
         assert!(error.contains("duplicate field"), "{error}");
     }
 
-    let mut json = serde_json::Deserializer::from_str(r#"{"auth":{"policy":{},"policy":{}}}"#);
+    let mut json =
+        busbar_contract::json::Deserializer::from_str(r#"{"auth":{"policy":{},"policy":{}}}"#);
     let error = deploy_from_deserializer(&mut json, &crate::config::Grammar::empty())
         .expect_err("duplicate JSON policy")
         .to_string();

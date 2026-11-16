@@ -1651,7 +1651,7 @@ fn key_granting(grants: &[(&str, &str)]) -> Arc<VirtualKey> {
     })
 }
 
-fn entitled(r: &Rig, unit: u64, principal: Option<Arc<VirtualKey>>, target: &str) -> u64 {
+fn entitled(r: &Rig, unit: u64, principal: Option<Arc<VirtualKey>>, target: &str) -> bool {
     r.s.units().admitted(
         unit,
         UnitRecord {
@@ -1659,8 +1659,7 @@ fn entitled(r: &Rig, unit: u64, principal: Option<Arc<VirtualKey>>, target: &str
             depth: 0,
         },
     );
-    r.s.entitlement_check(&caller("inst"), Some(unit), target)
-        .value
+    r.s.entitled(&caller("inst"), Some(unit), target)
 }
 
 fn sees(r: &Rig, unit: u64, principal: &Arc<VirtualKey>) -> Vec<&'static str> {
@@ -1672,7 +1671,7 @@ fn sees(r: &Rig, unit: u64, principal: &Arc<VirtualKey>) -> Vec<&'static str> {
                 unit,
                 Some(Arc::clone(principal)),
                 &format!("item:{item}"),
-            ) == svc::ENTITLED
+            )
         })
         .collect()
 }
@@ -1689,11 +1688,8 @@ fn two_grants_see_two_catalogues_and_a_third_sees_none() {
 fn a_group_grant_without_the_item_grant_sees_nothing() {
     let r = rig();
     let key = key_granting(&[("group", "g")]);
-    assert_eq!(
-        entitled(&r, 1, Some(Arc::clone(&key)), "group:g"),
-        svc::ENTITLED
-    );
-    assert_eq!(entitled(&r, 1, Some(key), "item:one"), svc::NOT_ENTITLED);
+    assert!(entitled(&r, 1, Some(Arc::clone(&key)), "group:g"));
+    assert!(!(entitled(&r, 1, Some(key), "item:one")));
 }
 
 #[test]
@@ -1701,10 +1697,7 @@ fn a_dead_or_expired_key_sees_nothing() {
     let r = rig();
     let now_s = r.clock.load(Ordering::SeqCst) / 1000;
     let live = key_granting(&[("item", "one")]);
-    assert_eq!(
-        entitled(&r, 1, Some(Arc::clone(&live)), "item:one"),
-        svc::ENTITLED
-    );
+    assert!(entitled(&r, 1, Some(Arc::clone(&live)), "item:one"));
     let dead = |f: &dyn Fn(&mut VirtualKey)| {
         let mut k = (*live).clone();
         f(&mut k);
@@ -1715,7 +1708,7 @@ fn a_dead_or_expired_key_sees_nothing() {
         dead(&|k| k.deleted_at = Some(1)),
         dead(&|k| k.expires_at = Some(now_s)),
     ] {
-        assert_eq!(entitled(&r, 2, Some(k), "item:one"), svc::NOT_ENTITLED);
+        assert!(!(entitled(&r, 2, Some(k), "item:one")));
     }
 }
 
@@ -1723,14 +1716,8 @@ fn a_dead_or_expired_key_sees_nothing() {
 fn entitlement_is_judged_against_the_principal_as_it_stands_now() {
     let r = rig();
     let admitted = key_granting(&[("item", "one"), ("item", "two")]);
-    assert_eq!(
-        entitled(
-            &r,
-            1,
-            Some(Arc::clone(&admitted)),
-            svc::ENTITLEMENT_STANDING
-        ),
-        svc::ENTITLED,
+    assert!(
+        entitled(&r, 1, Some(Arc::clone(&admitted)), "standing:"),
         "unattached, the admitted principal stands"
     );
     let now: Arc<std::sync::Mutex<Option<Arc<VirtualKey>>>> = Arc::new(std::sync::Mutex::new(
@@ -1740,33 +1727,19 @@ fn entitlement_is_judged_against_the_principal_as_it_stands_now() {
     assert!(r
         .s
         .attach_standing(Arc::new(move |_, _| live.lock().unwrap().clone())));
-    assert_eq!(
-        entitled(&r, 1, Some(Arc::clone(&admitted)), "item:two"),
-        svc::NOT_ENTITLED,
+    assert!(
+        !(entitled(&r, 1, Some(Arc::clone(&admitted)), "item:two")),
         "the narrowed grant is the one judged"
     );
-    assert_eq!(
-        entitled(&r, 1, Some(Arc::clone(&admitted)), "item:one"),
-        svc::ENTITLED
-    );
+    assert!(entitled(&r, 1, Some(Arc::clone(&admitted)), "item:one"));
     *now.lock().unwrap() = None;
-    assert_eq!(
-        entitled(
-            &r,
-            1,
-            Some(Arc::clone(&admitted)),
-            svc::ENTITLEMENT_STANDING
-        ),
-        svc::NOT_ENTITLED,
+    assert!(
+        !(entitled(&r, 1, Some(Arc::clone(&admitted)), "standing:")),
         "a revoked principal no longer stands"
     );
-    assert_eq!(
-        entitled(&r, 1, Some(admitted), "item:one"),
-        svc::NOT_ENTITLED
-    );
-    assert_eq!(
-        entitled(&r, 2, None, svc::ENTITLEMENT_STANDING),
-        svc::ENTITLED,
+    assert!(!(entitled(&r, 1, Some(admitted), "item:one")));
+    assert!(
+        entitled(&r, 2, None, "standing:"),
         "an ungoverned unit stands"
     );
 }
@@ -1775,32 +1748,22 @@ fn entitlement_is_judged_against_the_principal_as_it_stands_now() {
 fn an_undeclared_scope_kind_is_not_entitled() {
     let r = rig();
 
-    assert_eq!(entitled(&r, 1, None, "other:one"), svc::NOT_ENTITLED);
-    assert_eq!(entitled(&r, 1, None, "no-kind-at-all"), svc::NOT_ENTITLED);
-    assert_eq!(entitled(&r, 1, None, "item:one"), svc::ENTITLED);
+    assert!(!(entitled(&r, 1, None, "other:one")));
+    assert!(!(entitled(&r, 1, None, "no-kind-at-all")));
+    assert!(entitled(&r, 1, None, "item:one"));
 }
 
 #[test]
 fn a_unit_not_in_flight_or_no_unit_is_not_entitled_and_ungoverned_is() {
     let r = rig();
     let me = caller("inst");
-    assert_eq!(
-        r.s.entitlement_check(&me, None, "item:one").value,
-        svc::NOT_ENTITLED
-    );
-    assert_eq!(
-        r.s.entitlement_check(&me, Some(9), "item:one").value,
-        svc::NOT_ENTITLED
-    );
-    assert_eq!(entitled(&r, 9, None, "item:one:with:colons"), svc::ENTITLED);
+    assert!(!(r.s.entitled(&me, None, "item:one")));
+    assert!(!(r.s.entitled(&me, Some(9), "item:one")));
+    assert!(entitled(&r, 9, None, "item:one:with:colons"));
     r.s.units().ended(9);
-    assert_eq!(
-        r.s.entitlement_check(&me, Some(9), "item:one").value,
-        svc::NOT_ENTITLED
-    );
-    let stranger =
-        r.s.entitlement_check(&caller("stranger"), Some(9), "item:one");
-    assert_eq!(stranger.value, svc::NOT_ENTITLED);
+    assert!(!(r.s.entitled(&me, Some(9), "item:one")));
+    let stranger = r.s.entitled(&caller("stranger"), Some(9), "item:one");
+    assert!(!(stranger));
 }
 
 #[derive(Debug, PartialEq, Eq)]

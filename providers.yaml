@@ -78,7 +78,7 @@ openai:
 
 # Oracle OCI Generative AI, the OpenAI-compatible surface (/openai/v1/chat/completions), serving
 # OCI's hosted catalog (OpenAI, Meta Llama, xAI, Google, and Cohere models). Since Jan 2026 OCI
-# issues plain API keys (Bearer), so NO OCI request-signing is needed - set api_key_env to an env var
+# issues plain API keys (Bearer), so NO OCI request-signing is needed - set `api_key: { env: VAR }` in the deployment config to an env var
 # holding the key. REGIONAL: the region is in the host - set it to yours (`us-chicago-1` /
 # `us-ashburn-1` carry the broadest model set). Throttling is HTTP 429 (classified by the breaker);
 # OCI can also return a 400 carrying `TooManyRequests`/`QuotaExceeded`/`LimitExceeded`, and the
@@ -313,12 +313,12 @@ wandb:
 #     path: /openai/deployments/YOUR-DEPLOYMENT/chat/completions?api-version=2024-06-01
 #     error_map: {}
 #     max_output_key: max_completion_tokens           # OpenAI models on Azure reject max_tokens (o-series / gpt-5)
-#     api_key_env: AZURE_OPENAI_KEY
+#     api_key: { env: AZURE_OPENAI_KEY }
 #
 # Azure OpenAI via Microsoft Entra ID (AAD) instead of an API key: same OpenAI protocol + deployment
 # path, but authed with `auth: oauth-client-credentials` — busbar exchanges an app registration's
 # client_id:client_secret at the tenant token endpoint for an auto-refreshed bearer. Tenant + app are
-# per-account, so it is a fill-in template. `api_key_env` holds `client_id:client_secret`:
+# per-account, so it is a fill-in template. `api_key: { env: VAR }` holds `client_id:client_secret`:
 #
 #   azure-entra:
 #     protocol: openai
@@ -329,7 +329,7 @@ wandb:
 #     scope: https://cognitiveservices.azure.com/.default
 #     error_map: {}
 #     max_output_key: max_completion_tokens           # OpenAI models on Azure reject max_tokens (o-series / gpt-5)
-#     api_key_env: AZURE_ENTRA_CREDS                 # value = "client_id:client_secret"
+#     api_key: { env: AZURE_ENTRA_CREDS }               # value = "client_id:client_secret"
 
 
 # --- Added 2026-07-09: docs-verified against each provider's own API documentation ---------------
@@ -884,7 +884,7 @@ gemini:
 #     error_map: {}
 
 # -- AWS Bedrock protocol (Converse / ConverseStream) ---------------------------------------------
-# Auth is native AWS SigV4: set this provider's api_key_env to the AWS credentials as
+# Auth is native AWS SigV4: set this provider's `api_key: { env: VAR }` to the AWS credentials as
 # `ACCESS_KEY_ID:SECRET_ACCESS_KEY` or `ACCESS_KEY_ID:SECRET_ACCESS_KEY:SESSION_TOKEN`. The region is
 # parsed from the base_url host (`bedrock-runtime.<region>.amazonaws.com`) - set it to your region.
 # Streaming requests use ConverseStream; busbar decodes the binary

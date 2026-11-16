@@ -3,14 +3,14 @@
 
 # The busbar audit chain, `busbar.audit.digest.v4`
 
-**`v4` is `v3` plus `incarnation` and `node`, and `v3` is still published.** A unit's key restarts
+**`v4` is `v2` less `currency`, plus `incarnation`, `node`, `hooks[].head` and `hooks[].failed`. It is verify-only: records this build seals use the newer recipes ([`v7`](audit-chain-digest-v7.md) and the [link line](audit-link-v1.md)), and this page stays published so a `v4` record already on disk keeps verifying.** A unit's key restarts
 at every boot of a node, so `unit_key` alone named two different units across two boots;
 `incarnation` — which boot of the node the unit ran in — follows `unit_key` directly, and the pair is
 unique. Nodes share one store, and a monotonic reading compares only against readings of the node
 that took it, so `node` — which node sealed the record — follows `mono` directly (the fixed record's
-WHEN is "wall + monotonic, node"). `v4` adds those two number fields and changes nothing else: no
-field is renamed, reordered or re-framed, and the signature domain is unchanged. `v3` never shipped,
-so no node holds a `v3` record; a `v2` record is checked by
+WHEN is "wall + monotonic, node"). Relative to `v2`, `v4` drops `currency`, adds those two number fields and the two per-hook fields
+`hooks[].head` and `hooks[].failed`, and renames or reorders nothing; the signature domain is
+unchanged. No `v1` or `v3` page is published. A `v2` record is checked by
 [`audit-chain-digest-v2.md`](audit-chain-digest-v2.md). Every record in a range body names the
 recipe it was sealed under in its own `recipe` member, so a window that straddles the change says
 which page checks which record.
@@ -79,7 +79,7 @@ A range whose window runs off either end of what the node holds is **shorter**, 
 ## 3. The digest
 
 ```
-hash = SHA-256( framed(field₁) ‖ framed(field₂) ‖ … ‖ framed(field₄₂) )
+hash = SHA-256( framed(field₁) ‖ framed(field₂) ‖ … ‖ framed(field₄₄) )
 ```
 
 rendered as **64 lowercase hexadecimal characters**.
@@ -417,15 +417,16 @@ Three tests hold this section down, in
 
 * `the_published_table_reproduces_the_published_examples_digest` — the page checks out on its own
   terms, over committed artifacts only, with no chain sealed and no source consulted.
-* `the_published_table_still_describes_what_this_build_seals` — a record sealed by this build,
-  published through the range read, and re-digested **from the table above**. This is the one that
+* `the_published_table_still_describes_what_this_build_seals` — the same check run over the
+  [`v7` page](audit-chain-digest-v7.md): a record sealed by this build, published through the range
+  read, and re-digested **from that page's table**. This is the one that
   catches a build whose field order drifted: such a build agrees with itself perfectly, so every
   other test in the crate stays green.
 * `the_published_key_set_checks_the_published_examples_signature` — the derived key identifier and
   the preimage spelling are re-derived from this page, not from the code's constants.
 
-The three bodies are also asserted to be **this build's own output** by
-`the_worked_example_in_the_published_spec_is_what_this_build_answers_with` in
+The worked example's record is also asserted to keep its exact record hash and signature by
+`the_legacy_v4_worked_example_keeps_its_exact_record_hash_and_signature` in
 `crates/busbar-kernel/src/tests/members/audit/sign_tests.rs`. The page cannot drift from the code without
 one of these going red.
 
@@ -433,21 +434,24 @@ one of these going red.
 
 ## 8. Versioning
 
-Every published body names `"recipe": "busbar.audit.digest.v4"` — the recipe this node seals under
-now — and `"signature_domain": "busbar.audit.record.v1"`. Every record in a range body also names
+The example bodies on this page name `"recipe": "busbar.audit.digest.v4"` and `"signature_domain":
+"busbar.audit.record.v1"`. A node of this build seals under [`v7`](audit-chain-digest-v7.md) (with the
+[link line](audit-link-v1.md) for newer lines), so a range body from it names that recipe, not this
+one; this page is for the `v4` records that remain. Every record in a range body also names
 the recipe IT was sealed under, in its own `recipe` member, which is not a digest input. A verifier
 should refuse a recipe it does not know rather than guess.
 
-`v4` lives **beside** `v2`, and the `v3` and `v1` pages stay published as the history of the field
-list. A record sealed under `v2` is checked by the `v2` page, whose field order has not changed and
+`v4` lives **beside** `v2` (and the later `v5` to `v7` pages), which stay published as the history of the
+field list. A record sealed under `v2` is checked by the `v2` page, whose field order has not changed and
 never will; a node does not rewrite it. The signature domain did not move, because what is signed did
 not change — the digest's hex text — only which fields the digest is taken over. Moving a record
 between recipes is itself caught: a `v2` record relabelled `v4` loses `currency` and gains
-`incarnation` and `node` in its preimage, and no longer hashes to its sealed digest.
+`incarnation`, `node`, `hooks[].head` and `hooks[].failed` in its preimage, and no longer hashes to its sealed digest.
 `crates/busbar-kernel/src/tests/members/audit/record_tests.rs` pins the `v2` and `v4` digests a fully
 populated record froze and the relabelling arms; `published_recipe_tests.rs` proves off the two pages
-alone that `v4` is `v3` plus exactly `incarnation` and `node`
-(`the_v3_page_is_kept_and_v4_is_v3_plus_incarnation_and_node`).
+alone that `v4` is `v2` less exactly `currency`, plus exactly `incarnation`, `node`, `hooks[].head`
+and `hooks[].failed`
+(`the_v2_page_is_kept_and_v4_is_v2_less_currency_plus_incarnation_and_node`).
 
 `node` entered `v4` before the 1.6.0 tag, while `v4` was still being defined and before any release
 sealed a `v4` record (the owner's 2026-09-28 rule for a layout's first version: it is edited in place,

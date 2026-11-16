@@ -66,7 +66,7 @@ pub struct UnitMoney {
     pub classes: Arc<[String]>,
     /// The unit's arrival epoch, seconds: the window every figure of the unit files under.
     pub arrived: u64,
-    /// The unit's budget mode, resolved by the root from its governing limits.
+    /// The unit's in-flight exhaustion mode: the root always supplies `FinishUnit` (no config key selects `CutStream`).
     pub mode: ExhaustionMode,
     /// Who decides the unit's flat-fee refund, chosen by the root for the unit's plane.
     pub fee: FeeRefund,

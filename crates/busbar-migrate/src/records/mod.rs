@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! CORE'S RECORDS STEP (MIGRATE-ON-BOOT §3 4a, §6, §6a, §A6): the boot's one-time conversion of the
-//! 1.5.5 logical rows a store's data step left under IMPORT (R0, `sdk::store::cells`) into native
+//! 1.5.5 logical rows a store's data step left under IMPORT (R0, `persistence::cells`) into native
 //! records, and the record-format chain ([`evolve`]).
 //!
 //! The crate reaches the store only through [`RecordStore`]: three calls (scan, commit, register)
@@ -16,7 +16,7 @@
 
 use std::fmt;
 
-use busbar_contract::abi::sdk::store::cells::{self, table, Cell, IMPORT_NS};
+use busbar_contract::persistence::cells::{self, table, Cell, IMPORT_NS};
 use busbar_contract::persistence::NamespaceId;
 use busbar_contract::records::{CredentialMeta, CredentialSecret, VirtualKey};
 use busbar_contract::secure::SecureVec;

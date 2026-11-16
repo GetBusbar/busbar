@@ -417,9 +417,8 @@ pub struct PluginSchemaView {
     /// `schema: null`: a present-but-corrupt schema is a real
     /// authoring/packaging bug, not "this plugin simply has none."
     pub schema_error: Option<String>,
-    /// `"trusted" | "unverified" | "rejected"`: the same vocabulary the plugin catalog already
-    /// uses (never `"verified"`).
-    pub trust: String,
+    /// The signed image trust object; presence is distinct from verified signer evidence.
+    pub trust: crate::v1::contract::PluginTrustView,
     /// `"describe"` when a currently-loaded `kind: hook` answered its live `describe` wire
     /// message; `"statement"` for a linked plugin; `"manifest"` for a dropped-in plugin
     /// (its signed Statement schema, or the legacy manifest fallback); "installed_archive" for

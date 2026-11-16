@@ -394,19 +394,55 @@ impl GovState {
             None => item.snapshot.terminal.is_some(),
         });
 
-        // T: select every terminal operation of the batch before driving any.
-        for item in &mut items {
-            if let Err(why) = self.select_unit_terminal(&item.snapshot).await {
-                item.failed = Some(why);
+        // T: select every terminal operation of the batch before driving any, in one keep.
+        let mut intents: Vec<(usize, RecoveryEvent)> = Vec::new();
+        for (at, item) in items.iter_mut().enumerate() {
+            match self.unselected_unit_terminal(&item.snapshot).await {
+                Ok(unselected) => intents.extend(unselected.into_iter().map(|event| (at, event))),
+                Err(why) => item.failed = Some(why),
             }
         }
-        // V-K2: drive each selected operation to Settled.
-        for item in &mut items {
-            if item.failed.is_some() {
-                continue;
+        intents.retain(|(at, _)| items[*at].failed.is_none());
+        if !intents.is_empty() {
+            let events: Vec<RecoveryEvent> =
+                intents.iter().map(|(_, event)| event.clone()).collect();
+            let results = self.keep_recovery_events(&events).await;
+            for ((at, _), result) in intents.iter().zip(results) {
+                if let Err(why) = result {
+                    items[*at].failed.get_or_insert(why);
+                }
             }
-            if let Err(why) = self.settle_unit_terminal(&item.snapshot).await {
-                item.failed = Some(why);
+        }
+        // V-K2: drive every selected operation of the batch to Settled, in lockstep.
+        let mut operations: Vec<(usize, [u8; 16])> = Vec::new();
+        for (at, item) in items.iter().enumerate() {
+            if item.failed.is_none() {
+                operations.extend(
+                    item.snapshot
+                        .terminal
+                        .iter()
+                        .flatten()
+                        .map(|initial| (at, initial.operation_id)),
+                );
+            }
+        }
+        if !operations.is_empty() {
+            let ids: Vec<[u8; 16]> = operations.iter().map(|(_, id)| *id).collect();
+            let results = self.drive_raw_recoveries(&ids).await;
+            // One ambiguous operation does not strand its siblings; a unit is settled only when
+            // all of its operations are.
+            for ((at, id), result) in operations.iter().zip(results) {
+                let item = &mut items[*at];
+                if let Err(failed) = result {
+                    item.failed.get_or_insert(failed);
+                } else if !self
+                    .recovery_event(*id)
+                    .is_some_and(|e| e.state == RecoveryState::Settled)
+                {
+                    item.failed.get_or_insert_with(|| {
+                        error("terminal unit awaits durable recovery acknowledgement")
+                    });
+                }
             }
         }
         // R: recovered targets refreshed, then one removal per settled unit.
@@ -478,40 +514,25 @@ impl GovState {
         }))
     }
 
-    /// Phase T for one unit: restore its terminal receipts and select each terminal operation's
-    /// Intent, or check the selected one is this exact identity.
-    async fn select_unit_terminal(&self, snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
+    /// Phase T for one unit: restore its terminal receipts, check each selected terminal
+    /// operation is this exact identity, and return the Intents not yet selected (the pass keeps
+    /// them in one batch).
+    async fn unselected_unit_terminal(
+        &self,
+        snapshot: &UnitCheckpoint,
+    ) -> RecordStoreResult<Vec<RecoveryEvent>> {
+        let mut unselected = Vec::new();
         for initial in snapshot.terminal.iter().flatten() {
             self.restore_unit_terminal_receipt(initial).await?;
             if self.recovery_event(initial.operation_id).is_none() {
-                self.keep_recovery_event(initial).await?;
+                unselected.push(initial.clone());
             } else if self.recovery_initial_event(initial.operation_id).as_ref() != Some(initial) {
                 return Err(error(
                     "terminal unit operation identity differs from recovery custody",
                 ));
             }
         }
-        Ok(())
-    }
-
-    /// Phases V-K2 for one unit: drive every terminal operation. One ambiguous operation does not
-    /// strand its siblings; the unit is settled only when all of them are.
-    async fn settle_unit_terminal(&self, snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
-        let mut first_error = None;
-        for initial in snapshot.terminal.iter().flatten() {
-            if let Err(failed) = self.drive_raw_recovery(initial.operation_id).await {
-                first_error.get_or_insert(failed);
-            }
-            if !self
-                .recovery_event(initial.operation_id)
-                .is_some_and(|e| e.state == RecoveryState::Settled)
-            {
-                first_error.get_or_insert_with(|| {
-                    error("terminal unit awaits durable recovery acknowledgement")
-                });
-            }
-        }
-        first_error.map_or(Ok(()), Err)
+        Ok(unselected)
     }
 }
 

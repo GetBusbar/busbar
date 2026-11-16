@@ -34,12 +34,13 @@ use busbar_plugin_abi::records::Records;
 use busbar_plugin_abi::records::{tag as generic, RecErr};
 use busbar_plugin_abi::types::{KindCode, Status};
 
-use crate::encode::export::{
-    decode_ceiling, decode_delivered, decode_delivery, encode_batch, encode_snapshot,
-};
 use crate::instance::ErrorBook;
-use crate::ports::export::{Custody, Delivered, ExportPort, FamilyIn, RecorderNeeds, ScopeInfo};
-use crate::ports::{CallCx, PortError};
+use busbar_ports::codec::export::{
+    decode_ceiling, decode_confirmed, decode_delivered, decode_delivery, encode_batch,
+    encode_snapshot,
+};
+use busbar_ports::export::{Custody, Delivered, ExportPort, FamilyIn, RecorderNeeds, ScopeInfo};
+use busbar_ports::{CallCx, PortError};
 
 // Round 28/29/33: the ten STREAM_* numbers are pinned to core's `ExportStream` (the enum's one home is
 // `busbar_contract::export_stream`), so a renumbering on either side is a compile error here.
@@ -67,6 +68,8 @@ pub struct Described {
     pub span_records: bool,
     /// The image declared M_CONFIRM (round 33).
     pub confirm: bool,
+    /// The declared bound retained for the core custody scheduler.
+    pub pending_capacity: Option<u64>,
 }
 
 /// D_STREAMS: one ascending `u8` STREAM_* id per byte, 1..=STREAM_COUNT bytes. Anything else is `Size`.
@@ -135,14 +138,14 @@ pub fn decode_describe(
     if span_records && streams & (1 << STREAM_TRACES) == 0 {
         return Err(RecErr::Size);
     }
-    // Round 33: validation only; the capacity itself is kept from 1.6.x (PRD-2).
-    decode_delivery(describe, methods)?;
+    let pending_capacity = decode_delivery(describe, methods)?;
     Ok(Described {
         streams,
         scopes,
         recorder,
         span_records,
         confirm: methods & M_CONFIRM != 0,
+        pending_capacity,
     })
 }
 
@@ -332,6 +335,44 @@ impl<N: Needs> ExportPort for ExportAdapter<N> {
 
     fn custody_ceiling(&self) -> Option<u32> {
         self.ceiling
+    }
+
+    fn pending_capacity(&self) -> Option<u64> {
+        self.described.pending_capacity
+    }
+
+    fn confirm(&self, cx: CallCx, delivery: u64) -> BoxFut<'_, Result<Custody, PortError>> {
+        Box::pin(async move {
+            let inst = self.proxy.instance();
+            let req = Pool::global().acquire(inst.max_out);
+            let caller = Caller {
+                plugin: &inst.identity,
+                kind: KindCode::Export,
+                name: &inst.name,
+                instance: inst.id,
+                slot: inst.slot,
+                chain: 0,
+                deadline: cx.deadline,
+                stack: cx.stack,
+                out_of_process: false,
+                limits: inst.limits,
+            };
+            let mut drv = Driver::new(&*self.needs, caller);
+            let owned = self
+                .proxy
+                .confirm(&mut drv, req, delivery)
+                .await
+                .map_err(PortError::Call)?;
+            let answer = owned.answer();
+            if !answer.is_ok() {
+                return Err(self.failed(&answer, true));
+            }
+            let custody = decode_confirmed(&answer).map_err(bad_records)?;
+            Ok(Custody {
+                level: custody.level,
+                recheck_s: custody.recheck_s,
+            })
+        })
     }
 
     fn render(

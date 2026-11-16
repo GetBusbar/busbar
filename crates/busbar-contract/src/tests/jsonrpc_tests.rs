@@ -4,6 +4,7 @@
 //! The envelope reader, at the unit. The socket-level batteries of each protocol that reads an
 
 use super::*;
+use crate::json::{self, JsonContainerTrait as _, JsonValueTrait as _};
 
 #[test]
 fn exponent_shifts_preserve_sign_carry_borrow_and_unbounded_digits() {
@@ -32,31 +33,32 @@ fn exponent_shifts_preserve_sign_carry_borrow_and_unbounded_digits() {
 
 #[test]
 fn enormous_negative_exponents_are_uncorrelated_without_expansion() {
-    let response: Value = serde_json::from_str(&format!(
-        "{{\"jsonrpc\":\"2.0\",\"id\":1e-{},\"result\":null}}",
-        "9".repeat(500_000)
-    ))
+    let response: Value = json::parse_value(
+        format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":1e-{},\"result\":null}}",
+            "9".repeat(500_000)
+        )
+        .as_bytes(),
+    )
     .unwrap();
     assert_eq!(
-        read_response(&response, &serde_json::json!(1))
-            .unwrap_err()
-            .kind,
+        read_response(&response, &json::json!(1)).unwrap_err().kind,
         NotAnAnswerKind::Uncorrelated
     );
 }
 
-fn read_ok(v: serde_json::Value) -> Envelope {
+fn read_ok(v: json::Value) -> Envelope {
     read(&v).unwrap_or_else(|e| panic!("expected a valid envelope, got {e:?}"))
 }
 
-fn read_err(v: serde_json::Value) -> Invalid {
+fn read_err(v: json::Value) -> Invalid {
     read(&v).expect_err("expected a refusal")
 }
 
 #[test]
 fn an_absent_id_is_a_notification() {
     assert_eq!(
-        read_ok(serde_json::json!({ "jsonrpc": "2.0", "method": "m" })),
+        read_ok(json::json!({ "jsonrpc": "2.0", "method": "m" })),
         Envelope::Notification {
             method: "m".to_string()
         }
@@ -65,22 +67,22 @@ fn an_absent_id_is_a_notification() {
 
 #[test]
 fn a_null_id_is_not_a_notification_it_is_an_invalid_request() {
-    let e = read_err(serde_json::json!({ "jsonrpc": "2.0", "id": null, "method": "m" }));
+    let e = read_err(json::json!({ "jsonrpc": "2.0", "id": null, "method": "m" }));
     assert_eq!(e.code, INVALID_REQUEST);
-    assert_eq!(e.id, serde_json::Value::Null);
+    assert_eq!(e.id, json::Value::new());
 }
 
 #[test]
 fn a_string_or_number_id_is_a_request_and_the_value_survives_exactly() {
     for id in [
-        serde_json::json!("req-1"),
-        serde_json::json!(1),
-        serde_json::json!(0),
-        serde_json::json!(-7),
-        serde_json::json!(""),
+        json::json!("req-1"),
+        json::json!(1),
+        json::json!(0),
+        json::json!(-7),
+        json::json!(""),
     ] {
         assert_eq!(
-            read_ok(serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": "m" })),
+            read_ok(json::json!({ "jsonrpc": "2.0", "id": id, "method": "m" })),
             Envelope::Request {
                 id: id.clone(),
                 method: "m".to_string()
@@ -89,45 +91,41 @@ fn a_string_or_number_id_is_a_request_and_the_value_survives_exactly() {
         );
     }
 
-    let s = read_ok(serde_json::json!({ "jsonrpc": "2.0", "id": "1", "method": "m" }));
-    let n = read_ok(serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "m" }));
+    let s = read_ok(json::json!({ "jsonrpc": "2.0", "id": "1", "method": "m" }));
+    let n = read_ok(json::json!({ "jsonrpc": "2.0", "id": 1, "method": "m" }));
     assert_ne!(s, n);
 }
 
 #[test]
 fn an_id_that_is_neither_string_nor_number_nor_null_is_refused() {
-    for id in [
-        serde_json::json!(true),
-        serde_json::json!([1]),
-        serde_json::json!({ "a": 1 }),
-    ] {
-        let e = read_err(serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": "m" }));
+    for id in [json::json!(true), json::json!([1]), json::json!({ "a": 1 })] {
+        let e = read_err(json::json!({ "jsonrpc": "2.0", "id": id, "method": "m" }));
         assert_eq!(e.code, INVALID_REQUEST, "id {id} was accepted");
-        assert_eq!(e.id, serde_json::Value::Null);
+        assert_eq!(e.id, json::Value::new());
     }
 }
 
 #[test]
 fn the_jsonrpc_member_is_required_and_must_be_exactly_2_0() {
     for envelope in [
-        serde_json::json!({ "id": 1, "method": "m" }),
-        serde_json::json!({ "jsonrpc": "1.0", "id": 1, "method": "m" }),
-        serde_json::json!({ "jsonrpc": 2.0, "id": 1, "method": "m" }),
-        serde_json::json!({ "jsonrpc": "2.0.0", "id": 1, "method": "m" }),
+        json::json!({ "id": 1, "method": "m" }),
+        json::json!({ "jsonrpc": "1.0", "id": 1, "method": "m" }),
+        json::json!({ "jsonrpc": 2.0, "id": 1, "method": "m" }),
+        json::json!({ "jsonrpc": "2.0.0", "id": 1, "method": "m" }),
     ] {
         let e = read_err(envelope.clone());
         assert_eq!(e.code, INVALID_REQUEST, "{envelope} was accepted");
 
-        assert_eq!(e.id, serde_json::json!(1), "{envelope}");
+        assert_eq!(e.id, json::json!(1), "{envelope}");
     }
 }
 
 #[test]
 fn the_method_member_is_required_and_must_be_a_string() {
     for envelope in [
-        serde_json::json!({ "jsonrpc": "2.0", "id": 1 }),
-        serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": 7 }),
-        serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": null }),
+        json::json!({ "jsonrpc": "2.0", "id": 1 }),
+        json::json!({ "jsonrpc": "2.0", "id": 1, "method": 7 }),
+        json::json!({ "jsonrpc": "2.0", "id": 1, "method": null }),
     ] {
         assert_eq!(
             read_err(envelope.clone()).code,
@@ -140,46 +138,46 @@ fn the_method_member_is_required_and_must_be_a_string() {
 #[test]
 fn a_batch_array_and_a_scalar_are_both_refused_as_not_a_message_object() {
     for body in [
-        serde_json::json!([{ "jsonrpc": "2.0", "id": 1, "method": "m" }]),
-        serde_json::json!("a string"),
-        serde_json::json!(null),
+        json::json!([{ "jsonrpc": "2.0", "id": 1, "method": "m" }]),
+        json::json!("a string"),
+        json::json!(null),
     ] {
         let e = read_err(body.clone());
         assert_eq!(e.code, INVALID_REQUEST, "{body}");
-        assert_eq!(e.id, serde_json::Value::Null, "{body}");
+        assert_eq!(e.id, json::Value::new(), "{body}");
     }
 }
 
 #[test]
 fn an_envelope_defect_is_judged_before_the_id_so_a_notification_shaped_one_is_still_answered() {
-    let e = read_err(serde_json::json!({ "method": "m" }));
+    let e = read_err(json::json!({ "method": "m" }));
     assert_eq!(e.code, INVALID_REQUEST);
-    assert_eq!(e.id, serde_json::Value::Null);
+    assert_eq!(e.id, json::Value::new());
 }
 
 #[test]
 fn the_error_envelope_always_carries_an_id_member_even_when_it_is_null() {
-    let body = error_body(serde_json::Value::Null, INVALID_REQUEST, "no", None);
+    let body = error_body(json::Value::new(), INVALID_REQUEST, "no", None);
     assert!(
         body.as_object().expect("object").contains_key("id"),
         "the `id` member was omitted: {body}"
     );
-    assert_eq!(body["id"], serde_json::Value::Null);
+    assert_eq!(body["id"], json::Value::new());
     assert_eq!(body["jsonrpc"], "2.0");
     assert_eq!(body["error"]["code"], INVALID_REQUEST);
     assert!(body["error"].get("data").is_none(), "no data, no member");
 }
 
-fn sent(id: serde_json::Value) -> serde_json::Value {
+fn sent(id: json::Value) -> json::Value {
     id
 }
 
-fn reply_ok(body: serde_json::Value, sent_id: serde_json::Value) -> Reply {
+fn reply_ok(body: json::Value, sent_id: json::Value) -> Reply {
     read_response(&body, &sent_id)
         .unwrap_or_else(|e| panic!("expected a reply, got {e:?} for {body}"))
 }
 
-fn reply_err(body: serde_json::Value, sent_id: serde_json::Value) -> NotAnAnswer {
+fn reply_err(body: json::Value, sent_id: json::Value) -> NotAnAnswer {
     read_response(&body, &sent_id).expect_err("expected a refusal")
 }
 
@@ -187,15 +185,15 @@ fn reply_err(body: serde_json::Value, sent_id: serde_json::Value) -> NotAnAnswer
 #[test]
 fn a_response_that_does_not_name_the_request_that_was_sent_is_not_that_requests_answer() {
     for body in [
-        serde_json::json!({ "jsonrpc": "2.0", "id": 2, "result": { "leaked": true } }),
-        serde_json::json!({ "jsonrpc": "2.0", "id": "1", "result": {} }),
-        serde_json::json!({ "jsonrpc": "2.0", "id": null, "result": {} }),
-        serde_json::json!({ "jsonrpc": "2.0", "result": {} }),
-        serde_json::json!({ "jsonrpc": "2.0", "id": true, "result": {} }),
-        serde_json::json!({ "jsonrpc": "2.0", "id": [1], "result": {} }),
-        serde_json::json!({ "jsonrpc": "2.0", "id": 2, "error": { "code": -1, "message": "no" } }),
+        json::json!({ "jsonrpc": "2.0", "id": 2, "result": { "leaked": true } }),
+        json::json!({ "jsonrpc": "2.0", "id": "1", "result": {} }),
+        json::json!({ "jsonrpc": "2.0", "id": null, "result": {} }),
+        json::json!({ "jsonrpc": "2.0", "result": {} }),
+        json::json!({ "jsonrpc": "2.0", "id": true, "result": {} }),
+        json::json!({ "jsonrpc": "2.0", "id": [1], "result": {} }),
+        json::json!({ "jsonrpc": "2.0", "id": 2, "error": { "code": -1, "message": "no" } }),
     ] {
-        let e = reply_err(body.clone(), sent(serde_json::json!(1)));
+        let e = reply_err(body.clone(), sent(json::json!(1)));
         assert_eq!(
             e.kind,
             NotAnAnswerKind::Uncorrelated,
@@ -209,19 +207,19 @@ fn a_response_that_does_not_name_the_request_that_was_sent_is_not_that_requests_
 fn a_response_naming_the_request_that_was_sent_is_read_and_its_payload_survives() {
     assert_eq!(
         reply_ok(
-            serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": { "content": [] } }),
-            sent(serde_json::json!(1)),
+            json::json!({ "jsonrpc": "2.0", "id": 1, "result": { "content": [] } }),
+            sent(json::json!(1)),
         ),
-        Reply::Result(serde_json::json!({ "content": [] }))
+        Reply::Result(json::json!({ "content": [] }))
     );
     assert_eq!(
         reply_ok(
-            serde_json::json!({ "jsonrpc": "2.0", "id": "req-a", "result": null }),
-            sent(serde_json::json!("req-a")),
+            json::json!({ "jsonrpc": "2.0", "id": "req-a", "result": null }),
+            sent(json::json!("req-a")),
         ),
         // `"result": null` is a LEGAL result. It is the MEMBER's presence that decides, and a reader
         // that tested truthiness would report this as "neither result nor error".
-        Reply::Result(serde_json::Value::Null)
+        Reply::Result(json::Value::new())
     );
 }
 
@@ -230,16 +228,16 @@ fn a_response_naming_the_request_that_was_sent_is_read_and_its_payload_survives(
 fn correlation_never_coerces_across_types() {
     assert_eq!(
         reply_err(
-            serde_json::json!({ "jsonrpc": "2.0", "id": "1", "result": {} }),
-            sent(serde_json::json!(1)),
+            json::json!({ "jsonrpc": "2.0", "id": "1", "result": {} }),
+            sent(json::json!(1)),
         )
         .kind,
         NotAnAnswerKind::Uncorrelated
     );
     assert_eq!(
         reply_err(
-            serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": {} }),
-            sent(serde_json::json!("1")),
+            json::json!({ "jsonrpc": "2.0", "id": 1, "result": {} }),
+            sent(json::json!("1")),
         )
         .kind,
         NotAnAnswerKind::Uncorrelated
@@ -250,14 +248,14 @@ fn correlation_never_coerces_across_types() {
 #[test]
 fn the_same_number_written_two_ways_correlates_and_a_different_number_still_does_not() {
     assert!(read_response(
-        &serde_json::json!({ "jsonrpc": "2.0", "id": 1.0, "result": {} }),
-        &serde_json::json!(1),
+        &json::json!({ "jsonrpc": "2.0", "id": 1.0, "result": {} }),
+        &json::json!(1),
     )
     .is_ok());
     assert_eq!(
         reply_err(
-            serde_json::json!({ "jsonrpc": "2.0", "id": 2.0, "result": {} }),
-            sent(serde_json::json!(1)),
+            json::json!({ "jsonrpc": "2.0", "id": 2.0, "result": {} }),
+            sent(json::json!(1)),
         )
         .kind,
         NotAnAnswerKind::Uncorrelated
@@ -285,14 +283,14 @@ fn distinct_large_numeric_ids_do_not_correlate_in_either_direction() {
         ),
     ] {
         for (request, response) in [(left, right), (right, left)] {
-            let request_id: Value = serde_json::from_str(request).unwrap();
-            let response_id: Value = serde_json::from_str(response).unwrap();
+            let request_id: Value = json::parse_value(request.as_bytes()).unwrap();
+            let response_id: Value = json::parse_value(response.as_bytes()).unwrap();
             for payload in [
-                serde_json::json!({ "result": { "other_request": true } }),
-                serde_json::json!({ "error": { "code": -1, "message": "other request" } }),
+                json::json!({ "result": { "other_request": true } }),
+                json::json!({ "error": { "code": -1, "message": "other request" } }),
             ] {
                 let mut body = payload;
-                body["jsonrpc"] = serde_json::json!("2.0");
+                body["jsonrpc"] = json::json!("2.0");
                 body["id"] = response_id.clone();
                 assert_eq!(
                     read_response(&body, &request_id).unwrap_err().kind,
@@ -328,14 +326,14 @@ fn exact_numeric_ids_correlate_without_restricting_the_integer_range() {
         ),
     ] {
         for (request, response) in [(left, right), (right, left)] {
-            let request_id: Value = serde_json::from_str(request).unwrap();
-            let response_id: Value = serde_json::from_str(response).unwrap();
-            let body = serde_json::json!({
+            let request_id: Value = json::parse_value(request.as_bytes()).unwrap();
+            let response_id: Value = json::parse_value(response.as_bytes()).unwrap();
+            let body = json::json!({
                 "jsonrpc": "2.0", "id": response_id, "result": { "matched": true }
             });
             assert_eq!(
                 read_response(&body, &request_id).unwrap(),
-                Reply::Result(serde_json::json!({ "matched": true })),
+                Reply::Result(json::json!({ "matched": true })),
                 "request {request}, response {response}"
             );
         }
@@ -346,20 +344,20 @@ fn exact_numeric_ids_correlate_without_restricting_the_integer_range() {
 #[test]
 fn a_correlated_body_that_is_not_a_response_is_refused_as_a_shape_and_not_as_a_correlation() {
     for body in [
-        serde_json::json!({ "id": 1, "result": {} }),
-        serde_json::json!({ "jsonrpc": "1.0", "id": 1, "result": {} }),
-        serde_json::json!({ "jsonrpc": 2.0, "id": 1, "result": {} }),
-        serde_json::json!({ "jsonrpc": "2.0", "id": 1 }),
-        serde_json::json!({
+        json::json!({ "id": 1, "result": {} }),
+        json::json!({ "jsonrpc": "1.0", "id": 1, "result": {} }),
+        json::json!({ "jsonrpc": 2.0, "id": 1, "result": {} }),
+        json::json!({ "jsonrpc": "2.0", "id": 1 }),
+        json::json!({
             "jsonrpc": "2.0", "id": 1,
             "result": { "ok": true },
             "error": { "code": -1, "message": "actually it failed" }
         }),
-        serde_json::json!([{ "jsonrpc": "2.0", "id": 1, "result": {} }]),
-        serde_json::json!("a string"),
+        json::json!([{ "jsonrpc": "2.0", "id": 1, "result": {} }]),
+        json::json!("a string"),
     ] {
         assert_eq!(
-            reply_err(body.clone(), sent(serde_json::json!(1))).kind,
+            reply_err(body.clone(), sent(json::json!(1))).kind,
             NotAnAnswerKind::NotAResponse,
             "{body}"
         );
@@ -371,10 +369,10 @@ fn a_correlated_body_that_is_not_a_response_is_refused_as_a_shape_and_not_as_a_c
 fn an_explicitly_null_error_member_is_absent_rather_than_an_error() {
     assert_eq!(
         reply_ok(
-            serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": { "ok": true }, "error": null }),
-            sent(serde_json::json!(1)),
+            json::json!({ "jsonrpc": "2.0", "id": 1, "result": { "ok": true }, "error": null }),
+            sent(json::json!(1)),
         ),
-        Reply::Result(serde_json::json!({ "ok": true }))
+        Reply::Result(json::json!({ "ok": true }))
     );
 }
 
@@ -382,14 +380,14 @@ fn an_explicitly_null_error_member_is_absent_rather_than_an_error() {
 fn an_error_member_is_read_with_its_code_and_message() {
     assert_eq!(
         reply_ok(
-            serde_json::json!({
+            json::json!({
                 "jsonrpc": "2.0", "id": 1,
                 "error": { "code": -32601, "message": "no such method" }
             }),
-            sent(serde_json::json!(1)),
+            sent(json::json!(1)),
         ),
         Reply::Error {
-            code: Some(serde_json::json!(-32601)),
+            code: Some(json::json!(-32601)),
             message: "no such method".to_string()
         }
     );
@@ -426,18 +424,18 @@ fn a_unitless_kernel_refusal_renders_the_v1_5_5_bytes() {
         ),
     ] {
         let body = unitless_kernel_body(code.code()).expect("a body");
-        let parsed: serde_json::Value = serde_json::from_slice(body).expect("JSON");
+        let parsed: json::Value = json::parse_value(body).expect("JSON");
         assert_eq!(
             parsed,
-            error_body(serde_json::Value::Null, INVALID_REQUEST, message, None)
+            error_body(json::Value::new(), INVALID_REQUEST, message, None)
         );
     }
 }
 
-use serde_json::json;
+use crate::json::json;
 
-fn bytes(v: &serde_json::Value) -> Vec<u8> {
-    serde_json::to_vec(v).expect("JSON")
+fn bytes(v: &json::Value) -> Vec<u8> {
+    json::to_vec(v).expect("JSON")
 }
 
 #[test]
@@ -459,7 +457,7 @@ fn a_result_is_the_bytes_the_planes_json_sites_write() {
             json!({ "taskId": "far", "kind": "status-update" }),
         ),
         (json!(1), json!({})),
-        (json!(0), serde_json::Value::Null),
+        (json!(0), json::Value::new()),
     ] {
         let want = bytes(&json!({ "jsonrpc": "2.0", "id": id, "result": result }));
         assert_eq!(
@@ -497,7 +495,7 @@ fn an_error_is_the_bytes_the_planes_json_sites_write() {
         (json!(1), -32601, "no such method", None),
         (json!("r-1"), -32001, "no task {x}%", Some(info)),
         (
-            serde_json::Value::Null,
+            json::Value::new(),
             INVALID_REQUEST,
             "authentication failed",
             None,
@@ -528,17 +526,14 @@ fn an_error_is_the_bytes_the_planes_json_sites_write() {
                 id,
                 code,
                 message,
-                data.map(|d| { serde_json::from_slice(&d).expect("JSON") })
+                data.map(|d| { json::parse_value(&d).expect("JSON") })
             ))
         );
     }
 
     let written = error_bytes(b"null", INVALID_REQUEST, "authentication failed", None);
-    let pinned: serde_json::Value = serde_json::from_slice(UNITLESS_UNAUTHENTICATED).expect("JSON");
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&written).expect("JSON"),
-        pinned
-    );
+    let pinned: json::Value = json::parse_value(UNITLESS_UNAUTHENTICATED).expect("JSON");
+    assert_eq!(json::parse_value(&written).expect("JSON"), pinned);
 }
 
 #[test]
@@ -625,8 +620,8 @@ fn a_notification_is_the_bytes_the_planes_json_sites_write() {
 
 #[test]
 fn bc2_non_object_error_keeps_upstream_text() {
-    let body = serde_json::json!({"jsonrpc":"2.0","id":1,"error":"boom"});
-    match read_response(&body, &serde_json::json!(1)).unwrap() {
+    let body = json::json!({"jsonrpc":"2.0","id":1,"error":"boom"});
+    match read_response(&body, &json::json!(1)).unwrap() {
         Reply::Error { message, .. } => assert!(message.contains("boom"), "got {message:?}"),
         other => panic!("expected error, got {other:?}"),
     }

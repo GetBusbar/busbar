@@ -261,6 +261,39 @@ A plane journal scope that had been evicted from the in-memory cache was read ba
 
 **What to do:** Treat the durable governance store as compromised until explained: capture it for              forensic review before it is overwritten, then restore from a trusted backup once the              cause is understood.
 
+<a id="audit-stamp-failed"></a>
+### BUSBAR-2049 — The audit notary could not stamp a page (lines stay durable and linked)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `audit-stamp-failed`
+
+The background audit notary signs the newest audit line fingerprint every audit.seal_every milliseconds, and that one stamp vouches for every line before it. It could not: its signer failed, timed out or panicked three times in a row (reason=signer, signer_panic), the store refused or did not confirm the staged stamp (reason names the journal error), the journal failed for this process, or the notary task itself stopped (reason=panic). Requests are not affected and every line is still durable and linked; only the stamp is missing. Stamping resumes on its own after a transient failure, with a capped backoff of up to one second, and an Info line follows the first success. If the notary stopped for good, the next busbar process on this host seals the unstamped tail after restart or records a chain break.
+
+**What to do:** Check the field reason. For signer: check the audit signing key or KMS secret plugin. For a journal error: check the store health. For panic or signer_panic: restart the process when convenient and report the log; until then lines are unstamped but durable.
+
+<a id="audit-notary-stalled"></a>
+### BUSBAR-2050 — Audit lines have gone unstamped for too long
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `audit-notary-stalled`
+
+The oldest audit line no stamp covers yet is older than the alert threshold (ten times audit.seal_every, at least one second). The notary is backing off a failing signer or store, or it has stopped. Lines are durable and linked; a crash now leaves a longer unstamped tail for the next process on this host to seal or report.
+
+**What to do:** Look for BUSBAR-2049 just before this line and act on its reason. The gauge audit_unstamped_age_ms shows the current age.
+
+<a id="terminal-audit-stage-failed"></a>
+### BUSBAR-2051 — A request terminal audit original could not be staged
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `terminal-audit-stage-failed`
+
+The journal refused the terminal audit original before native confirmation. The request fails instead of reporting success without its audit evidence; an already streaming response terminates with an error. The journal and audit chain positions do not advance for the refused original. The counter busbar_audit_stage_failures_total counts these failures.
+
+**What to do:** Check store availability and journal custody pressure. A closed journal can also indicate shutdown. Do not assume an upstream operation was undone when its terminal audit failed.
+
 ## 3xxx — Config
 
 <a id="config-overlay-corrupt-refuse-write"></a>
@@ -2282,7 +2315,7 @@ A provider's `api_key` secret reference could not be resolved — an unset envir
 - **Since:** 1.6.0
 - **Slug:** `entitlement-undeclared-scope-kind`
 
-A plane asked whether the unit's principal is entitled to a target whose scope kind is not among the scope kinds the plane's tail declares. The kernel answers NOT_ENTITLED without consulting the principal's grants.
+A plane asked whether the unit's principal is entitled to a target whose scope kind is not among the scope kinds the plane's tail declares. The kernel denies access without consulting the principal's grants.
 
 **What to do:** Declare the scope kind in the plane's tail, or correct the target the plane asks about.
 
@@ -2581,9 +2614,9 @@ A graceful-shutdown signal handler (SIGINT/ctrl_c, SIGTERM on unix, or CTRL_CLOS
 - **Since:** 1.6.0
 - **Slug:** `jemalloc-idle-purge-fallback-unavailable`
 
-The fallback idle-purge helper (for targets where jemalloc's background purge threads are compiled out, e.g. static-musl or macOS) could not start — its worker thread failed to spawn, or it could not read `opt.dirty_decay_ms`. A fully IDLE process may therefore hold freed-but-unpurged dirty pages and its RSS can ratchet at the last burst's peak until traffic resumes. Request behavior is unaffected.
+The fallback idle-purge helper (for targets where jemalloc's background purge threads are compiled out, e.g. macOS) could not start — its worker thread failed to spawn, or it could not read `opt.dirty_decay_ms`. A fully IDLE process may therefore hold freed-but-unpurged dirty pages and its RSS can ratchet at the last burst's peak until traffic resumes. Request behavior is unaffected.
 
-**What to do:** Usually benign — RSS is reclaimed the moment traffic resumes, and under load the helper does nothing. If steady idle RSS on a musl/macOS build matters, investigate the logged spawn/mallctl error; the gateway serves normally regardless.
+**What to do:** Usually benign — RSS is reclaimed the moment traffic resumes, and under load the helper does nothing. If steady idle RSS on a macOS build matters, investigate the logged spawn/mallctl error; the gateway serves normally regardless.
 
 <a id="signing-key-generation-failed"></a>
 ### BUSBAR-9011 — --generate-signing-key could not mint a key (OS entropy source unavailable)

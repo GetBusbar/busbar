@@ -8,6 +8,7 @@ use std::cell::Cell;
 use std::future::Future;
 use std::task::{Context, Poll, Waker};
 
+use busbar_contract::json;
 use busbar_contract::secure::SecureVec;
 use busbar_contract::{jsonrpc, protocol::SseFrames};
 
@@ -181,27 +182,27 @@ fn every_jsonrpc_producer_allocates_only_its_final_output_even_with_heavy_escapi
     let request = measured_output(|| jsonrpc::request_bytes(ID, &text, Some(BODY)));
     let notification = measured_output(|| jsonrpc::notification_bytes(&text, Some(BODY)));
     let error = measured_output(|| jsonrpc::error_bytes(ID, i64::MIN, &text, Some(BODY)));
-    let id: serde_json::Value = serde_json::from_slice(ID).unwrap();
-    let body: serde_json::Value = serde_json::from_slice(BODY).unwrap();
+    let id: json::Value = json::parse_value(ID).unwrap();
+    let body: json::Value = json::parse_value(BODY).unwrap();
     for (out, expected) in [
         (
             result,
-            serde_json::json!({"id": id, "jsonrpc": "2.0", "result": body}),
+            json::json!({"id": id, "jsonrpc": "2.0", "result": body}),
         ),
         (
             request,
-            serde_json::json!({"id": id, "jsonrpc": "2.0", "method": text, "params": body}),
+            json::json!({"id": id, "jsonrpc": "2.0", "method": text, "params": body}),
         ),
         (
             notification,
-            serde_json::json!({"jsonrpc": "2.0", "method": text, "params": body}),
+            json::json!({"jsonrpc": "2.0", "method": text, "params": body}),
         ),
         (
             error,
-            serde_json::json!({"error": {"code": i64::MIN, "data": body, "message": text}, "id": id, "jsonrpc": "2.0"}),
+            json::json!({"error": {"code": i64::MIN, "data": body, "message": text}, "id": id, "jsonrpc": "2.0"}),
         ),
     ] {
-        assert_eq!(out, serde_json::to_vec(&expected).unwrap());
+        assert_eq!(out, json::to_vec(&expected).unwrap());
 
         let owner = SecureVec::from(out);
         watch(&owner);

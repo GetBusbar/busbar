@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use busbar_contract::abi::host::service::{
     check_clock_now, check_content_scan, check_dest_judge, check_hook_call, check_random_fill,
     check_ticket_mint, check_ticket_take, check_verify_lookup, check_verify_store, ContentScanIn,
-    EntitlementCheckIn, HookCallIn, ItemSpan, RandomFillIn, VerifyLookupIn, VerifyStoreIn,
-    DEST_ALLOWED, DEST_INTERNAL, DEST_METADATA, DEST_RESOLVE,
+    HookCallIn, ItemSpan, RandomFillIn, VerifyLookupIn, VerifyStoreIn, DEST_ALLOWED, DEST_INTERNAL,
+    DEST_METADATA, DEST_RESOLVE,
 };
 use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::check::Filled;
@@ -229,12 +229,6 @@ impl HostServices for Provider {
             spans: Vec::new(),
             ..Stored::ready(payload.len() as u64)
         }
-    }
-
-    fn entitlement_check(&self, c: &Caller, unit: Option<u64>, target: &str) -> Stored {
-        let arg = format!("{unit:?} {target}");
-        self.saw(c, "entitlement.check", arg.as_bytes());
-        Stored::ready(svc::ENTITLED)
     }
 
     fn ticket_mint(
@@ -715,7 +709,6 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
                     op::CLOCK_NOW
                         | op::SIGN
                         | op::TRUST_DUE
-                        | op::ENTITLEMENT_CHECK
                         | op::RANDOM_FILL
                         | op::TRUST_VERIFY
                         | op::SNAPSHOT_READ
@@ -1449,63 +1442,6 @@ fn trust_verify_with_a_null_blob_of_a_length_is_fault() {
         unsafe { HOST_SLOTS.trust_verify.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Fault);
     assert!(d.route.provider.scoped.lock().unwrap().is_empty());
-}
-
-fn entitlement_in(target: &'static str) -> EntitlementCheckIn {
-    EntitlementCheckIn {
-        head: head(
-            op::ENTITLEMENT_CHECK,
-            Ticket::NONE,
-            0,
-            size_of::<EntitlementCheckIn>(),
-        ),
-        target: text(target),
-    }
-}
-
-#[test]
-fn entitlement_check_reaches_the_kernel_with_the_unit_its_crossing_serves() {
-    let d = double();
-    let ask = |target| {
-        let i = entitlement_in(target);
-        let mut o = blank();
-        let ret = unsafe {
-            HOST_SLOTS.entitlement_check.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
-        };
-        (ret.outcome(), o.value)
-    };
-
-    assert_eq!(ask("item:one"), (Outcome::Ready, svc::ENTITLED));
-    {
-        let _outer = serving(Some(7));
-        assert_eq!(ask("item:two").0, Outcome::Ready);
-        {
-            let _inner = serving(Some(8));
-            ask("item:three");
-        }
-        ask("item:four");
-    }
-    ask("item:five");
-    let seen: Vec<String> = d
-        .route
-        .provider
-        .scoped
-        .lock()
-        .unwrap()
-        .iter()
-        .filter(|(_, what, _)| *what == "entitlement.check")
-        .map(|(_, _, arg)| String::from_utf8(arg.clone()).unwrap())
-        .collect();
-    assert_eq!(
-        seen,
-        vec![
-            "None item:one",
-            "Some(7) item:two",
-            "Some(8) item:three",
-            "Some(7) item:four",
-            "None item:five",
-        ]
-    );
 }
 
 fn fill_in(len: u64, buf: &mut [u8]) -> RandomFillIn {
@@ -2754,18 +2690,15 @@ fn a_handle_reused_for_another_service_is_fault_and_quarantines_never_the_stale_
     assert_eq!((ret.outcome(), o.value), (Outcome::Ready, svc::CLAIM_WON));
     assert!(still_served(&d));
 
-    let check = EntitlementCheckIn {
-        head: head(
-            op::ENTITLEMENT_CHECK,
-            TICKET,
-            0,
-            size_of::<EntitlementCheckIn>(),
-        ),
-        target: text("item:card"),
+    let mut bytes = [0u8; 1];
+    let check = RandomFillIn {
+        head: head(op::RANDOM_FILL, TICKET, 0, size_of::<RandomFillIn>()),
+        len: 1,
+        into: bufs(&mut bytes, &mut []),
     };
     let mut o = blank();
     let ret = unsafe {
-        HOST_SLOTS.entitlement_check.unwrap()(d.ctx, std::ptr::from_ref(&check).cast(), &mut o)
+        HOST_SLOTS.random_fill.unwrap()(d.ctx, std::ptr::from_ref(&check).cast(), &mut o)
     };
     assert_eq!(
         (ret.outcome(), o.value),
@@ -2773,14 +2706,9 @@ fn a_handle_reused_for_another_service_is_fault_and_quarantines_never_the_stale_
         "a handle reused for another service is a plugin fault, never the first service's answer"
     );
     assert_eq!(error(&o), HANDLE_REBOUND);
-    assert!(
-        !d.route
-            .provider
-            .scoped
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|(_, what, _)| *what == "entitlement.check"),
+    assert_eq!(
+        d.route.provider.filled.load(Ordering::SeqCst),
+        0,
         "the reused handle's service never reaches the kernel"
     );
     assert!(
@@ -3746,7 +3674,6 @@ fn slots_of(slots: &HostSlots) -> [Option<svc::ServiceFn>; SERVICES as usize] {
         slots.trust_due,
         slots.verify_lookup,
         slots.verify_store,
-        slots.entitlement_check,
         slots.content_scan,
         slots.hook_call,
         slots.random_fill,
@@ -4389,4 +4316,49 @@ fn only_the_store_table_advertises_migrate_admit() {
         );
     }
     assert!(HOST_SLOTS.migrate_admit.is_some());
+}
+
+#[test]
+fn ticket_take_restores_nested_serving_unit_scopes() {
+    let d = double();
+    let ask = || {
+        let mut bytes = [0u8; 8];
+        let input = svc::TicketTakeIn {
+            head: head(
+                op::TICKET_TAKE,
+                Ticket::NONE,
+                0,
+                size_of::<svc::TicketTakeIn>(),
+            ),
+            into: bufs(&mut bytes, &mut []),
+        };
+        let mut out = blank();
+        // SAFETY: input, output and the caller-owned buffer live through this crossing.
+        let result = unsafe {
+            HOST_SLOTS.ticket_take.unwrap()(d.ctx, std::ptr::from_ref(&input).cast(), &mut out)
+        };
+        assert_eq!(result.outcome(), Outcome::Ready);
+    };
+    ask();
+    {
+        let _outer = serving(Some(7));
+        ask();
+        {
+            let _inner = serving(Some(8));
+            ask();
+        }
+        ask();
+    }
+    ask();
+    let seen: Vec<String> = d
+        .route
+        .provider
+        .scoped
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, what, _)| *what == "ticket.take")
+        .map(|(_, _, arg)| String::from_utf8(arg.clone()).unwrap())
+        .collect();
+    assert_eq!(seen, ["None", "Some(7)", "Some(8)", "Some(7)", "None"]);
 }

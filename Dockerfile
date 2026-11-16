@@ -53,6 +53,8 @@ ARG TARGETARCH
 COPY binaries/${TARGETARCH}/busbar /busbar
 COPY providers.yaml /etc/busbar/providers.yaml
 COPY docker/config.yaml /etc/busbar/config.yaml
+# Apache-2.0 LICENSE, NOTICE and THIRD-PARTY-LICENSES, taken from the release archive.
+COPY licenses/ /licenses/
 
 # The distroless base sets WORKDIR /home/nonroot. Reset it to / so every relative path in a config
 # (the default `plugins.dir: plugins` above all) resolves exactly as it did on the scratch image:

@@ -7,7 +7,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-X1"]
+#[ignore = "blocked: runs in each plugin repo as an X1 CI job (cargo metadata graph + object symbol scan), not from this crate; owner W1-X1"]
 fn no_host_link_job() {
     todo!("owner: W1-X1 (C-NO-HOST-LINK)")
 }

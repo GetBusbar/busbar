@@ -4,8 +4,8 @@
 # The busbar audit chain, `busbar.audit.digest.v6`
 
 V6 records exact scale-six quantities as canonical nonnegative decimal text. It is
-selected only when a quantity cannot be encoded as a whole u64; whole-only seals
-continue to use V5 unchanged. The field names and order remain V5, and only the
+verify-only: it was selected only when a quantity could not be encoded as a whole u64, and
+this build seals every new record as [V7](audit-chain-digest-v7.md). The field names and order remain V5, and only the
 quantity field changes from number to text. A mixed chain dispatches each record
 by its explicit recipe and journal tag (`audit.v6` for this format).
 

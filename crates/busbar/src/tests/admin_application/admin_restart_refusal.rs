@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use busbar_contract::json::{self, JsonValueTrait as _};
 use busbar_kernel::audit_ring;
 
 #[tokio::test]
@@ -129,7 +130,7 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
         409,
         "an unsupervised restart must be refused unless confirmed"
     );
-    let body: serde_json::Value = resp.json().await.unwrap();
+    let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["code"], "conflict");
     assert!(
         body["error"]["message"]
@@ -150,7 +151,7 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
         409,
         "a process with no shutdown channel cannot restart itself"
     );
-    let body: serde_json::Value = resp.json().await.unwrap();
+    let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["code"], "conflict");
     let msg = body["error"]["message"].as_str().unwrap_or_default();
     assert!(

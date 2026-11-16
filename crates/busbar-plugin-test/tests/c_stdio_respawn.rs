@@ -5,8 +5,16 @@
 //! 100/200/400/800 ms and trips on the 5th exit in 60 s.
 //!
 //! W1-K8A: the respawn and trip policy arm runs on the kernel's channel policy (`channels::respawn`,
-//! IF §12.19). The spawn-in-`cwd` arm needs the connector's stdio carrier (W1-C1C) and stays ignored for it;
-//! the `LocalProgram`-without-`cwd` refusal is K7's config load.
+//! IF §12.19). The other two clauses are relocated (re-checked 2026-11-16: the spawn and the pin check are not in
+//! child_job.rs, they are on the branch already). TEST-VALUE pointers:
+//!
+//! - a CARRIER_STDIO child with `cwd` set starts there: `hostio::tests::an_admitted_program_runs_in_its_configured_working_directory`
+//!   (crates/busbar-core-connector/src/tests/hostio_tests.rs:196, spawn in hostio.rs:724; it spawns /bin/pwd in the
+//!   admitted directory and compares the output), with the cwd validation in the same file (:33-52);
+//! - a `LocalProgram` pin without `cwd` is refused at config load: `upstreams::tests::local_program_needs_its_key_to_be_argv0_and_an_explicit_absolute_cwd`
+//!   (crates/busbar-kernel/src/upstreams/tests.rs:145), and the pin is checked against the spawned path before the
+//!   child exists in `channels::stdio_tests::a_local_program_pin_is_checked_against_the_spawned_path_before_the_child_exists`
+//!   (crates/busbar-kernel/src/channels/stdio_tests.rs:162).
 
 use std::time::{Duration, Instant};
 
@@ -35,10 +43,4 @@ fn a_stdio_child_backs_off_then_trips() {
     );
     channel.redeclared();
     assert_eq!(channel.next(at + WINDOW), Spawn::Now);
-}
-
-#[test]
-#[ignore = "owner: W1-C1C"]
-fn a_stdio_child_starts_in_its_cwd() {
-    todo!("owner: W1-C1C (C-STDIO-RESPAWN cwd arm: the connector's stdio carrier)")
 }

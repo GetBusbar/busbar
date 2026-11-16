@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::verb::{VerbRow, VerbScope, LEGACY_VERBS};
+use busbar_contract::json::{self, JsonValueTrait as _};
 use std::collections::BTreeSet;
 
 const FIXTURE: &str = include_str!("../../../../testing/shadow-oracle/fixtures/openapi-1.5.5.json");
@@ -14,7 +15,7 @@ struct FixtureOp {
 }
 
 fn fixture_ops() -> Vec<FixtureOp> {
-    let doc: serde_json::Value = serde_json::from_str(FIXTURE).expect("fixture is valid JSON");
+    let doc = json::parse_value(FIXTURE.as_bytes()).expect("fixture is valid JSON");
     let paths = doc["paths"]
         .as_object()
         .expect("fixture has a paths object");
@@ -37,7 +38,7 @@ fn fixture_ops() -> Vec<FixtureOp> {
                 .to_string();
             ops.push(FixtureOp {
                 method: m,
-                path: path.clone(),
+                path: path.to_string(),
                 scope,
             });
         }
@@ -93,7 +94,7 @@ fn every_fixture_operation_declares_a_scope_the_table_can_express() {
 
 #[test]
 fn fixture_has_49_paths_and_66_operations() {
-    let doc: serde_json::Value = serde_json::from_str(FIXTURE).unwrap();
+    let doc = json::parse_value(FIXTURE.as_bytes()).unwrap();
     let paths = doc["paths"].as_object().unwrap();
     assert_eq!(paths.len(), 49, "the architecture document pins 49 paths");
     assert_eq!(

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 use crate::root::test_plugins as plugins;
 use axum::http::StatusCode;
+use busbar_contract::json;
 use busbar_contract::persistence::*;
 use busbar_contract::records::*;
 use busbar_kernel::governance::at_rest::{self, AtRestKeys};
@@ -340,7 +341,7 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
         let calls = store.listings.load(Ordering::SeqCst);
         let rejected = client
             .put(format!("http://{addr}/api/v1/admin/config/settings"))
-            .json(&serde_json::json!({"limits": {"request_body_max_bytes": 5000123}}))
+            .json(&json::json!({"limits": {"request_body_max_bytes": 5000123}}))
             .send()
             .await
             .unwrap();
