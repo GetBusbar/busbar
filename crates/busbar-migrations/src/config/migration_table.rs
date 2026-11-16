@@ -2,21 +2,38 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_contract::yaml::prelude::*;
-pub use busbar_kernel::config::declared_vocabulary::{install, Rows};
+
+/// A table of migration rows: (key, text).
+pub type Rows = &'static [(&'static str, &'static str)];
+
+static ROWS: std::sync::OnceLock<Rows> = std::sync::OnceLock::new();
+
+/// Hand the engine its rows; the first call wins. The root carries no table (MIGRATE-ON-BOOT C1), so a
+/// caller that drives this engine installs its own.
+pub fn install(rows: Rows) {
+    let _ = ROWS.set(rows);
+}
+
+fn installed() -> Rows {
+    ROWS.get().copied().unwrap_or(&[])
+}
 
 /// The installed migration rows. A test build has no root to hand them in, so it stands in the
 /// frozen rows the kernel tests pin (the same rows plugins.yaml renders into the root manifest).
 pub fn rows() -> Rows {
     #[cfg(test)]
     install_frozen_rows();
-    busbar_kernel::config::declared_vocabulary::rows()
+    installed()
 }
 
 /// One installed migration row's text; empty when the table has no such row.
 pub fn text(key: &str) -> &'static str {
     #[cfg(test)]
     install_frozen_rows();
-    busbar_kernel::config::declared_vocabulary::text(key)
+    installed()
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map_or("", |(_, v)| v)
 }
 
 #[cfg(test)]

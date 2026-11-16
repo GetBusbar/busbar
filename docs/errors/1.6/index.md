@@ -4,7 +4,7 @@ description: "Every Busbar 1.6 error and warning code: what it means and how to 
 slug: docs/1.6/errors
 ---
 
-Every operator-facing error and warning Busbar prints carries a permanent `BUSBAR-NNNN` code: config refusals at `--validate` and startup, `--migrate-config` messages, CLI errors, admin API error responses (the `code` field) and warn/error log lines (the `diag` field). A message reads `BUSBAR-NNNN: <what is wrong>. See <link>`; the link is the code's page below. Codes are never reused: a retired code keeps its page.
+Every operator-facing error and warning Busbar prints carries a permanent `BUSBAR-NNNN` code: config refusals at `--validate` and startup (the one-time upgrade included), CLI errors, admin API error responses (the `code` field) and warn/error log lines (the `diag` field). A message reads `BUSBAR-NNNN: <what is wrong>. See <link>`; the link is the code's page below. Codes are never reused: a retired code keeps its page.
 
 The thousands digit is the area.
 
@@ -68,8 +68,8 @@ The thousands digit is the area.
 | [BUSBAR-3024](/docs/1.6/errors/BUSBAR-3024/) | A metadata host-list entry names no host (it matches nothing and is dropped) — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-3025](/docs/1.6/errors/BUSBAR-3025/) | A provider URL names a private or loopback host the destination guard refuses | 1.6.0 |
 | [BUSBAR-3026](/docs/1.6/errors/BUSBAR-3026/) | Declared billable classes have no configured rate | 1.6.0 |
-| [BUSBAR-3027](/docs/1.6/errors/BUSBAR-3027/) | A 1.5.5 file overlay holds settings this Store has not imported (boot refuses to start) | 1.6.0 |
-| [BUSBAR-3028](/docs/1.6/errors/BUSBAR-3028/) | A 1.5.5 overlay selector, variable or file is not read (nothing to import) | 1.6.0 |
+| [BUSBAR-3027](/docs/1.6/errors/BUSBAR-3027/) | A 1.5.5 file overlay held settings this Store had not imported — RETIRED *(retired)* | 1.6.0 |
+| [BUSBAR-3028](/docs/1.6/errors/BUSBAR-3028/) | A 1.5.5 overlay input was not read — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-3029](/docs/1.6/errors/BUSBAR-3029/) | A retired launch environment variable is set and IGNORED | 1.6.0 |
 | [BUSBAR-3030](/docs/1.6/errors/BUSBAR-3030/) | An auth plugin states the operator credential but is not first-party (ignored) | 1.6.0 |
 | [BUSBAR-3101](/docs/1.6/errors/BUSBAR-3101/) | A registration is named with a reserved word | 1.6.0 |
@@ -118,10 +118,10 @@ The thousands digit is the area.
 | [BUSBAR-3148](/docs/1.6/errors/BUSBAR-3148/) | An advanced.tls destination entry is invalid | 1.6.0 |
 | [BUSBAR-3149](/docs/1.6/errors/BUSBAR-3149/) | Outbound connections go through a proxy | 1.6.0 |
 | [BUSBAR-3170](/docs/1.6/errors/BUSBAR-3170/) | A configuration word, section or style changed its owner after it was read | 1.6.0 |
-| [BUSBAR-3401](/docs/1.6/errors/BUSBAR-3401/) | --migrate-config was given no file to migrate | 1.6.0 |
-| [BUSBAR-3402](/docs/1.6/errors/BUSBAR-3402/) | --migrate-config could not read the file it was given | 1.6.0 |
-| [BUSBAR-3403](/docs/1.6/errors/BUSBAR-3403/) | --migrate-config could not resolve its working directory | 1.6.0 |
-| [BUSBAR-3404](/docs/1.6/errors/BUSBAR-3404/) | --migrate-config refused the file | 1.6.0 |
+| [BUSBAR-3401](/docs/1.6/errors/BUSBAR-3401/) | The retired migration command was given no file to migrate — RETIRED *(retired)* | 1.6.0 |
+| [BUSBAR-3402](/docs/1.6/errors/BUSBAR-3402/) | The retired migration command could not read the file it was given — RETIRED *(retired)* | 1.6.0 |
+| [BUSBAR-3403](/docs/1.6/errors/BUSBAR-3403/) | The retired migration command could not resolve its working directory — RETIRED *(retired)* | 1.6.0 |
+| [BUSBAR-3404](/docs/1.6/errors/BUSBAR-3404/) | The retired migration command refused the file — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-3405](/docs/1.6/errors/BUSBAR-3405/) | Migration carried refresh_ttl over to verify_ttl, whose meaning differs | 1.6.0 |
 | [BUSBAR-3406](/docs/1.6/errors/BUSBAR-3406/) | Migration widened a retired delegated admin scope to full | 1.6.0 |
 | [BUSBAR-3407](/docs/1.6/errors/BUSBAR-3407/) | An empty allowed_pools list now means no pools | 1.6.0 |

@@ -351,7 +351,7 @@ The broader execution-boundary model spans three planes:
 The SemVer-protected contract is the runtime: the data-plane HTTP
 surface and supported wire-protocol contracts do not break inside a
 major version. `config.yaml` is an operator artifact outside that
-freeze; changes ship with `busbar --migrate-config` and a loud
+freeze; changes ship with the first-boot migration and a loud
 fail-closed boot rather than silent behavior changes.
 
 Single Rust binary, MSRV 1.97, Apache-2.0. Docs at

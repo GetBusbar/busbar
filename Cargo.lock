@@ -309,9 +309,11 @@ dependencies = [
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
+ "busbar-migrate",
  "busbar-migrations",
  "busbar-plugin-loader",
  "bytes",
+ "close_fds",
  "core_affinity",
  "foldhash",
  "hex",
@@ -638,6 +640,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-migrate"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-kernel",
+ "busbar-kernel-ledger",
+ "serde",
+ "zeroize",
+]
+
+[[package]]
 name = "busbar-migrations"
 version = "1.6.0"
 dependencies = [
@@ -804,6 +817,16 @@ checksum = "57663b653d948a338bfb3eeba9bb2fd5fcfaecb9e199e87e1eda4d9e8b240fd9"
 dependencies = [
  "ciborium-io",
  "half",
+]
+
+[[package]]
+name = "close_fds"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3bc416f33de9d59e79e57560f450d21ff8393adcf1cdfc3e6d8fb93d5f88a2ed"
+dependencies = [
+ "cfg-if",
+ "libc",
 ]
 
 [[package]]

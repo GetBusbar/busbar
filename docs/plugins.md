@@ -206,7 +206,7 @@ every other kind.
 Which shorthand a document may use is decided per read, by that document's own `plugins:` block:
 a word counts when a `kind: secret` plugin that block admits (linked, or dropped into its
 `plugins.dir` and passing the same trust, floor and conflict checks the registry build applies)
-declares it. Boot, `--validate`, `--migrate-config`, a config reload and the startup upgrade each
+declares it. Boot, `--validate`, the first-boot migration, a config reload and the startup upgrade each
 judge their own document this way; none reads the words an earlier generation admitted. So a
 secret plugin dropped in after start serves its shorthand on the next `POST config/reload`, and a
 reload that removes a plugin whose word the document still uses is refused (the running
@@ -628,7 +628,7 @@ get code executed, and a compromised or replayed plugin must not load.
    when upgrading to 1.6.0. No new configuration key is required.
 
    The same pre-staging gate covers all seven kinds, including cold plugin checks invoked by
-   `--validate` and native migrations invoked by `--migrate-config`. These commands open no
+   `--validate` and native migrations invoked by the first-boot migration. These commands open no
    application Store; any dropped native checker or migrator they execute must therefore carry
    the immutable fetch pin from their operator input. This includes a native migrator downloaded
    from the release index: the index's version/tag and a valid publisher signature do not replace

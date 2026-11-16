@@ -76,8 +76,15 @@ impl StoreCfg {
     }
 }
 
+/// The refusal of a config with no `store:` block (BUSBAR-3120). 1.6.0 has no absent-store default
+/// (AGREED QM2, owner 2026-11-15T20:54Z): every config names its store. A 1.5.5 config with no block
+/// ran on the store built into 1.5.5, and the one-time upgrade writes that block into it, so only a
+/// config already stamped for 1.6.0 reaches this refusal.
 pub fn store_required() -> String {
-    "store is required; add a `store:` block with the configured Store module and settings".into()
+    "store is required; add a `store:` block with the configured Store module and settings. 1.6.0 \
+     has no default store: a 1.5.5 config.yaml with no `store:` block is upgraded once with the \
+     block 1.5.5 implied, and a config.yaml stamped `config_version: 1` must name its store itself"
+        .into()
 }
 
 /// A top-level `secrets:` entry — MODULE-LEVEL initialization config for a `kind: secret` plugin,
@@ -332,8 +339,8 @@ pub fn default_usage_flush_interval_ms() -> u64 {
 pub struct ResponseHeadersCfg {
     /// Emit the `Server-Timing: busbar;dur=<ms>` response header (default `false`). MIGRATED from
     /// the 1.5.x `observability.emit_server_timing`; the old key is now
-    /// an `unknown field` boot error (`deny_unknown_fields` on `ObservabilityCfg`) — run
-    /// `busbar --migrate-config` to move it. The header is a useful latency probe, but it is also an
+    /// an `unknown field` boot error (`deny_unknown_fields` on `ObservabilityCfg`); the boot's one-time
+    /// upgrade of a 1.5.x config.yaml moves it. The header is a useful latency probe, but it is also an
     /// in-band busbar fingerprint on an otherwise anti-fingerprinting gateway — and the one
     /// fingerprint observable by an UNAUTHENTICATED client on every response — so it defaults OFF to
     /// preserve backend-facing indistinguishability. Operators who want the latency probe (and accept

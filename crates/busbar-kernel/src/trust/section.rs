@@ -133,8 +133,7 @@ fn private_reach_retired(at: &str, key: &str) -> String {
     format!(
         "{at}: `{key}:` is retired ({code}). One setting governs every outbound connection: list \
          this registration's host (or its address) in `advanced.allow_destinations` and remove \
-         `{key}:`; `busbar --migrate-config` does both. A cloud-metadata address stays refused \
-         whatever is listed."
+         `{key}:`. A cloud-metadata address stays refused whatever is listed."
     )
 }
 

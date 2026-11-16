@@ -305,8 +305,6 @@ fn register_protocols() {
 }
 
 fn register_planes() {
-    root::migration_table::install();
-
     root::linked::register_stores(&LINKED);
     busbar_kernel::preflight::install_linked_auth(LINKED.auths);
 
@@ -390,6 +388,15 @@ fn main() {
     // 1.5.5 printed its deprecation line, before the config load that can refuse.
     for w in root::config_migrate::ignored_launch_env(|n| std::env::var_os(n)) {
         eprintln!("{w}");
+    }
+    // Migrate-on-boot step 1 (MIGRATE-ON-BOOT r42 §3): config.yaml's one field, before anything else
+    // reads it. An unstamped config is planned in memory here and written at step 5.
+    {
+        let argv = root::cli::argv();
+        let config =
+            std::path::PathBuf::from(root::cli::resolve_config_path(argv.config.as_deref()));
+        root::migrate::run(&config, argv.providers.is_some(), argv.ignore_overlay)
+            .unwrap_or_else(|error| die(error));
     }
     #[cfg(not(unix))]
     let worker_threads = WORKERS.0;
@@ -590,8 +597,6 @@ async fn run(
         busbar_kernel::appbuild::IGNORE_OVERLAY_FLAG
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
-    let overlay_migration =
-        root::overlay_migrate::command(std::env::args().skip(1)).unwrap_or_else(|error| die(error));
     let principal_transition =
         root::principal_transition::command(argv).unwrap_or_else(|error| die(error));
     if let Some(command) = principal_transition.as_ref() {
@@ -655,23 +660,6 @@ async fn run(
         unset_env_vars: _,
         operator_reference: _,
     } = loaded;
-    // The 1.5.5 overlay selection of the authored deployment, captured while startup custody
-    // is open. Startup conversion drops the selector; the serve gate below still answers for
-    // the data behind it. Nothing is opened here.
-    let legacy_overlay = if principal_transition.is_none() && overlay_migration.is_none() {
-        let (_, detection) = documents
-            .original_deployment(&config_path)
-            .unwrap_or_else(|error| die(error));
-        let env = std::env::var_os("BUSBAR_CONFIG_OVERLAY")
-            .filter(|value| !value.is_empty())
-            .map(std::path::PathBuf::from);
-        Some(
-            root::overlay_migrate::Legacy::capture(&config_path, &detection, env.as_deref())
-                .unwrap_or_else(|error| die(error)),
-        )
-    } else {
-        None
-    };
 
     let base_cfg = root::startup_upgrade::bootstrap::bootstrap(&deploy).unwrap_or_else(|errors| {
         die(boot_error(
@@ -884,19 +872,6 @@ async fn run(
                 .await
                 .unwrap_or_else(|error| die(error));
         }
-        if let Some(old_config) = overlay_migration.as_ref() {
-            root::overlay_migrate::run(
-                old_config,
-                &config_path,
-                deploy,
-                &defs,
-                &anchor_store,
-                config_locked,
-            )
-            .await
-            .unwrap_or_else(|error| die(error));
-            return None;
-        }
         root::boot::bind_plugin_floor(anchor_store.clone())
             .await
             .unwrap_or_else(|error| die(boot_error("Store plugin-floor authority refused", error)));
@@ -908,15 +883,6 @@ async fn run(
                     .unwrap_or_else(|error| die(boot_error("Store overlay unavailable", error))),
             )
         };
-        // Serving never reads a 1.5.5 file overlay: refuse while one holds un-imported settings.
-        if let Some(legacy) = legacy_overlay.as_ref() {
-            if let Err(line) =
-                root::overlay_migrate::admit_legacy(legacy, &anchor_store, ignore_overlay).await
-            {
-                eprintln!("{line}");
-                root::exit::exit(1);
-            }
-        }
         let overlay_doc = if ignore_overlay {
             None
         } else if let Some(store) = overlay_path.as_ref() {
@@ -1374,6 +1340,35 @@ async fn run(
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     };
+    // Migrate-on-boot step 5 (MIGRATE-ON-BOOT r42 §3): every instance has opened, and nothing
+    // serves or produces yet. An upgraded config.yaml is written in place now. The boot then closes
+    // every instance it owns (the App and each instance it opened, the core store and its
+    // admission, the node book and its lease task, the startup upgrade's holders), so no instance's
+    // descriptor reaches the new image, and re-executes onto the stamped file. A stamped boot
+    // passes straight through, with every owner kept as before.
+    if let Some(written) = root::migrate::finish()
+        .await
+        .unwrap_or_else(|error| die(error))
+    {
+        let owners = (
+            ready,
+            continuation,
+            upgrade,
+            publication,
+            completion,
+            // The prepared Store's own holders (its target identity moved into the continuation).
+            (prepared.backend, prepared.recovery),
+            _boot_store_binding,
+        );
+        die(root::migrate::restart(
+            written,
+            owners,
+            // Nothing is cancelled (R16): dropping the lease task's handle leaves it running until
+            // the exec replaces this image a moment later.
+            drop,
+            root::migrate::reexec,
+        ));
+    }
     let root::startup_upgrade::continuation::ReadyCandidate {
         startup: store_admission,
         app,
