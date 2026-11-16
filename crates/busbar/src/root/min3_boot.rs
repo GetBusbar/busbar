@@ -974,7 +974,26 @@ where
     F: Fn(&'static str, SecretRef) -> Fut,
     Fut: std::future::Future<Output = Result<SecureVec, String>>,
 {
-    let _ = (at_rest, resolve);
+    let verdict = match at_rest {
+        None => Ok(false),
+        Some(keys) => at_rest_resolves(keys, resolve).await,
+    };
+    busbar_kernel::appbuild::publish_bootstrap_at_rest(verdict);
+}
+
+/// Whether `keys` resolve and parse as at-rest keys; `Err` the first refusal's text.
+async fn at_rest_resolves<F, Fut>(keys: &AtRestCfg, resolve: F) -> Result<bool, String>
+where
+    F: Fn(&'static str, SecretRef) -> Fut,
+    Fut: std::future::Future<Output = Result<SecureVec, String>>,
+{
+    let key = resolve("the at-rest key", keys.key.clone()).await?;
+    let previous = match &keys.previous {
+        Some(previous) => Some(resolve("the previous at-rest key", previous.clone()).await?),
+        None => None,
+    };
+    busbar_kernel::appbuild::records_keys_from(Some(&*key), previous.as_deref(), None)
+        .map(|parsed| parsed.at_rest.is_some())
 }
 
 /// Boot through the MIN-3 registry, before any listener serves. `Ok(false)`: the configured store is not a MIN-3

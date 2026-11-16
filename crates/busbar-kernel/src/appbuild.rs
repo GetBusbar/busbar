@@ -1234,11 +1234,13 @@ pub fn take_bootstrap_records_keys() -> Option<RecordsKeys> {
 /// What the latest store bootstrap resolved of `credentials.at_rest`, before the store opened:
 /// `Ok(true)` the key resolved, `Ok(false)` no `credentials.at_rest` block, `Err` the resolver's
 /// own text. The migration seam's recoverable gate reads it while the store's data step runs
-/// (MIGRATE-ON-BOOT §3 step 2 (a)); nothing else does.
+/// (MIGRATE-ON-BOOT §3 step 2 (a)); nothing else does. A MIN-3 boot's walk publishes it after its
+/// secret instances opened (2a), before its store opens (2b).
 static BOOTSTRAP_AT_REST: std::sync::Mutex<Option<Result<bool, String>>> =
     std::sync::Mutex::new(None);
 
-fn publish_bootstrap_at_rest(verdict: Result<bool, String>) {
+/// Publishes the at-rest verdict the recoverable gate reads (see `BOOTSTRAP_AT_REST`).
+pub fn publish_bootstrap_at_rest(verdict: Result<bool, String>) {
     *BOOTSTRAP_AT_REST
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(verdict);
