@@ -49,3 +49,27 @@ fn the_1_5_5_security_keys_feed_the_one_guard() {
         }
     );
 }
+
+/// UPSTREAMS-DECLARED r3 section 2.4 removes the global destination grant.
+#[test]
+fn allow_destinations_is_refused_as_an_unknown_key() {
+    for yaml in [
+        "allow_destinations: [127.0.0.1]\n",
+        "allow_destinations: []\n",
+    ] {
+        let err = busbar_contract::yaml::from_str::<AdvancedCfg>(yaml)
+            .expect_err("the deleted advanced key is refused")
+            .to_string();
+        assert!(err.contains("unknown field"), "{yaml}: {err}");
+    }
+}
+
+#[test]
+fn allow_destinations_is_refused_by_the_settings_patch() {
+    let err = busbar_contract::yaml::from_str::<super::super::patch::AdvancedPatch>(
+        "allow_destinations: [127.0.0.1]\n",
+    )
+    .expect_err("the settings door refuses the deleted advanced key")
+    .to_string();
+    assert!(err.contains("unknown field"), "{err}");
+}
