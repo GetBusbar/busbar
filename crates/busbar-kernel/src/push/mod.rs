@@ -26,6 +26,9 @@ use crate::plugin_records::store::{denied, expiry, label, live, operation, InDou
 use crate::plugin_records::RecordsDenied;
 use crate::retry::{PortError, Retry, RetryPolicy, RetrySite};
 
+mod fetch;
+pub use fetch::ConnectorPushSink;
+
 /// Plane PUSH intents. Durable (CoreStore, rows keyed by (who.plugin, who.name), never the runtime id),
 /// at-least-once, deliveries through the connector's fetch with the live instance of that name as Caller
 /// (the connector's guard judges every new connection, §12.1), retries via RetryPolicy(PlanePush), dropped and audited after ttl_s or when no
