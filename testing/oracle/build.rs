@@ -19,8 +19,8 @@
 
 use std::path::{Path, PathBuf};
 
-// The generator is core's own source, included as it is (this script writes no Rust output).
-include!(concat!("../../crates/busbar/src/linked_gen", ".rs"));
+// The generator is core's own source (crates/busbar/src/linked_gen.rs), reached as a build-dependency (this script writes no Rust output).
+use busbar_linked_gen::*;
 
 /// `<sources>/<repo>/<crate dir>/tests/blackbox` when that crate is the plane door the bundled table
 /// names (its own `links` row, as crates/busbar/build.rs holds the door's metadata to be its own).

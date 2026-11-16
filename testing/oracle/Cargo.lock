@@ -509,6 +509,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-linked-gen"
+version = "1.6.0"
+
+[[package]]
 name = "busbar-migrations"
 version = "1.6.0"
 dependencies = [
@@ -535,6 +539,7 @@ dependencies = [
  "busbar-contract",
  "busbar-core-connector",
  "busbar-kernel",
+ "busbar-linked-gen",
  "busbar-migrations",
  "busbar-plugin-loader",
  "hex",

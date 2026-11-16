@@ -3,7 +3,7 @@ resolver = "2"
 # dist/default and testing/oracle (the black-box oracle) are their own workspaces; the root crate depends on
 # no plugin. busbar-crypto-backend is its own lock root so a private build can [patch] a backend of the same
 # name in.
-exclude = ["dist/default", "testing/oracle", "tools/system-hammer", "crates/busbar-crypto-backend"]
+exclude = ["dist/default", "testing/oracle", "crates/busbar-linked-gen", "tools/system-hammer", "crates/busbar-crypto-backend"]
 members = [
     "crates/busbar",
     "crates/busbar-core-connector",

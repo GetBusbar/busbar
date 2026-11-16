@@ -33,9 +33,9 @@
 // is the one crate that generates a linked table: no cleanliness crate has a build script that names
 // a plugin, and their tests link the kernel's kind-neutral doubles instead.
 
-pub(crate) const NODE_UNIT: &str = "node";
+pub const NODE_UNIT: &str = "node";
 
-pub(crate) const AXES: &[(&str, &str, &str)] = &[
+pub const AXES: &[(&str, &str, &str)] = &[
     ("protocols", "protocols", "PROTOCOLS"),
     ("protocol-seams", "protocol_seams", "install_protocol_seams"),
     ("diagnostics", "diagnostics", "DIAGNOSTICS"),
@@ -48,13 +48,13 @@ pub(crate) const AXES: &[(&str, &str, &str)] = &[
 
 const TRANSPORT_AXIS: &str = "transport";
 
-pub(crate) const DOOR_AXIS: &str = "transport-door";
+pub const DOOR_AXIS: &str = "transport-door";
 
-pub(crate) const CONNECTOR_DOOR_AXIS: &str = "connector-door";
+pub const CONNECTOR_DOOR_AXIS: &str = "connector-door";
 
-pub(crate) const PLANE_DOOR_AXIS: &str = "plane-door";
+pub const PLANE_DOOR_AXIS: &str = "plane-door";
 
-pub(crate) const EXPORT_DOOR_AXIS: &str = "export-doors";
+pub const EXPORT_DOOR_AXIS: &str = "export-doors";
 
 const CLAIMS_AXIS: &str = "claims";
 
@@ -62,7 +62,7 @@ const SECRET_AXIS: &str = "secret-doors";
 
 const AUTH_AXIS: &str = "auths";
 
-fn metadata_value(manifest: &str, table: &str, key: &str) -> Option<String> {
+pub fn metadata_value(manifest: &str, table: &str, key: &str) -> Option<String> {
     let header = format!("[{table}]");
     let mut in_table = false;
     for line in manifest.lines() {
@@ -80,11 +80,11 @@ fn metadata_value(manifest: &str, table: &str, key: &str) -> Option<String> {
     None
 }
 
-pub(crate) const SEAMS: &[(&str, &str)] = &[("egress", "linked_egress")];
+pub const SEAMS: &[(&str, &str)] = &[("egress", "linked_egress")];
 
 include!("manifest_rows.rs");
 
-pub(crate) fn declared_features(manifest: &str) -> Vec<String> {
+pub fn declared_features(manifest: &str) -> Vec<String> {
     let mut in_table = false;
     let mut out = Vec::new();
     for line in manifest.lines() {
@@ -102,7 +102,7 @@ pub(crate) fn declared_features(manifest: &str) -> Vec<String> {
     out
 }
 
-pub(crate) fn required_deps(manifest: &str) -> Vec<String> {
+pub fn required_deps(manifest: &str) -> Vec<String> {
     let mut in_table = false;
     let mut out = Vec::new();
     for line in manifest.lines() {
@@ -120,13 +120,13 @@ pub(crate) fn required_deps(manifest: &str) -> Vec<String> {
     out
 }
 
-pub(crate) fn ident(krate: &str) -> String {
+pub fn ident(krate: &str) -> String {
     krate.replace('-', "_")
 }
 
 /// The axes whose `linked_axis_<axis>` cfg a build declares (the composition root's sources gate
 /// on them) and sets when an enabled row names the axis.
-pub(crate) const CFG_AXES: &[&str] = &[
+pub const CFG_AXES: &[&str] = &[
     PLANE_DOOR_AXIS,
     DOOR_AXIS,
     EXPORT_DOOR_AXIS,
@@ -140,7 +140,7 @@ pub(crate) const CFG_AXES: &[&str] = &[
 /// set sets it. build.rs declares every name and sets the ones that are on, from this one table, so
 /// a test can hold that every declared name is set by some feature set: a cfg that no build ever
 /// sets gates code that runs nowhere. A seam's cfg is declared only when some row drives the seam.
-pub(crate) fn build_cfgs(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> Vec<(String, bool)> {
+pub fn build_cfgs(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> Vec<(String, bool)> {
     let features = declared_features(manifest);
     let required = required_deps(manifest);
     let plugins = metadata_map(manifest, "package.metadata.busbar.linked");
@@ -209,7 +209,7 @@ pub(crate) fn build_cfgs(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> Vec<
     out
 }
 
-pub(crate) fn linked_source(
+pub fn linked_source(
     manifest: &str,
     enabled: &dyn Fn(&str) -> bool,
 ) -> (String, Vec<&'static str>) {
