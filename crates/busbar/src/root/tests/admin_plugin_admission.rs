@@ -1860,3 +1860,44 @@ async fn a_bootstrap_archive_upload_and_rollback_refuse_a_changed_base_pin_befor
     std::fs::remove_file(providers).unwrap();
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn admission_retains_the_actual_rotated_signer_and_never_claims_unknown_signature_text() {
+    let dir = tmp_plugins_dir("admission-actual-signer");
+    let old_key = SigningKey::from_bytes(&[71; 32]);
+    let active_key = SigningKey::from_bytes(&[72; 32]);
+    let mut cfg = publisher_posture("acme", &old_key);
+    cfg.trust.publishers[0]
+        .keys
+        .push(busbar_kernel::config::PluginPublisherKey {
+            public_key: hex::encode(active_key.verifying_key().to_bytes()),
+            revoked: false,
+        });
+    let bytes = signed_tarball(
+        &active_key,
+        test_manifest("acme-store-s", "s", "acme", "1.0.0"),
+        b"actual signer",
+    );
+    let expected = crate::root::loader::release_trust::wire::key_id(
+        &crate::root::loader::sign::ReleaseKey::Ed25519(active_key.verifying_key()),
+    );
+    let admitted = ADMISSION
+        .admit_upload(&dir, "s.tar.gz", &bytes, &cfg)
+        .expect("second active key admits");
+    assert_eq!(admitted.verification.signers, [expected.clone()]);
+    assert_eq!(admitted.verification.root, None);
+    assert_eq!(admitted.verification.keys_version, None);
+    let (_, judged, proof) = ADMISSION
+        .inspect_with_verification(&bytes, &cfg)
+        .expect("same prospective proof");
+    assert!(matches!(judged, Judged::Trusted { .. }));
+    assert_eq!(proof, admitted.verification);
+    cfg.trust.publishers.clear();
+    cfg.trust.allow_untrusted = true;
+    let (_, judged, proof) = ADMISSION
+        .inspect_with_verification(&bytes, &cfg)
+        .expect("unknown signature opt-in");
+    assert_eq!(judged, Judged::Allowed);
+    assert_eq!(proof, busbar_contract::plugin_rows::Verification::default());
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+}
