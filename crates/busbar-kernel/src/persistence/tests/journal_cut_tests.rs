@@ -256,6 +256,42 @@ async fn pins_hold_the_floor_and_a_released_row_reads_truncated() {
         owner.record(carried).await.map(|_| ()),
         Err(RuntimeError::Truncated)
     );
+    assert_eq!(owner.locate_truncated(), 1);
+}
+
+/// Test 30(c): another caller publishes both runs before either owner's confirm is polled.
+/// Their staging pins must survive more than two retention windows and an attempted cut.
+#[tokio::test]
+async fn delayed_confirm_keeps_checkpoint_and_reconciliation_originals() {
+    let backend = ephemeral();
+    let (_store, owner) = owner_on(&backend).await;
+    let checkpoint = owner
+        .stage_run(&[Entry::new(RecordClass::Checkpoint, vec![1])])
+        .unwrap();
+    let reconciliation = owner
+        .stage_run(&[Entry::new(RecordClass::Reconciliation, vec![2])])
+        .unwrap();
+    let driver = owner
+        .stage_run(&[Entry::new(RecordClass::Transaction, vec![3])])
+        .unwrap();
+    owner.confirm(&driver).await.unwrap();
+    drop(driver);
+    append(&owner, 2 * RETAIN_TAIL + CUT_BATCH).await;
+    let mut cut = owner.cutter().unwrap();
+    assert_eq!(cut.truncate_through(u64::MAX).await, CutProgress::Idle);
+    for run in [&checkpoint, &reconciliation] {
+        owner.confirm(run).await.unwrap();
+        for original in run.carried() {
+            assert_eq!(owner.record(original).await.unwrap().node_seq, original.seq);
+        }
+    }
+    drop(checkpoint);
+    drop(reconciliation);
+    assert_eq!(owner.locate_truncated(), 0);
+    assert!(matches!(
+        cut.truncate_through(u64::MAX).await,
+        CutProgress::Cut { .. }
+    ));
 }
 
 /// (d) Cut versus readers: a walker whose base read preceded a cut is `Rebased`, never `Corrupt`;
