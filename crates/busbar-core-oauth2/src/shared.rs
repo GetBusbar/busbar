@@ -31,13 +31,13 @@ pub(crate) const RETIRE_AFTER_SECS: u64 = VERSION_CLAIM_SECS + CLOCK_SKEW_SECS;
 
 pub(crate) const INDEX_GRACE_SECS: u64 = 600;
 
-const SWAP_ATTEMPTS: u32 = 64;
+pub(crate) const SWAP_ATTEMPTS: u32 = 64;
 
 // Preserve the OAuth logical-cell admission boundary that preceded the native
 // port. This is a domain budget, independent of plane and generic Store bounds.
 const MAX_LOGICAL_CELL_BYTES: usize = 16 * 1024 * 1024;
 
-fn kind(name: &str) -> String {
+pub(crate) fn kind(name: &str) -> String {
     format!("{LABEL}{name}")
 }
 
@@ -45,11 +45,11 @@ fn atomic_kind(name: &str) -> bool {
     matches!(name, "bucket" | "family" | "uc" | "key") || name.starts_with("ix.")
 }
 
-fn atomic_schema(name: &str) -> String {
+pub(crate) fn atomic_schema(name: &str) -> String {
     format!("{}.atomic.v1", kind(name))
 }
 
-fn authority_body(value: &[u8]) -> Result<Option<&[u8]>, StorageError> {
+pub(crate) fn authority_body(value: &[u8]) -> Result<Option<&[u8]>, StorageError> {
     match value.split_first() {
         Some((b'-', nonce)) if nonce.len() == 32 => Ok(None),
         Some((b'-', _)) | None => Err(StorageError::new(
@@ -60,13 +60,13 @@ fn authority_body(value: &[u8]) -> Result<Option<&[u8]>, StorageError> {
 }
 
 /// A retired cell's body: `-` and a fresh nonce, in the nonce's own allocation.
-fn tombstone() -> Result<Vec<u8>, StorageError> {
+pub(crate) fn tombstone() -> Result<Vec<u8>, StorageError> {
     let mut body = nonce()?.into_bytes();
     body.insert(0, b'-');
     Ok(body)
 }
 
-fn digest(value: &str) -> String {
+pub(crate) fn digest(value: &str) -> String {
     hex::encode(busbar_contract::crypto::sha256(value.as_bytes()))
 }
 
@@ -83,15 +83,15 @@ pub(crate) fn now_time() -> SystemTime {
     UNIX_EPOCH + Duration::from_nanos(busbar_kernel::store::now_ns())
 }
 
-fn now_secs() -> u64 {
+pub(crate) fn now_secs() -> u64 {
     busbar_kernel::store::now_ns() / 1_000_000_000
 }
 
-fn secs_of(t: SystemTime) -> u64 {
+pub(crate) fn secs_of(t: SystemTime) -> u64 {
     t.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
-fn failed(what: &str, f: impl std::fmt::Debug) -> StorageError {
+pub(crate) fn failed(what: &str, f: impl std::fmt::Debug) -> StorageError {
     super::cold::store_failed(what, f)
 }
 
@@ -103,7 +103,7 @@ fn encode<T: Serialize>(what: &str, value: &T) -> Result<Vec<u8>, StorageError> 
     serde_json::to_vec(value).map_err(|e| decode_failed(what, &e))
 }
 
-fn decode<T: DeserializeOwned>(what: &str, body: &[u8]) -> Result<T, StorageError> {
+pub(crate) fn decode<T: DeserializeOwned>(what: &str, body: &[u8]) -> Result<T, StorageError> {
     serde_json::from_slice(body).map_err(|e| decode_failed(what, &e))
 }
 
@@ -113,9 +113,9 @@ fn user_code(d: &DeviceGrant) -> (String, String) {
 
 /// A revocation barrier's two instants (`oauth_as::store::RevocationWindow`, kept).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct Times {
-    recorded_at: SystemTime,
-    until: SystemTime,
+pub(crate) struct Times {
+    pub(crate) recorded_at: SystemTime,
+    pub(crate) until: SystemTime,
 }
 
 impl Times {
@@ -136,18 +136,18 @@ impl Times {
 /// EVERYTHING ONE CLIENT HOLDS, swapped whole.
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
-struct Bucket {
+pub(crate) struct Bucket {
     /// The client this bucket is for, as written: what the sweep walks the buckets by.
-    id: String,
-    client: Option<Client>,
-    client_barrier: Option<Times>,
-    consent_barriers: BTreeMap<String, Times>,
-    tokens: BTreeMap<String, IssuedToken>,
-    refresh: BTreeMap<String, RefreshTokenRecord>,
-    codes: BTreeMap<String, AuthorizationCodeRecord>,
-    pushed: BTreeMap<String, PushedAuthorizationRequest>,
-    devices: BTreeMap<String, DeviceGrant>,
-    consents: BTreeMap<String, ConsentRecord>,
+    pub(crate) id: String,
+    pub(crate) client: Option<Client>,
+    pub(crate) client_barrier: Option<Times>,
+    pub(crate) consent_barriers: BTreeMap<String, Times>,
+    pub(crate) tokens: BTreeMap<String, IssuedToken>,
+    pub(crate) refresh: BTreeMap<String, RefreshTokenRecord>,
+    pub(crate) codes: BTreeMap<String, AuthorizationCodeRecord>,
+    pub(crate) pushed: BTreeMap<String, PushedAuthorizationRequest>,
+    pub(crate) devices: BTreeMap<String, DeviceGrant>,
+    pub(crate) consents: BTreeMap<String, ConsentRecord>,
 }
 
 impl Bucket {
@@ -165,15 +165,15 @@ impl Bucket {
         })
     }
 
-    fn records(&self) -> usize {
+    pub(crate) fn records(&self) -> usize {
         self.tokens.len() + self.refresh.len() + self.codes.len() + self.devices.len()
     }
 
-    fn idle(&self) -> bool {
+    pub(crate) fn idle(&self) -> bool {
         self.records() == 0 && self.pushed.is_empty() && self.consents.is_empty()
     }
 
-    fn holds_nothing(&self) -> bool {
+    pub(crate) fn holds_nothing(&self) -> bool {
         self.client.is_none()
             && self.client_barrier.is_none()
             && self.consent_barriers.is_empty()
@@ -183,18 +183,18 @@ impl Bucket {
 
 /// The versioned envelope a bucket is kept in.
 #[derive(Serialize, Deserialize)]
-struct Cell<T> {
-    v: u64,
-    b: T,
+pub(crate) struct Cell<T> {
+    pub(crate) v: u64,
+    pub(crate) b: T,
     /// When this version was written (Unix seconds): what the sweep retires a cell by.
     #[serde(default)]
-    at: u64,
+    pub(crate) at: u64,
     /// The cell's own id, so the sweep can name it again.
     #[serde(default)]
-    id: String,
+    pub(crate) id: String,
     /// The cell's epoch, picked by the write that created it.
     #[serde(default)]
-    e: String,
+    pub(crate) e: String,
 }
 
 /// A [`Cell`] as it is written: the same fields in the same order, its id and epoch lent.
@@ -207,7 +207,7 @@ struct CellOut<'a, T> {
     e: &'a str,
 }
 
-enum Swap<R> {
+pub(crate) enum Swap<R> {
     Write(R),
 
     Keep(R),
@@ -216,7 +216,7 @@ enum Swap<R> {
 }
 
 impl<R> Swap<R> {
-    fn when(changed: bool, r: R) -> Self {
+    pub(crate) fn when(changed: bool, r: R) -> Self {
         if changed {
             Swap::Write(r)
         } else {
@@ -268,7 +268,7 @@ impl Drop for ClaimLease<'_> {
 }
 
 pub(crate) struct Shared {
-    store: Arc<ScopedStore>,
+    pub(crate) store: Arc<ScopedStore>,
     pending: Mutex<Vec<Arc<Pending>>>,
     claims: ClaimEntries,
 }
@@ -290,7 +290,7 @@ impl Shared {
         }
     }
 
-    async fn submit(&self, request: Arc<Request>) -> Result<Decision, StorageError> {
+    pub(crate) async fn submit(&self, request: Arc<Request>) -> Result<Decision, StorageError> {
         let oversized = request.mutations.iter().any(|mutation| matches!(mutation,
             Mutation::Put {schema,value,..} if schema.ends_with(".atomic.v1") && value.len()>MAX_LOGICAL_CELL_BYTES
         )) || request.predicates.iter().any(|predicate| matches!(&predicate.expected,
@@ -412,7 +412,7 @@ impl Shared {
         Ok(())
     }
 
-    fn candidate(
+    pub(crate) fn candidate(
         schema: &str,
         id: &str,
         expected: Option<Vec<u8>>,
@@ -637,7 +637,11 @@ impl Shared {
             .map_err(|e| failed("read record", e))
     }
 
-    async fn authority(&self, name: &str, id: &str) -> Result<Option<Vec<u8>>, StorageError> {
+    pub(crate) async fn authority(
+        &self,
+        name: &str,
+        id: &str,
+    ) -> Result<Option<Vec<u8>>, StorageError> {
         let schema = atomic_schema(name);
         self.settle(&schema, Some(id.as_bytes())).await?;
         let value = self.read_record(&schema, id.as_bytes()).await?;
@@ -708,7 +712,10 @@ impl Shared {
         self.put_body(name, id, encode(name, value)?).await
     }
 
-    async fn list<T: DeserializeOwned>(&self, name: &str) -> Result<Vec<T>, StorageError> {
+    pub(crate) async fn list<T: DeserializeOwned>(
+        &self,
+        name: &str,
+    ) -> Result<Vec<T>, StorageError> {
         let schema = Self::schema(name);
         self.settle(&schema, None).await?;
         let mut after = None;
@@ -739,7 +746,7 @@ impl Shared {
         Ok(rows)
     }
 
-    async fn delete(&self, name: &str, id: &str) -> Result<(), StorageError> {
+    pub(crate) async fn delete(&self, name: &str, id: &str) -> Result<(), StorageError> {
         if atomic_kind(name) {
             return Err(StorageError::new(
                 "oauth_as store: authoritative records retire through CAS",
@@ -819,35 +826,6 @@ impl Shared {
         }
     }
 
-    async fn sweep_claims(&self) -> Result<(), StorageError> {
-        for name in ["replay", "spent", "shown"] {
-            self.store
-                .register_claims(&kind(name))
-                .map_err(|error| failed("register claim cleanup", error))?;
-        }
-        let mut failure = None;
-        for _ in 0..3 {
-            match self.store.sweep_claims().await {
-                Ok(
-                    None
-                    | Some(
-                        scoped::ClaimSweepOutcome::Complete
-                        | scoped::ClaimSweepOutcome::Page { .. }
-                        | scoped::ClaimSweepOutcome::Contended,
-                    ),
-                ) => {}
-                Ok(Some(outcome)) => {
-                    failure
-                        .get_or_insert_with(|| failed("claim sweep remains unresolved", outcome));
-                }
-                Err(error) => {
-                    failure.get_or_insert_with(|| failed("claim sweep", error));
-                }
-            }
-        }
-        failure.map_or(Ok(()), Err)
-    }
-
     async fn read_cell<T: DeserializeOwned + Default>(
         &self,
         kind_name: &str,
@@ -859,7 +837,7 @@ impl Shared {
         })
     }
 
-    async fn cas_cell<T, R>(
+    pub(crate) async fn cas_cell<T, R>(
         &self,
         kind_name: &str,
         id: &str,
@@ -971,14 +949,14 @@ impl Shared {
         )))
     }
 
-    async fn bucket(&self, client_id: &str) -> Result<Bucket, StorageError> {
+    pub(crate) async fn bucket(&self, client_id: &str) -> Result<Bucket, StorageError> {
         Ok(self
             .read_cell::<Bucket>("bucket", &digest(client_id))
             .await?
             .3)
     }
 
-    async fn update<R>(
+    pub(crate) async fn update<R>(
         &self,
         client_id: &str,
         mut f: impl FnMut(&mut Bucket, u64) -> Result<Swap<R>, StorageError>,
@@ -1359,61 +1337,61 @@ impl Shared {
 }
 
 #[derive(Serialize, Deserialize)]
-struct SessionRow {
-    subject: String,
-    until: u64,
+pub(crate) struct SessionRow {
+    pub(crate) subject: String,
+    pub(crate) until: u64,
     /// The row's own id, so the sweep can delete it.
     #[serde(default)]
-    id: String,
+    pub(crate) id: String,
 }
 
 #[derive(Serialize, Deserialize)]
-struct StakeRow {
-    approve: bool,
-    until: u64,
+pub(crate) struct StakeRow {
+    pub(crate) approve: bool,
+    pub(crate) until: u64,
     /// The row's own id, so the sweep can delete it.
     #[serde(default)]
-    id: String,
+    pub(crate) id: String,
     /// This answer's own nonce: its spend claim names it, so each answer is spent once.
     #[serde(default)]
-    nonce: String,
+    pub(crate) nonce: String,
 }
 
-const LOST_ROW: &str = "oauth_as: a lapsed row was not reclaimed this tick";
-const LOST_REPLAY: &str = "oauth_as: a lapsed replay row was not reclaimed this tick";
+pub(crate) const LOST_ROW: &str = "oauth_as: a lapsed row was not reclaimed this tick";
+pub(crate) const LOST_REPLAY: &str = "oauth_as: a lapsed replay row was not reclaimed this tick";
 
 /// One claimed replay id, kept beside its claim so the sweep can count what it reclaims.
 #[derive(Serialize, Deserialize)]
-struct ReplayRow {
-    id: String,
-    until: u64,
+pub(crate) struct ReplayRow {
+    pub(crate) id: String,
+    pub(crate) until: u64,
 }
 
-const SUBJECT_INDEX: &str = "ix.subj";
+pub(crate) const SUBJECT_INDEX: &str = "ix.subj";
 
 /// A SUBJECT'S INDEX: every client the subject consented to, by client id.
 #[derive(Default, Serialize, Deserialize)]
-struct SubjectIndex {
+pub(crate) struct SubjectIndex {
     #[serde(default)]
-    clients: BTreeMap<String, Indexed>,
+    pub(crate) clients: BTreeMap<String, Indexed>,
 }
 
 /// When a client was indexed under a subject (Unix seconds).
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-struct Indexed {
-    at: u64,
+pub(crate) struct Indexed {
+    pub(crate) at: u64,
 }
 
 /// One credential's index row: the client it was minted for, the credential's digest (the row's
 /// id) and when the row was written.
 #[derive(Serialize, Deserialize)]
-struct IndexRow<S = String> {
+pub(crate) struct IndexRow<S = String> {
     client: S,
     key: S,
     at: u64,
 }
 
-fn bucket_holds(b: &Bucket, ix: &str, key: &str) -> bool {
+pub(crate) fn bucket_holds(b: &Bucket, ix: &str, key: &str) -> bool {
     let is = |value: &str| digest(value) == key;
     match ix {
         "tok" => b.tokens.keys().any(|k| is(k)),
@@ -1434,9 +1412,9 @@ fn bucket_holds(b: &Bucket, ix: &str, key: &str) -> bool {
 /// A token family's barrier, named by its family's digest so the sweep can find it again.
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
-struct FamilyBar {
-    id: String,
-    times: Option<Times>,
+pub(crate) struct FamilyBar {
+    pub(crate) id: String,
+    pub(crate) times: Option<Times>,
 }
 
 pub(crate) struct SharedStorage {
@@ -2010,360 +1988,7 @@ impl Storage for SharedStorage {
     }
 
     async fn sweep_expired(&self, now: SystemTime) -> Result<u64, StorageError> {
-        let s = &self.shared;
-        if let Err(error) = s.sweep_claims().await {
-            tracing::warn!(%error,"oauth_as: native claim cleanup remains owned for the next tick");
-        }
-
-        let mut removed = 0u64;
-        let now_s = secs_of(now);
-        let cells = s.list::<Cell<Bucket>>("bucket").await?;
-        for mut cell in cells.into_iter().filter(|cell| !cell.b.id.is_empty()) {
-            let acts = match sweep_bucket(&mut cell.b, cell.at, now) {
-                Swap::Keep(_) => false,
-                Swap::Write(_) => true,
-                Swap::Retire(_, changed) => {
-                    changed || now_s.saturating_sub(cell.at) > RETIRE_AFTER_SECS
-                }
-            };
-            if !acts {
-                continue;
-            }
-
-            let swept = s
-                .update(&cell.b.id, |b, at| Ok(sweep_bucket(b, at, now)))
-                .await;
-            match swept {
-                Ok(n) => removed += n,
-                Err(e) => {
-                    tracing::warn!(error = %e, "oauth_as: a client's records were not swept this tick; the next tick tries them again");
-                    continue;
-                }
-            }
-        }
-
-        match s.sweep_family_barriers(now).await {
-            Ok(n) => removed += n,
-            Err(e) => {
-                tracing::warn!(error = %e, "oauth_as: lapsed family barriers were not swept this tick")
-            }
-        }
-        let replays = s.sweep_rows::<ReplayRow>("replay", now_s, LOST_REPLAY, |r| (r.until, &r.id));
-        match replays.await {
-            Ok(n) => removed += n,
-            Err(e) => {
-                tracing::warn!(error = %e, "oauth_as: lapsed replay rows were not swept this tick")
-            }
-        }
-        let reclaimed = [
-            s.sweep_user_codes().await,
-            s.sweep_indexes().await,
-            s.sweep_subjects().await,
-            s.sweep_rows::<SessionRow>("session", now_s, LOST_ROW, |r| (r.until, &r.id))
-                .await
-                .map(drop),
-            s.sweep_rows::<StakeRow>("stake", now_s, LOST_ROW, |r| (r.until, &r.id))
-                .await
-                .map(drop),
-        ];
-        for r in reclaimed {
-            if let Err(e) = r {
-                tracing::warn!(error = %e, "oauth_as: lapsed store rows were not reclaimed this tick");
-            }
-        }
-        Ok(removed)
-    }
-}
-
-fn sweep_bucket(b: &mut Bucket, at: u64, now: SystemTime) -> Swap<u64> {
-    fn lapse<V>(map: &mut BTreeMap<String, V>, mut live: impl FnMut(&V) -> bool) -> u64 {
-        let before = map.len();
-        map.retain(|_, v| live(v));
-        (before - map.len()) as u64
-    }
-    let mut n = lapse(&mut b.devices, |g| now < g.expires_at);
-    n += lapse(&mut b.codes, |c| now < c.expires_at);
-    n += lapse(&mut b.pushed, |p| now < p.expires_at);
-    n += lapse(&mut b.tokens, |t| now < t.expires_at);
-    n += lapse(&mut b.refresh, |r| r.expires_at.is_none_or(|exp| now < exp));
-    if b.client_barrier.is_some_and(|t| now >= t.until) {
-        b.client_barrier = None;
-        n += 1;
-    }
-    n += lapse(&mut b.consent_barriers, |t| now < t.until);
-
-    if b.client.as_ref().is_some_and(|c| c.registration.is_some())
-        && b.idle()
-        && secs_of(now).saturating_sub(at) > crate::policy::REGISTERED_CLIENT_IDLE.as_secs()
-    {
-        b.client = None;
-        n += 1;
-    }
-    if b.holds_nothing() {
-        Swap::Retire(n, n > 0)
-    } else {
-        Swap::when(n != 0, n)
-    }
-}
-
-impl Shared {
-    async fn sweep_family_barriers(&self, now: SystemTime) -> Result<u64, StorageError> {
-        let mut removed = 0u64;
-        for cell in self.list::<Cell<FamilyBar>>("family").await? {
-            if cell.b.id.is_empty() || cell.b.times.is_some_and(|t| now < t.until) {
-                continue;
-            }
-
-            let swept = self.cas_cell::<FamilyBar, u64>("family", &cell.b.id, |bar, _| {
-                Ok(match bar.times {
-                    Some(t) if now >= t.until => {
-                        bar.times = None;
-                        Swap::Retire(1, true)
-                    }
-                    Some(_) => Swap::Keep(0),
-                    None => Swap::Retire(0, false),
-                })
-            });
-            match swept.await {
-                Ok(n) => removed += n,
-                Err(e) => {
-                    tracing::warn!(error = %e, "oauth_as: a lapsed family barrier was not swept this tick");
-                }
-            }
-        }
-        Ok(removed)
-    }
-
-    async fn sweep_user_codes(&self) -> Result<(), StorageError> {
-        for cell in self.list::<Cell<Option<String>>>("uc").await? {
-            if cell.id.is_empty() || cell.b.is_some() {
-                continue;
-            }
-            let retired = self.cas_cell::<Option<String>, ()>("uc", &cell.id, |held, _| {
-                Ok(if held.is_none() {
-                    Swap::Retire((), false)
-                } else {
-                    Swap::Keep(())
-                })
-            });
-            if let Err(e) = retired.await {
-                tracing::warn!(error = %e, "oauth_as: a released user code was not retired this tick");
-            }
-        }
-        Ok(())
-    }
-
-    async fn sweep_indexes(&self) -> Result<(), StorageError> {
-        let mut buckets: BTreeMap<String, Option<Bucket>> = BTreeMap::new();
-        let now_s = now_secs();
-        for ix in ["tok", "rt", "code", "par", "dev", "cons", "fam"] {
-            let name = format!("ix.{ix}");
-            for row in self.list::<IndexRow>(&name).await? {
-                if row.key.is_empty() || now_s.saturating_sub(row.at) <= INDEX_GRACE_SECS {
-                    continue;
-                }
-                if !buckets.contains_key(&row.client) {
-                    let bucket = self.bucket(&row.client).await.inspect_err(|e| {
-                        tracing::warn!(error = %e, "oauth_as: a client's index rows were not swept this tick");
-                    });
-                    buckets.insert(row.client.clone(), bucket.ok());
-                }
-                let Some(b) = &buckets[&row.client] else {
-                    continue;
-                };
-                let held = bucket_holds(b, ix, &row.key);
-                if !held {
-                    let retired = async {
-                        let raw = self.authority(&name, &row.key).await?;
-                        let Some(body) = raw.as_deref().map(authority_body).transpose()?.flatten()
-                        else {
-                            return Ok::<_, StorageError>(());
-                        };
-                        let current: IndexRow = decode(&name, body)?;
-
-                        if current.at != row.at || current.client != row.client {
-                            return Ok(());
-                        }
-                        let bucket_id = digest(&row.client);
-                        let bucket = self.authority("bucket", &bucket_id).await?;
-
-                        let current_bucket: Option<Cell<Bucket>> = bucket
-                            .as_deref()
-                            .map(authority_body)
-                            .transpose()?
-                            .flatten()
-                            .map(|body| decode("bucket", body))
-                            .transpose()?;
-                        let held = current_bucket
-                            .as_ref()
-                            .is_some_and(|c| bucket_holds(&c.b, ix, &row.key));
-                        if held {
-                            return Ok(());
-                        }
-                        let mut request =
-                            Self::candidate(&atomic_schema(&name), &row.key, raw, tombstone()?);
-                        Arc::make_mut(&mut request).predicates.push(Predicate {
-                            schema: atomic_schema("bucket"),
-                            key: bucket_id.into_bytes(),
-                            expected: bucket.map_or(Expected::Absent, Expected::Bytes),
-                        });
-                        self.submit(request).await.map(drop)
-                    }
-                    .await;
-                    if let Err(e) = retired {
-                        tracing::warn!(error = %e, "oauth_as: an index row was not reclaimed this tick");
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    async fn sweep_subjects(&self) -> Result<(), StorageError> {
-        self.sweep_subjects_at(now_secs()).await
-    }
-
-    async fn sweep_subjects_at(&self, now_s: u64) -> Result<(), StorageError> {
-        let mut buckets: BTreeMap<String, Option<Bucket>> = BTreeMap::new();
-        for cell in self.list::<Cell<SubjectIndex>>(SUBJECT_INDEX).await? {
-            if cell.id.is_empty() {
-                continue;
-            }
-            let mut gone: BTreeMap<String, Indexed> = BTreeMap::new();
-            for (client, indexed) in &cell.b.clients {
-                if now_s.saturating_sub(indexed.at) <= INDEX_GRACE_SECS {
-                    continue;
-                }
-                if !buckets.contains_key(client) {
-                    let bucket = self.bucket(client).await.inspect_err(|e| {
-                        tracing::warn!(error = %e, "oauth_as: a client's subject index entries were not swept this tick");
-                    });
-                    buckets.insert(client.clone(), bucket.ok());
-                }
-                let held = buckets[client]
-                    .as_ref()
-                    .is_none_or(|b| b.consents.values().any(|c| digest(&c.subject) == cell.id));
-                if !held {
-                    gone.insert(client.clone(), *indexed);
-                }
-            }
-            if gone.is_empty() && !cell.b.clients.is_empty() {
-                continue;
-            }
-            let swept = self.sweep_subject(&cell.id, &gone);
-            if let Err(e) = swept.await {
-                tracing::warn!(error = %e, "oauth_as: a subject's index was not swept this tick");
-            }
-        }
-        Ok(())
-    }
-
-    async fn sweep_subject(
-        &self,
-        id: &str,
-        gone: &BTreeMap<String, Indexed>,
-    ) -> Result<(), StorageError> {
-        let now = now_secs();
-        for attempt in 0..SWAP_ATTEMPTS {
-            let raw = self.authority(SUBJECT_INDEX, id).await?;
-            let cell: Option<Cell<SubjectIndex>> = raw
-                .as_deref()
-                .map(authority_body)
-                .transpose()?
-                .flatten()
-                .map(|body| decode(SUBJECT_INDEX, body))
-                .transpose()?;
-            let Some(mut cell) = cell else {
-                return Ok(());
-            };
-            let mut guards = Vec::new();
-            let mut changed = false;
-            for (client, indexed) in gone {
-                if cell.b.clients.get(client) != Some(indexed) {
-                    continue;
-                }
-                let bucket_id = digest(client);
-                let snapshot = match self.authority("bucket", &bucket_id).await {
-                    Ok(raw) => raw,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "oauth_as: a client's subject entry could not be rejudged");
-                        continue;
-                    }
-                };
-                let bucket: Option<Cell<Bucket>> = match snapshot
-                    .as_deref()
-                    .map(authority_body)
-                    .transpose()?
-                    .flatten()
-                    .map(|body| decode("bucket", body))
-                    .transpose()
-                {
-                    Ok(bucket) => bucket,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "oauth_as: a client's subject entry could not be rejudged");
-                        continue;
-                    }
-                };
-                if bucket.is_some_and(|b| b.b.consents.values().any(|c| digest(&c.subject) == id)) {
-                    continue;
-                }
-                cell.b.clients.remove(client);
-                changed = true;
-                guards.push(Predicate {
-                    schema: atomic_schema("bucket"),
-                    key: bucket_id.into_bytes(),
-                    expected: snapshot.map_or(Expected::Absent, Expected::Bytes),
-                });
-            }
-            let retired =
-                cell.b.clients.is_empty() && now.saturating_sub(cell.at) > RETIRE_AFTER_SECS;
-            if !changed && !retired {
-                return Ok(());
-            }
-            let value = if retired {
-                tombstone()?
-            } else {
-                cell.v = cell.v.checked_add(1).ok_or_else(|| {
-                    StorageError::new("oauth_as store: subject index version exhausted")
-                })?;
-                cell.at = now;
-                cell.id.clear();
-                cell.id.push_str(id);
-                encode(SUBJECT_INDEX, &cell)?
-            };
-            let mut request = Self::candidate(&atomic_schema(SUBJECT_INDEX), id, raw, value);
-            Arc::make_mut(&mut request).predicates.extend(guards);
-            match self.submit(request).await? {
-                Decision::Applied => return Ok(()),
-                Decision::ConditionConflict => {
-                    tokio::time::sleep(Duration::from_millis(u64::from(attempt.min(20)))).await
-                }
-            }
-        }
-        Err(StorageError::new(
-            "oauth_as store: subject sweep repeatedly conflicted",
-        ))
-    }
-
-    async fn sweep_rows<R: DeserializeOwned>(
-        &self,
-        kind_name: &str,
-        now_s: u64,
-        lost: &str,
-        of: impl Fn(&R) -> (u64, &String),
-    ) -> Result<u64, StorageError> {
-        let mut removed = 0u64;
-        for row in self.list::<R>(kind_name).await? {
-            let (until, id) = of(&row);
-            if until > now_s || id.is_empty() {
-                continue;
-            }
-            match self.delete(kind_name, id).await {
-                Ok(()) => removed += 1,
-                Err(e) => tracing::warn!(error = %e, "{lost}"),
-            }
-        }
-        Ok(removed)
+        self.shared.sweep_expired(now).await
     }
 }
 
