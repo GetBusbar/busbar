@@ -856,6 +856,12 @@ impl PluginRegistry {
         {
             let name = &p.manifest.name;
             let Some(stated) = p.manifest.stated_rendering()? else {
+                // A MIN-3 transport image states no Statement and exports no door: the MIN-3 boot admits it and
+                // opens it through `instance::Registry::open_transport` (the root's `min3_boot`), so this path
+                // leaves it alone (W2-SW-TRANSPORT). Anything else that states no Statement is still refused.
+                if is_min3(&p.lib_bytes, busbar_plugin_abi::types::KindCode::Transport) {
+                    continue;
+                }
                 return Err(format!(
                     "transport plugin '{name}' states no Statement in its signed manifest, so it \
                      exports no memory-ABI door (`busbar_plugin_door`) this host admits: a \
@@ -918,6 +924,12 @@ impl PluginRegistry {
         let planes = self.loadable().iter();
         for p in planes.filter(|p| p.manifest.kind == kind::PLANE) {
             let Some(c) = p.candidate()? else {
+                // A MIN-3 plane image states no Statement and exports no door: the MIN-3 registry admits and opens
+                // it (the root's `min3_boot`), so this axis leaves it alone (W2-SW-PLANE). Anything else that
+                // states no Statement is still refused here.
+                if is_min3(&p.lib_bytes, busbar_plugin_abi::types::KindCode::Plane) {
+                    continue;
+                }
                 return Err(format!(
                     "plugin '{}': states no Statement: a plane loads only through its memory-ABI \
                      door (`busbar_plugin_door`)",
@@ -928,6 +940,12 @@ impl PluginRegistry {
         }
         Ok(set)
     }
+}
+
+/// Whether `lib` is a MIN-3 image of `kind`: exactly one valid stamp (IF §7.4), naming that kind. Admission
+/// (`admit::admit_bytes`) re-verifies it whole; this only tells a door axis (planes, transports) whose image it is.
+fn is_min3(lib: &[u8], kind: busbar_plugin_abi::types::KindCode) -> bool {
+    crate::scan::stamp(lib).is_ok_and(|stamp| stamp.kind == kind as u32)
 }
 
 fn cross_claim(rows: &[LoadablePlugin], new: usize) -> Result<Vec<(usize, String)>, String> {

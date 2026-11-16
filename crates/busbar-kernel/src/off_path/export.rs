@@ -139,7 +139,28 @@ pub(crate) fn resolve_projection(
     }
 
     let subscribed: Vec<ExportStream> = match stream_tokens {
-        None => module_carries.unwrap_or(PRODUCED_STREAMS).to_vec(),
+        None => {
+            let produced: Vec<ExportStream> = module_carries
+                .unwrap_or(PRODUCED_STREAMS)
+                .iter()
+                .copied()
+                .filter(|s| stream_produced(*s))
+                .collect();
+            if produced.is_empty() {
+                errors.push(
+                    coded::config_export_invalid(format!(
+                        "export.{name}.streams: omitted, and `module: {module}` carries only \
+                         streams this release has NO PRODUCER for ({}), so the sink would \
+                         deliver nothing while reporting success. The streams this release \
+                         produces are: {}.",
+                        tokens(module_carries.unwrap_or(&[])),
+                        tokens(PRODUCED_STREAMS)
+                    ))
+                    .into(),
+                );
+            }
+            produced
+        }
         Some([]) => {
             errors.push(
                 coded::config_export_invalid(format!(

@@ -2359,7 +2359,8 @@ impl DataRoutes {
         let app_for_metrics = Arc::clone(&app);
         let node = self.post.node();
         let unit = admission.map_or_else(|| node.mint(), |admission| admission.unit_key());
-        if let Some(id) = node.unit_id(unit) {
+        let unit_id = node.unit_id(unit);
+        if let Some(id) = unit_id {
             caller.minted(id);
         }
         let arrived = node.arrived();
@@ -2510,6 +2511,7 @@ impl DataRoutes {
                     busbar_core_connector::framer::now()
                         .saturating_duration_since(started)
                         .as_secs_f64(),
+                    unit_id.as_ref().map(|id| id as &dyn std::fmt::Display),
                 );
             }
         }

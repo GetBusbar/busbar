@@ -220,6 +220,13 @@ fn failed(e: &io::Error) -> IoRefusal {
     IoRefusal::Failed(crate::cold::lines::io_error_text(e))
 }
 
+/// A TCP socket's address, as `std` answers it.
+fn inet(addr: io::Result<socket2::SockAddr>) -> io::Result<SocketAddr> {
+    addr?
+        .as_socket()
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))
+}
+
 /// What a non-blocking attempt answered: progress, nothing yet (wait), or the error.
 fn polled<T>(p: Poll<io::Result<T>>) -> Poll<IoResult<T>> {
     p.map(|r| r.map_err(|e| failed(&e)))
@@ -332,7 +339,7 @@ impl HostIo {
     pub fn take_stream(&self, id: u64) -> Option<TcpStream> {
         let entry = Arc::into_inner(self.handles.release(id, |_| true)?)?;
         match entry.kind {
-            Kind::Stream { sock, .. } => match sock.deregister() {
+            Kind::Stream { sock, .. } => match sock.deregister().ok()? {
                 Sock::Tcp(s) => Some(s),
                 #[cfg(unix)]
                 Sock::Unix(_) => None,
@@ -468,7 +475,7 @@ impl HostListener {
 fn ended(e: &Entry) {
     match &e.kind {
         Kind::Listener(listener) => {
-            let _ = socket2::SockRef::from(listener.get_ref()).shutdown(Shutdown::Both);
+            let _ = listener.socket().shutdown(Shutdown::Both);
         }
         Kind::Program(p) => {
             let _ = p
@@ -688,7 +695,7 @@ impl IoHost for HostIo {
     fn shut(&self, owner: u64, id: u64, how: u32) -> IoResult<()> {
         let e = self.entry(owner, id)?;
         match &e.kind {
-            Kind::Stream { sock, .. } => match sock.get_ref().shutdown(shutdown(how)) {
+            Kind::Stream { sock, .. } => match sock.socket().shutdown(shutdown(how)) {
                 Err(err) if err.kind() != io::ErrorKind::NotConnected => Err(failed(&err)),
                 _ => Ok(()),
             },
@@ -808,19 +815,23 @@ impl IoHost for HostIo {
     fn ends(&self, owner: u64, id: u64) -> IoResult<Ends> {
         let e = self.entry(owner, id)?;
         match &e.kind {
-            Kind::Stream { sock, .. } => match sock.get_ref() {
-                Sock::Tcp(s) => Ok(Ends {
-                    port: s.local_addr().map_err(|err| failed(&err))?.port(),
-                    peer: crate::off_path::hostio::peer_text(
-                        &s.peer_addr().map_err(|err| failed(&err))?,
-                    ),
+            Kind::Stream { sock, .. } => {
+                let s = sock.socket();
+                // A unix-domain stream's ends are paths, not ports: it answers the defaults.
+                let Some(local) = s.local_addr().map_err(|err| failed(&err))?.as_socket() else {
+                    return Ok(Ends::default());
+                };
+                let peer = inet(s.peer_addr()).map_err(|err| failed(&err))?;
+                Ok(Ends {
+                    port: local.port(),
+                    peer: crate::off_path::hostio::peer_text(&peer),
                     exit: None,
-                }),
-                #[cfg(unix)]
-                Sock::Unix(_) => Ok(Ends::default()),
-            },
+                })
+            }
             Kind::Listener(l) => Ok(Ends {
-                port: l.get_ref().local_addr().map_err(|err| failed(&err))?.port(),
+                port: inet(l.socket().local_addr())
+                    .map_err(|err| failed(&err))?
+                    .port(),
                 ..Ends::default()
             }),
 

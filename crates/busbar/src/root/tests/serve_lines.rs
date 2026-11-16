@@ -480,3 +480,20 @@ async fn an_existing_input_error_survives_the_output_drain_timeout() {
     assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
     assert!(probe.dropped.load(std::sync::atomic::Ordering::SeqCst));
 }
+
+/// IF §12.23 rule 1: the line carrier binds the one ROUTE_LINE route across the served plane instances; none = no
+/// line serving, two or more = refused at start naming both configured instance names.
+#[test]
+fn the_one_line_plane_is_bound_and_two_are_refused_naming_both() {
+    assert_eq!(one_line_plane(&[]), Ok(None));
+    assert_eq!(
+        one_line_plane(&[("llm", false), ("mcp", true)]),
+        Ok(Some(1))
+    );
+    assert_eq!(one_line_plane(&[("llm", false)]), Ok(None));
+    let refusal = one_line_plane(&[("mcp", true), ("llm", false), ("mcp-2", true)])
+        .expect_err("two line planes are ambiguous");
+    assert!(refusal.contains("`mcp`"), "{refusal}");
+    assert!(refusal.contains("`mcp-2`"), "{refusal}");
+    assert!(refusal.contains("first line"), "{refusal}");
+}

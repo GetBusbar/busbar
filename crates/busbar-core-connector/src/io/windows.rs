@@ -3,13 +3,16 @@
 
 //! Native IOCP readiness. Tokio owns a duplicate of the socket while the host keeps its
 //! original descriptor for nonblocking operations and transfers. Every custom operation goes
-//! through `try_io`, including Mio's Windows rearm path after `WouldBlock`.
+//! through `try_io`, including Mio's Windows rearm path after `WouldBlock`, on a [`SockRef`] of
+//! the original descriptor.
 
 use std::io;
 use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
+use std::os::windows::io::AsSocket;
 use std::task::{Context, Poll};
 
-use tokio::io::Interest;
+use socket2::SockRef;
+use tokio::io::{Interest, ReadBuf};
 
 use super::{enter_process_runtime, Direction, NOT_ON_A_WORKER};
 
@@ -20,7 +23,7 @@ impl<T: private::Source> Source for T {}
 mod private {
     use super::*;
 
-    pub trait Source {
+    pub trait Source: AsSocket {
         fn registration(&self) -> io::Result<Registration>;
     }
 }
@@ -105,16 +108,15 @@ impl<T: Source> Registered<T> {
     }
 
     /// Remove the IOCP registration and return the original socket.
-    #[must_use]
-    pub fn deregister(self) -> T {
+    pub fn deregister(self) -> io::Result<T> {
         drop(self.registration);
-        self.io
+        Ok(self.io)
     }
 
-    /// Borrow the original socket without changing its registration.
+    /// The original socket, lent for the borrow (no registration change).
     #[must_use]
-    pub fn get_ref(&self) -> &T {
-        &self.io
+    pub fn socket(&self) -> SockRef<'_> {
+        SockRef::from(&self.io)
     }
 
     /// Perform a custom nonblocking operation, rearming IOCP after `WouldBlock`.
@@ -122,7 +124,7 @@ impl<T: Source> Registered<T> {
         &self,
         dir: Direction,
         cx: &mut Context<'_>,
-        mut op: impl FnMut(&T) -> io::Result<R>,
+        mut op: impl FnMut(&socket2::Socket) -> io::Result<R>,
     ) -> Poll<io::Result<R>> {
         let interest = match dir {
             Direction::Read => Interest::READABLE,
@@ -131,8 +133,8 @@ impl<T: Source> Registered<T> {
         loop {
             std::task::ready!(self.poll_ready(dir, cx))?;
             let result = match &self.registration.0 {
-                Backend::Stream(s) => s.try_io(interest, || op(&self.io)),
-                Backend::Datagram(s) => s.try_io(interest, || op(&self.io)),
+                Backend::Stream(s) => s.try_io(interest, || op(&self.socket())),
+                Backend::Datagram(s) => s.try_io(interest, || op(&self.socket())),
                 Backend::Listener(_) => unreachable!("poll_ready refuses listener I/O"),
             };
             match result {
@@ -149,9 +151,26 @@ impl<T: Source> Registered<T> {
         dir: Direction,
         _want: usize,
         cx: &mut Context<'_>,
-        op: impl FnMut(&T) -> io::Result<usize>,
+        op: impl FnMut(&socket2::Socket) -> io::Result<usize>,
     ) -> Poll<io::Result<usize>> {
         self.poll_io(dir, cx, op)
+    }
+}
+
+impl Registered<UdpSocket> {
+    /// The next datagram into `buf` and the peer it came from; Pending with `cx`'s waker
+    /// registered.
+    pub fn poll_recv_from(
+        &self,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<io::Result<(usize, SocketAddr)>> {
+        let Backend::Datagram(socket) = &self.registration.0 else {
+            unreachable!("a UdpSocket has a datagram registration")
+        };
+        let mut read = ReadBuf::new(buf);
+        let from = std::task::ready!(socket.poll_recv_from(cx, &mut read))?;
+        Poll::Ready(Ok((read.filled().len(), from)))
     }
 }
 

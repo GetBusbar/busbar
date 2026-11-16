@@ -149,7 +149,7 @@ fn export_forms_match_actual_projection_resolver_and_producer_capabilities() {
     for stream in caps["streams"].as_array().unwrap() {
         assert_eq!(
             stream["fields_override"],
-            stream["name"] == "events",
+            stream["name"] == "events" || stream["name"] == "logs",
             "actual current producer restrictions"
         );
     }

@@ -332,6 +332,7 @@ fn finish_inner(
 /// The request-log export record, dated by the wall clock when a sink wants it.
 fn export_request_log(ingress_protocol: &str, pool: &str, outcome: &str, latency_ms: u64) {
     crate::export::deliver_request_log(&crate::export::RequestLogFacts {
+        correlation_id: None,
         ts: busbar_kernel::store::now(),
         ingress_protocol,
         pool,

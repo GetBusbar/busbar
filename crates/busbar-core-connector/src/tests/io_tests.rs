@@ -49,7 +49,7 @@ fn a_read_is_not_ready_until_the_far_end_writes() {
             reg.poll_io(Direction::Read, &mut cx, |mut s| s.read(&mut buf)),
             Poll::Pending
         ));
-        let mut back = reg.deregister();
+        let mut back = reg.deregister().unwrap();
         let _ = back.set_nonblocking(false);
         b.write_all(b"x").unwrap();
         let mut one = [0_u8; 1];
