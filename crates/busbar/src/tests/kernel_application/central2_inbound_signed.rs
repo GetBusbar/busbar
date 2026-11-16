@@ -128,7 +128,6 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
             "models": {},
             "auth": { "chain": ["keys"], "admin_auth": [], "signing_key": { "file": signing } },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -159,6 +158,8 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
         });
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let auth_config = config.auth.clone().expect("the fixture configures auth");
+    let destinations = config.destinations();
     let native_config = config;
     let native_plugins = plugin_config;
     let crate::root::min3_boot::fixture::Fixture {
@@ -168,7 +169,7 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
         .await
         .expect("actual Store opens for native startup");
     let native_core = crate::root::real_store::core_over(native_core).await;
-    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+    let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         native_config,
         native_plugins,
         None,
@@ -177,7 +178,7 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
         (None, None),
         None,
         &rules,
-        Some(native_core),
+        Some(native_core.clone()),
         true,
     )
     .await
@@ -191,9 +192,33 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
     if let Some(rotate) = rotate {
         rotate.await;
     }
+    // Open the actual credential readers over this generation's completed governance and
+    // persistence owners. The general fixture dispatcher has no credential authority.
+    let services = crate::root::serve::compose(
+        crate::root::connector::guard_for(&destinations).expect("fixture destination policy"),
+        &app,
+        native_core,
+        &[],
+    );
+    let dispatcher = Arc::new(crate::root::dispatch::build(1, &services));
+    let registry = Arc::new(crate::root::boot::linked_registry());
+    let axis: Arc<dyn busbar_contract::auth_calls::AuthAxis> = Arc::new(
+        busbar_plugin_loader::auth_axis::AuthRows::new(registry.clone(), dispatcher)
+            .with_conns(|| crate::root::connector::admit(crate::root::connector::the().clone())),
+    );
+    let mut instances = busbar_kernel::auth::instances::AuthInstances::default();
+    app.auth = Arc::new(
+        busbar_kernel::auth::AuthMiddleware::build_on(
+            &auth_config,
+            registry.as_ref(),
+            &app.secret_resolver,
+            &mut instances,
+            &|| Some(axis.clone()),
+        )
+        .expect("real signed credential readers open over the generation services"),
+    );
+    app.auth_instances = instances.sealed();
     let app = Arc::new(app);
-    let credential_owner = Arc::new(busbar_kernel::state::AppHandle::new(app.clone()));
-    crate::dist_root_install::bind_credentials_once(credential_owner.clone());
     let gov = app
         .governance
         .as_ref()
