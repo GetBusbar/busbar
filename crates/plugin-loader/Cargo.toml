@@ -98,6 +98,8 @@ futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 olpc-cjson = { workspace = true }
+# The canonical writer of release_trust: `sonic_rs::Serializer` over olpc-cjson's formatter (SERDE-JSON-EXIT r2 §2).
+sonic-rs = { workspace = true }
 time = { workspace = true, features = ["macros", "parsing"] }
 tracing = { workspace = true }
 zeroize = { workspace = true }

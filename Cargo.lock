@@ -661,6 +661,7 @@ dependencies = [
  "olpc-cjson",
  "serde",
  "serde_json",
+ "sonic-rs",
  "syn 2.0.117",
  "tar",
  "time",
@@ -1821,7 +1822,7 @@ version = "0.1.4"
 source = "git+https://github.com/MattJackson/olpc-cjson?rev=0a96a65b1122a2bbb93fd36cae3b36dd2b045c7e#0a96a65b1122a2bbb93fd36cae3b36dd2b045c7e"
 dependencies = [
  "serde",
- "serde_json",
+ "sonic-rs",
  "unicode-normalization",
 ]
 
