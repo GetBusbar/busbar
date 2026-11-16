@@ -3689,19 +3689,16 @@ async fn try_publish_door(
 
     let store = crate::root::real_store::core().await;
     let gov = gov_with_signer(store.clone(), None).await;
-    let services = crate::root::serve::LateServices::new();
     let kernel = Arc::new(
         busbar_kernel::host_services::KernelServices::new()
             .with_signer(gov.clone())
+            .with_persistence(store)
             .with_pool(Arc::new(busbar_kernel::host_services::BlockingPool::new(
                 tokio::runtime::Handle::current(),
                 busbar_kernel::host_records::QUEUE_CAP,
             ))),
     );
-    assert!(kernel.attach_persistence(store));
-    services
-        .install_kernel(kernel.clone(), kernel.clone())
-        .unwrap();
+    let services = crate::root::serve::Services::serving(kernel.clone());
     let dispatcher = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
         services.served(),

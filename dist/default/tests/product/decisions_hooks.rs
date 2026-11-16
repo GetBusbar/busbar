@@ -284,11 +284,6 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
     );
     let sections: BTreeMap<_, _> = deploy.door_sections();
     let judge = crate::root::connector::dest_judge(&cfg);
-    let late = crate::root::serve::LateServices::new();
-    let (credentials, credential_handle) = crate::root::credentials::AppCredentials::late();
-    crate::root::serve::compose(judge, &late, credentials);
-    let dispatcher = Arc::new(crate::root::dispatch::build(2, &late));
-    crate::root::connector::install_io(&dispatcher);
     let mut plugins = busbar_kernel::config::PluginsCfg {
         enabled: true,
         dir: directory.to_string_lossy().into_owned(),
@@ -362,13 +357,12 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
         .iter()
         .map(|d| &d.declaration)
         .collect();
-    crate::root::serve::attach(
-        &late,
-        Some(&gov),
-        Some(gov.clone()),
-        &app.demotion_record,
-        &declarations,
-    );
+    let core = gov
+        .core_store_handle()
+        .expect("actual signed Store custody");
+    let services = crate::root::serve::compose(judge, &app, core, &declarations);
+    let dispatcher = Arc::new(crate::root::dispatch::build(2, &services));
+    crate::root::connector::install_io(&dispatcher);
     let connector = crate::root::connector::the();
     let row =
         LinkedRow::of(busbar_plane_decisions::door).expect("the actual decisions door statement");
@@ -426,7 +420,7 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
     let mut composed = crate::root::serve::compose_planes(
         &[(instance.to_owned(), plane)],
         &dispatcher,
-        &late,
+        &services,
         &sections,
         None,
         &money,
@@ -449,7 +443,6 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
     .expect("actual decisions routes mount");
     let (router, _, handle) =
         busbar_kernel::build_split_routers_serving(app, doors, 1 << 20, 0, false);
-    credential_handle.set(handle.clone());
     Served {
         router,
         token: token.expose(&busbar_kernel::seal::lend()).to_owned(),

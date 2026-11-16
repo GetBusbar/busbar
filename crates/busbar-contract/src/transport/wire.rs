@@ -464,11 +464,22 @@ pub type SecuredIoFut<'a> = Pin<Box<dyn Future<Output = std::io::Result<SecuredI
 
 /// A secured stream and the peer leaf certificate verified by its handshake.
 pub struct SecuredIo {
+    /// The stream returned by the completed security handshake.
     pub io: Box<dyn RawIo>,
+    /// Verified peer leaf certificate bytes, or empty when no peer certificate is supplied.
     pub peer_certificate: Box<[u8]>,
 }
 
+impl fmt::Debug for SecuredIo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SecuredIo")
+            .field("peer_certificate_bytes", &self.peer_certificate.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl SecuredIo {
+    /// Wrap a secured stream whose handshake supplies no peer certificate to the caller.
     pub fn anonymous(io: Box<dyn RawIo>) -> Self {
         Self {
             io,
