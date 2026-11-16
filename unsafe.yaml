@@ -157,7 +157,7 @@ interim:
   crates/busbar-contract/src/abi/transport/mod.rs: { tokens: 24, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/lib.rs: { tokens: 1, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
   crates/busbar-contract/src/persistence/archive.rs: { tokens: 1, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
-  crates/busbar-contract/src/persistence/archive/spool.rs: { tokens: 8, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
+  crates/busbar-contract/src/persistence/archive/spool.rs: { tokens: 5, by: "PLATFORMS OQ-5 (the Windows owner-DACL create; the unix half is rustix)" }
   crates/busbar-contract/src/plugin_settings/owned.rs: { tokens: 3, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
   crates/busbar-contract/src/tests/allocation_observer_tests.rs: { tokens: 4, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
   crates/busbar-contract/src/tests/allocation_observer.rs: { tokens: 18, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
@@ -185,7 +185,6 @@ interim:
   crates/busbar-core-connector/src/conns.rs: { tokens: 5, by: "W1-U1 (counting swap, Q24)" }
   crates/busbar-core-connector/src/datagram.rs: { tokens: 1, by: "W1-U1 (counting swap, Q24)" }
   crates/busbar-core-connector/src/framed_stream.rs: { tokens: 1, by: "W1-U1 (counting swap, Q24)" }
-  crates/busbar-core-connector/src/io/unix.rs: { tokens: 2, by: "W1-U1 (typed tokio sockets; QB)" }
   crates/busbar-core-connector/src/test_support_adoption.rs: { tokens: 3, by: "W1-U1 (counting swap, Q24)" }
   crates/busbar-core-connector/src/tests/callback_waker.rs: { tokens: 9, by: "W1-U1 (counting swap, Q24)" }
   crates/busbar-core-connector/src/tests/compose_absorb_fail_tests.rs: { tokens: 1, by: "W1-U1 (counting swap, Q24)" }
