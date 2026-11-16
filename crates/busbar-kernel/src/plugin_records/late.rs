@@ -8,7 +8,6 @@
 //! installs the one records owner (once, after the store opens and before the first 2c instance), and from then
 //! on it is that owner. Clones share the one slot.
 
-use core::future::Future;
 use std::sync::{Arc, OnceLock};
 
 use busbar_plugin_abi::host_side::caller::Caller;
@@ -44,106 +43,92 @@ impl<R: PluginRecords> LateRecords<R> {
 }
 
 impl<R: PluginRecords> PluginRecords for LateRecords<R> {
-    fn get(
+    async fn get(
         &self,
         who: &Caller<'_>,
         scope: Scope,
         key: &[u8],
         sink: &mut (dyn FnMut(&[u8]) + Send),
-    ) -> impl Future<Output = Result<bool, RecordsDenied>> + Send {
-        async move {
-            match self.slot.get() {
-                Some(records) => records.get(who, scope, key, sink).await,
-                None => Err(RecordsDenied::Unavailable),
-            }
+    ) -> Result<bool, RecordsDenied> {
+        match self.slot.get() {
+            Some(records) => records.get(who, scope, key, sink).await,
+            None => Err(RecordsDenied::Unavailable),
         }
     }
-    fn put(
+    async fn put(
         &self,
         who: &Caller<'_>,
         scope: Scope,
         key: &[u8],
         value: &[u8],
         ttl_s: u64,
-    ) -> impl Future<Output = Result<(), RecordsDenied>> + Send {
-        async move {
-            match self.slot.get() {
-                Some(records) => records.put(who, scope, key, value, ttl_s).await,
-                None => Err(RecordsDenied::Unavailable),
-            }
+    ) -> Result<(), RecordsDenied> {
+        match self.slot.get() {
+            Some(records) => records.put(who, scope, key, value, ttl_s).await,
+            None => Err(RecordsDenied::Unavailable),
         }
     }
-    fn claim(
+    async fn claim(
         &self,
         who: &Caller<'_>,
         scope: Scope,
         key: &[u8],
         value: &[u8],
         ttl_s: u64,
-    ) -> impl Future<Output = Result<bool, RecordsDenied>> + Send {
-        async move {
-            match self.slot.get() {
-                Some(records) => records.claim(who, scope, key, value, ttl_s).await,
-                None => Err(RecordsDenied::Unavailable),
-            }
+    ) -> Result<bool, RecordsDenied> {
+        match self.slot.get() {
+            Some(records) => records.claim(who, scope, key, value, ttl_s).await,
+            None => Err(RecordsDenied::Unavailable),
         }
     }
-    fn del(
+    async fn del(
         &self,
         who: &Caller<'_>,
         scope: Scope,
         key: &[u8],
-    ) -> impl Future<Output = Result<(), RecordsDenied>> + Send {
-        async move {
-            match self.slot.get() {
-                Some(records) => records.del(who, scope, key).await,
-                None => Err(RecordsDenied::Unavailable),
-            }
+    ) -> Result<(), RecordsDenied> {
+        match self.slot.get() {
+            Some(records) => records.del(who, scope, key).await,
+            None => Err(RecordsDenied::Unavailable),
         }
     }
-    fn list(
+    async fn list(
         &self,
         who: &Caller<'_>,
         scope: Scope,
         prefix: &[u8],
         limit: u32,
         sink: &mut (dyn FnMut(&[u8], &[u8]) + Send),
-    ) -> impl Future<Output = Result<u32, RecordsDenied>> + Send {
-        async move {
-            match self.slot.get() {
-                Some(records) => records.list(who, scope, prefix, limit, sink).await,
-                None => Err(RecordsDenied::Unavailable),
-            }
+    ) -> Result<u32, RecordsDenied> {
+        match self.slot.get() {
+            Some(records) => records.list(who, scope, prefix, limit, sink).await,
+            None => Err(RecordsDenied::Unavailable),
         }
     }
-    fn commit(
+    async fn commit(
         &self,
         who: &Caller<'_>,
         scope: Scope,
         ops: &[CommitOp<'_>],
-    ) -> impl Future<Output = Result<CommitOutcome, RecordsDenied>> + Send {
-        async move {
-            match self.slot.get() {
-                Some(records) => records.commit(who, scope, ops).await,
-                None => Err(RecordsDenied::Unavailable),
-            }
+    ) -> Result<CommitOutcome, RecordsDenied> {
+        match self.slot.get() {
+            Some(records) => records.commit(who, scope, ops).await,
+            None => Err(RecordsDenied::Unavailable),
         }
     }
-    fn append(
+    async fn append(
         &self,
         who: &Caller<'_>,
         scope: Scope,
         chain: &[u8],
         entry: &[u8],
-    ) -> impl Future<Output = Result<u64, RecordsDenied>> + Send {
-        async move {
-            match self.slot.get() {
-                Some(records) => records.append(who, scope, chain, entry).await,
-                None => Err(RecordsDenied::Unavailable),
-            }
+    ) -> Result<u64, RecordsDenied> {
+        match self.slot.get() {
+            Some(records) => records.append(who, scope, chain, entry).await,
+            None => Err(RecordsDenied::Unavailable),
         }
     }
-    fn chain(
+    async fn chain(
         &self,
         who: &Caller<'_>,
         scope: Scope,
@@ -151,12 +136,10 @@ impl<R: PluginRecords> PluginRecords for LateRecords<R> {
         after: u64,
         limit: u32,
         sink: &mut (dyn FnMut(u64, &[u8]) + Send),
-    ) -> impl Future<Output = Result<ChainRead, RecordsDenied>> + Send {
-        async move {
-            match self.slot.get() {
-                Some(records) => records.chain(who, scope, chain, after, limit, sink).await,
-                None => Err(RecordsDenied::Unavailable),
-            }
+    ) -> Result<ChainRead, RecordsDenied> {
+        match self.slot.get() {
+            Some(records) => records.chain(who, scope, chain, after, limit, sink).await,
+            None => Err(RecordsDenied::Unavailable),
         }
     }
 }

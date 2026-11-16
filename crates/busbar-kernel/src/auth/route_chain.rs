@@ -38,7 +38,7 @@ pub(crate) fn class_word(class: u32) -> Option<&'static str> {
 /// naming the route. `mask` = 0 (a describe that offers no class) is refused the same way.
 pub fn effective_classes(route: &str, mask: u32, configured: Option<u32>) -> Result<u32, String> {
     let Some(set) = configured else {
-        let lowest = mask & mask.wrapping_neg();
+        let lowest = mask.isolate_lowest_one();
         if lowest == 0 {
             return Err(format!("route '{route}' offers no auth class"));
         }

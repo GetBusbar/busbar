@@ -33,7 +33,7 @@ pub fn resolve_strategy(
             .any(|(image, ws)| *image == identity && ws.contains(&word))
     };
     if let Some((_, identity)) = configured_hooks.iter().find(|(name, _)| *name == word) {
-        return match declares(*identity) {
+        return match declares(identity) {
             true => Ok(binding(word, false)),
             false => Err(text(&[
                 "hook instance `",
