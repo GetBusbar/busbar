@@ -23,6 +23,7 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
+use busbar_contract::secure::SecureString;
 use busbar_contract::yaml::{self, MappingExt, Pairs, Value, ValueExt};
 use zeroize::Zeroize;
 
@@ -49,13 +50,13 @@ pub struct CoreCfg {
 }
 
 /// What instance `index`'s `open` settled. `path` is core's path of the instance's block in the
-/// document (`["store"]`, `["auth", "<name>"]`); `settings` replaces its `settings` bag (`None`: the
-/// bag as written), secret references already restored to the operator's form.
+/// document (`["store"]`, `["auth", "<name>"]`); `settings` is the text of the value that replaces its `settings` bag (`None`: the
+/// bag as written; guarded text, never a readable tree), secret references already restored to the operator's form.
 #[derive(Debug, Clone)]
 pub struct Settled {
     pub index: u32,
     pub path: Vec<String>,
-    pub settings: Option<Value>,
+    pub settings: Option<SecureString>,
     pub core_cfg: Vec<CoreCfg>,
 }
 
@@ -276,7 +277,13 @@ fn settle_block(
     let index = answer.index;
     let shown = answer.path.join(".");
     if let Some(settings) = &answer.settings {
-        block.insert_key("settings", settings.clone());
+        let bag: Value = yaml::from_str(settings.as_str()).map_err(|_| {
+            refuse(
+                index,
+                "the settled settings are not a YAML value; nothing was written",
+            )
+        })?;
+        block.insert_key("settings", bag);
     }
     let mut limits_seen = false;
     let mut lifted: Vec<&str> = Vec::new();

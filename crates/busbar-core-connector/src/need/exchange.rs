@@ -146,13 +146,18 @@ pub(super) async fn fetch<P: Reply>(
         .map_err(|_| NeedErr::Timeout)?
 }
 
+/// The `Host` header of an HTTP/1 exchange: the URL's authority as one header value.
+fn host_value(authority: &str) -> Result<HeaderValue, NeedErr> {
+    HeaderValue::from_str(authority).map_err(|_| NeedErr::Invalid)
+}
+
 async fn exchange<P: Reply>(
     io: &ConnectorIo,
     req: FetchReq<'_>,
     admission: &dyn Admission,
     reply: &mut P,
 ) -> Result<(), NeedErr> {
-    let url = url::Url::parse(req.need.url).map_err(|_| NeedErr::Invalid)?;
+    let url = super::judge::parse_fetch_url(req.need.url)?;
     let https = match url.scheme() {
         "https" => true,
         "http" => false,
@@ -217,10 +222,7 @@ async fn exchange<P: Reply>(
         wire.append(name, value);
     }
     if !h2 {
-        wire.insert(
-            http::header::HOST,
-            HeaderValue::from_str(&authority).map_err(|_| NeedErr::Invalid)?,
-        );
+        wire.insert(http::header::HOST, host_value(&authority)?);
     }
 
     let (parts, mut body, _driver) = send(stream, h2, request).await?;

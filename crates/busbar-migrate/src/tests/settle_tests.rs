@@ -32,7 +32,7 @@ fn store(index: u32, settings: Option<&str>, core_cfg: Vec<CoreCfg>) -> Settled 
     Settled {
         index,
         path: vec!["store".to_owned()],
-        settings: settings.map(json),
+        settings: settings.map(busbar_contract::secure::SecureString::from),
         core_cfg,
     }
 }
@@ -246,7 +246,7 @@ fn a_lifted_literal_becomes_a_secret_file_reference_and_never_a_report_line() {
     let settled = Settled {
         index: 2,
         path: vec!["auth".to_owned(), "ldap".to_owned()],
-        settings: Some(json(
+        settings: Some(busbar_contract::secure::SecureString::from(
             r#"{"bind_service_password": "hunter2", "url": "ldaps://dc"}"#,
         )),
         core_cfg: vec![cfg(section::LIFT, "", "\"/bind_service_password\"")],

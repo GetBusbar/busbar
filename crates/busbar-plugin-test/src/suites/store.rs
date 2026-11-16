@@ -239,13 +239,13 @@ mod cases {
     }
 
     async fn value(b: &dyn PersistenceBackend, address: Address) -> Option<Vec<u8>> {
-        match read(b, &address).await {
-            ReadResult::Values { mut values, .. } => values
-                .pop()
-                .flatten()
-                .map(|secret| secret.expose(&TestKernelSeal).clone()),
-            ReadResult::TimeGuardFailed { .. } => panic!("an unguarded read failed its guard"),
-        }
+        let ReadResult::Values { mut values, .. } = read(b, &address).await else {
+            panic!("an unguarded read failed its guard");
+        };
+        values
+            .pop()
+            .flatten()
+            .map(|secret| secret.expose(&TestKernelSeal).clone())
     }
 
     /// Initialize an empty dataset, registering [`WRITER`].

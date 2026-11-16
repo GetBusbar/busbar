@@ -39,12 +39,33 @@ pub fn split_dest(dest: &str) -> Result<(&str, u16), NeedErr> {
     Ok((host, port))
 }
 
+/// The URL of a FETCH need, read the one way the judgement and the exchange both read it: a WHATWG
+/// parser reads `https:///x` as host `x`, but a URL whose authority is empty names no host.
+///
+/// # Errors
+/// `Invalid` for text that does not parse or whose authority is empty.
+pub(crate) fn parse_fetch_url(url: &str) -> Result<url::Url, NeedErr> {
+    let u = url::Url::parse(url).map_err(|_| NeedErr::Invalid)?;
+    let rest = url.split_once(':').map_or("", |(_, r)| r);
+    if rest
+        .as_bytes()
+        .iter()
+        .take(3)
+        .filter(|&&b| matches!(b, b'/' | b'\\'))
+        .count()
+        == 3
+    {
+        return Err(NeedErr::Invalid);
+    }
+    Ok(u)
+}
+
 /// `host` and `port` of a FETCH URL (the scheme's default port when it names none).
 ///
 /// # Errors
 /// `Invalid` for a URL that does not parse, names no host, or whose scheme is not http or https.
 pub fn split_url(url: &str) -> Result<(String, u16), NeedErr> {
-    let u = url::Url::parse(url).map_err(|_| NeedErr::Invalid)?;
+    let u = parse_fetch_url(url)?;
     if !matches!(u.scheme(), "http" | "https") {
         return Err(NeedErr::Invalid);
     }

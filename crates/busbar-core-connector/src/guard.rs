@@ -178,9 +178,11 @@ impl Allow {
     }
 }
 
-/// An IPv4-mapped, -compatible or NAT64 IPv6 address is its IPv4 address.
+/// An IPv4-mapped, -compatible or NAT64 IPv6 address is its IPv4 address. The IPv6 loopback `::1`
+/// is itself, not the IPv4-compatible `0.0.0.1` it would read as.
 pub(crate) fn canonical(addr: IpAddr) -> IpAddr {
     match addr {
+        IpAddr::V6(v6) if v6.is_loopback() => addr,
         IpAddr::V6(v6) => embedded_ipv4(&v6).map_or(addr, IpAddr::V4),
         v4 => v4,
     }

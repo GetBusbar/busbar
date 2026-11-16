@@ -381,7 +381,9 @@ fn a_stamped_boot_writes_the_settled_answer_back_once() {
     let settled = [busbar_migrate::Settled {
         index: 0,
         path: vec!["store".to_owned()],
-        settings: Some(busbar_contract::yaml::from_str(r#"{"url": "new"}"#).unwrap()),
+        settings: Some(busbar_contract::secure::SecureString::from(
+            r#"{"url": "new"}"#,
+        )),
         core_cfg: Vec::new(),
     }];
     assert_eq!(
