@@ -13,11 +13,8 @@ use std::time::{Duration, Instant};
 
 use busbar_contract::services::{Caller, Incarnation};
 use busbar_plugin_abi::fail::failed::F_INTERNAL;
-use busbar_plugin_abi::fail::refused::R_CONFIG;
-use busbar_plugin_abi::host_side::needs::Needs;
 use busbar_plugin_abi::plane::{ADMIN_CARRIER_END, ADMIN_TICK};
 use busbar_plugin_abi::records::{tag as g, Reply, U64Rec, Writer};
-use busbar_plugin_loader::instance::{InstanceSpec, OpenError, Registry};
 use busbar_ports::plane::{PlaneIn, PlanePort};
 use busbar_ports::{CallCx, PortError};
 
@@ -200,23 +197,16 @@ pub struct PortDriver {
 }
 
 impl PortDriver {
-    /// Opens the plane instance `spec` names through the registry and binds it to the kernel's services under
-    /// `caller`, the instance's own binding. `refusals` is the map every refusal this driver renders goes through.
-    pub async fn open<N: Needs>(
-        registry: &Registry<N>,
-        spec: &InstanceSpec<'_>,
+    /// Binds an already-opened plane to its complete kernel services and caller.
+    /// Image admission and instance opening belong to the composition root.
+    pub fn new(
+        port: Arc<dyn PlanePort>,
         services: Arc<KernelServices>,
         caller: Caller,
         refusals: Arc<dyn RefusalMap>,
         classes: &(dyn Fn(u32) -> Option<u32> + Sync),
-    ) -> Result<Self, OpenError> {
-        let port = registry.open_plane(spec).await?;
-        let routes =
-            plan(port.routes(), port.admin_openapi(), classes).map_err(|e| OpenError::Config {
-                code: R_CONFIG,
-                text: e.to_string(),
-                error: None,
-            })?;
+    ) -> Result<Self, super::port_routes::RouteRefused> {
+        let routes = plan(port.routes(), port.admin_openapi(), classes)?;
         let usage: Arc<[String]> = port
             .usage_classes()
             .iter()
