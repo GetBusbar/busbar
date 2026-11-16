@@ -31,6 +31,9 @@ static const char SCHEMA[] = "{\"type\":\"object\",\"additionalProperties\":fals
 static const char REF_SCHEMA[] = "{\"type\":\"object\",\"required\":[\"name\"],\"additionalProperties\":false,"
                                  "\"properties\":{\"name\":{\"type\":\"string\"}}}";
 
+/* A buffer the plugin owns; the host must never read an answer from it. */
+static uint8_t decoy[4096];
+
 static bool is(bb_bytes b, const char *s) { return b.len == strlen(s) && (!b.len || !memcmp(b.ptr, s, b.len)); }
 
 static bb_status describe(const bb_host *h, bb_raw_out *out) {
@@ -54,10 +57,49 @@ static bb_status open_(const bb_host *h, bb_bytes config, uint32_t flags, bb_raw
     return BB_OK;
 }
 
+static bb_status rewrite_ptr(const bb_host *h, bb_raw_out *out) {
+    if (!bb_put(h, out, BB_TAG_SECRET_VALUE, "kept", 4))
+        return bb_fail(h, out, BB_FAILED, BB_F_INTERNAL, "value does not fit");
+    bb_raw_out fake = {decoy, 0, sizeof decoy};
+    (void)bb_put(h, &fake, BB_TAG_SECRET_VALUE, "decoy", 5); /* fits: grow is never asked for the decoy */
+    out->ptr = decoy;
+    out->cap = sizeof decoy;
+    return BB_OK;
+}
+
+static bb_status rewrite_cap(const bb_host *h, bb_raw_out *out) {
+    out->cap = SIZE_MAX;
+    uint8_t seen[2];
+    seen[0] = h->grow(h->ctx, out, FIXTURE_MAX_OUT + 1) ? 1 : 0;
+    seen[1] = h->grow(h->ctx, out, 64) ? 1 : 0;
+    out->cap = 0; /* bb_put now asks grow for its record: the host buffer has the room */
+    if (!bb_put(h, out, BB_TAG_SECRET_VALUE, seen, sizeof seen))
+        return bb_fail(h, out, BB_FAILED, BB_F_INTERNAL, "value does not fit");
+    return BB_OK;
+}
+
+static bb_status regrow(const bb_host *h, bb_raw_out *out) {
+    uint8_t *real = out->ptr;
+    size_t real_cap = out->cap;
+    out->ptr = decoy;
+    out->cap = 0;
+    uint8_t seen[3];
+    seen[0] = h->grow(h->ctx, out, 24) ? 1 : 0;
+    seen[1] = out->ptr == real ? 1 : 0;
+    seen[2] = out->cap == real_cap ? 1 : 0;
+    out->ptr = real; /* whatever grow did, the report goes into the host buffer */
+    out->cap = real_cap;
+    if (!bb_put(h, out, BB_TAG_SECRET_VALUE, seen, sizeof seen))
+        return bb_fail(h, out, BB_FAILED, BB_F_INTERNAL, "value does not fit");
+    return BB_OK;
+}
+
 static bb_status resolve(const void *inst, const bb_host *h, bb_bytes reference, bb_raw_out *out) {
     (void)inst;
     if (!reference.len || reference.ptr[0] != '{') return bb_fail(h, out, BB_REFUSED, BB_R_INVALID, "not an object");
-    (void)is; /* red proof: no scenario is wired yet */
+    if (is(reference, "{\"name\":\"ptr\"}")) return rewrite_ptr(h, out);
+    if (is(reference, "{\"name\":\"cap\"}")) return rewrite_cap(h, out);
+    if (is(reference, "{\"name\":\"regrow\"}")) return regrow(h, out);
     return bb_fail(h, out, BB_REFUSED, BB_R_NOT_FOUND, "no such name");
 }
 

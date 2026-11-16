@@ -186,7 +186,7 @@ pub(crate) mod fixture {
     use std::cell::Cell;
     use std::sync::Arc;
 
-    use busbar_plugin_abi::fail::Fail;
+    use busbar_plugin_abi::fail::{failed, refused, Fail};
     use busbar_plugin_abi::host_side::caller::InstanceLimits;
     use busbar_plugin_abi::host_side::driver::{Image, Instance, InstanceParts, SlotCell};
     use busbar_plugin_abi::host_side::scrub::Scrub;
@@ -195,7 +195,7 @@ pub(crate) mod fixture {
     use busbar_plugin_abi::plugin::__rt::host::{OpenAnswer, OutLease};
     use busbar_plugin_abi::plugin::__rt::image::Admitted;
     use busbar_plugin_abi::plugin::__rt::{Kind, LinkedPlugin};
-    use busbar_plugin_abi::records::Out;
+    use busbar_plugin_abi::records::{Out, Writer};
     use busbar_plugin_abi::transport::ConnInfo;
     use busbar_plugin_abi::types::{Bytes, Slice, Status, Str};
 
@@ -429,9 +429,21 @@ pub(crate) mod fixture {
 
     /// One opener's body for `variant`: `record` is the one record ACCEPT, REFUSE and FAIL write.
     fn opener(variant: u32, out: &mut Out<'_>, record: u16, body: &[u8]) -> Result<Sess, Fail> {
-        // Red proof: the variants are not wired yet, so every opener refuses as unsupported.
-        let _ = (variant, out, record, body, FAILED_TEXT);
-        let _: fn() -> Sess = Sess::begin;
-        Err(Fail::unsupported())
+        match variant {
+            ACCEPT => {
+                out.put(record, body)?;
+                Ok(Sess::begin())
+            }
+            ACCEPT_BARE => Ok(Sess::begin()),
+            REFUSE => {
+                out.put(record, body)?;
+                Err(Fail::refused(refused::R_DENIED))
+            }
+            FAIL => {
+                out.put(record, body)?;
+                Err(Fail::failed_because(failed::F_UNAVAILABLE, FAILED_TEXT))
+            }
+            _ => Err(Fail::refused(refused::R_INVALID)),
+        }
     }
 }
