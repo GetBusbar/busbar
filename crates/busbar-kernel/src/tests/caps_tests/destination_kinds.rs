@@ -28,7 +28,7 @@ fn walking_down_a_transport_stack_carries_the_seal_and_widens_nothing() {
     );
 
     let under = sealed
-        .beneath("http", UpstreamAddress::socket("10.0.0.1:443"))
+        .beneath("http", UpstreamAddress::socket("\x310.0.0.1:443"))
         .expect("an upstream has a layer beneath it");
     assert_eq!(under.lane(), sealed.lane(), "the priced lane travels down");
     assert_eq!(under.budget_remaining(), sealed.budget_remaining());
@@ -37,13 +37,13 @@ fn walking_down_a_transport_stack_carries_the_seal_and_widens_nothing() {
         under.facts(),
         DestinationFacts::Upstream {
             transport: "http",
-            address: UpstreamAddress::socket("10.0.0.1:443"),
+            address: UpstreamAddress::socket("\x310.0.0.1:443"),
             lane: lane(),
         }
     );
 
     let twice = under
-        .beneath("tcp", UpstreamAddress::socket("10.0.0.1:443"))
+        .beneath("tcp", UpstreamAddress::socket("\x310.0.0.1:443"))
         .expect("still an upstream");
     assert_eq!(twice.lane(), sealed.lane());
     assert_eq!(twice.budget_remaining(), sealed.budget_remaining());
@@ -76,7 +76,7 @@ fn walking_down_a_transport_stack_carries_the_seal_and_widens_nothing() {
         let sealed = VerifiedDestination::seal(&seal(), facts, "http", Some(17));
         assert!(
             sealed
-                .beneath("tcp", UpstreamAddress::socket("10.0.0.1:443"))
+                .beneath("tcp", UpstreamAddress::socket("\x310.0.0.1:443"))
                 .is_none(),
             "{facts:?} has no layer beneath it"
         );

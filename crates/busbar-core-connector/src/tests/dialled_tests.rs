@@ -231,7 +231,7 @@ fn a_close_beside_a_hung_datagram_emit_never_waits_and_the_holder_finishes_it() 
         let door = Arc::new(Hanging {
             facts: crate::framer::DoorFacts {
                 dials: true,
-                name: "hanging".to_owned(),
+                name: "hanging".into(),
                 claims: vec!["hanging"],
                 role: busbar_contract::abi::transport::ROLE_FRAMER,
                 composes_over: Vec::new(),
@@ -508,7 +508,7 @@ fn line_outputs_settings(
     let door = Arc::new(LineOutputs {
         facts: crate::framer::DoorFacts {
             dials: true,
-            name: "line-output".to_owned(),
+            name: "line-output".into(),
             claims: vec!["line-output"],
             role: busbar_contract::abi::transport::ROLE_FRAMER,
             composes_over: Vec::new(),
@@ -696,9 +696,8 @@ fn a_close_during_queued_line_publication_prevents_later_lines_from_crossing() {
             |()| panic!("the association starts at home"),
             |()| panic!("the association starts open"),
             |_, ()| {
-                let now = std::time::Instant::now();
-                dialled.leg.line(incoming_line(), now);
-                dialled.leg.line(incoming_line(), now);
+                dialled.leg.line(incoming_line(), std::time::Instant::now());
+                dialled.leg.line(incoming_line(), std::time::Instant::now());
             },
         );
         dialled.pairing.published().await;
@@ -807,7 +806,6 @@ fn line_publication_wakes_only_the_latest_read_context_as_the_stream_and_reactor
 fn the_latest_pending_read_is_woken_on_close_and_on_a_queued_publication_unwind() {
     use crate::datagram::LegSink as _;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    let now = std::time::Instant::now();
     for unwind in [false, true] {
         crate::support::worker().block_on(async {
             let (dialled, _, caller) = line_outputs();
@@ -825,7 +823,7 @@ fn the_latest_pending_read_is_woken_on_close_and_on_a_queued_publication_unwind(
             assert_eq!(woke.load(Ordering::SeqCst), 0);
             if unwind {
                 *caller.1.lock().unwrap() = Some(Box::new(|| panic!("publication unwinds")));
-                dialled.leg.line(incoming_line(), now);
+                dialled.leg.line(incoming_line(), std::time::Instant::now());
                 assert!(dialled.pairing.published().await.failure.is_some());
             } else {
                 dialled.close();
@@ -859,7 +857,6 @@ fn a_busy_line_takes_no_input_and_resumes_exactly_once_after_the_holder_returns(
                 .leg
                 .poll_line(&mut cx, Some(&incoming_line()), false, Instant::now())
         });
-        let now = std::time::Instant::now();
         entered.recv_timeout(Duration::from_secs(5)).unwrap();
         let woke = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let waker = Waker::from(Arc::new(LatestReadWake {
@@ -871,7 +868,9 @@ fn a_busy_line_takes_no_input_and_resumes_exactly_once_after_the_holder_returns(
         let mut second = incoming_line();
         second.bytes = b"second".to_vec();
         assert!(matches!(
-            dialled.leg.poll_line(&mut cx, Some(&second), true, now),
+            dialled
+                .leg
+                .poll_line(&mut cx, Some(&second), true, Instant::now()),
             Poll::Pending
         ));
         assert_eq!(door.calls.lock().unwrap().len(), 1);
@@ -885,8 +884,10 @@ fn a_busy_line_takes_no_input_and_resumes_exactly_once_after_the_holder_returns(
         };
         assert!(woke.load(std::sync::atomic::Ordering::SeqCst) > 0);
         assert!(!dialled.leg.framing.lock().unwrap().out);
-        let batch = dialled.pairing.publish(Leg::Upstream, yielded, now);
-        dialled.leg.channels(batch, now).unwrap();
+        let batch = dialled
+            .pairing
+            .publish(Leg::Upstream, yielded, Instant::now());
+        dialled.leg.channels(batch, Instant::now()).unwrap();
         assert_eq!(
             door.calls.lock().unwrap().len(),
             1,
@@ -898,12 +899,16 @@ fn a_busy_line_takes_no_input_and_resumes_exactly_once_after_the_holder_returns(
         let Poll::Ready(Ok(LineStep::Batch {
             yielded,
             accepted: true,
-        })) = dialled.leg.poll_line(&mut cx, Some(&second), true, now)
+        })) = dialled
+            .leg
+            .poll_line(&mut cx, Some(&second), true, Instant::now())
         else {
             panic!("the unaccepted frame must now cross");
         };
-        let batch = dialled.pairing.publish(Leg::Upstream, yielded, now);
-        dialled.leg.channels(batch, now).unwrap();
+        let batch = dialled
+            .pairing
+            .publish(Leg::Upstream, yielded, Instant::now());
+        dialled.leg.channels(batch, Instant::now()).unwrap();
         assert!(dialled.pairing.published().await.failure.is_none());
         assert_eq!(
             *door.inputs.lock().unwrap(),
@@ -921,12 +926,11 @@ fn a_busy_line_takes_no_input_and_resumes_exactly_once_after_the_holder_returns(
 #[test]
 fn a_charged_channel_keeps_its_original_allocation_until_consumption_or_close() {
     use crate::datagram::LegSink as _;
-    let now = std::time::Instant::now();
     for cancel in [false, true] {
         crate::support::worker().block_on(async {
             let (dialled, _, _) = line_outputs_with_limit(Some(usize::MAX));
             let memory = dialled.pairing.memory_account();
-            dialled.leg.line(incoming_line(), now);
+            dialled.leg.line(incoming_line(), std::time::Instant::now());
             assert!(dialled.pairing.published().await.failure.is_none());
             let mut buf = [0; 16];
 
@@ -1292,7 +1296,7 @@ fn connector_holds_datagram_writes_until_the_signalling_exchange_finishes() {
         let door = Arc::new(Hanging {
             facts: crate::framer::DoorFacts {
                 dials: true,
-                name: "signalling-write-guard".to_owned(),
+                name: "signalling-write-guard".into(),
                 claims: vec!["signalling-write-guard"],
                 role: busbar_contract::abi::transport::ROLE_FRAMER,
                 composes_over: Vec::new(),

@@ -602,6 +602,125 @@ pub(crate) async fn get_admin_auth(State(handle): State<Arc<AppHandle>>) -> Resp
     )
 }
 
+/// The query parameters that select a usage SERIES (range mode). With none of them, `/usage` is the
+/// single-day read.
+const USAGE_SERIES_PARAMS: [&str; 11] = [
+    "from", "to", "group_by", "key", "group", "model", "provider", "kind", "instance", "cursor",
+    "limit",
+];
+
+/// The most UTC-day buckets one series read may span.
+const USAGE_MAX_BUCKETS: u64 = 366;
+
+/// `GET /usage` in range mode (ADMIN-API-1.6 section 11).
+async fn get_usage_series(
+    handle: &Arc<AppHandle>,
+    q: &std::collections::HashMap<String, String>,
+    window: Option<u64>,
+    as_of: Option<busbar_kernel::cost::EntryKey>,
+) -> Response {
+    use crate::v1::service::{parse_utc_day, SeriesSpec, UsageDim};
+    let bad =
+        |message: String| err_json_cond(&AdminError::Validation(message), Cond::InvalidQueryValue);
+    let day = |name: &str| -> Result<Option<u64>, Response> {
+        q.get(name).map_or(Ok(None), |v| {
+            parse_utc_day(v)
+                .map(Some)
+                .ok_or_else(|| bad(format!("invalid `{name}`: expected a UTC day, YYYY-MM-DD")))
+        })
+    };
+    let step = busbar_kernel::governance::METERING_BUCKET_SECS;
+    let current = busbar_kernel::governance::metering_bucket(busbar_kernel::store::now());
+    let (from, to) = match (
+        ok_or_respond!(day("from")),
+        ok_or_respond!(day("to")),
+        window,
+    ) {
+        (None, None, Some(w)) if w % step == 0 => (w, w),
+        (None, None, Some(w)) => {
+            return bad(format!(
+                "window must be a UTC-day bucket start (a multiple of {step}); got {w}"
+            ))
+        }
+        (from, to, _) => {
+            let to = to.unwrap_or(current);
+            (from.unwrap_or(to), to)
+        }
+    };
+    if from > to {
+        return bad("`from` is after `to`".into());
+    }
+    if to > current {
+        return bad("the range is in the future".into());
+    }
+    if (to - from) / step + 1 > USAGE_MAX_BUCKETS {
+        return busbar_kernel::admin::gate::admin_error_envelope_with(
+            400,
+            "invalid_request",
+            Some("range_too_large"),
+            "the range spans more UTC-day buckets than one read may",
+            &serde_json::json!({ "max_buckets": USAGE_MAX_BUCKETS }),
+        );
+    }
+    let mut group_by = Vec::new();
+    if let Some(list) = q.get("group_by") {
+        for name in list.split(',').filter(|n| !n.is_empty()) {
+            match UsageDim::parse(name) {
+                Some(dim) => group_by.push(dim),
+                None => {
+                    return bad(format!(
+                        "invalid `group_by`: `{name}` is not one of key, group, model, provider, kind, instance, bucket"
+                    ))
+                }
+            }
+        }
+    }
+    group_by.sort_unstable();
+    group_by.dedup();
+    let filters = [
+        ("key", UsageDim::Key),
+        ("group", UsageDim::Group),
+        ("model", UsageDim::Model),
+        ("provider", UsageDim::Provider),
+        ("kind", UsageDim::Kind),
+        ("instance", UsageDim::Instance),
+    ]
+    .into_iter()
+    .filter_map(|(name, dim)| q.get(name).map(|v| (dim, v.clone())))
+    .collect();
+    let digest = cursor::filter_digest(
+        q,
+        &[
+            "from", "to", "window", "group_by", "key", "group", "model", "provider", "kind",
+            "instance", "as_of",
+        ],
+    );
+    let w = ok_or_respond!(boxed cursor::window(q, "usage", &digest, crate::v1::contract::LIST_LIMIT_DEFAULT));
+    let spec = SeriesSpec {
+        from,
+        to,
+        group_by,
+        filters,
+        as_of,
+    };
+    match service(handle).get_usage_series(&spec).await {
+        Ok(mut series) => {
+            let page = cursor::keyset(
+                std::mem::take(&mut series.items),
+                &w,
+                "usage",
+                &digest,
+                |row| row.sort.clone(),
+                false,
+            );
+            series.items = page.items;
+            series.next_cursor = page.next_cursor;
+            respond(StatusCode::OK, Ok(series))
+        }
+        Err(e) => err_json(&e),
+    }
+}
+
 pub(crate) async fn get_usage(
     State(handle): State<Arc<AppHandle>>,
     Query(q): Query<std::collections::HashMap<String, String>>,
@@ -629,6 +748,9 @@ pub(crate) async fn get_usage(
             }
         },
     };
+    if USAGE_SERIES_PARAMS.iter().any(|p| q.contains_key(*p)) {
+        return get_usage_series(&handle, &q, window, as_of).await;
+    }
     respond(
         StatusCode::OK,
         service(&handle).get_usage(window, as_of).await,
@@ -1914,7 +2036,8 @@ pub(crate) async fn put_auth(
         let operator = busbar_kernel::config::operator_provider();
         let in_process = busbar_kernel::preflight::root_rows().in_process_auth;
         for name in &req.admin_auth {
-            let known = current.admin_modules.operator.is(name)
+            let known = name == busbar_kernel::config::KEYS_MODULE
+                || current.admin_modules.operator.is(name)
                 || current.admin_modules.modules.contains_key(name)
                 || in_process.is_some_and(|answers| answers(name));
             if !known {
@@ -4097,6 +4220,9 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 if let Some(op) = op.as_object_mut() {
                     let scope = crate::v1::contract::required_scope(&m, path);
                     op.insert("x-busbar-required-scope".to_string(), json!(scope.as_str()));
+                    if let Some(verb) = crate::admin_codec::verbs::name_at(m.as_str(), path) {
+                        op.insert("x-busbar-verb".to_string(), json!(verb));
+                    }
 
                     op.insert(
                         "security".to_string(),

@@ -367,10 +367,10 @@ fn dropping(alias: &str, door: busbar_contract::abi::mechanism::door::DoorFn) ->
         &key,
         Manifest {
             name: format!("busbar-auth-{alias}"),
-            alias: alias.to_owned(),
-            kind: "auth".to_owned(),
-            version: "1.0.0".to_owned(),
-            publisher: FIRST_PARTY_PUBLISHER.to_owned(),
+            alias: alias.into(),
+            kind: "auth".into(),
+            version: "1.0.0".into(),
+            publisher: FIRST_PARTY_PUBLISHER.into(),
             abi_version: crate::registry::supported_abi("auth").unwrap(),
             statement: Some(hex::encode(stated)),
             ..Default::default()
@@ -448,7 +448,7 @@ fn red_a_stated_rendering_whose_tail_is_not_the_doors_is_refused_at_admit() {
     use crate::dispatch::kinds::auth::Auth;
     use crate::dispatch::{load_linked, Bind, ConnTable, LinkedRow, LoadError, NoSink};
     let bind = || Bind {
-        instance: crate::cold::auth_axis::instance("tail-admit"),
+        instance: Arc::from("tail-admit"),
         max_inflight_cap: 4,
         sink: Arc::new(NoSink),
         dispatcher: crate::dispatch::Adopter::unwatched(),

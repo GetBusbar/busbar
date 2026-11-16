@@ -43,6 +43,8 @@ pub struct KeyView {
     pub minted_via: Option<String>,
     pub idp_subject: Option<String>,
     pub binding_mode: Option<String>,
+    /// The admin grant (ADMIN-API r5 section 2.1): `{scope, verbs, verbs_all}`; `null` on a data-plane key.
+    pub admin: Option<KeyAdminView>,
     /// Why and when the key was revoked; `null` unless `state` is `revoked`.
     pub revocation: Option<KeyRevocationView>,
     pub deleted_at: Option<u64>,
@@ -51,6 +53,17 @@ pub struct KeyView {
     pub credentials: Vec<KeyCredentialView>,
     /// `"created"`, or `{"migrated_from": "1.5.5"}` for a key the migration carried over.
     pub origin: serde_json::Value,
+}
+
+/// `KeyView.admin`: the grant that makes a key an admin credential.
+#[derive(Serialize, JsonSchema)]
+pub struct KeyAdminView {
+    /// `read-only` or `full`: the ceiling of every verb the key holds.
+    pub scope: String,
+    /// The verbs held by name; empty when `verbs_all`.
+    pub verbs: Vec<String>,
+    /// Whether the key holds every verb within `scope`.
+    pub verbs_all: bool,
 }
 
 /// `KeyView.revocation`.
@@ -104,6 +117,8 @@ pub struct CreatedKeyView {
     pub minted_via: Option<String>,
     pub idp_subject: Option<String>,
     pub binding_mode: Option<String>,
+    /// The admin grant (ADMIN-API r5 section 2.1): `{scope, verbs, verbs_all}`; `null` on a data-plane key.
+    pub admin: Option<KeyAdminView>,
     /// Why and when the key was revoked; `null` unless `state` is `revoked`.
     pub revocation: Option<KeyRevocationView>,
     pub deleted_at: Option<u64>,
@@ -156,6 +171,8 @@ pub struct RotatedKeyView {
     pub minted_via: Option<String>,
     pub idp_subject: Option<String>,
     pub binding_mode: Option<String>,
+    /// The admin grant (ADMIN-API r5 section 2.1): `{scope, verbs, verbs_all}`; `null` on a data-plane key.
+    pub admin: Option<KeyAdminView>,
     /// Why and when the key was revoked; `null` unless `state` is `revoked`.
     pub revocation: Option<KeyRevocationView>,
     pub deleted_at: Option<u64>,

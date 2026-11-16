@@ -286,7 +286,7 @@ fn restart_scoped_mutations_admit_durability() {
     assert_eq!(
         found,
         vec![
-            ("v1/json/config_document.rs".to_owned(), "put".to_owned()),
+            ("v1/json/config_document.rs".to_owned(), "apply".to_owned()),
             (
                 "v1/json/handlers.rs".to_owned(),
                 "put_config_settings".to_owned()

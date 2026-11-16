@@ -165,6 +165,8 @@ pub mod auth {
         pub secret_len: u32,
     }
 
+    impl crate::records::Pod for IssuedShapeRec {}
+
     pub mod tag {
         /// answers: generic ID_SUBJECT, ID_GROUP*, ID_CLAIM* (records.rs; first and contiguous), then STRIP*
         /// (text header name) and FACT*. 0x0100..=0x0102 are retired (round 1's kind-local identity tags).

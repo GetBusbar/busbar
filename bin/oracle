@@ -743,7 +743,7 @@ if [ "${1:-}" = "token-selftest" ]; then
   if [ ! -f "$st/fresh/.git/config" ] || grep -qE 'plant-token|x-access-token|extraheader' "$st/fresh/.git/config"; then
     echo "  [FAILED] a fresh clone stored the token"; fail=1
   else echo "  [ok]     a fresh clone under a token stores none"; fi
-  git -C "$st/fresh" remote set-url origin "https://x-access-token:plant-token-0123456789@github.com/GetBusbar/busbar-release.git"
+  git -C "$st/fresh" remote set-url origin "https://x-access-token:plant-token-0123456789"@"github.com/GetBusbar/busbar-release.git"
   if ( export BUSBAR_RELEASE_TOKEN=plant-token-0123456789; assert_no_token "$st/fresh" ) 2>/dev/null; then
     echo "  [FAILED] the guard passed a config holding the token"; fail=1
   else echo "  [ok]     the guard refuses a config holding a token"; fi

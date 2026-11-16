@@ -30,21 +30,34 @@ pub const CORE_INSTANCES: [&str; 9] = [
 #[must_use]
 pub fn instance_id_collisions(cfg: &RootCfg) -> Vec<String> {
     let mut sections: Vec<(&'static str, Vec<&str>)> = Vec::new();
-    let mut named = |kind: Kind, names: Vec<&str>| sections.push((kind.root(), names));
+    fn named<'a>(
+        sections: &mut Vec<(&'static str, Vec<&'a str>)>,
+        kind: Kind,
+        names: Vec<&'a str>,
+    ) {
+        sections.push((kind.root(), names));
+    }
     named(
+        &mut sections,
         Kind::Auth,
         cfg.identity_providers.keys().map(String::as_str).collect(),
     );
     named(
+        &mut sections,
         Kind::Export,
         cfg.export_defs.keys().map(String::as_str).collect(),
     );
-    named(Kind::Hook, ordered(cfg.hooks.keys()));
+    named(&mut sections, Kind::Hook, ordered(cfg.hooks.keys()));
     named(
+        &mut sections,
         Kind::Secret,
         cfg.secrets.keys().map(String::as_str).collect(),
     );
-    named(Kind::Transport, ordered(cfg.providers.keys()));
+    named(
+        &mut sections,
+        Kind::Transport,
+        ordered(cfg.providers.keys()),
+    );
 
     let mut seen: std::collections::BTreeMap<&str, String> = std::collections::BTreeMap::new();
     let mut errors = Vec::new();

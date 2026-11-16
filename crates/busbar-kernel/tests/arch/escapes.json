@@ -1,50 +1,5 @@
 {
-  "version": 1,
-  "unsafe_code": {
-    "whole_crates": {
-      "busbar-contract": "W4.3",
-      "busbar-plugin-loader": "W4.3"
-    },
-    "sites": {
-      "crates/busbar-core-connector/src/conns.rs": { "keywords": 0, "allows": 1, "by": "slimming (callback_waker)" },
-      "crates/busbar-core-connector/src/child_job.rs": { "keywords": 35, "allows": 0, "by": "W3.6 (edge::sys)" },
-      "crates/busbar-core-connector/src/io/unix.rs": { "keywords": 1, "allows": 1, "by": "W3.6 (edge::sys)" },
-      "crates/busbar-core-connector/src/lib.rs": { "keywords": 0, "allows": 1, "by": "W3.6 (edge::sys)" },
-      "crates/busbar-kernel/src/lib.rs": { "keywords": 0, "allows": 1, "by": "W3.10 (boot::mallctl)" },
-      "crates/busbar-kernel/src/mallctl.rs": { "keywords": 2, "allows": 0, "by": "W3.10 (boot::mallctl)" },
-      "crates/busbar-kernel/src/persistence/slot_seal.rs": { "keywords": 0, "allows": 1, "by": "W4.3 (no_mangle root)" },
-      "crates/busbar-kernel/src/plane_driver/registry.rs": { "keywords": 1, "allows": 1, "by": "W3.11" },
-      "crates/busbar-kernel/src/preflight.rs": { "keywords": 1, "allows": 1, "by": "W3.11" },
-      "crates/busbar-kernel/src/seal.rs": { "keywords": 0, "allows": 1, "by": "W4.3" },
-      "crates/busbar-kernel/src/timing/mod.rs": { "keywords": 1, "allows": 1, "by": "W6.2" },
-      "crates/busbar-migrations/src/seal.rs": { "keywords": 0, "allows": 1, "by": "W4.S3" }
-    },
-    "forbid": [
-      "crates/busbar-contract/src/caps/mod.rs",
-      "crates/busbar-contract/src/json_grammar.rs",
-      "crates/busbar-contract/src/secure.rs",
-      "crates/busbar-contract/src/yaml.rs",
-      "crates/busbar-core-admin/src/admin_codec/mod.rs",
-      "crates/busbar-core-admin/src/lib.rs",
-      "crates/busbar-core-connector/src/tls/mod.rs",
-      "crates/busbar-core-oauth2/src/lib.rs",
-      "crates/busbar-kernel-audit/src/bin/busbar-audit-verify.rs",
-      "crates/busbar-kernel-audit/src/lib.rs",
-      "crates/busbar-kernel-breaker/src/lib.rs",
-      "crates/busbar-kernel-egress/src/lib.rs",
-      "crates/busbar-kernel-egress/src/trust/mod.rs",
-      "crates/busbar-kernel-identity/src/lib.rs",
-      "crates/busbar-kernel-ledger/src/cost/mod.rs",
-      "crates/busbar-kernel-ledger/src/lib.rs",
-      "crates/busbar-kernel-ledger/src/usage/mod.rs",
-      "crates/busbar-kernel-wal/src/lib.rs",
-      "crates/busbar-plugin-bench/src/lib.rs",
-      "crates/busbar-plugin-test/src/lib.rs",
-      "crates/busbar/src/main.rs",
-      "tools/ci-checks/src/main.rs"
-    ]
-  },
-  "admitted": {},
+  "version": 2,
   "dead_code": {
     "crates/busbar-contract/src/abi/mechanism/decl.rs": 2,
     "crates/busbar-contract/src/abi/mod.rs": 2,
@@ -99,5 +54,30 @@
     "crates/plugin-loader/src/store_v4.rs": 1,
     "crates/plugin-loader/src/tests/auth_door_tests.rs": 1,
     "crates/plugin-loader/src/tests/dispatch_tests.rs": 1
-  }
+  },
+  "forbid": [
+    "crates/busbar-contract/src/caps/mod.rs",
+    "crates/busbar-contract/src/json_grammar.rs",
+    "crates/busbar-contract/src/secure.rs",
+    "crates/busbar-contract/src/yaml.rs",
+    "crates/busbar-core-admin/src/admin_codec/mod.rs",
+    "crates/busbar-core-admin/src/lib.rs",
+    "crates/busbar-core-connector/src/tls/mod.rs",
+    "crates/busbar-core-oauth2/src/lib.rs",
+    "crates/busbar-kernel-audit/src/bin/busbar-audit-verify.rs",
+    "crates/busbar-kernel-audit/src/lib.rs",
+    "crates/busbar-kernel-breaker/src/lib.rs",
+    "crates/busbar-kernel-egress/src/lib.rs",
+    "crates/busbar-kernel-egress/src/trust/mod.rs",
+    "crates/busbar-kernel-identity/src/lib.rs",
+    "crates/busbar-kernel-ledger/src/cost/mod.rs",
+    "crates/busbar-kernel-ledger/src/lib.rs",
+    "crates/busbar-kernel-ledger/src/usage/mod.rs",
+    "crates/busbar-kernel-wal/src/lib.rs",
+    "crates/busbar-plugin-bench/src/lib.rs",
+    "crates/busbar-plugin-test/src/lib.rs",
+    "crates/busbar/src/main.rs",
+    "tools/ci-checks/src/main.rs"
+  ],
+  "admitted": {}
 }

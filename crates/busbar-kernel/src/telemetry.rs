@@ -62,6 +62,10 @@ pub(crate) struct AppSlots {
     pub(crate) failover: HashMap<Box<str>, [CounterSlot; REASONS.len()]>,
     /// mounted plane key → families, indexed by position in that plane's declared dialects.
     pub(crate) mounted: HashMap<&'static str, Box<[MountedFamily]>>,
+    /// lane idx -> `busbar_lane_request_duration_seconds` slot. Keyed by the lane id alone, so the
+    /// request path hashes no label; `pool`, `target`, `model` and `instance` were attached when
+    /// the slot was interned at build, from the lane table.
+    pub(crate) lane_duration: Box<[HistogramSlot]>,
 }
 
 impl AppSlots {
@@ -97,6 +101,48 @@ impl AppSlots {
 
     fn lane_family(&self, pool_label: &str, lane_idx: usize) -> Option<&LaneFamily> {
         self.lane.get(pool_label)?.get(&lane_idx)
+    }
+}
+
+/// A lane's request finished in `seconds`: one push into the lane's own histogram slot. A lane
+/// outside this generation's table records nothing.
+pub fn lane_request_finished(app: &App, lane_idx: usize, seconds: f64) {
+    if let Some(slot) = app.tslots.lane_duration.get(lane_idx) {
+        if slot.is_valid() {
+            slot.record(seconds);
+        }
+    }
+}
+
+/// `telemetry.max_lane_series`: lanes beyond it fold into `target="other"`.
+static MAX_LANE_SERIES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(crate::config::limits::DEFAULT_TELEMETRY_MAX_LANE_SERIES);
+
+static LANE_SERIES_DROPPED: AtomicU64 = AtomicU64::new(0);
+
+pub fn set_max_lane_series(max: usize) {
+    MAX_LANE_SERIES.store(max, Ordering::Relaxed);
+}
+
+pub(crate) fn max_lane_series() -> usize {
+    MAX_LANE_SERIES.load(Ordering::Relaxed)
+}
+
+/// `dropped.lane_series`: lanes folded into `target="other"` since boot.
+#[must_use]
+pub fn lane_series_dropped() -> u64 {
+    LANE_SERIES_DROPPED.load(Ordering::Relaxed)
+}
+
+pub(crate) fn count_lane_series_dropped(n: u64) {
+    LANE_SERIES_DROPPED.fetch_add(n, Ordering::Relaxed);
+}
+
+/// `busbar_unit_refusals_total{reason,instance}`: `reason` is a closed unit reason, equal to the
+/// unit record's `reason.code`.
+pub fn unit_refusal_on(instance: &str, reason: &'static str) {
+    if !bump_kept(&UNBANKED_UNIT_REFUSALS, instance, reason) {
+        crate::cold::host::telemetry_unit_refusal_first(instance, reason);
     }
 }
 
@@ -317,6 +363,9 @@ pub(crate) static UNBANKED_FAILURES: Handles<LabelMap<HashMap<&'static str, metr
     std::sync::LazyLock::new(RwLock::default);
 /// `busbar_translations_total`: from → to → handle.
 pub(crate) static UNBANKED_TRANSLATIONS: Handles<LabelMap<metrics::Counter>> =
+    std::sync::LazyLock::new(RwLock::default);
+/// `busbar_unit_refusals_total`: instance -> reason -> handle.
+pub(crate) static UNBANKED_UNIT_REFUSALS: Handles<LabelMap<metrics::Counter>> =
     std::sync::LazyLock::new(RwLock::default);
 /// The pool-depth gauge's interned pool label values.
 pub(crate) static POOL_LABELS: Handles<Arc<str>> = std::sync::LazyLock::new(RwLock::default);

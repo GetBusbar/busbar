@@ -465,7 +465,7 @@ fn reply_trees_wipe_unknown_and_typed_refusal_fields_with_an_unwiped_control() {
     }
     // SAFETY: exclusively owned initialized String, dropped before observation ends.
     let probe = unsafe { InitializedPayloadProbe::start().expect("Linux memory observer") };
-    let control = "UNWIPED-CONTROL-CANARY".to_owned();
+    let control = String::from("UNWIPED-CONTROL-CANARY");
     // SAFETY: the String's whole initialized payload starts at its allocation base.
     unsafe { watch_initialized_payload(control.as_bytes()) };
     drop(control);

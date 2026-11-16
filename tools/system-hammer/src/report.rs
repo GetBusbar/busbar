@@ -39,16 +39,25 @@ impl Host {
                 .map(|(_, v)| v.trim().to_string())
                 .unwrap_or_default()
         };
-        let mut load = [0f64; 3];
-        // SAFETY: writes three doubles.
-        unsafe { libc::getloadavg(load.as_mut_ptr(), 3) };
+        // The 1-minute load average: `/proc/loadavg` on Linux, `sysctl vm.loadavg` ("{ 1.23 4.56 7.89 }") on macOS.
+        let load_text = if cfg!(target_os = "macos") {
+            sh("sysctl", &["-n", "vm.loadavg"])
+        } else {
+            std::fs::read_to_string("/proc/loadavg").unwrap_or_default()
+        };
+        let load_1m = load_text
+            .trim_matches(|c: char| c == '{' || c.is_whitespace())
+            .split_whitespace()
+            .next()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.0);
         Host {
             hostname: sh("hostname", &[]),
             os: std::env::consts::OS.into(),
             arch: std::env::consts::ARCH.into(),
             cpus: std::thread::available_parallelism().map_or(1, |n| n.get()),
             cpu_model,
-            load_avg_1m: load[0],
+            load_avg_1m: load_1m,
         }
     }
 }

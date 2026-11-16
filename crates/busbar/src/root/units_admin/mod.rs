@@ -1807,7 +1807,9 @@ pub(crate) fn authenticate(
             }
             (principal.id, grants, Some(list))
         }
-        busbar_kernel::auth::AdminDoor::Denied => return Err(ReasonCode::Unauthenticated),
+        busbar_kernel::auth::AdminDoor::Denied | busbar_kernel::auth::AdminDoor::Rejected(_) => {
+            return Err(ReasonCode::Unauthenticated)
+        }
         busbar_kernel::auth::AdminDoor::Unavailable(_) => {
             walk.answer = Some(authentication_unavailable_answer());
             return Err(ReasonCode::Internal);

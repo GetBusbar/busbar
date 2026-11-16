@@ -79,7 +79,7 @@ use crate::framer::FramerDoor;
 use crate::hostio::HostIo;
 use crate::line::{Line, EVERY};
 use crate::listen::{AcceptLimits, Listening};
-use crate::pool::{PoolKey, PoolPosture, Pools, Same};
+use crate::pool::{Fill, Joined, Leader, PoolKey, PoolPosture, Pools, Same, Take};
 use crate::registry::Transports;
 
 /// How the host wakes a caller's ticket, naming the caller that handed it the ticket: the supplier
@@ -739,6 +739,44 @@ struct Redial {
     mark: u64,
 }
 
+/// THE POOL TOKEN a pooled exchange's dial holds its line through (WASTE-EGRESS rule 1): the
+/// key's claimed dial, kept until its handshake settles, or an unclaimed dial's fill.
+enum Token {
+    Lead(Leader),
+    Fill(Fill),
+}
+
+/// A FOLLOWER: an open that joined the key's claimed dial in flight (WASTE-EGRESS rule 7). It
+/// keeps its plan (never located again), parks on the claimed dial until it ends, and takes again
+/// then: lent the line, it attaches; else it dials, through the token it took. Past its CAP, half
+/// its dial budget at its first join, it dials unclaimed inside its own `dial_due`.
+struct Following {
+    joined: Joined,
+    planned: Planned,
+    door: Arc<dyn FramerDoor>,
+    egress_class: u32,
+    judged_class: u32,
+    reach: bool,
+    require_secure: bool,
+    /// The plan's dial can multiplex (rule 2).
+    candidate: bool,
+    /// How many claimed dials it joined: at most two.
+    joins: u8,
+    /// When it stops waiting on another open's dial.
+    cap: Due,
+}
+
+/// An offer the far end may answer with a multiplexing line (WASTE-EGRESS rule 2): secured, one
+/// offering `h2`; in the clear, exactly `h2` (prior knowledge, agreed at the dial).
+fn multiplex_candidate(offer: &[Vec<u8>], secure: bool) -> bool {
+    let h2 = |p: &Vec<u8>| p.as_slice() == b"h2".as_slice();
+    if secure {
+        offer.iter().any(h2)
+    } else {
+        matches!(offer, [one] if h2(one))
+    }
+}
+
 /// A HELD CONNECTION'S DIAL OR REPLAY, CROSSING WITH NO LOCK HELD (`BUSBAR-1.6.0.md` §11: no plugin code
 struct Crossing<'h> {
     held: &'h Held,
@@ -903,6 +941,14 @@ pub(crate) struct Held {
     /// WHY THE CONNECTION FAILED BEFORE A LINE EXISTED (host-only, [`NeedRefusal`]): the first
     /// terminal reason its judgement or dial met.
     why: std::sync::OnceLock<NeedRefusal>,
+    /// The pool token its dial holds its line through (WASTE-EGRESS rule 1): a fill until the line
+    /// is held, a claimed dial's leader until its handshake settles.
+    token: Mutex<Option<Token>>,
+    /// It holds a claimed dial's leader: set when one is stored, read (Relaxed) by every settle
+    /// hook, so an exchange that leads nothing pays one load (rule 4).
+    leads: AtomicBool,
+    /// It follows another open's claimed dial (rule 7).
+    following: Mutex<Option<Following>>,
 }
 
 /// The instant a request's `timeout_ms` (the plugin's own number, unclamped: `RequestPiece` and
@@ -1084,6 +1130,34 @@ impl Held {
             open_timeout: DEFAULT_OPEN_TIMEOUT,
             dialled: None,
             why: std::sync::OnceLock::new(),
+            token: Mutex::new(None),
+            leads: AtomicBool::new(false),
+            following: Mutex::new(None),
+        }
+    }
+
+    /// Its dial holds its line through `token`; a leader turns its settle hook on.
+    fn hold_token(&self, token: Token) {
+        if matches!(token, Token::Lead(_)) {
+            self.leads.store(true, Ordering::Relaxed);
+        }
+        let previous = self.token.lock().expect("token").replace(token);
+        drop(previous);
+    }
+
+    /// The claimed dial it leads, taken out (its hook turned off): settled or dropped by the caller
+    /// with no lock held.
+    fn take_lead(&self) -> Option<Leader> {
+        if !self.leads.swap(false, Ordering::Relaxed) {
+            return None;
+        }
+        let mut token = self.token.lock().expect("token");
+        match token.take() {
+            Some(Token::Lead(leader)) => Some(leader),
+            other => {
+                *token = other;
+                None
+            }
         }
     }
 
@@ -1114,8 +1188,15 @@ impl Held {
     fn watch_deadlines(&self, interest: DeadlineInterest, waker: &Waker) {
         let due = self.due.lock().expect("due").clone();
         let dial_due = self.dial_due.lock().expect("dial due").clone();
+        // A follower is woken at its join cap too, though no one polls it (WASTE-EGRESS rule 7).
+        let cap = self
+            .following
+            .lock()
+            .expect("following")
+            .as_ref()
+            .map(|f| f.cap.clone());
         let now = framer::now();
-        for due in due.into_iter().chain(dial_due) {
+        for due in due.into_iter().chain(dial_due).chain(cap) {
             if now < due.at {
                 due.wake.register(interest, waker);
             }
@@ -2238,21 +2319,198 @@ impl Connector {
         line.emit(stream, bytes, end, text).map_err(|f| map(&f))
     }
 
-    /// Dial a held connection whose judgement has answered and replay its accepted writes.
+    /// Dial a held connection whose judgement has answered and replay its accepted writes. The
+    /// claimed dial it leads settles once its line's handshake ends; when its dial or landing
+    /// fails, it is dropped (lost) before the error goes back, every guard released, so its
+    /// followers take again at once (WASTE-EGRESS rule 4).
     fn settle(&self, held: &Held, waker: Option<&Waker>) -> Result<bool, ConnError> {
-        let ready = self.settle_dial(held, waker)?;
-
-        if self.observe_landing(held, waker.unwrap_or_else(|| Waker::noop()))? && !ready {
-            if let Some(waker) = waker {
-                waker.wake_by_ref();
+        let settled = self.settle_dial(held, waker).and_then(|ready| {
+            if self.observe_landing(held, waker.unwrap_or_else(|| Waker::noop()))? && !ready {
+                if let Some(waker) = waker {
+                    waker.wake_by_ref();
+                }
             }
+            Ok(ready)
+        });
+        match &settled {
+            Ok(_) | Err(ConnError::Pending) => self.settle_lead(held),
+            Err(_) => drop(held.take_lead()),
         }
-        Ok(ready)
+        settled
+    }
+
+    /// THE SETTLE HOOK (WASTE-EGRESS rule 4), run with no line, judgement or pool lock held: the
+    /// claimed dial `held` leads settles once its line's handshake ends. Its line multiplexes: the
+    /// followers are lent it. It secured another protocol: the key turns `solo`. It failed, or
+    /// agreed `h2` and no longer multiplexes (it ended): the dial is lost. An exchange that leads
+    /// nothing pays one load.
+    fn settle_lead(&self, held: &Held) {
+        if !held.leads.load(Ordering::Relaxed) {
+            return;
+        }
+        let Some((line, _)) = held.line() else {
+            return;
+        };
+        let shared = if line.multiplexes() {
+            Some(true)
+        } else if line.cause().is_some() {
+            None
+        } else if line.secured() {
+            let h2 = line
+                .established()
+                .is_some_and(|e| e.agreed_protocol.as_deref() == Some(b"h2".as_slice()));
+            (!h2).then_some(false)
+        } else {
+            return;
+        };
+        drop(line);
+        match (held.take_lead(), shared) {
+            (Some(leader), Some(shared)) => leader.settle(shared),
+            (leader, _) => drop(leader),
+        }
+    }
+
+    /// THE JOIN ARM (WASTE-EGRESS rule 7), at the head of every settle: `held` follows another
+    /// open's claimed dial. Before its cap, while that dial is in flight, it parks on it (`false`;
+    /// with no waker to park, a write or a fact, it is only pending). Once the dial ended, or past
+    /// the cap, it takes again: joined again (at most two joins), it parks; lent the line, it
+    /// attaches its opening and rides it; leading or dialling, it dials its own plan through the
+    /// token, inside its original `dial_due`. `true` once it follows nothing. What it takes again
+    /// crosses (a freshness probe, a locate, a judgement, a dial) with no lock held: a caller
+    /// polling it meanwhile waits on the crossing.
+    fn follow(&self, held: &Held, waker: Option<&Waker>) -> Result<bool, ConnError> {
+        // Only a pooled open follows.
+        let Some((shard, key)) = held.pooled.as_ref() else {
+            return Ok(true);
+        };
+        let (mut f, capped, crossing) = {
+            let mut following = held.following.lock().expect("following");
+            let Some(mut f) = following.take() else {
+                return Ok(true);
+            };
+            // The cap's expiry is no error: past it, the follower dials its own.
+            let capped = f.cap.check().is_err();
+            if !capped && !f.joined.done() && waker.is_none_or(|w| f.joined.park(w)) {
+                *following = Some(f);
+                return Ok(false);
+            }
+            let crossing = Crossing::begin(held, held.judging.lock().expect("judging"));
+            (f, capped, crossing)
+        };
+        crossing.finish((|| {
+            let taken = loop {
+                // Joining again only before the cap, and at most twice.
+                let joins = !capped && f.joins < 2;
+                match self.pools.take(*shard, key, joins, f.candidate) {
+                    Take::Join(joined) => {
+                        f.joins += 1;
+                        f.joined = joined;
+                        if waker.is_none_or(|w| f.joined.park(w)) {
+                            *held.following.lock().expect("following") = Some(f);
+                            return Ok(false);
+                        }
+                    }
+                    other => break other,
+                }
+            };
+            let Following {
+                planned,
+                door,
+                egress_class,
+                judged_class,
+                reach,
+                require_secure,
+                candidate,
+                cap,
+                ..
+            } = f;
+            // It follows nothing now: its cap is spent, as `landed` spends the dial bound.
+            cap.cancel();
+            let mut planned = planned;
+            let mut taken = taken;
+            let token = loop {
+                match taken {
+                    Take::Lent(line) => {
+                        let redial = Redial {
+                            door: Arc::clone(&door),
+                            dial: planned.dial().clone(),
+                            egress_class,
+                            judged_class,
+                            require_secure,
+                            reach,
+                            mark: line.flushed(),
+                        };
+                        let (opening, words) = planned.into_opening();
+                        match line.attach(opening, words) {
+                            Ok(stream) => return self.ride_lent(held, line, stream, Some(redial)),
+                            Err((stream, _))
+                                if line.flushed() != redial.mark || line.wire_kept() =>
+                            {
+                                return self.ride_lent(held, line, stream, None);
+                            }
+                            // The lent line failed before taking the opening: take again.
+                            Err((stream, _)) => {
+                                line.leave(stream, false);
+                                self.pools.drop_line(*shard, key, &line);
+                                planned =
+                                    self.plan(&redial.door, redial.dial).map_err(|f| map(&f))?;
+                                taken = self.pools.take(*shard, key, false, candidate);
+                            }
+                        }
+                    }
+                    Take::Lead(leader) => break Some(Token::Lead(leader)),
+                    Take::Dial(fill) => break Some(Token::Fill(fill)),
+                    // An unclaimed take joins nothing; its line is then not pooled.
+                    Take::Join(_) => break None,
+                }
+            };
+            if let Some(token) = token {
+                held.hold_token(token);
+            }
+            let mut why = None;
+            let dialled =
+                self.dial_judged(planned, egress_class, judged_class, &[], reach, &mut why);
+            if let Some(why) = why {
+                held.refused(why);
+            }
+            match dialled? {
+                (Some(conn), _) => {
+                    self.ride(held, conn)?;
+                }
+                (None, judging) => *held.judging.lock().expect("judging") = judging,
+            }
+            Ok(true)
+        })())
+    }
+
+    /// `held`, lent `line`, rides `stream` on it, keeping `redial` (the one redial a lent exchange
+    /// keeps, if any).
+    fn ride_lent(
+        &self,
+        held: &Held,
+        line: Arc<Line>,
+        stream: u64,
+        redial: Option<Redial>,
+    ) -> Result<bool, ConnError> {
+        let mut home = held.line.lock().expect("line");
+        if held.retired.load(Ordering::Acquire) {
+            drop(home);
+            self.let_go(held, &line, stream, false);
+            return Err(ConnError::Closed);
+        }
+        *home = Some((line, stream));
+        drop(home);
+        let previous = std::mem::replace(&mut *held.redial.lock().expect("redial"), redial);
+        drop(previous);
+        Ok(true)
     }
 
     fn settle_dial(&self, held: &Held, waker: Option<&Waker>) -> Result<bool, ConnError> {
         if held.retired.load(Ordering::Acquire) {
             return Err(ConnError::Closed);
+        }
+        if !self.follow(held, waker)? {
+            return Ok(false);
         }
         held.within_dial_due()?;
         let mut wake = waker.cloned();
@@ -2552,8 +2810,18 @@ impl Connector {
             line.close();
             return Err(ConnError::Closed);
         }
-        if let Some((shard, key)) = &held.pooled {
-            self.pools.hold(*shard, key.clone(), &line);
+        // A pooled exchange's line enters the pool only through the token its take minted
+        // (LINT-RULES R62): a fill is spent; a leader holds the line and is kept until it settles.
+        {
+            let mut token = held.token.lock().expect("token");
+            match token.take() {
+                Some(Token::Fill(fill)) => fill.hold(&self.pools, &line),
+                Some(Token::Lead(leader)) => {
+                    leader.hold(&self.pools, &line);
+                    *token = Some(Token::Lead(leader));
+                }
+                None => {}
+            }
         }
         *home = Some((Arc::clone(&line), EXCHANGE_STREAM));
         Ok(line)
@@ -2761,9 +3029,43 @@ impl Connector {
         let at = framer::now().checked_add(r.dial.open_timeout).map(Due::new);
         let previous = std::mem::replace(&mut *held.dial_due.lock().expect("dial due"), at);
         drop(previous);
-        let planned = self.plan(&r.door, r.dial).map_err(|f| map(&f))?;
+        let mut planned = self.plan(&r.door, r.dial).map_err(|f| map(&f))?;
         if r.require_secure && !planned.secure() {
             return Err(ConnError::AuthRefused);
+        }
+        // Through the pool's take, unclaimed (WASTE-EGRESS rule 7): lent another line, the exchange
+        // rides it, never redialled again; else it dials, its line pooled through the fill.
+        if let Some((shard, key)) = &held.pooled {
+            loop {
+                match self.pools.take(*shard, key, false, false) {
+                    Take::Lent(line) => {
+                        let dial = planned.dial().clone();
+                        let mark = line.flushed();
+                        let (opening, words) = planned.into_opening();
+                        match line.attach(opening, words) {
+                            Ok(stream) => return self.ride_lent(held, line, stream, None),
+                            Err((stream, _)) if line.flushed() != mark || line.wire_kept() => {
+                                return self.ride_lent(held, line, stream, None);
+                            }
+                            Err((stream, _)) => {
+                                line.leave(stream, false);
+                                self.pools.drop_line(*shard, key, &line);
+                                planned = self.plan(&r.door, dial).map_err(|f| map(&f))?;
+                            }
+                        }
+                    }
+                    Take::Dial(fill) => {
+                        held.hold_token(Token::Fill(fill));
+                        break;
+                    }
+                    Take::Lead(leader) => {
+                        held.hold_token(Token::Lead(leader));
+                        break;
+                    }
+                    // An unclaimed take joins nothing; its line is then not pooled.
+                    Take::Join(_) => break,
+                }
+            }
         }
         let mut why = None;
         let dialled = self.dial_judged(
@@ -2788,6 +3090,9 @@ impl Connector {
 
     /// `held`'s exchange leaves `line` (`whole` = its answer was read to its end): the line goes
     fn let_go(&self, held: &Held, line: &Arc<Line>, stream: u64, whole: bool) {
+        // An exchange leaving the line its claimed dial made before that dial settled: the dial
+        // is lost, and its followers take again at once (WASTE-EGRESS rule 5).
+        drop(held.take_lead());
         let left = line.leave(stream, whole);
         if left > 0 {
             return;
@@ -2918,7 +3223,9 @@ impl Connector {
                         return Err(ConnError::Pending);
                     }
                     let (line, stream) = held.line().ok_or(ConnError::Closed)?;
-                    match line.poll_piece(stream, &mut Context::from_waker(waker)) {
+                    let polled = line.poll_piece(stream, &mut Context::from_waker(waker));
+                    self.settle_lead(held);
+                    match polled {
                         Poll::Pending => return Err(ConnError::Pending),
 
                         Poll::Ready(Err(_) | Ok(None)) if self.redial(held)? => {}
@@ -3790,7 +4097,7 @@ impl Connector {
             declared,
             why,
         )?;
-        let dialled = dialled::Dialled::new(framing, port, pairing, due).begun(began)?;
+        let dialled = dialled::Dialled::new(framing, port, pairing, due).begun(began, now)?;
         Ok(held.dialling(dialled))
     }
 
@@ -3886,6 +4193,10 @@ impl Connector {
         record: &DeclaredNeed,
         why: &mut Option<NeedRefusal>,
     ) -> Result<Held, ConnError> {
+        let claim = owned.is_some();
+        // `claim`: only an open carrying its owned head (the kernel's upstream exchange, which a
+        // core task drives to its end or drops) claims its key's dial; no plugin-paced open does
+        // (WASTE-EGRESS rule 3).
         endpoint::named(target).map_err(|_| ConnError::Refused)?;
         // The answer the attempt's head was completed with, when it was located for this very
         // caller, need and target; any other is never trusted and the entry is asked afresh.
@@ -4024,55 +4335,96 @@ impl Connector {
                 }),
             )
         });
+        // The dial can multiplex: what its key's claim waits on (WASTE-EGRESS rule 2).
+        let candidate = multiplex_candidate(planned.offer(), planned.secure());
         let mut planned = planned;
+        let mut token = None;
         if let Some((shard, key)) = &pooled {
-            if let Some(line) = self.pools.lend(*shard, key) {
-                if prepare {
-                    // A prepared exchange reserves a stream; its opening is committed later, on
-                    // this line only. It keeps no Redial: its dial carries no opening, so a redial
-                    // would send nothing. The dial is kept only to dial fresh if the reserve fails.
-                    let fallback = planned.dial().clone();
-                    match line.reserve() {
-                        Ok(stream) => {
-                            return Ok(Held::over(Some((line, stream)), None, pooled)
-                                .bounded(now, desc.timeout_ms));
-                        }
-                        Err((stream, _)) => {
-                            line.leave(stream, false);
-                            self.pools.drop_line(*shard, key, &line);
-                            planned = self.plan(&door, fallback).map_err(|f| map(&f))?;
+            loop {
+                match self.pools.take(*shard, key, claim, candidate) {
+                    Take::Lent(line) if prepare => {
+                        // A prepared exchange reserves a stream; its opening is committed later, on
+                        // this line only. It keeps no Redial: its dial carries no opening, so a
+                        // redial would send nothing. The dial is kept only to dial fresh if the
+                        // reserve fails.
+                        let fallback = planned.dial().clone();
+                        match line.reserve() {
+                            Ok(stream) => {
+                                return Ok(Held::over(Some((line, stream)), None, pooled)
+                                    .bounded(now, desc.timeout_ms));
+                            }
+                            Err((stream, _)) => {
+                                line.leave(stream, false);
+                                self.pools.drop_line(*shard, key, &line);
+                                planned = self.plan(&door, fallback).map_err(|f| map(&f))?;
+                            }
                         }
                     }
-                } else {
-                    let redial = Redial {
-                        door: Arc::clone(&door),
-                        dial: planned.dial().clone(),
-                        egress_class,
-                        judged_class,
-                        require_secure,
-                        reach,
-                        mark: line.flushed(),
-                    };
-                    let (opening, words) = planned.into_opening();
-                    match line.attach(opening, words) {
-                        Ok(stream) => {
-                            let held = Held::over(Some((line, stream)), None, pooled)
-                                .bounded(now, desc.timeout_ms);
-                            *held.redial.lock().expect("redial") = Some(redial);
-                            return Ok(held);
-                        }
+                    Take::Lent(line) => {
+                        let redial = Redial {
+                            door: Arc::clone(&door),
+                            dial: planned.dial().clone(),
+                            egress_class,
+                            judged_class,
+                            require_secure,
+                            reach,
+                            mark: line.flushed(),
+                        };
+                        let (opening, words) = planned.into_opening();
+                        match line.attach(opening, words) {
+                            Ok(stream) => {
+                                let held = Held::over(Some((line, stream)), None, pooled)
+                                    .bounded(now, desc.timeout_ms);
+                                *held.redial.lock().expect("redial") = Some(redial);
+                                return Ok(held);
+                            }
 
-                        Err((stream, _)) if line.flushed() != redial.mark || line.wire_kept() => {
-                            let held = Held::over(Some((line, stream)), None, pooled)
-                                .bounded(now, desc.timeout_ms);
-                            return Ok(held);
-                        }
+                            Err((stream, _))
+                                if line.flushed() != redial.mark || line.wire_kept() =>
+                            {
+                                let held = Held::over(Some((line, stream)), None, pooled)
+                                    .bounded(now, desc.timeout_ms);
+                                return Ok(held);
+                            }
 
-                        Err((stream, _)) => {
-                            line.leave(stream, false);
-                            self.pools.drop_line(*shard, key, &line);
-                            planned = self.plan(&redial.door, redial.dial).map_err(|f| map(&f))?;
+                            // The lent line failed before taking the opening: take again.
+                            Err((stream, _)) => {
+                                line.leave(stream, false);
+                                self.pools.drop_line(*shard, key, &line);
+                                planned =
+                                    self.plan(&redial.door, redial.dial).map_err(|f| map(&f))?;
+                            }
                         }
+                    }
+                    // A FOLLOWER (rule 7): it answers its conn id at once, as a deferred dial does,
+                    // and parks on the key's claimed dial until it ends or its cap passes: half its
+                    // dial budget, so it keeps the other half for a dial of its own.
+                    Take::Join(joined) => {
+                        let held = Held::over(None, None, pooled)
+                            .bounded(now, desc.timeout_ms)
+                            .dial_bounded(now, open_timeout);
+                        let cap = Due::new(now.checked_add(open_timeout / 2).unwrap_or(now));
+                        *held.following.lock().expect("following") = Some(Following {
+                            joined,
+                            planned,
+                            door,
+                            egress_class,
+                            judged_class,
+                            reach,
+                            require_secure,
+                            candidate,
+                            joins: 1,
+                            cap,
+                        });
+                        return Ok(held);
+                    }
+                    Take::Lead(leader) => {
+                        token = Some(Token::Lead(leader));
+                        break;
+                    }
+                    Take::Dial(fill) => {
+                        token = Some(Token::Fill(fill));
+                        break;
                     }
                 }
             }
@@ -4085,6 +4437,9 @@ impl Connector {
         let held = Held::over(None, judging, pooled)
             .bounded(now, desc.timeout_ms)
             .dial_bounded(now, open_timeout);
+        if let Some(token) = token {
+            held.hold_token(token);
+        }
         if let Some(conn) = conn {
             self.ride(&held, conn)?;
         }
@@ -4459,6 +4814,7 @@ impl Conns for Connector {
         }
         let (line, stream) = held.line().ok_or(ConnError::Closed)?;
         let got = line.emit(stream, bytes, end, text);
+        self.settle_lead(&held);
         if got.is_ok() {
             let _ = self.observe_landing(&held, Waker::noop());
         }
@@ -4517,7 +4873,9 @@ impl Conns for Connector {
             let Some((line, stream)) = held.line() else {
                 return Ok(at);
             };
-            if line.poll_ready(stream, &mut cx).is_ready() {
+            let ready = line.poll_ready(stream, &mut cx).is_ready();
+            self.settle_lead(&held);
+            if ready {
                 let _ = self.observe_landing(&held, &waker);
                 return Ok(at);
             }
@@ -4844,3 +5202,7 @@ mod pool_prepared_target_tests;
 #[cfg(test)]
 #[path = "tests/waiter_order_tests.rs"]
 mod waiter_order_tests;
+
+#[cfg(test)]
+#[path = "tests/pool_single_flight_tests.rs"]
+mod pool_single_flight_tests;

@@ -143,6 +143,7 @@ pub enum KernelVerb {
     GetKindInstances,
     GetKindInstance,
     GetKindInstanceView,
+    GetWhoami,
     GetUsage,
     GetOpenapiJson,
 
@@ -163,6 +164,8 @@ pub enum KernelVerb {
     GetHooksNameSchema,
     PatchHooksNameSettings,
     GetHooksNameStatus,
+    PutHooksNameAttachmentsTarget,
+    DeleteHooksNameAttachmentsTarget,
 
     GetKeys,
     PostKeys,
@@ -295,6 +298,9 @@ pub const TABLE: &[VerbRow] = table! {
     New GetKindInstances "GET" "/api/v1/admin/kinds/{kind}/instances" "get_kind_instances";
     New GetKindInstance "GET" "/api/v1/admin/kinds/{kind}/instances/{id}" "get_kind_instance";
     New GetKindInstanceView "GET" "/api/v1/admin/kinds/{kind}/instances/{id}/views/{view}" "get_kind_instance_view";
+    New GetWhoami "GET" "/api/v1/admin/whoami" "get_whoami";
+    New PutHooksNameAttachmentsTarget "PUT" "/api/v1/admin/hooks/{name}/attachments/{target}" "put_hooks_name_attachments_target";
+    New DeleteHooksNameAttachmentsTarget "DELETE" "/api/v1/admin/hooks/{name}/attachments/{target}" "delete_hooks_name_attachments_target";
     New GetTrust "GET" "/api/v1/admin/trust" "get_trust";
     New TrustApprove "POST" "/api/v1/admin/trust/approve" "trust_approve";
     New TrustRevoke "POST" "/api/v1/admin/trust/revoke" "trust_revoke";

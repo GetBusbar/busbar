@@ -3,52 +3,27 @@
 
 //! What the rate lookup costs, measured.
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
+use stats_alloc::StatsAlloc;
+#[cfg(target_env = "msvc")]
+use std::alloc::System as Base;
+#[cfg(not(target_env = "msvc"))]
+use tikv_jemallocator::Jemalloc as Base;
 
 use busbar_kernel_ledger::cost::{LaneClass, RateCard};
 
-thread_local! {
-    /// Allocations made on THIS thread. Thread-local on purpose: the harness runs cases in
-    /// parallel, and a process-wide counter would be perturbed by whatever else happens to be
-    /// allocating at the same moment. The cell is const-initialised and has no destructor, so
-    /// reading it from inside the allocator cannot itself allocate and cannot recurse.
-    static ALLOCATIONS: Cell<u64> = const { Cell::new(0) };
-}
-
-fn allocations() -> u64 {
-    ALLOCATIONS.with(Cell::get)
-}
-
-struct Counting;
-
-// SAFETY: every method forwards to the system allocator unchanged and hands back exactly the
-// pointer `System` returned. The only addition is a thread-local integer increment, which allocates
-// nothing; `try_with` is used so that a thread whose local has already been destroyed skips the
-// count rather than panicking inside the allocator.
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let _ = ALLOCATIONS.try_with(|c| c.set(c.get() + 1));
-        System.alloc(layout)
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        System.dealloc(ptr, layout)
-    }
-
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        let _ = ALLOCATIONS.try_with(|c| c.set(c.get() + 1));
-        System.alloc_zeroed(layout)
-    }
-
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        let _ = ALLOCATIONS.try_with(|c| c.set(c.get() + 1));
-        System.realloc(ptr, layout, new_size)
-    }
-}
-
+/// The shipped allocator (jemalloc), counted process-wide by `stats_alloc`. The counts are
+/// process-wide, so the measuring tests run one at a time (nextest runs each in its own process).
 #[global_allocator]
-static COUNTING: Counting = Counting;
+static COUNTING: StatsAlloc<Base> = StatsAlloc::new(Base);
+
+/// Allocations and reallocations made so far.
+fn allocations() -> u64 {
+    let stats = COUNTING.stats();
+    stats.allocations as u64 + stats.reallocations as u64
+}
+
+/// One measuring test at a time: a second test building its card must not land inside a window.
+static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// A card over one lane pricing four classes.
 fn four_class_card() -> RateCard {
@@ -66,6 +41,7 @@ fn four_class_card() -> RateCard {
 /// A RATE LOOKUP ALLOCATES NOTHING.
 #[test]
 fn a_rate_lookup_allocates_nothing() {
+    let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(|p| p.into_inner());
     let card = four_class_card();
     let view = card.lane_rates("lane").expect("the lane is priced");
 
@@ -94,6 +70,7 @@ fn a_rate_lookup_allocates_nothing() {
 /// Resolving the lane itself allocates nothing either, so a whole priced line — lane, then class —
 #[test]
 fn resolving_a_lane_allocates_nothing() {
+    let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(|p| p.into_inner());
     let card = four_class_card();
     assert!(card.lane_rates("lane").is_some());
     assert!(card.lane_rates("mystery").is_none());

@@ -443,3 +443,6 @@ mod admin_application_admin_config_tree;
 
 #[path = "admin_application/admin_kinds.rs"]
 mod admin_application_admin_kinds;
+
+#[path = "admin_application/admin_hook_attachments.rs"]
+mod admin_application_admin_hook_attachments;

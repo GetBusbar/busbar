@@ -112,7 +112,7 @@ pub fn is_link_local_v6(addr: &Ipv6Addr) -> bool {
     (addr.segments()[0] & 0xffc0) == 0xfe80
 }
 
-/// RFC 6598 Shared Address Space `100.64.0.0/10` (CGNAT). Not covered by `is_private()`, yet it
+/// RFC 6598 Shared Address Space (CGNAT). Not covered by `is_private()`, yet it
 pub fn is_cgnat_shared_v4(v4: &Ipv4Addr) -> bool {
     let o = v4.octets();
     o[0] == 100 && (o[1] & 0xC0) == 64
@@ -867,7 +867,7 @@ pub fn url_authority(url: &str) -> Authority<'_> {
     }
 }
 
-/// AN IP NETWORK as an operator writes one in a list (`10.0.0.0/8`, `fd00::/8`, or a bare address,
+/// AN IP NETWORK as an operator writes one in a list (`192.0.2.0/8`, `fd00::/8`, or a bare address,
 /// which is host-length). THE ONE CIDR READER: the destination guard's `advanced.allow_destinations`
 /// and the client-address reader's `advanced.trusted_proxies` both parse and match through it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

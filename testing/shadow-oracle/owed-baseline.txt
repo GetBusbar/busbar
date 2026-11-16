@@ -652,7 +652,6 @@ documented|changelog|no-keygen-at-boot
 documented|changelog|no-per-key-gauge
 documented|changelog|retry-after-floor
 documented|changelog|spend-metrics-labelled
-documented|changelog|stats-reasons
 documented|changelog|validate-checks
 documented|changelog|validate-list-plugins
 documented|changelog|worker-threads-zero
@@ -720,7 +719,6 @@ http.crosscut|api-prefix|data
 http.crosscut|api|data
 http.crosscut|auth-token|GET-none
 http.crosscut|auth-token|POST-empty
-http.crosscut|bearer-and-x-api-key
 http.crosscut|HEAD|healthz
 http.crosscut|OPTIONS|chat
 http.crosscut|unknown-path|anthropic-beta
@@ -949,11 +947,9 @@ neutrality|routes|decisions-shaped-404
 neutrality|routes|healthz
 neutrality|routes|mcp-shaped-404
 neutrality|routes|oauth-as-shaped-404
-neutrality|routes|stats
 neutrality|routes|v1-models
 neutrality|routes|voice-shaped-404
 neutrality|routes|ws-shaped-404
-neutrality|stats-idle-zero
 ops.raw|header-order
 ops.scrape|healthz|admin
 ops.scrape|healthz|data
@@ -963,7 +959,6 @@ ops.scrape|metrics|no-ledger-series
 ops.scrape|metrics|none
 ops.scrape|metricshooks|key
 ops.scrape|reload|sink-removed
-ops.scrape|stats|key
 ops.scrape|stats|none
 ops.scrape|v1betamodels
 ops.scrape|v1models|anthropic-fp

@@ -56,6 +56,7 @@ impl AdminTransport for JsonV1 {
                 "/kinds/{kind}/instances/{id}/views/{view}",
                 get(kinds::view),
             )
+            .route("/whoami", get(whoami::get))
             .route(PATH_HOOKS, get(list_hooks).post(register_hook))
             .route(
                 "/hooks/{name}",
@@ -65,6 +66,11 @@ impl AdminTransport for JsonV1 {
             .route("/hooks/{name}/settings", patch(patch_hook_settings))
             .route("/hooks/{name}/schema", get(hook_schema))
             .route("/hooks/{name}/status", get(hook_status))
+            .route(
+                "/hooks/{name}/attachments/{target}",
+                axum::routing::put(hook_attachments::put_attachment)
+                    .delete(hook_attachments::delete_attachment),
+            )
             .merge(named_map::routes());
 
         let router = mount_plane_admin_routes(router);
@@ -623,12 +629,16 @@ mod config_forms;
 mod contract_metadata;
 pub(crate) mod cursor;
 mod generation;
+mod hook_attachments;
+pub(crate) use hook_attachments::attachments_of;
 mod handlers;
 #[cfg(feature = "openapi-schema")]
 mod replay_metadata;
 mod settings_edit;
 pub(super) mod telemetry;
+mod whoami;
 pub(crate) use handlers::*;
+pub(crate) use whoami::who_of as whoami_of;
 
 mod kernel_verbs;
 
@@ -652,9 +662,15 @@ mod envelope_reasons;
 #[path = "tests/operator_file_policy_tests.rs"]
 mod operator_file_policy_tests;
 
+#[cfg(test)]
+#[path = "tests/hook_attachment_tests.rs"]
+mod hook_attachment_tests;
+
 #[cfg(feature = "test-support")]
 pub use handlers::credential_flush_response_for_test;
 
+#[path = "tests/admin_grant_tests.rs"]
+mod admin_grant_tests;
 #[cfg(test)]
 #[path = "tests/audit_feed_tests.rs"]
 mod audit_feed_tests;

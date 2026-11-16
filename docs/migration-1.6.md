@@ -105,8 +105,10 @@ The config migration:
 
 ### Retired environment variables
 
-1.6.0 no longer reads these at runtime. The first 1.6.0 boot copies their values into config, so
-keep them set for that boot and remove them afterwards.
+1.6.0 no longer reads these at runtime. Run the explicit configuration migration with the original
+environment before starting 1.6. It captures the supported values in the generated configuration.
+Review that output, then remove the retired variables from the normal service environment.
+Startup does not import them.
 
 | Retired env var | Config key |
 |---|---|
@@ -121,7 +123,8 @@ keep them set for that boot and remove them afterwards.
 
 **Containers.** The 1.5.x image set `BUSBAR_PROVIDERS=/etc/busbar/providers.yaml`; the 1.6.0 image
 does not. With `config.yaml` at the default `/etc/busbar/config.yaml` nothing changes. If you
-mounted it elsewhere, set `BUSBAR_PROVIDERS` for the first boot or put `providers.yaml` beside it.
+mounted it elsewhere, set `providers_file:`, pass `--providers`, or put `providers.yaml` beside it.
+Keep the old `BUSBAR_PROVIDERS` value only for the explicit migration command.
 
 `BUSBAR_CONFIG_OVERLAY` selects old file-overlay migration input only; serving never reads it.
 The old `config.overlay` file/boolean field is refused by `--validate` (the current reader), which
@@ -136,8 +139,8 @@ state). Selectors and `BUSBAR_CONFIG_OVERLAY` that hold nothing get a warning (B
 records when upgrading 1.5.5: existing signed keys do not need to be reminted merely for this upgrade.
 
 In 1.6.0, changes made through the admin API are stored in the store, not in an overlay file. The
-first boot imports your 1.5.5 overlay file (`config.overlay.file`, else `BUSBAR_CONFIG_OVERLAY`,
-else `busbar-overlay.json` beside the config) into the store once:
+explicit migration command imports your 1.5.5 overlay file (`config.overlay.file`, else `BUSBAR_CONFIG_OVERLAY`,
+else `busbar-overlay.json` beside the old config) into the store once. Run it before serving; startup refuses unimported legacy state:
 
 - hooks, wiring, groups, root controls, named definitions and plugin floors are kept;
 - if the overlay chose the store, that choice is written into `config.yaml`;
@@ -145,7 +148,7 @@ else `busbar-overlay.json` beside the config) into the store once:
 - the import needs a durable store; an overlay with the memory store is refused;
 - an unknown or invalid overlay is refused, never partly imported;
 - the old file is not read again after import.
-<!-- TODO(migrate-design): whether the imported overlay file is renamed (design: <file>.imported-1.5.5). -->
+The original files remain unchanged; the import and digest receipt commit atomically. See [overlay import](migration-overlay-1.6.md).
 
 ### Credentials moved to files
 
@@ -187,8 +190,7 @@ Hook configuration and admin writes use one canonical spelling. Convert existing
 once and update clients that submit or read retired fields.
 
 - **`config.overlay` is retired.** 1.6.0 keeps admin-API config changes in the configured Store,
-  not in an overlay file, so `config:` accepts only `locked`. `busbar --migrate-config` and the
-  first 1.6.0 boot remove `overlay: false` and `overlay: { file: <path> }` and keep
+  not in an overlay file, so `config:` accepts only `locked`. `busbar --migrate-config` removes `overlay: false` and `overlay: { file: <path> }` and keep
   `config.locked`. Import the old file into the Store once with
   `busbar --config <new-config.yaml> --migrate-overlay <old-config.yaml>`
   ([overlay import](migration-overlay-1.6.md)). Where the selector is still present and nothing
@@ -304,6 +306,7 @@ See the [1.6.0 advisories](advisories/1.6.0/README.md) for the full disclosures.
 
 - Hook writes require `module:` (not `plugin:`) and `phase: [...]` (not `at:`). Hook reads no longer
   return `at`; read `fires_at` and `phase`.
+- `GET /stats` lanes no longer carry `limit`; read `max_concurrent` (same value).
 - Remove `persist` from `PUT /api/v1/admin/config/settings` requests; it is refused with 400.
   Every successful change is saved to the store.
 - A `rate_card` written through the admin API must include the `units:` map below.
@@ -333,9 +336,10 @@ See the [1.6.0 advisories](advisories/1.6.0/README.md) for the full disclosures.
 
 ## Rate cards
 
-**Every billable unit must have a rate.** A `rate_card:` must price every unit its plane counts
-(`0` is a rate), or startup refuses and names the missing units. The migration adds these at `0`,
-which is what 1.5.5 billed:
+**Price every billable unit deliberately.** With a rate card present, a missing required lane
+is a validation error; missing billable classes produce unpriced warnings. A deployment with no
+rate card has usage pricing disabled. Do not treat successful startup as proof that every unit
+is priced. The migration adds the following units at `0`, which is what 1.5.5 billed:
 
 **This is the one edit a 1.5.5 config with a `rate_card:` needs.** Every count a provider reports
 is a ledger line under its own unit (owner ruling LEDGER-100). The LLM plane counts `input`,
@@ -375,7 +379,7 @@ rate_card:
                             guardrail_topic_policy_units: 0, guardrail_word_policy_units: 0 } }
 ```
 
-Put the map on every entry: an entry silent about a unit refuses that traffic. Set a real rate when
+Put the map on every entry and resolve unpriced warnings. Set a real rate when
 you want to bill a unit. These units do not count toward `tokens:` caps.
 
 **Rate cards are a dated history.** Changing a card prices only what comes after the change; past
