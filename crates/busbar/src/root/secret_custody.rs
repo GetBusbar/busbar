@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The secret kind on the MIN-3 path (W2-SW-SECRET; IF §11.3, §12.2): the process's open secret instances,
-//! by configured name, and the one custody over them. A secret reference `{module, settings}` names a
+//! The secret kind on the MIN-3 path (HOST M3a; IF §11.3, §12.2): immutable prefixes of opened instances,
+//! by configured name, and custody bound to each prefix. A secret reference `{module, settings}` names a
 //! configured secret instance; custody reaches it through its `SecretPort` and hands the plugin the
 //! reference's `settings` only, never its `module` (I2).
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::time::Instant;
 
-use arc_swap::ArcSwap;
 use busbar_contract::secret_ref::SecretRef;
 use busbar_contract::secure::SecureVec;
 use busbar_kernel::custody::{
@@ -22,48 +21,49 @@ use busbar_ports::secret::SecretPort;
 use busbar_ports::CallCx;
 use foldhash::HashMap;
 
-/// The open secret instances, by the operator's configured instance name. Copied on write: an instance opens
-/// or closes once per boot, reload or admin install; every resolve is one lock-free load.
-#[derive(Default)]
-pub(crate) struct SecretTable {
-    open: ArcSwap<HashMap<Box<str>, SecretSource>>,
-    grow: Mutex<()>,
+/// An immutable prefix of successfully opened secret instances. Cloning retains exactly these ports;
+/// a later prefix never changes what an earlier per-open Needs can resolve.
+#[derive(Clone, Default)]
+struct SecretView {
+    open: Arc<HashMap<Box<str>, SecretSource>>,
 }
 
-impl SecretTable {
-    /// `name`'s instance is open (boot step 2a or 2c, a reload, an admin install). A reopen replaces the old
-    /// instance, whose cached values the caller drops with [`BootSecrets::closed`].
-    pub(crate) fn opened(&self, name: &str, source: SecretSource) -> Option<SecretSource> {
-        let _grow = self.grow.lock().unwrap_or_else(PoisonError::into_inner);
-        let current = self.open.load_full();
-        let mut next = (*current).clone();
-        let old = next.insert(Box::from(name), source);
-        self.open.store(Arc::new(next));
-        old
-    }
-
-    /// `name`'s instance closed; the returned source is the one that was open.
-    fn closed(&self, name: &str) -> Option<SecretSource> {
-        let _grow = self.grow.lock().unwrap_or_else(PoisonError::into_inner);
-        let current = self.open.load_full();
-        if !current.contains_key(name) {
-            return None;
+impl SecretView {
+    fn appended(&self, name: &str, source: SecretSource) -> Result<Self, CustodyDenied> {
+        if name.is_empty()
+            || source.instance == 0
+            || self.open.contains_key(name)
+            || self
+                .open
+                .values()
+                .any(|existing| existing.instance == source.instance)
+        {
+            return Err(CustodyDenied::Denied);
         }
-        let mut next = (*current).clone();
-        let old = next.remove(name);
-        self.open.store(Arc::new(next));
-        old
+        let mut open = (*self.open).clone();
+        open.insert(Box::from(name), source);
+        Ok(Self {
+            open: Arc::new(open),
+        })
     }
 
-    pub(crate) fn get(&self, module: &str) -> Option<SecretSource> {
-        self.open.load().get(module).cloned()
+    fn without(&self, name: &str) -> Self {
+        let mut open = (*self.open).clone();
+        open.remove(name);
+        Self {
+            open: Arc::new(open),
+        }
+    }
+
+    fn get(&self, name: &str) -> Option<SecretSource> {
+        self.open.get(name).cloned()
     }
 }
 
 /// What custody reads from the process: the open secret instances, plugin-facing bindings (`ConfigBinder::secret`,
 /// §12.7) and instance scrub sets (§10.6).
 pub(crate) struct Host {
-    table: Arc<SecretTable>,
+    view: SecretView,
     binder: Arc<dyn ConfigBinder>,
     slots: Arc<busbar_plugin_loader::instance::SlotTable>,
 }
@@ -78,7 +78,7 @@ impl CustodyHost for Host {
     }
 
     fn source(&self, module: &str) -> Option<SecretSource> {
-        self.table.get(module)
+        self.view.get(module)
     }
 
     fn audit(
@@ -106,9 +106,11 @@ impl CustodyHost for Host {
     }
 }
 
-/// The process's secret kind: its open instances and the custody that resolves every reference through them.
+/// One immutable secret prefix and its custody. Owned by the per-open Needs that captures it.
 pub(crate) struct BootSecrets {
-    table: Arc<SecretTable>,
+    view: SecretView,
+    binder: Arc<dyn ConfigBinder>,
+    slots: Arc<busbar_plugin_loader::instance::SlotTable>,
     custody: Custody<Host>,
 }
 
@@ -116,10 +118,11 @@ impl BootSecrets {
     /// Synchronous configuration readers dispatch resolution onto the owned I/O executor,
     /// which keeps progressing even when the reader runs on a current-thread runtime.
     pub(crate) fn resolver(
-        &'static self,
+        self: &Arc<Self>,
         runtime: tokio::runtime::Handle,
         sugars: busbar_contract::secret_ref::Sugars,
     ) -> Arc<busbar_kernel::config::secret::SecretResolver> {
+        let prefix = Arc::clone(self);
         let resolver = busbar_kernel::config::secret::SecretResolver::with_scoped_plugin(Box::new(
             move |module, settings, _scope| {
                 let reference = SecretRef::Source(busbar_contract::secret_ref::SourceReference {
@@ -128,8 +131,9 @@ impl BootSecrets {
                 });
                 let (send, receive) = std::sync::mpsc::sync_channel(1);
                 let deadline = Instant::now() + super::min3_boot::CORE_SECRET_DEADLINE;
+                let prefix = Arc::clone(&prefix);
                 let task = runtime.spawn(async move {
-                    let result = self.resolve_ref(deadline, &reference).await;
+                    let result = prefix.resolve_ref(deadline, &reference).await;
                     let _ = send.send(result);
                 });
                 let result = receive.recv_timeout(super::min3_boot::CORE_SECRET_DEADLINE);
@@ -146,35 +150,58 @@ impl BootSecrets {
         Arc::new(resolver.with_sources(sugars))
     }
 
-    /// The secret kind over `binder`, which custody reads plugin-facing bindings through (the binder does not
-    /// depend on custody, so it exists first and is handed over here).
-    pub(crate) fn new(
+    /// The complete empty prefix exists before the first secret open; it refuses forward references.
+    pub(crate) fn empty(
         binder: Arc<dyn ConfigBinder>,
         slots: Arc<busbar_plugin_loader::instance::SlotTable>,
-    ) -> Self {
-        let table = Arc::new(SecretTable::default());
+    ) -> Arc<Self> {
+        Self::from_view(binder, slots, SecretView::default())
+    }
+
+    fn from_view(
+        binder: Arc<dyn ConfigBinder>,
+        slots: Arc<busbar_plugin_loader::instance::SlotTable>,
+        view: SecretView,
+    ) -> Arc<Self> {
         let custody = Custody::new(Host {
-            table: Arc::clone(&table),
+            view: view.clone(),
+            binder: Arc::clone(&binder),
+            slots: Arc::clone(&slots),
+        });
+        Arc::new(Self {
+            view,
             binder,
             slots,
-        });
-        BootSecrets { table, custody }
+            custody,
+        })
     }
 
-    /// The port of the secret instance configured as `name`, if it is open.
+    /// Extend after a successful reserved open. Existing Needs keep their old prefix and cache;
+    /// the successor has fresh custody and cannot inherit a cached answer for a changed source.
+    pub(crate) fn with_opened(
+        self: &Arc<Self>,
+        name: &str,
+        source: SecretSource,
+    ) -> Result<Arc<Self>, CustodyDenied> {
+        Ok(Self::from_view(
+            Arc::clone(&self.binder),
+            Arc::clone(&self.slots),
+            self.view.appended(name, source)?,
+        ))
+    }
+
+    /// A candidate retirement removes a source only from the returned view; an already captured prefix
+    /// remains valid until its owning instance is retired and drops it.
+    pub(crate) fn without(self: &Arc<Self>, name: &str) -> Arc<Self> {
+        Self::from_view(
+            Arc::clone(&self.binder),
+            Arc::clone(&self.slots),
+            self.view.without(name),
+        )
+    }
+
     pub(crate) fn port(&self, name: &str) -> Option<Arc<dyn SecretPort>> {
-        self.table.get(name).map(|source| source.port)
-    }
-
-    pub(crate) fn table(&self) -> &SecretTable {
-        &self.table
-    }
-
-    /// `name`'s instance closed (reload, admin uninstall, shutdown): custody forgets its per-instance entries.
-    pub(crate) fn closed(&self, name: &str) {
-        if let Some(old) = self.table.closed(name) {
-            self.custody.drop_instance(old.instance);
-        }
+        self.view.get(name).map(|source| source.port)
     }
 
     /// A kernel-internal secret (admin token, signing key, at-rest keys, mTLS material): by reference, with an
@@ -193,9 +220,9 @@ impl BootSecrets {
     }
 }
 
-/// The custody the Need handlers own (`HostNeeds<BootCustody, ..>`): the process's one [`BootSecrets`].
-#[derive(Clone, Copy)]
-pub(crate) struct BootCustody(pub(crate) &'static BootSecrets);
+/// The custody the Need handlers own: the immutable prefix captured for that specific open.
+#[derive(Clone)]
+pub(crate) struct BootCustody(pub(crate) Arc<BootSecrets>);
 
 impl SecretCustody for BootCustody {
     fn resolve(
@@ -233,43 +260,6 @@ impl RefSource for BootRefs {
     ) -> BoxFut<'a, Option<SecureVec>> {
         Box::pin(core::future::ready(None))
     }
-}
-
-/// The boot walk's secret steps (IF §11.2; boot steps 2a and 2c): every `Secret` instance among `steps` (indices into
-/// `instances`, in plan order) is opened through `registry.open_secret` and its port entered in the table under the
-/// instance's configured name, with a process-unique runtime id (the §12.2 cycle check keys on it). `instances` is
-/// the same slice the plan was built over. The first refusal stops the walk: a secret instance that cannot open
-/// refuses the boot.
-pub(crate) async fn open_secret_steps<N: busbar_plugin_abi::host_side::needs::Needs>(
-    secrets: &BootSecrets,
-    registry: &busbar_plugin_loader::instance::Registry,
-    needs: &Arc<N>,
-    steps: &[u32],
-    instances: &[(
-        busbar_plugin_abi::types::KindCode,
-        busbar_plugin_loader::instance::InstanceSpec<'_>,
-    )],
-) -> Result<usize, busbar_plugin_loader::instance::OpenError> {
-    let mut opened = 0;
-    for at in steps {
-        let Some((kind, spec)) = instances.get(*at as usize) else {
-            continue;
-        };
-        if *kind != busbar_plugin_abi::types::KindCode::Secret {
-            continue;
-        }
-        let prepared = registry.reserve(spec)?;
-        let instance = prepared.id();
-        let port = registry.open_secret_reserved(prepared, needs).await?;
-        if let Some(old) = secrets
-            .table()
-            .opened(spec.name, SecretSource { instance, port })
-        {
-            secrets.custody.drop_instance(old.instance);
-        }
-        opened += 1;
-    }
-    Ok(opened)
 }
 
 #[cfg(test)]

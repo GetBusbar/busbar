@@ -19,9 +19,9 @@ use super::{BootRefs, BootSecrets};
 use busbar_kernel::plugin_config::{Binder, ConfigBinder};
 
 /// A secret kind over the boot's own binder.
-fn secrets() -> BootSecrets {
+fn secrets() -> Arc<BootSecrets> {
     let binder: Arc<dyn ConfigBinder> = Arc::new(Binder::new(Arc::new(BootRefs)));
-    BootSecrets::new(
+    BootSecrets::empty(
         binder,
         Arc::new(busbar_plugin_loader::instance::SlotTable::new()),
     )
@@ -84,20 +84,24 @@ async fn a_secret_env_and_a_secret_vault_instance_resolve_through_their_ports() 
     let secrets = secrets();
     let env = Port::new("env-material-0001");
     let vault = Port::new("vault-material-0002");
-    secrets.table().opened(
-        "secret-env",
-        SecretSource {
-            instance: 11,
-            port: Arc::clone(&env) as Arc<dyn SecretPort>,
-        },
-    );
-    secrets.table().opened(
-        "secret-vault",
-        SecretSource {
-            instance: 12,
-            port: Arc::clone(&vault) as Arc<dyn SecretPort>,
-        },
-    );
+    let secrets = secrets
+        .with_opened(
+            "secret-env",
+            SecretSource {
+                instance: 11,
+                port: Arc::clone(&env) as Arc<dyn SecretPort>,
+            },
+        )
+        .unwrap();
+    let secrets = secrets
+        .with_opened(
+            "secret-vault",
+            SecretSource {
+                instance: 12,
+                port: Arc::clone(&vault) as Arc<dyn SecretPort>,
+            },
+        )
+        .unwrap();
 
     let from_env = resolved(&secrets, &source("secret-env", r#"{"name":"DB_PASSWORD"}"#)).await;
     let from_vault = resolved(
@@ -130,13 +134,15 @@ async fn a_secret_env_and_a_secret_vault_instance_resolve_through_their_ports() 
 async fn a_module_that_is_not_open_is_refused_without_a_name() {
     let secrets = secrets();
     let env = Port::new("env-material-0001");
-    secrets.table().opened(
-        "secret-env",
-        SecretSource {
-            instance: 11,
-            port: Arc::clone(&env) as Arc<dyn SecretPort>,
-        },
-    );
+    let secrets = secrets
+        .with_opened(
+            "secret-env",
+            SecretSource {
+                instance: 11,
+                port: Arc::clone(&env) as Arc<dyn SecretPort>,
+            },
+        )
+        .unwrap();
     let reference = source("secret-env", r#"{"name":"DB_PASSWORD"}"#);
 
     assert_eq!(
@@ -147,7 +153,7 @@ async fn a_module_that_is_not_open_is_refused_without_a_name() {
         resolved(&secrets, &reference).await.as_deref(),
         Ok("env-material-0001")
     );
-    secrets.closed("secret-env");
+    let secrets = secrets.without("secret-env");
     assert_eq!(
         resolved(&secrets, &reference).await,
         Err(CustodyDenied::NoSuchSecretSource),
@@ -161,7 +167,7 @@ async fn synchronous_config_resolution_progresses_on_the_owned_io_executor() {
     use busbar_contract::secret::SecretResolve;
     let io = crate::root::boot::process::ProcessIo::new().unwrap();
     let secrets = Box::leak(Box::new(secrets()));
-    secrets.table().opened(
+    let secrets = secrets.with_opened(
         "configured-source",
         SecretSource {
             instance: 41,
@@ -175,5 +181,96 @@ async fn synchronous_config_resolution_progresses_on_the_owned_io_executor() {
     assert_eq!(
         held.expose(&busbar_kernel::seal::lend()),
         b"owned-source-material"
+    );
+}
+
+#[tokio::test]
+async fn a_later_open_does_not_change_the_prefix_captured_by_an_existing_need() {
+    let binder: Arc<dyn ConfigBinder> = Arc::new(Binder::new(Arc::new(BootRefs)));
+    let before = BootSecrets::empty(
+        binder,
+        Arc::new(busbar_plugin_loader::instance::SlotTable::new()),
+    );
+    let captured = super::BootCustody(Arc::clone(&before));
+    let after = before
+        .with_opened(
+            "later",
+            SecretSource {
+                instance: 21,
+                port: Port::new("later-material"),
+            },
+        )
+        .unwrap();
+    let reference = source("later", r#"{"key":"value"}"#);
+    assert_eq!(
+        resolved(&before, &reference).await,
+        Err(CustodyDenied::NoSuchSecretSource)
+    );
+    assert_eq!(
+        resolved(&captured.0, &reference).await,
+        Err(CustodyDenied::NoSuchSecretSource)
+    );
+    assert_eq!(
+        resolved(&after, &reference).await.as_deref(),
+        Ok("later-material")
+    );
+    assert!(after
+        .with_opened(
+            "later",
+            SecretSource {
+                instance: 22,
+                port: Port::new("replacement")
+            }
+        )
+        .is_err());
+    assert!(after
+        .with_opened(
+            "another",
+            SecretSource {
+                instance: 21,
+                port: Port::new("same-id")
+            }
+        )
+        .is_err());
+}
+
+#[tokio::test]
+async fn an_immutable_prefix_keeps_cycle_refusal_and_releases_its_ports_on_drop() {
+    use busbar_kernel::custody::SecretCustody;
+    use busbar_plugin_abi::host_side::caller::CallStack;
+    let binder: Arc<dyn ConfigBinder> = Arc::new(Binder::new(Arc::new(BootRefs)));
+    let before = BootSecrets::empty(
+        binder,
+        Arc::new(busbar_plugin_loader::instance::SlotTable::new()),
+    );
+    let port = Port::new("secret-material");
+    let weak = Arc::downgrade(&port);
+    let after = before
+        .with_opened("source", SecretSource { instance: 31, port })
+        .unwrap();
+    let cx = CallCx {
+        deadline: deadline(),
+        request_id: 0,
+        stack: CallStack::default().push(31).unwrap(),
+    };
+    let custody = super::BootCustody(Arc::clone(&after));
+    assert!(matches!(
+        custody.resolve_ref(cx, &source("source", "{}")).await,
+        Err(CustodyDenied::Cycle)
+    ));
+    let retired = after.without("source");
+    assert_eq!(
+        resolved(&retired, &source("source", "{}")).await,
+        Err(CustodyDenied::NoSuchSecretSource)
+    );
+    drop(after);
+    assert!(
+        weak.upgrade().is_some(),
+        "the captured prefix owns its live source lease"
+    );
+    drop(custody);
+    assert!(
+        weak.upgrade().is_none(),
+        "no leaked BootSecrets keeps the source alive"
     );
 }
