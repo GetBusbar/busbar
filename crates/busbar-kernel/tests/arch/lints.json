@@ -64,6 +64,7 @@
       "crates/busbar-migrations/src/native_source.rs": ["ReadSeek", "SourceSpool", "SpoolFactory"],
       "crates/busbar-migrations/src/startup.rs": ["FrozenBindingResolver"],
       "crates/busbar-migrations/src/verification.rs": ["NativeReadback", "TargetRecoveryProbe"],
+      "crates/busbar-plugin-abi/src/host.rs": ["HostExt"],
       "crates/busbar-plugin-abi/src/host_side/needs.rs": ["Needs"],
       "crates/busbar/src/root/serve_neutral.rs": ["Output"],
       "crates/busbar/src/root/startup_upgrade/document_commit.rs": ["Checkpoints"],
@@ -111,5 +112,7 @@
       "crates/busbar-kernel/src/trust/validate.rs": "trust::validate::Grant is one scope or egress grant a visibility check needs (Copy by design), not the capability token"
     }
   },
-  "admitted": {}
+  "admitted": {
+    "crates/busbar-plugin-abi/src/host.rs HostExt": "W1-A1F, coordinator ruling on W1-U0 (MIN3-RULINGS-COORD 2026-11-15T23:44Z): the IF 5.1 safe host methods are an extension trait over busbar-ffi's Host, which plugin-abi cannot add inherent methods to; owner approval is the CODEOWNERS review of this MR"
+  }
 }

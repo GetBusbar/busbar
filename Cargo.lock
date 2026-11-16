@@ -641,6 +641,7 @@ dependencies = [
  "arc-swap",
  "base64 0.22.1",
  "busbar-crypto",
+ "busbar-ffi",
  "hex",
  "percent-encoding",
  "zerocopy",
@@ -652,6 +653,7 @@ name = "busbar-plugin-bench"
 version = "1.6.0"
 dependencies = [
  "busbar-plugin-abi",
+ "sharded-slab",
 ]
 
 [[package]]
@@ -691,6 +693,7 @@ name = "busbar-plugin-test"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-ffi",
  "busbar-kernel",
  "busbar-plugin-abi",
  "busbar-plugin-loader",
