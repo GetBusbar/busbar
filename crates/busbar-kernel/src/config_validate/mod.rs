@@ -2706,3 +2706,7 @@ mod boot_advice_tests;
 #[cfg(test)]
 #[path = "tests/operator_third_party_tests.rs"]
 mod operator_third_party_tests;
+
+#[cfg(test)]
+#[path = "tests/instance_id_tests.rs"]
+mod instance_id_tests;

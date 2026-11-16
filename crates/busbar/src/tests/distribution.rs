@@ -440,3 +440,6 @@ mod admin_application_admin_generation_etags;
 
 #[path = "admin_application/admin_config_tree.rs"]
 mod admin_application_admin_config_tree;
+
+#[path = "admin_application/admin_kinds.rs"]
+mod admin_application_admin_kinds;
