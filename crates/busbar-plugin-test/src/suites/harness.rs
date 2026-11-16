@@ -59,28 +59,57 @@ struct Bound {
     secrets: Vec<Value>,
     trust: Vec<Value>,
     dests: Vec<Value>,
+    /// The D_REF_PATH references `bind` found, in pointer order, left in place until `resolve_refs`.
+    refs: Vec<Ref>,
+    /// The D_REF_PATH patterns the instance was bound under.
+    ref_paths: Vec<String>,
+}
+
+/// One D_REF_PATH reference of a bound config.
+struct Ref {
+    /// Its concrete pointer.
+    pointer: String,
+    /// The operator's original node.
+    text: Value,
+    /// The value `resolve_refs` wrote in its place.
+    resolved: Option<String>,
 }
 
 /// The suites' in-memory `ConfigBinder`. `bind` and `bind_any` replace the node at every declared
 /// D_SECRET_PATH, D_TRUST_PATH and D_DEST_PATH pointer (a `*` segment matches every array element or object
-/// member, in order) with `{"$secret": n}`, `{"$trust": n}` or `{"$dest": n}`, numbering each family from 1 in
-/// pointer order, so the plugin only ever sees handles. Values come from `FakeNeeds::secret` in the same order.
-/// `unbind_refs` writes the operator's original node back. It parses no reference grammar (that is core's
-/// binder, covered by its own tests): `secret`, `trust`, `dest` answer None and `unix_path` is false.
+/// member, in order; `""` is the whole document) with `{"$secret": n}`, `{"$trust": n}` or `{"$dest": n}`,
+/// numbering each family from 1 in pointer order, so the plugin only ever sees handles. Values come from
+/// `FakeNeeds::secret` in the same order. At a D_SECRET_PATH, as core's binder does: null is left as is, an object
+/// is a reference, and a string is a 1.x literal that `bind_any` leaves in place and `bind` refuses
+/// (`NotAReference`, `""` included), as it refuses any other node. Unlike core's `bind_any` it binds no
+/// reference off a declared path (it cannot tell one without the grammar).
+///
+/// At a D_REF_PATH pointer, as core's binder does: a plain string or null is left as is, an object is a reference
+/// recorded with its concrete pointer and left in place, anything else is `NotAReference`. `resolve_refs` writes
+/// at each reference, as a JSON string, the value `FakeNeeds::secret` scripts for that concrete pointer; a pointer
+/// with no scripted value, or a value that is not UTF-8, is `BadReference` (core's text). `unbind_refs` writes the
+/// operator's original node back for every handle, and for every resolved value at its pointer or at any
+/// D_REF_PATH pointer; a resolved value anywhere else is `NotAReference`. It parses no reference grammar (that is
+/// core's binder, covered by its own tests): `secret`, `trust`, `dest` answer None and `unix_path` is false.
 #[derive(Default)]
 pub struct MemBinder {
     bound: Mutex<HashMap<u64, Bound>>,
+    /// Where `resolve_refs` reads reference values; None resolves none.
+    needs: Option<Arc<FakeNeeds>>,
 }
 
 impl MemBinder {
+    /// A binder with no scripted values: every D_REF_PATH reference is unresolvable.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// A binder that resolves D_REF_PATH references from `needs` (not wired yet).
+    /// A binder that resolves D_REF_PATH references to the values `needs` scripts (`FakeNeeds::secret`).
     pub fn over(needs: Arc<FakeNeeds>) -> Self {
-        let _ = needs;
-        Self::default()
+        Self {
+            needs: Some(needs),
+            ..Self::default()
+        }
     }
 
     fn table(&self) -> MutexGuard<'_, HashMap<u64, Bound>> {
@@ -92,24 +121,36 @@ fn escape(key: &str) -> String {
     key.replace('~', "~0").replace('/', "~1")
 }
 
-/// Hand `f` every node the pointer pattern `segs` names in `node` (`*` is every element of an array, or of an
-/// object in key order; a missing path names nothing).
-fn walk(node: &mut Value, segs: &[&str], f: &mut dyn FnMut(&mut Value)) {
+/// The segments of a pointer pattern, still escaped (`""` is the whole document: no segment).
+fn segments(pattern: &str) -> Vec<&str> {
+    pattern.split('/').skip(1).collect()
+}
+
+/// Hand `f` every node the pointer pattern `segs` names in `node`, with its concrete pointer (`at` is the pointer
+/// of `node`; `*` is every element of an array, or of an object in key order; a missing path names nothing).
+fn walk(node: &mut Value, segs: &[&str], at: &mut String, f: &mut dyn FnMut(&str, &mut Value)) {
     let Some((seg, rest)) = segs.split_first() else {
-        f(node);
+        f(at, node);
         return;
     };
+    let mark = at.len();
     if *seg == "*" {
         if let Some(items) = node.as_array_mut() {
-            for item in items.iter_mut() {
-                walk(item, rest, f);
+            for (i, item) in items.iter_mut().enumerate() {
+                at.push('/');
+                at.push_str(&i.to_string());
+                walk(item, rest, at, f);
+                at.truncate(mark);
             }
         } else if let Some(members) = node.as_object_mut() {
             let mut keys: Vec<String> = members.iter().map(|(k, _)| k.to_owned()).collect();
             keys.sort();
             for key in keys {
                 if let Some(child) = node.get_mut(key.as_str()) {
-                    walk(child, rest, f);
+                    at.push('/');
+                    at.push_str(&escape(&key));
+                    walk(child, rest, at, f);
+                    at.truncate(mark);
                 }
             }
         }
@@ -122,7 +163,90 @@ fn walk(node: &mut Value, segs: &[&str], f: &mut dyn FnMut(&mut Value)) {
         node.get_mut(key.as_str())
     };
     if let Some(child) = child {
-        walk(child, rest, f);
+        at.push('/');
+        at.push_str(seg);
+        walk(child, rest, at, f);
+        at.truncate(mark);
+    }
+}
+
+/// Whether the concrete pointer `at` is named by `pattern` (`*` matching any array index), as core's binder
+/// matches a field the conversion moved.
+fn names(pattern: &str, at: &str) -> bool {
+    let (p, a) = (segments(pattern), segments(at));
+    p.len() == a.len()
+        && p.iter().zip(&a).all(|(p, a)| {
+            p == a || (*p == "*" && !a.is_empty() && a.bytes().all(|b| b.is_ascii_digit()))
+        })
+}
+
+/// Record every reference the D_REF_PATH `paths` name in `doc` (each concrete pointer once), as core's binder
+/// does: a plain string or null is left as is, an object is a reference, anything else is `NotAReference`.
+fn record_refs(doc: &mut Value, paths: &[&str], refs: &mut Vec<Ref>) -> Result<(), BindError> {
+    let mut refused = None;
+    for pattern in paths {
+        walk(
+            doc,
+            &segments(pattern),
+            &mut String::new(),
+            &mut |at, node| {
+                if refused.is_some()
+                    || node.is_null()
+                    || node.as_str().is_some()
+                    || refs.iter().any(|r| r.pointer == at)
+                {
+                    return;
+                }
+                if node.is_object() {
+                    refs.push(Ref {
+                        pointer: at.to_owned(),
+                        text: node.clone(),
+                        resolved: None,
+                    });
+                } else {
+                    refused = Some(BindError::NotAReference { pointer: at.into() });
+                }
+            },
+        );
+        if let Some(refused) = refused {
+            return Err(refused);
+        }
+    }
+    Ok(())
+}
+
+/// Core's text for a reference `resolve_refs` could not write.
+fn bad_reference(pointer: &str, why: &str) -> BindError {
+    let at = if pointer.is_empty() {
+        "the top of the config"
+    } else {
+        pointer
+    };
+    BindError::BadReference {
+        pointer: pointer.into(),
+        text: format!("the secret reference at {at} {why}").into(),
+    }
+}
+
+/// The operator's original node for the resolved value `s` found at `at`: the reference recorded at `at`, else
+/// (a field the conversion moved) the first reference resolved to `s` when a D_REF_PATH pattern names `at`. None
+/// when `s` is no resolved value; a resolved value anywhere else is `NotAReference` (never written back).
+fn ref_text(s: &str, at: &str, bound: &Bound) -> Result<Option<Value>, BindError> {
+    let mut equal = bound
+        .refs
+        .iter()
+        .filter(|r| r.resolved.as_deref() == Some(s));
+    let Some(first) = equal.next() else {
+        return Ok(None);
+    };
+    let here = std::iter::once(first)
+        .chain(equal)
+        .find(|r| r.pointer == at);
+    let movable = bound.ref_paths.iter().any(|p| names(p, at));
+    match (here, movable) {
+        (Some(r), _) => Ok(Some(r.text.clone())),
+        (None, true) => Ok(Some(first.text.clone())),
+        (None, false) => Err(BindError::NotAReference { pointer: at.into() }),
     }
 }
 
@@ -140,21 +264,64 @@ fn handle(marker: &str, n: usize) -> Value {
     facade::parse_typed(format!("{{\"{marker}\":{n}}}").as_bytes()).expect("a handle is JSON")
 }
 
-/// Replace every node the `paths` name with `{marker: n}`, keeping the original in `saved`.
-fn replace(doc: &mut Value, paths: &[&str], marker: &str, saved: &mut Vec<Value>) {
+/// What a family does with the node at one declared concrete pointer: `Ok(true)` binds it to a handle,
+/// `Ok(false)` leaves it in place.
+type Admit<'a> = &'a dyn Fn(&str, &Value) -> Result<bool, BindError>;
+
+/// Replace every node the `paths` name (each concrete pointer once; `""` is the whole document, as in core's
+/// binder) that `admit` binds with `{marker: n}`, keeping the original in `saved`.
+fn replace(
+    doc: &mut Value,
+    paths: &[&str],
+    marker: &str,
+    saved: &mut Vec<Value>,
+    admit: Admit<'_>,
+) -> Result<(), BindError> {
+    let mut seen: Vec<String> = Vec::new();
+    let mut refused = None;
     for pattern in paths {
-        if pattern.is_empty() {
-            continue;
+        walk(
+            doc,
+            &segments(pattern),
+            &mut String::new(),
+            &mut |at, node| {
+                if refused.is_some() || seen.iter().any(|s| s == at) {
+                    return;
+                }
+                seen.push(at.to_owned());
+                match admit(at, node) {
+                    Ok(true) => {
+                        saved.push(node.take());
+                        *node = handle(marker, saved.len());
+                    }
+                    Ok(false) => {}
+                    Err(e) => refused = Some(e),
+                }
+            },
+        );
+        if let Some(refused) = refused {
+            return Err(refused);
         }
-        let segs: Vec<&str> = pattern.split('/').skip(1).collect();
-        walk(doc, &segs, &mut |node| {
-            if node.is_null() {
-                return;
-            }
-            saved.push(node.take());
-            *node = handle(marker, saved.len());
-        });
     }
+    Ok(())
+}
+
+/// A D_SECRET_PATH node, as core's binder takes it: null is left as is; under `bind_any` a string is a 1.x
+/// literal left in place (for CORE_CFG(LIFT)); an object is a reference; anything else (a literal under `bind`,
+/// `""` included) is `NotAReference`.
+fn secret_node(at: &str, node: &Value, any: bool) -> Result<bool, BindError> {
+    if node.is_null() || (any && node.as_str().is_some()) {
+        return Ok(false);
+    }
+    if node.is_object() {
+        return Ok(true);
+    }
+    Err(BindError::NotAReference { pointer: at.into() })
+}
+
+/// A D_TRUST_PATH or D_DEST_PATH node: everything but null binds (this binder parses no PEM and no DestDef).
+fn present(_at: &str, node: &Value) -> Result<bool, BindError> {
+    Ok(!node.is_null())
 }
 
 /// The pointer of the first object that already looks like a bound handle.
@@ -218,21 +385,26 @@ fn restore(node: &mut Value, at: &str, bound: &Bound) -> Result<(), BindError> {
         for (i, v) in items.iter_mut().enumerate() {
             restore(v, &format!("{at}/{i}"), bound)?;
         }
+    } else if let Some(s) = node.as_str() {
+        if let Some(text) = ref_text(s, at, bound)? {
+            *node = text;
+        }
     }
     Ok(())
 }
 
 impl MemBinder {
+    /// `paths` is D_SECRET_PATH, D_TRUST_PATH, D_DEST_PATH, D_REF_PATH; `any` is `bind_any`.
     fn bind_with(
         &self,
         instance: u64,
         config: &[u8],
-        paths: [&[&str]; 3],
-        strict: bool,
+        paths: [&[&str]; 4],
+        any: bool,
     ) -> Result<Vec<u8>, BindError> {
         let mut doc: Value = facade::parse_value(config)
             .map_err(|_| BindError::NotAReference { pointer: "".into() })?;
-        if strict {
+        if !any {
             if let Some(pointer) = stray(&doc, "") {
                 return Err(BindError::StraySecret {
                     pointer: pointer.into(),
@@ -240,12 +412,51 @@ impl MemBinder {
             }
         }
         let mut bound = Bound::default();
-        replace(&mut doc, paths[0], SECRET, &mut bound.secrets);
-        replace(&mut doc, paths[1], TRUST, &mut bound.trust);
-        replace(&mut doc, paths[2], DEST, &mut bound.dests);
+        replace(
+            &mut doc,
+            paths[0],
+            SECRET,
+            &mut bound.secrets,
+            &|at, node| secret_node(at, node, any),
+        )?;
+        replace(&mut doc, paths[1], TRUST, &mut bound.trust, &present)?;
+        record_refs(&mut doc, paths[3], &mut bound.refs)?;
+        bound.ref_paths = paths[3].iter().map(|p| (*p).to_owned()).collect();
+        // Last, as in core's binder: a dest at `""` is the whole bag.
+        replace(&mut doc, paths[2], DEST, &mut bound.dests, &present)?;
         let out = facade::to_vec(&doc).map_err(|_| BindError::TooMany)?;
         self.table().insert(instance, bound);
         Ok(out)
+    }
+
+    /// `resolve_refs`, synchronously: every recorded reference's scripted value, as a JSON string, at its pointer.
+    fn resolve_now(&self, instance: u64, bound: Vec<u8>) -> Result<SecureVec, BindError> {
+        let mut table = self.table();
+        let Some(entry) = table
+            .get_mut(&instance)
+            .filter(|entry| !entry.refs.is_empty())
+        else {
+            return Ok(SecureVec::from(bound));
+        };
+        let mut doc: Value = facade::parse_value(&bound)
+            .map_err(|_| BindError::NotAReference { pointer: "".into() })?;
+        for r in &mut entry.refs {
+            let value = self
+                .needs
+                .as_ref()
+                .and_then(|needs| needs.secret_at(&r.pointer))
+                .ok_or_else(|| bad_reference(&r.pointer, "could not be resolved"))?;
+            let text = String::from_utf8(value).map_err(|_| {
+                bad_reference(&r.pointer, "resolved to a value that is not UTF-8 text")
+            })?;
+            if let Some(slot) = facade::pointer_mut(&mut doc, &r.pointer) {
+                *slot = Value::from(text.as_str());
+            }
+            r.resolved = Some(text);
+        }
+        facade::to_vec(&doc)
+            .map(SecureVec::from)
+            .map_err(|_| BindError::NotAReference { pointer: "".into() })
     }
 }
 
@@ -261,22 +472,22 @@ impl ConfigBinder for MemBinder {
         secret_paths: &[&str],
         trust_paths: &[&str],
         dest_paths: &[&str],
-        _ref_paths: &[&str],
+        ref_paths: &[&str],
     ) -> Result<Vec<u8>, BindError> {
         self.bind_with(
             instance,
             config,
-            [secret_paths, trust_paths, dest_paths],
-            true,
+            [secret_paths, trust_paths, dest_paths, ref_paths],
+            false,
         )
     }
 
     fn resolve_refs<'a>(
         &'a self,
-        _instance: u64,
+        instance: u64,
         bound: Vec<u8>,
     ) -> BoxFut<'a, Result<SecureVec, BindError>> {
-        Box::pin(std::future::ready(Ok(SecureVec::from(bound))))
+        Box::pin(std::future::ready(self.resolve_now(instance, bound)))
     }
 
     fn unbind(&self, instance: u64) {
@@ -290,13 +501,13 @@ impl ConfigBinder for MemBinder {
         secret_paths: &[&str],
         trust_paths: &[&str],
         dest_paths: &[&str],
-        _ref_paths: &[&str],
+        ref_paths: &[&str],
     ) -> Result<Vec<u8>, BindError> {
         self.bind_with(
             instance,
             config,
-            [secret_paths, trust_paths, dest_paths],
-            false,
+            [secret_paths, trust_paths, dest_paths, ref_paths],
+            true,
         )
     }
 
@@ -500,7 +711,7 @@ impl Harness {
             )
         })?;
         let needs = Arc::new(needs);
-        let binder = Arc::new(MemBinder::new());
+        let binder = Arc::new(MemBinder::over(Arc::clone(&needs)));
         let mut registry = Registry::new(
             &HOST,
             Arc::clone(&needs),
@@ -725,7 +936,7 @@ mod tests {
     #[test]
     fn bind_numbers_handles_from_one_in_pointer_order_and_unbind_restores() {
         let binder = MemBinder::new();
-        let config = br#"{"a":{"k":"s1"},"list":[{"v":"s2"},{"v":"s3"}],"keep":"x"}"#;
+        let config = br#"{"a":{"k":{"env":"s1"}},"list":[{"v":{"env":"s2"}},{"v":{"env":"s3"}}],"keep":"x"}"#;
         let bound = binder
             .bind(7, config, &["/a/k", "/list/*/v"], &[], &[], &[])
             .unwrap();
@@ -759,9 +970,9 @@ mod tests {
             }
             node.as_str().map(str::to_owned)
         };
-        assert_eq!(text(&["a", "k"]).as_deref(), Some("s1"));
-        assert_eq!(text(&["list", "0", "v"]).as_deref(), Some("s2"));
-        assert_eq!(text(&["list", "1", "v"]).as_deref(), Some("s3"));
+        assert_eq!(text(&["a", "k", "env"]).as_deref(), Some("s1"));
+        assert_eq!(text(&["list", "0", "v", "env"]).as_deref(), Some("s2"));
+        assert_eq!(text(&["list", "1", "v", "env"]).as_deref(), Some("s3"));
         assert_eq!(text(&["keep"]).as_deref(), Some("x"));
         assert_eq!(restored.as_object().map(|o| o.len()), Some(3));
     }
@@ -865,7 +1076,7 @@ mod tests {
     fn a_handle_the_instance_never_bound_is_not_a_reference() {
         let binder = MemBinder::new();
         binder
-            .bind(1, br#"{"a":"s"}"#, &["/a"], &[], &[], &[])
+            .bind(1, br#"{"a":{"env":"s"}}"#, &["/a"], &[], &[], &[])
             .unwrap();
         let err = binder
             .unbind_refs(1, br#"{"a":{"$secret":9}}"#)
