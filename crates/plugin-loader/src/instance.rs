@@ -761,6 +761,17 @@ fn name_conflict<'a, W: Iterator<Item = &'a str>>(
     None
 }
 
+/// One ENDPOINT record a plugin's CHECK answer declared (§3, round 32), decoded and bounds-checked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeclaredEndpoint {
+    /// The need op the plugin will use: `op::OPEN` or `op::FETCH`.
+    pub op: u32,
+    /// The `NeedRec.flags` encoding: TLS bits 0..=3 and the egress class in bits 16..=19.
+    pub flags: u32,
+    /// The destination the plugin declared, at most `MAX_DEST` bytes of UTF-8.
+    pub dest: Box<str>,
+}
+
 /// The most ENDPOINT records an answer may carry and the longest dest (§3, round 32).
 const MAX_ENDPOINTS: usize = 16;
 const MAX_DEST: usize = 2_048;
