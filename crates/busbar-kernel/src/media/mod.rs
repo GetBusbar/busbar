@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Media rendezvous: RV_ACCEPT, UP_NEW(CARRIER_RTC) and RV_REMOTE over the datagram transport (IF §12.13). W0-ABI stub: frozen signatures, `todo!()` bodies; W1-K11 fills it.
+//! Media rendezvous: RV_ACCEPT, UP_NEW(CARRIER_RTC) and RV_REMOTE over the datagram transport (IF §12.13),
+//! kernel side (W1-K11). Core decides here: what a dial offers ([`Lines`], and [`resolve`] for the UP_NEW
+//! PAIR* the plane task reads), that a dial whose opening says nothing is never dialled, and that an answered
+//! leg mirrors what was offered. The connector carries: it binds the listener, begins the datagram session and
+//! implements [`MediaCarrier`] and [`MediaLeg`]; [`Media`] puts core's rules in front of it.
+
+mod opening;
+
+pub use opening::{resolve, DialOpening, Lines};
 
 use busbar_plugin_abi::host_side::caller::BoxFut;
 
@@ -30,11 +38,100 @@ pub trait MediaRendezvous: Send + Sync + 'static {
         opening: &'a [u8],
     ) -> BoxFut<'a, Result<(Box<str>, MediaBridge), RecordsDenied>>;
 }
+
+/// One media session's leg as the connector's session task holds it (today's `Pairing` and its `Bridge`).
+/// Dropping it drops the TransportSession.
+pub trait MediaLeg: Send + Sync + 'static {
+    /// An accepted leg: wait until the caller's lines have settled (today's `Pairing::wait_opening`), then its
+    /// media kinds in line order and its channel labels in the order the caller opened them. A closed leg =
+    /// `Unavailable`.
+    fn settled(&self) -> BoxFut<'_, Result<Lines, RecordsDenied>>;
+    /// A dialled leg: hand the far end's answer to the transport (`event(Rendezvous(description))`) and, once
+    /// it has taken it, the answered leg's media kinds and channel labels.
+    fn answer<'a>(&'a self, description: &'a str) -> BoxFut<'a, Result<Lines, RecordsDenied>>;
+    /// Close the session now (core refused it).
+    fn close(&self);
+}
+
+/// A carrier's answer: the transport's RENDEZVOUS text and the leg it began.
+pub type Carried = (Box<str>, Box<dyn MediaLeg>);
+
+/// The connector's datagram carriers. `accept` binds the route's media listener and begins
+/// `ROLE_DATAGRAM, CONN_ACCEPT` with the offer; `dial` begins `ROLE_DATAGRAM, CONN_DIAL` with `ConnInfo.head` =
+/// `opening`, which core has already checked. Each answers the transport's RENDEZVOUS text and the leg.
+pub trait MediaCarrier: Send + Sync + 'static {
+    fn accept<'a>(
+        &'a self,
+        route: u32,
+        offer: &'a str,
+    ) -> BoxFut<'a, Result<Carried, RecordsDenied>>;
+    fn dial<'a>(
+        &'a self,
+        route: u32,
+        opening: &'a [u8],
+    ) -> BoxFut<'a, Result<Carried, RecordsDenied>>;
+}
+
+/// Core's rendezvous over a connector's carriers: the only way a [`MediaBridge`] is made.
+pub struct Media<C> {
+    carrier: C,
+}
+
+impl<C: MediaCarrier> Media<C> {
+    pub fn new(carrier: C) -> Self {
+        Media { carrier }
+    }
+}
+
+impl<C: MediaCarrier> MediaRendezvous for Media<C> {
+    fn accept<'a>(
+        &'a self,
+        route: u32,
+        offer: &'a str,
+    ) -> BoxFut<'a, Result<(Box<str>, MediaBridge), RecordsDenied>> {
+        Box::pin(async move {
+            let (answer, leg) = self.carrier.accept(route, offer).await?;
+            Ok((
+                answer,
+                MediaBridge {
+                    leg,
+                    dialled: None,
+                    refused: None,
+                },
+            ))
+        })
+    }
+
+    fn dial<'a>(
+        &'a self,
+        route: u32,
+        opening: &'a [u8],
+    ) -> BoxFut<'a, Result<(Box<str>, MediaBridge), RecordsDenied>> {
+        Box::pin(async move {
+            // Checked before the carrier: an opening that states nothing is never dialled.
+            let offered = Lines::read(opening)?;
+            let (offer, leg) = self.carrier.dial(route, opening).await?;
+            Ok((
+                offer,
+                MediaBridge {
+                    leg,
+                    dialled: Some(offered),
+                    refused: None,
+                },
+            ))
+        })
+    }
+}
+
 /// Owned by the plane session's task (one owner, §11.3); dropping it drops the TransportSession.
 pub struct MediaBridge {
-    // W0-ABI: private fields (TransportSession owner channel, stream map) land with W1-K11.
-    _stub: (),
+    leg: Box<dyn MediaLeg>,
+    /// A dialled bridge's opening: the lines its answered leg must mirror. `None` = an accepted (caller) leg.
+    dialled: Option<Lines>,
+    /// `remote`'s refusal text once it closed the session for not mirroring the opening.
+    refused: Option<Box<str>>,
 }
+
 impl MediaBridge {
     /// Round 27. The opening that mirrors this accepted (RV_ACCEPT) caller leg, as `dial`'s `opening`: one `media`
     /// = <kind> per caller line in order, then one `channel` = <label> per caller data channel in the order the
@@ -42,8 +139,16 @@ impl MediaBridge {
     /// Waits until the caller's lines have settled (today's `wait_opening`, datagram.rs:2815-2842); a closed leg
     /// or one with no line and no channel = `Unavailable`. A dialled bridge answers `Invalid`.
     pub fn opening(&self) -> BoxFut<'_, Result<Box<[u8]>, RecordsDenied>> {
-        let _ = &self._stub;
-        todo!()
+        Box::pin(async move {
+            if self.dialled.is_some() {
+                return Err(RecordsDenied::Invalid);
+            }
+            let caller = self.leg.settled().await?;
+            if caller.is_empty() {
+                return Err(RecordsDenied::Unavailable);
+            }
+            caller.write()
+        })
     }
     /// RV_REMOTE: the far end's answer for a dialled session. Round 27: once the transport has taken the answer,
     /// the answered leg's media lines must mirror the opening's `media` lines (same count, same kind at every
@@ -51,7 +156,28 @@ impl MediaBridge {
     /// otherwise the dialled session is closed and `remote` returns `Invalid` (the plane gets P_RV_FAILED with a
     /// REFUSAL whose text is `mirrored`'s, e.g. "line 0 is `audio` on the caller's leg and `video` upstream").
     pub fn remote<'a>(&'a mut self, description: &'a str) -> BoxFut<'a, Result<(), RecordsDenied>> {
-        let _ = (&self._stub, description);
-        todo!()
+        Box::pin(async move {
+            // An accepted leg has no answer to take; a refused dial is closed for good.
+            let Some(offered) = self.dialled.as_ref() else {
+                return Err(RecordsDenied::Invalid);
+            };
+            if self.refused.is_some() {
+                return Err(RecordsDenied::Invalid);
+            }
+            let answered = self.leg.answer(description).await?;
+            if let Err(text) = offered.mirrored_by(&answered) {
+                self.leg.close();
+                self.refused = Some(text);
+                return Err(RecordsDenied::Invalid);
+            }
+            Ok(())
+        })
+    }
+    /// The text of `remote`'s refusal (the P_RV_FAILED REFUSAL text), once it closed the session.
+    pub fn refusal(&self) -> Option<&str> {
+        self.refused.as_deref()
     }
 }
+
+#[cfg(test)]
+mod tests;
