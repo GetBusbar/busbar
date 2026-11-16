@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-C1C"]
+#[ignore = "blocked: H_BUDGET_NS/H_BODY_LEN are defined in busbar-plugin-abi but no core-connector code emits them on E_HEAD yet (W1-C1C); no fake gRPC upstream reachable from this crate"]
 fn budget_and_body_length_on_the_client_head() {
-    todo!("owner: W1-C1C (C-GRPC-DEADLINE)")
+    todo!("blocked: H_BUDGET_NS/H_BODY_LEN are defined in busbar-plugin-abi but no core-connector code emits them on E_HEAD yet (W1-C1C); no fake gRPC upstream reachable from this crate (C-GRPC-DEADLINE)")
 }

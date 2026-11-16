@@ -75,7 +75,7 @@ fn bad_d_streams_bodies_are_describe_invalid() {
 }
 
 #[test]
-#[ignore = "owner: W1-K8C"]
+#[ignore = "owner: W1-K8C; blocked (re-checked on dev 2026-11-16): the kernel export pump, DiskSink and stream routing are not on dev (OUTSTANDING row 4)"]
 fn stream_routing_and_refusals() {
     todo!("owner: W1-K8C (C-EXPORT-STREAMS)")
 }

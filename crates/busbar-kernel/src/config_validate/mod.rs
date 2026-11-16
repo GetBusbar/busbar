@@ -1330,7 +1330,6 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
         pool_max_idle_per_host: _,
         max_keys_per_principal: _,
         max_auto_provisioned_groups: _,
-        hook_content_max_bytes: _,
         upstream_error_body_max_bytes: _,
         key_gauge_limit: _,
 

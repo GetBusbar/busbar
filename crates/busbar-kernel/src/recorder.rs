@@ -355,6 +355,14 @@ impl Recorder {
         self.lock().remove(&(kind, name.into()));
     }
 
+    /// Applies a reload (FU2, B32): keeps the series of every (kind, name) in `live`, whatever its config became, and
+    /// drops every other instance's series at once, so the next scrape no longer carries them. A name dropped here
+    /// and opened again later starts from zero. Equivalent to `forget` for each instance the reload no longer names.
+    pub fn reconfigure(&self, live: &[(KindCode, &str)]) {
+        self.lock()
+            .retain(|(kind, name), _| live.iter().any(|(k, n)| k == kind && *n == &**name));
+    }
+
     /// Every family in `scope`, ordered by name, then type; samples ordered by instance, then label values.
     #[must_use]
     pub fn snapshot(&self, scope: Scope) -> Vec<Family> {

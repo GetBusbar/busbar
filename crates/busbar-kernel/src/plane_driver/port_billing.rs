@@ -42,7 +42,7 @@ pub struct Admit<'a> {
     pub key: Arc<VirtualKey>,
     /// The generation's cost model the request was admitted under.
     pub cost: Arc<CostModel>,
-    /// The key's budget mode, resolved from its governing limits.
+    /// The in-flight exhaustion mode: the root always supplies `FinishUnit`.
     pub mode: ExhaustionMode,
     /// The arrival epoch, seconds.
     pub arrived: u64,

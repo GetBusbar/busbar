@@ -7,7 +7,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K7"]
+#[ignore = "blocked: D_PUBLIC_URL_PATH write-path enforcement is in the kernel boot (K7 with L2) with no public entry reachable from this crate"]
 fn public_url_at_its_declared_path_only() {
     todo!("owner: W1-K7 (C-PUBLIC-URL)")
 }
