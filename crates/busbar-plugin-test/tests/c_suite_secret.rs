@@ -19,5 +19,9 @@ fn the_secret_suite_passes_over_a_plugin_built_secret() {
             (b"db", b"hunter2-zq81"),
             (br#"{"name":"api"}"#, b"k-93ac0d"),
         ],
+        &[
+            br#"{"name":"busbar-suite-no-such-secret-7f3a"}"#,
+            b"busbar-suite-no-such-secret-7f3a-2",
+        ],
     );
 }
