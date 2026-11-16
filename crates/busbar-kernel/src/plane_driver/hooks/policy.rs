@@ -216,10 +216,27 @@ pub(super) fn transformed(
     if verbs & VERB_REWRITE == 0 {
         return TransformOutcome::Abstain;
     }
-    serde_json::from_slice::<serde_json::Value>(&rewrite())
-        .ok()
-        .and_then(wire::take_rewrite)
-        .map_or(TransformOutcome::Abstain, TransformOutcome::Rewrite)
+    // A requested rewrite that cannot be read is the hook failing its call, so its `on_error`
+    // decides (Aikido 1074606968); only an empty one keeps the original body, as the SDK reads it.
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&rewrite()) else {
+        return malformed_rewrite();
+    };
+    if value
+        .get("messages")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|messages| messages.is_empty())
+    {
+        return TransformOutcome::Abstain;
+    }
+    wire::take_rewrite(value).map_or_else(malformed_rewrite, TransformOutcome::Rewrite)
+}
+
+fn malformed_rewrite() -> TransformOutcome {
+    TransformOutcome::Failed {
+        message: "hook rewrite must be an object with a non-empty messages array and an \
+                  optional tools array"
+            .into(),
+    }
 }
 
 #[async_trait::async_trait]
