@@ -857,46 +857,41 @@ fn judge_endpoints(
     Ok(())
 }
 
-/// `SlotCell.state` low word.
-const LIVE: u64 = 0;
-const QUARANTINED: u64 = 1;
-const CLOSING: u64 = 2;
-
-/// Round 14: one slot of the registry's slot table. The watchdog's whole view of an owner (§10.6): the ceiling row
-/// and the quarantine target live here, beside the record, from `alloc` until the lease is released, and move
-/// with the lease Image chain → Instance → close exactly as the record does (I10 (d)).
-pub struct SlotCell {
-    /// `(epoch << 32) | st`, st = LIVE 0 / QUARANTINED 1 / CLOSING 2. `alloc` bumps the epoch and stores LIVE
-    /// (Release, under the mutex); quarantine is a CAS from (epoch, LIVE); `is_live` is one Acquire load.
-    pub state: AtomicU64,
-    /// The §10.6 row, written by `alloc` (Relaxed stores, before the lease exists), read by `watch::scan`.
-    pub ceilings_us: [AtomicU32; 64],
-    /// The slot's record while leased (safe Rust: an `Arc` swapped in by `alloc` and out by release, so no
-    /// `UnsafeCell`; the lease keeps its own `Arc`, so a reader through the lease never touches this).
-    record: ArcSwapOption<SlotRecord>,
-}
-
-impl SlotCell {
-    fn new() -> Self {
-        SlotCell {
-            state: AtomicU64::new(CLOSING),
-            ceilings_us: core::array::from_fn(|_| AtomicU32::new(0)),
-            record: ArcSwapOption::empty(),
-        }
-    }
-}
+/// Round 14: one slot's state word and §10.6 ceiling row are `busbar_plugin_abi`'s `SlotCell` (the abi crate
+/// owns the type because the host-side `Instance` reaches it). The registry's table keeps one `Arc<SlotCell>` per
+/// leased slot and hands the same `Arc` to the lease and then to the `Instance`, so the watchdog's quarantine and
+/// the instance's `is_live` read one word.
+pub use busbar_plugin_abi::host_side::driver::SlotCell;
 
 const PAGE: usize = 64;
 const FAN: usize = 512;
 /// Slot indices stay below the watch word's 24-bit field.
 const SLOTS_MAX: u32 = 1 << 24;
 
-type Page = Box<[SlotCell; PAGE]>;
+/// One slot of the table: the cell and the record of its current lease (both `None` while the slot is free), and
+/// the last epoch used, so the next lease of the slot always has a later one. Written only by `alloc` and
+/// `release`, under the table's cold mutex.
+struct SlotEntry {
+    cell: ArcSwapOption<SlotCell>,
+    record: ArcSwapOption<SlotRecord>,
+    epoch: AtomicU32,
+}
+
+impl SlotEntry {
+    fn new() -> Self {
+        SlotEntry {
+            cell: ArcSwapOption::empty(),
+            record: ArcSwapOption::empty(),
+            epoch: AtomicU32::new(0),
+        }
+    }
+}
+
+type Page = Box<[SlotEntry; PAGE]>;
 type Mid = Box<[OnceLock<Page>; FAN]>;
 
-/// Round 14: the registry's slot table. Cells live in pages of 64, allocated under the cold mutex when the free
-/// list is empty, never moved or freed (so `&SlotCell` from a lease or from `watch_view` is always valid); slot
-/// indices stay < 2^24 (the watch word's field).
+/// Round 14: the registry's slot table. Entries live in pages of 64, allocated under the cold mutex when the free
+/// list is empty, never moved or freed; slot indices stay < 2^24 (the watch word's field).
 pub struct SlotTable {
     dir: Box<[OnceLock<Mid>; FAN]>,
     /// Free slot indices and the next never-used index.
@@ -917,7 +912,7 @@ impl SlotTable {
         }
     }
 
-    fn cell(&self, slot: u32) -> Option<&SlotCell> {
+    fn entry(&self, slot: u32) -> Option<&SlotEntry> {
         let slot = slot as usize;
         let mid = self.dir.get(slot / (FAN * PAGE))?.get()?;
         let page = mid.get((slot / PAGE) % FAN)?.get()?;
@@ -926,13 +921,13 @@ impl SlotTable {
 
     /// The record of a slot that is leased now (the log sink's attribution for a running entry).
     pub(crate) fn record(&self, slot: u32) -> Option<Arc<SlotRecord>> {
-        self.cell(slot)?.record.load_full()
+        self.entry(slot)?.record.load_full()
     }
 
     /// Cold: under the mutex, pops a free slot, writes its record and its ceiling row (`ceilings` = the §10.6 row
-    /// for this image, kind and store fact; describe's slot gets the fixed describe row, every index 5 s), bumps
-    /// the epoch and stores LIVE, and returns the lease. Every entry (describe included: round 14 withdraws the
-    /// inert slot 0) runs under a leased slot.
+    /// for this image, kind and store fact; describe's slot gets the fixed describe row, every index 5 s), gives
+    /// it a later epoch and a LIVE cell, and returns the lease. Every entry (describe included: round 14 withdraws
+    /// the inert slot 0) runs under a leased slot.
     pub fn alloc(self: &Arc<Self>, rec: SlotRecord, ceilings: &[u32; 64]) -> SlotLease {
         let mut cold = self.cold.lock().unwrap_or_else(PoisonError::into_inner);
         let slot = match cold.0.pop() {
@@ -948,23 +943,20 @@ impl SlotTable {
         let mid = self.dir[at / (FAN * PAGE)]
             .get_or_init(|| Box::new(core::array::from_fn(|_| OnceLock::new())));
         let page = mid[(at / PAGE) % FAN]
-            .get_or_init(|| Box::new(core::array::from_fn(|_| SlotCell::new())));
-        let cell = &page[at % PAGE];
+            .get_or_init(|| Box::new(core::array::from_fn(|_| SlotEntry::new())));
+        let entry = &page[at % PAGE];
+        let epoch = entry.epoch.load(Ordering::Relaxed).wrapping_add(1).max(1);
+        entry.epoch.store(epoch, Ordering::Relaxed);
+        let cell = Arc::new(SlotCell::new(epoch, ceilings));
         let rec = Arc::new(rec);
-        cell.record.store(Some(Arc::clone(&rec)));
-        for (cap, us) in cell.ceilings_us.iter().zip(ceilings) {
-            cap.store(*us, Ordering::Relaxed);
-        }
-        let epoch = ((cell.state.load(Ordering::Relaxed) >> 32) as u32)
-            .wrapping_add(1)
-            .max(1);
-        cell.state
-            .store((u64::from(epoch) << 32) | LIVE, Ordering::Release);
+        entry.record.store(Some(Arc::clone(&rec)));
+        entry.cell.store(Some(Arc::clone(&cell)));
         drop(cold);
         SlotLease {
             slot,
             epoch,
             table: Arc::clone(self),
+            cell,
             record: rec,
             armed: true,
         }
@@ -972,14 +964,13 @@ impl SlotTable {
 
     /// `watch::scan`'s `ceiling` (§10.6): `ceilings_us[entry]` (Relaxed) and `epoch` (Acquire). No lock.
     pub fn watch_view(&self, slot: u32, entry: u8) -> (u32, u32) {
-        match self.cell(slot) {
+        match self.entry(slot).and_then(|e| e.cell.load_full()) {
             Some(cell) => {
-                let epoch = (cell.state.load(Ordering::Acquire) >> 32) as u32;
                 let us = cell
-                    .ceilings_us
+                    .ceilings_us()
                     .get(usize::from(entry))
                     .map_or(u32::MAX, |c| c.load(Ordering::Relaxed));
-                (us, epoch)
+                (us, cell.epoch())
             }
             None => (u32::MAX, 0),
         }
@@ -997,19 +988,14 @@ impl SlotTable {
     /// always (so its Drop closes it) and dropped at once, and `open_<kind>` returns `OpenError::Call(Quarantined)`.
     pub fn hung(&self, slot: u32, epoch: u32, entry: u8, busy_ms: u64) {
         let _cold = self.cold.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(cell) = self.cell(slot) else { return };
-        let live = (u64::from(epoch) << 32) | LIVE;
-        let quarantined = (u64::from(epoch) << 32) | QUARANTINED;
-        if cell
-            .state
-            .compare_exchange(live, quarantined, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
+        let Some(e) = self.entry(slot) else { return };
+        let Some(cell) = e.cell.load_full() else {
+            return;
+        };
+        if !cell.quarantine(epoch) {
             return;
         }
-        // Gap (K8D): the `plugin_hung` audit row and the alert are the kernel's sinks; the loader has none, so
-        // this is the log line they are driven from.
-        if let Some(rec) = cell.record.load_full() {
+        if let Some(rec) = e.record.load_full() {
             tracing::error!(
                 kind = ?rec.kind,
                 instance = &*rec.name,
@@ -1020,27 +1006,49 @@ impl SlotTable {
         }
     }
 
-    /// Lease release, cold: stores CLOSING and frees the slot for reuse (only while the epoch is still the
-    /// lease's).
+    /// The FAULT path (`driver::set_fault_sink`): quarantine whatever instance holds `slot` now. Cold.
+    pub(crate) fn fault(
+        &self,
+        slot: u32,
+        image_owned: bool,
+        reason: busbar_plugin_abi::fail::FaultReason,
+    ) {
+        let _cold = self.cold.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(e) = self.entry(slot) else { return };
+        let (Some(cell), Some(rec)) = (e.cell.load_full(), e.record.load_full()) else {
+            return;
+        };
+        if !image_owned {
+            cell.quarantine(cell.epoch());
+        }
+        tracing::error!(
+            kind = ?rec.kind,
+            instance = &*rec.name,
+            image_owned,
+            reason = ?reason,
+            "plugin_fault: a plugin entry broke the interface contract"
+        );
+    }
+
     fn release(&self, slot: u32, epoch: u32) {
         let mut cold = self.cold.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(cell) = self.cell(slot) else { return };
-        if (cell.state.load(Ordering::Relaxed) >> 32) as u32 != epoch {
+        let Some(e) = self.entry(slot) else { return };
+        if e.epoch.load(Ordering::Relaxed) != epoch {
             return;
         }
-        cell.state
-            .store((u64::from(epoch) << 32) | CLOSING, Ordering::Release);
-        cell.record.store(None);
+        e.cell.store(None);
+        e.record.store(None);
         cold.0.push(slot);
     }
 }
 
-/// Owns one slot of the registry's slot table; Drop frees the slot (cold: takes the table mutex, stores CLOSING,
-/// pushes the slot on the free list). `take` leaves an inert lease whose Drop does nothing.
+/// One leased slot: its cell (shared with the `Instance` built over it) and record. The slot returns to the
+/// table when the last entry that can log under it has returned (round 8).
 pub struct SlotLease {
     slot: u32,
     epoch: u32,
     table: Arc<SlotTable>,
+    cell: Arc<SlotCell>,
     record: Arc<SlotRecord>,
     armed: bool,
 }
@@ -1058,29 +1066,30 @@ impl SlotLease {
         self.slot
     }
 
+    pub fn epoch(&self) -> u32 {
+        self.epoch
+    }
+
     pub fn record(&self) -> &SlotRecord {
         &self.record
     }
 
-    /// Round 14: the leased cell (ceiling row and state word).
-    pub fn cell(&self) -> &SlotCell {
-        // A leased slot's page exists, so `cell` is always Some; the cells never move.
-        self.table
-            .cell(self.slot)
-            .expect("a leased slot always has its cell")
+    /// The slot's cell; `InstanceParts::cell` takes a clone of this `Arc`.
+    pub fn cell(&self) -> &Arc<SlotCell> {
+        &self.cell
     }
 
-    /// Round 14: state word is (this lease's epoch, LIVE).
     pub fn is_live(&self) -> bool {
-        self.armed
-            && self.cell().state.load(Ordering::Acquire) == (u64::from(self.epoch) << 32) | LIVE
+        self.armed && self.cell.is_live(self.epoch)
     }
 
+    /// Hands the lease to its next owner (Image chain → Instance); this one no longer releases the slot.
     pub fn take(&mut self) -> SlotLease {
         let lease = SlotLease {
             slot: self.slot,
             epoch: self.epoch,
             table: Arc::clone(&self.table),
+            cell: Arc::clone(&self.cell),
             record: Arc::clone(&self.record),
             armed: self.armed,
         };
@@ -1089,9 +1098,6 @@ impl SlotLease {
     }
 }
 
-/// Round 10: the round-8 `cold_hop` adapter (`spawn_blocking` of `ffi_thread::on_plugin_thread`) is deleted with
-/// `set_cold_hop` (§10.7, §16.92); `Registry::new` installs only the log sink.
-/// The newly opened port (the kind's `Arc<dyn …Port>` or StoreHandle), or Stale when `version` was older.
 pub enum Reconfigured {
     Opened(OpenedPort),
     Stale,
