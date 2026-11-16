@@ -471,11 +471,13 @@ pub mod export {
 pub mod plane {
     use super::*;
 
+    type PieceFn = OnSession<EntryFn5<u64, u32, u32, u32, B>>;
+
     #[repr(C)]
     pub struct Vt {
         pub request: VtEntry<Opens<EntryFn2<PlaneRef, B>>>,
         pub upstream: VtEntry<OnSession<EntryFn2<u64, TargetRef>>>,
-        pub piece: VtEntry<OnSession<EntryFn5<u64, u32, u32, u32, B>>>,
+        pub piece: VtEntry<PieceFn>,
         pub end: VtEntry<Ends<EntryFn1<u64>>>,
         pub rewrite: VtEntry<OnSession<EntryFn2<u64, B>>>,
         pub render: VtEntry<Plain<EntryFn3<PlaneRef, u32, B>>>,
@@ -539,11 +541,13 @@ pub mod plane {
 pub mod transport {
     use super::*;
 
+    type EmitFn = OnSession<EntryFn5<u64, u64, u32, u32, B>>;
+
     #[repr(C)]
     pub struct Vt {
         pub begin: VtEntry<Opens<EntryFn1<ConnRef>>>,
         pub ingest: VtEntry<OnSession<EntryFn2<u64, B>>>,
-        pub emit: VtEntry<OnSession<EntryFn5<u64, u64, u32, u32, B>>>,
+        pub emit: VtEntry<EmitFn>,
         pub timer: VtEntry<OnSession<EntryFn1<u64>>>,
         pub datagram: VtEntry<OnSession<EntryFn4<u64, u32, u32, B>>>,
         pub event: VtEntry<OnSession<EntryFn3<u64, u32, B>>>,
