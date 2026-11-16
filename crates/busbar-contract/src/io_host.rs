@@ -41,13 +41,32 @@ pub struct Spawn<'a> {
     pub env: &'a [(&'a str, &'a str)],
 }
 
+/// A value `Debug` names only by its length, behind an optional name.
+struct Redacted<'a> {
+    name: &'a str,
+    len: usize,
+}
+
+impl std::fmt::Debug for Redacted<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.name.is_empty() {
+            write!(f, "<{} bytes>", self.len)
+        } else {
+            write!(f, "{}=<{} bytes>", self.name, self.len)
+        }
+    }
+}
+
 /// Argument lengths, as `Debug` may say them.
 struct ArgLengths<'a>(&'a [&'a str]);
 
 impl std::fmt::Debug for ArgLengths<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_list()
-            .entries(self.0.iter().map(|a| format_args!("<{} bytes>", a.len())))
+            .entries(self.0.iter().map(|a| Redacted {
+                name: "",
+                len: a.len(),
+            }))
             .finish()
     }
 }
@@ -58,11 +77,10 @@ struct EnvLengths<'a>(&'a [(&'a str, &'a str)]);
 impl std::fmt::Debug for EnvLengths<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_list()
-            .entries(
-                self.0
-                    .iter()
-                    .map(|(name, value)| format_args!("{name}=<{} bytes>", value.len())),
-            )
+            .entries(self.0.iter().map(|(name, value)| Redacted {
+                name,
+                len: value.len(),
+            }))
             .finish()
     }
 }
