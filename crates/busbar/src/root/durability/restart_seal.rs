@@ -146,6 +146,20 @@ pub(crate) enum OwnSeal {
     Refused(String),
 }
 
+/// Transfer own-node work to the ordered boot gate before its certificate is signed.
+pub(crate) async fn prepare_own_node(
+    durability: &mut Durability,
+    records: &[JournalRecord],
+    handle: &SignerHandle<Seal>,
+    key: &AuditVerifyingKey,
+    host: &str,
+) -> (OwnSeal, Option<super::boot_jobs::PendingBootJob>) {
+    (
+        seal_own_node(durability, records, handle, key, host).await,
+        None,
+    )
+}
+
 /// THE OWN-NODE RESTART SEAL (`BookPhase::SealAfterRestart`, §3.6.1): walk the records the book read
 /// at reopen, sign on the Bootstrap thread through `handle`, stage and confirm. Never fails boot.
 pub(crate) async fn seal_own_node(

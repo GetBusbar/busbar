@@ -187,3 +187,82 @@ async fn a_fresh_node_seals_nothing() {
     assert_eq!(sealed, OwnSeal::Nothing);
     assert!(book.restart_findings.is_empty());
 }
+
+/// Failed confirmation retains the original restart/break run ahead of the boot certificate.
+/// Retrying must confirm those same bytes, never append another terminal record.
+#[tokio::test]
+async fn failed_own_seal_confirmation_preserves_original_before_certificate() {
+    use crate::root::durability::boot_jobs::{BootPreparation, PendingBootJob};
+    use busbar_contract::crypto::{LocalSigner, Signer};
+    use busbar_kernel_audit::notary_key::notary_key_from_journal_body;
+    use std::sync::atomic::Ordering;
+
+    for anchored in [false, true] {
+        let fixture = NativeFixture::new(if anchored { 65 } else { 64 }).await;
+        let book = Arc::new(Mutex::new(fixture.book().await));
+        seal_n(&book, 1, 1).await;
+        if anchored {
+            live_page(&book, 1, 1).await;
+        }
+        seal_n(&book, 2, 1).await;
+        let journal = book.lock().unwrap().journal.clone();
+        journal.flush().await.unwrap();
+        let mut reopened = fixture.reopen().await;
+        let records = reopened.take_boot_records();
+        let signers = signers();
+        fixture.faults.refusing.store(true, Ordering::Release);
+        let (_, pending) =
+            super::prepare_own_node(&mut reopened, &records, &signers.boot, &public(), HOST).await;
+        fixture.faults.refusing.store(false, Ordering::Release);
+        let Some(PendingBootJob::Staged(original)) = pending else {
+            panic!("failed confirmation must transfer its exact staged original");
+        };
+        let original_row = original.records()[0].clone();
+        let reopened = Arc::new(Mutex::new(reopened));
+        let delegated = LocalSigner::from_seed(&[0x45; 32]).unwrap();
+        let mut boot = BootPreparation::new(
+            signers.boot,
+            reopened.clone(),
+            vec![PendingBootJob::Staged(original)],
+            Some(delegated.public_key().clone()),
+        );
+        let certificate_at = tokio::time::timeout(std::time::Duration::from_secs(5), boot.run())
+            .await
+            .unwrap()
+            .unwrap();
+        let journal = reopened.lock().unwrap().journal.clone();
+        let rows = journal
+            .read_records(crate::root::durability::tests::BUDGET)
+            .await
+            .unwrap();
+        let terminals: Vec<_> = rows
+            .iter()
+            .filter(|row| {
+                stamp_from_journal_body(&row.body)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|stamp| stamp.kind == StampKind::AfterRestart)
+                    || break_from_journal_body(&row.body).ok().flatten().is_some()
+            })
+            .collect();
+        assert_eq!(
+            terminals.len(),
+            1,
+            "retry must not append another terminal record"
+        );
+        assert_eq!(terminals[0], &original_row);
+        assert!(original_row.node_seq < certificate_at);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| {
+                    notary_key_from_journal_body(&row.body)
+                        .ok()
+                        .flatten()
+                        .is_some()
+                })
+                .count(),
+            1
+        );
+        assert_eq!(boot.run().await.unwrap(), certificate_at);
+    }
+}
