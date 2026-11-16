@@ -20,6 +20,7 @@ members = [
     "crates/busbar-kernel-wal",
     "crates/busbar-kernel-audit",
     "crates/plugin-loader",
+    "crates/busbar-ffi",
     "crates/busbar-plugin-abi",
     "crates/busbar-plugin-bench",
     "crates/busbar-plugin-test",
@@ -171,7 +172,7 @@ unicode-normalization = "0.1.25"
 # plane door; core's source gates a few tests on two of them, and core alone sets none.
 # busbar-kernel: the transaction-fence red witness.
 # busbar-core-connector: mio's poll(2) backend switch, mirrored by the short-transfer readiness gate.
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(linked_section_pools)", "cfg(linked_section_agents)", "cfg(txn_fence_red)", "cfg(mio_unsupported_force_poll_poll)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(linked_section_pools)", "cfg(linked_section_agents)", "cfg(txn_fence_red)", "cfg(mio_unsupported_force_poll_poll)", "cfg(loom)"] }
 
 # Fleet bad-pattern rules: the list is in clippy.toml (a byte-identical copy of GetBusbar/busbar-release
 # template/clippy.toml's block). It is raised to deny only inside module trees that carry the

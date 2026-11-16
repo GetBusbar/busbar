@@ -69,7 +69,7 @@ deny = [
     # THE ONE LOAD CHOKEPOINT (LINT-RULES R23, ABI-DECISION §3.1): a dynamic library is loaded only
     # by busbar-plugin-loader's `stage` (memfd staging, the native load guard), so libloading is the
     # loader's alone, and no other dlopen crate may enter the graph.
-    { crate = "libloading", wrappers = ["busbar-plugin-loader"], reason = "dynamic libraries load only through busbar-plugin-loader's stage" },
+    { crate = "libloading", wrappers = ["busbar-ffi", "busbar-plugin-loader"], reason = "dynamic libraries load only through busbar-plugin-loader's stage and the busbar-ffi host boundary" },
     { crate = "dlopen", reason = "dynamic libraries load only through busbar-plugin-loader's stage" },
     { crate = "dlopen2", reason = "dynamic libraries load only through busbar-plugin-loader's stage" },
     { crate = "sharedlib", reason = "dynamic libraries load only through busbar-plugin-loader's stage" },
