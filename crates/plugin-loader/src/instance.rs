@@ -660,7 +660,7 @@ impl ErrorBook {
             ErrorBook::Declared {
                 identity, numbers, ..
             } if n <= 9999 && numbers.binary_search(&(n as u16)).is_ok() => Some(PluginCode {
-                plugin: *identity,
+                plugin: identity,
                 number: n as u16,
             }),
             _ => {
@@ -1177,7 +1177,7 @@ mod l2_tests {
 
     #[test]
     fn a_former_name_may_not_shadow_an_admitted_plugin() {
-        let admitted = vec![("a", vec!["old-a"])];
+        let admitted = [("a", vec!["old-a"])];
         let it = || admitted.iter().map(|(i, w)| (*i, w.iter().copied()));
         assert!(name_conflict(it(), "b", &["old-a"]).is_some());
         assert!(name_conflict(it(), "old-a", &[]).is_some());

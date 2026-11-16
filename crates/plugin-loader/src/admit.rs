@@ -280,7 +280,7 @@ fn image_refusal(e: &ImageError) -> Refusal {
         ),
         ImageError::Bounds(what) => Refusal::new(
             RefusalCode::ImageBounds,
-            *what,
+            what,
             "outside the image's segments or misaligned",
             "inside one segment, aligned",
         ),
@@ -291,7 +291,7 @@ fn image_refusal(e: &ImageError) -> Refusal {
             "the verified stamp",
         ),
         ImageError::Null(what) => {
-            Refusal::new(RefusalCode::DoorStampMismatch, *what, "null", "an entry")
+            Refusal::new(RefusalCode::DoorStampMismatch, what, "null", "an entry")
         }
     }
 }
