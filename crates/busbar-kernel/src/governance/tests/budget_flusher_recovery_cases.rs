@@ -302,7 +302,9 @@ async fn flusher_resumes_not_landed_with_current_cost(drain: bool) {
             );
             clock.stop_money();
         }
-        None => shutdown_tx.send(()).unwrap(),
+        None => {
+            shutdown_tx.send(()).unwrap();
+        }
     }
     tokio::time::timeout(std::time::Duration::from_secs(5), flusher)
         .await

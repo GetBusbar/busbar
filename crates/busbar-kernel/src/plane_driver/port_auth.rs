@@ -147,6 +147,17 @@ pub struct Admitted {
     ticket_record: Option<SecureVec>,
 }
 
+/// The class and the identity's length: the identity bytes and the ticket record are credentials-adjacent and
+/// never print.
+impl std::fmt::Debug for Admitted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Admitted")
+            .field("auth", &self.auth)
+            .field("identity_len", &self.identity.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl Admitted {
     /// `PlaneReq.ticket_record`: non-empty only for a ticket that carried one.
     #[must_use]

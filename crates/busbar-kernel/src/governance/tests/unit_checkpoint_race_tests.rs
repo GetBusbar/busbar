@@ -856,6 +856,7 @@ fn audit_line() -> busbar_kernel_audit::AuditRecord {
         },
         controls: Controls::default(),
         correlation_label: None,
+        unit: busbar_kernel_audit::UnitFacts::default(),
     };
     busbar_kernel_audit::record::Audit::seal(
         &mut chain,

@@ -123,6 +123,11 @@ impl Units {
         self.by_id.contains_key(id)
     }
 
+    #[cfg(test)]
+    pub(super) fn len(&self) -> usize {
+        self.by_id.len()
+    }
+
     pub(super) fn insert(&mut self, id: u64, unit: UnitState) -> Option<UnitState> {
         let old = self.remove(&id);
         if let Some(framing) = unit.binding.framing {

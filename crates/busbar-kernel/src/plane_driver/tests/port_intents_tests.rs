@@ -949,12 +949,13 @@ fn work_without_a_recovery_runtime_is_refused_unsupported_and_with_one_it_is_ans
         run(&script, &host, SUBJECT).unwrap();
         let got = script.got();
         assert_eq!((got[0].0, got[0].1), (FROM_CORE, P_WORK));
-        Records::new(&got[0].2)
+        let (answer, tail) = Records::new(&got[0].2)
             .next()
             .unwrap()
             .unwrap()
             .pod_tail::<WorkAns>()
-            .unwrap()
+            .unwrap();
+        (answer, tail.to_vec())
     };
     let (none, _) = work(Host::default());
     assert_eq!((none.check, none.status, none.state), (9, R_UNSUPPORTED, 0));
@@ -971,7 +972,7 @@ fn work_without_a_recovery_runtime_is_refused_unsupported_and_with_one_it_is_ans
         (live.status, live.state),
         (0, busbar_plugin_abi::plane::WORK_LIVE)
     );
-    let nested = Records::new(tail).next().unwrap().unwrap();
+    let nested = Records::new(&tail).next().unwrap().unwrap();
     assert_eq!(nested.tag, busbar_plugin_abi::plane::tag::WK_REF);
     assert_eq!(nested.text().unwrap(), "ref1");
 }

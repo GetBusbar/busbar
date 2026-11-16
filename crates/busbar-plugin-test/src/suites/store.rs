@@ -240,9 +240,10 @@ mod cases {
 
     async fn value(b: &dyn PersistenceBackend, address: Address) -> Option<Vec<u8>> {
         match read(b, &address).await {
-            ReadResult::Values { mut values, .. } => {
-                values.pop().flatten().map(|secret| secret.0.clone())
-            }
+            ReadResult::Values { mut values, .. } => values
+                .pop()
+                .flatten()
+                .map(|secret| secret.expose(&TestKernelSeal).clone()),
             ReadResult::TimeGuardFailed { .. } => panic!("an unguarded read failed its guard"),
         }
     }
