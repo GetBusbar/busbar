@@ -134,9 +134,13 @@ async fn serve(name: &str) -> Served {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .await
-        .unwrap();
+    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
+        &config,
+        &plugin_config,
+        &busbar_kernel::preflight::Unopened,
+    )
+    .await
+    .unwrap();
     let anchor = crate::root::real_store::core_over(anchor).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone()).unwrap();
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(

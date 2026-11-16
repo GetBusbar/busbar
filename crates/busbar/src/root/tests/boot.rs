@@ -770,9 +770,13 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let core = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(&config, &Default::default())
-            .await
-            .expect("the configured native target opens"),
+        busbar_kernel::appbuild::bootstrap_config_store(
+            &config,
+            &Default::default(),
+            &busbar_kernel::preflight::Unopened,
+        )
+        .await
+        .expect("the configured native target opens"),
     )
     .await;
     crate::root::boot::bind_plugin_floor(core.clone())

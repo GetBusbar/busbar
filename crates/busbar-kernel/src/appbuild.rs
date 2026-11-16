@@ -1087,10 +1087,11 @@ impl RootRules for AcceptAll {
 pub async fn bootstrap_config_store(
     cfg: &config::RootCfg,
     plugins: &config::PluginsCfg,
+    opener: &dyn crate::preflight::StoreOpener,
 ) -> Result<busbar_contract::persistence::axis::OpenedBackend, String> {
     // Validation, fetch, admission and the bootstrap secrets run as before; the open itself is the registry's.
     bootstrap_store_inputs(cfg, plugins).await?;
-    open_config_store(cfg).await
+    open_config_store(cfg, opener).await
 }
 
 /// Inspect a configured Store before ordinary OPEN can initialize or select its dataset.
@@ -1387,11 +1388,10 @@ pub fn validate_bootstrap_archive(
 /// write-back (`Registry::take_settled`, step 5 / 5W). The instance name is the section key, `store`.
 async fn open_config_store(
     cfg: &config::RootCfg,
+    opener: &dyn crate::preflight::StoreOpener,
 ) -> Result<busbar_contract::persistence::axis::OpenedBackend, String> {
     let store = cfg.store.as_ref().ok_or_else(config::store_required)?;
     let failed = |error: String| format!("store '{}' plugin load failed: {error}", store.module);
-    let opener = crate::preflight::store_opener()
-        .ok_or_else(|| failed("no store registry is installed".into()))?;
     let config_json = store
         .settings
         .encode()

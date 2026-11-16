@@ -177,9 +177,13 @@ async fn application(
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = plugins::trusted_config(directory);
-    let backend = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .await
-        .expect("the actual Store reopens the configuration authority");
+    let backend = busbar_kernel::appbuild::bootstrap_config_store(
+        &config,
+        &plugin_config,
+        &busbar_kernel::preflight::Unopened,
+    )
+    .await
+    .expect("the actual Store reopens the configuration authority");
     let store = crate::root::real_store::core_over(backend).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(store.clone())
         .expect("the actual Store supports conditional configuration records");

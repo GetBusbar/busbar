@@ -52,9 +52,13 @@ async fn test_dry_run_empty_admin_chain_is_not_full() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let anchor = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-            .await
-            .expect("actual native Store opens"),
+        busbar_kernel::appbuild::bootstrap_config_store(
+            &config,
+            &plugin_config,
+            &busbar_kernel::preflight::Unopened,
+        )
+        .await
+        .expect("actual native Store opens"),
     )
     .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(

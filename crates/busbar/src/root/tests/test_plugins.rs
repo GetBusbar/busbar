@@ -200,7 +200,12 @@ pub(crate) async fn provision_fresh_application_store_with_backend(
     )
     .expect("retain the actual fixture creation evidence");
     let evidence_sha256 = sha256_hex(&evidence);
-    let backend = busbar_kernel::appbuild::bootstrap_config_store(cfg, plugins).await?;
+    let backend = busbar_kernel::appbuild::bootstrap_config_store(
+        cfg,
+        plugins,
+        &busbar_kernel::preflight::Unopened,
+    )
+    .await?;
     let opened = core_over(decorate(backend)).await;
     let seal = busbar_kernel::seal::acquire();
     let store_sha256 = busbar_kernel::governance::principal_transition::store_fingerprint(

@@ -4,8 +4,8 @@
 //! The boot's use of the MIN-3 `Registry` (ABI-MIN3-INTERFACE §11.2, §12.10; W2-BOOT, W2-SW-STORE).
 //!
 //! `install_kernel_sides` hands the registry the kernel's side of the adapters (the store seal factory, the
-//! auth core) and installs the registry as the process's store opener, so `appbuild::open_config_store` opens the
-//! store through `Registry::open_store`. `boot` plans (core's own secret references are 2a roots) and walks.
+//! auth core); the registry itself is the `StoreOpener` a caller of `appbuild::bootstrap_config_store` is handed, so the
+//! store opens through `Registry::open_store`. `boot` plans (core's own secret references are 2a roots) and walks.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,17 +17,15 @@ use busbar_plugin_loader::instance::{BootPlan, InstanceSpec, OpenError, Registry
 
 use super::boot_walk::{walk, BootRefused, BootSteps, Booted};
 
-/// Installs the kernel's sides on `registry`, then the registry as the store opener (the first one installed
-/// stays). Called once, before the first `open_store`. Returns whether this call installed the opener.
+/// Installs the kernel's sides on `registry`. Called once, before the first `open_store`.
 pub fn install_kernel_sides<N: Needs + 'static>(
     registry: Arc<Registry<N>>,
     seal: StoreSeal,
     auth_core: Arc<dyn AuthCore>,
     unknown_key_refresh: Duration,
-) -> bool {
+) {
     registry.set_store_seal(seal);
     registry.set_auth_core(auth_core, unknown_key_refresh);
-    crate::preflight::install_store_opener(registry)
 }
 
 /// Plan the boot over `instances` (core's own secret modules as 2a roots), then walk it.

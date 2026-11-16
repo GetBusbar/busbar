@@ -180,9 +180,13 @@ async fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal(
             core
         } else {
             crate::root::real_store::core_over(
-                kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-                    .await
-                    .expect("the shared configured backend opens"),
+                kernel::appbuild::bootstrap_config_store(
+                    &config,
+                    &plugin_config,
+                    &busbar_kernel::preflight::Unopened,
+                )
+                .await
+                .expect("the shared configured backend opens"),
             )
             .await
         };

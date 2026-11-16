@@ -15,7 +15,14 @@ use busbar_kernel::custody::{CustodyDenied, SecretSource};
 use busbar_plugin_loader::ports::secret::{SecretAnswer, SecretPort};
 use busbar_plugin_loader::ports::{CallCx, PortError};
 
-use super::BootSecrets;
+use super::{BootRefs, BootSecrets};
+use busbar_kernel::plugin_config::{Binder, ConfigBinder};
+
+/// A secret kind over the boot's own binder.
+fn secrets() -> BootSecrets {
+    let binder: Arc<dyn ConfigBinder> = Arc::new(Binder::new(Arc::new(BootRefs)));
+    BootSecrets::new(binder)
+}
 
 /// One configured secret instance, as the kernel sees it through its port.
 struct Port {
@@ -71,7 +78,7 @@ async fn resolved(secrets: &BootSecrets, reference: &SecretRef) -> Result<String
 
 #[tokio::test]
 async fn a_secret_env_and_a_secret_vault_instance_resolve_through_their_ports() {
-    let secrets = BootSecrets::default();
+    let secrets = secrets();
     let env = Port::new("env-material-0001");
     let vault = Port::new("vault-material-0002");
     secrets.table().opened(
@@ -118,7 +125,7 @@ async fn a_secret_env_and_a_secret_vault_instance_resolve_through_their_ports() 
 
 #[tokio::test]
 async fn a_module_that_is_not_open_is_refused_without_a_name() {
-    let secrets = BootSecrets::default();
+    let secrets = secrets();
     let env = Port::new("env-material-0001");
     secrets.table().opened(
         "secret-env",

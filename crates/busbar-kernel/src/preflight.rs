@@ -100,19 +100,29 @@ impl<N: busbar_plugin_abi::host_side::needs::Needs> StoreOpener
     }
 }
 
-static STORE_OPENER: std::sync::OnceLock<Arc<dyn StoreOpener>> = std::sync::OnceLock::new();
+/// The opener of a caller that holds no MIN-3 registry (a tool, a fixture): every open refuses, so a store is
+/// never opened through a registry that was not handed over.
+pub struct Unopened;
 
-/// Installs the boot's MIN-3 registry as the store opener, once per process. `false` when one is already
-/// installed (the first stays).
-pub fn install_store_opener(opener: Arc<dyn StoreOpener>) -> bool {
-    STORE_OPENER.set(opener).is_ok()
+impl StoreOpener for Unopened {
+    fn open_store<'a>(
+        &'a self,
+        _spec: &'a busbar_plugin_loader::instance::InstanceSpec<'a>,
+    ) -> busbar_plugin_abi::host_side::caller::BoxFut<
+        'a,
+        Result<
+            busbar_plugin_loader::ports::store::StoreHandle,
+            busbar_plugin_loader::instance::OpenError,
+        >,
+    > {
+        Box::pin(core::future::ready(Err(
+            busbar_plugin_loader::instance::OpenError::Unknown(
+                "no store registry is installed".into(),
+            ),
+        )))
+    }
 }
 
-/// The installed store opener, if the boot installed one.
-#[must_use]
-pub fn store_opener() -> Option<&'static Arc<dyn StoreOpener>> {
-    STORE_OPENER.get()
-}
 use busbar_contract::plugin_rows::PluginRows;
 pub use busbar_kernel_identity::operator::LinkedAuth;
 

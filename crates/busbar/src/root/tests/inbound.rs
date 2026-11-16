@@ -221,9 +221,13 @@ async fn app_generation(
         core
     } else {
         crate::root::real_store::core_over(
-            busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-                .await
-                .expect("actual native backend"),
+            busbar_kernel::appbuild::bootstrap_config_store(
+                &config,
+                &plugin_config,
+                &busbar_kernel::preflight::Unopened,
+            )
+            .await
+            .expect("actual native backend"),
         )
         .await
     };

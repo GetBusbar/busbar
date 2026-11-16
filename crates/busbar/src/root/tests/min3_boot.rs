@@ -43,7 +43,7 @@ fn shared() -> Shared {
 
 #[test]
 fn every_seat_is_given_the_services_the_boot_can_build_and_no_more() {
-    let services = plane_services(&shared(), None);
+    let services = plane_services(&shared(), Arc::new(Open), None);
     assert!(
         services.judge.is_some(),
         "JUDGE answers, fail closed without a judge"
@@ -52,7 +52,10 @@ fn every_seat_is_given_the_services_the_boot_can_build_and_no_more() {
         services.observations.is_some(),
         "OBS_SCOPE and OBSERVE have their custody"
     );
-    assert!(services.tickets.is_some(), "MINT has the late ticket store");
+    assert!(
+        services.tickets.is_some(),
+        "MINT has the ticket store the seat was built with"
+    );
     // Not built at boot: each answers its fail-closed value until its owner installs it.
     assert!(services.entitlements.is_none());
     assert!(services.signer.is_none());
@@ -63,7 +66,9 @@ fn every_seat_is_given_the_services_the_boot_can_build_and_no_more() {
 
 #[tokio::test]
 async fn a_process_with_no_destination_judge_answers_internal_for_every_destination() {
-    let judge = plane_services(&shared(), None).judge.unwrap();
+    let judge = plane_services(&shared(), Arc::new(ClosedTickets), None)
+        .judge
+        .unwrap();
     let verdict = judge
         .judge("example.com", 0, 0, Instant::now() + Duration::from_secs(1))
         .await;
@@ -71,25 +76,28 @@ async fn a_process_with_no_destination_judge_answers_internal_for_every_destinat
 }
 
 #[test]
-fn tickets_are_shut_until_the_signing_key_resolves_and_open_for_every_seat_after() {
-    let shared = shared();
-    let services = plane_services(&shared, None);
+fn tickets_are_shut_without_a_signing_key_and_open_with_one() {
+    let records = Records::default();
+    let shut = ticket_store(&records, None);
+    assert!(
+        !shut.is_ticket("bbt1.abc"),
+        "no host key: nothing is a ticket"
+    );
+    let signing = SecureVec::from(&[7u8; 32][..]);
+    let keyed = ticket_store(&records, Some(&signing));
+    assert!(
+        !keyed.is_ticket("Bearer-token"),
+        "a credential that is not a ticket is never one"
+    );
+    let services = plane_services(&shared(), Arc::new(Open), None);
     let tickets = services.tickets.unwrap();
-    assert!(
-        !tickets.is_ticket("bbt1.abc"),
-        "no host key yet: nothing is a ticket"
-    );
-    shared.tickets.install(Arc::new(Open));
-    assert!(
-        tickets.is_ticket("bbt1.abc"),
-        "a seat built before the key resolved sees the installed store"
-    );
+    assert!(tickets.is_ticket("bbt1.abc"));
     assert!(!tickets.is_ticket("Bearer-token"));
 }
 
 #[tokio::test]
 async fn a_mint_with_no_ticket_store_is_unavailable_not_a_made_up_ticket() {
-    let tickets = LateTickets::default();
+    let tickets = ClosedTickets;
     let who = busbar_kernel::plane_driver::port_intents::Namespace {
         plugin: "plane-x".into(),
         name: "x".into(),

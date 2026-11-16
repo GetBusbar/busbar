@@ -188,9 +188,12 @@ async fn serve_admission_with_inputs(
         tokio::sync::OnceCell::const_new();
     let core = CORE
         .get_or_try_init(|| async {
-            let backend =
-                busbar_kernel::appbuild::bootstrap_config_store(&resolved, &Default::default())
-                    .await?;
+            let backend = busbar_kernel::appbuild::bootstrap_config_store(
+                &resolved,
+                &Default::default(),
+                &busbar_kernel::preflight::Unopened,
+            )
+            .await?;
             let core = crate::root::real_store::core_over(backend).await;
             crate::root::boot::bind_plugin_floor(core.clone()).await?;
             crate::root::kernel::ROOT_CARD

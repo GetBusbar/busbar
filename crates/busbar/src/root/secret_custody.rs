@@ -64,12 +64,11 @@ impl SecretTable {
 /// The scrub set of the instance that owns a watchdog slot (the registry's slot table, §10.6).
 pub(crate) type ScrubOf = Arc<dyn Fn(u32) -> Option<Arc<Scrub>> + Send + Sync>;
 
-/// What the registry and the binder supply once they exist (the registry is built over the Needs that own
-/// custody, so custody cannot hold them from the start). Until both are attached a SECRET Need is refused
+/// What the registry supplies once it exists (the registry is built over the Needs that own
+/// custody, so custody cannot hold it from the start). Until it is attached a SECRET Need is refused
 /// (ForeignHandle, then Unavailable), never served unmasked.
 #[derive(Default)]
 struct Wiring {
-    binder: OnceLock<Arc<dyn ConfigBinder>>,
     scrub: OnceLock<ScrubOf>,
 }
 
@@ -77,12 +76,13 @@ struct Wiring {
 /// §12.7) and instance scrub sets (§10.6).
 pub(crate) struct Host {
     table: Arc<SecretTable>,
+    binder: Arc<dyn ConfigBinder>,
     wiring: Arc<Wiring>,
 }
 
 impl CustodyHost for Host {
     fn binding(&self, key: CustodyKey) -> Option<SecretRef> {
-        self.wiring.binder.get()?.secret(key.instance, key.handle)
+        self.binder.secret(key.instance, key.handle)
     }
 
     fn scrub(&self, who: &busbar_plugin_abi::host_side::caller::Caller<'_>) -> Option<Arc<Scrub>> {
@@ -125,12 +125,15 @@ pub(crate) struct BootSecrets {
     custody: Custody<Host>,
 }
 
-impl Default for BootSecrets {
-    fn default() -> Self {
+impl BootSecrets {
+    /// The secret kind over `binder`, which custody reads plugin-facing bindings through (the binder does not
+    /// depend on custody, so it exists first and is handed over here).
+    pub(crate) fn new(binder: Arc<dyn ConfigBinder>) -> Self {
         let table = Arc::new(SecretTable::default());
         let wiring = Arc::new(Wiring::default());
         let custody = Custody::new(Host {
             table: Arc::clone(&table),
+            binder,
             wiring: Arc::clone(&wiring),
         });
         BootSecrets {
@@ -139,13 +142,10 @@ impl Default for BootSecrets {
             custody,
         }
     }
-}
 
-impl BootSecrets {
-    /// The binder and the registry's scrub sets, once both exist (boot, after the registry is built). The first
-    /// attachment stays; a second is ignored.
-    pub(crate) fn attach(&self, binder: Arc<dyn ConfigBinder>, scrub: ScrubOf) {
-        let _ = self.wiring.binder.set(binder);
+    /// The registry's scrub sets, once it exists (boot, after the registry is built). The first attachment
+    /// stays; a second is ignored.
+    pub(crate) fn attach(&self, scrub: ScrubOf) {
         let _ = self.wiring.scrub.set(scrub);
     }
 
@@ -224,18 +224,13 @@ impl RefSource for BootRefs {
     }
 }
 
-/// The process's one secret kind, whichever reader asks first.
-pub(crate) fn the() -> &'static BootSecrets {
-    static SECRETS: OnceLock<BootSecrets> = OnceLock::new();
-    SECRETS.get_or_init(BootSecrets::default)
-}
-
 /// The boot walk's secret steps (IF §11.2; boot steps 2a and 2c): every `Secret` instance among `steps` (indices into
 /// `instances`, in plan order) is opened through `registry.open_secret` and its port entered in the table under the
 /// instance's configured name, with a process-unique runtime id (the §12.2 cycle check keys on it). `instances` is
 /// the same slice the plan was built over. The first refusal stops the walk: a secret instance that cannot open
 /// refuses the boot.
 pub(crate) async fn open_secret_steps<N: busbar_plugin_abi::host_side::needs::Needs>(
+    secrets: &BootSecrets,
     registry: &busbar_plugin_loader::instance::Registry<N>,
     steps: &[u32],
     instances: &[(
@@ -243,7 +238,6 @@ pub(crate) async fn open_secret_steps<N: busbar_plugin_abi::host_side::needs::Ne
         busbar_plugin_loader::instance::InstanceSpec<'_>,
     )],
 ) -> Result<usize, busbar_plugin_loader::instance::OpenError> {
-    let secrets = the();
     let mut opened = 0;
     for at in steps {
         let Some((kind, spec)) = instances.get(*at as usize) else {

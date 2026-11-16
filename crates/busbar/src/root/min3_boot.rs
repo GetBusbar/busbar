@@ -41,7 +41,7 @@ use busbar_kernel::plane_driver::port_intents::{
     DurableDecider, DurableWork, KernelIntents, Namespace,
 };
 use busbar_kernel::plane_driver::port_observations::ObsCustody;
-use busbar_kernel::plane_driver::port_serve::{LateDoor, TicketGate};
+use busbar_kernel::plane_driver::port_serve::TicketGate;
 use busbar_kernel::plane_driver::port_services::Services;
 use busbar_kernel::plane_driver::port_work::{governed_binder, LateBinder, LateStore, StoreWork};
 use busbar_kernel::plane_grants::{
@@ -61,7 +61,7 @@ use busbar_plugin_loader::instance::{
 use busbar_plugin_loader::ports::store::StoreHandle;
 
 use super::port_mount::Ingress;
-use super::secret_custody::{self, BootCustody, BootRefs};
+use super::secret_custody::{self, BootCustody, BootRefs, BootSecrets};
 
 /// The records every Need handler, the replay guard and the plane driver share: filled once the store is open.
 pub(crate) type Records = LateRecords<Arc<StoreRecords>>;
@@ -131,17 +131,12 @@ impl PushQueue for LatePush {
 }
 
 /// What the plane instances' intents, tickets and tick share, built before any instance opens and filled as the
-/// boot proceeds: the records and push queue are filled at the deployment point, the ticket doors once core's own
-/// secrets resolve.
+/// boot proceeds: the records and push queue are filled at the deployment point.
 struct Shared {
     records: Records,
     push: LatePush,
     signals: Arc<SignalRegistry>,
-    /// One per plane instance, with the namespace its gate asks the ticket store as.
-    doors: Mutex<Vec<(LateDoor, Namespace)>>,
     next_instance: AtomicU64,
-    /// The ticket store MINT seals through, shut until `install_tickets`.
-    tickets: LateTickets,
     /// The observation custody every seat's OBS_SCOPE and OBSERVE run on (units register as requests bill).
     observations: ObsCustody,
     /// The core store (filled at the deployment point) and the governance binder (filled when governance
@@ -152,61 +147,76 @@ struct Shared {
     work: Arc<StoreWork>,
 }
 
-/// The ticket store the plane instances' MINT intents seal through. Seats open before core's own secrets resolve, so
-/// each holds this and the boot fills it in `install_tickets`; until then nothing is a ticket and nothing mints.
-#[derive(Clone, Default)]
-pub(crate) struct LateTickets {
-    slot: Arc<OnceLock<Arc<dyn Tickets>>>,
-}
+/// The ticket store of a deployment with no usable `auth.signing_key`: nothing is a ticket and nothing mints
+/// (fail closed). Every seat holds either this or the sealed store the host key opened.
+struct ClosedTickets;
 
-impl LateTickets {
-    /// The store every clone uses from now on (the first install stays).
-    fn install(&self, tickets: Arc<dyn Tickets>) {
-        let _ = self.slot.set(tickets);
-    }
-}
-
-impl Tickets for LateTickets {
+impl Tickets for ClosedTickets {
     fn mint<'a>(
         &'a self,
-        who: &'a LoaderCaller<'_>,
-        m: TicketMint<'a>,
+        _who: &'a LoaderCaller<'_>,
+        _m: TicketMint<'a>,
     ) -> BoxFut<'a, Result<(Box<str>, u64), RecordsDenied>> {
-        match self.slot.get() {
-            Some(tickets) => tickets.mint(who, m),
-            None => Box::pin(core::future::ready(Err(RecordsDenied::Unavailable))),
-        }
+        Box::pin(core::future::ready(Err(RecordsDenied::Unavailable)))
     }
 
-    fn is_ticket(&self, credential: &str) -> bool {
-        self.slot
-            .get()
-            .is_some_and(|tickets| tickets.is_ticket(credential))
+    fn is_ticket(&self, _credential: &str) -> bool {
+        false
     }
 
     fn admit<'a>(
         &'a self,
-        plane: &'a LoaderCaller<'_>,
-        audience: &'a str,
-        credential: &'a str,
-        now_s: u64,
+        _plane: &'a LoaderCaller<'_>,
+        _audience: &'a str,
+        _credential: &'a str,
+        _now_s: u64,
     ) -> BoxFut<'a, Result<TicketAdmitted, TicketDenied>> {
-        match self.slot.get() {
-            Some(tickets) => tickets.admit(plane, audience, credential, now_s),
-            None => Box::pin(core::future::ready(Err(TicketDenied::Unavailable))),
+        Box::pin(core::future::ready(Err(TicketDenied::Unavailable)))
+    }
+}
+
+/// The ticket store every plane seat is built with (IF §12.11): its host key is derived from core's
+/// `auth.signing_key`, which the walk resolves (the secret instances are open before any plane, step 2a) before
+/// the seat is built. Without a signing key, or when the key cannot be derived, the store is shut.
+fn ticket_store(records: &Records, signing: Option<&SecureVec>) -> Arc<dyn Tickets> {
+    let Some(signing) = signing else {
+        tracing::info!("no auth.signing_key: plane tickets are not admitted");
+        return Arc::new(ClosedTickets);
+    };
+    let mut key = SecureVec::zeroed(32);
+    if busbar_contract::crypto::hkdf_sha256(
+        b"busbar.ticket-host.v1",
+        &signing[..],
+        b"host-key",
+        &mut key[..],
+    )
+    .is_err()
+    {
+        tracing::warn!("the ticket host key could not be derived: plane tickets are not admitted");
+        return Arc::new(ClosedTickets);
+    }
+    match SealedTickets::new(records.clone(), &key[..], busbar_kernel::store::now) {
+        Some(sealed) => Arc::new(sealed),
+        None => {
+            tracing::warn!("the ticket store refused its host key: plane tickets are not admitted");
+            Arc::new(ClosedTickets)
         }
     }
 }
 
 /// The services every plane seat's intents run on (IF §12.1, §12.11): what the boot can build. JUDGE is the
 /// deployment's one destination judge, or the fail-closed one (every destination internal, BUSBAR-7108) when the
-/// process has none. MINT is the late ticket store, OBS_SCOPE and OBSERVE the process's observation custody. ENTITLE,
+/// process has none. MINT is the ticket store the seat is built with, OBS_SCOPE and OBSERVE the process's observation custody. ENTITLE,
 /// SIGN, CONNECT, SIGHT/TRUST and RENDEZVOUS have no production owner at boot yet (no grant resolver, host signing
 /// key, caller-connection store, trust book or media carrier is built here), so each answers its fail-closed value.
-fn plane_services(shared: &Shared, judge: Option<Arc<dyn DestJudge>>) -> Services {
+fn plane_services(
+    shared: &Shared,
+    tickets: Arc<dyn Tickets>,
+    judge: Option<Arc<dyn DestJudge>>,
+) -> Services {
     Services {
         judge: Some(judge.map_or_else(PlaneJudge::unavailable, PlaneJudge::new)),
-        tickets: Some(Arc::new(shared.tickets.clone())),
+        tickets: Some(tickets),
         observations: Some(Arc::new(shared.observations.clone())),
         ..Services::default()
     }
@@ -231,9 +241,7 @@ impl Shared {
             records,
             push,
             signals: SignalRegistry::new(),
-            doors: Mutex::default(),
             next_instance: AtomicU64::new(1),
-            tickets: LateTickets::default(),
             observations: ObsCustody::new(Arc::new(busbar_kernel::store::now_ms)),
             work: Arc::new(StoreWork::new(
                 work_store.clone(),
@@ -244,45 +252,6 @@ impl Shared {
             work_binder,
         }
     }
-
-    /// The ticket host key (§12.11) is derived from core's `auth.signing_key`; every door installs its gate under
-    /// its instance's namespace. Without a signing key the doors stay shut (fail closed): no ticket admits.
-    fn install_tickets(&self, core: &CoreSecrets) {
-        let Some(signing) = &core.signing_key else {
-            tracing::info!("no auth.signing_key: plane tickets are not admitted");
-            return;
-        };
-        let mut key = SecureVec::zeroed(32);
-        if busbar_contract::crypto::hkdf_sha256(
-            b"busbar.ticket-host.v1",
-            &signing[..],
-            b"host-key",
-            &mut key[..],
-        )
-        .is_err()
-        {
-            tracing::warn!(
-                "the ticket host key could not be derived: plane tickets are not admitted"
-            );
-            return;
-        }
-        let Some(sealed) =
-            SealedTickets::new(self.records.clone(), &key[..], busbar_kernel::store::now)
-        else {
-            tracing::warn!("the ticket store refused its host key: plane tickets are not admitted");
-            return;
-        };
-        let tickets: Arc<dyn Tickets> = Arc::new(sealed);
-        self.tickets.install(Arc::clone(&tickets));
-        for (door, who) in self
-            .doors
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .iter()
-        {
-            door.install(Arc::new(TicketGate::new(Arc::clone(&tickets), who.clone())));
-        }
-    }
 }
 
 /// What a boot through the MIN-3 registry leaves running.
@@ -290,6 +259,8 @@ pub(crate) struct Booted {
     pub(crate) registry: Arc<MinRegistry>,
     pub(crate) seats: Vec<PortSeat>,
     pub(crate) core: CoreSecrets,
+    /// The secret kind the boot opened its secret instances into (webhook secrets resolve through it).
+    pub(crate) secrets: &'static BootSecrets,
     pub(crate) deployment: [u8; 16],
     /// The format admission the walk attached the store through.
     pub(crate) startup: Mutex<Option<Startup>>,
@@ -352,12 +323,12 @@ pub(crate) fn attach_governance(handle: Arc<busbar_kernel::state::AppHandle>) {
 
 /// Webhook secrets by reference, through custody (a route's secret resolves like any other reference: by reference,
 /// an empty call stack, no source named in an error). A reference that does not resolve verifies nothing.
-struct CustodySecrets;
+struct CustodySecrets(&'static BootSecrets);
 
 impl RouteSecrets for CustodySecrets {
     fn resolve<'a>(&'a self, reference: &'a SecretRef) -> BoxFut<'a, Option<SecureVec>> {
         Box::pin(async move {
-            secret_custody::the()
+            self.0
                 .resolve_ref(Instant::now() + CORE_SECRET_DEADLINE, reference)
                 .await
                 .ok()
@@ -372,7 +343,7 @@ impl RouteSecrets for CustodySecrets {
 pub(crate) fn signed_ingress() -> Option<Arc<Ingress>> {
     let booted = booted()?;
     Some(Arc::new(Ingress {
-        verifier: Arc::new(StandardWebhooks::new(CustodySecrets)),
+        verifier: Arc::new(StandardWebhooks::new(CustodySecrets(booted.secrets))),
         replay: Arc::new(StoreReplay::new(booted.records.clone())),
         secrets: Arc::new(|_: &str, _: u32| None),
     }))
@@ -519,13 +490,15 @@ fn ref_schemas(registry: &MinRegistry, cfg: &RootCfg) -> Vec<(Arc<str>, Box<str>
 struct Built {
     registry: Arc<MinRegistry>,
     sugars: Sugars,
+    secrets: &'static BootSecrets,
     records: Records,
     directory: Directory,
 }
 
 fn build(guard: Guard, cfg: &RootCfg, images: Vec<Admitted>) -> Result<Built, String> {
-    let secrets = secret_custody::the();
     let binder: Arc<dyn ConfigBinder> = Arc::new(Binder::new(Arc::new(BootRefs)));
+    // The process's one secret kind, built over the binder and kept for the life of the process.
+    let secrets: &'static BootSecrets = Box::leak(Box::new(BootSecrets::new(Arc::clone(&binder))));
     let records = Records::default();
     let directory = Directory::default();
     let needs = HostNeeds::production(
@@ -553,10 +526,7 @@ fn build(guard: Guard, cfg: &RootCfg, images: Vec<Admitted>) -> Result<Built, St
     let registry = Arc::new(registry);
     registry.start_watchdog();
     let weak = Arc::downgrade(&registry);
-    secrets.attach(
-        Arc::clone(&binder),
-        Arc::new(move |slot| weak.upgrade()?.scrub_of(slot)),
-    );
+    secrets.attach(Arc::new(move |slot| weak.upgrade()?.scrub_of(slot)));
     let seal: StoreSeal = Box::new(|| Box::new(busbar_kernel::seal::lend()));
     let auth_core = Arc::new(KernelAuthCore::new(
         Unissued,
@@ -566,6 +536,7 @@ fn build(guard: Guard, cfg: &RootCfg, images: Vec<Admitted>) -> Result<Built, St
     Ok(Built {
         registry,
         sugars,
+        secrets,
         records,
         directory,
     })
@@ -579,6 +550,10 @@ struct Steps<'r> {
     services: Option<Arc<KernelServices>>,
     seats: Mutex<Vec<PortSeat>>,
     shared: Arc<Shared>,
+    /// `auth.signing_key`: the reference the ticket host key is derived from (IF §12.11).
+    signing_key: Option<SecretRef>,
+    /// The process's secret kind: the open secret instances and the custody that resolves through them.
+    secrets: &'static BootSecrets,
 }
 
 impl Steps<'_> {
@@ -608,14 +583,24 @@ impl Steps<'_> {
             instance: self.shared.next_instance.fetch_add(1, Ordering::Relaxed),
             slot: 0,
         };
-        // Tickets: shut until core's own secrets resolve and `Shared::install_tickets` opens every door.
-        let door = LateDoor::default();
-        self.shared
-            .doors
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push((door.clone(), who.clone()));
-        let driver = driver.with_tickets(Arc::new(door));
+        // Tickets: the host key is resolved here (the secret instances are open, step 2a), so the gate and the
+        // MINT store are built whole, with the key, before the seat exists.
+        let signing = match &self.signing_key {
+            Some(reference) => Some(
+                self.secrets
+                    .resolve_ref(Instant::now() + CORE_SECRET_DEADLINE, reference)
+                    .await
+                    .map_err(|denied| {
+                        OpenError::Unknown(format!(
+                            "the signing key could not be resolved ({denied:?})"
+                        ))
+                    })?,
+            ),
+            None => None,
+        };
+        let tickets = ticket_store(&self.shared.records, signing.as_ref());
+        let driver =
+            driver.with_tickets(Arc::new(TicketGate::new(Arc::clone(&tickets), who.clone())));
         let rt = tokio::runtime::Handle::current();
         // WORK is opened only for a target on this instance's ROUTE_RECOVERY routes.
         let recovers = recovery_matcher(
@@ -639,7 +624,7 @@ impl Steps<'_> {
             rt.clone(),
         )
         .with_work(Arc::new(DurableDecider::new(work, recovers, rt)))
-        .with_services(plane_services(&self.shared, judge));
+        .with_services(plane_services(&self.shared, tickets, judge));
         self.seats
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -685,12 +670,13 @@ impl BootSteps for Steps<'_> {
         match kind {
             KindCode::Secret => Box::pin(async move {
                 secret_custody::open_secret_steps(
+                    self.secrets,
                     self.inner.registry,
                     &[index],
                     self.inner.instances,
                 )
                 .await?;
-                secret_custody::the()
+                self.secrets
                     .port(spec.name)
                     .map(|port| Some(OpenedPort::Secret(port)))
                     .ok_or_else(|| {
@@ -767,8 +753,7 @@ fn deployment_read(
 
 /// Core's own secrets, through the secret kind (§12.2: by reference, an empty call stack, no source named in an
 /// error). A reference naming no open secret instance refuses the boot.
-async fn core_secrets_of(cfg: &RootCfg) -> Result<CoreSecrets, String> {
-    let secrets = secret_custody::the();
+async fn core_secrets_of(cfg: &RootCfg, secrets: &BootSecrets) -> Result<CoreSecrets, String> {
     let deadline = Instant::now() + CORE_SECRET_DEADLINE;
     let resolve = |what: &'static str, reference: &busbar_contract::secret_ref::SecretRef| {
         let reference = reference.clone();
@@ -855,14 +840,15 @@ pub(crate) async fn run(
         services,
         seats: Mutex::default(),
         shared: Arc::clone(&shared),
+        signing_key: cfg.auth.as_ref().and_then(|auth| auth.signing_key.clone()),
+        secrets: built.secrets,
     };
     let core_modules = busbar_kernel::appbuild::core_secret_modules(cfg);
     let core_refs: Vec<&str> = core_modules.iter().map(String::as_str).collect();
     let walked = boot(&*built.registry, &specs, &built.sugars, &core_refs, &steps)
         .await
         .map_err(|refused| refused.to_string())?;
-    let core = core_secrets_of(cfg).await?;
-    shared.install_tickets(&core);
+    let core = core_secrets_of(cfg, built.secrets).await?;
     let seats = steps
         .seats
         .into_inner()
@@ -874,6 +860,7 @@ pub(crate) async fn run(
         registry: built.registry,
         seats,
         core,
+        secrets: built.secrets,
         deployment: walked.deployment,
         work_binder: shared.work_binder.clone(),
         records: built.records.clone(),

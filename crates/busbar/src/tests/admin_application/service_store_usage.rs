@@ -176,9 +176,13 @@ async fn get_group_usage_reads_the_store_off_the_async_worker() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .await
-        .expect("the configured native backend opens");
+    let actual = busbar_kernel::appbuild::bootstrap_config_store(
+        &config,
+        &plugin_config,
+        &busbar_kernel::preflight::Unopened,
+    )
+    .await
+    .expect("the configured native backend opens");
     let started = Arc::new(tokio::sync::Notify::new());
     let heard = Arc::new(AtomicBool::new(false));
     let store = Arc::new(RecordReads {
@@ -313,9 +317,13 @@ async fn usage_read_store_failure_logs_the_real_error() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .await
-        .expect("the configured native backend opens");
+    let actual = busbar_kernel::appbuild::bootstrap_config_store(
+        &config,
+        &plugin_config,
+        &busbar_kernel::preflight::Unopened,
+    )
+    .await
+    .expect("the configured native backend opens");
     let started = Arc::new(tokio::sync::Notify::new());
     let heard = Arc::new(AtomicBool::new(false));
     let store = Arc::new(RecordReads {

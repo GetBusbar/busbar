@@ -57,9 +57,13 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-            .await
-            .expect("the actual Store bootstraps its config authority"),
+        busbar_kernel::appbuild::bootstrap_config_store(
+            &config,
+            &plugin_config,
+            &busbar_kernel::preflight::Unopened,
+        )
+        .await
+        .expect("the actual Store bootstraps its config authority"),
     )
     .await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
@@ -228,9 +232,13 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-            .await
-            .expect("the actual Store bootstraps its config authority"),
+        busbar_kernel::appbuild::bootstrap_config_store(
+            &config,
+            &plugin_config,
+            &busbar_kernel::preflight::Unopened,
+        )
+        .await
+        .expect("the actual Store bootstraps its config authority"),
     )
     .await;
     anchor
@@ -358,9 +366,13 @@ async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-            .await
-            .expect("the actual Store bootstraps its config authority"),
+        busbar_kernel::appbuild::bootstrap_config_store(
+            &config,
+            &plugin_config,
+            &busbar_kernel::preflight::Unopened,
+        )
+        .await
+        .expect("the actual Store bootstraps its config authority"),
     )
     .await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
@@ -469,9 +481,13 @@ async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-            .await
-            .expect("the actual Store bootstraps its config authority"),
+        busbar_kernel::appbuild::bootstrap_config_store(
+            &config,
+            &plugin_config,
+            &busbar_kernel::preflight::Unopened,
+        )
+        .await
+        .expect("the actual Store bootstraps its config authority"),
     )
     .await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
@@ -605,9 +621,13 @@ async fn test_admin_prefix_is_boundary_safe() {
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-            .await
-            .expect("the actual Store bootstraps its config authority"),
+        busbar_kernel::appbuild::bootstrap_config_store(
+            &config,
+            &plugin_config,
+            &busbar_kernel::preflight::Unopened,
+        )
+        .await
+        .expect("the actual Store bootstraps its config authority"),
     )
     .await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
@@ -739,9 +759,13 @@ async fn test_unauthorized_body_carries_no_busbar_vocabulary_on_the_live_stack()
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-            .await
-            .expect("the actual Store bootstraps its config authority"),
+        busbar_kernel::appbuild::bootstrap_config_store(
+            &config,
+            &plugin_config,
+            &busbar_kernel::preflight::Unopened,
+        )
+        .await
+        .expect("the actual Store bootstraps its config authority"),
     )
     .await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
