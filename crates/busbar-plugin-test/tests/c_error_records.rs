@@ -42,10 +42,44 @@ fn fail_error_and_two_facts_fit_the_first_4_kib_in_order() {
     assert_eq!(Fail::failed(failed::F_UPSTREAM).with_error(0).error(), 0);
 }
 
+/// The shim arm (W1-A3, IF §6.4 step 2): a chain answering a Fail writes FAIL, then ERROR only when the number is not 0,
+/// then the FAILED facts; REFUSED may carry ERROR and never facts.
 #[test]
-#[ignore = "owner: W1-A3"]
 fn the_shim_writes_error_only_when_the_number_is_set() {
-    todo!("owner: W1-A3 (C-ERROR-RECORDS)")
+    use crate::bridge_fixture::{self as fx, Status};
+
+    let instance = fx::instance();
+    let cases: [(&[u8], Status, &[u16], Option<u32>); 4] = [
+        (
+            b"fail-error",
+            Status::FAILED,
+            &[tag::FAIL, tag::ERROR, tag::FACT, tag::FACT],
+            Some(7071),
+        ),
+        (
+            b"fail-facts",
+            Status::FAILED,
+            &[tag::FAIL, tag::FACT, tag::FACT],
+            None,
+        ),
+        (
+            b"refuse-error",
+            Status::REFUSED,
+            &[tag::FAIL, tag::ERROR],
+            Some(7070),
+        ),
+        (b"refuse-plain", Status::REFUSED, &[tag::FAIL], None),
+    ];
+    for (scenario, status, tags, error) in cases {
+        let mut lease = fx::lease();
+        assert!(
+            matches!(fx::start(&instance, scenario, &mut lease), fx::Started::Done(s) if s == status),
+            "{scenario:?}"
+        );
+        assert_eq!(fx::tags(&lease), tags, "{scenario:?}");
+        assert_eq!(fx::error_number(&lease), error, "{scenario:?}");
+        assert!(lease.len() <= 4096);
+    }
 }
 
 #[test]
