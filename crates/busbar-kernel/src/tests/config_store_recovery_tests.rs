@@ -276,3 +276,27 @@ fn malformed_and_conflicting_bootstrap_pins_cannot_authorize_native_code() {
         .is_err());
     }
 }
+
+#[test]
+fn core_secret_modules_names_each_of_cores_own_references_once_and_not_the_stores() {
+    let deploy = crate::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {}, "models": {},
+            "auth": {"chain": [], "admin_auth": []},
+            "credentials": {"at_rest": {
+                "key": {"module": "secret-a", "settings": {}},
+                "previous": {"module": "secret-a", "settings": {"name": "old"}}
+            }},
+            "store": {"module": "store-x", "settings": {
+                "token": {"module": "secret-store", "settings": {}}
+            }}
+        }),
+        &crate::config::Grammar::empty(),
+    )
+    .unwrap();
+    let cfg = crate::config::resolve(&deploy, &Default::default()).unwrap();
+    assert_eq!(
+        crate::appbuild::core_secret_modules(&cfg),
+        vec!["secret-a".to_string()]
+    );
+}
