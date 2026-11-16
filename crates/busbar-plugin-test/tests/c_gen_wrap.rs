@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-A3 (needs a test hook in busbar-ffi slots.rs, owner-pinned: GetBusbar/busbar#265)"]
+#[ignore = "blocked: no test hook in busbar-ffi slots.rs to force the 31-bit generation to 2^31-2 (owner-pinned: GetBusbar/busbar#265)"]
 fn a_wrapped_generation_keeps_chain_ids_distinct() {
     todo!("owner: W1-A3 (C-GEN-WRAP)")
 }

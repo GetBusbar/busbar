@@ -43,7 +43,7 @@ fn thread_churn_leaves_the_table_at_baseline() {
 }
 
 #[test]
-#[ignore = "owner: W1-L2"]
+#[ignore = "owner: W1-L2 (blocked: needs the table filled to WATCH_CAP and a log line read back through the Harness sink with its slot attribution; the churn arm itself runs)"]
 fn a_full_table_entry_is_still_attributed_and_scrubbed() {
     todo!("owner: W1-L2 (C-WATCH-CHURN)")
 }

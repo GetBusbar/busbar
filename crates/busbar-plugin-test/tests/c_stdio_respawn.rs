@@ -38,7 +38,7 @@ fn a_stdio_child_backs_off_then_trips() {
 }
 
 #[test]
-#[ignore = "owner: W1-C1C"]
+#[ignore = "owner: W1-C1C (blocked: the connector's stdio carrier child_job.rs (cwd spawn and pin check) is not ported; OUTSTANDING A6)"]
 fn a_stdio_child_starts_in_its_cwd() {
     todo!("owner: W1-C1C (C-STDIO-RESPAWN cwd arm: the connector's stdio carrier)")
 }

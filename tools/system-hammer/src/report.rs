@@ -80,7 +80,7 @@ impl BinaryInfo {
         let sha256 = std::fs::read(bin).map_or_else(
             |_| "unknown".into(),
             |bytes| {
-                let d = ring::digest::digest(&ring::digest::SHA256, &bytes);
+                let d = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, &bytes);
                 d.as_ref().iter().map(|b| format!("{b:02x}")).collect()
             },
         );

@@ -37,7 +37,7 @@ fn two_sessions_on_one_serial_channel_are_written_in_turn() {
 }
 
 #[test]
-#[ignore = "owner: W1-C1C"]
+#[ignore = "owner: W1-C1C; blocked (re-checked on dev 2026-11-16): the connector still drives framers over the old FramerDoor (OUTSTANDING row 6)"]
 fn one_greet_per_generation_and_replies_demuxed_to_their_session() {
     todo!("owner: W1-C1C (C-CHANNEL greet/demux/kill arms: the connector's stdio carrier)")
 }

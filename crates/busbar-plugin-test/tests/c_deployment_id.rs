@@ -39,7 +39,7 @@ fn every_read_is_all_zero_or_exactly_the_id() {
 }
 
 #[test]
-#[ignore = "owner: W1-K9"]
+#[ignore = "owner: W1-K9; blocked (re-checked on dev 2026-11-16): boot does not yet open the planes, stores and hooks through the MIN-3 Registry (min3_boot configured(), OUTSTANDING rows 7 to 10)"]
 fn step_2b_reads_none_and_2c_reads_the_stored_id() {
     todo!("owner: W1-K9 (C-DEPLOYMENT-ID)")
 }
@@ -51,13 +51,13 @@ fn the_conformance_injection_answers_all_zero_without_unwinding() {
 }
 
 #[test]
-#[ignore = "owner: W1-K9"]
+#[ignore = "owner: W1-K9; blocked (re-checked on dev 2026-11-16): boot does not yet open the planes, stores and hooks through the MIN-3 Registry (min3_boot configured(), OUTSTANDING rows 7 to 10)"]
 fn the_id_never_equals_a_run_of_the_keyset_seed() {
     todo!("owner: W1-K9 (C-DEPLOYMENT-ID)")
 }
 
 #[test]
-#[ignore = "owner: W1-L2"]
+#[ignore = "owner: W1-L2; blocked (re-checked on dev 2026-11-16): no test constructor for Registry<N> (Needs impl, ConfigBinder, Ceilings, a static Host) and no second-identity MIN-3 fixture image exist in busbar-plugin-test on dev"]
 fn the_2a_and_2b_recheck_sees_the_id_before_any_2c_open() {
     todo!("owner: W1-L2 (C-DEPLOYMENT-ID)")
 }

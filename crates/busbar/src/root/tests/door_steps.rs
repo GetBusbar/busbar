@@ -1069,8 +1069,6 @@ fn downgrading(pool: &str, amount: u64, to: &str) -> busbar_kernel::config::grou
         scope: Some(busbar_contract::records::ScopeRef::pool(pool)),
         on_exhaust: Some(OnExhaust::Downgrade),
         downgrade_to: Some(busbar_contract::records::ScopeRef::pool(to)),
-        admission: None,
-        on_exhaustion: None,
     }
 }
 
@@ -1343,8 +1341,6 @@ async fn a_live_parent_at_the_request_cap_admits_and_ledgers_its_child() {
             scope: None,
             on_exhaust: None,
             downgrade_to: None,
-            admission: None,
-            on_exhaustion: None,
         }],
         None,
     )
@@ -1725,8 +1721,6 @@ async fn exhausted_pool_walk_bills_under_a_member_lane() {
             scope: None,
             on_exhaust: None,
             downgrade_to: None,
-            admission: None,
-            on_exhaustion: None,
         }],
         None,
         Some(card),
@@ -1816,14 +1810,7 @@ async fn exhausted_pool_walk_bills_under_a_member_lane() {
         )
         .await
         .expect("a fresh key in the same group");
-    let admitted = gov.try_admit_estimated_counts(
-        &app.cost,
-        &fresh,
-        "oracle-fo",
-        busbar_kernel::store::now(),
-        &["m-openai-chat", "m-anthropic"],
-        &std::collections::BTreeMap::new(),
-    );
+    let admitted = gov.try_admit(&app.cost, &fresh, "oracle-fo", busbar_kernel::store::now());
     assert!(
         admitted.is_ok(),
         "the group is still served after one exhausted walk: {:?}",
@@ -1974,8 +1961,6 @@ fn one_request_a_day() -> busbar_kernel::config::groups::LimitCfg {
         scope: None,
         on_exhaust: None,
         downgrade_to: None,
-        admission: None,
-        on_exhaustion: None,
     }
 }
 
@@ -5248,8 +5233,6 @@ async fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() 
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
-                admission: None,
-                on_exhaustion: None,
             }],
             ..Default::default()
         },

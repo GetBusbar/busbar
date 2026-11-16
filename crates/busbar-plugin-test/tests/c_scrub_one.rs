@@ -31,7 +31,7 @@ fn the_scrub_set_and_mask_url_agree_and_strip_userinfo_drops_it() {
 }
 
 #[test]
-#[ignore = "owner: W1-C1A"]
+#[ignore = "owner: W1-C1A (blocked: needs config validate, the egress guard and the connector masking over one corpus; busbar-core-connector is not a dev-dependency of this crate)"]
 fn config_validate_egress_and_connector_masking_agree_on_the_corpus() {
     todo!("owner: W1-C1A (C-SCRUB-ONE)")
 }
