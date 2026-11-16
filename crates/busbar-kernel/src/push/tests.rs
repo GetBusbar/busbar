@@ -30,7 +30,7 @@ fn advance(s: u64) {
     NOW.with(|cell| cell.set(cell.get() + s));
 }
 
-fn caller<'a>(plugin: &'a str, name: &'a str, instance: u64) -> Caller<'a> {
+pub(super) fn caller<'a>(plugin: &'a str, name: &'a str, instance: u64) -> Caller<'a> {
     Caller {
         plugin,
         kind: KindCode::Plane,

@@ -341,3 +341,6 @@ impl StorePushQueue {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod fetch_tests;
