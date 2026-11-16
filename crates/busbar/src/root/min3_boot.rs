@@ -682,17 +682,17 @@ fn build(guard: Guard, cfg: &RootCfg, images: Vec<Admitted>) -> Result<Built, St
         Arc::clone(&binder),
         NeedLimits::default(),
     );
-    let mut registry = Registry::new(
-        &HOST,
-        Arc::new(needs),
-        Arc::clone(&binder),
-        Ceilings::DEFAULT,
-    );
+    let slots = Arc::new(busbar_plugin_loader::instance::SlotTable::new());
+    busbar_plugin_loader::instance::install_sinks(&slots);
+    let mut described =
+        busbar_plugin_loader::instance::ImagesBuilder::new(&HOST, slots, Ceilings::DEFAULT);
     for image in images {
-        registry
-            .add(image)
+        described
+            .admit(image)
             .map_err(|refusal| format!("plugin image refused: {refusal}"))?;
     }
+    let registry = Registry::new(described.finish(), Arc::new(needs), Arc::clone(&binder));
+
     let sugars = sugars_of(&registry)?;
     binder.set_sugars(Arc::new(sugars.clone()));
     binder.set_ref_schemas(ref_schemas(&registry, cfg));

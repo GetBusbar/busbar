@@ -7,7 +7,7 @@
 //! (RECORD), the OPEN/FETCH needs it made, the log lines it emitted and every refusal an open answered.
 //!
 //! The registry arms (C-ALIAS, C-BLIND, C-ERRORS, C-ADMIT-UNLOAD) admit more than one image into one registry
-//! ([`Harness::admit_all`], [`Harness::add`]) and open any of them by its `module:` word
+//! ([`Harness::admit_all`]) and open any of them by its `module:` word
 //! ([`Harness::spec_for`]); an image the caller admitted itself (a dropped-in one, through the loader's `admit`)
 //! comes in through [`Harness::admit_admitted`].
 //!
@@ -35,7 +35,8 @@ use busbar_plugin_abi::plugin::Plugin;
 use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::admit::{admit_header, admit_linked, Admitted};
 use busbar_plugin_loader::instance::{
-    Ceilings, DeclaredEndpoint, InstanceSpec, OpenError, OpenedPort, PluginCode, Registry, Settled,
+    Ceilings, DeclaredEndpoint, ImagesBuilder, InstanceSpec, OpenError, OpenedPort, PluginCode,
+    Registry, Settled, SlotTable,
 };
 use busbar_plugin_loader::refusal::{Refusal, RefusalCode};
 use busbar_ports::auth::AuthPort;
@@ -725,10 +726,10 @@ impl Harness {
     /// Admit `plugin` (the `&'static Plugin` a plugin crate's `PLUGIN.plugin()` hands the frozen suite
     /// signatures; `LinkedPlugin::plugin`) into a fresh registry over `needs`, the real `HOST` static and a
     /// `MemBinder`, with `Ceilings::DEFAULT`. Admission runs every step `admit_linked` runs (null and stamp
-    /// checks, compatibility) and `Registry::add` (describe, name conflicts, error book): a refusal comes back
+    /// checks, compatibility) and `ImagesBuilder::admit` (describe, name conflicts, error book): a refusal comes back
     /// as it is. Capture of log lines starts here.
     pub fn admit(plugin: &'static Plugin, needs: FakeNeeds) -> Result<Harness, Refusal> {
-        Self::start(|| admit_header(plugin), needs)
+        Self::start(|| admit_header(plugin).map(|image| vec![image]), needs)
     }
 
     /// [`Harness::admit`] for a caller that holds the `LinkedPlugin` static itself.
@@ -736,44 +737,28 @@ impl Harness {
         linked: &'static LinkedPlugin,
         needs: FakeNeeds,
     ) -> Result<Harness, Refusal> {
-        Self::start(|| admit_linked(linked), needs)
+        Self::start(|| admit_linked(linked).map(|image| vec![image]), needs)
     }
 
     /// Every image of `plugins` admitted into one registry, in order, as [`Harness::admit`] then
-    /// [`Harness::add`] for each further one: the first refusal comes back as it is. [`Harness::identity`] and
+    /// image admission for each further one: the first refusal comes back as it is. [`Harness::identity`] and
     /// [`Harness::kind`] stay the first image's; open another by its word with [`Harness::spec_for`].
     pub fn admit_all(plugins: &[&'static Plugin], needs: FakeNeeds) -> Result<Harness, Refusal> {
-        let Some((first, rest)) = plugins.split_first() else {
-            return Err(Refusal::new(
-                RefusalCode::Integrity,
-                "images",
-                "no image",
-                "at least one image",
-            ));
-        };
-        let mut harness = Self::admit(*first, needs)?;
-        for plugin in rest {
-            harness.add(*plugin)?;
-        }
-        Ok(harness)
-    }
-
-    /// One more image into this harness's registry: `admit_header` and `Registry::add` (describe, NameConflict
-    /// over every admitted identity and `former_names` word, the error book). A refusal leaves the registry as it
-    /// was.
-    pub fn add(&mut self, plugin: &'static Plugin) -> Result<(), Refusal> {
-        self.registry.add(admit_header(plugin)?)
+        Self::start(
+            || plugins.iter().map(|plugin| admit_header(plugin)).collect(),
+            needs,
+        )
     }
 
     /// A harness over an image the caller admitted itself (a dropped-in image through the loader's `admit`, or
-    /// `busbar_plugin_loader::test_host::admit_bytes`): `Registry::add` and everything [`Harness::admit`] does
+    /// `busbar_plugin_loader::test_host::admit_bytes`): `ImagesBuilder::admit` and everything [`Harness::admit`] does
     /// after admission.
     pub fn admit_admitted(admitted: Admitted, needs: FakeNeeds) -> Result<Harness, Refusal> {
-        Self::start(move || Ok(admitted), needs)
+        Self::start(move || Ok(vec![admitted]), needs)
     }
 
     fn start(
-        admit: impl FnOnce() -> Result<Admitted, Refusal>,
+        admit: impl FnOnce() -> Result<Vec<Admitted>, Refusal>,
         needs: FakeNeeds,
     ) -> Result<Harness, Refusal> {
         let logs = Arc::new(LogBook::default());
@@ -788,15 +773,28 @@ impl Harness {
         })?;
         let needs = Arc::new(needs);
         let binder = Arc::new(MemBinder::over(Arc::clone(&needs)));
-        let mut registry = Registry::new(
-            &HOST,
+        let admitted = admit()?;
+        let first = admitted.first().ok_or_else(|| {
+            Refusal::new(
+                RefusalCode::Integrity,
+                "images",
+                "no image",
+                "at least one image",
+            )
+        })?;
+        let (identity, kind) = (first.identity().to_owned(), first.kind());
+        let slots = Arc::new(SlotTable::new());
+        busbar_plugin_loader::instance::install_sinks(&slots);
+        let mut images = ImagesBuilder::new(&HOST, slots, Ceilings::DEFAULT);
+        for image in admitted {
+            images.admit(image)?;
+        }
+        let registry = Registry::new(
+            images.finish(),
             Arc::clone(&needs),
             Arc::clone(&binder) as Arc<dyn ConfigBinder>,
-            Ceilings::DEFAULT,
         );
-        let admitted = admit()?;
-        let (identity, kind) = (admitted.identity().to_owned(), admitted.kind());
-        registry.add(admitted)?;
+
         Ok(Harness {
             registry,
             needs,
