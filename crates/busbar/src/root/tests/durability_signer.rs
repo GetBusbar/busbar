@@ -64,6 +64,11 @@ async fn bootstrap_thread_certifies_and_stages_the_exact_chain_position() {
     journal.confirm(&run).await.unwrap();
     // Confirmation of the original stage is idempotent; retries must not append certificates.
     journal.confirm(&run).await.unwrap();
+    let reopened = fixture.book().await;
+    assert_eq!(reopened.record.next_seq(), seq + 1);
+    assert_eq!(reopened.record.head(), record.fingerprint.to_string());
+    assert_eq!(reopened.head.head().seq, seq);
+    assert_eq!(reopened.head.head().node_seq, run.records()[0].node_seq);
     Durability::seal_unit(&book, audit_inputs(3), audit_pass(), &token())
         .await
         .unwrap();
