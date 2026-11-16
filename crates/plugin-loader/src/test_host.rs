@@ -58,6 +58,7 @@ use busbar_contract::abi::sdk::door::{blank_in, blank_out, KindSlot, RawDoorFn};
 use busbar_contract::abi::sdk::out::Scalar;
 use busbar_contract::abi::sdk::test_support::loans::{Buf, Loans, Pairs};
 use busbar_contract::abi::sdk::test_support::mutant::Mutant;
+use busbar_contract::conn::InstanceId;
 use busbar_contract::services::{CallerBinding, HostServices};
 
 use crate::dispatch::kinds::{
@@ -219,11 +220,15 @@ pub fn both<K: Kind>(lib_name: &str, door: DoorFn, case: impl Fn(&str, Image<K>)
     case("cdylib", Image::cdylib(lib_name, door));
 }
 
-/// A real dispatcher a test binds images to.
+/// A real dispatcher a test binds images to. Its builders are order-free: [`Host::services`] and
+/// [`Host::config`] each rebuild the dispatcher from everything stated so far, so neither erases
+/// the other.
 pub struct Host {
     dispatcher: Arc<Dispatcher>,
     callers: Arc<dyn CallerBinding>,
     conns: ConnTable,
+    config: DispatchConfig,
+    services: Option<Arc<dyn HostServices>>,
 }
 
 impl Host {
@@ -231,13 +236,13 @@ impl Host {
     /// `busbar_contract::services::test_caller_binding()`, behind its dev-only `test-seal`).
     #[must_use]
     pub fn new(callers: Arc<dyn CallerBinding>) -> Self {
+        let config = DispatchConfig::default();
         Self {
-            dispatcher: Arc::new(Dispatcher::new(
-                DispatchConfig::default(),
-                Arc::clone(&callers),
-            )),
+            dispatcher: Arc::new(Dispatcher::new(config, Arc::clone(&callers))),
             callers,
             conns: ConnTable::Probe,
+            config,
+            services: None,
         }
     }
 
@@ -245,12 +250,29 @@ impl Host {
     /// serves.
     #[must_use]
     pub fn services(mut self, services: Arc<dyn HostServices>) -> Self {
-        self.dispatcher = Arc::new(Dispatcher::with_services(
-            DispatchConfig::default(),
-            services,
-            Arc::clone(&self.callers),
-        ));
+        self.services = Some(services);
+        self.rebuild();
         self
+    }
+
+    /// The dispatcher's shape (STH-ROWS D-5: a test's `workers`, budgets or quarantine count).
+    #[must_use]
+    pub fn config(mut self, config: DispatchConfig) -> Self {
+        self.config = config;
+        self.rebuild();
+        self
+    }
+
+    /// The dispatcher, rebuilt from the stated config and services.
+    fn rebuild(&mut self) {
+        // RED (STH-ROWS D-5): each builder still rebuilds from its own argument alone.
+        let callers = Arc::clone(&self.callers);
+        self.dispatcher = Arc::new(match self.services.take() {
+            Some(services) => {
+                Dispatcher::with_services(DispatchConfig::default(), services, callers)
+            }
+            None => Dispatcher::new(self.config, callers),
+        });
     }
 
     /// The connection table images are bound to (default: a probe, which declares no need).
@@ -275,6 +297,15 @@ impl Host {
             conns: self.conns.clone(),
         })
         .map_err(Refused::Load)
+    }
+
+    /// Loads and binds `img` as instance `name`, and nothing more (STH-ROWS D-1a): no OPEN, no
+    /// READY, so a test can VALIDATE before any OPEN and see what an instance does before READY.
+    pub fn load<K: Openable>(&self, img: Image<K>, name: &str) -> Result<Loaded<K>, Refused> {
+        Ok(Loaded {
+            plugin: self.bind(&img, name)?,
+            dispatcher: Arc::clone(&self.dispatcher),
+        })
     }
 
     /// Loads `img` as instance `name`, opens it with `settings` (JSON) and readies it.
@@ -392,6 +423,89 @@ impl Host {
     }
 }
 
+/// What one lifecycle crossing answered (STH-ROWS D-1a/D-1b), copied; its lease, if any, is
+/// already released.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Life {
+    /// The authoritative outcome.
+    pub outcome: Outcome,
+    /// The error text, copied, for a FAILED or REFUSED answer.
+    pub error: Option<Vec<u8>>,
+    /// A READY TICK's `next_tick_ns`; `None` for every other answer.
+    pub next_tick_ns: Option<u64>,
+}
+
+impl Life {
+    /// RED (STH-ROWS D-1a/D-1b): no lifecycle crossing is built yet.
+    fn unbuilt() -> Self {
+        Self {
+            outcome: Outcome::Fault,
+            error: None,
+            next_tick_ns: None,
+        }
+    }
+}
+
+/// A bound image that is not opened yet (STH-ROWS D-1a). VALIDATE crosses it before any OPEN.
+/// Dropped, it sends no CLOSE: nothing was opened.
+pub struct Loaded<K: Kind> {
+    plugin: Plugin<K>,
+    dispatcher: Arc<Dispatcher>,
+}
+
+impl<K: Openable> Loaded<K> {
+    /// VALIDATE `settings` (JSON) on the bound, unopened instance.
+    pub fn validate(&mut self, settings: &[u8]) -> Life {
+        let _ = settings;
+        Life::unbuilt()
+    }
+
+    /// OPEN only, with `settings` (JSON) and `secrets` lent as [`Host::open_lent`] lends them;
+    /// READY is the [`Opening`]'s own step. A refused OPEN hands the image back with the host's
+    /// refusal and sends no CLOSE: an OPEN that did not answer READY opened nothing.
+    pub fn open(self, settings: &[u8], secrets: &[&[u8]]) -> Result<Opening<K>, (Refused, Self)> {
+        match K::open(&self.plugin, settings, secrets) {
+            Ok(()) => Ok(Opening {
+                plugin: Some(self.plugin),
+                dispatcher: self.dispatcher,
+            }),
+            Err(text) => Err((Refused::Open(text), self)),
+        }
+    }
+}
+
+/// An instance whose OPEN answered READY, before its own READY step (STH-ROWS D-1a). It holds no
+/// kind op, so nothing can be in flight on it. Dropped, it CLOSEs once.
+pub struct Opening<K: Kind> {
+    plugin: Option<Plugin<K>>,
+    dispatcher: Arc<Dispatcher>,
+}
+
+impl<K: Kind> Opening<K> {
+    /// READY: the opened instance. A failed READY hands the opening back with the host's text.
+    pub fn ready(mut self) -> Result<Opened<K>, (Refused, Self)> {
+        let ready = self
+            .plugin
+            .as_ref()
+            .expect("an opening holds its plugin until drop")
+            .ready(&self.dispatcher, crate::dispatch::ready::READY_DEADLINE);
+        match ready {
+            Ok(()) => Ok(Opened {
+                plugin: self.plugin.take(),
+                flight: Rc::new(Cell::new(0)),
+            }),
+            Err(text) => Err((Refused::Ready(text), self)),
+        }
+    }
+}
+
+impl<K: Kind> Drop for Opening<K> {
+    fn drop(&mut self) {
+        // RED (STH-ROWS D-1a): an opening leaks unclosed.
+        std::mem::forget(self.plugin.take());
+    }
+}
+
 mod sealed {
     pub trait Sealed {}
 }
@@ -456,6 +570,72 @@ impl<K: Kind> Opened<K> {
         self.plugin
             .as_ref()
             .expect("an open instance holds its plugin until drop")
+    }
+
+    /// Panics while a crossing on this instance is still in flight (the method panics, never a
+    /// `Drop`).
+    fn idle(&self) {
+        assert_eq!(
+            self.flight.get(),
+            0,
+            "a pending crossing is still in flight on this instance"
+        );
+    }
+
+    /// The instance's id: the same across every REFRESH (STH-ROWS D-1b).
+    #[must_use]
+    pub fn instance_id(&self) -> InstanceId {
+        self.instance().instance()
+    }
+
+    /// VALIDATE `settings` (JSON) on the open instance (STH-ROWS D-1b).
+    ///
+    /// # Panics
+    /// While a pending crossing on this instance is neither resumed nor leaked.
+    pub fn validate(&mut self, settings: &[u8]) -> Life {
+        self.idle();
+        let _ = settings;
+        Life::unbuilt()
+    }
+
+    /// REFRESH to `generation` with `settings` (JSON) and `secrets` (STH-ROWS D-1b).
+    ///
+    /// # Panics
+    /// While a pending crossing on this instance is neither resumed nor leaked.
+    pub fn refresh(&mut self, settings: &[u8], secrets: &[&[u8]], generation: u64) -> Life {
+        self.idle();
+        let _ = (settings, secrets, generation);
+        Life::unbuilt()
+    }
+
+    /// TICK at `now_ns` (STH-ROWS D-1b).
+    ///
+    /// # Panics
+    /// While a pending crossing on this instance is neither resumed nor leaked.
+    pub fn tick(&mut self, now_ns: u64) -> Life {
+        self.idle();
+        let _ = now_ns;
+        Life::unbuilt()
+    }
+
+    /// RETIRE `generation` (STH-ROWS D-1b).
+    ///
+    /// # Panics
+    /// While a pending crossing on this instance is neither resumed nor leaked.
+    pub fn retire(&mut self, generation: u64) -> Life {
+        self.idle();
+        let _ = generation;
+        Life::unbuilt()
+    }
+
+    /// CLOSE now (STH-ROWS D-1b). RED: nothing crosses, and the instance leaks.
+    ///
+    /// # Panics
+    /// While a pending crossing on this instance is neither resumed nor leaked.
+    pub fn close(mut self) -> Life {
+        self.idle();
+        std::mem::forget(self.plugin.take());
+        Life::unbuilt()
     }
 
     /// Kind op `I` with `loans` as its `in`, through the loader's real crossing.
