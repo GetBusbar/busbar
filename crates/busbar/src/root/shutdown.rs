@@ -34,7 +34,7 @@ use tokio::time::Instant;
 pub(crate) use busbar_kernel::governance::drain::{Cut, DrainClock};
 
 use crate::root::durability::NodeBook;
-use crate::root::serve::{drain_records, LateServices, RECORD_DRAIN};
+use crate::root::serve::{drain_records, Services, RECORD_DRAIN};
 
 /// Obtained only by a successful semantic drain and consumed by retirement.
 /// Retaining the actual owners binds the final check to the drained generation.
@@ -145,7 +145,7 @@ const PROGRESS_EVERY: Duration = Duration::from_secs(1);
 /// The owners the progress line reads, registered once as `finish` takes them.
 struct ProgressSources {
     gov: Option<Arc<GovState>>,
-    late: Arc<LateServices>,
+    late: Arc<Services>,
     journal: Option<Arc<RuntimeJournal>>,
     fence: Option<Arc<PredecessorFence>>,
 }
@@ -384,7 +384,7 @@ pub(crate) struct PostServe<'a> {
     /// The flusher: in drain mode it is the money driver [M].
     pub(crate) flusher: Option<JoinHandle<()>>,
     pub(crate) governance: Option<Arc<GovState>>,
-    pub(crate) late: Arc<LateServices>,
+    pub(crate) late: Arc<Services>,
     pub(crate) book: Option<NodeBook>,
     pub(crate) startup: busbar_kernel::persistence::startup::Startup,
     pub(crate) shutdown_tx: tokio::sync::broadcast::Sender<()>,
@@ -807,7 +807,7 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
 fn incomplete(
     drain: &ShutdownDrain,
     gov: Option<&Arc<GovState>>,
-    late: &LateServices,
+    late: &Services,
     cause: &'static str,
     failures: &[String],
 ) -> i32 {
@@ -860,7 +860,7 @@ fn incomplete(
 /// checkpoint book by checkpoint id (a unit with no checkpoint reads `none`), then the
 /// admissions alive without an open unit (SHUTDOWN-HANG F4 "Running requests at exit"). One
 /// walk, at exit; a running unit never changes the exit code.
-fn open_at_exit_lines(gov: Option<&Arc<GovState>>, late: &LateServices) -> Vec<String> {
+fn open_at_exit_lines(gov: Option<&Arc<GovState>>, late: &Services) -> Vec<String> {
     use std::fmt::Write as _;
     let Some(gov) = gov else {
         return Vec::new();

@@ -60,6 +60,7 @@ pub(crate) mod neutral;
 #[path = "serve_observations.rs"]
 mod observations;
 
+#[cfg(test)]
 #[must_use]
 pub(crate) fn kernel_services(dest: Arc<dyn DestJudge>) -> KernelServices {
     KernelServices::new()
@@ -70,16 +71,39 @@ pub(crate) fn kernel_services(dest: Arc<dyn DestJudge>) -> KernelServices {
 
 pub(crate) fn compose(
     dest: Arc<dyn DestJudge>,
-    late: &LateServices,
-    credentials: crate::root::credentials::AppCredentials,
-) {
-    let kernel = Arc::new(kernel_services(dest).with_credentials(Arc::new(credentials)));
-    if late
-        .install_kernel(Arc::clone(&kernel), kernel as Arc<dyn HostServices>)
-        .is_err()
-    {
-        tracing::debug!("the kernel's host services were already installed");
-    }
+    app: &busbar_kernel::state::App,
+    core: Arc<busbar_kernel::persistence::facade::CoreStore>,
+    planes: &[&PlaneDeclaration],
+) -> Arc<Services> {
+    let signer = app.governance.clone().map(|gov| gov as Arc<dyn SignKey>);
+    let tickets = app.governance.as_ref().map(|governance| {
+        Arc::new(GenerationTickets {
+            governance: Arc::clone(governance),
+            block_max_ttl_secs: app.mint_policy.block_max_ttl_secs,
+        }) as Arc<dyn busbar_kernel::host_services::TicketPress>
+    });
+    let kernel = KernelServices::from_inputs(busbar_kernel::host_services::CoreServicesInputs {
+        persistence: core,
+        pool: Arc::new(BlockingPool::new(
+            tokio::runtime::Handle::current(),
+            QUEUE_CAP,
+        )),
+        signer,
+        demotions: Arc::clone(&app.demotion_record),
+        demotion_owner: demotion_owner(planes).map(Arc::from),
+        tickets,
+        standing: busbar_kernel::plane_driver::policy_standing(
+            app.governance.clone(),
+            app.role_bindings.clone(),
+        ),
+        judge: dest,
+        credentials: Arc::new(crate::root::credentials::AppCredentials::new(
+            app.governance.clone(),
+        )),
+        disk: crate::root::linked::disk_lane(),
+    })
+    .with_mono_clock(Arc::new(crate::root::loader::dispatch::now_ns));
+    Services::serving(Arc::new(kernel))
 }
 
 /// The most unredeemed tickets one node holds in custody, across every key.
@@ -664,40 +688,10 @@ impl busbar_kernel::host_services::TicketPress for GenerationTickets {
     }
 }
 
-pub(crate) fn attach(
-    late: &LateServices,
-    records: Option<&busbar_kernel::governance::GovState>,
-    signer: Option<Arc<dyn SignKey>>,
-    demotions: &Arc<DemotionRecord>,
-    planes: &[&PlaneDeclaration],
-) {
-    let Some(kernel) = late.kernel() else {
-        return;
-    };
-    let pool = BlockingPool::new(tokio::runtime::Handle::current(), QUEUE_CAP);
-    if kernel.attach_pool(Arc::new(pool)) {
-        let cadence = Arc::clone(&kernel);
-        tokio::spawn(async move { cadence.flushes().await });
-    }
-    if let Some(signer) = signer {
-        kernel.attach_signer(signer);
-    }
-
-    if let Some(gov) = records {
-        let core = gov
-            .core_store_handle()
-            .expect("admitted governance persistence");
-        kernel.attach_persistence(core);
-    }
-    if let Some(owner) = demotion_owner(planes) {
-        kernel.attach_demotions(Arc::clone(demotions), owner);
-    }
-}
-
 pub(crate) const RECORD_DRAIN: std::time::Duration =
     std::time::Duration::from_secs(5 * busbar_kernel::host_records::FLUSH_INTERVAL.as_secs());
 
-pub(crate) async fn drain_records(late: &LateServices, deadline: std::time::Duration) -> bool {
+pub(crate) async fn drain_records(late: &Services, deadline: std::time::Duration) -> bool {
     let Some(kernel) = late.kernel() else {
         return true;
     };
@@ -717,78 +711,70 @@ pub(crate) fn demotion_owner(planes: &[&PlaneDeclaration]) -> Option<&'static st
     }
 }
 
-pub(crate) struct LateServices {
+/// Complete services for a phase. Bootstrap owns a permanently restricted provider;
+/// a serving generation owns its fully constructed kernel.
+pub(crate) struct Services {
     pub(crate) slot: Arc<ServicesSlot>,
-
-    pub(crate) kernel: OnceLock<Arc<KernelServices>>,
+    kernel: Option<Arc<KernelServices>>,
 }
 
-/// Why [`LateServices::install`] would not take a second set of services.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct AlreadyInstalled;
+pub(crate) const NOT_INSTALLED: &str = "bootstrap services do not have serving authority";
 
-pub(crate) const NOT_INSTALLED: &str = "the kernel's host services are not installed yet";
-
-impl LateServices {
-    #[must_use]
-    pub(crate) fn new() -> Arc<Self> {
-        Arc::new(LateServices {
-            slot: ServicesSlot::late(Arc::new(NotInstalled(
-                KernelServices::new()
-                    .with_mono_clock(Arc::new(crate::root::loader::dispatch::now_ns)),
-            ))),
-            kernel: OnceLock::new(),
+impl Services {
+    pub(crate) fn bootstrap() -> Arc<Self> {
+        Arc::new(Self {
+            slot: ServicesSlot::of(Arc::new(BootstrapServices)),
+            kernel: None,
         })
     }
 
-    #[must_use]
+    pub(crate) fn serving(kernel: Arc<KernelServices>) -> Arc<Self> {
+        Arc::new(Self {
+            slot: ServicesSlot::of(kernel.clone()),
+            kernel: Some(kernel),
+        })
+    }
+
     pub(crate) fn slot(&self) -> Arc<ServicesSlot> {
         Arc::clone(&self.slot)
     }
+    pub(crate) fn kernel(&self) -> Option<Arc<KernelServices>> {
+        self.kernel.clone()
+    }
 
-    pub(crate) fn install(&self, services: Arc<dyn HostServices>) -> Result<(), AlreadyInstalled> {
-        if self.slot.install(services) {
-            Ok(())
-        } else {
-            Err(AlreadyInstalled)
+    /// Start the retained kernel's flush loop only after the serving generation is published.
+    pub(crate) fn start(&self) {
+        if let Some(kernel) = self.kernel() {
+            tokio::spawn(async move { kernel.flushes().await });
         }
     }
 
-    pub(crate) fn install_kernel(
-        &self,
-        kernel: Arc<KernelServices>,
-        services: Arc<dyn HostServices>,
-    ) -> Result<(), AlreadyInstalled> {
-        self.install(services)?;
-        self.kernel.set(kernel).map_err(|_| AlreadyInstalled)
-    }
-
-    #[must_use]
-    pub(crate) fn kernel(&self) -> Option<Arc<KernelServices>> {
-        self.kernel.get().cloned()
-    }
-
     #[cfg(test)]
-    #[must_use]
-    pub(crate) fn is_installed(&self) -> bool {
-        self.slot.is_installed()
+    pub(crate) fn fixture(provider: Arc<dyn HostServices>) -> Arc<Self> {
+        Arc::new(Self {
+            slot: ServicesSlot::of(provider),
+            kernel: None,
+        })
     }
 
     #[cfg(test)]
     pub(crate) fn served(&self) -> Arc<dyn HostServices> {
-        Arc::clone(self.slot.get().expect("a late slot always serves"))
+        Arc::clone(self.slot.get())
     }
 }
 
-pub(crate) struct NotInstalled(KernelServices);
+pub(crate) struct BootstrapServices;
 
 fn not_installed() -> Stored {
     Stored::refused(NOT_INSTALLED)
 }
 
-impl HostServices for NotInstalled {
+impl HostServices for BootstrapServices {
     fn now(&self) -> Reading {
-        self.0.now()
+        Reading {
+            wall_ns: busbar_kernel::store::now_ns(),
+            mono_ns: crate::root::loader::dispatch::now_ns(),
+        }
     }
 
     fn dest_judge(&self, _: &str, _: u32, _: u32, _: Option<Later>) -> Ran {

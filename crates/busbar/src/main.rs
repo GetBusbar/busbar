@@ -344,7 +344,7 @@ fn main() {
         eprintln!("busbar: the `log` bridge is not installed: {e}");
     }
 
-    let late_services = root::serve::LateServices::new();
+    let bootstrap_services = root::serve::Services::bootstrap();
     root::boot::install_native_load_guard().unwrap_or_else(|error| die(error));
 
     if let Err(e) = root::loader::dispatch::handle::arm() {
@@ -353,7 +353,7 @@ fn main() {
     }
     // Force this boot's node now, so its one OS draw never lands on a request worker.
     let _ = busbar_kernel::door::node();
-    let dispatcher = root::dispatch::boot(WORKERS.0, &late_services);
+    let dispatcher = root::dispatch::boot(WORKERS.0, &bootstrap_services);
     root::doors::install_dispatcher(dispatcher);
 
     register_protocols();
@@ -410,7 +410,7 @@ fn main() {
             .enable_all()
             .build()
             .expect("failed to build the tokio control runtime")
-            .block_on(run(late_services, catalogue, control_work));
+            .block_on(run(catalogue, control_work));
     }
     #[cfg(not(unix))]
     {
@@ -421,7 +421,7 @@ fn main() {
             .enable_all()
             .build()
             .expect("failed to build the tokio control runtime")
-            .block_on(run(late_services, catalogue, control_work));
+            .block_on(run(catalogue, control_work));
     }
     // Every return from `run` (a one-shot command, a serve-and-shutdown) leaves here, so an
     // unpublished first start is handed over on a normal return too (FIRST-START-TAKEOVER §2.7).
@@ -572,11 +572,7 @@ mod bootstrap_destination_tests {
     }
 }
 
-async fn run(
-    late_services: std::sync::Arc<root::serve::LateServices>,
-    catalogue: busbar_kernel::diagnostics::Catalogue,
-    control_work: ControlWork,
-) {
+async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: ControlWork) {
     let process_io = root::boot::process::ProcessIo::new().unwrap_or_else(|error| die(error));
     let plugin_process = std::sync::Arc::new(
         busbar_plugin_loader::process::ProcessResources::new().unwrap_or_else(|error| die(error)),
@@ -1259,35 +1255,15 @@ async fn run(
         .iter()
         .map(|d| &d.declaration)
         .collect();
-    let signer = app
-        .governance
-        .clone()
-        .map(|g| g as Arc<dyn busbar_kernel::host_services::SignKey>);
-    root::serve::compose(
+    let services = root::serve::compose(
         dest.clone(),
-        &late_services,
-        root::credentials::AppCredentials::new(app.governance.clone()),
-    );
-    root::serve::attach(
-        &late_services,
-        app.governance.as_deref(),
-        signer,
-        &app.demotion_record,
+        &app,
+        store_admission
+            .store()
+            .unwrap_or_else(|| die("S7 has no admitted Store")),
         &planes,
     );
-
-    if let Some(kernel) = late_services.kernel() {
-        if let Some(governance) = &app.governance {
-            kernel.attach_tickets(Arc::new(root::serve::GenerationTickets {
-                governance: Arc::clone(governance),
-                block_max_ttl_secs: app.mint_policy.block_max_ttl_secs,
-            }));
-        }
-        let _attached = kernel.attach_standing(busbar_kernel::plane_driver::policy_standing(
-            app.governance.clone(),
-            app.role_bindings.clone(),
-        ));
-    }
+    let serving_dispatcher = Arc::new(root::dispatch::build(WORKERS.0, &services));
 
     // Explicit same-open ephemeral initialization uses its newly committed principal baseline
     // as a real Store witness. It follows exactly the ordinary receipt consumer before admission.
@@ -1297,7 +1273,7 @@ async fn run(
         }
         let fingerprint =
             busbar_kernel::host_record_bootstrap::store_fingerprint(&record_bootstrap_store);
-        let kernel = late_services
+        let kernel = services
             .kernel()
             .unwrap_or_else(|| die("record bootstrap has no installed kernel"));
         kernel
@@ -1313,7 +1289,7 @@ async fn run(
     if let Some(path) = std::env::var_os(busbar_kernel::host_record_bootstrap::RECEIPT_ENV) {
         let fingerprint =
             busbar_kernel::host_record_bootstrap::store_fingerprint(&record_bootstrap_store);
-        let kernel = late_services
+        let kernel = services
             .kernel()
             .unwrap_or_else(|| die("record bootstrap has no installed kernel"));
         let receipt = tokio::task::spawn_blocking(
@@ -1348,7 +1324,7 @@ async fn run(
         serving_ready,
         process_io.handle(),
         store_admission,
-        late_services.kernel(),
+        services.kernel(),
     )
     .await
     .unwrap_or_else(|error| die(error));
@@ -1366,8 +1342,8 @@ async fn run(
     let mut served = root::serve::compose_served_checked(
         app.governance.clone(),
         root::boot::door_planes(),
-        &root::dispatch::dispatcher(),
-        &late_services,
+        &serving_dispatcher,
+        &services,
         &root::serve::with_pools(
             {
                 let mut sections = deploy.door_sections();
@@ -1455,6 +1431,7 @@ async fn run(
 
     drop(served);
     let app_handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
+    services.start();
     let probes = Arc::new(busbar_kernel::endpoints::ProbeState::new(
         book.as_ref().map(|book| book.runtime_journal.clone()),
     ));
@@ -1603,7 +1580,7 @@ async fn run(
                 .unwrap_or_else(|error| die(error)),
             book,
             None,
-            &late_services,
+            &services,
             root::adapters::BreakerPolicy::new(),
         )
         .unwrap_or_else(|error| die(format!("admin persistence admission refused: {error:?}"))),
@@ -1856,7 +1833,7 @@ async fn run(
         node_lease: node_lease_task,
         flusher: budget_flusher,
         governance,
-        late: Arc::clone(&late_services),
+        late: Arc::clone(&services),
         book,
         startup: store_admission,
         shutdown_tx: shutdown_tx.clone(),
