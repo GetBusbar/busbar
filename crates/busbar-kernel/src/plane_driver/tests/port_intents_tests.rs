@@ -584,9 +584,9 @@ impl IntentHost for Host {
         self.distrust
     }
 
-    fn trust_state(&self, party: &str) -> (u32, Vec<TrustItemOwned>) {
+    fn trust_state(&self, party: &str) -> (u32, Option<[u8; 32]>, Vec<TrustItemOwned>) {
         self.note(format!("trust_state {party}"));
-        (self.distrust, self.state_items.clone())
+        (self.distrust, None, self.state_items.clone())
     }
 
     fn trust_verify(&self, party: &str, payload: &[u8], signatures: &[u8]) -> (u32, String) {

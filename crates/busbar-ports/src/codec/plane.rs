@@ -377,14 +377,14 @@ pub fn encode_committed(w: &mut impl Writer, answers: &[(u32, u32, u32, u32)]) -
 pub fn encode_trust_answers(w: &mut impl Writer, answers: &[TrustAnswer<'_>]) -> Result<(), Full> {
     for answer in answers {
         debug_assert!(
-            answer.items.is_empty() || answer.named.is_empty(),
+            (answer.items.is_empty() && answer.catalog.is_none()) || answer.named.is_empty(),
             "a TRUST_ANS tail is item states or a named member, never both"
         );
         let ans = plane::TrustAns {
             check: answer.check,
             verdict: answer.verdict,
         };
-        if answer.items.is_empty() {
+        if answer.items.is_empty() && answer.catalog.is_none() {
             w.put_pod_tail(
                 tag::TRUST_ANS,
                 &ans,
@@ -393,6 +393,9 @@ pub fn encode_trust_answers(w: &mut impl Writer, answers: &[TrustAnswer<'_>]) ->
             continue;
         }
         let mut states = Reply::new();
+        if let Some(catalog) = &answer.catalog {
+            states.put(tag::TR_CATALOG, catalog)?;
+        }
         for item in answer.items {
             let mut flags = 0;
             if item.approved.is_some() {
@@ -764,18 +767,21 @@ mod tests {
             TrustAnswer {
                 check: 7,
                 verdict: plane::DISTRUST_CHANGED,
+                catalog: None,
                 items: &items,
                 named: "",
             },
             TrustAnswer {
                 check: 8,
                 verdict: plane::SIGNED_ALGORITHM,
+                catalog: None,
                 items: &[],
                 named: "HS256",
             },
             TrustAnswer {
                 check: 9,
                 verdict: plane::SIGNED_VERIFIED,
+                catalog: None,
                 items: &[],
                 named: "",
             },
@@ -835,6 +841,7 @@ mod tests {
         let answers = [TrustAnswer {
             check: 1,
             verdict: plane::SIGNED_CRITICAL,
+            catalog: None,
             items: &[],
             named: &named,
         }];

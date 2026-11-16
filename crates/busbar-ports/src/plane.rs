@@ -266,6 +266,8 @@ pub struct TargetIn<'a> {
 pub struct TrustAnswer<'a> {
     pub check: u32,
     pub verdict: u32,
+    /// Current catalogue digest from the same coherent state read as verdict/items.
+    pub catalog: Option<[u8; 32]>,
     pub items: &'a [TrustItem<'a>],
     pub named: &'a str,
 }
