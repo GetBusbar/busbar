@@ -36,6 +36,7 @@ impl busbar_ports::binder::RefSource for DeniedRefs {
         &'a self,
         _: u64,
         _: u32,
+        _: u32,
         _: &'a busbar_contract::secret_ref::SecretRef,
     ) -> busbar_plugin_abi::host_side::caller::BoxFut<'a, Option<SecureVec>> {
         Box::pin(async { None })

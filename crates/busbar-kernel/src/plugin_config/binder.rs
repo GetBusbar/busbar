@@ -625,7 +625,7 @@ impl ConfigBinder for Binder {
                 .map_err(|_| BindError::NotAReference { pointer: "".into() })?;
             let mut written: Vec<&str> = Vec::with_capacity(entry.refs.len());
             let mut result = Ok(());
-            for r in &entry.refs {
+            for (binding, r) in entry.refs.iter().enumerate() {
                 let refused = |why: &str| {
                     let mut text = String::new();
                     {
@@ -641,7 +641,9 @@ impl ConfigBinder for Binder {
                         text: text.into(),
                     }
                 };
-                let Some(value) = source.resolve(instance, slot, &r.reference).await else {
+                let binding = u32::try_from(binding).map_err(|_| BindError::TooMany)?;
+                let Some(value) = source.resolve(instance, slot, binding, &r.reference).await
+                else {
                     result = Err(refused("could not be resolved"));
                     break;
                 };
