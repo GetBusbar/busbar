@@ -578,8 +578,6 @@ fn restart_paths(paths: &[String]) -> Vec<String> {
         "/advanced/worker_threads",
         "/advanced/upstream_http1_only",
         "/advanced/upstream_h2_prior_knowledge",
-        "/advanced/shutdown/drain_timeout",
-        "/advanced/governance/max_pending_checkpoints",
     ];
     paths
         .iter()
