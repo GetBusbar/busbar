@@ -536,15 +536,23 @@ impl<H: CustodyHost> SecretCustody for Custody<H> {
                 instance: who.instance,
                 handle,
             };
-            let _ = (self, key);
-            let stub: Result<Arc<SecureVec>, CustodyDenied> = todo!("W1-K2: custody");
-            stub
+            match self.hit(key) {
+                Some(value) => Ok(value),
+                None => self.miss(&who, key).await,
+            }
         }
     }
 
     fn generation(&self, who: &Caller<'_>, handle: u32) -> u64 {
-        let _ = (who, handle);
-        todo!("W1-K2: custody")
+        let instances = self.instances.load();
+        let Some(handles) = instances.get(&who.instance) else {
+            return 0;
+        };
+        handles
+            .map
+            .load()
+            .get(&handle)
+            .map_or(0, |entry| entry.generation.load(Ordering::Relaxed))
     }
 
     fn resolve_ref<'a>(
@@ -553,9 +561,8 @@ impl<H: CustodyHost> SecretCustody for Custody<H> {
         r: &'a SecretRef,
     ) -> BoxFut<'a, Result<SecureVec, CustodyDenied>> {
         Box::pin(async move {
-            let _ = (self, cx, r);
-            let stub: Result<SecureVec, CustodyDenied> = todo!("W1-K2: custody");
-            stub
+            let resolved = self.resolved(cx, r).await?;
+            Ok(SecureVec::from(resolved.value.as_slice()))
         })
     }
 }

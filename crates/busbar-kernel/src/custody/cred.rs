@@ -274,8 +274,52 @@ impl CredentialCache for CredCache {
     where
         M: Fn() -> BoxFut<'a, Result<OutboundAnswer, PortError>> + Send + Sync + 'a,
     {
-        let _ = (key, per_request, now, &mint, detach);
-        todo!("W1-K2: credential cache")
+        if per_request {
+            return CredGet::Direct(mint());
+        }
+        let inner = &*self.inner;
+        {
+            let map = inner.read(key.auth_instance);
+            if let Some(entry) = map.get(&key) {
+                match step(entry, now, &inner.policy) {
+                    Step::Hit(answer) | Step::Stale(answer, false) => {
+                        entry.used.store(inner.nanos(now), Ordering::Relaxed);
+                        return CredGet::Ready(Ok(answer));
+                    }
+                    Step::Windowed(error) => return CredGet::Ready(Err(error)),
+                    Step::Stale(_, true) | Step::Miss => {}
+                }
+            }
+        }
+        let mut map = inner.write(key.auth_instance);
+        if !map.contains_key(&key) && !room(&mut map, key.auth_instance, now, &inner.policy) {
+            return CredGet::Ready(Err(busy()));
+        }
+        let entry = map
+            .entry(key)
+            .or_insert_with(|| Entry::new(inner.nanos(now)));
+        entry.used.store(inner.nanos(now), Ordering::Relaxed);
+        match step(entry, now, &inner.policy) {
+            Step::Hit(answer) | Step::Stale(answer, false) => CredGet::Ready(Ok(answer)),
+            Step::Windowed(error) => CredGet::Ready(Err(error)),
+            Step::Stale(answer, true) => {
+                self.detached(entry, key, now, detach);
+                CredGet::Ready(Ok(answer))
+            }
+            Step::Miss => {
+                let (flight, lead) = match entry.flight.clone() {
+                    Some(flight) => (flight, None),
+                    None => {
+                        let flight = Flight::new();
+                        entry.flight = Some(Arc::clone(&flight));
+                        let lead = Lead::new(Arc::clone(&flight));
+                        (flight, Some(lead))
+                    }
+                };
+                drop(map);
+                CredGet::Wait(self.wait(key, flight, lead, mint))
+            }
+        }
     }
 
     fn evict_instance(&self, auth_instance: u64) {

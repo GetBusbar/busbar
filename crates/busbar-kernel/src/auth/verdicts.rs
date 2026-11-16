@@ -331,8 +331,50 @@ impl<V: Clone + Send + Sync + 'static, O: Clone + Send + Sync + 'static> Verdict
     /// Rule 4 (`VerdictCache::begin`): `Hit` under the read lock; otherwise, under the write lock, `Follow` a
     /// standing lead or take a new one. Rule 5's `room` decides whether a new key fits.
     pub fn start(&self, key: VerdictKey, now_s: u64) -> VerdictGet<'_, V, O> {
-        let _ = (key, now_s);
-        todo!("W1-K2: verdict cache")
+        let max = usize::try_from(self.policy.max_entries).unwrap_or(usize::MAX);
+        if max == 0 {
+            return VerdictGet::Bypass;
+        }
+        {
+            let book = self.read(key.auth_instance);
+            let hit = book
+                .get(&key.auth_instance)
+                .and_then(|keys| keys.keys.get(&key.credential.0))
+                .and_then(|slot| slot.fresh(now_s));
+            if let Some(value) = hit {
+                return VerdictGet::Hit(value.clone());
+            }
+        }
+        let mut book = self.write(key.auth_instance);
+        let keys = book.entry(key.auth_instance).or_default();
+        if !keys.keys.contains_key(&key.credential.0) && !room(&mut keys.keys, now_s, max) {
+            return VerdictGet::Bypass;
+        }
+        let epoch = keys.epoch.load(Ordering::Relaxed);
+        let slot = keys.keys.entry(key.credential.0).or_default();
+        if let Some(value) = slot.fresh(now_s) {
+            return VerdictGet::Hit(value.clone());
+        }
+        match slot.lead_until {
+            Some(until) if now_s < until => {
+                if slot.followers.len() >= MAX_FOLLOWERS {
+                    return VerdictGet::Bypass;
+                }
+                let (tell, told) = oneshot::channel();
+                slot.followers.push_back(tell);
+                drop(book);
+                VerdictGet::Follow(Box::pin(async move {
+                    match told.await {
+                        Ok(Handoff::Outcome(outcome)) => Ok(outcome),
+                        Ok(Handoff::Lead) | Err(_) => Err(self.lead(key, epoch)),
+                    }
+                }))
+            }
+            _ => {
+                slot.lead_until = Some(now_s.saturating_add(LEAD_S));
+                VerdictGet::Lead(self.lead(key, epoch))
+            }
+        }
     }
 
     fn lead(&self, key: VerdictKey, epoch: u64) -> VerdictLead<'_, V, O> {
