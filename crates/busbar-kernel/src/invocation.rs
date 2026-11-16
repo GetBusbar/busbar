@@ -58,6 +58,25 @@ impl InvocationContext {
         &self.generation
     }
 
+    pub fn unit(&self) -> u64 {
+        self.unit
+    }
+
+    /// Hook child operations carry the same checked parent and generation.
+    pub(crate) fn dispatch_hook_child(
+        &self,
+        nest: Nest,
+        done: NestDone,
+    ) -> Result<(), &'static str> {
+        if nest.parent != self.unit || !self.accepts(&self.caller) {
+            return Err(NEST_NO_UNIT);
+        }
+        self.generation
+            .core
+            .dispatch_child(self.clone(), &self.generation.route, nest, done);
+        Ok(())
+    }
+
     pub fn accepts(&self, caller: &Caller) -> bool {
         self.caller.incarnation() == caller.incarnation()
             && self.generation.core.facts(caller).is_some()
@@ -75,6 +94,7 @@ impl InvocationContext {
         }
         let retained = self.clone();
         self.generation.core.dispatch_child(
+            self.clone(),
             &self.generation.route,
             Nest {
                 parent: self.unit,

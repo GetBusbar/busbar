@@ -141,7 +141,7 @@ impl std::fmt::Display for DestRefusal {
 impl std::error::Error for DestRefusal {}
 
 pub trait NestRoute: Send + Sync {
-    fn nest(&self, nest: Nest, done: NestDone);
+    fn nest(&self, context: InvocationContext, nest: Nest, done: NestDone);
 }
 
 /// One nested unit, as the kernel hands it to the root.
@@ -357,36 +357,7 @@ impl Drop for Unrun {
     }
 }
 
-struct OwedNest {
-    later: Option<Later>,
-    pool: Arc<crate::pump::NestedPool>,
-    permit: Option<crate::pump::NestedPermit>,
-}
-
-impl OwedNest {
-    fn answer(mut self, reply: NestReply) {
-        self.release();
-        if let Some(later) = self.later.take() {
-            later(nested_answer(reply));
-        }
-    }
-
-    fn release(&mut self) {
-        if let Some(p) = self.permit.take() {
-            self.pool.leave(p);
-        }
-    }
-}
-
-impl Drop for OwedNest {
-    fn drop(&mut self) {
-        self.release();
-        if let Some(later) = self.later.take() {
-            later(failed(NEST_DROPPED));
-        }
-    }
-}
-
+#[cfg(test)]
 fn nested_answer(reply: NestReply) -> Stored {
     let (status, fields, body) = match reply {
         NestReply::Answered {
@@ -1009,8 +980,6 @@ pub struct KernelServices {
 
     bounds_of: Mutex<HashMap<Arc<str>, WorkBounds>>,
 
-    nest: OnceLock<Arc<dyn NestRoute>>,
-
     standing: OnceLock<Standing>,
     nested: Arc<crate::pump::NestedPool>,
 
@@ -1158,7 +1127,6 @@ impl KernelServices {
             recovery: recovery_runtime::RecoveryRuntime::default(),
             work_bounds: WorkBounds::default(),
             bounds_of: Mutex::default(),
-            nest: OnceLock::new(),
             standing: OnceLock::new(),
             nested: Arc::new(crate::pump::NestedPool::new(
                 NEST_CONCURRENCY,
@@ -1306,17 +1274,19 @@ impl KernelServices {
         &self.sessions
     }
 
-    pub(crate) fn dispatch_hook_child(&self, nest: Nest, done: NestDone) {
-        let Some(route) = self.nest.get() else {
-            done(NestReply::Unserved(NO_NEST_ROUTE));
-            return;
-        };
-        self.dispatch_child(route, nest, done);
-    }
-
-    fn dispatch_child(&self, route: &Arc<dyn NestRoute>, nest: Nest, done: NestDone) {
+    fn dispatch_child(
+        &self,
+        context: InvocationContext,
+        route: &Arc<dyn NestRoute>,
+        nest: Nest,
+        done: NestDone,
+    ) {
         let permit = match self.nested.enter(nest.depth as usize) {
             Ok(permit) => permit,
+            Err(busbar_contract::caps::ReasonCode::InFlightCap) => {
+                done(NestReply::Unserved(NEST_FULL));
+                return;
+            }
             Err(_) => {
                 done(NestReply::Unserved(NEST_TOO_DEEP));
                 return;
@@ -1350,11 +1320,7 @@ impl KernelServices {
             permit: Some(permit),
             done: Some(done),
         };
-        route.nest(nest, Box::new(move |answer| held.answer(answer)));
-    }
-
-    pub fn attach_nest(&self, route: Arc<dyn NestRoute>) -> bool {
-        self.nest.set(route).is_ok()
+        route.nest(context, nest, Box::new(move |answer| held.answer(answer)));
     }
 
     pub fn attach_standing(&self, standing: Standing) -> bool {
@@ -3573,42 +3539,10 @@ impl HostServices for KernelServices {
         }
     }
 
-    fn unit_nest(&self, caller: &Caller, unit: Option<u64>, ask: NestAsk, later: Later) -> Ran {
-        if self.facts(caller).is_none() {
-            return Ran::Now(Stored::refused(NOT_ADMITTED));
-        }
-
-        let Some((parent, record)) = unit.and_then(|u| Some((u, self.units.get(u)?))) else {
-            return Ran::Now(Stored::refused(NEST_NO_UNIT));
-        };
-        let Some(route) = self.nest.get() else {
-            return Ran::Now(Stored::refused(NO_NEST_ROUTE));
-        };
-        let depth = record.depth.saturating_add(1);
-        let permit = match self.nested.enter(depth as usize) {
-            Ok(p) => p,
-            Err(busbar_contract::caps::ReasonCode::InFlightCap) => {
-                return Ran::Now(Stored::refused(NEST_FULL));
-            }
-            Err(_) => return Ran::Now(Stored::refused(NEST_TOO_DEEP)),
-        };
-        let owed = OwedNest {
-            later: Some(later),
-            pool: Arc::clone(&self.nested),
-            permit: Some(permit),
-        };
-        route.nest(
-            Nest {
-                parent,
-                depth,
-                principal: record.principal.clone(),
-                ancestry: self.units.child_ancestry(parent),
-                constraints: None,
-                ask,
-            },
-            Box::new(move |reply| owed.answer(reply)),
-        );
-        Ran::Later
+    fn unit_nest(&self, _caller: &Caller, _unit: Option<u64>, _ask: NestAsk, _later: Later) -> Ran {
+        // The legacy crossing has no invocation authority. MIN-3 dispatch uses
+        // InvocationContext; numeric request IDs cannot recover that authority.
+        Ran::Now(Stored::refused(NEST_NO_UNIT))
     }
 
     fn work_open(
