@@ -728,10 +728,11 @@ pub fn registry<N: Needs>(
     plugins: &[&'static Plugin],
 ) -> Registry<N> {
     let binder: Arc<dyn ConfigBinder> = Arc::new(MemBinder::new());
-    let mut registry = Registry::new(
+    let slots = Arc::new(busbar_plugin_loader::instance::SlotTable::new());
+    busbar_plugin_loader::instance::install_sinks(&slots);
+    let mut images = busbar_plugin_loader::instance::ImagesBuilder::new(
         &HOST,
-        needs,
-        binder,
+        slots,
         Ceilings {
             max_steps,
             ..Ceilings::DEFAULT
@@ -739,16 +740,17 @@ pub fn registry<N: Needs>(
     );
     for plugin in plugins {
         let admitted = admit_header(*plugin).unwrap_or_else(|r| panic!("admit: {r:?}"));
-        registry
-            .add(admitted)
+        images
+            .admit(admitted)
             .unwrap_or_else(|r| panic!("add: {r:?}"));
     }
-    registry
+    Registry::new(images.finish(), needs, binder)
 }
 
 /// The spec of instance `name` of the image `module` names, with `config` and no limits.
 pub fn spec<'a>(module: &'a str, name: &'a str, config: &'a [u8]) -> InstanceSpec<'a> {
     InstanceSpec {
+        purpose: busbar_plugin_loader::instance::OpenPurpose::Canonical,
         identity: module,
         name,
         config_json: config,

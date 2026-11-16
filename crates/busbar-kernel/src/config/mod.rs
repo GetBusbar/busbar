@@ -1050,13 +1050,6 @@ pub struct DeployCfg {
     /// secret plugin opens with `{}`. Mirrors `store.settings` for the store plugin.
     #[serde(default)]
     pub secrets: std::collections::BTreeMap<String, SecretModuleCfg>,
-    /// The top-level `upstreams:` section (IF §12.1, §12.18; 1.6.0, additive): upstream name → entry (`url:` or
-    /// `command:`, optional `tls:`, `auth:`, `upstream_credentials:`). Kept as written; [`min3::parse_min3`]
-    /// parses each entry's binding keys and [`crate::upstreams::ConfiguredUpstreams::from_config`] types the
-    /// entries, at load (refusals) and at boot (the table every plane seat reads). A 1.5.x plane's `migrate`
-    /// writes its members here (CORE_CFG(UPSTREAM)). Absent = no upstream.
-    #[serde(default)]
-    pub upstreams: Option<serde_json::Map<String, serde_json::Value>>,
     /// Internal tuning knobs (the `advanced:` block).
     #[serde(default)]
     pub advanced: AdvancedCfg,
@@ -1101,6 +1094,10 @@ pub struct DeployCfg {
     /// The `telemetry:` block (the metric registry; default on).
     #[serde(default)]
     pub telemetry: TelemetryCfg,
+    /// The `records:` block (ADMIN-API-1.6 §3.5): what each unit's record keeps of the end user and
+    /// of allow-listed request headers. Absent: off, at no cost. Applied at boot.
+    #[serde(default)]
+    pub records: RecordsCfg,
     /// The `audit:` block (SEALING-FIX §3.4): `seal_every`, the notary's stamp cadence in ms.
     #[serde(default)]
     pub audit: AuditCfg,
@@ -1139,6 +1136,7 @@ impl DeployCfg {
 }
 
 pub use busbar_kernel::config::sections::{Destinations, SecurityCfg};
+pub use busbar_kernel::config::sections::{RecordsCfg, RecordsUser, RECORDS_LABELS_MAX};
 
 /// The top-level `plugins:` block — the ONLY configuration surface of the dynamic plugin subsystem.
 /// A plugin is a plugin: store, auth, and hook plugins share this one block (one directory, one
@@ -1379,10 +1377,7 @@ impl Default for PluginsCfg {
     }
 }
 
-/// `plugins.trust` — how the engine treats plugin signatures. A first-party (busbar-signed) plugin
-/// verifies against the EMBEDDED release key; a third-party plugin verifies against `publishers`;
-/// anything else (unsigned, tampered, unknown publisher) is UNTRUSTED and, by DEFAULT, logged and
-/// SKIPPED (never `dlopen`ed) unless the matching opt-in flag is set.
+/// Signature admission policy, independent of dynamic loading and runtime grants.
 #[cfg_attr(
     feature = "openapi-schema",
     derive(schemars::JsonSchema, serde::Serialize)
@@ -1390,23 +1385,16 @@ impl Default for PluginsCfg {
 #[derive(Deserialize, Clone, Default, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PluginsTrustCfg {
-    /// THIRD-PARTY allowlist: publishers whose signatures mark a plugin TRUSTED. Each maps a
-    /// publisher name to a hex ed25519 public key. The first-party `busbar` key is embedded in the
-    /// binary and never configured here.
+    /// Explicit scoped publisher authorities. Busbar authority is embedded, never configured.
     #[serde(default)]
     pub publishers: Vec<PluginPublisher>,
-    /// EXPLICIT opt-in: load plugins that carry NO valid signature (unsigned / tampered). Default
-    /// `false` — an unsigned plugin found in `plugins.dir` is LOGGED and SKIPPED (never `dlopen`ed
-    /// / executed), at boot and in the admin catalog.
+    /// Permit unsigned or unknown-publisher artifacts. Known invalid or revoked authority
+    /// and failed integrity checks always refuse admission. Defaults to false.
     #[serde(default)]
-    pub allow_unsigned: bool,
-    /// EXPLICIT opt-in: load plugins that ARE validly signed but by a publisher NOT in
-    /// `publishers`. Default `false` — a third-party-signed plugin is LOGGED and SKIPPED.
-    #[serde(default)]
-    pub allow_third_party: bool,
+    pub allow_untrusted: bool,
 }
 
-/// One allowlisted plugin publisher: a name and its hex ed25519 public key.
+/// One operator-authorized publisher and its exact plugin names and overlapping keys.
 #[cfg_attr(
     feature = "openapi-schema",
     derive(schemars::JsonSchema, serde::Serialize)
@@ -1415,19 +1403,45 @@ pub struct PluginsTrustCfg {
 #[serde(deny_unknown_fields)]
 pub struct PluginPublisher {
     pub name: String,
-    pub public_key: String,
+    pub plugins: Vec<String>,
+    pub keys: Vec<PluginPublisherKey>,
 }
+
+/// A configured Ed25519 publisher key. Revoked keys remain visible but never admit code.
+#[cfg_attr(
+    feature = "openapi-schema",
+    derive(schemars::JsonSchema, serde::Serialize)
+)]
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PluginPublisherKey {
+    pub public_key: String,
+    #[serde(default)]
+    pub revoked: bool,
+}
+
+/// Borrowed operator publisher authority passed to the admission policy.
+pub type PluginPublisherInput<'a> = (&'a str, &'a [String], Vec<(&'a str, bool)>);
 
 impl PluginsCfg {
     pub fn fetch_targets(&self) -> Result<Vec<FetchTarget>, String> {
         self.fetch.iter().map(fetch_target_from).collect()
     }
 
-    pub fn publisher_keys(&self) -> Vec<(&str, &str)> {
+    pub fn publisher_keys(&self) -> Vec<PluginPublisherInput<'_>> {
         self.trust
             .publishers
             .iter()
-            .map(|p| (p.name.as_str(), p.public_key.as_str()))
+            .map(|p| {
+                (
+                    p.name.as_str(),
+                    p.plugins.as_slice(),
+                    p.keys
+                        .iter()
+                        .map(|key| (key.public_key.as_str(), key.revoked))
+                        .collect(),
+                )
+            })
             .collect()
     }
 
@@ -2119,7 +2133,6 @@ pub fn resolve(
             allow_all_metadata: security.allow_all_metadata,
             guard: Destinations {
                 block_private_addresses: deploy.advanced.block_private_addresses,
-                allow: deploy.advanced.allow_destinations.clone(),
                 ..Destinations::default()
             },
             outbound_tls: deploy.advanced.tls.clone(),
@@ -2167,13 +2180,6 @@ fn resolve_min3(deploy: &DeployCfg, errors: &mut Vec<String>) -> min3::Min3Confi
         }
     };
     if let Err(refused) = min3::check_upstream_credentials(&parsed) {
-        errors.extend(refused.into_iter().map(code));
-    }
-    if let Err(refused) = crate::upstreams::ConfiguredUpstreams::from_config(
-        &parsed.upstream_section,
-        &parsed.upstreams,
-        &crate::plugin_config::upstream_anchor,
-    ) {
         errors.extend(refused.into_iter().map(code));
     }
     parsed
@@ -2320,13 +2326,6 @@ impl std::fmt::Debug for DeployCfg {
             .field("declared_raw", &self.declared_raw)
             .field("store", &self.store)
             .field("secrets", &self.secrets)
-            .field(
-                "upstreams",
-                &self
-                    .upstreams
-                    .as_ref()
-                    .map(|section| section.keys().collect::<Vec<_>>()),
-            )
             .field("advanced", &self.advanced)
             .field("export", &self.export)
             .field("declared", &self.declared)
@@ -2335,6 +2334,7 @@ impl std::fmt::Debug for DeployCfg {
             .field("limits", &self.limits)
             .field("health", &self.health)
             .field("routing", &self.routing)
+            .field("records", &self.records)
             .finish()
     }
 }

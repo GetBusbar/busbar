@@ -57,8 +57,6 @@ fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
 admin_listen: "127.0.0.1:{admin_port}"
 store: {{module: memory}}
 admin_require_mtls: false
-advanced:
-  allow_destinations: ["127.0.0.1"]
   worker_threads: 2
 identity-providers:
   admin-tokens:

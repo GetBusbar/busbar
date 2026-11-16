@@ -88,7 +88,7 @@ async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_
             "identity-providers": {(operator): {"module": operator, "token": {"file": token_path}}},
             "auth": {"chain": [], "admin_auth": [operator], "signing_key": {"file": signing_path}},
             "store": {"module": store, "settings": settings},
-            "advanced": {"allow_destinations": ["127.0.0.1"]}
+            "advanced": {}
         }),
         &crate::root::boot::axis_test_grammar(),
     )

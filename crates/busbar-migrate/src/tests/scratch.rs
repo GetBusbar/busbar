@@ -109,16 +109,10 @@ pub(crate) fn facts() -> crate::Facts {
         env: no_env,
         cwd: std::env::temp_dir(),
         ephemeral_stores: None,
-        resolve: no_resolver,
     }
 }
 
 /// A strict parse that accepts every document.
 pub(crate) fn accept(_: &str, _: Option<&str>) -> Result<(), String> {
     Ok(())
-}
-
-/// A resolver that answers nothing: a test that needs DNS says so with its own.
-pub(crate) fn no_resolver(_: &str) -> Result<Vec<std::net::IpAddr>, String> {
-    Err("no resolver in this test".to_owned())
 }

@@ -285,6 +285,7 @@ pub mod instance;
 pub mod refusal;
 #[deny(unsafe_code)]
 pub mod scan;
+mod upstream_paths;
 #[deny(unsafe_code)]
 pub mod watchdog;
 
@@ -594,3 +595,8 @@ mod neutral_transport;
 #[cfg(test)]
 #[path = "tests/neutral_auth.rs"]
 mod neutral_auth;
+
+/// Process-owned MIN-3 resources.
+pub mod process;
+
+mod reopen;

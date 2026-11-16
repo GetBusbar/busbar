@@ -147,7 +147,7 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 pub const ABI_VERSION: u32 = super::versions::HOOK.raw();
 
 /// The hook kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-pub const LAYOUT_FINGERPRINT: u64 = 0x554fa343936df174;
+pub const LAYOUT_FINGERPRINT: u64 = 0x714c2d6e34092fa0;
 
 /// The hook kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
 pub const LAYOUT_SHAPES: &[&[u64]] = &[
@@ -208,6 +208,7 @@ pub const LAYOUT_SHAPES: &[&[u64]] = &[
         head, kind_class, prompt_access, user_access, infallible, _reserved, requested_signals,
         requested_signals_len, routes, routes_len
     ),
+    crate::abi::host::service::HOST_SLOTS_LAYOUT,
 ];
 
 /// [`InHead::op`] values the hook kind adds after the shared lifecycle, in table order.

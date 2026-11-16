@@ -1,8 +1,0 @@
-                let proof = match super::provenance::HistoricalConfigProof::settings(&site.path, &handed) {
-                    Ok(proof) => proof,
-                    Err(error) => { ledger.failures.push(error); continue; }
-                };
-                if host.admit_config_profile(&proof).is_err() {
-                    ledger.failures.push("historical settings evidence was refused".into()); continue;
-                }
-                apply(root, host, &site, &handed, &plugin, migrated, ledger);

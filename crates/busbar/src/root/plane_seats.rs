@@ -105,8 +105,8 @@ impl ConnTable {
 
 /// What every seat of one boot composes over.
 pub(crate) struct SeatShared {
-    /// The boot's configured upstreams, shared by every seat's egress and carrier.
-    pub(crate) upstreams: Arc<ConfiguredUpstreams>,
+    /// Per-instance registration tables; a seat never sees another plane's registrations.
+    pub(crate) upstreams: BTreeMap<String, Arc<ConfiguredUpstreams>>,
     pub(crate) signals: Arc<SignalRegistry>,
     pub(crate) secrets: Arc<dyn SpawnSecrets>,
     pub(crate) kernel: Arc<Kernel>,
@@ -503,8 +503,7 @@ fn egress_of(
                 )
             })?;
         if let Some(route) = pool.routes.get(&member.destination) {
-            if route.anchors.secures() {
-                table
+            table
                     .conns
                     .anchor(owner, member.need, &route.provider, &route.base_url, &route.anchors)
                     .map_err(|refused| {
@@ -514,7 +513,6 @@ fn egress_of(
                             member.upstream
                         )
                     })?;
-            }
         }
     }
     let names: Vec<(busbar_kernel_egress::ports::DestinationId, String)> = pool
@@ -625,10 +623,13 @@ pub(crate) fn compose(
     port: Arc<dyn PlanePort>,
     rt: Handle,
 ) -> Result<SeatWiring, String> {
-    let pool = SeatPool::of(instance, &shared.upstreams)?;
+    let upstreams = shared.upstreams.get(instance).ok_or_else(|| {
+        format!("plane {instance}: no declared registration table was built for this generation")
+    })?;
+    let pool = SeatPool::of(instance, upstreams)?;
     audit_acceptance(instance, accept, &pool);
     let owner = seat_owner(who.instance);
-    let table_upstreams: Arc<dyn Upstreams> = Arc::clone(&shared.upstreams) as Arc<dyn Upstreams>;
+    let table_upstreams: Arc<dyn Upstreams> = Arc::clone(upstreams) as Arc<dyn Upstreams>;
     let (upstream, held, probes) = match &shared.table {
         Some(table) => {
             let egress = egress_of(instance, owner, table, &pool)?;

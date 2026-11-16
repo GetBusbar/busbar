@@ -1014,7 +1014,7 @@ mod tests {
         let reference =
             serde_json::json!({"module":"allocation-source","settings":{"slot":"unused"}});
         let settings: Settings = serde_json::from_value(
-            serde_json::json!({"licenseKey":reference.clone(),"url":reference}),
+            serde_json::json!({"accessToken":reference.clone(),"url":reference}),
         )
         .unwrap();
         let resolver = Recorded::default();
@@ -1022,7 +1022,7 @@ mod tests {
             .resolve(
                 &Resolution {
                     owner: "test-plugin",
-                    secrets: &["licenseKey".into()],
+                    secrets: &["accessToken".into()],
                     references: &["url".into()],
                     sources: &crate::secret_ref::Sugars::default(),
                 },
@@ -1031,7 +1031,7 @@ mod tests {
             )
             .expect("resolves");
         let handed = resolver.0.lock().unwrap().clone();
-        let held: Vec<usize> = ["licenseKey", "url"]
+        let held: Vec<usize> = ["accessToken", "url"]
             .iter()
             .map(|k| out.0 .0[*k].as_str().expect("a string").as_ptr() as usize)
             .collect();

@@ -7,7 +7,7 @@
 //! index (never the plugin's identity). On an unstamped boot this is step 5; on a stamped boot or a
 //! reload it is the seam's patch-writer edit of the same answer.
 //!
-//! Filing rules: UPSTREAM files `upstreams.<name>`, TRUST_APPROVAL `trust.<instance>.<name>`,
+//! Filing rules: TRUST_APPROVAL files `trust.<instance>.<name>`,
 //! ROUTE_MEDIA `routes.<name>.media`; a name two instances state with equal values is one entry, a
 //! different value or a clash with what the operator wrote refuses CONFIG naming the instance
 //! indices. LIMITS fills the instance's own `limits` (empty name, once; an operator key wins and the
@@ -31,10 +31,10 @@ use crate::patch::{rewrite, schema_insert};
 use crate::templates::Template;
 use crate::{Env, Refusal};
 
-/// `abi::core_cfg::*` (IF §8.8): the sections a plugin's `open` may hand back. 5 and 6 are retired
+/// `abi::core_cfg::*` (IF §8.8): the sections a plugin's `open` may hand back. 1, 5 and 6 are retired
 /// and never reused.
 pub mod section {
-    pub const UPSTREAM: u32 = 1;
+    // Section 1 (host-global upstream) is retired by UPSTREAMS-DECLARED r3.
     pub const TRUST_APPROVAL: u32 = 2;
     pub const ROUTE_MEDIA: u32 = 3;
     pub const LIMITS: u32 = 4;
@@ -58,6 +58,17 @@ pub struct Settled {
     pub path: Vec<String>,
     pub settings: Option<SecureString>,
     pub core_cfg: Vec<CoreCfg>,
+    /// Exact pointers authorized by core from admitted describe paths and typed core leaves.
+    /// Never infer this set from CONFIG strings or from requested LIFT fragments.
+    pub allowed_lifts: std::collections::BTreeSet<String>,
+    pub placement: BagPlacement,
+}
+
+/// Core's authored location of the config bag, never chosen by the plugin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BagPlacement {
+    Settings,
+    Block,
 }
 
 /// A planned 0600 secret file: a lifted literal. The bytes are wiped on drop and never printed.
@@ -151,7 +162,18 @@ fn pointer_mut<'v>(root: &'v mut Value, pointer: &str) -> Option<&'v mut Value> 
     }
     let mut at = root;
     for raw in pointer.strip_prefix('/')?.split('/') {
-        let step = raw.replace("~1", "/").replace("~0", "~");
+        let mut step = String::new();
+        let mut chars = raw.chars();
+        while let Some(ch) = chars.next() {
+            step.push(match ch {
+                '~' => match chars.next()? {
+                    '0' => '~',
+                    '1' => '/',
+                    _ => return None,
+                },
+                other => other,
+            });
+        }
         at = match at {
             Value::Map(entries) => {
                 let found = entries
@@ -159,7 +181,15 @@ fn pointer_mut<'v>(root: &'v mut Value, pointer: &str) -> Option<&'v mut Value> 
                     .position(|(key, _)| key.as_text() == Some(step.as_str()))?;
                 &mut entries[found].1
             }
-            Value::Array(items) => items.get_mut(step.parse::<usize>().ok()?)?,
+            Value::Array(items) => {
+                if step.is_empty()
+                    || !step.bytes().all(|b| b.is_ascii_digit())
+                    || (step.len() > 1 && step.starts_with('0'))
+                {
+                    return None;
+                }
+                items.get_mut(step.parse::<usize>().ok()?)?
+            }
             _ => return None,
         };
     }
@@ -176,7 +206,6 @@ fn valid_name(name: &str) -> bool {
 /// Where a named fragment lands: the document path, the section's word for the report.
 fn target(frag: &CoreCfg, instance: &str, index: u32) -> Result<Vec<String>, Refusal> {
     let (head, ok): (Vec<&str>, bool) = match frag.section {
-        section::UPSTREAM => (vec!["upstreams"], valid_name(&frag.name)),
         section::TRUST_APPROVAL => (vec!["trust", instance], valid_name(&frag.name)),
         section::ROUTE_MEDIA => (
             vec!["routes"],
@@ -274,6 +303,23 @@ fn settle_block(
     report: &mut Vec<String>,
     secrets: &mut Vec<SecretFile>,
 ) -> Result<(), Refusal> {
+    if answer.placement == BagPlacement::Block {
+        let mut wrapped = vec![(Value::from("settings"), Value::Map(block.clone()))];
+        let mut nested = answer.clone();
+        nested.placement = BagPlacement::Settings;
+        settle_block(&mut wrapped, &nested, dir, report, secrets)?;
+        let Some(Value::Map(bag)) = wrapped.get_key("settings") else {
+            return Err(refuse(
+                answer.index,
+                "a whole-block CONFIG must be an object",
+            ));
+        };
+        *block = bag.clone();
+        if let Some(limits) = wrapped.get_key("limits") {
+            block.insert_key("limits", limits.clone());
+        }
+        return Ok(());
+    }
     let index = answer.index;
     let shown = answer.path.join(".");
     if let Some(settings) = &answer.settings {
@@ -329,6 +375,12 @@ fn settle_block(
                         "a lift carries an empty name and one JSON pointer string",
                     ));
                 };
+                if !answer.allowed_lifts.contains(pointer) {
+                    return Err(refuse(
+                        index,
+                        "a lift names a slot not authorized by its admitted secret grammar",
+                    ));
+                }
                 if lifted.contains(&pointer) {
                     return Err(refuse(
                         index,
@@ -373,7 +425,7 @@ fn settle_block(
     Ok(())
 }
 
-/// File one named fragment (UPSTREAM, TRUST_APPROVAL, ROUTE_MEDIA) of `index`: one entry when another
+/// File one named fragment (TRUST_APPROVAL, ROUTE_MEDIA) of `index`: one entry when another
 /// instance stated it with an equal value, CONFIG naming both indices when the values differ.
 fn file_named(
     root: &mut Pairs,
@@ -451,6 +503,12 @@ pub fn apply_settled(
             ));
         }
         let shown = answer.path.join(".");
+        if answer.placement == BagPlacement::Block
+            && answer.path.len() == 1
+            && root.get_key(answer.path[0].as_str()).is_none()
+        {
+            schema_insert(root, &answer.path[0], Value::Map(Vec::new()));
+        }
         let block = block_mut(root, &answer.path).ok_or_else(|| {
             refuse(
                 index,
@@ -462,7 +520,7 @@ pub fn apply_settled(
         for frag in &answer.core_cfg {
             match frag.section {
                 section::LIMITS | section::LIFT => {}
-                section::UPSTREAM | section::TRUST_APPROVAL | section::ROUTE_MEDIA => {
+                section::TRUST_APPROVAL | section::ROUTE_MEDIA => {
                     file_named(root, &mut filed, frag, instance, index, &mut report)?;
                 }
                 other => {

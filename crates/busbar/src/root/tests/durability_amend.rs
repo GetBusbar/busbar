@@ -105,7 +105,7 @@ async fn application(core: Arc<CoreStore>) -> Arc<busbar_kernel::state::App> {
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )

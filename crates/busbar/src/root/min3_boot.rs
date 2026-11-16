@@ -61,7 +61,6 @@ use busbar_plugin_loader::instance::{
 use busbar_ports::store::StoreHandle;
 
 use busbar_kernel::teller::Kernel;
-use busbar_kernel::upstreams::ConfiguredUpstreams;
 
 use super::plane_seats::{compose as compose_seat, ConnTable, SeatShared, SpawnCustody};
 use super::port_mount::Ingress;
@@ -482,12 +481,12 @@ fn admit_dropped_images(
 }
 
 /// One configured instance, owned until the plan borrows it.
-struct Configured {
-    kind: KindCode,
-    identity: String,
-    name: String,
-    config: Vec<u8>,
-    limits: busbar_plugin_abi::host_side::caller::InstanceLimits,
+pub(crate) struct Configured {
+    pub(crate) kind: KindCode,
+    pub(crate) identity: String,
+    pub(crate) name: String,
+    pub(crate) config: Vec<u8>,
+    pub(crate) limits: busbar_plugin_abi::host_side::caller::InstanceLimits,
 }
 
 /// One admitted MIN-3 plane image: its identity and its signed manifest's `alias` (today's plane name, IF §12.10:
@@ -586,22 +585,39 @@ fn configured(cfg: &RootCfg, planes: &[PlaneImage]) -> Result<Vec<Configured>, S
 /// typed over the config's `upstreams:` section and each entry's parsed binding (`cfg.min3`, W1-K7). The load
 /// already typed the same section once (`config::resolve`), so a refusal here means the config changed shape
 /// between load and boot; a binding naming an upstream with no entry still refuses the boot.
-fn configured_upstreams(cfg: &RootCfg) -> Result<Arc<ConfiguredUpstreams>, String> {
-    upstreams_of(&cfg.min3.upstream_section, cfg)
-}
-
-/// The table typed over `section` (upstream name to entry) and the config's bindings; Err = every refusal, joined.
-fn upstreams_of(
-    section: &serde_json::Map<String, serde_json::Value>,
-    cfg: &RootCfg,
-) -> Result<Arc<ConfiguredUpstreams>, String> {
-    ConfiguredUpstreams::from_config(
-        section,
-        &cfg.min3.upstreams,
-        &busbar_kernel::plugin_config::upstream_anchor,
-    )
-    .map(Arc::new)
-    .map_err(|refused| refused.join("; "))
+pub(crate) fn declared_planes(
+    registry: &MinRegistry,
+    instances: &mut [Configured],
+) -> Result<std::collections::BTreeMap<String, busbar_kernel::upstreams::Declared>, String> {
+    let mut declarations = std::collections::BTreeMap::new();
+    for instance in instances
+        .iter_mut()
+        .filter(|one| matches!(one.kind, KindCode::Plane))
+    {
+        let described = registry
+            .described(&instance.identity)
+            .ok_or_else(|| format!("{}: the plane image has not been admitted", instance.name))?;
+        let pointers: Vec<_> = described
+            .paths(busbar_plugin_abi::records::tag::D_UPSTREAM_PATH)
+            .collect();
+        let authored = busbar_contract::json::parse_value(&instance.config)
+            .map_err(|e| format!("{}: its authored config is invalid: {e}", instance.name))?;
+        let declared = busbar_kernel::upstreams::declared(
+            &instance.name,
+            &authored,
+            &pointers,
+            &busbar_kernel::plugin_config::upstream_anchor,
+        )
+        .map_err(|errors| errors.join("; "))?;
+        instance.config = busbar_contract::json::to_vec(&declared.visible_bag).map_err(|e| {
+            format!(
+                "{}: its visible config cannot be encoded: {e}",
+                instance.name
+            )
+        })?;
+        declarations.insert(instance.name.clone(), declared);
+    }
+    Ok(declarations)
 }
 
 /// The shorthands the admitted secret images declare, as the one `Sugars` the binder and the config parser read.
@@ -684,17 +700,17 @@ fn build(guard: Guard, cfg: &RootCfg, images: Vec<Admitted>) -> Result<Built, St
         Arc::clone(&binder),
         NeedLimits::default(),
     );
-    let mut registry = Registry::new(
-        &HOST,
-        Arc::new(needs),
-        Arc::clone(&binder),
-        Ceilings::DEFAULT,
-    );
+    let slots = Arc::new(busbar_plugin_loader::instance::SlotTable::new());
+    busbar_plugin_loader::instance::install_sinks(&slots);
+    let mut described =
+        busbar_plugin_loader::instance::ImagesBuilder::new(&HOST, slots, Ceilings::DEFAULT);
     for image in images {
-        registry
-            .add(image)
+        described
+            .admit(image)
             .map_err(|refusal| format!("plugin image refused: {refusal}"))?;
     }
+    let registry = Registry::new(described.finish(), Arc::new(needs), Arc::clone(&binder));
+
     let sugars = sugars_of(&registry)?;
     binder.set_sugars(Arc::new(sugars.clone()));
     binder.set_ref_schemas(ref_schemas(&registry, cfg));
@@ -879,6 +895,12 @@ impl BootSteps for Steps<'_> {
                         ))
                     })
             }),
+            KindCode::Plane
+                if spec.purpose
+                    == busbar_plugin_loader::instance::OpenPurpose::ConvertUnstamped =>
+            {
+                Box::pin(async move { self.inner.open(index).await.map(Some) })
+            }
             KindCode::Plane => Box::pin(async move { self.open_plane(spec).await.map(|()| None) }),
             KindCode::Store => Box::pin(async move {
                 // The secret instances are open (2a): the gate's key is published before the store's open asks.
@@ -1054,19 +1076,33 @@ pub(crate) async fn run(
     if built.registry.identity_of(store_module).is_none() {
         return Ok(false);
     }
+    let converting = !super::migrate::stamped();
+    let normalization_source = super::migrate::normalization_source()?;
     let mut instances = configured(cfg, &planes)?;
     // Transports have no config section: one instance per admitted image (its schema is the registry's).
-    instances.extend(transports::configured(
-        cfg,
-        &built.registry,
-        &transport_images,
-    )?);
+    if !converting {
+        instances.extend(transports::configured(
+            cfg,
+            &built.registry,
+            &transport_images,
+        )?);
+    }
+    let declared = if converting {
+        Default::default()
+    } else {
+        declared_planes(&built.registry, &mut instances)?
+    };
     let specs: Vec<(KindCode, InstanceSpec<'_>)> = instances
         .iter()
         .map(|one| {
             (
                 one.kind,
                 InstanceSpec {
+                    purpose: if converting {
+                        busbar_plugin_loader::instance::OpenPurpose::ConvertUnstamped
+                    } else {
+                        busbar_plugin_loader::instance::OpenPurpose::Canonical
+                    },
                     identity: &one.identity,
                     name: &one.name,
                     config_json: &one.config,
@@ -1088,7 +1124,10 @@ pub(crate) async fn run(
         shared.work_store.clone(),
     );
     let seat = SeatShared {
-        upstreams: configured_upstreams(cfg)?,
+        upstreams: declared
+            .iter()
+            .map(|(name, split)| (name.clone(), Arc::new(split.definitions.clone())))
+            .collect(),
         signals: Arc::clone(&shared.signals),
         secrets: Arc::new(SpawnCustody(built.secrets)),
         kernel: Arc::new(Kernel::new()),
@@ -1114,6 +1153,134 @@ pub(crate) async fn run(
     let walked = boot(&*built.registry, &specs, &built.sugars, &core_refs, &steps)
         .await
         .map_err(|refused| refused.to_string())?;
+    if converting {
+        let mut settled = Vec::new();
+        let mut plane_checks = Vec::new();
+        for (index, instance) in instances.iter().enumerate() {
+            let identity = built
+                .registry
+                .identity_of(&instance.identity)
+                .ok_or("CONFIG: settlement image is no longer admitted")?;
+            let described = built
+                .registry
+                .described(&identity)
+                .ok_or("CONFIG: settlement image has no describe")?;
+            if instance.kind == KindCode::Plane {
+                plane_checks.push((
+                    instance.name.clone(),
+                    described
+                        .paths(busbar_plugin_abi::records::tag::D_UPSTREAM_PATH)
+                        .map(str::to_owned)
+                        .collect(),
+                ));
+            }
+            let answer = built.registry.take_settled(&instance.name).ok_or_else(|| {
+                format!("CONFIG: instance {index} did not settle its converting CONFIG")
+            })?;
+            settled.push(settlement::answer(
+                u32::try_from(index).map_err(|_| "CONFIG: too many configured instances")?,
+                instance,
+                &described,
+                answer,
+            )?);
+        }
+        // Temporary planes are never composed into seats or published. Keep bootstrap owners
+        // while the record/config writers run, then close them before replacing this process.
+        let mut opened = walked.opened;
+        opened.retain(|(index, _, _)| instances[*index as usize].kind != KindCode::Plane);
+        let admission = startup
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+            .ok_or("CONFIG: conversion did not retain store admission")?;
+        let core = admission
+            .store()
+            .ok_or("CONFIG: conversion has no admitted core store")?;
+        super::migrate::records(Arc::clone(&core)).await?;
+        let written = super::migrate::finish_settled_checked(
+            settled,
+            Some(Arc::clone(&core)),
+            Arc::new(move |text| settlement::candidate(text, &plane_checks)),
+        )
+        .await?
+        .ok_or("CONFIG: conversion lost its pending source plan")?;
+        let secret_names: Vec<_> = instances
+            .iter()
+            .filter(|one| one.kind == KindCode::Secret)
+            .map(|one| one.name.clone())
+            .collect();
+        drop(steps);
+        drop(specs);
+        drop(reader);
+        return Err(super::migrate::restart(
+            written,
+            (opened, admission, core, built, shared),
+            move |owners| {
+                for name in secret_names {
+                    owners.3.secrets.closed(&name);
+                }
+                drop(owners);
+            },
+            super::migrate::reexec,
+        ));
+    }
+    let mut normalized = Vec::new();
+    let mut plane_checks = Vec::new();
+    for (index, instance) in instances.iter().enumerate() {
+        let identity = built
+            .registry
+            .identity_of(&instance.identity)
+            .ok_or("CONFIG: normalization image is no longer admitted")?;
+        let described = built
+            .registry
+            .described(&identity)
+            .ok_or("CONFIG: normalization image has no describe")?;
+        if instance.kind == KindCode::Plane {
+            plane_checks.push((
+                instance.name.clone(),
+                described
+                    .paths(busbar_plugin_abi::records::tag::D_UPSTREAM_PATH)
+                    .map(str::to_owned)
+                    .collect(),
+            ));
+        }
+        let Some(mut answer) = built.registry.take_settled(&instance.name) else {
+            continue;
+        };
+        if instance.kind == KindCode::Transport {
+            let before = busbar_contract::json::parse_value(&instance.config)
+                .map_err(|_| "CONFIG: invalid transport config")?;
+            let after = busbar_contract::json::parse_value(answer.config_json.as_slice())
+                .map_err(|_| "CONFIG: invalid transport CONFIG")?;
+            if before != after {
+                return Err("CONFIG: a transport cannot normalize core-owned config".to_owned());
+            }
+            continue;
+        }
+        if let Some(retained) = declared.get(&instance.name) {
+            let visible = busbar_contract::json::parse_value(answer.config_json.as_slice())
+                .map_err(|_| "CONFIG: invalid plane CONFIG")?;
+            let complete = retained
+                .reattach(&visible)
+                .map_err(|errors| errors.join("; "))?;
+            answer.config_json = SecureVec::from(
+                busbar_contract::json::to_vec(&complete)
+                    .map_err(|_| "CONFIG: cannot encode normalized plane config")?,
+            );
+        }
+        normalized.push(settlement::answer(
+            u32::try_from(index).map_err(|_| "CONFIG: too many configured instances")?,
+            instance,
+            &described,
+            answer,
+        )?);
+    }
+    super::migrate::normalize_settled(
+        normalization_source,
+        normalized,
+        Arc::new(move |text| settlement::candidate(text, &plane_checks)),
+    )
+    .await?;
     transports::publish(transports::opened(&walked.opened, &specs))?;
     let core = core_secrets_of(cfg, built.secrets).await?;
     let seats = steps
@@ -1167,3 +1334,6 @@ mod tests;
 /// `Registry::open_transport` and published for the connector.
 #[path = "min3_transports.rs"]
 pub(crate) mod transports;
+
+#[path = "min3_settled.rs"]
+mod settlement;

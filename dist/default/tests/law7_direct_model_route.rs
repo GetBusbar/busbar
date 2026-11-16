@@ -80,8 +80,6 @@ fn write_configs(dir: &Path, upstream: u16, data: u16, admin: u16, pools: &str) 
         format!(
             r#"listen: "127.0.0.1:{data}"
 admin_listen: "127.0.0.1:{admin}"
-advanced:
-  allow_destinations: ["127.0.0.1"]
 store: {{module: memory}}
 admin_require_mtls: false
 identity-providers:

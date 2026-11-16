@@ -20,6 +20,20 @@ impl AuditSigningKey {
         AuditSigningKey::from_parts(inner, key_id)
     }
 
+    /// A 32-BYTE KEY DERIVED FROM THE KEYSET SEED: HKDF-SHA256 with the seed as input keying
+    /// material, under `salt` and `info` (RFC 5869). Runs once per boot for each key a node
+    /// derives (`records.user`'s `K_user`, ADMIN-API-1.6 §3.5); the caller holds the result as a
+    /// secret and never serves it.
+    #[must_use]
+    pub fn derived_key(&self, salt: &[u8], info: &[u8]) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        // PANIC: HKDF-SHA256 with a 32-byte key and a 32-byte output is inside every backend's
+        // bounds; only a backend refusing HKDF outright can fail here.
+        busbar_contract::crypto::hkdf_sha256(salt, self.seed_bytes(), info, &mut out)
+            .unwrap_or_else(|e| panic!("crypto backend refused HKDF-SHA256: {e}"));
+        out
+    }
+
     /// Build one from 64 lowercase hex characters. The decoded seed is held where it is wiped when
     /// dropped.
     pub fn from_hex_seed(text: &str) -> Result<Self, KeyError> {

@@ -1382,11 +1382,6 @@ mod ticketed {
                 "unexpected host service in the records-secret scheduling boundary: trust_verify"
             )
         }
-        fn entitlement_check(&self, _: &Caller, _: Option<u64>, _: &str) -> Stored {
-            panic!(
-                "unexpected host service in the records-secret scheduling boundary: entitlement_check"
-            )
-        }
         fn session_emit(&self, _: &Caller, _: u64, _: &[u8]) -> Stored {
             panic!(
                 "unexpected host service in the records-secret scheduling boundary: session_emit"

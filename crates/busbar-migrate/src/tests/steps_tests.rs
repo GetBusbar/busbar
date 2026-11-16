@@ -289,3 +289,44 @@ fn upgrade_from_155_shape_carries_acceptance() {
         .and_then(|export| busbar_contract::yaml::ValueExt::get(export, "otlp1"));
     assert_eq!(reason(exporter).as_deref(), Some("loopback collector"));
 }
+
+#[test]
+fn legacy_secret_instances_name_their_module_without_rekeying_or_losing_settings() {
+    use busbar_contract::yaml::{self, Value, ValueExt};
+    let source = "store: {module: m}\nsecrets:\n  custom: {settings: {prefix: keep}, limits: {max_inflight: 3}, insecure_transport: true}\n  named: {module: actual, settings: {value: kept}}\n";
+    let (written, _) = upgrade(source, &facts());
+    let tree: Value = yaml::from_str(&written).unwrap();
+    let custom = tree.at("secrets").at("custom");
+    assert_eq!(custom.at("module").as_str(), Some("custom"));
+    assert_eq!(custom.at("settings").at("prefix").as_str(), Some("keep"));
+    assert_eq!(custom.at("limits").at("max_inflight").as_u64(), Some(3));
+    assert_eq!(custom.at("insecure_transport").as_bool(), Some(true));
+    assert_eq!(
+        tree.at("secrets").at("named").at("module").as_str(),
+        Some("actual")
+    );
+}
+
+#[test]
+fn ambiguous_legacy_secret_blocks_are_refused_without_writing() {
+    let scratch = Scratch::new();
+    let source = "store: {module: m}\nsecrets: {custom: {settings: {}, future: do-not-drop}}\n";
+    let path = scratch.deployment(source);
+    let refused = plan(&Inputs::new(&path, &facts(), &accept))
+        .expect_err("unknown block fields cannot identify the legacy shape");
+    assert_eq!(refused.word(), "CONFIG");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
+    assert!(!crate::backup_path(&path).exists());
+}
+
+#[test]
+fn migration_does_not_synthesize_host_global_private_authority() {
+    let (written, _) = upgrade(
+        "store: {module: m}\nproviders: {local: {base_url: 'http://127.0.0.1:11434'}}\n",
+        &facts(),
+    );
+    assert!(
+        !written.contains("allow_destinations"),
+        "private authority belongs to the declared registration"
+    );
+}

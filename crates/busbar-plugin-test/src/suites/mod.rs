@@ -21,7 +21,7 @@ mod hook;
 mod migrate;
 mod plane;
 mod secret;
-mod store;
+pub(crate) mod store;
 mod transport;
 
 pub use busbar_plugin_abi::plugin::Plugin;

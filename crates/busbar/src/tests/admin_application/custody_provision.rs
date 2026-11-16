@@ -94,7 +94,7 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
             "auth": { "chain": [], "admin_auth": [], "signing_key": { "file": signing_key } },
             "groups": { "team": {} },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -299,7 +299,7 @@ async fn auto_provision_stops_at_the_group_ceiling() {
         },
         "groups": { "team": {} },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let mut config = busbar_kernel::config::resolve(&deploy, &Default::default())

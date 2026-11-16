@@ -52,7 +52,7 @@ async fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -343,7 +343,10 @@ async fn restart_if_match_is_checked_at_serialized_admission_without_stale_drain
     let (_, router, handle) =
         busbar_core_admin::build_split_routers_with_limits(app, 1 << 20, 16, false);
     let (shutdown, mut receiver) = tokio::sync::broadcast::channel(4);
-    busbar_core_admin::restart::publish_shutdown(shutdown);
+    busbar_core_admin::restart::publish_shutdown(
+        shutdown,
+        std::sync::Arc::new(busbar_kernel::endpoints::ProbeState::new(None)),
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

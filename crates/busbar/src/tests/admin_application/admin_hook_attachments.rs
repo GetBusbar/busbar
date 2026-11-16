@@ -91,7 +91,7 @@ async fn serve(name: &str, require_if_match: bool) -> Served {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key },
                   "policy": { "require_if_match": require_if_match } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
         "hooks": { "base": { "kind": "tap", "module": "test-hook" } },
     });

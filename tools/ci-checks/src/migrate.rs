@@ -6,8 +6,7 @@
 //! - `migrate-flag-text` (red (mc1)(3)): 1.6.0 has no `--migrate-config`; the boot migrates. No
 //!   production string literal or doc comment under `crates/` names the flag, so no text sends an
 //!   operator to it. Test code (a `#[cfg(test)]` scope, a `#[test]` fn, a module file declared
-//!   under test cfg, a `tests/` tree) is not production. `crates/busbar-migrations` is skipped: it
-//!   is deleted whole at C3 (§A9 item 8), and nothing in the gateway depends on it after C1.
+//!   under test cfg, a `tests/` tree) is not production. No crate is skipped.
 //! - `migrate-retired-words` (red (k)): none of the migration table's vocabulary survives. No
 //!   `[package.metadata.busbar.*]` table carries a `former.`, `retired.` or `name_1_5_5` key (the root
 //!   migration table is gone, names resolve through each plugin's `FORMER_NAMES`), and no production
@@ -29,9 +28,6 @@ use super::{
 
 /// The retired flag's spelling; no production text names it.
 pub(crate) const FLAG: &str = "--migrate-config";
-
-/// Deleted whole at C3 (§A9 item 8); not product code after C1.
-const RETIRING: &str = "busbar-migrations";
 
 /// The host of the retired flag's plugin migrations.
 pub(crate) const ROOT_HOST: &str = "RootHost";
@@ -61,8 +57,7 @@ pub(crate) const ANCHORS: [(&str, &str, &str); 3] = [
 pub(crate) fn flag_text(root: &Path) -> Result<Vec<String>, String> {
     let mut files = Vec::new();
     for dir in sorted_entries(&root.join("crates"))? {
-        let retiring = dir.file_name().is_some_and(|name| name == RETIRING);
-        if !retiring && dir.is_dir() {
+        if dir.is_dir() {
             rust_files(&dir, &mut files)?;
         }
     }
@@ -225,8 +220,7 @@ pub(crate) fn retired_words(root: &Path) -> Result<Vec<String>, String> {
     }
     let mut files = Vec::new();
     for dir in sorted_entries(&root.join("crates"))? {
-        let retiring = dir.file_name().is_some_and(|name| name == RETIRING);
-        if !retiring && dir.is_dir() {
+        if dir.is_dir() {
             rust_files(&dir, &mut files)?;
         }
     }

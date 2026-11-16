@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use busbar_contract::abi::host::conn::{host_slots, ConnHost, HostConns};
 use busbar_contract::conn::{
-    ConnError, ConnId, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc,
+    ConnError, ConnId, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc, PollConns,
 };
 use busbar_kernel::config::Destinations;
 
@@ -45,9 +45,9 @@ impl Resolve for Table {
     }
 }
 
-/// The connector serving a byte-exact door, its dials judged by the one guard over `allow` and
+/// A byte-exact connector with an explicit private-address policy and resolver.
 fn connector_over(
-    allow: &[&str],
+    block_private: bool,
     resolver: Arc<dyn Resolve>,
     wakes: Arc<AtomicU64>,
 ) -> Arc<Connector> {
@@ -57,11 +57,10 @@ fn connector_over(
     }])
     .expect("the view");
     let guard = Guard::from_config(&Destinations {
-        block_private_addresses: true,
-        allow: allow.iter().map(|s| (*s).to_owned()).collect(),
+        block_private_addresses: block_private,
         ..Destinations::default()
     })
-    .expect("a valid allowlist");
+    .expect("valid destination policy");
     let c = Arc::new(Connector::serving(
         view,
         judge(Arc::new(GuardJudge::new(guard, resolver)), &[]),
@@ -75,9 +74,9 @@ fn connector_over(
     c
 }
 
-/// The connector over a guard allowlisting the loopback far ends these tests dial.
+/// Transport-only fixtures permit private far ends; policy cases use connector_over(true, ...).
 fn connector(resolver: Arc<dyn Resolve>, wakes: Arc<AtomicU64>) -> Arc<Connector> {
-    connector_over(&["127.0.0.0/8", "::1"], resolver, wakes)
+    connector_over(false, resolver, wakes)
 }
 
 /// Read one piece, driving the connection by reads alone.
@@ -262,11 +261,7 @@ fn a_need_dials_localhost_through_the_system_resolver() {
         .ip();
     worker().block_on(async {
         let port = echo(first).await;
-        let c = connector_over(
-            &["localhost", "127.0.0.0/8", "::1"],
-            Arc::new(SystemResolver),
-            Arc::default(),
-        );
+        let c = connector_over(false, Arc::new(SystemResolver), Arc::default());
         let host = host(&c);
         let t = table(&host);
         let target = format!("localhost:{port}");
@@ -554,7 +549,7 @@ fn a_name_resolving_to_loopback_is_refused_before_any_socket() {
     worker().block_on(async {
         let (port, accepted) = counting_echo().await;
         let c = connector_over(
-            &[],
+            true,
             Arc::new(Table(vec![("db.test", [127, 0, 0, 1].into())])),
             Arc::default(),
         );
@@ -580,23 +575,35 @@ fn a_name_resolving_to_loopback_is_refused_before_any_socket() {
     });
 }
 
-/// GREEN: the same name dials once the allowlist names it.
+/// The same name dials only under its own core-selected registration reach.
 #[test]
-fn the_same_name_dials_when_allowlisted() {
+fn the_same_name_dials_with_its_own_route_reach() {
     worker().block_on(async {
         let (port, accepted) = counting_echo().await;
         let c = connector_over(
-            &["db.test"],
+            true,
             Arc::new(Table(vec![("db.test", [127, 0, 0, 1].into())])),
             Arc::default(),
         );
         let target = format!("db.test:{port}");
+        c.anchor(
+            OWNER,
+            NEED,
+            "db",
+            &target,
+            &busbar_contract::transport::trust::Anchors {
+                private_reach: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let id = c
             .open(
                 OWNER,
                 NEED,
                 &OpenDesc {
                     target: &target,
+                    member: "db",
                     ..OpenDesc::default()
                 },
             )
@@ -613,7 +620,7 @@ fn a_config_named_target_on_loopback_is_trusted() {
     worker().block_on(async {
         let (port, accepted) = counting_echo().await;
         let c = connector_over(
-            &[],
+            true,
             Arc::new(Table(vec![("db.test", [127, 0, 0, 1].into())])),
             Arc::default(),
         );
@@ -629,15 +636,15 @@ fn a_config_named_target_on_loopback_is_trusted() {
     });
 }
 
-/// A config named provider target on loopback is refused until allowlisted.
+/// A configured provider target remains refused until its named route is authorized.
 #[test]
-fn a_config_named_provider_target_on_loopback_is_refused_until_allowlisted() {
+fn a_config_named_provider_target_on_loopback_is_refused_until_its_own_route_is_authorized() {
     use busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;
     worker().block_on(async {
         let (port, accepted) = counting_echo().await;
         let target = format!("model.test:{port}");
         let names = || Arc::new(Table(vec![("model.test", [127, 0, 0, 1].into())]));
-        let strict = connector_over(&[], names(), Arc::default());
+        let strict = connector_over(true, names(), Arc::default());
         strict
             .declare_need_to(OWNER, NEED, "bytes", EGRESS_PROVIDER, &target)
             .expect("the provider need declares");
@@ -647,13 +654,32 @@ fn a_config_named_provider_target_on_loopback_is_refused_until_allowlisted() {
         assert_eq!(read_direct(&strict, id).await, Err(ConnError::Refused));
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(accepted.load(Ordering::SeqCst), 0, "nothing was dialled");
-        let allowed = connector_over(&["model.test"], names(), Arc::default());
+        let allowed = connector_over(true, names(), Arc::default());
         allowed
             .declare_need_to(OWNER, NEED, "bytes", EGRESS_PROVIDER, &target)
             .expect("the provider need declares");
+        allowed
+            .anchor(
+                OWNER,
+                NEED,
+                "provider",
+                &target,
+                &busbar_contract::transport::trust::Anchors {
+                    private_reach: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         let id = allowed
-            .open(OWNER, NEED, &OpenDesc::default())
-            .expect("the allowlisted target opens");
+            .open(
+                OWNER,
+                NEED,
+                &OpenDesc {
+                    member: "provider",
+                    ..OpenDesc::default()
+                },
+            )
+            .expect("the authorized route opens");
         assert_eq!(allowed.write(OWNER, id, b"prov", false, false), Ok(4));
         assert_eq!(read_direct(&allowed, id).await.expect("the echo"), b"prov");
         assert_eq!(accepted.load(Ordering::SeqCst), 1);

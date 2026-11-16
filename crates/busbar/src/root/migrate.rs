@@ -236,21 +236,36 @@ pub(crate) async fn finish_settled(
     settled: Vec<busbar_migrate::Settled>,
     core: Option<std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>>,
 ) -> Result<Option<Written>, String> {
+    finish_settled_checked(settled, core, std::sync::Arc::new(|_| Ok(()))).await
+}
+
+/// The admitted images' pure candidate check runs again inside the guarded writer after LIFT.
+pub(crate) async fn finish_settled_checked(
+    settled: Vec<busbar_migrate::Settled>,
+    core: Option<std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>>,
+    candidate: std::sync::Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>,
+) -> Result<Option<Written>, String> {
     let Some(plan) = PENDING.get() else {
         return Ok(None);
     };
     let runtime = tokio::runtime::Handle::current();
     let config = CONFIG_PATH.get().cloned().unwrap_or_default();
-    tokio::task::spawn_blocking(move || match core {
-        // 5S, 5d and 5C over the opened store (§A6 "Attempts").
-        Some(core) => crate::root::migrate_records::write_with_attempt(
-            &crate::root::migrate_records::Store::new(core, runtime),
-            plan,
-            &settled,
-            &strict_parse,
-            &config,
-        ),
-        None => busbar_migrate::write_settled(plan, &settled, &strict_parse),
+    tokio::task::spawn_blocking(move || {
+        let check = |text: &str, catalog: Option<&str>| {
+            strict_parse(text, catalog)?;
+            candidate(text)
+        };
+        match core {
+            // 5S, 5d and 5C over the opened store (§A6 "Attempts").
+            Some(core) => crate::root::migrate_records::write_with_attempt(
+                &crate::root::migrate_records::Store::new(core, runtime),
+                plan,
+                &settled,
+                &check,
+                &config,
+            ),
+            None => busbar_migrate::write_settled(plan, &settled, &check),
+        }
     })
     .await
     .map_err(|error| format!("the config.yaml upgrade did not finish its write: {error}"))?
@@ -536,3 +551,49 @@ fn close_on_exec_from_3() {
 #[cfg(test)]
 #[path = "tests/migrate_seam.rs"]
 mod tests;
+
+/// Read before canonical instances open, so normalization never overwrites a later operator edit.
+pub(crate) fn normalization_source() -> Result<Option<(PathBuf, SecureString)>, String> {
+    if !stamped() {
+        return Ok(None);
+    }
+    CONFIG_PATH
+        .get()
+        .map(|path| {
+            busbar_migrate::read_config(path)
+                .map(|text| (path.clone(), SecureString::from(text)))
+                .map_err(text_of)
+        })
+        .transpose()
+}
+
+/// Validate the complete candidate before treating guarded write failure as an optional normalization.
+pub(crate) async fn normalize_settled(
+    source: Option<(PathBuf, SecureString)>,
+    settled: Vec<busbar_migrate::Settled>,
+    candidate: std::sync::Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>,
+) -> Result<(), String> {
+    let Some((path, seen)) = source else {
+        return Ok(());
+    };
+    tokio::task::spawn_blocking(move || {
+        let applied = busbar_migrate::apply_settled(seen.as_str(), &path, &settled, true, |name| {
+            std::env::var(name).ok()
+        })
+        .map_err(text_of)?;
+        strict_parse(applied.text(), None)?;
+        candidate(applied.text())?;
+        let wanted = SecureString::from(applied.text());
+        match busbar_migrate::write_back(&path, &busbar_migrate::digest(seen.as_str()), &|_| {
+            Ok(wanted.as_str().to_owned())
+        }) {
+            Ok(_) => {}
+            Err(_) => tracing::warn!(
+                "the validated normalization could not be written; the authored file is kept"
+            ),
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| "the normalization writer did not finish".to_owned())?
+}

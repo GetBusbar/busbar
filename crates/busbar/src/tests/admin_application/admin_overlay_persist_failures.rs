@@ -73,7 +73,7 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_install_limits()
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["plugins"] = crate::root::test_plugins::config_document(
@@ -228,7 +228,7 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_crede
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["plugins"] = crate::root::test_plugins::config_document(

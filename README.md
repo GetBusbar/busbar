@@ -21,6 +21,8 @@
 <a href="https://discord.com/invite/nnK5evXERp"><img src="https://img.shields.io/badge/Discord-join%20chat-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
+For automated checks and the current coverage-report limits, see [what CI checks](docs/ci.md).
+
 Busbar sits between AI applications and the destinations they can reach:
 
 ```text
@@ -298,9 +300,9 @@ spec:
           # No listener is bound while a replica waits on another's first start of a shared store:
           # the startup budget must cover it (docs/operations.md "First start with several
           # replicas"; raise it for the one-time 1.5.5 upgrade boot).
-          startupProbe:   { httpGet: { path: /healthz, port: http }, periodSeconds: 10, failureThreshold: 100 }
-          readinessProbe: { httpGet: { path: /healthz, port: http } }
-          livenessProbe:  { httpGet: { path: /healthz, port: http } }
+          startupProbe:   { httpGet: { path: /livez, port: http }, periodSeconds: 10, failureThreshold: 100 }
+          readinessProbe: { httpGet: { path: /readyz, port: http } }
+          livenessProbe:  { httpGet: { path: /livez, port: http } }
           resources:
             requests: { cpu: 100m, memory: 32Mi }
             limits:   { memory: 128Mi }

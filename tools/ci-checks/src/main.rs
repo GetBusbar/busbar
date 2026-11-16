@@ -557,13 +557,26 @@ fn rel(root: &Path, file: &Path) -> String {
 
 // ---- crypto-graph -------------------------------------------------------------------------------
 
-/// The root workspace's feature-resolved graph (every feature, target and edge kind), outside the
+/// Both the root and shipped workspace's feature-resolved graphs (every feature, target and edge kind), outside the
 /// seam: cargo's own resolver decides what builds. `Cargo.lock` alone over-reports: it also records
 /// an optional dependency that only a weak feature names (rustls-webpki's `alloc = ["ring?/alloc"]`
 /// keeps a `ring` entry that no build compiles). Then the facade's own graph without the backend:
 /// a private (FIPS) build swaps the backend and keeps the facade, so a backend-only crate reached
 /// from the facade would enter that build too.
 fn crypto_graph(root: &Path) -> Result<Vec<String>, String> {
+    let mut findings = crypto_workspace_graph(root)?;
+    let shipped = root.join("dist/default");
+    if shipped.join("Cargo.toml").is_file() {
+        findings.extend(
+            crypto_workspace_graph(&shipped)?
+                .into_iter()
+                .map(|finding| format!("dist/default: {finding}")),
+        );
+    }
+    Ok(findings)
+}
+
+fn crypto_workspace_graph(root: &Path) -> Result<Vec<String>, String> {
     let outside = cargo_tree(
         root,
         &[

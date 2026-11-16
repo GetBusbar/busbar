@@ -71,7 +71,7 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -276,7 +276,7 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
     )
     .unwrap();
     let mut unsafe_plugins = plugins::trusted_config(&directory);
-    unsafe_plugins.trust.allow_unsigned = true;
+    unsafe_plugins.trust.allow_untrusted = true;
     unsafe_plugins.dir = directory
         .join("must-not-be-opened")
         .to_string_lossy()

@@ -273,11 +273,11 @@ diagnostics! {
         "A plugin declares billable classes for a configured lane, but that lane lacks one or more rates. Startup continues and raw counts remain available. With a present card, missing classes remain unpriced; a rate on another lane does not price them. With no card for the plane, usage-based pricing is disabled. An explicit zero rate is a configured free class, not a missing rate. Class-parent relationships are reporting and cap projections, not inherited prices.",
         "Configure the named lane and classes in the plane's rate_card. Use an explicit zero only for deliberately free usage. Invalid rates, unknown class names and other structural mistakes still prevent startup.";
 
-    /// An `advanced.allow_destinations` entry names a cloud-metadata destination, which no configuration admits.
-    CONFIG_DESTINATION_NAMES_METADATA = 3134, Config, Fatal, "config-destination-names-metadata", "1.6.0", false,
+    /// RETIRED: the global destination allowlist was removed; metadata is always refused.
+    CONFIG_DESTINATION_NAMES_METADATA = 3134, Config, Fatal, "config-destination-names-metadata", "1.6.0", true,
         "An allowlist entry names a cloud-metadata destination",
-        "An `advanced.allow_destinations` entry is a cloud-metadata host name (such as `metadata.google.internal`), a metadata address (such as `169.254.169.254`, `fd00:ec2::254` or an IPv6 link-local address), or a /32 or /128 network equal to one. Cloud metadata is refused for every outbound connection, in every egress class, and no configuration admits it, so the entry is refused at startup rather than silently ignored. A wider network that merely covers a metadata address (such as `169.254.0.0/16`) loads, and still never admits the metadata address.",
-        "Remove the entry named in the message. A workload that needs cloud credentials uses workload-identity federation (IRSA, AKS workload identity, GKE workload identity federation) through a projected token file, never the instance metadata endpoint.";
+        "RETIRED. The global advanced.allow_destinations setting was removed. Private reach is owned by a declared registration or core-selected provider route. No route grant admits cloud metadata.",
+        "Remove advanced.allow_destinations. Set allow_private only on the declared registration that requires private reach; metadata stays refused.";
 
     /// A retired 1.5.5 cloud-metadata carve-out key is set; no configuration admits cloud metadata.
     CONFIG_METADATA_CARVE_OUT_RETIRED = 3136, Config, Fatal, "config-metadata-carve-out-retired", "1.6.0", false,
@@ -321,11 +321,11 @@ diagnostics! {
         "A plane registration (an MCP server under `tools:`, an A2A agent under `agents:`) sets `allow_private`. 1.6.0 has one private-address policy for every outbound connection, `advanced.block_private_addresses` with `advanced.allow_destinations`; a per-registration switch that lifted it for one plugin is retired. The configuration is refused, naming the registration, rather than read with the switch ignored or applied.",
         "Delete `allow_private` and add the host (or its address) to `advanced.allow_destinations`. A cloud-metadata address stays refused whatever is listed.";
 
-    /// A provider URL names a private or loopback host the destination guard refuses (1.5.5 upgrade).
-    CONFIG_PROVIDER_DESTINATION_REFUSED = 3025, Config, Actionable, "config-provider-destination-refused", "1.6.0", false,
+    /// RETIRED: configured providers retain private reach on their own core-selected origins.
+    CONFIG_PROVIDER_DESTINATION_REFUSED = 3025, Config, Actionable, "config-provider-destination-refused", "1.6.0", true,
         "A provider URL names a private or loopback host the destination guard refuses",
-        "A provider's `base_url` or `token_url` names a private or loopback address (an RFC 1918, loopback, link-local, CGNAT or unique-local literal, or the `localhost` name), and `advanced.block_private_addresses` is on (the default) and `advanced.allow_destinations` does not name it. The destination guard refuses every request to it, so the provider would fail on its first request rather than at startup. 1.5.5 had no such guard. Emitted once per URL at config load, naming the provider, the key and the host.",
-        "Add exactly that host to `advanced.allow_destinations`, or point the provider at a public address. Turning `block_private_addresses` off also admits it, and every other private address with it.";
+        "RETIRED. Configured providers retain private reach on their core-selected base/token routes. The grant is restricted to those origins and never becomes a global hostname permission. Metadata remains refused.",
+        "Nothing emits this code. Review the configured provider route; arbitrary requests and strict OPEN_WEB checks do not inherit its private reach.";
 
     /// RETIRED: a metadata host-list entry that names no host is refused at startup, not warned about.
     CONFIG_METADATA_ENTRY_NAMES_NO_HOST = 3024, Config, Actionable, "config-metadata-entry-names-no-host", "1.6.0", true,
@@ -634,7 +634,7 @@ diagnostics! {
     /// A plugin was loaded but its signature is UNVERIFIED, permitted by an explicit plugins.trust opt-in. Lives in `preflight.rs`, but the subject is plugin trust, so it is a 6000 code.
     PLUGIN_LOADED_UNVERIFIED = 6003, Plugins, Actionable, "plugin-loaded-unverified", "1.6.0", false,
         "Plugin loaded UNVERIFIED (permitted by an explicit plugins.trust opt-in)",
-        "A plugin was loaded even though its signature is UNVERIFIED — its code is running unauthenticated, permitted only because an explicit `plugins.trust` opt-in (`allow_unsigned`/`allow_third_party`) let it through. Security-relevant: unverified plugin code runs in-process with busbar's privileges. Emitted once per such plugin at boot.",
+        "A plugin was loaded even though its signature is UNVERIFIED — its code is running unauthenticated, permitted only because an explicit `plugins.trust` opt-in (`allow_untrusted`) let it through. Security-relevant: unverified plugin code runs in-process with busbar's privileges. Emitted once per such plugin at boot.",
         "Prefer a signed artifact from a trusted publisher and remove the `plugins.trust` opt-in once you no longer need it. If running unverified is a deliberate, understood choice (e.g. a locally-built plugin), the opt-in is what keeps it explicit.";
 
     /// The RAM (ephemeral) store was resolved while a STATEFUL plane (one carrying per-task state) is configured, so in-flight plane task state is dropped on restart.
@@ -977,10 +977,10 @@ diagnostics! {
         "RETIRED. Nothing emits this code: the engine keeps no plane task store.",
         "Nothing emits this code.";
 
-    /// `entitlement.check` named a scope kind the calling plane did not declare; the answer is NOT_ENTITLED.
+    /// A scope authorization check named a scope kind the calling plane did not declare.
     ENTITLEMENT_UNDECLARED_SCOPE_KIND = 8021, Governance, BenignRecurring, "entitlement-undeclared-scope-kind", "1.6.0", false,
         "An entitlement check named a scope kind its plane did not declare",
-        "A plane asked whether the unit's principal is entitled to a target whose scope kind is not among the scope kinds the plane's tail declares. The kernel answers NOT_ENTITLED without consulting the principal's grants.",
+        "A plane asked whether the unit's principal is entitled to a target whose scope kind is not among the scope kinds the plane's tail declares. The kernel denies access without consulting the principal's grants.",
         "Declare the scope kind in the plane's tail, or correct the target the plane asks about.";
 
     ADMIN_STORE_OPERATION_FAILED = 1006, Durability, Actionable, "admin-store-operation-failed", "1.6.0", false,
@@ -1851,7 +1851,7 @@ diagnostics! {
     EGRESS_DIAL_REFUSED = 5051, Proxy, BenignRecurring, "egress-dial-refused", "1.6.0", false,
         "An outbound dial was refused",
         "busbar refused an outbound connection: the destination guard refused the host or an address it answered, plaintext was not admitted to it (BUSBAR-3141), or no trust anchor applies (BUSBAR-3140). The line carries the verdict, the class, the host, the owning plugin and need; it is rate-limited per host and reason, and each refusal writes one `egress.dial_refused` audit record.",
-        "If the destination is intended, add it to `advanced.allow_destinations` (private hosts), use TLS, or list its CA under `advanced.tls`.";
+        "For a private registration target, set allow_private on that declared registration. Configured provider reach applies only to its own selected base/token origins. Use TLS and configure its CA under advanced.tls when needed; metadata and strict OPEN_WEB checks remain enforced.";
 
     /// An `advanced.tls` trust anchor expired at runtime and was withdrawn.
     EGRESS_TLS_ANCHOR_EXPIRED_WITHDRAWN = 5048, Proxy, Actionable, "egress-tls-anchor-expired-withdrawn", "1.6.0", false,

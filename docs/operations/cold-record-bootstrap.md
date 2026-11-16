@@ -19,10 +19,12 @@ While that boundary holds:
 
 1. Identify the effective store configuration and the instance label. Capture a stable,
    public identity row from the actual backing database/namespace using its operator
-   tooling. Its schema, raw key, and raw value form the store witness. If the fresh
-   store has no identity row, provision a random identity row with trusted store tooling
-   during maintenance. The witness must be present and unique to that store, not an
-   absent row or a shared constant. Never use a credential as the witness.
+   tooling. Its schema, raw key, and raw value form the store witness. The schema must be
+   one of the core record schemas busbar compiles in (`busbar.node.v1`, `busbar.keyset.v1`,
+   `busbar.plugin_floor.v1`, `busbar.release_keys_floor.v1`, `busbar.config.overlay.v1`,
+   `busbar.principal-transition.v1`); a plugin instance's own row, or any other schema, is
+   refused. The witness must be present and unique to that store, not an absent row or a
+   shared constant. Never use a credential as the witness.
 2. Create a private, operator-controlled JSON receipt. The format is below. Use a fresh
    random 16-byte epoch for every attempted cold boot. The namespace is the hex of
    `u16_be(instance_utf8_length) || instance_utf8`. The store fingerprint is SHA-256 of
@@ -55,7 +57,7 @@ Example shape (replace every placeholder with measured values):
   "namespace_hex": "hex-of-length-prefixed-instance-label",
   "store_config_sha256": "sha256-of-effective-store-json",
   "store_witness": {
-    "schema": "operator-chosen-public-identity-schema",
+    "schema": "busbar.node.v1",
     "key_hex": "hex-of-existing-identity-key",
     "value_hex": "hex-of-existing-nonempty-identity-value"
   },

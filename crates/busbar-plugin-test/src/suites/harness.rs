@@ -7,7 +7,7 @@
 //! (RECORD), the OPEN/FETCH needs it made, the log lines it emitted and every refusal an open answered.
 //!
 //! The registry arms (C-ALIAS, C-BLIND, C-ERRORS, C-ADMIT-UNLOAD) admit more than one image into one registry
-//! ([`Harness::admit_all`], [`Harness::add`]) and open any of them by its `module:` word
+//! ([`Harness::admit_all`]) and open any of them by its `module:` word
 //! ([`Harness::spec_for`]); an image the caller admitted itself (a dropped-in one, through the loader's `admit`)
 //! comes in through [`Harness::admit_admitted`].
 //!
@@ -35,7 +35,8 @@ use busbar_plugin_abi::plugin::Plugin;
 use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::admit::{admit_header, admit_linked, Admitted};
 use busbar_plugin_loader::instance::{
-    Ceilings, DeclaredEndpoint, InstanceSpec, OpenError, OpenedPort, PluginCode, Registry, Settled,
+    Ceilings, DeclaredEndpoint, ImagesBuilder, InstanceSpec, OpenError, OpenedPort, PluginCode,
+    Registry, Settled, SlotTable,
 };
 use busbar_plugin_loader::refusal::{Refusal, RefusalCode};
 use busbar_ports::auth::AuthPort;
@@ -428,9 +429,24 @@ impl MemBinder {
         replace(&mut doc, paths[1], TRUST, &mut bound.trust, &present)?;
         record_refs(&mut doc, paths[3], &mut bound.refs)?;
         bound.ref_paths = paths[3].iter().map(|p| (*p).to_owned()).collect();
+        #[cfg(feature = "target-sockets")]
+        let socket_doc = doc.clone();
         // Last, as in core's binder: a dest at `""` is the whole bag.
         replace(&mut doc, paths[2], DEST, &mut bound.dests, &present)?;
         let out = facade::to_vec(&doc).map_err(|_| BindError::TooMany)?;
+        #[cfg(feature = "target-sockets")]
+        if let Some(needs) = &self.needs {
+            if let Some(host) = needs.socket_report() {
+                let mut values = crate::sockets::Bindings {
+                    trusts: Vec::new(),
+                    clients: Vec::new(),
+                };
+                collect_socket_bindings(&socket_doc, "", &bound, needs, host, &mut values)?;
+                needs
+                    .bind_sockets(instance, values)
+                    .map_err(|_| bad_reference("", "socket trust binding refused"))?;
+            }
+        }
         self.table().insert(instance, bound);
         Ok(out)
     }
@@ -497,6 +513,10 @@ impl ConfigBinder for MemBinder {
     }
 
     fn unbind(&self, instance: u64) {
+        #[cfg(feature = "target-sockets")]
+        if let Some(needs) = &self.needs {
+            needs.unbind_sockets(instance);
+        }
         self.table().remove(&instance);
     }
 
@@ -706,10 +726,10 @@ impl Harness {
     /// Admit `plugin` (the `&'static Plugin` a plugin crate's `PLUGIN.plugin()` hands the frozen suite
     /// signatures; `LinkedPlugin::plugin`) into a fresh registry over `needs`, the real `HOST` static and a
     /// `MemBinder`, with `Ceilings::DEFAULT`. Admission runs every step `admit_linked` runs (null and stamp
-    /// checks, compatibility) and `Registry::add` (describe, name conflicts, error book): a refusal comes back
+    /// checks, compatibility) and `ImagesBuilder::admit` (describe, name conflicts, error book): a refusal comes back
     /// as it is. Capture of log lines starts here.
     pub fn admit(plugin: &'static Plugin, needs: FakeNeeds) -> Result<Harness, Refusal> {
-        Self::start(|| admit_header(plugin), needs)
+        Self::start(|| admit_header(plugin).map(|image| vec![image]), needs)
     }
 
     /// [`Harness::admit`] for a caller that holds the `LinkedPlugin` static itself.
@@ -717,44 +737,28 @@ impl Harness {
         linked: &'static LinkedPlugin,
         needs: FakeNeeds,
     ) -> Result<Harness, Refusal> {
-        Self::start(|| admit_linked(linked), needs)
+        Self::start(|| admit_linked(linked).map(|image| vec![image]), needs)
     }
 
     /// Every image of `plugins` admitted into one registry, in order, as [`Harness::admit`] then
-    /// [`Harness::add`] for each further one: the first refusal comes back as it is. [`Harness::identity`] and
+    /// image admission for each further one: the first refusal comes back as it is. [`Harness::identity`] and
     /// [`Harness::kind`] stay the first image's; open another by its word with [`Harness::spec_for`].
     pub fn admit_all(plugins: &[&'static Plugin], needs: FakeNeeds) -> Result<Harness, Refusal> {
-        let Some((first, rest)) = plugins.split_first() else {
-            return Err(Refusal::new(
-                RefusalCode::Integrity,
-                "images",
-                "no image",
-                "at least one image",
-            ));
-        };
-        let mut harness = Self::admit(*first, needs)?;
-        for plugin in rest {
-            harness.add(*plugin)?;
-        }
-        Ok(harness)
-    }
-
-    /// One more image into this harness's registry: `admit_header` and `Registry::add` (describe, NameConflict
-    /// over every admitted identity and `former_names` word, the error book). A refusal leaves the registry as it
-    /// was.
-    pub fn add(&mut self, plugin: &'static Plugin) -> Result<(), Refusal> {
-        self.registry.add(admit_header(plugin)?)
+        Self::start(
+            || plugins.iter().map(|plugin| admit_header(plugin)).collect(),
+            needs,
+        )
     }
 
     /// A harness over an image the caller admitted itself (a dropped-in image through the loader's `admit`, or
-    /// `busbar_plugin_loader::test_host::admit_bytes`): `Registry::add` and everything [`Harness::admit`] does
+    /// `busbar_plugin_loader::test_host::admit_bytes`): `ImagesBuilder::admit` and everything [`Harness::admit`] does
     /// after admission.
     pub fn admit_admitted(admitted: Admitted, needs: FakeNeeds) -> Result<Harness, Refusal> {
-        Self::start(move || Ok(admitted), needs)
+        Self::start(move || Ok(vec![admitted]), needs)
     }
 
     fn start(
-        admit: impl FnOnce() -> Result<Admitted, Refusal>,
+        admit: impl FnOnce() -> Result<Vec<Admitted>, Refusal>,
         needs: FakeNeeds,
     ) -> Result<Harness, Refusal> {
         let logs = Arc::new(LogBook::default());
@@ -769,15 +773,28 @@ impl Harness {
         })?;
         let needs = Arc::new(needs);
         let binder = Arc::new(MemBinder::over(Arc::clone(&needs)));
-        let mut registry = Registry::new(
-            &HOST,
+        let admitted = admit()?;
+        let first = admitted.first().ok_or_else(|| {
+            Refusal::new(
+                RefusalCode::Integrity,
+                "images",
+                "no image",
+                "at least one image",
+            )
+        })?;
+        let (identity, kind) = (first.identity().to_owned(), first.kind());
+        let slots = Arc::new(SlotTable::new());
+        busbar_plugin_loader::instance::install_sinks(&slots);
+        let mut images = ImagesBuilder::new(&HOST, slots, Ceilings::DEFAULT);
+        for image in admitted {
+            images.admit(image)?;
+        }
+        let registry = Registry::new(
+            images.finish(),
             Arc::clone(&needs),
             Arc::clone(&binder) as Arc<dyn ConfigBinder>,
-            Ceilings::DEFAULT,
         );
-        let admitted = admit()?;
-        let (identity, kind) = (admitted.identity().to_owned(), admitted.kind());
-        registry.add(admitted)?;
+
         Ok(Harness {
             registry,
             needs,
@@ -838,6 +855,7 @@ impl Harness {
         config: &'a [u8],
     ) -> InstanceSpec<'a> {
         InstanceSpec {
+            purpose: busbar_plugin_loader::instance::OpenPurpose::Canonical,
             identity: module,
             name,
             config_json: config,
@@ -861,7 +879,12 @@ impl Harness {
     /// for the generic match ([`Harness::undeclared`]).
     pub fn check(&self, name: &str, config: &[u8]) -> Result<(), OpenError> {
         let spec = self.spec(name, config);
-        let declared = self.noted(self.block_on(self.registry.check_endpoints(&spec)))?;
+        self.check_spec(&spec)
+    }
+
+    /// The typed store facade supplies limits without bypassing endpoint or refusal observations.
+    pub(crate) fn check_spec(&self, spec: &InstanceSpec<'_>) -> Result<(), OpenError> {
+        let declared = self.noted(self.block_on(self.registry.check_endpoints(spec)))?;
         self.declared
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -908,10 +931,47 @@ impl Harness {
         }
     }
 
+    /// Open an unstamped legacy bag; CONFIG is required even when its contents are unchanged.
+    pub fn open_converting(&self, name: &str, config: &[u8]) -> Result<OpenedPort, OpenError> {
+        let mut spec = self.spec(name, config);
+        spec.purpose = busbar_plugin_loader::instance::OpenPurpose::ConvertUnstamped;
+        self.noted(self.block_on(async {
+            match self.kind {
+                KindCode::Store => self.registry.open_store(&spec).await.map(OpenedPort::Store),
+                KindCode::Secret => self
+                    .registry
+                    .open_secret(&spec)
+                    .await
+                    .map(OpenedPort::Secret),
+                KindCode::Auth => self.registry.open_auth(&spec).await.map(OpenedPort::Auth),
+                KindCode::Hook => self.registry.open_hook(&spec).await.map(OpenedPort::Hook),
+                KindCode::Export => self
+                    .registry
+                    .open_export(&spec)
+                    .await
+                    .map(OpenedPort::Export),
+                KindCode::Plane => self.registry.open_plane(&spec).await.map(OpenedPort::Plane),
+                KindCode::Transport => self
+                    .registry
+                    .open_transport(&spec)
+                    .await
+                    .map(OpenedPort::Transport),
+            }
+        }))
+    }
+
     /// A store needs `registry().set_store_seal(..)` first (the kernel's seal factory).
     pub fn open_store(&self, name: &str, config: &[u8]) -> Result<StoreHandle, OpenError> {
         let spec = self.spec(name, config);
-        self.noted(self.block_on(self.registry.open_store(&spec)))
+        self.open_store_spec(&spec)
+    }
+
+    /// Open with an explicit spec through the same refusal recorder as the ordinary harness.
+    pub(crate) fn open_store_spec(
+        &self,
+        spec: &InstanceSpec<'_>,
+    ) -> Result<StoreHandle, OpenError> {
+        self.noted(self.block_on(self.registry.open_store(spec)))
     }
 
     pub fn open_secret(&self, name: &str, config: &[u8]) -> Result<Arc<dyn SecretPort>, OpenError> {
@@ -1279,4 +1339,64 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, BindError::NotAReference { .. }));
     }
+}
+
+#[cfg(feature = "target-sockets")]
+fn collect_socket_bindings(
+    node: &Value,
+    at: &str,
+    bound: &Bound,
+    needs: &FakeNeeds,
+    host: &crate::sockets::SocketTargets,
+    out: &mut crate::sockets::Bindings,
+) -> Result<(), BindError> {
+    if let Some(handle) = node.get(TRUST).and_then(count) {
+        if host.wants_trust(at) {
+            let index = usize::try_from(handle)
+                .ok()
+                .and_then(|h| h.checked_sub(1))
+                .ok_or(BindError::TooMany)?;
+            let pem = bound
+                .trust
+                .get(index)
+                .and_then(JsonValueTrait::as_str)
+                .ok_or_else(|| bad_reference(at, "socket trust must be PEM text"))?;
+            out.trusts.push((
+                at.to_owned(),
+                u32::try_from(handle).map_err(|_| BindError::TooMany)?,
+                pem.to_owned(),
+            ));
+        }
+        return Ok(());
+    }
+    if let Some(handle) = node.get(SECRET).and_then(count) {
+        if host.wants_client(at) {
+            let pem = needs
+                .secret_at(at)
+                .ok_or_else(|| bad_reference(at, "socket client identity is not scripted"))?;
+            out.clients.push((
+                at.to_owned(),
+                u32::try_from(handle).map_err(|_| BindError::TooMany)?,
+                SecureVec::from(pem),
+            ));
+        }
+        return Ok(());
+    }
+    if let Some(members) = node.as_object() {
+        for (key, value) in members.iter() {
+            collect_socket_bindings(
+                value,
+                &format!("{at}/{}", escape(key)),
+                bound,
+                needs,
+                host,
+                out,
+            )?;
+        }
+    } else if let Some(items) = node.as_array() {
+        for (index, value) in items.iter().enumerate() {
+            collect_socket_bindings(value, &format!("{at}/{index}"), bound, needs, host, out)?;
+        }
+    }
+    Ok(())
 }

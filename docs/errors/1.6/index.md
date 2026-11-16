@@ -66,7 +66,7 @@ The thousands digit is the area.
 | [BUSBAR-3021](/docs/1.6/errors/BUSBAR-3021/) | A deprecated environment variable is set and still honored — RETIRED *(retired)* | 1.5.0 |
 | [BUSBAR-3023](/docs/1.6/errors/BUSBAR-3023/) | Config overlay rejected at read (the reason, naming the key and the file) — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-3024](/docs/1.6/errors/BUSBAR-3024/) | A metadata host-list entry names no host (it matches nothing and is dropped) — RETIRED *(retired)* | 1.6.0 |
-| [BUSBAR-3025](/docs/1.6/errors/BUSBAR-3025/) | A provider URL names a private or loopback host the destination guard refuses | 1.6.0 |
+| [BUSBAR-3025](/docs/1.6/errors/BUSBAR-3025/) | A provider URL names a private or loopback host the destination guard refuses *(retired)* | 1.6.0 |
 | [BUSBAR-3026](/docs/1.6/errors/BUSBAR-3026/) | Declared billable classes have no configured rate | 1.6.0 |
 | [BUSBAR-3027](/docs/1.6/errors/BUSBAR-3027/) | A 1.5.5 file overlay held settings this Store had not imported — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-3028](/docs/1.6/errors/BUSBAR-3028/) | A 1.5.5 overlay input was not read — RETIRED *(retired)* | 1.6.0 |
@@ -105,7 +105,7 @@ The thousands digit is the area.
 | [BUSBAR-3131](/docs/1.6/errors/BUSBAR-3131/) | An export sink definition is invalid | 1.6.0 |
 | [BUSBAR-3132](/docs/1.6/errors/BUSBAR-3132/) | An outbound destination is refused by the egress policy | 1.6.0 |
 | [BUSBAR-3133](/docs/1.6/errors/BUSBAR-3133/) | A login attempt limit setting is invalid | 1.6.0 |
-| [BUSBAR-3134](/docs/1.6/errors/BUSBAR-3134/) | An allowlist entry names a cloud-metadata destination | 1.6.0 |
+| [BUSBAR-3134](/docs/1.6/errors/BUSBAR-3134/) | An allowlist entry names a cloud-metadata destination *(retired)* | 1.6.0 |
 | [BUSBAR-3135](/docs/1.6/errors/BUSBAR-3135/) | A registration still carries the retired per-registration private-address switch | 1.6.0 |
 | [BUSBAR-3136](/docs/1.6/errors/BUSBAR-3136/) | A retired cloud-metadata carve-out key is set | 1.6.0 |
 | [BUSBAR-3137](/docs/1.6/errors/BUSBAR-3137/) | An advanced.tls trust anchor is not a usable CA | 1.6.0 |

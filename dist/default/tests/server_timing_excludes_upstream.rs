@@ -185,8 +185,6 @@ fn write_configs(
         format!(
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
-advanced:
-  allow_destinations: ["127.0.0.1"]
   response_headers:
     server_timing: {server_timing}
 store: {{module: memory}}
