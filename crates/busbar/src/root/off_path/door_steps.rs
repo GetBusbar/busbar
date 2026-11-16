@@ -3123,3 +3123,66 @@ impl std::fmt::Debug for StyleParams {
             .finish()
     }
 }
+
+#[cfg(test)]
+mod owned_reader_tests {
+    use super::Rules;
+    use busbar_kernel::{appbuild::RootRules, config};
+    use std::sync::Arc;
+
+    struct Reader;
+    impl RootRules for Reader {
+        fn grammar(
+            &self,
+            _: &config::grammar::PhaseOneIn<'_>,
+        ) -> Result<config::Grammar, config::GrammarRefusal> {
+            Err(config::GrammarRefusal("candidate image refused".into()))
+        }
+        fn check(&self, _: &config::RootCfg) -> Result<(), String> {
+            Ok(())
+        }
+        fn held_document(
+            &self,
+            _: &std::path::Path,
+        ) -> Option<busbar_contract::secure::SecureString> {
+            Some("held candidate".into())
+        }
+        fn secret_resolver<'a>(
+            &'a self,
+            _: &'a config::RootCfg,
+            _: &'a config::PluginsCfg,
+        ) -> busbar_plugin_abi::host_side::caller::BoxFut<
+            'a,
+            Result<Arc<config::secret::SecretResolver>, String>,
+        > {
+            Box::pin(async { Err("candidate boot projection refused".into()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn serving_rules_preserve_the_owned_reader_refusals() {
+        let rules = Rules::with_reader(None, Arc::new(Reader));
+        let plugins = config::PluginsCfg::default();
+        assert_eq!(
+            rules
+                .grammar(&config::grammar::PhaseOneIn::of(&plugins))
+                .err()
+                .unwrap()
+                .0,
+            "candidate image refused"
+        );
+        assert_eq!(
+            rules
+                .held_document(std::path::Path::new("config.yaml"))
+                .unwrap()
+                .as_str(),
+            "held candidate"
+        );
+        let deploy = busbar_contract::yaml::from_str("{}").unwrap();
+        let cfg = config::resolve(&deploy, &Default::default()).unwrap();
+        assert_eq!(
+            rules.secret_resolver(&cfg, &plugins).await.err().unwrap(),
+            "candidate boot projection refused"
+        );
+    }
+}
