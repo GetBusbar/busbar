@@ -128,3 +128,29 @@ fn the_plugins_yaml_manifest_job() {
 fn every_word_resolves_module_in_old_and_current_configs() {
     todo!("owner: W1-K9 (C-ALIAS)")
 }
+
+/// Image grammar is available without a binder or an instance Needs implementation. Extending a candidate
+/// cannot mutate an already-frozen generation, and duplicate admission still refuses by name.
+#[test]
+fn described_images_are_available_before_registry_construction() {
+    use busbar_plugin_abi::host_side::vt::HOST;
+    use busbar_plugin_loader::admit::admit_linked;
+    use busbar_plugin_loader::instance::{Ceilings, ImagesBuilder, SlotTable};
+    use std::sync::Arc;
+
+    let slots = Arc::new(SlotTable::new());
+    let mut builder = ImagesBuilder::new(&HOST, slots, Ceilings::DEFAULT);
+    builder
+        .admit(admit_linked(&fx::alias::PLUGIN).expect("linked header"))
+        .expect("describe");
+    let images = builder.finish();
+    assert_eq!(images.identity_of(ALIAS_WORDS[0]).as_deref(), Some(ALIAS));
+    assert!(images.described(ALIAS).is_some());
+    let mut candidate = images.extend();
+    let refused = candidate
+        .admit(admit_linked(&fx::alias_shared_word::PLUGIN).expect("linked header"))
+        .expect_err("a conflicting candidate must refuse");
+    assert_eq!(refused.code, RefusalCode::NameConflict);
+    assert_eq!(images.identity_of("fixture-alias-c"), None);
+    assert_eq!(images.identity_of(ALIAS_WORDS[0]).as_deref(), Some(ALIAS));
+}
