@@ -124,6 +124,12 @@ fn unanswered<O>(name: &str, budget: Duration, a: Answered<O>) -> String {
     }
 }
 
+/// A hook's failure text as the operator's log may carry it. The text is the plugin's own: it
+/// is not trusted to be free of line breaks or terminal escapes, nor to be short.
+fn failure_text(raw: &str) -> String {
+    raw.to_string()
+}
+
 /// The hook's reject message, sanitised and capped as 1.5.5 did, with a cut reported against
 /// `hook`. `reject_of` caps it again; at most 300 chars already, that is the identity.
 fn reported_reject(hook: &str, raw: &str) -> String {
@@ -282,10 +288,10 @@ impl RoutingPolicy for HookPolicy {
                 ..
             } => lower_transform(&self.name, &out, &frame),
             Answered::Answer { error, .. } => TransformOutcome::Failed {
-                message: error.unwrap_or_default(),
+                message: failure_text(&error.unwrap_or_default()),
             },
             other => TransformOutcome::Failed {
-                message: unanswered(&self.name, budget, other),
+                message: failure_text(&unanswered(&self.name, budget, other)),
             },
         }
     }
@@ -357,3 +363,7 @@ mod wire_tests;
 #[cfg(test)]
 #[path = "tests/statics_tests.rs"]
 mod statics_tests;
+
+#[cfg(test)]
+#[path = "tests/failure_text_tests.rs"]
+mod failure_text_tests;
