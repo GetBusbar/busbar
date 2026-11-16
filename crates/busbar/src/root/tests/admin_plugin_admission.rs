@@ -112,7 +112,7 @@ fn strict_posture() -> busbar_kernel::config::PluginsCfg {
 
 fn unsigned_ok_posture() -> busbar_kernel::config::PluginsCfg {
     let mut cfg = busbar_kernel::config::PluginsCfg::default();
-    cfg.trust.allow_unsigned = true;
+    cfg.trust.allow_untrusted = true;
     cfg
 }
 
@@ -284,7 +284,7 @@ async fn serve_with_plugins_dir_and_hook_env(
 
 fn scanned_hook_env(dir: &std::path::Path) -> busbar_kernel::hooks::HookEnv {
     let policy = crate::root::loader::sign::TrustPolicy {
-        allow_unsigned: true,
+        allow_untrusted: true,
         ..Default::default()
     };
     let registry = crate::root::loader::scan_and_validate(dir, &policy).unwrap();
@@ -527,8 +527,7 @@ async fn install_strict_posture_rejects_unsigned() {
     let (status, b) = install(addr, "x.tar.gz", &tarball).await;
     assert!(
         status == 409
-            && (message(&b).contains("allow_third_party")
-                || message(&b).contains("allow_unsigned")),
+            && (message(&b).contains("allow_untrusted") || message(&b).contains("allow_untrusted")),
         "the rejection names the opt-in flag: {status} {b}"
     );
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
@@ -976,7 +975,7 @@ fn the_root_admission_classes_an_upload_and_writes_nothing() {
     let unsigned = unsigned_tarball(test_manifest("acme-store-u", "u", "acme", "1.0.0"), b"u");
     let admitted = ADMISSION
         .admit_upload(&dir, "u.tar.gz", &unsigned, &unsigned_ok_posture())
-        .expect("an unsigned upload is admitted under allow_unsigned");
+        .expect("an unsigned upload is admitted under allow_untrusted");
     assert_eq!(admitted.judged, Judged::Allowed);
     assert!(!admitted.linked_serves);
     let key = SigningKey::from_bytes(&[13u8; 32]);

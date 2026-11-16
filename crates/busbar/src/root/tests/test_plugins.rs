@@ -239,7 +239,7 @@ pub fn config_document(config: &busbar_kernel::config::PluginsCfg) -> serde_json
         .iter()
         .map(|p| {
             serde_json::json!({
-                "name": p.name, "public_key": p.public_key
+                "name": p.name, "plugins": p.plugins, "keys": p.keys
             })
         })
         .collect();
@@ -258,8 +258,7 @@ pub fn config_document(config: &busbar_kernel::config::PluginsCfg) -> serde_json
         .collect();
     serde_json::json!({
         "enabled": config.enabled, "dir": config.dir, "min_versions": config.min_versions,
-        "trust": {"publishers": publishers, "allow_unsigned": config.trust.allow_unsigned,
-            "allow_third_party": config.trust.allow_third_party}, "fetch": fetch
+        "trust": {"publishers": publishers, "allow_untrusted": config.trust.allow_untrusted}, "fetch": fetch
     })
 }
 

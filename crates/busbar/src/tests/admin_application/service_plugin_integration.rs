@@ -14,12 +14,11 @@ use std::sync::{
 
 pub(super) fn trust_document(config: &PluginsCfg) -> serde_json::Value {
     let publishers: Vec<_> = config.trust.publishers.iter().map(|publisher| {
-        serde_json::json!({"name": publisher.name, "public_key": publisher.public_key})
+        serde_json::json!({"name": publisher.name, "plugins": publisher.plugins, "keys": publisher.keys})
     }).collect();
     serde_json::json!({
         "publishers": publishers,
-        "allow_unsigned": config.trust.allow_unsigned,
-        "allow_third_party": config.trust.allow_third_party,
+        "allow_untrusted": config.trust.allow_untrusted,
     })
 }
 
@@ -313,7 +312,7 @@ async fn install_catalog_remove_roundtrip() {
         rotate.await;
     }
     std::fs::remove_file(directory.join("store.tar.gz")).unwrap();
-    app.plugins_cfg.trust.allow_unsigned = true;
+    app.plugins_cfg.trust.allow_untrusted = true;
     let router =
         busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
