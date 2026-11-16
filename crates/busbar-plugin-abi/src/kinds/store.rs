@@ -301,6 +301,24 @@ pub mod store {
         pub durability: u32,
     }
 
+    // W1-A5: `kind!` (W1-A4) emits these `Pod` impls for every `pods {}` struct; the stub swap deletes them.
+    impl crate::records::Pod for TimeGuard {}
+    impl crate::records::Pod for AttemptId {}
+    impl crate::records::Pod for ReadHead {}
+    impl crate::records::Pod for AddressRec {}
+    impl crate::records::Pod for ScanHead {}
+    impl crate::records::Pod for CandHead {}
+    impl crate::records::Pod for PredicateRec {}
+    impl crate::records::Pod for MutationRec {}
+    impl crate::records::Pod for ReadDone {}
+    impl crate::records::Pod for ValueRec {}
+    impl crate::records::Pod for ScanDone {}
+    impl crate::records::Pod for RowRec {}
+    impl crate::records::Pod for Committed {}
+    impl crate::records::Pod for ClockRec {}
+    impl crate::records::Pod for CellRec {}
+    impl crate::records::Pod for InfoRec {}
+
     pub mod tag {
         /// read request: one READ_HEAD then ADDRESS*.
         pub const READ_HEAD: u16 = 0x0100;
@@ -494,3 +512,367 @@ pub mod store {
         }
     }
 }
+
+/// Plugin-side typed helpers every store shares (STORE-TRANSACTIONS Decision 299 §2.4 "SDK plumbing", r39 "MIN-3
+/// home"; W1-A5). They sit outside the `kind!` block, so they are not FP-hashed: `Verdict`, `SlotRow` with its
+/// packed codec and replay mapping, `holds`, `prelude_order`, the commit decode with its G2 `match` and the
+/// `CommitHead` carrier, and the receipt-era refusal. A store depends on busbar-plugin-abi only, so nothing here
+/// names busbar-contract: the replay mapping yields the wire `Committed` record, not a `Decision`.
+pub mod plumbing {
+    use super::store::{
+        self as wire, AttemptId, CandHead, Committed, MutationRec, PredicateRec, TimeGuard,
+    };
+    use crate::records::{Rec, RecErr, Records, tag};
+
+    /// `physical_version` of a receipt-era dataset; M4 refuses it at `open`.
+    pub const RECEIPT_ERA_VERSION: u32 = 1;
+    /// The one explanation every store gives for a receipt-era dataset.
+    pub const RECEIPT_ERA_REFUSAL: &str =
+        "pre-release receipt-era dataset; recreate it or re-run the 1.5.5 migration";
+
+    /// A recorded evaluation, stored as the wire `COMMIT_*` code.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Verdict {
+        /// `COMMIT_APPLIED`.
+        Applied = 1,
+        /// `COMMIT_CONDITION_CONFLICT`.
+        Conflict = 2,
+        /// `COMMIT_TIME_GUARD_FAILED`.
+        TimeGuard = 3,
+    }
+
+    /// A stored slot row that cannot be decoded.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Corrupt;
+
+    impl Verdict {
+        /// The stored byte.
+        pub fn to_u8(self) -> u8 {
+            self as u8
+        }
+        /// The wire `COMMIT_*` code.
+        pub fn code(self) -> u32 {
+            u32::from(self as u8)
+        }
+        /// Decode a stored byte; anything else is a corrupt row.
+        pub fn from_u8(code: u8) -> Result<Self, Corrupt> {
+            match code {
+                1 => Ok(Self::Applied),
+                2 => Ok(Self::Conflict),
+                3 => Ok(Self::TimeGuard),
+                _ => Err(Corrupt),
+            }
+        }
+    }
+
+    /// One (writer, slot) row: the last evaluated sequence, its fingerprint, verdict and serialization time.
+    /// A missing row is `seq == 0`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct SlotRow {
+        /// Last evaluated lease sequence.
+        pub seq: u64,
+        /// Candidate fingerprint of that evaluation.
+        pub fp: [u8; 32],
+        /// Its verdict.
+        pub verdict: Verdict,
+        /// Its serialization time, in Unix seconds.
+        pub observed: u64,
+    }
+
+    const PACKED_MAGIC: &[u8; 4] = b"BVS1";
+    /// Length of [`SlotRow::encode_packed`].
+    pub const PACKED_LEN: usize = 4 + 8 + 32 + 1 + 8;
+
+    /// What M1 step 2 does with an incoming `(seq, fp)` against the slot's row.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Judgement {
+        /// No row, or an earlier sequence: evaluate and write the row.
+        Fresh,
+        /// Equal sequence and fingerprint: answer the recorded verdict, write nothing.
+        Replay,
+        /// Equal sequence, different fingerprint: `COMMIT_OPID_CONFLICT`, write nothing.
+        OpIdConflict,
+        /// The row holds a later sequence: `COMMIT_STALE`, write nothing.
+        Stale,
+    }
+
+    impl SlotRow {
+        /// The recorded answer an equal-sequence replay returns, at its original time.
+        pub fn replay(&self, authority: [u8; 16]) -> Committed {
+            Committed {
+                code: self.verdict.code(),
+                _r: 0,
+                observed_at: self.observed,
+                authority,
+            }
+        }
+
+        /// Packed value for key-value stores: `'BVS1' | seq LE8 | fp32 | verdict u8 | observed LE8`.
+        pub fn encode_packed(&self) -> [u8; PACKED_LEN] {
+            let mut out = [0; PACKED_LEN];
+            out[..4].copy_from_slice(PACKED_MAGIC);
+            out[4..12].copy_from_slice(&self.seq.to_le_bytes());
+            out[12..44].copy_from_slice(&self.fp);
+            out[44] = self.verdict.to_u8();
+            out[45..].copy_from_slice(&self.observed.to_le_bytes());
+            out
+        }
+
+        /// Decode [`Self::encode_packed`]; any other length, magic or verdict is `Corrupt`.
+        pub fn decode_packed(bytes: &[u8]) -> Result<Self, Corrupt> {
+            let bytes: &[u8; PACKED_LEN] = bytes.try_into().map_err(|_| Corrupt)?;
+            if &bytes[..4] != PACKED_MAGIC {
+                return Err(Corrupt);
+            }
+            let word = |at: usize| {
+                let mut w = [0; 8];
+                w.copy_from_slice(&bytes[at..at + 8]);
+                u64::from_le_bytes(w)
+            };
+            let mut fp = [0; 32];
+            fp.copy_from_slice(&bytes[12..44]);
+            Ok(Self {
+                seq: word(4),
+                fp,
+                verdict: Verdict::from_u8(bytes[44])?,
+                observed: word(45),
+            })
+        }
+    }
+
+    /// M1 step 2 over the slot's current row (`None` = no row).
+    pub fn judge(row: Option<&SlotRow>, seq: u64, fp: &[u8; 32]) -> Judgement {
+        match row {
+            Some(row) if row.seq > seq => Judgement::Stale,
+            Some(row) if row.seq == seq && row.fp == *fp => Judgement::Replay,
+            Some(row) if row.seq == seq => Judgement::OpIdConflict,
+            _ => Judgement::Fresh,
+        }
+    }
+
+    /// One condition against the pre-mutation state: `PREDICATE_ABSENT` needs no live value, `PREDICATE_EXACT`
+    /// needs exactly `expected`; any other tag never holds (the decode already FAULTed it).
+    pub fn holds(tag: u32, expected: &[u8], current: Option<&[u8]>) -> bool {
+        match tag {
+            wire::PREDICATE_ABSENT => current.is_none(),
+            wire::PREDICATE_EXACT => current == Some(expected),
+            _ => false,
+        }
+    }
+
+    /// How an address takes part in M1 step 0.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Use {
+        /// A `read` address: locks its namespace shared.
+        Read,
+        /// A FENCE or PREDICATE: shared; on `GENERATION_NS` it locks the namespace its 16-byte key names (G2).
+        Condition,
+        /// A MUTATION: locks its namespace exclusive.
+        Mutation,
+    }
+
+    /// Step 0's lock set and acquisition order (N12): each namespace once, in byte order, exclusive when any
+    /// item mutates it. Input is `(namespace, key, use)`.
+    pub fn prelude_order<'a>(
+        items: impl IntoIterator<Item = (&'a [u8; 16], &'a [u8], Use)>,
+    ) -> Vec<([u8; 16], bool)> {
+        let mut out: Vec<([u8; 16], bool)> = Vec::new();
+        for (namespace, key, how) in items {
+            let target = match how {
+                Use::Condition if *namespace == wire::GENERATION_NS => {
+                    <[u8; 16]>::try_from(key).unwrap_or(*namespace)
+                }
+                _ => *namespace,
+            };
+            let exclusive = how == Use::Mutation;
+            match out.binary_search_by(|(held, _)| held.cmp(&target)) {
+                Ok(at) => {
+                    if let Some(held) = out.get_mut(at) {
+                        held.1 |= exclusive;
+                    }
+                }
+                Err(at) => out.insert(at, (target, exclusive)),
+            }
+        }
+        out
+    }
+
+    /// One decoded FENCE or PREDICATE: `expected` is empty for `PREDICATE_ABSENT`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Cond<'a> {
+        pub namespace: [u8; 16],
+        pub tag: u32,
+        pub key: &'a [u8],
+        pub expected: &'a [u8],
+    }
+
+    /// One decoded MUTATION. `value` is empty for a Delete or DeleteRange (whose `key` is the prefix and
+    /// `exact_length` the matched key length).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Mut<'a> {
+        pub namespace: [u8; 16],
+        pub tag: u32,
+        pub key: &'a [u8],
+        pub value: &'a [u8],
+        pub exact_length: u64,
+    }
+
+    /// The commit's dedupe key after N1 validation.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum CommitSlot {
+        /// `slot < MAX_SLOTS`, `seq >= 1`.
+        Slotted { slot: u32, seq: u64 },
+        /// `SLOT_SELF_FENCED` with `seq == 0`.
+        SelfFenced,
+    }
+
+    /// The carrier for decoded fences (one, in the SDK): the validated head and the FENCE records.
+    #[derive(Clone)]
+    pub struct CommitHead<'a> {
+        pub id: AttemptId,
+        pub codec: u32,
+        pub guard: TimeGuard,
+        pub slot: CommitSlot,
+        pub fences: Vec<Cond<'a>>,
+    }
+
+    /// A decoded commit candidate, borrowed from the request.
+    #[derive(Clone)]
+    pub struct Commit<'a> {
+        pub head: CommitHead<'a>,
+        pub predicates: Vec<Cond<'a>>,
+        pub mutations: Vec<Mut<'a>>,
+        pub result: &'a [u8],
+    }
+
+    /// Why a commit request is not run.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum CommitErr {
+        /// A malformed buffer or a G2 violation: the caller FAULTs before the store runs.
+        Fault(RecErr),
+        /// N1: a slot and sequence that are neither slotted nor self-fenced: REFUSED.
+        Refused,
+    }
+
+    const SIZE: CommitErr = CommitErr::Fault(RecErr::Size);
+
+    /// The next record, skipping the generic `METRIC` records any answer or request may carry.
+    fn next<'a>(recs: &mut Records<'a>) -> Result<Option<Rec<'a>>, CommitErr> {
+        loop {
+            match recs.next_rec() {
+                None => return Ok(None),
+                Some(Err(e)) => return Err(CommitErr::Fault(e)),
+                Some(Ok(rec)) if rec.tag == tag::METRIC => {}
+                Some(Ok(rec)) => return Ok(Some(rec)),
+            }
+        }
+    }
+
+    /// FENCE or PREDICATE: a `PredicateRec`, its key, then (EXACT only) the expected bytes. G2: a condition on
+    /// `GENERATION_NS` names a namespace, so its key is exactly 16 bytes.
+    fn cond<'a>(rec: &Rec<'a>) -> Result<Cond<'a>, CommitErr> {
+        let (head, tail) = rec.pod_tail::<PredicateRec>().map_err(CommitErr::Fault)?;
+        let key_len = usize::try_from(head.key_len).map_err(|_| SIZE)?;
+        let (key, expected) = tail.split_at_checked(key_len).ok_or(SIZE)?;
+        match head.tag {
+            wire::PREDICATE_ABSENT if expected.is_empty() => {}
+            wire::PREDICATE_EXACT => {}
+            _ => return Err(SIZE),
+        }
+        if head.namespace == wire::GENERATION_NS && key.len() != 16 {
+            return Err(SIZE);
+        }
+        Ok(Cond {
+            namespace: head.namespace,
+            tag: head.tag,
+            key,
+            expected,
+        })
+    }
+
+    /// MUTATION: a `MutationRec`, its key, then (PUT only) the value. G2: a `SLOT_NS` mutation is only
+    /// `DeleteRange{16-byte prefix, exact length 20}`, and `GENERATION_NS` is never mutated.
+    fn mutation<'a>(rec: &Rec<'a>) -> Result<Mut<'a>, CommitErr> {
+        let (head, tail) = rec.pod_tail::<MutationRec>().map_err(CommitErr::Fault)?;
+        let key_len = usize::try_from(head.key_len).map_err(|_| SIZE)?;
+        let (key, value) = tail.split_at_checked(key_len).ok_or(SIZE)?;
+        let shaped = match head.tag {
+            wire::MUTATION_PUT => head.exact_length == 0,
+            wire::MUTATION_DELETE => head.exact_length == 0 && value.is_empty(),
+            wire::MUTATION_DELETE_RANGE => value.is_empty(),
+            _ => false,
+        };
+        let allowed = if head.namespace == wire::SLOT_NS {
+            head.tag == wire::MUTATION_DELETE_RANGE && key.len() == 16 && head.exact_length == 20
+        } else {
+            head.namespace != wire::GENERATION_NS
+        };
+        if !shaped || !allowed {
+            return Err(SIZE);
+        }
+        Ok(Mut {
+            namespace: head.namespace,
+            tag: head.tag,
+            key,
+            value,
+            exact_length: head.exact_length,
+        })
+    }
+
+    /// Decode a commit request: `CAND_HEAD, FENCE*, PREDICATE*, MUTATION*, RESULT`, with N1 on the head and
+    /// G2 (N13) on every record. `METRIC` records are skipped.
+    pub fn decode_commit(mut req: Records<'_>) -> Result<Commit<'_>, CommitErr> {
+        let first = next(&mut req)?.ok_or(CommitErr::Fault(RecErr::Truncated))?;
+        if first.tag != wire::tag::CAND_HEAD {
+            return Err(CommitErr::Fault(RecErr::Unknown(first.tag)));
+        }
+        let cand = first.pod::<CandHead>().map_err(CommitErr::Fault)?;
+        let slot = if cand.slot < wire::MAX_SLOTS && cand.seq >= 1 {
+            CommitSlot::Slotted {
+                slot: cand.slot,
+                seq: cand.seq,
+            }
+        } else if cand.slot == wire::SLOT_SELF_FENCED && cand.seq == 0 {
+            CommitSlot::SelfFenced
+        } else {
+            return Err(CommitErr::Refused);
+        };
+        let (mut fences, mut predicates, mut mutations) = (Vec::new(), Vec::new(), Vec::new());
+        let mut stage = 0u8;
+        let result = loop {
+            let rec = next(&mut req)?.ok_or(CommitErr::Fault(RecErr::Truncated))?;
+            match rec.tag {
+                wire::tag::FENCE if stage == 0 => fences.push(cond(&rec)?),
+                wire::tag::PREDICATE if stage <= 1 => {
+                    stage = 1;
+                    predicates.push(cond(&rec)?);
+                }
+                wire::tag::MUTATION if stage <= 2 => {
+                    stage = 2;
+                    mutations.push(mutation(&rec)?);
+                }
+                wire::tag::RESULT => break rec.body,
+                other => return Err(CommitErr::Fault(RecErr::Unknown(other))),
+            }
+        };
+        if let Some(extra) = next(&mut req)? {
+            return Err(CommitErr::Fault(RecErr::Unknown(extra.tag)));
+        }
+        Ok(Commit {
+            head: CommitHead {
+                id: cand.id,
+                codec: cand.codec,
+                guard: cand.guard,
+                slot,
+                fences,
+            },
+            predicates,
+            mutations,
+            result,
+        })
+    }
+}
+
+#[cfg(test)]
+#[path = "store_plumbing_tests.rs"]
+mod plumbing_tests;

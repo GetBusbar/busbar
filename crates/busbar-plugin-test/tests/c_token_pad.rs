@@ -31,7 +31,7 @@ fn a_token_record_is_16_bytes_and_the_next_record_starts_at_16() {
 }
 
 #[test]
-#[ignore = "owner: W1-H1"]
+#[ignore = "owner: W1-H1 (blocked: typed session proxies over busbar-ffi Session, W1-A4 kind!)"]
 fn plane_request_probe_and_transport_begin_answers_parse_with_no_unknown_tag_zero() {
     todo!("owner: W1-H1 (C-TOKEN-PAD)")
 }

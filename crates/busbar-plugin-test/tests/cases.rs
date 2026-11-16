@@ -330,6 +330,8 @@ mod c_zeroize_fresh;
 mod c_zeroize_grow;
 #[path = "c_zeroize_sync.rs"]
 mod c_zeroize_sync;
+#[path = "fu3-check-crypto-failed.rs"]
+mod fu3_check_crypto_failed;
 
 /// Every `tests/*.rs` is wired: a module of this binary or a `[[test]]` target of the manifest
 /// (`autotests = false`, so an unwired file would never run).

@@ -9,6 +9,12 @@ use busbar_plugin_abi::records::Records;
 use crate::plugin_records::RecordsDenied;
 use crate::upstreams::UpstreamDef;
 
+pub mod ask_line;
+pub mod respawn;
+pub mod signals;
+#[cfg(test)]
+mod tests;
+
 /// One long-lived upstream connection shared by many plane sessions: a stdio child (CARRIER_STDIO) or a held
 /// HTTP request (CARRIER_HTTP, e.g. legacy MCP SSE). Key = (plane plugin, plane instance name, upstream name,
 /// channel key, subject hash if CH_PER_CALLER). Core owns spawn/connect, framing (CH_FRAME_*), writes (in

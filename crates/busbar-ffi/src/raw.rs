@@ -134,6 +134,13 @@ pub(crate) mod seal {
     }
 }
 
+/// Byte offset of `RawOut::ptr` (a private field), for busbar-plugin-abi's C-HEADER static asserts (IF §7.8).
+pub const RAW_OUT_PTR_AT: usize = core::mem::offset_of!(RawOut, ptr);
+/// Byte offset of `RawOut::len`.
+pub const RAW_OUT_LEN_AT: usize = core::mem::offset_of!(RawOut, len);
+/// Byte offset of `RawOut::cap`.
+pub const RAW_OUT_CAP_AT: usize = core::mem::offset_of!(RawOut, cap);
+
 /// Types allowed inside an input view: `Copy`, C layout, only pointer, length and `View` fields.
 /// Sealed: busbar-ffi implements it for the view types it defines (here and in `vt`).
 pub trait View: Copy + seal::Sealed {}
