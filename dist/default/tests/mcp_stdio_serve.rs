@@ -5,6 +5,7 @@
 
 mod common;
 
+use busbar_contract::json;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -637,7 +638,7 @@ fn a_real_created_namespace_retains_its_baseline_and_cannot_be_initialized_as_fr
         1,
         "one actual initialization observation was emitted"
     );
-    let report: serde_json::Value = serde_json::from_slice(
+    let report = json::parse_value(
         &std::fs::read(&reports[0]).expect("the emitted initialization stdout reads"),
     )
     .expect("the emitted product initialization report is JSON");
