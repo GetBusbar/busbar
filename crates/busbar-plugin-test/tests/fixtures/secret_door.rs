@@ -4,7 +4,8 @@
 //! The host's secret fixture: an SDK-authored secret door whose RESOLVE answers the first secret
 //! its OPEN (or its last REFRESH) was lent (empty when it was lent none), so a test sees exactly
 //! what the host lent. Its OPEN and REFRESH refuse a JSON list, its TICK asks for the next tick
-//! 5 ns on, and every CLOSE it answers is counted ([`CLOSES`]).
+//! 5 ns on, every CLOSE it answers is counted ([`CLOSES`]), and lent [`PENDS`] its RESOLVE answers
+//! PENDING until the op is cancelled.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -22,6 +23,9 @@ pub static CLOSES: AtomicU64 = AtomicU64::new(0);
 
 /// The settings the fixture's OPEN and REFRESH refuse.
 const REFUSED: &[u8] = b"[]";
+
+/// The secret that makes RESOLVE answer PENDING (on a ticketed submission) until it is cancelled.
+pub const PENDS: &[u8] = b"pend";
 
 /// The first secret OPEN, or the last REFRESH that lent any, was lent.
 pub struct Lends(Mutex<Vec<u8>>);
@@ -76,6 +80,9 @@ impl SafeSlot for Resolve {
             return Outcome::Refused;
         };
         let lent = held.life().0.lock().map(|v| v.clone()).unwrap_or_default();
+        if lent == PENDS {
+            return Outcome::Pending;
+        }
         busbar_contract::abi::sdk::cred::resolved(
             input,
             &mut out,

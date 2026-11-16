@@ -26,6 +26,7 @@ use crate::abi::hook::{
     BudgetBucketState as HookBudgetBucketState, CandidateDynamic as HookCandidateDynamic,
     CandidateStatic as HookCandidateStatic, DecideIn, MessageView as HookMessageView, NotifyIn,
     PromptView as HookPromptView, RequestView as HookRequestView, SignalEntry as HookSignalEntry,
+    SignalValue, SIGNAL_TAG_BOOL, SIGNAL_TAG_F64, SIGNAL_TAG_I64, SIGNAL_TAG_STR, SIGNAL_TAG_U64,
 };
 use crate::abi::mechanism::call::{AbiStr, Blob, Field, Span};
 use crate::abi::mechanism::lifecycle::{OpenIn, ReadyIn, RefreshIn, ValidateIn};
@@ -118,7 +119,10 @@ impl<T> Loans<T> {
         unsafe { std::slice::from_raw_parts(k.ptr.cast::<E>(), n) }
     }
 
-    /// Owns `v`, under `field` (replacing what it held) or unnamed, and answers its pointer.
+    /// Owns `v`, under `field` or unnamed, and answers its pointer. What `field` held before is
+    /// retired, not freed: it stays owned, named by no field and read by no key, until the loans
+    /// drop, so a SHORT answer's re-call lent a grown buffer never frees one the first call was
+    /// lent (STH-ROWS D-6, D-8).
     fn keep<E: 'static>(&mut self, field: Option<&'static str>, mut v: Vec<E>) -> *mut u8 {
         let (ptr, len, bytes) = (
             v.as_mut_ptr().cast::<u8>(),
@@ -126,6 +130,7 @@ impl<T> Loans<T> {
             size_of::<E>() * v.len(),
         );
         if field.is_some() {
+            // RED (STH-ROWS D-8): replaced storage is still freed at once.
             self.kept.retain(|k| k.field != field);
         }
         self.kept.push(Kept {
@@ -168,6 +173,33 @@ impl<T> Loans<T> {
             len,
         }
     }
+
+    /// The `BLOB_SECRET` payload setters (STH-ROWS D-8): `loans.secret().credential(b, fmt)` lends
+    /// the copy flagged as a secret, as production lends a resolved credential. One setter per
+    /// `blob` row, each named as its plain setter is.
+    pub fn secret(&mut self) -> SecretBlobs<'_, T> {
+        SecretBlobs(self)
+    }
+}
+
+/// The secret-flagged payload setters of one struct's loans ([`Loans::secret`]).
+pub struct SecretBlobs<'a, T>(&'a mut Loans<T>);
+
+/// A signal's value, for the `value` setter of a `SignalEntry`'s loans (STH-ROWS D-8): the setter
+/// writes the tag and the whole 16-byte union together, so safe code cannot pair the string tag
+/// with integer bits. There is no `tag` setter.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SignalArg {
+    /// `SIGNAL_TAG_U64`.
+    U64(u64),
+    /// `SIGNAL_TAG_I64`.
+    I64(i64),
+    /// `SIGNAL_TAG_F64`.
+    F64(f64),
+    /// `SIGNAL_TAG_BOOL`.
+    Bool(bool),
+    /// `SIGNAL_TAG_STR`: the bytes, copied into storage the loans own.
+    Str(Vec<u8>),
 }
 
 /// The key to a host buffer the loans allocated: [`Loans::read`] answers its values.
@@ -316,14 +348,55 @@ lend_export_list!(loan_pairs);
 
 /// The scalar, string, payload and nested-struct setters of each struct, stated from the field
 /// list. Reviewed exclusions: the head (the host stamps it), and the two `val`s that are not
-/// pointer-free (a host context and a signal value whose string arm is a raw `AbiStr`); any other
+/// pointer-free (a host context, and a signal value whose string arm is a raw `AbiStr`, which
+/// `SignalEntry`'s one hand-written `value` setter writes with its tag); any other
 /// `val` that is not a [`Scalar`] fails to compile here, so a new one is reviewed before it gets a
 /// setter.
 macro_rules! loan_fields {
     ($($ty:ty { $($rows:tt)* })+) => {$(
         impl Loans<$ty> { loan_fields!(@rows $($rows)*); }
+        loan_fields!(@secret [$ty] $($rows)*);
     )+};
     (@rows) => {};
+    // THE SIGNAL VALUE (STH-ROWS D-8): `SignalEntry`'s `tag` and `value` are one reviewed row, so no
+    // `tag` setter exists and the union is written whole with the tag that names its live arm.
+    (@rows val tag: u32; val value: crate::abi::hook::SignalValue; $($rest:tt)*) => {
+        /// Sets the signal's tag and value together: the whole union, then the arm the tag names.
+        pub fn value(&mut self, v: SignalArg) -> &mut Self {
+            let mut value = SignalValue {
+                str_: AbiStr {
+                    ptr: std::ptr::null(),
+                    len: 0,
+                },
+            };
+            let tag = match v {
+                SignalArg::U64(n) => {
+                    value.u64_ = n;
+                    SIGNAL_TAG_U64
+                }
+                SignalArg::I64(n) => {
+                    value.i64_ = n;
+                    SIGNAL_TAG_I64
+                }
+                SignalArg::F64(x) => {
+                    value.f64_ = x;
+                    SIGNAL_TAG_F64
+                }
+                SignalArg::Bool(b) => {
+                    value.boolean = u8::from(b);
+                    SIGNAL_TAG_BOOL
+                }
+                SignalArg::Str(s) => {
+                    value.str_ = self.own_text(&s);
+                    SIGNAL_TAG_STR
+                }
+            };
+            self.input.tag = tag;
+            self.input.value = value;
+            self
+        }
+        loan_fields!(@rows $($rest)*);
+    };
     (@rows sub head: $t:ty; $($rest:tt)*) => { loan_fields!(@rows $($rest)*); };
     (@rows val $name:ident: crate::abi::mechanism::ticket::HostCtx; $($rest:tt)*) => {
         loan_fields!(@rows $($rest)*);
@@ -363,6 +436,23 @@ macro_rules! loan_fields {
             self
         }
         loan_fields!(@rows $($rest)*);
+    };
+    // The secret-flagged payload setters ([`SecretBlobs`]): one per `blob` row, every other row
+    // skipped.
+    (@secret [$ty:ty]) => {};
+    (@secret [$ty:ty] blob $name:ident; $($rest:tt)*) => {
+        impl<'a> SecretBlobs<'a, $ty> {
+            #[doc = concat!("Lends the payload `", stringify!($name), "` (format `fmt`), copied, flagged `BLOB_SECRET`.")]
+            pub fn $name(self, b: impl AsRef<[u8]>, fmt: u32) -> &'a mut Loans<$ty> {
+                let s = self.0.own_text(b.as_ref());
+                self.0.input.$name = Blob { ptr: s.ptr, len: s.len, fmt, flags: 0 }; // RED: not flagged yet
+                self.0
+            }
+        }
+        loan_fields!(@secret [$ty] $($rest)*);
+    };
+    (@secret [$ty:ty] $kw:ident $name:ident $(: $t:ty)?; $($rest:tt)*) => {
+        loan_fields!(@secret [$ty] $($rest)*);
     };
 }
 

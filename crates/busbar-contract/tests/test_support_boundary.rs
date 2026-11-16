@@ -290,3 +290,43 @@ fn a_check_lends_its_instances() {
     assert!(!sealed.instances.is_null());
     assert_eq!(sealed.instances_len, 1, "the instance is lent");
 }
+
+#[test]
+fn a_secret_payload_is_lent_flagged_secret_and_a_plain_one_is_not() {
+    use busbar_contract::abi::auth::VerifyIn;
+    use busbar_contract::abi::mechanism::call::{BLOB_OCTETS, BLOB_SECRET};
+    let mut i = Loans::<VerifyIn>::new();
+    i.secret().credential(b"api-key", BLOB_OCTETS);
+    i.body(b"{}", BLOB_OCTETS);
+    let sealed = i.seal();
+    assert_eq!(
+        (
+            sealed.credential.len,
+            sealed.credential.fmt,
+            sealed.credential.flags
+        ),
+        (7, BLOB_OCTETS, BLOB_SECRET),
+        "the credential is lent as a secret, as production lends one"
+    );
+    assert!(!sealed.credential.ptr.is_null());
+    assert_eq!(sealed.body.flags, 0, "a plain payload is not flagged");
+}
+
+#[test]
+fn a_replaced_buffer_is_retired_until_the_loans_drop() {
+    let mut i = Loans::<WriteIn>::new();
+    i.bytes(CANARY);
+    let replaced = A.armed_here(CANARY, || {
+        i.bytes(b"grown");
+    });
+    assert_eq!(
+        replaced.blocks_containing_canary, 0,
+        "the bytes a setter replaced are retired, not freed, while the loans live: {replaced:?}"
+    );
+    assert_eq!(i.seal().len, 5, "the loans lend the new bytes");
+    let dropped = A.armed_here(CANARY, || drop(i));
+    assert!(
+        dropped.blocks_containing_canary >= 1,
+        "the retired bytes are freed with the loans: {dropped:?}"
+    );
+}

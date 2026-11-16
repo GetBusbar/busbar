@@ -707,3 +707,156 @@ fn the_host_builders_keep_each_other_s_settings() {
         "config() keeps the stated services"
     );
 }
+
+/// STH-ROWS D-6: how long a submission's answer is waited for.
+const WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A RESOLVE `in` lending a `cap`-byte secret buffer, and its key.
+fn resolve_in(cap: usize) -> (Loans<busbar_contract::abi::secret::ResolveIn>, Buf<u8>) {
+    let mut i = Loans::<busbar_contract::abi::secret::ResolveIn>::new();
+    let k = i.secret_buf(cap);
+    (i, k)
+}
+
+#[test]
+fn a_short_answer_regrows_its_buffer_before_the_one_re_call() {
+    use busbar_contract::abi::secret::slot as secret_slot;
+    let h = host();
+    let mut t = open_secret(&h, b"lent-secret-0");
+    let (i, _small) = resolve_in(4);
+    let pending = match t.call::<{ secret_slot::RESOLVE }>(i) {
+        Called::Pending(p) => p,
+        Called::Ready(a) => panic!(
+            "a 4-byte buffer is SHORT for a 13-byte secret: {:?}",
+            a.outcome()
+        ),
+    };
+    let mut grown = None;
+    let pending = pending.regrow(|i| grown = Some(i.secret_buf(64)));
+    let key = grown.expect("regrow ran its closure");
+    match pending.resume(&mut t) {
+        Called::Ready(a) => {
+            assert_eq!(a.outcome(), Outcome::Ready, "{:?}", a.error());
+            let len = a.get(|o| o.secret.len);
+            assert_eq!(
+                a.read(&key).get(..len),
+                Some(b"lent-secret-0".as_slice()),
+                "the re-call was lent the grown buffer"
+            );
+        }
+        Called::Pending(p) => {
+            p.leak_loans();
+            panic!("the one re-call, lent 64 bytes, answers");
+        }
+    }
+}
+
+#[test]
+fn submitted_ops_answer_through_wait_each_with_its_own_moved_loans() {
+    use busbar_contract::abi::secret::slot as secret_slot;
+    let h = host();
+    let t = open_secret(&h, b"lent-secret-0");
+    let mut flying = Vec::new();
+    let mut keys = Vec::new();
+    for _ in 0..2 {
+        let (i, k) = resolve_in(64);
+        keys.push(k);
+        flying.push(t.submit::<{ secret_slot::RESOLVE }>(i));
+    }
+    for (submitted, key) in flying.into_iter().zip(keys) {
+        let done = submitted.wait(WITHIN).unwrap_or_else(|late| {
+            late.leak_loans();
+            panic!("RESOLVE answers within the wait")
+        });
+        assert_eq!(done.outcome(), Outcome::Ready, "{:?}", done.error());
+        let len = done.get(|o| o.secret.len);
+        assert_eq!(
+            done.read(&key).get(..len),
+            Some(b"lent-secret-0".as_slice()),
+            "each moved submission reads back its own buffer"
+        );
+    }
+}
+
+#[test]
+fn a_short_submission_is_resubmitted_once_on_its_ticket_with_grown_loans() {
+    use busbar_contract::abi::secret::slot as secret_slot;
+    let h = host();
+    let t = open_secret(&h, b"lent-secret-0");
+    let (i, _small) = resolve_in(4);
+    let short = t
+        .submit::<{ secret_slot::RESOLVE }>(i)
+        .wait(WITHIN)
+        .unwrap_or_else(|late| {
+            late.leak_loans();
+            panic!("RESOLVE answers within the wait")
+        });
+    assert!(
+        short.short(),
+        "a 4-byte buffer is SHORT for a 13-byte secret: {:?}",
+        short.outcome()
+    );
+    let mut grown = None;
+    let done = short
+        .resubmit(|i| grown = Some(i.secret_buf(64)))
+        .wait(WITHIN)
+        .unwrap_or_else(|late| {
+            late.leak_loans();
+            panic!("the resubmission answers within the wait")
+        });
+    assert_eq!(done.outcome(), Outcome::Ready, "{:?}", done.error());
+    let key = grown.expect("resubmit ran its closure");
+    let len = done.get(|o| o.secret.len);
+    assert_eq!(
+        done.read(&key).get(..len),
+        Some(b"lent-secret-0".as_slice()),
+        "the resubmission was lent the grown buffer"
+    );
+}
+
+#[test]
+fn a_cancelled_pending_submission_answers_the_kind_s_disposition() {
+    use busbar_contract::abi::secret::{cancel, slot as secret_slot};
+    let h = host();
+    let t = open_secret(&h, secret_door::PENDS);
+    let (i, _k) = resolve_in(64);
+    let pending = match t
+        .submit::<{ secret_slot::RESOLVE }>(i)
+        .wait(std::time::Duration::from_millis(200))
+    {
+        Err(pending) => pending,
+        Ok(done) => panic!("RESOLVE pends until cancelled: {:?}", done.outcome()),
+    };
+    let done = pending.cancel(WITHIN).unwrap_or_else(|late| {
+        late.leak_loans();
+        panic!("a cancelled op answers within the wait")
+    });
+    assert_eq!(
+        done.disposition(),
+        Some(cancel::ABORTED),
+        "the fixture's CANCEL disposition: {:?} {:?}",
+        done.outcome(),
+        done.error()
+    );
+    assert_ne!(
+        done.outcome(),
+        Outcome::Ready,
+        "a cancelled op did not answer"
+    );
+}
+
+#[test]
+fn an_instance_with_a_forgotten_submission_is_poisoned_not_closed() {
+    use busbar_contract::abi::secret::slot as secret_slot;
+    let h = host();
+    let t = open_secret(&h, secret_door::PENDS);
+    let (i, _k) = resolve_in(64);
+    std::mem::forget(t.submit::<{ secret_slot::RESOLVE }>(i));
+    let before = closes();
+    drop(t);
+    assert_eq!(
+        closes(),
+        before,
+        "a poisoned instance skips CLOSE: the plugin may still hold the leaked loans"
+    );
+}
