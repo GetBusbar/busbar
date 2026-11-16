@@ -634,7 +634,7 @@ diagnostics! {
     /// A plugin was loaded but its signature is UNVERIFIED, permitted by an explicit plugins.trust opt-in. Lives in `preflight.rs`, but the subject is plugin trust, so it is a 6000 code.
     PLUGIN_LOADED_UNVERIFIED = 6003, Plugins, Actionable, "plugin-loaded-unverified", "1.6.0", false,
         "Plugin loaded UNVERIFIED (permitted by an explicit plugins.trust opt-in)",
-        "A plugin was loaded even though its signature is UNVERIFIED — its code is running unauthenticated, permitted only because an explicit `plugins.trust` opt-in (`allow_unsigned`/`allow_third_party`) let it through. Security-relevant: unverified plugin code runs in-process with busbar's privileges. Emitted once per such plugin at boot.",
+        "A plugin was loaded even though its signature is UNVERIFIED — its code is running unauthenticated, permitted only because an explicit `plugins.trust` opt-in (`allow_untrusted`) let it through. Security-relevant: unverified plugin code runs in-process with busbar's privileges. Emitted once per such plugin at boot.",
         "Prefer a signed artifact from a trusted publisher and remove the `plugins.trust` opt-in once you no longer need it. If running unverified is a deliberate, understood choice (e.g. a locally-built plugin), the opt-in is what keeps it explicit.";
 
     /// The RAM (ephemeral) store was resolved while a STATEFUL plane (one carrying per-task state) is configured, so in-flight plane task state is dropped on restart.

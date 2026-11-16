@@ -90,7 +90,7 @@ fn the_built_in_stores_dropped_in_copy_is_admitted_once_and_a_rival_is_refused()
     m.statement = Some(hex::encode(&statement));
     std::fs::write(dir.join("copy.tar.gz"), unsigned_tarball(m, b"lib")).unwrap();
     let mut cfg = plugins_cfg(&dir, true);
-    cfg.trust.allow_unsigned = true;
+    cfg.trust.allow_untrusted = true;
     let scan = || preflight(Some(&store), &cfg);
     let reg = scan().expect("the directory scans");
     assert!(
@@ -118,7 +118,7 @@ fn the_built_in_stores_dropped_in_copy_is_admitted_once_and_a_rival_is_refused()
 fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
     let dir = tmp_plugin_dir("untrusted-store");
     let tarball = unsigned_tarball(
-        plugin_manifest("busbar-store-held", "held", "busbar"),
+        plugin_manifest("busbar-store-held", "held", "acme"),
         b"unsigned lib bytes",
     );
     std::fs::write(dir.join("held.tar.gz"), tarball).unwrap();
@@ -129,14 +129,14 @@ fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
         "names the plugin: {err}"
     );
     assert!(
-        err.contains("allow_unsigned"),
+        err.contains("allow_untrusted"),
         "carries the exact opt-in flag to set: {err}"
     );
 
     let mut cfg = plugins_cfg(&dir, true);
-    cfg.trust.allow_unsigned = true;
+    cfg.trust.allow_untrusted = true;
     let reg = preflight(Some(&gov_with_store("held")), &cfg)
-        .expect("allow_unsigned permits the unsigned store plugin at boot");
+        .expect("allow_untrusted permits the unsigned store plugin at boot");
     assert!(reg.resolve("held").is_some(), "alias resolves");
     assert!(
         reg.resolve("busbar-store-held").is_some(),
@@ -145,6 +145,23 @@ fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
     let reg2 = preflight(Some(&gov_with_store("busbar-store-held")), &cfg)
         .expect("the canonical name is equally valid as governance.store");
     assert!(reg2.resolve("busbar-store-held").is_some());
+    let forged_busbar = unsigned_tarball(
+        plugin_manifest("busbar-store-held", "held", "busbar"),
+        b"unsigned lib bytes",
+    );
+    std::fs::write(dir.join("held.tar.gz"), forged_busbar).unwrap();
+    for allow_untrusted in [false, true] {
+        cfg.trust.allow_untrusted = allow_untrusted;
+        let refused = preflight(Some(&gov_with_store("held")), &cfg).unwrap_err();
+        assert!(
+            refused.contains("busbar-store-held") || refused.contains("'held'"),
+            "names refused Busbar artifact: {refused}"
+        );
+        assert!(
+            refused.contains("release seal"),
+            "Busbar proof remains mandatory: {refused}"
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -170,9 +187,9 @@ fn invalid_manifest_in_enabled_dir_fails_boot() {
 fn alias_conflict_fails_boot_naming_both() {
     let dir = tmp_plugin_dir("conflict");
     let mut cfg = plugins_cfg(&dir, true);
-    cfg.trust.allow_unsigned = true;
+    cfg.trust.allow_untrusted = true;
     let a = unsigned_tarball(
-        plugin_manifest("busbar-store-kv-plugin", "kv", "busbar"),
+        plugin_manifest("busbar-store-kv-plugin", "kv", "other-publisher"),
         b"a",
     );
     let b = unsigned_tarball(plugin_manifest("acme-store-kv", "kv", "acme"), b"b");

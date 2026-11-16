@@ -180,7 +180,7 @@ fn unsupported_is_refused_unsupported_and_moves_no_counter() {
     use busbar_plugin_abi::host_side::host_vt::HOST_FAULTS;
     use busbar_plugin_abi::host_side::scrub::Scrub;
     use busbar_plugin_loader::adapters::auth::verify_refusal;
-    use busbar_plugin_loader::ports::PortError;
+    use busbar_ports::PortError;
 
     let before: Vec<u64> = HOST_FAULTS
         .iter()

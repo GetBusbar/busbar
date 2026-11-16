@@ -28,10 +28,10 @@ use busbar_plugin_abi::hook::{
 use busbar_plugin_abi::host_side::caller::CallStack;
 use busbar_plugin_abi::plugin::Plugin;
 use busbar_plugin_abi::types::KindCode;
-use busbar_plugin_loader::ports::hook::{
+use busbar_ports::hook::{
     BudgetIn, CandidateIn, CostTermIn, HookAnswer, HookCall, HookPort, HookView,
 };
-use busbar_plugin_loader::ports::{CallCx, FactRef, PortError};
+use busbar_ports::{CallCx, FactRef, PortError};
 
 use super::harness::Harness;
 use crate::fake_needs::FakeNeeds;

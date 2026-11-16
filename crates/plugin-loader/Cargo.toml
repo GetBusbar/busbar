@@ -86,6 +86,7 @@ path = "tests/fixtures/neutral_frame_door.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
+busbar-ports = { path = "../busbar-ports" }
 arc-swap = { workspace = true }
 foldhash = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }

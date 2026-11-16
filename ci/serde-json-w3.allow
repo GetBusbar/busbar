@@ -59,6 +59,3 @@ tools/plugin-bench/
 
 # W3-D-LOADER: the old dispatch and the loader modules it alone references.
 crates/plugin-loader/src/dispatch/
-
-# W3-D-MIGRATIONS: the 1.5.5 migration crate.
-crates/busbar-migrations/

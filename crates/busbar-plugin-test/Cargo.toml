@@ -99,6 +99,7 @@ target-http = ["target", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "t
 test-seal = ["busbar-contract/test-seal"]
 
 [dependencies]
+busbar-ports = { path = "../busbar-ports" }
 zeroize = { workspace = true }
 rustls = { workspace = true, optional = true }
 tokio-rustls = { workspace = true, optional = true }

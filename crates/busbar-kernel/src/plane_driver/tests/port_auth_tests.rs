@@ -13,7 +13,7 @@ use busbar_plugin_abi::plane::{
     AUTH_OPERATOR, AUTH_OPTIONAL, AUTH_PRINCIPAL, AUTH_PUBLIC, AUTH_SIGNED_INGRESS, AUTH_TICKET,
 };
 use busbar_plugin_abi::records::{tag as g, Records};
-use busbar_plugin_loader::ports::auth::Identity;
+use busbar_ports::auth::Identity;
 
 use super::{
     admit, bearer, classify, effective_classes, plain_refusal, subject_identity, Credentials,

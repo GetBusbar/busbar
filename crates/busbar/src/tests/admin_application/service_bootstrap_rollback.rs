@@ -8,12 +8,11 @@ use std::sync::Arc;
 
 fn trust_document(config: &busbar_kernel::config::PluginsCfg) -> serde_json::Value {
     let publishers: Vec<_> = config.trust.publishers.iter().map(|publisher| {
-        serde_json::json!({"name": publisher.name, "public_key": publisher.public_key})
+        serde_json::json!({"name": publisher.name, "plugins": publisher.plugins, "keys": publisher.keys.iter().map(|key| serde_json::json!({"public_key": key.public_key, "revoked": key.revoked})).collect::<Vec<_>>()})
     }).collect();
     serde_json::json!({
         "publishers": publishers,
-        "allow_unsigned": config.trust.allow_unsigned,
-        "allow_third_party": config.trust.allow_third_party,
+        "allow_untrusted": config.trust.allow_untrusted,
     })
 }
 
@@ -118,7 +117,11 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
         .publishers
         .push(busbar_kernel::config::PluginPublisher {
             name: "acme".into(),
-            public_key: publisher_hex.clone(),
+            plugins: vec![target_name.clone()],
+            keys: vec![busbar_kernel::config::PluginPublisherKey {
+                public_key: publisher_hex.clone(),
+                revoked: false,
+            }],
         });
     app.plugins_cfg
         .min_versions
@@ -367,7 +370,11 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
             .publishers
             .push(busbar_kernel::config::PluginPublisher {
                 name: "acme".into(),
-                public_key: publisher_hex.clone(),
+                plugins: vec![target_name.clone()],
+                keys: vec![busbar_kernel::config::PluginPublisherKey {
+                    public_key: publisher_hex.clone(),
+                    revoked: false,
+                }],
             });
         app.plugins_cfg
             .min_versions
@@ -548,7 +555,11 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
         .publishers
         .push(busbar_kernel::config::PluginPublisher {
             name: "acme".into(),
-            public_key: publisher_hex.clone(),
+            plugins: vec![target_name.clone()],
+            keys: vec![busbar_kernel::config::PluginPublisherKey {
+                public_key: publisher_hex.clone(),
+                revoked: false,
+            }],
         });
     app.plugins_cfg
         .min_versions

@@ -14,7 +14,7 @@ use busbar_plugin_abi::fail::CallError;
 use busbar_plugin_abi::host_side::caller::CallStack;
 use busbar_plugin_abi::host_side::pool::{observe_pool, PoolEvent};
 use busbar_plugin_loader::instance::{OpenError, Registry};
-use busbar_plugin_loader::ports::CallCx;
+use busbar_ports::CallCx;
 
 use crate::min3_second::{self as fx, ParkNeeds, Step, PROBE};
 

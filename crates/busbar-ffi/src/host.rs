@@ -850,7 +850,7 @@ mod tests {
     pub struct Fx;
 
     /// A session's state; its drop is counted.
-    struct Sess;
+    pub struct Sess;
     impl Drop for Sess {
         fn drop(&mut self) {
             SESSION_DROPS.set(SESSION_DROPS.get() + 1);

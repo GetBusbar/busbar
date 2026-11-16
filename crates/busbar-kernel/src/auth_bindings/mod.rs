@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use busbar_contract::config::dialect_styles::{self as styles, Row, Settings};
 use busbar_contract::config::outbound_owner;
-use busbar_plugin_loader::encode::plane::{DialectAuthOwned, PresentationOwned};
+use busbar_ports::codec::plane::{DialectAuthOwned, PresentationOwned};
 
 mod outbound;
 mod upstream;

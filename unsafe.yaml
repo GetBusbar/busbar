@@ -54,7 +54,7 @@ interim:
   crates/busbar-contract/src/abi/mechanism/door.rs: { tokens: 9, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/mechanism/rendering/mod.rs: { tokens: 13, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/mechanism/rendering/tail.rs: { tokens: 24, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/mod.rs: { tokens: 12, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/mod.rs: { tokens: 11, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/plane/check.rs: { tokens: 10, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/plane/mod.rs: { tokens: 23, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/auth_door.rs: { tokens: 7, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
@@ -222,7 +222,6 @@ interim:
   crates/busbar-kernel/tests/support/plane_driver_completion_retirement.rs: { tokens: 9, by: "W3-D-BINARY" }
   crates/busbar-kernel/tests/support/plane_driver_session_input_cases.rs: { tokens: 1, by: "W3-D-BINARY" }
   crates/busbar-kernel/tests/support/plane_driver_unbilled_cases.rs: { tokens: 7, by: "W3-D-BINARY" }
-  crates/busbar-migrations/src/seal.rs: { tokens: 2, by: "W3-D-MIGRATIONS" }
   crates/busbar/build.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/main.rs: { tokens: 2, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/boot.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
@@ -390,7 +389,6 @@ interim_roots:
   crates/busbar-core-connector/src/lib.rs: { by: "W3 (its crate holds interim rows)" }
   crates/busbar-kernel-ledger/src/lib.rs: { by: "W3 (its crate holds interim rows)" }
   crates/busbar-kernel/src/lib.rs: { by: "W3 (its crate holds interim rows)" }
-  crates/busbar-migrations/src/lib.rs: { by: "W3 (its crate holds interim rows)" }
   crates/busbar/src/main.rs: { by: "W3 (its crate holds interim rows)" }
   crates/plugin-loader/src/lib.rs: { by: "W3 (its crate holds interim rows)" }
   crates/plugin-loader/src/pack.rs: { by: "W3 (its crate holds interim rows)" }

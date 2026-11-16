@@ -1421,13 +1421,32 @@
     "PluginPublisher": {
       "deny_unknown_fields": true,
       "fields": {
+        "keys": {
+          "optional": false,
+          "type": "Vec<PluginPublisherKey>"
+        },
         "name": {
           "optional": false,
           "type": "String"
         },
+        "plugins": {
+          "optional": false,
+          "type": "Vec<String>"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "PluginPublisherKey": {
+      "deny_unknown_fields": true,
+      "fields": {
         "public_key": {
           "optional": false,
           "type": "String"
+        },
+        "revoked": {
+          "optional": true,
+          "type": "bool"
         }
       },
       "kind": "struct",
@@ -1467,11 +1486,7 @@
     "PluginsTrustCfg": {
       "deny_unknown_fields": true,
       "fields": {
-        "allow_third_party": {
-          "optional": true,
-          "type": "bool"
-        },
-        "allow_unsigned": {
+        "allow_untrusted": {
           "optional": true,
           "type": "bool"
         },
