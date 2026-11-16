@@ -1396,23 +1396,32 @@ fn exact_nano_rate(text: &str) -> Option<u64> {
     Some(value)
 }
 
+/// The correction's canonical bytes, as the policy journal keeps them. The reason is named by its
+/// SHA-256 (`reason_sha256`), never its text: the API keeps the hash, not the operator's words.
 fn canonical_amend_payload(obj: &serde_json::Map<String, serde_json::Value>) -> Vec<u8> {
-    let mut payload = String::from("busbar/amend-rate-history/v1\n");
+    let mut payload = String::from("busbar/amend-rate-history/v2\n");
 
-    for key in [
-        "effective_from",
-        "effective_until",
-        "per_request_fee",
-        "reason",
-        "rates",
-    ] {
-        payload.push_str(key);
-        payload.push('=');
-        let value = obj.get(key).unwrap_or(&serde_json::Value::Null);
-        payload.push_str(&serde_json::to_string(value).unwrap_or_default());
-        payload.push('\n');
+    for key in ["effective_from", "effective_until", "per_request_fee"] {
+        push_payload_field(&mut payload, key, obj.get(key));
     }
+    let reason = obj
+        .get("reason")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let reason_sha256 = serde_json::Value::String(hex::encode(
+        busbar_contract::abi::sdk::digest::sha256(reason.as_bytes()),
+    ));
+    push_payload_field(&mut payload, "reason_sha256", Some(&reason_sha256));
+    push_payload_field(&mut payload, "rates", obj.get("rates"));
     payload.into_bytes()
+}
+
+fn push_payload_field(payload: &mut String, key: &str, value: Option<&serde_json::Value>) {
+    payload.push_str(key);
+    payload.push('=');
+    let value = value.unwrap_or(&serde_json::Value::Null);
+    payload.push_str(&serde_json::to_string(value).unwrap_or_default());
+    payload.push('\n');
 }
 
 async fn render_ledger_view(

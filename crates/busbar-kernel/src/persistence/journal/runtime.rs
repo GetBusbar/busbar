@@ -137,6 +137,10 @@ fn prefix_of(
     Ok(())
 }
 
+/// The group the next append carries: the verified head it extends (its proof), its runs, the head it
+/// lands at and its records seal.
+type Group = (Arc<VerifiedHead>, Vec<Arc<StagedRun>>, Head, [u8; 32]);
+
 struct PendingRun {
     run: Arc<StagedRun>,
     attempt: Option<Attempt>,
@@ -637,8 +641,7 @@ impl RuntimeJournal {
         state: &mut State,
         limits: crate::persistence::facade::Limits,
         node: u64,
-    ) -> std::result::Result<(Arc<VerifiedHead>, Vec<Arc<StagedRun>>, Head, [u8; 32]), RuntimeError>
-    {
+    ) -> std::result::Result<Group, RuntimeError> {
         let verified = state.verified.clone();
         let front = state.pending.front().ok_or(RuntimeError::Corrupt)?;
         let pinned = front

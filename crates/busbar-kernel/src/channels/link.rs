@@ -35,6 +35,10 @@ pub enum Claim {
     Wait,
 }
 
+/// Why [`Link::write`] wrote nothing: the channel's writer task has ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChannelGone;
+
 pub struct Link {
     line: Mutex<AskLine>,
     writer: mpsc::UnboundedSender<Box<[u8]>>,
@@ -166,9 +170,9 @@ impl Link {
     }
 
     /// Writes `bytes` to the channel now, outside the ask line (the plane's DX_OUTSTANDING fallback).
-    pub fn write(&self, bytes: Box<[u8]>) -> Result<(), ()> {
+    pub fn write(&self, bytes: Box<[u8]>) -> Result<(), ChannelGone> {
         self.touch();
-        self.writer.send(bytes).map_err(|_| ())
+        self.writer.send(bytes).map_err(|_| ChannelGone)
     }
 
     /// DX_FINAL to `slot`: its oldest ask leaves the line and the next serial ask is written.

@@ -33,6 +33,9 @@ mod retirement_cases;
 #[path = "plane_driver_unbilled_cases.rs"]
 mod unbilled_cases;
 
+#[path = "plane_driver_principal_need.rs"]
+mod principal_need_cases;
+
 use futures::FutureExt as _;
 use std::collections::HashMap;
 use std::future::Future;
@@ -50,9 +53,10 @@ use busbar_contract::abi::plane::{
     RefusalIn, RefusalOut, UnitCount, AUDIT_APPLIED, CANCEL_ABORTED, CANCEL_FAILED,
     CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_FINAL, PIECE_HAS_STATUS,
-    PIECE_LAST, PIECE_OUT_TEXT, PIECE_REFUSED, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT,
-    REFUSAL_ARRIVE, REFUSED_AFTER_ADMISSION, ROUTE_LOCAL, ROUTE_POOL, ROUTE_SCOPE_LOCAL,
-    ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    PIECE_LAST, PIECE_OUT_TEXT, PIECE_REFUSED, PRINCIPAL_NONE, PRINCIPAL_OPTIONAL,
+    PRINCIPAL_REQUIRED, RECORD_AUDIT, RECORD_PUT, REFUSAL_ARRIVE, REFUSED_AFTER_ADMISSION,
+    ROUTE_LOCAL, ROUTE_POOL, ROUTE_SCOPE_LOCAL, ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED,
+    VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{ServeIn, ServeOut, REFUSAL_GATE};
 use busbar_contract::caps::OpClassId;
@@ -990,7 +994,11 @@ impl PlaneCalls for Double {
             out.units_written = wants.len() as u32;
             out.op_class = 0;
             out.dialect = 0;
-            out.principal_need = PRINCIPAL_OPTIONAL;
+            out.principal_need = match target.as_slice() {
+                b"/principal-required" => PRINCIPAL_REQUIRED,
+                b"/principal-none" => PRINCIPAL_NONE,
+                _ => PRINCIPAL_OPTIONAL,
+            };
             return Outcome::Ready;
         }
         Outcome::Fault
