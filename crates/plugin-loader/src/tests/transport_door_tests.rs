@@ -177,47 +177,58 @@ fn a_transport_library_with_no_door_is_refused() {
     );
 }
 
+/// Bytes carrying one MIN-3 stamp (IF §7.4) naming `kind`, with other bytes around it.
+fn min3_lib(kind: busbar_plugin_abi::types::KindCode, layout: u64) -> Vec<u8> {
+    let stamp = busbar_plugin_abi::stamp::emit(&busbar_plugin_abi::stamp::Spec {
+        kind,
+        kind_abi: 1,
+        layout,
+        out_of_process: false,
+        engine_min: None,
+        engine_max: None,
+        name: "busbar-transport-delta",
+        version: "1.6.0",
+        build_id: None,
+        crypto: "host",
+    })
+    .0;
+    let mut lib = b"\x7fELF min3 transport ".to_vec();
+    lib.extend_from_slice(&stamp);
+    lib.extend_from_slice(b" tail");
+    lib
+}
+
+/// W2-SW-TRANSPORT: a MIN-3 transport image states no Statement and exports no `busbar_plugin_door`; the MIN-3
+/// boot opens it through `Registry::open_transport`, so this path leaves it alone instead of refusing the boot.
+/// Only a stamp naming kind TRANSPORT is passed over: a row whose bytes carry another kind's stamp is refused as
+/// before (as is a library carrying no stamp, `a_transport_library_with_no_door_is_refused`).
 #[test]
-fn a_row_with_no_statement_the_min3_registry_takes_is_passed_over_and_any_other_is_still_refused() {
-    let lib = std::fs::read(crate::both_ways::example_cdylib("json_contract_auth"))
-        .expect("read the cdylib");
-    let manifest = statement(
-        busbar_contract::abi::mechanism::kind::TRANSPORT,
-        "min3-framer",
-        "min3-framer",
-        busbar_contract::abi::transport::ABI_VERSION,
-    );
-    let registry = dropped("min3-framer", manifest, &lib);
-    let asked = std::cell::RefCell::new(Vec::new());
-    let entries = registry
-        .open_transport_entries_beside(
-            &bind(),
-            &uses(&["min3-framer"]),
-            &log_config(),
-            &|row: &crate::LoadablePlugin| {
-                asked.borrow_mut().push(row.manifest.name.clone());
-                true
-            },
+fn a_min3_transport_image_is_left_to_the_min3_registry_and_another_kinds_stamp_is_still_refused() {
+    use busbar_plugin_abi::types::KindCode;
+    let manifest = || {
+        statement(
+            busbar_contract::abi::mechanism::kind::TRANSPORT,
+            "busbar-transport-delta",
+            "delta",
+            busbar_contract::abi::transport::ABI_VERSION,
         )
-        .expect("a MIN-3 transport row is the MIN-3 registry's, not a refusal of this path");
+    };
+    let lib = min3_lib(KindCode::Transport, busbar_plugin_abi::transport::FP);
+    let registry = dropped("min3-transport", manifest(), &lib);
+    let entries = registry
+        .open_transport_entries(&bind(), &uses(&["delta"]), &log_config())
+        .expect("a MIN-3 transport image is the MIN-3 registry's, not a refusal of this path");
     assert!(
         entries.doors.is_empty(),
-        "this path bound a row the MIN-3 registry serves"
+        "this path bound an image the MIN-3 registry serves"
     );
-    assert_eq!(
-        asked.into_inner(),
-        ["min3-framer"],
-        "the predicate judged the row once"
-    );
+
+    let lib = min3_lib(KindCode::Plane, busbar_plugin_abi::plane::FP);
+    let registry = dropped("min3-plane-as-transport", manifest(), &lib);
     let why = registry
-        .open_transport_entries_beside(
-            &bind(),
-            &uses(&["min3-framer"]),
-            &log_config(),
-            &|_: &crate::LoadablePlugin| false,
-        )
+        .open_transport_entries(&bind(), &uses(&["delta"]), &log_config())
         .err()
-        .expect("a row stating no Statement that MIN-3 admission does not take is refused");
+        .expect("a row declared transport whose stamp names another kind is not a MIN-3 transport");
     assert!(
         why.contains("exports no memory-ABI door"),
         "the refusal is the one this path always gave: {why}"
