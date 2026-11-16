@@ -1308,11 +1308,8 @@ fn a_record_bootstrap_witness_resolves_only_compiled_core_schemas() {
     let expected = builtin_record_address(core, b"head", b"baseline")
         .expect("a core schema routes")
         .expect("a compiled core schema");
-    assert_eq!(
-        bootstrap_witness("plane", core, b"head", b"baseline"),
-        Ok(expected)
-    );
+    assert_eq!(bootstrap_witness(core, b"head", b"baseline"), Ok(expected));
     let scoped = busbar_kernel::host_records::record_key("plane", b"row");
-    assert!(bootstrap_witness("plane", "plane-schema", &scoped, b"body").is_err());
-    assert!(bootstrap_witness("plane", "unknown", b"row", b"body").is_err());
+    assert!(bootstrap_witness("plane-schema", &scoped, b"body").is_err());
+    assert!(bootstrap_witness("unknown", b"row", b"body").is_err());
 }
