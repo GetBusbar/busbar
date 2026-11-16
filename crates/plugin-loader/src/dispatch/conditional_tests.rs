@@ -142,16 +142,6 @@ impl busbar_contract::services::HostServices for Provider {
     ) -> busbar_contract::services::Stored {
         panic!("unexpected host service trust_verify in inspection/conditional boundary control")
     }
-    fn entitlement_check(
-        &self,
-        _caller: &busbar_contract::services::Caller,
-        _unit: Option<u64>,
-        _target: &str,
-    ) -> busbar_contract::services::Stored {
-        panic!(
-            "unexpected host service entitlement_check in inspection/conditional boundary control"
-        )
-    }
     fn session_emit(
         &self,
         _caller: &busbar_contract::services::Caller,

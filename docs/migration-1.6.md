@@ -285,3 +285,7 @@ instance. If it remains in your files, complete the older-version upgrade before
 `UPGRADE_VERIFY_OFF` is refused in 1.6.0 for every egress class, including operator
 infrastructure. Plugins must use the Need API and its core-held
 `insecure_transport` policy; a plugin flag cannot disable certificate verification.
+
+Direct contract plugins must rebuild against the current 1.6 SDK. The retired host policy
+callback has been removed; principal scope decisions use the plane `ENTITLE` intent. Admission
+rejects artifacts carrying an earlier common host-table layout fingerprint.
