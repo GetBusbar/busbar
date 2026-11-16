@@ -28,6 +28,7 @@ use super::port_auth::{
     admit, catalog, refuse, subject_identity, Admitted, Credentials, NoTickets, Principal,
     TicketDoor,
 };
+use super::port_carrier::PortCarrier;
 use super::port_channels::{decode_tick, TickOut};
 use super::port_charge::charge;
 use super::port_egress::{PortUpstream, SessionFacts};
@@ -128,6 +129,9 @@ pub struct PortSeat {
     /// The egress walk a FORWARD runs over (`PortEgress`); `None` = this instance forwards nothing yet (its
     /// pool is not configured: a FORWARD fails `NotDriven`).
     pub upstream: Option<Arc<dyn PortUpstream>>,
+    /// The channel carrier a session's CHANNEL, EX_MSG, WAKE_AT and DETACH run over (`PortCarrier`); `None` = this
+    /// instance has no carrier yet: a CHANNEL is `P_ERROR` and a session ends with its walk.
+    pub carrier: Option<Arc<PortCarrier>>,
 }
 
 impl PortSeat {
@@ -319,6 +323,7 @@ impl PortDriver {
             unit,
             upstream,
             client,
+            carrier,
             intents,
             models,
             ..
@@ -342,6 +347,7 @@ impl PortDriver {
                 unit,
                 upstream,
                 client,
+                carrier,
                 &*intents,
                 &models,
             )
@@ -593,6 +599,8 @@ pub struct ServeIn<'a> {
     pub upstream: Option<Arc<dyn PortUpstream>>,
     /// Where the client's items go as they are decided (a streamed reply); `None` = they are collected in [`Ran`].
     pub client: Option<Arc<dyn ClientSink>>,
+    /// The seat's channel carrier (`PortSeat::carrier`).
+    pub carrier: Option<Arc<PortCarrier>>,
     /// What the plane's intents run against.
     pub intents: Arc<dyn IntentHost>,
     /// The model names a ROUTE_CATALOG route lists (the principal's view, `endpoints::catalog_names`); empty for any
@@ -632,6 +640,7 @@ fn serve_blocking(
     unit: Option<Unit>,
     upstream: Option<Arc<dyn PortUpstream>>,
     client: Option<Arc<dyn ClientSink>>,
+    carrier: Option<Arc<PortCarrier>>,
     intents: &dyn IntentHost,
     models: &[String],
 ) -> Result<Served, ServeError> {
@@ -686,6 +695,11 @@ fn serve_blocking(
         None => Resolver::new(intents, None),
     }
     .with_route(route.route);
+    let session = carrier.as_ref().map(|carrier| carrier.session());
+    let resolver = match &session {
+        Some(session) => resolver.with_channels(&session.host),
+        None => resolver,
+    };
     let dialect = port.dialects().first().map_or("", |d| &**d);
     let ran = {
         let unit_books = unit
@@ -712,6 +726,7 @@ fn serve_blocking(
                     refusals,
                     effects: &effects,
                     books,
+                    carrier: session.as_ref(),
                 },
             )
         };

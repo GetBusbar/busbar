@@ -12,12 +12,14 @@
 //! * [`demux`] is the sessionless `PlanePort::demux`: where one inbound channel message goes.
 //! * [`decode_tick`] reads the `ADMIN_TICK` answer: PUSH and EMIT records only.
 //!
-//! Not here (PLANE-DRIVER.md): the stdio/HTTP carrier driver that spawns the child, frames the stream and builds an
-//! `UpstreamChannels` generation (C1C); this file is the plane-facing half of it.
+//! The carrier driver that spawns the child, frames the stream and builds the generations is
+//! [`crate::channels::carrier`]; the session loop that delivers what the channels receive is [`super::port_carrier`].
+//! This file is the plane-facing half of both ([`PortDemuxer`] is the plane's `demux` for the carrier).
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use busbar_plugin_abi::host_side::caller::BoxFut;
 use busbar_plugin_abi::plane::{tag as t, EmitRec, PushRec};
 use busbar_plugin_abi::records::{RecErr, Records};
 use busbar_plugin_loader::ports::plane::{PlaneOut, PlanePort};
@@ -26,7 +28,8 @@ use tokio::runtime::Handle;
 
 use super::port_intents::Namespace;
 use super::port_session::{Calls, Task};
-use crate::channels::{Attachment, ChannelReq, UpstreamChannels};
+use crate::channels::carrier::Demuxer;
+use crate::channels::{Attachment, ChannelMsg, ChannelReq, UpstreamChannels};
 use crate::plugin_records::RecordsDenied;
 use crate::upstreams::UpstreamDef;
 
@@ -44,6 +47,12 @@ pub trait Held: Send {
     /// Why the last `remote` was refused, in core's words (a mirror failure names the lines), if it says.
     fn refusal(&self) -> Option<String> {
         None
+    }
+    /// The next message from the far end, or the end of what this holds (`ChannelMsg::Ended`: a channel's generation
+    /// ended, a media session closed). The default never resolves: a holder with nothing to say keeps its session
+    /// alive and says nothing. Cancel safe: a dropped future loses nothing.
+    fn recv(&mut self) -> BoxFut<'_, Option<ChannelMsg>> {
+        Box::pin(std::future::pending())
     }
 }
 
@@ -113,6 +122,33 @@ impl Held for Link {
 
     fn ready(&mut self, tail: &[u8]) {
         self.attachment.ready(tail);
+    }
+
+    fn recv(&mut self) -> BoxFut<'_, Option<ChannelMsg>> {
+        self.attachment.recv()
+    }
+}
+
+/// The plane's `demux` as the carrier's [`Demuxer`]: a refused, failed or faulted call is logged and the message has
+/// no slot (the port already handled the image).
+pub struct PortDemuxer(Arc<dyn PlanePort>);
+
+impl PortDemuxer {
+    #[must_use]
+    pub fn new(port: Arc<dyn PlanePort>) -> Self {
+        Self(port)
+    }
+}
+
+impl Demuxer for PortDemuxer {
+    fn demux(&self, key: &str, message: &[u8]) -> Option<Demuxed> {
+        match demux(&*self.0, key, message) {
+            Ok(found) => found,
+            Err(error) => {
+                tracing::warn!(?error, "a plane demux failed");
+                None
+            }
+        }
     }
 }
 

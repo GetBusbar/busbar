@@ -319,6 +319,7 @@ fn run(plane: &Plane, walk: Option<&mut Walk>, books: &Log) -> Result<super::Ran
             refusals: &refusals,
             effects: &Quiet,
             books,
+            carrier: None,
         },
     )
 }

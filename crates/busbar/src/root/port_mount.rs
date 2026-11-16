@@ -392,9 +392,11 @@ impl Drop for Settle {
 }
 
 /// The client sink that also remembers the status of the head the plane wrote, so the unit settles by what the
-/// client was answered (0 = no head was written).
+/// client was answered (0 = no head was written), and that closes the response body at the plane's `End`: a session
+/// that outlives its response (a held channel, a media bridge, a DETACH) must not hold its client's body open. What
+/// the plane writes after the end has no client to go to and is dropped (the client is not gone, so `true`).
 struct Counted {
-    inner: Pipe,
+    inner: Mutex<Option<Pipe>>,
     status: Arc<AtomicU16>,
 }
 
@@ -407,7 +409,16 @@ impl ClientSink for Counted {
                         .compare_exchange(0, *status, Ordering::Relaxed, Ordering::Relaxed);
             }
         }
-        self.inner.items(items)
+        let ended = items.iter().any(|item| matches!(item, ToClient::End));
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(pipe) = inner.as_ref() else {
+            return true;
+        };
+        let open = pipe.items(items);
+        if ended {
+            *inner = None;
+        }
+        open
     }
 }
 
@@ -461,10 +472,10 @@ async fn answer(
     let (body_tx, body_rx) = mpsc::unbounded_channel();
     let status = Arc::new(AtomicU16::new(0));
     let pipe = Counted {
-        inner: Pipe {
+        inner: Mutex::new(Some(Pipe {
             head: Mutex::new(Some(head_tx)),
             body: body_tx,
-        },
+        })),
         status: Arc::clone(&status),
     };
     let (seat, route) = (seat.clone(), route.clone());
@@ -490,6 +501,7 @@ async fn answer(
             unit,
             upstream: seat.upstream.clone(),
             client: Some(Arc::new(pipe)),
+            carrier: seat.carrier.clone(),
             intents: Arc::clone(&seat.intents),
             models,
         };

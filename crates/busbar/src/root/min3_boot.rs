@@ -649,6 +649,9 @@ impl Steps<'_> {
                 // The MIN-3 pools (K9 `upstreams`) do not compose an `Egress` at boot yet: no walk, so a FORWARD
                 // fails `NotDriven`. `PortEgress` is what lands here.
                 upstream: None,
+                // No `UpstreamChannels` is composed at boot yet (K9: the configured upstreams, the spawn secrets and the
+                // held-HTTP connector): a CHANNEL is `P_ERROR`. `PortCarrier::new` lands here.
+                carrier: None,
             });
         Ok(())
     }

@@ -408,6 +408,12 @@ impl<'h> Resolver<'h> {
         }
     }
 
+    /// The request's subject scope (SHA-256 of its ID_SUBJECT), when it has a verified principal.
+    #[must_use]
+    pub fn subject(&self) -> Option<[u8; 32]> {
+        self.subject
+    }
+
     /// The mounted route the request arrived on (RENDEZVOUS picks the route's media listener).
     #[must_use]
     pub fn with_route(mut self, route: u32) -> Self {
