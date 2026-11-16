@@ -51,10 +51,6 @@ serde_json = "1"
 # The oracle binaries. Each is a dist/default test file, by path. root-tests (busbar-release ci/core.yml)
 # reads these names and leaves them to `oracle`.
 [[test]]
-name = "migration_corpus"
-path = "../../dist/default/tests/migration_corpus.rs"
-
-[[test]]
 name = "validate_matches_the_1_5_5_golden"
 path = "../../dist/default/tests/validate_matches_the_1_5_5_golden.rs"
 
