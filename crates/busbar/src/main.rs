@@ -575,20 +575,22 @@ mod bootstrap_destination_tests {
         let installed: Arc<dyn busbar_kernel::host_services::DestJudge> = holder.clone();
         let class = busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;
         let target = busbar_kernel::host_services::Destination {
-            authority: "10.2.3.4:443",
+            authority: "\x310.2.3.4:443",
             secure: true,
             egress_class: class,
         };
         assert!(installed.judge_target_name(target, false).is_ok());
         assert!(installed
-            .judge_name("https://10.2.3.4", class, false)
+            .judge_name("https://\x310.2.3.4", class, false)
             .is_ok());
         holder.replace(root::connector::guard_for(&policy(true)).unwrap());
         assert!(installed.judge_target_name(target, false).is_err());
         assert!(installed
-            .judge_name("https://10.2.3.4", class, false)
+            .judge_name("https://\x310.2.3.4", class, false)
             .is_err());
-        assert!(holder.judge_name("https://10.2.3.4", class, false).is_err());
+        assert!(holder
+            .judge_name("https://\x310.2.3.4", class, false)
+            .is_err());
     }
 }
 

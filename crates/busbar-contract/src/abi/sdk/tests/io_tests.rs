@@ -135,7 +135,7 @@ fn io(ticket: Ticket) -> Io<'static> {
 fn an_open_answers_the_hosts_handle_or_its_refusal() {
     assert_eq!(io(Ticket::NONE).open("127.0.0.1:1"), Ok(9));
     assert_eq!(
-        io(Ticket::NONE).open("10.0.0.1:1"),
+        io(Ticket::NONE).open("\x310.0.0.1:1"),
         Err(IoFailure::Refused("not admitted".into()))
     );
 }

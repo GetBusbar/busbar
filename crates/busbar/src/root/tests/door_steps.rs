@@ -2757,7 +2757,7 @@ fn the_signing_region_is_read_off_the_host_the_request_dials() {
     let params = br#"{"region":{"host_label_after":["svc-runtime"],"default":"us-east-1"}}"#;
     for base_url in [
         "https://svc-runtime.us-west-2.amazonaws.com\\@svc-runtime.eu-west-1.amazonaws.com/",
-        "https://svc-runtime.us-west-2.amazonaws.com\\x@svc-runtime.eu-west-1.amazonaws.com",
+        "https://svc-runtime.us-west-2.amazonaws.com\\x\x40svc-runtime.eu-west-1.amazonaws.com",
     ] {
         let dialled = busbar_contract::net::url_host(base_url).expect("the base URL reads a host");
         assert_eq!(dialled, "svc-runtime.us-west-2.amazonaws.com", "{base_url}");

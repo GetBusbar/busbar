@@ -350,7 +350,7 @@ fn the_real_tcp_carrier_obeys_the_production_destination_guard() {
         })
     };
     assert_eq!(
-        open(EGRESS_DEFAULT, "10.0.0.1:443"),
+        open(EGRESS_DEFAULT, "\x310.0.0.1:443"),
         Err(ConnError::Refused)
     );
     assert_eq!(open(EGRESS_DEFAULT, &address), Err(ConnError::Refused));

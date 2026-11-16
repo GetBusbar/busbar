@@ -164,7 +164,7 @@ plugins:
 
 store:
   module: valkey          # alias or canonical name, resolved against the signed manifests
-  settings: { url: "rediss://:password@valkey.internal:6380/0" }
+  settings: { url: "rediss://:password@valkey.example.com:6380/0" }
 ```
 
 With `enabled: false` (or the block absent) a tarball in the directory is inert: Busbar does not

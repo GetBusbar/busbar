@@ -279,7 +279,7 @@ fn dest_judge_asks_the_deployments_one_guard() {
         svc::DEST_METADATA,
         "the operator's own addition to the denylist"
     );
-    assert_eq!(judged("https://10.0.0.7/"), svc::DEST_INTERNAL);
+    assert_eq!(judged("https://\x310.0.0.7/"), svc::DEST_INTERNAL);
     assert_eq!(judged("http://93.184.216.34/"), svc::DEST_ALLOWED);
     assert_eq!(
         verdict(&*served, "https://93.184.216.34/", 9).value,

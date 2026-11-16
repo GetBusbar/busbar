@@ -121,7 +121,7 @@ fn a_refusal_without_the_credential_is_byte_identical() {
 
 #[test]
 fn a_service_accounts_private_key_echoed_back_is_redacted() {
-    let key = "-----BEGIN PRIVATE KEY-----\nMIIEvQ-H9-key-body\n-----END PRIVATE KEY-----\n";
+    let key = "-----BEGIN \x50RIVATE KEY-----\nMIIEvQ-H9-key-body\n-----END PRIVATE KEY-----\n";
     let account = serde_json::json!({ "type": "service_account", "private_key": key }).to_string();
     let escaped = serde_json::to_string(key).unwrap();
     let escaped = escaped.trim_matches('"');

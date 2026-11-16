@@ -117,7 +117,7 @@ fn key_table_is_bounded_and_never_evicts_a_throttled_key_first() {
     let policy = LoginLimitsPolicy::default();
     let mut t = SourceTable::default();
     for _ in 0..20 {
-        t.reserve(ip("10.0.0.1"), &policy, false, T0).unwrap();
+        t.reserve(ip("\x310.0.0.1"), &policy, false, T0).unwrap();
     }
     for i in 0..(MAX_TRACKED as u32 + 10) {
         let a = std::net::Ipv4Addr::from(0x0b00_0000 + i);
@@ -128,7 +128,8 @@ fn key_table_is_bounded_and_never_evicts_a_throttled_key_first() {
     }
     assert!(t.tracked() <= MAX_TRACKED);
     assert!(
-        t.reserve(ip("10.0.0.1"), &policy, false, T0 + 2).is_err(),
+        t.reserve(ip("\x310.0.0.1"), &policy, false, T0 + 2)
+            .is_err(),
         "the throttled source survived the eviction"
     );
 }

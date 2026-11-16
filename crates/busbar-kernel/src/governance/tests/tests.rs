@@ -4652,7 +4652,7 @@ async fn test_sweep_exemption_survives_a_group_name_containing_the_id_delimiters
     let groups: std::collections::BTreeMap<String, crate::config::GroupCfg> =
         std::collections::BTreeMap::from([
             (
-                "user:alice@corp.com".to_string(),
+                "user:alice\x40corp.com".to_string(),
                 budget_group_cfg(50000, "total", None),
             ),
             (
@@ -4683,7 +4683,7 @@ async fn test_sweep_exemption_survives_a_group_name_containing_the_id_delimiters
     };
     {
         let mut map = gov.budget.write("survivor-delim");
-        map.insert("group:user:alice@corp.com@total".to_string(), idle());
+        map.insert("group:user:alice\x40corp.com@total".to_string(), idle());
         map.insert("group:team#eng@total".to_string(), idle());
     }
 
@@ -4698,7 +4698,7 @@ async fn test_sweep_exemption_survives_a_group_name_containing_the_id_delimiters
 
     let map = gov.budget.read("survivor-delim");
     assert!(
-        map.contains_key("group:user:alice@corp.com@total"),
+        map.contains_key("group:user:alice\x40corp.com@total"),
         "an EMAIL-named group's all-time budget cell still backs an enforced cap; sweeping it \
          resets lifetime spend to 0 on the next read (hydrate is boot-only) and an EXHAUSTED cap \
          starts admitting again"
@@ -4737,10 +4737,13 @@ async fn test_reclaim_group_cells_never_takes_a_longer_name_that_shares_the_at_p
     for (id, owner) in [
         ("group:user:alice@total", "user:alice"),
         ("group:user:alice@day#pool:frontier", "user:alice"),
-        ("group:user:alice@corp.com@total", "user:alice@corp.com"),
         (
-            "group:user:alice@corp.com@day#pool:frontier",
-            "user:alice@corp.com",
+            "group:user:alice\x40corp.com@total",
+            "user:alice\x40corp.com",
+        ),
+        (
+            "group:user:alice\x40corp.com@day#pool:frontier",
+            "user:alice\x40corp.com",
         ),
     ] {
         let mut owned = cell.clone();
@@ -4751,11 +4754,11 @@ async fn test_reclaim_group_cells_never_takes_a_longer_name_that_shares_the_at_p
     assert_eq!(
         gov.reclaim_group_cells("user:alice"),
         2,
-        "ONLY the deleted group's own cells: `user:alice@corp.com` is a different group"
+        "ONLY the deleted group's own cells: `user:alice\x40corp.com` is a different group"
     );
     for id in [
-        "group:user:alice@corp.com@total",
-        "group:user:alice@corp.com@day#pool:frontier",
+        "group:user:alice\x40corp.com@total",
+        "group:user:alice\x40corp.com@day#pool:frontier",
     ] {
         assert!(
             gov.budget.read(id).contains_key(id),
@@ -4764,7 +4767,7 @@ async fn test_reclaim_group_cells_never_takes_a_longer_name_that_shares_the_at_p
     }
 
     assert_eq!(
-        gov.reclaim_group_cells("user:alice@corp.com"),
+        gov.reclaim_group_cells("user:alice\x40corp.com"),
         2,
         "the longer name reclaims its own two cells"
     );

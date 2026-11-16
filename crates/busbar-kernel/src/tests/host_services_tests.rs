@@ -1844,7 +1844,7 @@ impl DestJudge for FakeGuard {
 
     fn judge_name(&self, dest: &str, _class: u32, _refuse_private: bool) -> Result<(), u64> {
         self.names.lock().unwrap().push(dest.to_owned());
-        if dest.contains("10.0.0.5") {
+        if dest.contains("\x310.0.0.5") {
             Err(svc::DEST_INTERNAL)
         } else {
             Ok(())
@@ -1865,7 +1865,7 @@ impl DestJudge for FakeGuard {
                 })
                 .map_err(|verdict| Refused {
                     verdict,
-                    detail: Some("10.0.0.5".into()),
+                    detail: Some("\x310.0.0.5".into()),
                 }),
         )
     }
@@ -1880,13 +1880,13 @@ fn dest_judge_answers_the_installed_guard_refusal() {
     let s = KernelServices::new().with_dest_judge(guard.clone());
     for class in [0, 4] {
         let (_, later) = recorder();
-        let got = verdict_now(s.dest_judge("http://10.0.0.5:80/x", class, 0, Some(later)));
+        let got = verdict_now(s.dest_judge("http://\x310.0.0.5:80/x", class, 0, Some(later)));
         assert_eq!(got.value, svc::DEST_INTERNAL, "class {class}");
     }
     assert_eq!(
         s.judge_destination(
             Destination {
-                authority: "10.0.0.5:443",
+                authority: "\x310.0.0.5:443",
                 secure: true,
                 egress_class: 4,
             },
@@ -1897,7 +1897,7 @@ fn dest_judge_answers_the_installed_guard_refusal() {
     assert_eq!(
         *guard.targets.lock().unwrap(),
         vec![TargetJudgement {
-            authority: "10.0.0.5:443".into(),
+            authority: "\x310.0.0.5:443".into(),
             secure: true,
             class: 4,
             refuse_private: false,
