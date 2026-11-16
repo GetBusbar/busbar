@@ -32,14 +32,14 @@ use busbar_plugin_abi::records::{
 };
 use busbar_plugin_abi::types::{KindCode, Status};
 
-use crate::binder::{BindError, ConfigBinder};
-use crate::encode::settled::decode_settled;
+use crate::answer::{open_error, port_error};
 use crate::instance::{
     BootPhase, CoreCfg, Described, ErrorBook, InstanceSpec, MetricInfo, OpenError, Registry,
     Settled, SlotLease, SlotRecord,
 };
-use crate::ports::{open_error, port_error};
 use crate::refusal::{Refusal, RefusalCode};
+use busbar_ports::binder::{BindError, ConfigBinder};
+use busbar_ports::codec::settled::decode_settled;
 
 /// An `open` chain may run this long end to end (its NEEDs included): the first poll is bounded by the §10.6
 /// ceiling, the rest by the Need handlers' own timeouts and the step cap.

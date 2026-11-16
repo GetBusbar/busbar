@@ -34,8 +34,8 @@ use busbar_plugin_abi::host_side::needs::Needs;
 use busbar_plugin_abi::kinds::hook::hook::{self as abi, CandidateRec};
 
 use crate::instance::{InstanceSpec, OpenError, Registry};
-use crate::ports::hook::{BudgetIn, CandidateIn, HookAnswer, HookCall, HookPort, HookView};
-use crate::ports::{CallCx, FactRef, PortError};
+use busbar_ports::hook::{BudgetIn, CandidateIn, HookAnswer, HookCall, HookPort, HookView};
+use busbar_ports::{CallCx, FactRef, PortError};
 
 /// The text `configure` answers: MIN-3 hooks have no configure op (IF §8.4).
 pub const CONFIGURE_IS_RECONFIGURE: &str =

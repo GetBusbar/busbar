@@ -21,8 +21,8 @@ use busbar_plugin_abi::fail::refused::R_NO_ROUTE;
 use busbar_plugin_abi::host_side::caller::BoxFut;
 use busbar_plugin_abi::plane::{FROM_CORE, P_EXHAUSTED};
 use busbar_plugin_abi::records::Reply;
-use busbar_plugin_loader::encode::plane::encode_refusal;
-use busbar_plugin_loader::ports::plane::PlaneIn;
+use busbar_ports::codec::plane::encode_refusal;
+use busbar_ports::plane::PlaneIn;
 use std::sync::Arc;
 
 use super::port_auth::{plain_refusal, TicketDoor};

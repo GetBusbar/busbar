@@ -16,8 +16,8 @@ use busbar_plugin_abi::host_side::caller::{BoxFut, InstanceLimits};
 use busbar_plugin_abi::kinds::export::export as x;
 
 use super::{AppendBytes, AppendDenied, DestAppend, PortDoor};
-use crate::ports::export::{Custody, Delivered, ExportPort, FamilyIn, RecorderNeeds, ScopeInfo};
-use crate::ports::{CallCx, PortError};
+use busbar_ports::export::{Custody, Delivered, ExportPort, FamilyIn, RecorderNeeds, ScopeInfo};
+use busbar_ports::{CallCx, PortError};
 
 const WAIT: Duration = Duration::from_secs(5);
 const ACCEPTED: Custody = Custody {

@@ -12,6 +12,7 @@ name = "busbar_core_connector"
 path = "src/lib.rs"
 
 [dependencies]
+busbar-ports = { path = "../busbar-ports" }
 hex = { workspace = true }
 busbar-contract = { path = "../busbar-contract", features = ["tls"] }
 arc-swap = { workspace = true }

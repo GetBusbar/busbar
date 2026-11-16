@@ -31,6 +31,7 @@ name = "shutdown_waits"
 path = "tests/shutdown_waits.rs"
 
 [dependencies]
+busbar-ports = { path = "../busbar-ports" }
 async-trait = { workspace = true }
 busbar-core-oauth2 = { path = "../busbar-core-oauth2" }
 busbar-core-admin = { path = "../busbar-core-admin", default-features = false }

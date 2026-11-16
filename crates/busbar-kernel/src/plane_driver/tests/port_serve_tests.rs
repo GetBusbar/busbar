@@ -15,8 +15,8 @@ use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
 use busbar_plugin_abi::plane::{
     UsageRec, AUDIT_APPLIED, FROM_CORE, P_EXHAUSTED, P_LOOKUP, SRC_REPORTED, W_MODEL,
 };
-use busbar_plugin_loader::ports::plane::{PlaneIn, PlaneOut, TargetIn};
-use busbar_plugin_loader::ports::{FactRef, PortError};
+use busbar_ports::plane::{PlaneIn, PlaneOut, TargetIn};
+use busbar_ports::{FactRef, PortError};
 
 use super::{run_session, Books, Drive, TicketGate, UnitBooks};
 use crate::plane_driver::cancel::{CancelBill, Checkpoint, MoneySeam};

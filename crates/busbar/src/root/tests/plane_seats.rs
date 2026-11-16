@@ -20,10 +20,8 @@ use busbar_kernel::upstreams::{ProgramPin, StdioCommand, UpstreamTls};
 use busbar_plugin_abi::fail::FaultReason;
 use busbar_plugin_abi::plane::CARRIER_STDIO;
 use busbar_plugin_abi::records::Records;
-use busbar_plugin_loader::ports::plane::{
-    PlaneIn, PlaneOut, PlaneSession, RouteInfo, TargetIn, UsageClass,
-};
-use busbar_plugin_loader::ports::{CallCx, PortError};
+use busbar_ports::plane::{PlaneIn, PlaneOut, PlaneSession, RouteInfo, TargetIn, UsageClass};
+use busbar_ports::{CallCx, PortError};
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 

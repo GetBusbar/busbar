@@ -39,10 +39,10 @@ fn the_file_matches_describe_and_every_number_the_suite_saw() {
     use busbar_plugin_abi::host_side::caller::CallStack;
     use busbar_plugin_abi::records::tag;
     use busbar_plugin_loader::admit::admit_header;
-    use busbar_plugin_loader::ports::{CallCx, PortError};
     use busbar_plugin_loader::scan::error_identity;
     use busbar_plugin_test::fake_needs::FakeNeeds;
     use busbar_plugin_test::suites::harness::{plugin_code, Harness};
+    use busbar_ports::{CallCx, PortError};
 
     use crate::min3_second::{self as fx, PROBE};
 
