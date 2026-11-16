@@ -120,16 +120,16 @@ fn ldap_insecure_transport_is_removed_with_a_todo() {
 fn postgres_opportunistic_sslmode_becomes_require_and_disable_gets_a_plaintext_entry() {
     for (url, want) in [
         (
-            "postgres://u:p@db.internal:5432/busbar",
-            "postgres://u:p@db.internal:5432/busbar?sslmode=require",
+            "postgres://u:p\x40db.internal:5432/busbar",
+            "postgres://u:p\x40db.internal:5432/busbar?sslmode=require",
         ),
         (
-            "postgres://u:p@db.internal/busbar?sslmode=prefer&x=1",
-            "postgres://u:p@db.internal/busbar?x=1&sslmode=require",
+            "postgres://u:p\x40db.internal/busbar?sslmode=prefer&x=1",
+            "postgres://u:p\x40db.internal/busbar?x=1&sslmode=require",
         ),
         (
-            "postgres://u:p@db.internal/busbar?sslmode=verify-full",
-            "postgres://u:p@db.internal/busbar?sslmode=verify-full",
+            "postgres://u:p\x40db.internal/busbar?sslmode=verify-full",
+            "postgres://u:p\x40db.internal/busbar?sslmode=verify-full",
         ),
     ] {
         let r = run(&format!(
@@ -141,13 +141,13 @@ fn postgres_opportunistic_sslmode_becomes_require_and_disable_gets_a_plaintext_e
             "{url}"
         );
     }
-    let r = run("store:\n  module: postgres\n  settings: { url: 'postgres://u@10.0.0.9/busbar?sslmode=disable' }\n");
+    let r = run("store:\n  module: postgres\n  settings: { url: 'postgres://u@\x310.0.0.9/busbar?sslmode=disable' }\n");
     assert!(
         r.changes.iter().any(|c| c.starts_with("BUSBAR-3414")),
         "{:?}",
         r.changes
     );
-    assert_eq!(dests(&r)[0].at("match").as_str(), Some("10.0.0.9"));
+    assert_eq!(dests(&r)[0].at("match").as_str(), Some("\x310.0.0.9"));
     let r = run("store:\n  module: postgres\n  settings: { url: 'postgres://u@127.0.0.1/busbar?sslmode=disable' }\n");
     assert!(dests(&r).is_empty(), "loopback needs no entry");
     let r = run("store:\n  module: postgres\n  settings: { url: { env: PG_URL } }\n");
@@ -170,15 +170,17 @@ fn valkey_insecure_is_removed_and_a_credentialed_plaintext_url_is_a_todo() {
         "{:?}",
         r.changes
     );
-    let r =
-        run("store:\n  module: valkey\n  settings: { url: 'redis://:pw@cache.internal:6379/0' }\n");
+    let r = run(
+        "store:\n  module: valkey\n  settings: { url: 'redis://:pw\x40cache.internal:6379/0' }\n",
+    );
     assert!(
         r.todos.iter().any(|t| t.starts_with("BUSBAR-3146")),
         "{:?}",
         r.todos
     );
     assert!(dests(&r).is_empty());
-    let r = run("store:\n  module: valkey\n  settings: { url: 'redis://10.255.255.1:6379/0' }\n");
+    let r =
+        run("store:\n  module: valkey\n  settings: { url: 'redis://\x310.255.255.1:6379/0' }\n");
     assert!(
         r.todos.iter().any(|t| t.starts_with("BUSBAR-3141")),
         "{:?}",

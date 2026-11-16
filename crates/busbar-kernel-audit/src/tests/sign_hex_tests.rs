@@ -60,3 +60,15 @@ fn key_text_that_is_not_lowercase_hex_is_refused_without_detail() {
         Some(KeyError::NotHex)
     );
 }
+
+/// QE: a pinned audit key with no point on edwards25519 (`y = 2`: canonical, not small-order) is
+/// refused when it is read, as `NotAKey`, the class it had before Q9b.
+#[test]
+fn an_off_curve_public_key_is_not_a_key() {
+    assert_eq!(
+        AuditVerifyingKey::from_hex(
+            "0200000000000000000000000000000000000000000000000000000000000000"
+        ),
+        Err(KeyError::NotAKey)
+    );
+}

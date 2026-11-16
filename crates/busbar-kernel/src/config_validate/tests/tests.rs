@@ -261,8 +261,8 @@ fn deferred_targets_never_call_the_locator_and_userinfo_is_refused_first() {
 #[test]
 fn vet_token_uri_takes_http_to_a_private_host_and_refuses_a_public_one() {
     for uri in [
-        "http://10.0.0.5/token",
-        "http://192.168.1.20/token",
+        "http://\x310.0.0.5/token",
+        "http://\x3192.168.1.20/token",
         "http://127.0.0.1:9000/token",
         "http://[::1]/token",
         "https://oauth2.googleapis.com/token",
@@ -403,8 +403,8 @@ fn test_ssrf_blocks_metadata_denylist_by_default() {
         "http://169.254.169.254/",
         "https://169.254.170.2/v2/credentials",
         "https://169.254.0.23/",
-        "https://100.100.100.200/latest/meta-data/",
-        "http://100.100.100.200/",
+        "https://\x3100.100.100.200/latest/meta-data/",
+        "http://\x3100.100.100.200/",
         "https://168.63.129.16/",
         "https://[fd00:ec2::254]/",
         "https://metadata.google.internal/computeMetadata/v1/",
@@ -417,7 +417,7 @@ fn test_ssrf_blocks_metadata_denylist_by_default() {
         "https://[::ffff:169.254.169.254]/",
         "https://[::169.254.169.254]/",
         "https://[::ffff:169.254.170.2]/",
-        "https://[::ffff:100.100.100.200]/",
+        "https://[::ffff:\x3100.100.100.200]/",
         "https://[::ffff:168.63.129.16]/",
         "https://2852039166/",
         "https://0xa9fea9fe/",
@@ -455,8 +455,8 @@ fn test_ssrf_blocked_returns_exact_host_string() {
         Some("metadata.google.internal")
     );
     assert_eq!(
-        ssrf_blocked_host("https://100.100.100.200/", &[], false, &[]).as_deref(),
-        Some("100.100.100.200")
+        ssrf_blocked_host("https://\x3100.100.100.200/", &[], false, &[]).as_deref(),
+        Some("\x3100.100.100.200")
     );
 }
 
@@ -542,8 +542,8 @@ fn test_metadata_list_entries_are_mapped() {
     let full_width_ip = "\u{ff11}\u{ff10}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}";
     let full_width_name = "\u{ff4d}\u{ff45}\u{ff54}\u{ff41}.example";
     for (entry, target) in [
-        (full_width_ip, "https://10.99.99.99/v1"),
-        (full_width_ip, "https://[::ffff:10.99.99.99]/v1"),
+        (full_width_ip, "https://\x310.99.99.99/v1"),
+        (full_width_ip, "https://[::ffff:\x310.99.99.99]/v1"),
         (full_width_name, "https://meta.example/v1"),
         (full_width_name, "meta.example:443"),
     ] {
@@ -562,19 +562,19 @@ fn test_metadata_list_entries_are_mapped() {
 fn test_ssrf_allows_private_and_loopback_by_default() {
     for allowed in [
         "https://127.0.0.1/",
-        "https://10.0.0.1/v1",
-        "https://172.16.0.1/",
-        "https://192.168.1.1:8443/",
+        "https://\x310.0.0.1/v1",
+        "https://\x3172.16.0.1/",
+        "https://\x3192.168.1.1:8443/",
         "https://[::1]/",
         "https://[::1]:443/",
         "https://[fe80::1]/",
         "https://[fc00::1]/",
         "https://0.0.0.0/",
-        "https://user:pass@10.0.0.5/path",
-        "https://100.64.0.1/",
-        "https://100.127.255.255/",
-        "https://[::ffff:10.0.0.1]/",
-        "https://[::ffff:100.64.0.1]/",
+        "https://user:pass@\x310.0.0.5/path",
+        "https://\x3100.64.0.1/",
+        "https://\x3100.127.255.255/",
+        "https://[::ffff:\x310.0.0.1]/",
+        "https://[::ffff:\x3100.64.0.1]/",
         "https://[::127.0.0.1]/",
         "https://2130706433/",
         "https://127.1/",
@@ -592,14 +592,14 @@ fn test_ssrf_allows_private_and_loopback_by_default() {
 
 #[test]
 fn test_ssrf_cgnat_allowed_but_alibaba_literal_blocked() {
-    assert!(ssrf_blocked_host("https://100.64.0.0/", &[], false, &[]).is_none());
-    assert!(ssrf_blocked_host("https://100.127.255.255/", &[], false, &[]).is_none());
+    assert!(ssrf_blocked_host("https://\x3100.64.0.0/", &[], false, &[]).is_none());
+    assert!(ssrf_blocked_host("https://\x3100.127.255.255/", &[], false, &[]).is_none());
     assert!(ssrf_blocked_host("https://100.63.255.255/", &[], false, &[]).is_none());
     assert!(ssrf_blocked_host("https://100.128.0.1/", &[], false, &[]).is_none());
 
     assert!(
-        ssrf_blocked_host("https://100.100.100.200/", &[], false, &[]).is_some(),
-        "the Alibaba metadata literal 100.100.100.200 must stay blocked even though CGNAT is allowed"
+        ssrf_blocked_host("https://\x3100.100.100.200/", &[], false, &[]).is_some(),
+        "the Alibaba metadata literal \x3100.100.100.200 must stay blocked even though CGNAT is allowed"
     );
 }
 

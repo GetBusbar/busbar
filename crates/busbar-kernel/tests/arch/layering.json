@@ -9,9 +9,11 @@
     "busbar-kernel-identity",
     "busbar-kernel-ledger",
     "busbar-kernel-wal",
-    "busbar-plugin-abi"
+    "busbar-plugin-abi",
+    "busbar-plugin-loader"
   ],
   "allowed_additions": [
-    "busbar-plugin-abi"
+    "busbar-plugin-abi",
+    "busbar-plugin-loader"
   ]
 }

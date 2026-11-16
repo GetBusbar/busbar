@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The secret port (IF §11.3) and `SugarDecl` (IF §11.2, defined with the ports per §8.8). W0-ABI stub: frozen
-//! signatures, `todo!()` bodies; L4 fills it.
+//! The secret port (IF §11.3) and `SugarDecl` (IF §11.2, defined with the ports per §8.8).
 
 use std::sync::Arc;
 
@@ -11,7 +10,7 @@ use busbar_plugin_abi::host_side::caller::BoxFut;
 
 use crate::ports::{CallCx, PortError};
 
-// W0-ABI: the IF types `value` as `zeroize::Zeroizing<Vec<u8>>`; the workspace bans `Zeroizing` crate-wide
+// The IF types `value` as `zeroize::Zeroizing<Vec<u8>>`; the workspace bans `Zeroizing` crate-wide
 // (clippy-crate-wide/clippy.toml, owner 2026-11-14), so the stub uses its named replacement `SecureVec`.
 pub struct SecretAnswer {
     pub value: SecureVec,

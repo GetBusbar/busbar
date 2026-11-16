@@ -32,3 +32,7 @@ mod cold;
 // The request-path tree's code that runs off the request path: once per configuration, binding or
 // process lifecycle, never per request.
 mod off_path;
+
+// The Need handlers (IF 13): `HostNeeds` over the guard, the transport-security gate, the pool and
+// the conn table. Core-side only; no plugin text crosses it.
+pub mod need;

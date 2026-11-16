@@ -851,8 +851,13 @@ fn doc_ranges(stream: TokenStream, out: &mut Vec<(usize, usize)>) {
                 }
                 if let Some(TokenTree::Group(group)) = trees.get(next) {
                     if group.delimiter() == Delimiter::Bracket {
-                        let first = group.stream().into_iter().next();
-                        if matches!(&first, Some(TokenTree::Ident(ident)) if ident == "doc") {
+                        // Only `doc = ..` (what `///` and `//!` lex to) is doc text: `#[doc(hidden)]` and
+                        // the other `doc(..)` forms hide nothing on their line (UNSAFE-MIN A15).
+                        let mut inner = group.stream().into_iter();
+                        let first = inner.next();
+                        let eq =
+                            matches!(inner.next(), Some(TokenTree::Punct(p)) if p.as_char() == '=');
+                        if eq && matches!(&first, Some(TokenTree::Ident(ident)) if ident == "doc") {
                             out.push((pound.span().start().line, group.span_close().end().line));
                             index = next + 1;
                             continue;
@@ -1132,4 +1137,436 @@ fn test_only_cfg_is_test_or_the_test_support_feature_exactly() {
     let source = "#[cfg(feature = \"test-support\")]\nfn a() { unsafe {} }\n\
                   #[cfg(any(test, feature = \"other\"))]\nfn b() { unsafe {} }\n";
     assert_eq!(Parsed::new(source).unsafe_keywords(), 1);
+}
+
+// ---- escapes v2 (UNSAFE-MIN r3.1 §4.6): the token-level walk of every tracked `.rs` file ----
+
+/// The escape tokens of one file, token-level: comments are not tokens, doc text is a literal, and
+/// nothing else is skipped (no test range, no `#[doc(hidden)]` line, no `cfg`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EscapeCounts {
+    /// `unsafe` keywords: blocks, fns, impls, traits, extern blocks, attributes, fn-pointer types.
+    pub unsafe_tokens: usize,
+    /// `no_mangle`, `export_name`, `link_section`, `global_asm`, `naked_asm`.
+    pub linker: usize,
+    /// `extern` blocks (`extern "C" { .. }`), wherever they stand.
+    pub extern_blocks: usize,
+    /// `allow`/`expect`/`warn` naming `unsafe_code`, in any form (`cfg_attr`, multi-lint lists).
+    pub unsafe_code_allows: usize,
+    /// `include!`/`include_str!`/`include_bytes!` of an `OUT_DIR` path.
+    pub out_dir_includes: usize,
+    /// 1 when the file is a `build.rs` that names a `.rs` output.
+    pub build_writes_rs: usize,
+    /// `unsafe` keywords inside fenced Rust code blocks of the file's doc text.
+    pub doc_code_unsafe: usize,
+}
+
+impl EscapeCounts {
+    /// E1's count, for a file outside busbar-ffi: every kind of escape.
+    pub fn outside(&self) -> usize {
+        self.unsafe_tokens
+            + self.linker
+            + self.extern_blocks
+            + self.unsafe_code_allows
+            + self.out_dir_includes
+            + self.build_writes_rs
+    }
+    /// E3's count, for a file inside busbar-ffi: `unsafe` tokens (doc code included) and allows.
+    pub fn ffi(&self) -> usize {
+        self.unsafe_tokens + self.doc_code_unsafe + self.unsafe_code_allows
+    }
+}
+
+/// The escape counts of `source` (tracked at `path`). Err: the file does not lex, which fails the check.
+pub fn escape_counts(path: &str, source: &str) -> Result<EscapeCounts, String> {
+    let stream: TokenStream = lexable(source).parse().map_err(|error| {
+        format!("{path}: does not lex ({error}); every tracked .rs file is scanned")
+    })?;
+    let mut counts = EscapeCounts::default();
+    count_escapes(stream.clone(), false, &mut counts);
+    if path == "build.rs" || path.ends_with("/build.rs") {
+        counts.build_writes_rs =
+            usize::from(any_literal(stream.clone(), &|text| text.ends_with(".rs\"")));
+    }
+    let mut docs = Vec::new();
+    doc_texts(stream, &mut docs);
+    counts.doc_code_unsafe = doc_code_unsafe(&docs.join("\n"));
+    Ok(counts)
+}
+
+fn count_escapes(stream: TokenStream, level_paren: bool, counts: &mut EscapeCounts) {
+    let trees: Vec<TokenTree> = stream.into_iter().collect();
+    for (index, tree) in trees.iter().enumerate() {
+        match tree {
+            TokenTree::Ident(ident) => match ident.to_string().as_str() {
+                "unsafe" => counts.unsafe_tokens += 1,
+                "no_mangle" | "export_name" | "link_section" | "global_asm" | "naked_asm" => {
+                    counts.linker += 1
+                }
+                "extern" => {
+                    let mut next = index + 1;
+                    if matches!(trees.get(next), Some(TokenTree::Literal(_))) {
+                        next += 1;
+                    }
+                    if matches!(trees.get(next), Some(TokenTree::Group(group)) if group.delimiter() == Delimiter::Brace)
+                    {
+                        counts.extern_blocks += 1;
+                    }
+                }
+                "unsafe_code" if level_paren => counts.unsafe_code_allows += 1,
+                "include" | "include_str" | "include_bytes" => {
+                    let bang = matches!(trees.get(index + 1), Some(TokenTree::Punct(p)) if p.as_char() == '!');
+                    if let (true, Some(TokenTree::Group(args))) = (bang, trees.get(index + 2)) {
+                        if any_literal(args.stream(), &|text| text == "\"OUT_DIR\"") {
+                            counts.out_dir_includes += 1;
+                        }
+                    }
+                }
+                _ => {}
+            },
+            TokenTree::Group(group) => {
+                let after_level = group.delimiter() == Delimiter::Parenthesis
+                    && index
+                        .checked_sub(1)
+                        .and_then(|before| trees.get(before))
+                        .is_some_and(|before| {
+                            matches!(before, TokenTree::Ident(level)
+                            if matches!(level.to_string().as_str(), "allow" | "expect" | "warn"))
+                        });
+                count_escapes(group.stream(), after_level, counts);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn any_literal(stream: TokenStream, matches: &dyn Fn(&str) -> bool) -> bool {
+    stream.into_iter().any(|tree| match tree {
+        TokenTree::Literal(literal) => matches(&literal.to_string()),
+        TokenTree::Group(group) => any_literal(group.stream(), matches),
+        _ => false,
+    })
+}
+
+/// Every `doc = "..."` value (doc comments included), in source order.
+fn doc_texts(stream: TokenStream, out: &mut Vec<String>) {
+    let trees: Vec<TokenTree> = stream.into_iter().collect();
+    for (index, tree) in trees.iter().enumerate() {
+        if let TokenTree::Group(group) = tree {
+            let attribute = group.delimiter() == Delimiter::Bracket
+                && index.checked_sub(1).and_then(|before| trees.get(before)).is_some_and(|before| {
+                    matches!(before, TokenTree::Punct(p) if p.as_char() == '#' || p.as_char() == '!')
+                });
+            let inner: Vec<TokenTree> = group.stream().into_iter().collect();
+            if let (true, [TokenTree::Ident(doc), TokenTree::Punct(eq), TokenTree::Literal(text)]) =
+                (attribute, inner.as_slice())
+            {
+                if doc == "doc" && eq.as_char() == '=' {
+                    if let Ok(text) = syn::parse_str::<syn::LitStr>(&text.to_string()) {
+                        out.push(text.value());
+                    }
+                    continue;
+                }
+            }
+            doc_texts(group.stream(), out);
+        }
+    }
+}
+
+/// `unsafe` keywords in the fenced Rust code blocks of `docs` (A15): a fence whose info string is empty
+/// or names Rust or a rustdoc attribute; `text`, `toml`, `yaml`, `json`, `sh`, `console`, `c` and the
+/// like are prose.
+fn doc_code_unsafe(docs: &str) -> usize {
+    const PROSE: &[&str] = &[
+        "text", "txt", "plain", "toml", "yaml", "yml", "json", "sh", "bash", "shell", "console",
+        "c", "md", "markdown", "diff",
+    ];
+    let mut total = 0;
+    // The open fence, if any: whether it is Rust, and its lines so far.
+    let mut open: Option<(bool, String)> = None;
+    for line in docs.lines() {
+        let trimmed = line.trim_start();
+        if let Some(info) = trimmed.strip_prefix("```") {
+            match open.take() {
+                Some((true, block)) => total += unsafe_idents(&block),
+                Some((false, _)) => {}
+                None => {
+                    let rust = !info
+                        .split([',', ' '])
+                        .any(|word| PROSE.contains(&word.trim()));
+                    open = Some((rust, String::new()));
+                }
+            }
+            continue;
+        }
+        if let Some((true, block)) = open.as_mut() {
+            block.push_str(trimmed.strip_prefix("# ").unwrap_or(trimmed));
+            block.push('\n');
+        }
+    }
+    if let Some((true, block)) = open {
+        total += unsafe_idents(&block);
+    }
+    total
+}
+
+fn unsafe_idents(code: &str) -> usize {
+    match code.parse::<TokenStream>() {
+        Ok(stream) => {
+            let mut lines = Vec::new();
+            idents_named(stream, "unsafe", &mut lines);
+            lines.len()
+        }
+        // Doc code that does not lex still counts, word by word.
+        Err(_) => code
+            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .filter(|word| *word == "unsafe")
+            .count(),
+    }
+}
+
+/// True when the file carries `#![doc(test(attr(forbid(unsafe_code))))]` (E2).
+pub fn forbids_unsafe_in_doctests(source: &str) -> bool {
+    let Ok(file) = syn::parse_file(&lexable(source)) else {
+        return false;
+    };
+    file.attrs.iter().any(|attr| {
+        matches!(attr.style, syn::AttrStyle::Inner(_))
+            && matches!(&attr.meta, Meta::List(list)
+                if list.path.is_ident("doc")
+                    && list.tokens.to_string().split_whitespace().collect::<String>()
+                        == "test(attr(forbid(unsafe_code)))")
+    })
+}
+
+/// E4/E5 findings in one busbar-ffi file: its exported macros (by name), and every `unsafe` token in a
+/// `macro_rules!` body other than `export!`'s `#[unsafe(no_mangle)]`, and every `$`-metavariable (other
+/// than `$crate`) inside an `unsafe` construct or attribute.
+pub fn ffi_macro_findings(source: &str) -> (Vec<String>, Vec<String>) {
+    let mut exported = Vec::new();
+    let mut findings = Vec::new();
+    if let Ok(stream) = lexable(source).parse::<TokenStream>() {
+        macro_walk(stream, &mut exported, &mut findings);
+    }
+    (exported, findings)
+}
+
+fn macro_walk(stream: TokenStream, exported: &mut Vec<String>, findings: &mut Vec<String>) {
+    let trees: Vec<TokenTree> = stream.into_iter().collect();
+    for (index, tree) in trees.iter().enumerate() {
+        match tree {
+            TokenTree::Ident(ident) if ident == "macro_rules" => {
+                let (
+                    Some(TokenTree::Punct(bang)),
+                    Some(TokenTree::Ident(name)),
+                    Some(TokenTree::Group(body)),
+                ) = (
+                    trees.get(index + 1),
+                    trees.get(index + 2),
+                    trees.get(index + 3),
+                )
+                else {
+                    continue;
+                };
+                if bang.as_char() != '!' {
+                    continue;
+                }
+                let name = name.to_string();
+                let is_exported = index >= 2
+                    && matches!(&trees[index - 1], TokenTree::Group(attr)
+                        if attr.delimiter() == Delimiter::Bracket
+                            && attr.stream().into_iter().next().is_some_and(|first| first.to_string() == "macro_export"));
+                if is_exported {
+                    exported.push(name.clone());
+                }
+                let mut allowed = usize::from(name == "export");
+                body_walk(body.stream(), &name, false, &mut allowed, findings);
+            }
+            TokenTree::Group(group) => macro_walk(group.stream(), exported, findings),
+            _ => {}
+        }
+    }
+}
+
+/// `allowed`: how many `#[unsafe(no_mangle)]` this body may still hold.
+fn body_walk(
+    stream: TokenStream,
+    name: &str,
+    in_unsafe: bool,
+    allowed: &mut usize,
+    findings: &mut Vec<String>,
+) {
+    let trees: Vec<TokenTree> = stream.into_iter().collect();
+    for (index, tree) in trees.iter().enumerate() {
+        match tree {
+            TokenTree::Ident(ident) if ident == "unsafe" => {
+                let export_attribute = index == 0
+                    && matches!(trees.get(1), Some(TokenTree::Group(g))
+                        if g.delimiter() == Delimiter::Parenthesis && g.stream().to_string() == "no_mangle")
+                    && trees.len() == 2;
+                if export_attribute && *allowed > 0 {
+                    *allowed -= 1;
+                } else {
+                    findings.push(format!(
+                        "an `unsafe` token in the body of macro_rules! {name} (S2, E4)"
+                    ));
+                }
+            }
+            TokenTree::Punct(dollar) if dollar.as_char() == '$' && in_unsafe => {
+                if !matches!(trees.get(index + 1), Some(TokenTree::Ident(next)) if next == "crate")
+                {
+                    findings.push(format!(
+                        "a `$` metavariable inside an `unsafe` construct or attribute of macro_rules! {name} (E5)"
+                    ));
+                }
+            }
+            TokenTree::Group(group) => {
+                let after_unsafe = index
+                    .checked_sub(1)
+                    .and_then(|before| trees.get(before))
+                    .is_some_and(|before| matches!(before, TokenTree::Ident(i) if i == "unsafe"));
+                let unsafe_attribute = group.delimiter() == Delimiter::Bracket
+                    && group
+                        .stream()
+                        .into_iter()
+                        .any(|t| matches!(&t, TokenTree::Ident(i) if i == "unsafe"));
+                body_walk(
+                    group.stream(),
+                    name,
+                    in_unsafe || after_unsafe || unsafe_attribute,
+                    allowed,
+                    findings,
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+/// E6: the lines of `unsafe` blocks and impls with no `// SAFETY:` comment right above them.
+pub fn unsafe_without_safety(source: &str) -> Vec<usize> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut sites = Vec::new();
+    if let Ok(stream) = lexable(source).parse::<TokenStream>() {
+        safety_sites(stream, &mut sites);
+    }
+    sites
+        .into_iter()
+        .filter(|line| {
+            let mut at = *line;
+            while at > 1 {
+                at -= 1;
+                let text = lines.get(at - 1).map_or("", |text| text.trim());
+                if !text.starts_with("//") {
+                    return true;
+                }
+                if text.contains("SAFETY:") {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect()
+}
+
+fn safety_sites(stream: TokenStream, out: &mut Vec<usize>) {
+    let trees: Vec<TokenTree> = stream.into_iter().collect();
+    for (index, tree) in trees.iter().enumerate() {
+        match tree {
+            TokenTree::Ident(ident) if ident == "unsafe" => {
+                let block = matches!(trees.get(index + 1), Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Brace);
+                let implementation =
+                    matches!(trees.get(index + 1), Some(TokenTree::Ident(next)) if next == "impl");
+                if block || implementation {
+                    out.push(ident.span().start().line);
+                }
+            }
+            TokenTree::Group(group) => safety_sites(group.stream(), out),
+            _ => {}
+        }
+    }
+}
+
+/// Lints busbar-ffi's root denies that no file below may lower (E10), each named as in source.
+pub const FFI_ROOT_LINTS: [&str; 4] = [
+    "unsafe_code",
+    "unsafe_op_in_unsafe_fn",
+    "clippy::undocumented_unsafe_blocks",
+    "clippy::multiple_unsafe_ops_per_block",
+];
+
+/// The inner `#![deny(..)]`/`#![forbid(..)]` lints of a root, as written (`clippy::x` joined).
+pub fn inner_denies(source: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let Ok(file) = syn::parse_file(&lexable(source)) else {
+        return out;
+    };
+    for attr in &file.attrs {
+        let inner = matches!(attr.style, syn::AttrStyle::Inner(_));
+        if !(inner && (attr.path().is_ident("deny") || attr.path().is_ident("forbid"))) {
+            continue;
+        }
+        if let Ok(lints) = attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated) {
+            for lint in lints {
+                out.insert(path_name(lint.path()));
+            }
+        }
+    }
+    out
+}
+
+/// Any `allow`/`expect`/`warn` of one of `lints` (written `x` or `clippy::x`) in the file.
+pub fn lowers_any(source: &str, lints: &[&str]) -> bool {
+    let Ok(stream) = lexable(source).parse::<TokenStream>() else {
+        return false;
+    };
+    let names: BTreeSet<&str> = lints
+        .iter()
+        .map(|lint| lint.rsplit("::").next().unwrap_or(lint))
+        .collect();
+    let mut found = false;
+    lowers_walk(stream, false, &names, &mut found);
+    found
+}
+
+fn lowers_walk(stream: TokenStream, level_paren: bool, names: &BTreeSet<&str>, found: &mut bool) {
+    let trees: Vec<TokenTree> = stream.into_iter().collect();
+    for (index, tree) in trees.iter().enumerate() {
+        match tree {
+            TokenTree::Ident(ident)
+                if level_paren && names.contains(ident.to_string().as_str()) =>
+            {
+                *found = true
+            }
+            TokenTree::Group(group) => {
+                let after_level = group.delimiter() == Delimiter::Parenthesis
+                    && index
+                        .checked_sub(1)
+                        .and_then(|before| trees.get(before))
+                        .is_some_and(|before| {
+                            matches!(before, TokenTree::Ident(level)
+                            if matches!(level.to_string().as_str(), "allow" | "expect" | "warn"))
+                        });
+                lowers_walk(group.stream(), after_level, names, found);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Every tracked path matching `pattern` (`git ls-files -z`), or None when git fails.
+pub fn tracked(root: &Path, pattern: &str) -> Option<Vec<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["ls-files", "-z", "--", pattern])
+        .output()
+        .ok()?;
+    output.status.success().then(|| {
+        String::from_utf8_lossy(&output.stdout)
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+            .collect()
+    })
 }

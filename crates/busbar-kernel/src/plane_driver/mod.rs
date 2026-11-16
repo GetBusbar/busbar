@@ -22,6 +22,7 @@ pub mod route_tables;
 pub mod serve;
 pub mod slots;
 mod timing;
+pub mod usage;
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub use timing::forward_instrumentation;

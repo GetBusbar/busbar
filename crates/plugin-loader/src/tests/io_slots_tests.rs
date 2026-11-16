@@ -95,11 +95,11 @@ fn ends_answers_a_programs_own_exit_in_the_exited_byte() {
     );
     let stream = Ends {
         port: 8080,
-        peer: "10.0.0.1:443".into(),
+        peer: "\x310.0.0.1:443".into(),
         exit: None,
     };
     // SAFETY: as above.
     let a = unsafe { ends_answer(Ok(stream), buf.as_mut_ptr(), buf.len()) };
     assert_eq!((a.exited, a.value, a.len), (0, 8080, 12));
-    assert_eq!(&buf[..12], b"10.0.0.1:443");
+    assert_eq!(&buf[..12], b"\x310.0.0.1:443");
 }

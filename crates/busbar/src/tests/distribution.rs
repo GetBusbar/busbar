@@ -437,3 +437,6 @@ owner_test_sources!(sqlite_application);
 
 #[path = "admin_application/admin_generation_etags.rs"]
 mod admin_application_admin_generation_etags;
+
+#[path = "admin_application/admin_hook_attachments.rs"]
+mod admin_application_admin_hook_attachments;

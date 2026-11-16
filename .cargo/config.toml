@@ -48,3 +48,12 @@ AWS_LC_SYS_STATIC_x86_64_pc_windows_msvc = { value = "1", force = true }
 # unbounded_recursion_is_refused, kernel test_structural_check_does_not_overflow_on_deeply_nested_config).
 # Not forced: an explicit RUST_MIN_STACK in the environment wins.
 RUST_MIN_STACK = "8388608"
+
+# jemalloc's background purge thread is on from the first allocation, through the allocator's own
+# build-time `malloc_conf` (tikv-jemalloc-sys `--with-malloc-conf`), so the binary calls no `mallctl`
+# at run time (UNSAFE-MIN QJ (a)).
+JEMALLOC_SYS_WITH_MALLOC_CONF = { value = "background_thread:true", force = true }
+
+# Q24 wipe proofs (busbar-plugin-test `canary_scan`) read freed memory back, so the test processes keep
+# freed pages mapped: jemalloc's decay is off (UNSAFE-MIN §4.4). Not forced; a test run only.
+_RJEM_MALLOC_CONF = "dirty_decay_ms:-1,muzzy_decay_ms:-1"
