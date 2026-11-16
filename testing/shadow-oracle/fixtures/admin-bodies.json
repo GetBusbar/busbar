@@ -42,31 +42,6 @@
    "restart": false,
    "scope": "full"
   },
-  "DeleteExportName": {
-   "bad_body": null,
-   "idempotent": false,
-   "if_match": true,
-   "method": "DELETE",
-   "mutating": true,
-   "not_found": {
-    "expect": [
-     404
-    ],
-    "path": "/api/v1/admin/export/does-not-exist"
-   },
-   "notes": "204 no content; deletes the `oracle-log` instance created by PutExportName earlier in the epoch. Deleting a base-defined (config.yaml) instance such as `metrics` is 409 conflict (Cond::BaseDefined); still-referenced \u21d2 409. Stale If-Match 409 version_conflict.",
-   "ok": {
-    "body": null,
-    "expect": [
-     204
-    ],
-    "headers": {},
-    "path": "/api/v1/admin/export/oracle-log"
-   },
-   "path": "/api/v1/admin/export/{name}",
-   "restart": false,
-   "scope": "full"
-  },
   "DeleteGroupsName": {
    "bad_body": null,
    "idempotent": false,
@@ -127,31 +102,6 @@
     "headers": {},
     "path": "/api/v1/admin/hooks/busbar-webrequest"
    }
-  },
-  "DeleteIdentityProvidersName": {
-   "bad_body": null,
-   "idempotent": false,
-   "if_match": true,
-   "method": "DELETE",
-   "mutating": true,
-   "not_found": {
-    "expect": [
-     404
-    ],
-    "path": "/api/v1/admin/identity-providers/does-not-exist"
-   },
-   "notes": "204; deletes `oracle-idp2` created earlier in the epoch. Deleting the base-defined `admin-tokens` (also the caller's own chain member) is 409 BaseDefined/StillReferenced. Stale If-Match 409.",
-   "ok": {
-    "body": null,
-    "expect": [
-     204
-    ],
-    "headers": {},
-    "path": "/api/v1/admin/identity-providers/oracle-idp2"
-   },
-   "path": "/api/v1/admin/identity-providers/{name}",
-   "restart": false,
-   "scope": "full"
   },
   "DeleteKeysId": {
    "bad_body": null,
@@ -498,50 +448,6 @@
    "restart": false,
    "scope": "read-only"
   },
-  "GetExport": {
-   "bad_body": null,
-   "idempotent": false,
-   "if_match": false,
-   "method": "GET",
-   "mutating": false,
-   "not_found": null,
-   "notes": "200 Page_NamedDefView listing the oracle's single `metrics` (prometheus) instance; settings are served as keys / redacted.",
-   "ok": {
-    "body": null,
-    "expect": [
-     200
-    ],
-    "headers": {}
-   },
-   "path": "/api/v1/admin/export",
-   "restart": false,
-   "scope": "read-only"
-  },
-  "GetExportName": {
-   "bad_body": null,
-   "idempotent": false,
-   "if_match": false,
-   "method": "GET",
-   "mutating": false,
-   "not_found": {
-    "expect": [
-     404
-    ],
-    "path": "/api/v1/admin/export/does-not-exist"
-   },
-   "notes": "200 NamedDefView for the base-defined `metrics` prometheus instance.",
-   "ok": {
-    "body": null,
-    "expect": [
-     200
-    ],
-    "headers": {},
-    "path": "/api/v1/admin/export/metrics"
-   },
-   "path": "/api/v1/admin/export/{name}",
-   "restart": false,
-   "scope": "read-only"
-  },
   "GetGroups": {
    "bad_body": null,
    "idempotent": false,
@@ -767,50 +673,6 @@
     "path": "/api/v1/admin/hooks/busbar-webrequest/status"
    }
   },
-  "GetIdentityProviders": {
-   "bad_body": null,
-   "idempotent": false,
-   "if_match": false,
-   "method": "GET",
-   "mutating": false,
-   "not_found": null,
-   "notes": "200 Page_NamedDefView: the oracle's `admin-tokens` provider (token redacted).",
-   "ok": {
-    "body": null,
-    "expect": [
-     200
-    ],
-    "headers": {}
-   },
-   "path": "/api/v1/admin/identity-providers",
-   "restart": false,
-   "scope": "read-only"
-  },
-  "GetIdentityProvidersName": {
-   "bad_body": null,
-   "idempotent": false,
-   "if_match": false,
-   "method": "GET",
-   "mutating": false,
-   "not_found": {
-    "expect": [
-     404
-    ],
-    "path": "/api/v1/admin/identity-providers/does-not-exist"
-   },
-   "notes": "200 NamedDefView for `admin-tokens`; `token` is never echoed.",
-   "ok": {
-    "body": null,
-    "expect": [
-     200
-    ],
-    "headers": {},
-    "path": "/api/v1/admin/identity-providers/admin-tokens"
-   },
-   "path": "/api/v1/admin/identity-providers/{name}",
-   "restart": false,
-   "scope": "read-only"
-  },
   "GetInfo": {
    "bad_body": null,
    "idempotent": false,
@@ -997,25 +859,6 @@
    "restart": false,
    "scope": "read-only"
   },
-  "GetModels": {
-   "bad_body": null,
-   "idempotent": false,
-   "if_match": false,
-   "method": "GET",
-   "mutating": false,
-   "not_found": null,
-   "notes": "200 Page_ModelView: the six m-<dialect> models.",
-   "ok": {
-    "body": null,
-    "expect": [
-     200
-    ],
-    "headers": {}
-   },
-   "path": "/api/v1/admin/models",
-   "restart": false,
-   "scope": "read-only"
-  },
   "GetOpenapiJson": {
    "bad_body": null,
    "idempotent": false,
@@ -1032,25 +875,6 @@
     "headers": {}
    },
    "path": "/api/v1/admin/openapi.json",
-   "restart": false,
-   "scope": "read-only"
-  },
-  "GetPlaneFacts": {
-   "bad_body": null,
-   "idempotent": false,
-   "if_match": false,
-   "method": "GET",
-   "mutating": false,
-   "not_found": null,
-   "notes": "Read-only new verb, never dual-controlled. Bound in 1.6.0 (owner answer Q71(2)): answers a served plane's declaration for ?plane=<key>; this cell names no plane, so an admitted call answers 400 invalid_request `plane is required`. Baseline: [404]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
-   "ok": {
-    "body": null,
-    "expect": [
-     404
-    ],
-    "headers": {}
-   },
-   "path": "/api/v1/admin/plane-facts",
    "restart": false,
    "scope": "read-only"
   },
@@ -1110,72 +934,6 @@
     "headers": {},
     "path": "/api/v1/admin/plugins/{ASSET:webrequest-hook}/schema"
    }
-  },
-  "GetPools": {
-   "bad_body": null,
-   "idempotent": false,
-   "if_match": false,
-   "method": "GET",
-   "mutating": false,
-   "not_found": null,
-   "notes": "200 Page_PoolView with live member status inlined (`oracle-unused`); a non-boolean `detail` is 400.",
-   "ok": {
-    "body": null,
-    "expect": [
-     200
-    ],
-    "headers": {},
-    "query": {
-     "detail": "true"
-    }
-   },
-   "path": "/api/v1/admin/pools",
-   "restart": false,
-   "scope": "read-only"
-  },
-  "GetPoolsName": {
-   "bad_body": null,
-   "idempotent": false,
-   "if_match": false,
-   "method": "GET",
-   "mutating": false,
-   "not_found": {
-    "expect": [
-     404
-    ],
-    "path": "/api/v1/admin/pools/does-not-exist"
-   },
-   "notes": "200 PoolDetailView for `oracle-unused`.",
-   "ok": {
-    "body": null,
-    "expect": [
-     200
-    ],
-    "headers": {},
-    "path": "/api/v1/admin/pools/oracle-unused"
-   },
-   "path": "/api/v1/admin/pools/{name}",
-   "restart": false,
-   "scope": "read-only"
-  },
-  "GetProviders": {
-   "bad_body": null,
-   "idempotent": false,
-   "if_match": false,
-   "method": "GET",
-   "mutating": false,
-   "not_found": null,
-   "notes": "200 Page_ProviderView: the six dialect-named providers (api_key redacted).",
-   "ok": {
-    "body": null,
-    "expect": [
-     200
-    ],
-    "headers": {}
-   },
-   "path": "/api/v1/admin/providers",
-   "restart": false,
-   "scope": "read-only"
   },
   "GetTelemetry": {
    "bad_body": null,
@@ -1318,48 +1076,6 @@
    "restart": false,
    "scope": "full"
   },
-  "PatchExportNameSettings": {
-   "bad_body": {
-    "body": {
-     "settings": "not-an-object"
-    },
-    "expect": [
-     400
-    ],
-    "headers": {
-     "Content-Type": "application/json"
-    }
-   },
-   "idempotent": false,
-   "if_match": true,
-   "method": "PATCH",
-   "mutating": true,
-   "not_found": {
-    "expect": [
-     404
-    ],
-    "path": "/api/v1/admin/export/does-not-exist/settings"
-   },
-   "notes": "200 NamedDefView; `settings` is REPLACED wholesale (never deep-merged) so `path` must be resent. Per-module settings are deny_unknown_fields (a typo inside is 400). Stale If-Match 409.",
-   "ok": {
-    "body": {
-     "settings": {
-      "path": "{TMP}/oracle-request-log.jsonl",
-      "rotate_mb": 1
-     }
-    },
-    "expect": [
-     200
-    ],
-    "headers": {
-     "Content-Type": "application/json"
-    },
-    "path": "/api/v1/admin/export/oracle-log/settings"
-   },
-   "path": "/api/v1/admin/export/{name}/settings",
-   "restart": false,
-   "scope": "full"
-  },
   "PatchGroupsName": {
    "bad_body": {
     "body": {
@@ -1461,45 +1177,6 @@
     },
     "path": "/api/v1/admin/hooks/busbar-webrequest/settings"
    }
-  },
-  "PatchIdentityProvidersNameSettings": {
-   "bad_body": {
-    "body": {
-     "settings": []
-    },
-    "expect": [
-     400
-    ],
-    "headers": {
-     "Content-Type": "application/json"
-    }
-   },
-   "idempotent": false,
-   "if_match": true,
-   "method": "PATCH",
-   "mutating": true,
-   "not_found": {
-    "expect": [
-     404
-    ],
-    "path": "/api/v1/admin/identity-providers/does-not-exist/settings"
-   },
-   "notes": "200 NamedDefView; `settings` replaced wholesale (opaque to busbar for admin-tokens). Stale If-Match 409.",
-   "ok": {
-    "body": {
-     "settings": {}
-    },
-    "expect": [
-     200
-    ],
-    "headers": {
-     "Content-Type": "application/json"
-    },
-    "path": "/api/v1/admin/identity-providers/oracle-idp2/settings"
-   },
-   "path": "/api/v1/admin/identity-providers/{name}/settings",
-   "restart": false,
-   "scope": "full"
   },
   "PatchKeysId": {
    "bad_body": {
@@ -2222,25 +1899,6 @@
    "restart": false,
    "scope": "full"
   },
-  "PostExportKeyset": {
-   "bad_body": null,
-   "idempotent": false,
-   "if_match": false,
-   "method": "POST",
-   "mutating": true,
-   "not_found": null,
-   "notes": "Admitted while the operator is unset (with set_operator_key / export_keyset). This build binds NO EFFECT to the verb: an admitted call answers 404 not_found. Body not read. Baseline: [404]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
-   "ok": {
-    "body": null,
-    "expect": [
-     404
-    ],
-    "headers": {}
-   },
-   "path": "/api/v1/admin/export-keyset",
-   "restart": false,
-   "scope": "full"
-  },
   "PostGroups": {
    "bad_body": {
     "body": {
@@ -2919,52 +2577,6 @@
    "restart": false,
    "scope": "full"
   },
-  "PutExportName": {
-   "bad_body": {
-    "body": {
-     "bogus": 1,
-     "module": "request-log-file",
-     "settings": {
-      "path": "{TMP}/oracle-request-log.jsonl"
-     }
-    },
-    "expect": [
-     400
-    ],
-    "headers": {
-     "Content-Type": "application/json"
-    }
-   },
-   "idempotent": false,
-   "if_match": true,
-   "method": "PUT",
-   "mutating": true,
-   "not_found": {
-    "expect": [
-     200
-    ],
-    "path": "/api/v1/admin/export/does-not-exist"
-   },
-   "notes": "200 NamedDefView (upsert: PUT on an unknown name CREATES it, so there is no 404 on this op \u2014 the not_found probe is expected to return 200 and create `does-not-exist`; skip it or delete afterwards). ExportDefCfg is deny_unknown_fields \u21d2 bad_body's `bogus` is 400. `request-log-file` needs settings.path; a second `prometheus`/`otlp` instance is refused. Stale If-Match 409 version_conflict.",
-   "ok": {
-    "body": {
-     "module": "request-log-file",
-     "settings": {
-      "path": "{TMP}/oracle-request-log.jsonl"
-     }
-    },
-    "expect": [
-     200
-    ],
-    "headers": {
-     "Content-Type": "application/json"
-    },
-    "path": "/api/v1/admin/export/oracle-log"
-   },
-   "path": "/api/v1/admin/export/{name}",
-   "restart": false,
-   "scope": "full"
-  },
   "PutGroupsName": {
    "bad_body": {
     "body": {
@@ -3085,51 +2697,6 @@
     "path": "/api/v1/admin/hooks/busbar-webrequest"
    }
   },
-  "PutIdentityProvidersName": {
-   "bad_body": {
-    "body": {
-     "module": "keys",
-     "token": {
-      "env": "BUSBAR_ADMIN_TOKEN"
-     }
-    },
-    "expect": [
-     400
-    ],
-    "headers": {
-     "Content-Type": "application/json"
-    }
-   },
-   "idempotent": false,
-   "if_match": true,
-   "method": "PUT",
-   "mutating": true,
-   "not_found": {
-    "expect": [
-     200
-    ],
-    "path": "/api/v1/admin/identity-providers/does-not-exist"
-   },
-   "notes": "200 NamedDefView; creates a second admin-tokens provider `oracle-idp2` (an unreferenced definition is legal). Upsert: an unknown name CREATES it, so the not_found probe returns 200 (skip or delete afterwards). bad_body: `token:` on a module other than admin-tokens is refused (CONF-212) \u21d2 400; unknown keys are 400 (deny_unknown_fields); unknown module 400 Cond::UnknownModule. Stale If-Match 409.",
-   "ok": {
-    "body": {
-     "module": "admin-tokens",
-     "token": {
-      "env": "BUSBAR_ADMIN_TOKEN"
-     }
-    },
-    "expect": [
-     200
-    ],
-    "headers": {
-     "Content-Type": "application/json"
-    },
-    "path": "/api/v1/admin/identity-providers/oracle-idp2"
-   },
-   "path": "/api/v1/admin/identity-providers/{name}",
-   "restart": false,
-   "scope": "full"
-  },
   "PutToolsName": {
    "bad_body": null,
    "idempotent": false,
@@ -3151,12 +2718,6 @@
   "PutGroupsName",
   "PatchGroupsName",
   "DeleteGroupsName",
-  "PutExportName",
-  "PatchExportNameSettings",
-  "DeleteExportName",
-  "PutIdentityProvidersName",
-  "PatchIdentityProvidersNameSettings",
-  "DeleteIdentityProvidersName",
   "PutAdminAuth",
   "PutConfigSettings",
   "DeleteOverlaySection",

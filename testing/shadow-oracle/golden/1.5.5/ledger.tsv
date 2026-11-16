@@ -466,11 +466,6 @@ a2a|jsonrpc|server|server|PushNotificationDelivery|out_of_scope	SKIP	UNSUPPORTED
 a2a|jsonrpc|server|server|PushNotificationDelivery|over_budget	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|jsonrpc|server|server|PushNotificationDelivery|unauthenticated	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|jsonrpc|server|server|PushNotificationDelivery|upstream_down	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-admin.ops|DeleteExportName|if-match-malformed	PASS	HTTP 400; usage Δ {}	
-admin.ops|DeleteExportName|if-match-stale	PASS	HTTP 409; usage Δ {}	
-admin.ops|DeleteExportName|not-found	PASS	HTTP 404; usage Δ {}	
-admin.ops|DeleteExportName|ok	PASS	HTTP 204; usage Δ {}	
-admin.ops|DeleteExportName|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|DeleteGroupsName|if-match-malformed	PASS	HTTP 400; usage Δ {}	
 admin.ops|DeleteGroupsName|if-match-stale	PASS	HTTP 409; usage Δ {}	
 admin.ops|DeleteGroupsName|not-found	PASS	HTTP 404; usage Δ {}	
@@ -478,11 +473,6 @@ admin.ops|DeleteGroupsName|ok	PASS	HTTP 204; usage Δ {}
 admin.ops|DeleteGroupsName|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|DeleteHooksName|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|DeleteHooksName|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|DeleteIdentityProvidersName|if-match-malformed	PASS	HTTP 400; usage Δ {}	
-admin.ops|DeleteIdentityProvidersName|if-match-stale	PASS	HTTP 409; usage Δ {}	
-admin.ops|DeleteIdentityProvidersName|not-found	PASS	HTTP 404; usage Δ {}	
-admin.ops|DeleteIdentityProvidersName|ok	PASS	HTTP 204; usage Δ {}	
-admin.ops|DeleteIdentityProvidersName|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|DeleteKeysId|if-match-malformed	PASS	HTTP 400; usage Δ {}	
 admin.ops|DeleteKeysId|if-match-stale	PASS	HTTP 400; usage Δ {}	
 admin.ops|DeleteKeysId|not-found	PASS	HTTP 404; usage Δ {}	
@@ -513,11 +503,6 @@ admin.ops|GetConfigVersions|ok	PASS	HTTP 200; usage Δ {}
 admin.ops|GetConfigVersions|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetConfig|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetConfig|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|GetExportName|not-found	PASS	HTTP 404; usage Δ {}	
-admin.ops|GetExportName|ok	PASS	HTTP 200; usage Δ {}	
-admin.ops|GetExportName|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|GetExport|ok	PASS	HTTP 200; usage Δ {}	
-admin.ops|GetExport|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetGroupsNameUsage|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|GetGroupsNameUsage|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetGroupsNameUsage|unauth	PASS	HTTP 401; usage Δ {}	
@@ -535,11 +520,6 @@ admin.ops|GetHooksNameStatus|unauth	PASS	HTTP 401; usage Δ {}
 admin.ops|GetHooksName|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|GetHooksName|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetHooks|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|GetIdentityProvidersName|not-found	PASS	HTTP 404; usage Δ {}	
-admin.ops|GetIdentityProvidersName|ok	PASS	HTTP 200; usage Δ {}	
-admin.ops|GetIdentityProvidersName|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|GetIdentityProviders|ok	PASS	HTTP 200; usage Δ {}	
-admin.ops|GetIdentityProviders|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetInfo|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetInfo|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetKeysIdUsage|not-found	PASS	HTTP 404; usage Δ {}	
@@ -552,29 +532,14 @@ admin.ops|GetKeysId|overlong-id	PASS	HTTP 400; usage Δ {}
 admin.ops|GetKeysId|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetKeys|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetKeys|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|GetModels|ok	PASS	HTTP 200; usage Δ {}	
-admin.ops|GetModels|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetOpenapiJson|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetOpenapiJson|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetPluginsFileSchema|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|GetPluginsFileSchema|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetPlugins|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|GetPoolsName|not-found	PASS	HTTP 404; usage Δ {}	
-admin.ops|GetPoolsName|ok	PASS	HTTP 200; usage Δ {}	
-admin.ops|GetPoolsName|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|GetPools|ok	PASS	HTTP 200; usage Δ {}	
-admin.ops|GetPools|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|GetProviders|ok	PASS	HTTP 200; usage Δ {}	
-admin.ops|GetProviders|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetUsage|no-usage-after-mutation	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetUsage|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetUsage|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|PatchExportNameSettings|bad-body	PASS	HTTP 400; usage Δ {}	
-admin.ops|PatchExportNameSettings|if-match-malformed	PASS	HTTP 400; usage Δ {}	
-admin.ops|PatchExportNameSettings|if-match-stale	PASS	HTTP 409; usage Δ {}	
-admin.ops|PatchExportNameSettings|not-found	PASS	HTTP 404; usage Δ {}	
-admin.ops|PatchExportNameSettings|ok	PASS	HTTP 200; usage Δ {}	
-admin.ops|PatchExportNameSettings|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PatchGroupsName|bad-body	PASS	HTTP 400; usage Δ {}	
 admin.ops|PatchGroupsName|if-match-malformed	PASS	HTTP 400; usage Δ {}	
 admin.ops|PatchGroupsName|if-match-stale	PASS	HTTP 409; usage Δ {}	
@@ -584,12 +549,6 @@ admin.ops|PatchGroupsName|unauth	PASS	HTTP 401; usage Δ {}
 admin.ops|PatchHooksNameSettings|bad-body	PASS	HTTP 400; usage Δ {}	
 admin.ops|PatchHooksNameSettings|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|PatchHooksNameSettings|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|PatchIdentityProvidersNameSettings|bad-body	PASS	HTTP 400; usage Δ {}	
-admin.ops|PatchIdentityProvidersNameSettings|if-match-malformed	PASS	HTTP 400; usage Δ {}	
-admin.ops|PatchIdentityProvidersNameSettings|if-match-stale	PASS	HTTP 409; usage Δ {}	
-admin.ops|PatchIdentityProvidersNameSettings|not-found	PASS	HTTP 404; usage Δ {}	
-admin.ops|PatchIdentityProvidersNameSettings|ok	PASS	HTTP 200; usage Δ {}	
-admin.ops|PatchIdentityProvidersNameSettings|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PatchKeysId|bad-body	PASS	HTTP 400; usage Δ {}	
 admin.ops|PatchKeysId|if-match-malformed	PASS	HTTP 400; usage Δ {}	
 admin.ops|PatchKeysId|if-match-stale	PASS	HTTP 400; usage Δ {}	
@@ -659,12 +618,6 @@ admin.ops|PutConfigSettings|if-match-malformed	PASS	HTTP 400; usage Δ {}
 admin.ops|PutConfigSettings|if-match-stale	PASS	HTTP 200; usage Δ {}	
 admin.ops|PutConfigSettings|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|PutConfigSettings|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|PutExportName|bad-body	PASS	HTTP 400; usage Δ {}	
-admin.ops|PutExportName|if-match-malformed	PASS	HTTP 400; usage Δ {}	
-admin.ops|PutExportName|if-match-stale	PASS	HTTP 200; usage Δ {}	
-admin.ops|PutExportName|not-found	PASS	HTTP 200; usage Δ {}	
-admin.ops|PutExportName|ok	PASS	HTTP 200; usage Δ {}	
-admin.ops|PutExportName|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PutGroupsName|bad-body	PASS	HTTP 400; usage Δ {}	
 admin.ops|PutGroupsName|if-match-malformed	PASS	HTTP 400; usage Δ {}	
 admin.ops|PutGroupsName|if-match-stale	PASS	HTTP 409; usage Δ {}	
@@ -674,12 +627,6 @@ admin.ops|PutGroupsName|unauth	PASS	HTTP 401; usage Δ {}
 admin.ops|PutHooksName|bad-body	PASS	HTTP 400; usage Δ {}	
 admin.ops|PutHooksName|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|PutHooksName|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|PutIdentityProvidersName|bad-body	PASS	HTTP 400; usage Δ {}	
-admin.ops|PutIdentityProvidersName|if-match-malformed	PASS	HTTP 400; usage Δ {}	
-admin.ops|PutIdentityProvidersName|if-match-stale	PASS	HTTP 200; usage Δ {}	
-admin.ops|PutIdentityProvidersName|not-found	PASS	HTTP 200; usage Δ {}	
-admin.ops|PutIdentityProvidersName|ok	PASS	HTTP 200; usage Δ {}	
-admin.ops|PutIdentityProvidersName|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|admin-token|wrong-destination	PASS	HTTP 401; usage Δ {}	
 auth.lifecycle|key-expiry	PASS	script key-expiry.sh: status 0	
 auth.lifecycle|key-revoke	PASS	script key-revoke.sh: status 0	
