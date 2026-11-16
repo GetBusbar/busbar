@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use super::*;
 use crate::admin_state::AppAdmin as _;
 use crate::v1::service::manifest_schema;

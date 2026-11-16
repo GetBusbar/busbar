@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use super::{ClientIdentity, EgressTrust};
 
 /// A byte value that appears NOWHERE in the redacted `Debug` shells (`ClientIdentity { … }`,

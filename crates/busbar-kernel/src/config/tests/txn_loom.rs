@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use loom::sync::{Arc, Mutex, RwLock};
 
 /// `loom::thread::Builder::stack_size` forwards, unconverted, straight through to `generator`'s

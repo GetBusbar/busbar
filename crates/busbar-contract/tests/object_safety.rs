@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! One object-safety fixture per kind trait.
 
 use busbar_contract::bounded::PlaneAlloc;

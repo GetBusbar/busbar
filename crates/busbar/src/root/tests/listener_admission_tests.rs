@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use http_body::{Body, Frame};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! The bounded types hold their bounds, and the constants are the design's numbers.
 
 use busbar_contract::bounded::{

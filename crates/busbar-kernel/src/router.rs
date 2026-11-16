@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use axum::Router;
 
 use crate::off_path::router::base_data_router_scoped;
