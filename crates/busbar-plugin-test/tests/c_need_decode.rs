@@ -516,13 +516,13 @@ fn every_decode_table_row_both_ways() {
 }
 
 #[test]
-#[ignore = "owner: W1-C1A"]
+#[ignore = "blocked: HostNeeds lives in busbar-core-connector (need.rs), not a busbar-plugin-test dependency; owner W1-C1A"]
 fn hostneeds_judges_the_stated_class() {
     todo!("owner: W1-C1A (C-NEED-DECODE)")
 }
 
 #[test]
-#[ignore = "owner: W1-L2"]
+#[ignore = "blocked: endpoint-record validation is in the loader boot path (L2), no pub entry from this crate; owner W1-L2"]
 fn bad_endpoint_records_are_invalid() {
     todo!("owner: W1-L2 (C-NEED-DECODE)")
 }

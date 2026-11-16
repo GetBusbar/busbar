@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K10"]
+#[ignore = "owner: W1-K10 (blocked: W1-K10 remainder: crates/busbar-kernel/src/connections/mod.rs and trust/plane_book.rs are still W0 stubs on dev; OUTSTANDING A3)"]
 fn trust_verify_matches_the_golden_corpus() {
     todo!("owner: W1-K10 (C-TRUST-VERIFY)")
 }

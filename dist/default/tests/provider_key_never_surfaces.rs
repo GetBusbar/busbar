@@ -6,6 +6,7 @@
 
 mod common;
 
+use busbar_contract::json::{self, JsonValueTrait};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -46,7 +47,7 @@ fn far_end(answer: Option<(u16, serde_json::Value)>) -> (u16, Receiver<bool>) {
                             name.eq_ignore_ascii_case("x-api-key") && value.trim() == PROVIDER_KEY
                         })
                     });
-                    let requested = serde_json::from_slice::<serde_json::Value>(&body)
+                    let requested = json::parse_value(&body)
                         .is_ok_and(|request| request["messages"][0]["content"] == CALL_TEXT);
                     if requested {
                         let _ = sent.send(keyed);
@@ -235,7 +236,7 @@ fn a_provider_key_never_appears_in_logs_errors_or_stats() {
         Some(ADMIN_TOKEN),
     );
     assert_eq!(mint_status, 201, "the admin API created the caller's key");
-    let minted: serde_json::Value = serde_json::from_str(&minted).expect("the minted key response");
+    let minted = json::parse_value(minted.as_bytes()).expect("the minted key response");
     let token = minted["token"]
         .as_str()
         .unwrap_or_else(|| panic!("the admin API must mint a key: {minted}"))
@@ -256,8 +257,7 @@ fn a_provider_key_never_appears_in_logs_errors_or_stats() {
                     Ok(true),
                     "the serving upstream received the key"
                 );
-                let answer: serde_json::Value =
-                    serde_json::from_str(&text).expect("the served answer");
+                let answer = json::parse_value(text.as_bytes()).expect("the served answer");
                 assert_eq!(answer["content"][0]["text"], "served");
             }
             "refused-model" => {
@@ -341,7 +341,7 @@ fn a_provider_key_never_appears_in_logs_errors_or_stats() {
             !text.trim().is_empty(),
             "the admin surface {path} has a body to scan"
         );
-        let _: serde_json::Value = serde_json::from_str(&text).expect("an admin JSON response");
+        let _: json::Value = json::parse_value(text.as_bytes()).expect("an admin JSON response");
         surfaces.push((format!("GET {path}"), status, headers, text));
     }
 

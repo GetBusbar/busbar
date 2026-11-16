@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-C1A"]
+#[ignore = "owner: W1-C1A (blocked: needs a cdylib fixture arming a plugin TLS key on workers and a dlclose probe through the loader; no such fixture)"]
 fn tls_destructors_on_exiting_workers_and_no_dlclose() {
     todo!("owner: W1-C1A (C-TLS-KEY)")
 }

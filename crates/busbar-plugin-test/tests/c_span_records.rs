@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K8C"]
+#[ignore = "owner: W1-K8C (blocked: no kernel span-record consumer on dev to drive: export pump and projection are absent; OUTSTANDING A4)"]
 fn span_records_core_arms() {
     todo!("owner: W1-K8C (C-SPAN-RECORDS)")
 }

@@ -29,7 +29,7 @@ fn the_file_is_checked_against_the_stamp_name() {
 }
 
 #[test]
-#[ignore = "owner: W1-L2"]
+#[ignore = "owner: W1-L2; blocked (re-checked on dev 2026-11-16): no test constructor for Registry<N> (Needs impl, ConfigBinder, Ceilings, a static Host) and no second-identity MIN-3 fixture image exist in busbar-plugin-test on dev"]
 fn the_file_matches_describe_and_every_number_the_suite_saw() {
     todo!("owner: W1-L2 (C-ERRORS)")
 }

@@ -21,12 +21,12 @@ mod linked {
 
 use crate::root::test_plugins as plugins;
 use axum::extract::Extension;
+use busbar_contract::json::{self, json, JsonValueTrait, Value};
 use busbar_contract::records::{ScopeRef, VirtualKey};
 use busbar_kernel::endpoints::{catalog_names, stats};
 use busbar_kernel::governance::GovCtx;
 use busbar_kernel::state::{App, CurrentApp};
 use busbar_kernel::store::now;
-use serde_json::{json, Value};
 use std::sync::Arc;
 
 fn register_planes() {
@@ -141,7 +141,7 @@ async fn stats_json(app: Arc<App>, gov: GovCtx) -> Value {
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .expect("collect /stats body");
-    serde_json::from_slice(&bytes).expect("/stats body is JSON")
+    json::parse_value(&bytes).expect("/stats body is JSON")
 }
 
 #[tokio::test]
@@ -153,9 +153,12 @@ async fn test_stats_restricted_key_sees_only_its_pools_and_lanes() {
     let body = stats_json(app, gov).await;
 
     let pools = body["pools"].as_object().expect("pools object");
-    assert!(pools.contains_key("pool-a"), "allowed pool must be visible");
     assert!(
-        !pools.contains_key("pool-b"),
+        pools.contains_key(&"pool-a"),
+        "allowed pool must be visible"
+    );
+    assert!(
+        !pools.contains_key(&"pool-b"),
         "a pool the key cannot target must be hidden; got {pools:?}"
     );
 
@@ -184,7 +187,7 @@ async fn test_stats_empty_allowed_pools_sees_full_topology() {
     let body = stats_json(app, gov).await;
 
     let pools = body["pools"].as_object().expect("pools object");
-    assert!(pools.contains_key("pool-a") && pools.contains_key("pool-b"));
+    assert!(pools.contains_key(&"pool-a") && pools.contains_key(&"pool-b"));
 
     let lanes = body["lanes"].as_array().expect("lanes array");
     assert_eq!(lanes.len(), 3, "an unrestricted key sees every lane");
@@ -196,7 +199,7 @@ async fn test_stats_no_key_sees_full_topology() {
     let body = stats_json(app, GovCtx::default()).await;
 
     let pools = body["pools"].as_object().expect("pools object");
-    assert!(pools.contains_key("pool-a") && pools.contains_key("pool-b"));
+    assert!(pools.contains_key(&"pool-a") && pools.contains_key(&"pool-b"));
     assert_eq!(body["lanes"].as_array().expect("lanes array").len(), 3);
 }
 
@@ -306,7 +309,7 @@ pools:
     assert_eq!(bounded["at_capacity"], json!(false));
 
     assert_eq!(bounded["availability"], json!("available"));
-    assert_eq!(bounded["recovery_hint_ms"], Value::Null);
+    assert_eq!(bounded["recovery_hint_ms"], Value::new());
     assert_eq!(bounded["breaker_state"], json!("closed"));
     let unbounded = lane(&body, "unbounded");
     assert_eq!(unbounded["available"], json!("unbounded"));
