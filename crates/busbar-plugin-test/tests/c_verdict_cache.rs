@@ -69,27 +69,12 @@ static SERVICES: AuthServices<'static> = AuthServices {
     replay: &CHECKS,
     policy: &CHECKS,
 };
-fn instance(id: u64, port: &dyn AuthPort) -> ChainInstance<'_> {
-    let caller = Box::leak(Box::new(busbar_plugin_abi::host_side::caller::Caller {
-        plugin: "fixture",
-        kind: busbar_plugin_abi::types::KindCode::Auth,
-        name: "auth",
-        instance: id,
-        slot: 0,
-        chain: 0,
-        deadline: cx().deadline,
-        stack: CallStack::default(),
-        out_of_process: false,
-        limits: Default::default(),
-    }));
-    let keys = Box::leak(Box::new(busbar_kernel::plane_grants::KeyRefresh::new(
-        Duration::from_secs(30),
-    )));
+fn instance(id: u64, port: &Fake) -> ChainInstance<'_> {
     ChainInstance {
         id,
         port,
-        caller,
-        keys,
+        caller: &port.caller,
+        keys: &port.keys,
         holds: &[],
     }
 }
@@ -127,6 +112,8 @@ pub(super) struct Fake {
     answer: Answer,
     verifies: Arc<AtomicUsize>,
     refreshes: AtomicUsize,
+    keys: busbar_kernel::plane_grants::KeyRefresh,
+    caller: busbar_plugin_abi::host_side::caller::Caller<'static>,
 }
 
 impl Fake {
@@ -137,6 +124,19 @@ impl Fake {
             answer,
             verifies: Arc::new(AtomicUsize::new(0)),
             refreshes: AtomicUsize::new(0),
+            keys: busbar_kernel::plane_grants::KeyRefresh::new(Duration::from_secs(30)),
+            caller: busbar_plugin_abi::host_side::caller::Caller {
+                plugin: "fixture",
+                kind: busbar_plugin_abi::types::KindCode::Auth,
+                name: "auth",
+                instance: 0,
+                slot: 0,
+                chain: 0,
+                deadline: cx().deadline,
+                stack: CallStack::default(),
+                out_of_process: false,
+                limits: Default::default(),
+            },
         }
     }
 
