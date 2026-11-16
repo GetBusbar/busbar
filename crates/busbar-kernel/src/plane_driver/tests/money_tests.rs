@@ -52,7 +52,7 @@ fn cost_model(budget_cents: Option<u64>, fee: i64) -> CostModel {
             }]
         })
         .unwrap_or_default();
-    let groups = BTreeMap::from_iter([(
+    let groups = BTreeMap::from([(
         "g".to_string(),
         GroupCfg {
             enabled: true,
@@ -66,7 +66,7 @@ fn cost_model(budget_cents: Option<u64>, fee: i64) -> CostModel {
         ..Default::default()
     };
 
-    let card = BTreeMap::from_iter([("m".to_string(), rate()), ("m2".to_string(), rate())]);
+    let card = BTreeMap::from([("m".to_string(), rate()), ("m2".to_string(), rate())]);
     CostModel::resolve_parts(Some(&card), fee, &groups)
 }
 
@@ -132,7 +132,7 @@ async fn rig_with(
         cost: cost.clone(),
         pool: String::new(),
         lane: "m".into(),
-        classes: Arc::from_iter(vec![
+        classes: Arc::from(vec![
             "input".to_string(),
             "output".to_string(),
             busbar_contract::plane::PER_REQUEST.to_string(),
@@ -259,7 +259,7 @@ async fn a_delivered_end_keeps_the_flat_fee() {
 const FEE_UNIT: u32 = 2;
 
 fn plane_fees() -> FeeRefund {
-    FeeRefund::PlaneFeeUnits(Arc::from_iter(vec![FEE_UNIT]))
+    FeeRefund::PlaneFeeUnits(Arc::from(vec![FEE_UNIT]))
 }
 
 fn fee_reported(amount: u64) -> UnitCount {
@@ -708,7 +708,7 @@ async fn a_plane_units_declared_class_counts_reach_its_metering_row() {
         UnitKey::new(1),
         UnitMoney {
             lane: "tp\u{1f}srv".into(),
-            classes: Arc::from_iter(vec![
+            classes: Arc::from(vec![
                 "calls".to_string(),
                 "bytes".to_string(),
                 busbar_contract::plane::PER_REQUEST.to_string(),
@@ -750,7 +750,7 @@ async fn a_plane_units_declared_class_counts_reach_its_metering_row() {
             "srv_read",
             "tp",
             1,
-            BTreeMap::from_iter([
+            BTreeMap::from([
                 ("bytes".to_string(), 37_000_000),
                 ("calls".to_string(), 1_000_000)
             ]),
@@ -1217,7 +1217,7 @@ async fn a_session_whose_open_failed_is_refunded_its_per_session_fee() {
             .expect("usage")
             .spend_cents
     };
-    let one = BTreeMap::from_iter([(PER_SESSION.to_string(), 1)]);
+    let one = BTreeMap::from([(PER_SESSION.to_string(), 1)]);
     for (answered, kept) in [(false, 0), (true, 40)] {
         let gov = Arc::new(
             GovState::new_with_core(crate::real_store::core().await, None, None)
@@ -1232,7 +1232,7 @@ async fn a_session_whose_open_failed_is_refunded_its_per_session_fee() {
                 cost: cost.clone(),
                 pool: pool.clone(),
                 lane: "m".into(),
-                classes: Arc::from_iter(vec![
+                classes: Arc::from(vec![
                     "input".to_string(),
                     "output".to_string(),
                     PER_SESSION.to_string(),
@@ -1775,7 +1775,7 @@ async fn child_exit_authority_requires_a_real_matching_live_child_even_after_par
 #[tokio::test]
 async fn the_real_governor_concurrency_grant_lives_through_child_and_parent_authority() {
     let mut r = rig(None, 5, ExhaustionMode::FinishUnit).await;
-    let groups = BTreeMap::from_iter([(
+    let groups = BTreeMap::from([(
         "g".to_string(),
         GroupCfg {
             enabled: true,
@@ -1925,7 +1925,7 @@ async fn reserved_admission_becomes_priced_media_after_the_original_mint_has_set
     );
     drop(parent);
 
-    let classes = Arc::from_iter(vec![
+    let classes = Arc::from(vec![
         busbar_contract::plane::PER_REQUEST.to_string(),
         "input".into(),
         "output".into(),
@@ -1937,7 +1937,7 @@ async fn reserved_admission_becomes_priced_media_after_the_original_mint_has_set
             UnitKey::new(2),
             "m".into(),
             classes,
-            FeeRefund::PlaneFeeUnits(Arc::from_iter(vec![0])),
+            FeeRefund::PlaneFeeUnits(Arc::from(vec![0])),
             &r.key
         )
         .is_ok());
@@ -2126,7 +2126,7 @@ async fn reserving_requires_the_actual_live_original_admission() {
 async fn the_actual_reservation_grant_holds_concurrency_across_settled_mint_and_adoption() {
     for consume in [false, true] {
         let mut r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees()).await;
-        let groups = BTreeMap::from_iter([(
+        let groups = BTreeMap::from([(
             "g".to_string(),
             GroupCfg {
                 enabled: true,
@@ -2191,7 +2191,7 @@ async fn reserved_ticket_adoption_checks_receiving_authority_and_binding() {
             expires_at: NOW + 60,
             store: store.clone(),
             prefix: "test".into(),
-            credential: "redacted".to_owned().into(),
+            credential: String::from("redacted").into(),
         };
         drop(reserve_parent(&r));
         let node = Arc::new(());
@@ -2317,7 +2317,7 @@ async fn reserved_ticket_holder_clones_share_one_financial_token() {
         expires_at: NOW + 60,
         store: crate::real_store::core().await,
         prefix: "test".into(),
-        credential: "redacted".to_owned().into(),
+        credential: String::from("redacted").into(),
     };
     drop(reserve_parent(&r));
     let reservation = r
@@ -2360,7 +2360,7 @@ async fn reserved_ticket_holder_clones_share_one_financial_token() {
 async fn exact_decimal_checkpoints_survive_settlement_flush_and_governor_reopen() {
     use crate::cost::{MeteredRow, Tally, STANDARD_TIER_BP};
     let mut r = rig(None, 0, ExhaustionMode::FinishUnit).await;
-    let rates = BTreeMap::from_iter([(
+    let rates = BTreeMap::from([(
         "m".into(),
         crate::config::RateEntryCfg {
             input_utok: 10_000.0,
@@ -2443,7 +2443,7 @@ async fn exact_decimal_checkpoints_survive_settlement_flush_and_governor_reopen(
             .bucket_model_tokens_async(&key_id, WINDOW_TOTAL, NOW)
             .await
             .unwrap(),
-        vec![("m".into(), BTreeMap::from_iter([("input".into(), total)]))]
+        vec![("m".into(), BTreeMap::from([("input".into(), total)]))]
     );
 }
 

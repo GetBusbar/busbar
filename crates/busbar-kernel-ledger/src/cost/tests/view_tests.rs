@@ -384,7 +384,7 @@ fn per_plane_card(flat: bool, plane: bool) -> RateCard {
 fn per_plane_card_with_fee(flat: bool, plane: bool, fee: i64) -> RateCard {
     use crate::cost::{compose_plane_cards, TierRates};
     use std::collections::BTreeMap;
-    let flat_card = [(
+    let flat_card = BTreeMap::from([(
         LANE.to_string(),
         (
             TierRates {
@@ -393,16 +393,10 @@ fn per_plane_card_with_fee(flat: bool, plane: bool, fee: i64) -> RateCard {
             },
             None,
         ),
-    )]
-    .into_iter()
-    .collect::<BTreeMap<_, _>>();
-    let plane_card = [(LANE.to_string(), (TierRates::default(), Some(7_000)))]
-        .into_iter()
-        .collect::<BTreeMap<_, _>>();
+    )]);
+    let plane_card = BTreeMap::from([(LANE.to_string(), (TierRates::default(), Some(7_000)))]);
     let planes = if plane {
-        [("p".to_string(), plane_card)]
-            .into_iter()
-            .collect::<BTreeMap<_, _>>()
+        BTreeMap::from([("p".to_string(), plane_card)])
     } else {
         BTreeMap::new()
     };
@@ -471,9 +465,7 @@ fn each_plane_card_is_its_own_switch() {
 
     let empty = crate::cost::compose_plane_cards::<TierPair>(
         None,
-        &[("p".to_string(), Default::default())]
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>(),
+        &std::collections::BTreeMap::from([("p".to_string(), Default::default())]),
     );
     let card = RateCard::from_config(
         empty
@@ -494,9 +486,7 @@ type TierPair = (crate::cost::TierRates, Option<u64>);
 fn a_flat_card_alone_composes_to_itself() {
     use std::collections::BTreeMap;
     let none: BTreeMap<String, BTreeMap<String, u8>> = BTreeMap::new();
-    let flat = [("m".to_string(), 1u8)]
-        .into_iter()
-        .collect::<BTreeMap<_, _>>();
+    let flat = BTreeMap::from([("m".to_string(), 1u8)]);
     assert_eq!(
         crate::cost::compose_plane_cards(Some(&flat), &none),
         Some(flat)

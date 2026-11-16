@@ -115,13 +115,27 @@ pub mod ed25519 {
         }
     }
 
+    /// `Ok` when `raw` is the canonical encoding of a point on edwards25519 (RFC 8032 §5.1.3), else
+    /// `Err(Invalid)`. Input validation for a key pinned in configuration (QE), run at boot and by
+    /// `--validate`; [`VerifyingKey::from_bytes`] does not do it (Q9b), and verification stays AWS-LC's.
+    pub fn validate_public_key(raw: &[u8; 32]) -> Result<(), Error> {
+        if crate::weak::on_curve(raw) {
+            Ok(())
+        } else {
+            Err(Error::Invalid(
+                "Ed25519 public key is not a canonical curve point",
+            ))
+        }
+    }
+
     /// An Ed25519 public key (32 bytes).
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub struct VerifyingKey([u8; 32]);
 
     impl VerifyingKey {
-        /// The key encoded as `bytes`: `Err(Invalid)` unless it is the canonical encoding of a
-        /// curve point (small-order points decode; see `is_weak`).
+        /// The key encoded as `bytes`: `Err(Invalid)` unless the encoding is canonical (`y < p`, and no sign
+        /// bit on the two `x = 0` points). Small-order points decode (see `is_weak`), and so does a `y` with
+        /// no point on the curve: it verifies nothing, so it fails closed at the first verify.
         pub fn from_bytes(bytes: &[u8; 32]) -> Result<Self, Error> {
             if crate::weak::decodes(bytes) {
                 Ok(Self(*bytes))

@@ -132,17 +132,13 @@ fn measurement_readback_uses_common_classes_without_legacy_request_fees() {
     use std::collections::BTreeMap;
     let lane = measurement_lane("hook", "gate");
     let card = RateCard::absent(99).with_unit_rates([(LaneClass::new(&lane, "input"), 125)]);
-    let classes = [("input".to_string(), 8)]
-        .into_iter()
-        .collect::<BTreeMap<_, _>>();
-    let legacy_placeholders = [
+    let classes = BTreeMap::from([("input".to_string(), 8)]);
+    let legacy_placeholders = BTreeMap::from([
         ("input".into(), 0),
         ("output".into(), 0),
         ("cache_read".into(), 0),
         ("cache_write".into(), 0),
-    ]
-    .into_iter()
-    .collect::<BTreeMap<_, _>>();
+    ]);
     let row = crate::cost::MeteredRow::new(&lane, legacy_placeholders, 50, &classes);
     assert_eq!(row.spend_micros_at_card(&card).unwrap(), 1);
 }

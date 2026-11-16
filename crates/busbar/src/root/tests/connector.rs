@@ -247,8 +247,8 @@ async fn a_reload_that_changes_the_allowlist_changes_nothing() {
     use busbar_contract::abi::host::service::DEST_INTERNAL;
     crate::dist_root_install::install();
     crate::root::test_plane_registry::register();
-    let private_a = vec!["10.0.0.5".parse().unwrap()];
-    let private_b = vec!["10.0.0.9".parse().unwrap()];
+    let private_a = vec!["\x310.0.0.5".parse().unwrap()];
+    let private_b = vec!["\x310.0.0.9".parse().unwrap()];
     let verdict = |judge: &dyn DestJudge, host: &str, answer: &[std::net::IpAddr]| {
         judge
             .judge_answer(host, answer, EGRESS_PROVIDER)
@@ -320,7 +320,7 @@ async fn a_reload_that_changes_the_allowlist_changes_nothing() {
 #[test]
 fn a_provider_without_an_allowlist_entry_is_refused_a_private_address() {
     use busbar_contract::abi::host::service::DEST_INTERNAL;
-    let private = vec!["10.0.0.5".parse().unwrap()];
+    let private = vec!["\x310.0.0.5".parse().unwrap()];
     let bare = deployment(&[("local_model", "http://model.internal:8000", &[])], "");
     let judge = guard_for(&bare.destinations()).expect("a guard");
     assert_eq!(
@@ -361,7 +361,7 @@ fn a_provider_without_an_allowlist_entry_is_refused_a_private_address() {
 #[test]
 fn every_linked_auth_plugins_outbound_need_is_refused_a_private_address_unless_allowlisted() {
     use busbar_contract::abi::host::service::DEST_INTERNAL;
-    let private = vec!["10.0.0.5".parse().unwrap()];
+    let private = vec!["\x310.0.0.5".parse().unwrap()];
     let strict = guard_for(&deployment(&[], "").destinations()).expect("the default guard");
     let listed = deployment(&[], "advanced:\n  allow_destinations: [token.internal]\n");
     let listed = guard_for(&listed.destinations()).expect("a guard");

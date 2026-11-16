@@ -11,6 +11,9 @@ All notable changes to Busbar are documented here. The format is based on
 - **A secret or auth plugin's own rotating credential is re-lent without a reload.**
   1.6.0 Changed: every 30 seconds busbar re-reads the secret references a secret or auth plugin instance was opened with (a workload-identity token file, for example); a changed value is handed to the plugin's `refresh`, or, for a plugin with no `refresh`, to a new instance of the same artifact that is swapped in. A refusal keeps the running instance (`BUSBAR-8028`). Secret plugins may open in two steps (PENDING), and their `tick` is driven; a failed tick is retried rather than ending the schedule (`BUSBAR-8029`).
 
+- **`GET /stats` lanes drop the `limit` alias.**
+  1.6.0 Removed: `limit` is gone from each lane record (owner CLEAN-1.6, no aliases); read `max_concurrent`, which carries the same value.
+
 - **Hook API change:** configuration and admin writes require `module` and `phase`; use
   `phase: [response]` for a single stage. Hook responses omit `at`; clients read `fires_at`.
   One-shot configuration and overlay migration convert old `plugin`/`at` fields.
@@ -249,7 +252,7 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 - **A metadata host-list entry is read the way the destination it guards is read.**
   1.6.0 Changed: a Unicode-written `blocked_metadata_hosts` entry matches the ASCII host it maps to, a destination host holding a `%` outside an IPv6 zone id is refused as `DEST_NO_HOST`, and a metadata host-list entry that names no usable host refuses startup with an error naming the entry.
   On 1.5.5 the lists compared raw strings, so `１０.９９.９９.９９` matched nothing and
-  `https://10.99.99.99/` was dialled; now it is blocked. A `://` URL's host is decoded first and an
+  `https://192.0.2.99/` was dialled; now it is blocked. A `://` URL's host is decoded first and an
   IPv6 zone id (`fe80::1%eth0`) is judged as its address, as before. The entries refused at startup are a `%`
   outside a zone id, a number-like last label that is no IPv4 address (`db.1`, `1.2.3.4.5`), and
   non-ASCII that UTS #46 cannot map. Every other ASCII host gets 1.5.5's verdicts and texts, and a CIDR

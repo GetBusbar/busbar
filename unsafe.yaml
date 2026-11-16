@@ -163,10 +163,8 @@ interim:
   crates/busbar-contract/src/tests/allocation_observer.rs: { tokens: 18, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
   crates/busbar-contract/src/tests/sse_frames_tests.rs: { tokens: 3, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
   crates/busbar-contract/src/tests/wipe_support.rs: { tokens: 4, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
-  crates/busbar-contract/src/work_count.rs: { tokens: 10, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
   crates/busbar-contract/tests/abi_versions.rs: { tokens: 1, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
   crates/busbar-contract/tests/auth_answer_validators.rs: { tokens: 1, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
-  crates/busbar-contract/tests/bounded_allocations.rs: { tokens: 7, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
   crates/busbar-contract/tests/common_measurements.rs: { tokens: 9, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
   crates/busbar-contract/tests/exchange_request_wipe.rs: { tokens: 6, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
   crates/busbar-contract/tests/fixtures/sdk_door_plugin.rs: { tokens: 5, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
@@ -177,7 +175,6 @@ interim:
   crates/busbar-contract/tests/plane_streaming_media.rs: { tokens: 4, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
   crates/busbar-contract/tests/protocol_producer_custody.rs: { tokens: 11, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
   crates/busbar-contract/tests/sdk_door_cdylib.rs: { tokens: 8, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
-  crates/busbar-contract/tests/sdk_hyper_field_block.rs: { tokens: 7, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
   crates/busbar-contract/tests/sdk_hyper.rs: { tokens: 11, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
   crates/busbar-contract/tests/signing_gate_reader.rs: { tokens: 1, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
   crates/busbar-contract/tests/verify_request_wipe.rs: { tokens: 6, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
@@ -214,11 +211,6 @@ interim:
   crates/busbar-core-connector/src/tests/pool_prepared_seal_tests.rs: { tokens: 2, by: "W1-U1 (counting swap, Q24)" }
   crates/busbar-core-connector/src/tests/support_lib.rs: { tokens: 9, by: "W1-U1 (counting swap, Q24)" }
   crates/busbar-core-connector/src/tests/support.rs: { tokens: 17, by: "W1-U1 (counting swap, Q24)" }
-  crates/busbar-crypto-backend/src/legacy_impl.rs: { tokens: 2, by: "W1-U1 (md-5, Q9b)" }
-  crates/busbar-crypto-backend/src/weak.rs: { tokens: 3, by: "W1-U1 (md-5, Q9b)" }
-  crates/busbar-kernel-ledger/tests/hot_path_allocation.rs: { tokens: 5, by: "W1-U1 (§4.3, §4.4)" }
-  crates/busbar-kernel/src/lib.rs: { tokens: 2, by: "W1-U1 (§4.3, §4.4)" }
-  crates/busbar-kernel/src/mallctl.rs: { tokens: 4, by: "W1-U1 (§4.3, §4.4)" }
   crates/busbar-kernel/src/persistence/slot_seal.rs: { tokens: 2, by: "W3-D-CONTRACT (boot OnceLock seals)" }
   crates/busbar-kernel/src/plane_driver/serve.rs: { tokens: 1, by: "W3-D-BINARY" }
   crates/busbar-kernel/src/plane_driver/tests/far_end_tests.rs: { tokens: 2, by: "W3-D-BINARY" }
@@ -227,9 +219,7 @@ interim:
   crates/busbar-kernel/src/plane_driver/tests/route_tests.rs: { tokens: 2, by: "W3-D-BINARY" }
   crates/busbar-kernel/src/plane_driver/tests/serve_tests.rs: { tokens: 7, by: "W3-D-BINARY" }
   crates/busbar-kernel/src/seal.rs: { tokens: 2, by: "W3-D-CONTRACT (boot OnceLock seals)" }
-  crates/busbar-kernel/src/tests/alloc_gate_instrument.rs: { tokens: 5, by: "W1-U1 (§4.3, §4.4)" }
   crates/busbar-kernel/src/tests/host_disk_export_tests.rs: { tokens: 14, by: "W1-U1 (§4.3, §4.4)" }
-  crates/busbar-kernel/src/timing/mod.rs: { tokens: 1, by: "W1-U1 (§4.3, §4.4)" }
   crates/busbar-kernel/tests/host_projection_wipe.rs: { tokens: 6, by: "W1-U1 (§4.3, §4.4)" }
   crates/busbar-kernel/tests/support/plane_driver_actual.rs: { tokens: 34, by: "W3-D-BINARY" }
   crates/busbar-kernel/tests/support/plane_driver_completion_retirement.rs: { tokens: 9, by: "W3-D-BINARY" }
@@ -399,35 +389,17 @@ interim:
   tools/plugin-bench/src/stats.rs: { tokens: 7, by: "W3-D-CONTRACT (deleted)" }
   tools/plugin-bench/src/store.rs: { tokens: 5, by: "W3-D-CONTRACT (deleted)" }
   tools/plugin-bench/src/transport.rs: { tokens: 3, by: "W3-D-CONTRACT (deleted)" }
-  tools/system-hammer/src/gateway.rs: { tokens: 1, by: "W1-U1 (rustix or /proc)" }
-  tools/system-hammer/src/procstat.rs: { tokens: 8, by: "W1-U1 (rustix or /proc)" }
-  tools/system-hammer/src/report.rs: { tokens: 1, by: "W1-U1 (rustix or /proc)" }
 # E2: package roots that do not yet carry both #![forbid(unsafe_code)] and
 # #![doc(test(attr(forbid(unsafe_code))))]. Rows are never added.
 interim_roots:
-  ci/hop/src/main.rs: { by: "W1-U1 (root attributes)" }
   crates/busbar-contract/src/lib.rs: { by: "W3 (its crate holds interim rows)" }
   crates/busbar-core-admin/src/lib.rs: { by: "W3 (its crate holds interim rows)" }
   crates/busbar-core-connector/src/lib.rs: { by: "W3 (its crate holds interim rows)" }
-  crates/busbar-core-oauth2/src/lib.rs: { by: "W1-U1 (root attributes)" }
-  crates/busbar-crypto-backend/src/lib.rs: { by: "W3 (its crate holds interim rows)" }
-  crates/busbar-crypto/src/lib.rs: { by: "W1-U1 (root attributes)" }
-  crates/busbar-kernel-audit/src/bin/busbar-audit-verify.rs: { by: "W1-U1 (root attributes)" }
-  crates/busbar-kernel-audit/src/lib.rs: { by: "W1-U1 (root attributes)" }
-  crates/busbar-kernel-breaker/src/lib.rs: { by: "W1-U1 (root attributes)" }
-  crates/busbar-kernel-egress/src/lib.rs: { by: "W1-U1 (root attributes)" }
-  crates/busbar-kernel-identity/src/lib.rs: { by: "W1-U1 (root attributes)" }
   crates/busbar-kernel-ledger/src/lib.rs: { by: "W3 (its crate holds interim rows)" }
-  crates/busbar-kernel-wal/src/lib.rs: { by: "W1-U1 (root attributes)" }
   crates/busbar-kernel/src/lib.rs: { by: "W3 (its crate holds interim rows)" }
   crates/busbar-migrations/src/lib.rs: { by: "W3 (its crate holds interim rows)" }
-  crates/busbar-plugin-abi/src/lib.rs: { by: "W1-U1 (root attributes)" }
-  crates/busbar-plugin-bench/src/lib.rs: { by: "W1-U1 (root attributes)" }
-  crates/busbar-plugin-test/src/lib.rs: { by: "W1-U1 (root attributes)" }
   crates/busbar/src/main.rs: { by: "W3 (its crate holds interim rows)" }
   crates/plugin-loader/src/lib.rs: { by: "W3 (its crate holds interim rows)" }
   crates/plugin-loader/src/pack.rs: { by: "W3 (its crate holds interim rows)" }
-  tools/ci-checks/src/main.rs: { by: "W1-U1 (root attributes)" }
   tools/plugin-bench/src/lib.rs: { by: "W3 (its crate holds interim rows)" }
   tools/plugin-bench/src/main.rs: { by: "W3 (its crate holds interim rows)" }
-  tools/system-hammer/src/main.rs: { by: "W3 (its crate holds interim rows)" }

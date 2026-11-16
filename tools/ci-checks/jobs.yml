@@ -1,0 +1,119 @@
+# W1-X1: every job line for busbar-release `ci/core.yml` (core has no .gitlab-ci.yml, Δ3; the coordinator lands
+# these, AGREED:15). Reference copy kept beside the checks it runs; nothing in core reads this file.
+# Conventions are those of the existing `hop` job: `.cache-all`, `.checked` rules, `k` = the cached cargo wrapper.
+
+# --- core's own tree: green today ------------------------------------------------------------------------
+fleet-manifest:
+  stage: check
+  tags: [size-s]
+  extends: .cache-all
+  rules: !reference [.checked, rules]
+  script:
+    - if green_skip; then green_exit; fi
+    # fleet/deps.toml [min3-closure] and plugins.yaml: 33 ported, 2 archived, headroom excluded.
+    - k cargo run --locked --quiet -p busbar-ci-checks -- fleet-manifest export-streams
+    - k_done
+
+# --- core's own tree: red until the owning task lands (allow_failure until then, then drop the line) ---------
+# c-transport: W1-K7 deletes TlsDestinationCfg.plaintext and limits.plaintext (TRANSPORT-SECURITY-POLICY §8 test 11).
+# core-scan: W1-K1/K7/K9/L1-L9 remove every plugin word at an identity site (IF §15.8); the enterprise stamps come from
+#   the release manifests (`--words`), the OSS words from plugins.yaml.
+# no-licence: W1-L1 and the abi owners (IF §14 C-NO-LICENCE (a)).
+core-source-checks:
+  stage: check
+  tags: [size-s]
+  extends: .cache-all
+  rules: !reference [.checked, rules]
+  allow_failure: true
+  script:
+    - if green_skip; then green_exit; fi
+    - k cargo run --locked --quiet -p busbar-ci-checks -- c-transport no-licence
+    - k cargo run --locked --quiet -p busbar-ci-checks -- core-scan --words "$ENTERPRISE_STAMP_WORDS"
+    - k_done
+
+# The per-file LOC report (IF §15 rule 7; Δ2: a report, no gate; test_host.rs counts as test code).
+loc-report:
+  stage: check
+  tags: [size-s]
+  extends: .cache-all
+  rules: !reference [.checked, rules]
+  script:
+    - if green_skip; then green_exit; fi
+    - k cargo run --locked --quiet -p busbar-ci-checks -- loc-report | tee loc-report.txt
+    - k_done
+  artifacts:
+    paths: [loc-report.txt]
+
+# --- wired from earlier packages (their lines, unchanged) -------------------------------------------------------
+hop:                                   # W1-H0 !2387 (ci/hop, IF §15 rule 10)
+  stage: check
+  tags: [size-s]
+  extends: .cache-all
+  rules: !reference [.checked, rules]
+  script:
+    - if green_skip; then green_exit; fi
+    - k cargo run --locked --quiet -p busbar-ci-hop
+    - k_done
+
+c-header:                              # W1-A13 !2443 (the cc job; use `CC: [cc]` if clang is not in the image)
+  stage: check
+  tags: [size-m]
+  extends: .cache-all
+  rules: !reference [.checked, rules]
+  parallel:
+    matrix:
+      - CC: [gcc, clang]
+  script:
+    - if green_skip; then green_exit; fi
+    - sh crates/busbar-plugin-abi/tests/c_header/cc.sh
+
+ffi-lint:                              # W1-U0 !2438 (blocking; needs refs/remotes/origin/dev for escapes v2 as the test job does)
+  stage: check
+  tags: [size-m]
+  extends: .cache-all
+  rules: !reference [.checked, rules]
+  script:
+    - if green_skip; then green_exit; fi
+    - git fetch --no-tags origin +refs/heads/dev:refs/remotes/origin/dev
+    - k cargo clippy -p busbar-ffi --all-targets --locked -- -D warnings
+    - k cargo clippy -p busbar-ffi --all-targets --all-features --locked -- -D warnings
+    - k_done
+
+ffi-loom:                              # W1-U0 !2438
+  stage: check
+  tags: [size-m]
+  extends: .cache-all
+  rules: !reference [.checked, rules]
+  script:
+    - if green_skip; then green_exit; fi
+    - RUSTFLAGS="--cfg loom" k cargo test -p busbar-ffi --test loom_slots --release
+    - k_done
+
+# --- the plugin repos' jobs: lines for busbar-release template/gitlab-ci.yml (W1-FLEET renders them) -------------
+# Each runs the checks binary built from the core checkout at the repo's `.busbar-ref` pin. $CORE is that checkout.
+plugin-rules:                          # IF §15 rules 1a, 3, 8, 9; C-TRANSPORT test 11's fleet lint
+  stage: check
+  script:
+    - cargo run --locked --quiet --manifest-path "$CORE/Cargo.toml" -p busbar-ci-checks -- plugin-rules .
+plugin-dev-edges:                      # IF §15 rule 1b: enabled by the repo's port MR, never before
+  stage: check
+  script:
+    - cargo run --locked --quiet --manifest-path "$CORE/Cargo.toml" -p busbar-ci-checks -- plugin-rules . --dev-edges
+no-host-link:                          # C-NO-HOST-LINK: after the release cdylib's own build step (IF §15.11)
+  stage: check
+  needs: [release-cdylib]
+  script:
+    - cargo run --locked --quiet --manifest-path "$CORE/Cargo.toml" -p busbar-ci-checks -- no-host-link . target/release/*.so
+template-drift:                        # IF §15.0: deny.toml equals template/deny.toml outside [bans] skip and [licenses]
+  stage: check
+  script:
+    - cargo run --locked --quiet --manifest-path "$CORE/Cargo.toml" -p busbar-ci-checks -- template-drift "$TEMPLATE/deny.toml" deny.toml
+patch-drift:                           # IF §15 rule 8: [patch] port crates equal core's root [patch] (same git, same rev)
+  stage: check
+  script:
+    - cargo run --locked --quiet --manifest-path "$CORE/Cargo.toml" -p busbar-ci-checks -- patch-drift Cargo.toml
+# busbar-release (fleet-wide, once): C-ALIAS. $HEADERS = one `repo: word, word` line per shipped image (header former_names).
+c-alias:
+  stage: check
+  script:
+    - cargo run --locked --quiet -p busbar-ci-checks -- c-alias "$HEADERS"

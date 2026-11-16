@@ -22,11 +22,6 @@ extern crate self as busbar_kernel;
 pub(crate) use alloc_gate_instrument::CountingJemalloc;
 
 #[cfg(all(test, not(target_env = "msvc")))]
-#[global_allocator]
-static GLOBAL: CountingJemalloc = CountingJemalloc;
-
-#[cfg(all(test, not(target_env = "msvc")))]
-#[allow(unsafe_code)]
 #[path = "tests/alloc_gate_instrument.rs"]
 mod alloc_gate_instrument;
 
@@ -407,13 +402,9 @@ pub mod host_services;
 )]
 pub mod json;
 pub mod limits;
-pub mod rt;
-// jemalloc control for the binary and the allocation tests.
-#[cfg(not(target_env = "msvc"))]
-#[allow(unsafe_code)]
-pub mod mallctl;
 pub mod oauth_as;
 pub mod observability;
+pub mod rt;
 pub mod snapshot;
 
 pub mod operation {

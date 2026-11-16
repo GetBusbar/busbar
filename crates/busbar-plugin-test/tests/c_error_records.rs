@@ -10,6 +10,7 @@
 //! arm's body and un-ignores it in its own MR (red first, then green). Arms of tasks merged before W1-T1 run now.
 
 use busbar_plugin_abi::fail::{fact, failed, Fail, FAIL_TEXT_WIRE_MAX};
+use busbar_plugin_abi::host::level;
 use busbar_plugin_abi::records::{tag, FailRec, Records, Reply, U32Rec, Writer};
 
 #[test]
@@ -82,10 +83,58 @@ fn the_shim_writes_error_only_when_the_number_is_set() {
     }
 }
 
+/// W1-A13: the C fixture, driven out of process by a C host (busbar-plugin-abi/tests/c_header/driver.c), writes
+/// what the Rust shim writes for `Fail::failed_because(F_INTERNAL, text).with_error(7071)`: one FAIL, then one
+/// ERROR, with everything written before wiped; `bb_log` passes error 0 and `bb_log_error` the number, both as
+/// the raw `log` entry receives `Host::log` and `Host::log_error`; and describe declares that number.
 #[test]
-#[ignore = "owner: W1-A13"]
 fn the_c_helpers_write_the_same_bytes_and_arguments_as_the_rust_shim() {
-    todo!("owner: W1-A13 (C-ERROR-RECORDS)")
+    let driver = crate::c_header::cc::cc("c_fixture_driver", &["fixture.c", "driver.c"], true);
+    let run = std::process::Command::new(&driver)
+        .output()
+        .expect("the driver runs");
+    assert!(run.status.success(), "driver exit {:?}", run.status);
+    let seen = String::from_utf8(run.stdout).expect("UTF-8 lines");
+    let lines: Vec<Vec<&str>> = seen.lines().map(|l| l.split(' ').collect()).collect();
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+
+    let fail = Fail::failed_because(failed::F_INTERNAL, "numbered failure").with_error(7071);
+    let mut shim = Reply::new();
+    let head = FailRec {
+        status: fail.status().0,
+        code: fail.code(),
+    };
+    shim.put_pod_tail(tag::FAIL, &head, fail.text().as_bytes())
+        .expect("fail");
+    let error = U32Rec {
+        value: u32::from(fail.error()),
+        _r: 0,
+    };
+    shim.put_pod(tag::ERROR, &error).expect("error");
+    let msg = hex(b"numbered".as_slice());
+    let (info, warn) = (level::INFO.to_string(), level::WARN.to_string());
+    let status = fail.status().0.to_string();
+    let shim = hex(shim.as_bytes());
+    assert_eq!(
+        lines[1..],
+        [
+            vec!["log", info.as_str(), "0", msg.as_str()],
+            vec!["log", warn.as_str(), "7071", msg.as_str()],
+            vec!["numbered", status.as_str(), "zeroed", shim.as_str()],
+        ]
+    );
+
+    assert_eq!(lines[0][..2], ["describe", "0"]);
+    let describe: Vec<u8> = (0..lines[0][2].len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&lines[0][2][i..i + 2], 16).expect("hex"))
+        .collect();
+    let declared: Vec<&[u8]> = Records::new(&describe)
+        .map(|rec| rec.expect("framing"))
+        .filter(|rec| rec.tag == tag::D_ERRORS)
+        .map(|rec| rec.body)
+        .collect();
+    assert_eq!(declared, [7071u16.to_le_bytes().as_slice()]);
 }
 
 #[test]

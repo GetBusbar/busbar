@@ -8,8 +8,8 @@ use busbar_contract::transport::UpstreamAddress;
 
 #[test]
 fn a_socket_target_carries_an_authority_and_an_optional_certificate_name() {
-    let plain = UpstreamAddress::socket("10.0.0.1:443");
-    assert_eq!(plain.authority(), Some("10.0.0.1:443"));
+    let plain = UpstreamAddress::socket("\x310.0.0.1:443");
+    assert_eq!(plain.authority(), Some("\x310.0.0.1:443"));
     assert_eq!(
         plain.sni(),
         None,
@@ -17,11 +17,11 @@ fn a_socket_target_carries_an_authority_and_an_optional_certificate_name() {
     );
 
     let named = UpstreamAddress::Socket {
-        authority: "10.0.0.1:443",
+        authority: "\x310.0.0.1:443",
         sni: Some("api.example"),
         extras: &[],
     };
-    assert_eq!(named.authority(), Some("10.0.0.1:443"));
+    assert_eq!(named.authority(), Some("\x310.0.0.1:443"));
     assert_eq!(
         named.sni(),
         Some("api.example"),

@@ -281,7 +281,7 @@ async fn list_groups_is_cursor_paginated() {
         .next_cursor
         .as_deref()
         .expect("more rows remain -> a next_cursor is present");
-    let _start2 = busbar_core_admin::v1::contract::decode_offset_cursor(c1).expect("valid cursor");
+    assert!(c1.starts_with("k1.groups."), "a keyset cursor: {c1}");
 
     let response = client
         .get(format!("http://{addr}/api/v1/admin/groups"))
@@ -297,7 +297,7 @@ async fn list_groups_is_cursor_paginated() {
     let names: Vec<&str> = p2.items.iter().map(|g| g.name.as_str()).collect();
     assert_eq!(names, vec!["g2", "g3"]);
     let c2 = p2.next_cursor.as_deref().expect("one row remains");
-    let _start3 = busbar_core_admin::v1::contract::decode_offset_cursor(c2).expect("valid cursor");
+    assert!(c2.starts_with("k1.groups."), "a keyset cursor: {c2}");
 
     let response = client
         .get(format!("http://{addr}/api/v1/admin/groups"))

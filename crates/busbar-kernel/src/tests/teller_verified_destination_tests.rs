@@ -3,6 +3,7 @@
 
 use std::sync::Mutex;
 
+use busbar_contract::caps::Frame as EncodedFrame;
 use busbar_contract::caps::{
     Admission, Admit, Admittance, Approve, Arrival, Audit, Authenticate, Authenticated,
     Consumption, Decode, Dial, Encode, Grant, Hold, LaneId, Meter, OriginKind, Outcome, Pass,
@@ -48,8 +49,8 @@ fn audit_facts() -> busbar_contract::caps::AuditFacts {
     }
 }
 
-fn encoded_frame() -> busbar_contract::caps::Frame {
-    busbar_contract::caps::Frame {
+fn encoded_frame() -> EncodedFrame {
+    EncodedFrame {
         direction: busbar_contract::Direction::Outbound,
         stream: busbar_contract::StreamId(0),
         bytes: busbar_contract::SlabBytes::new(std::sync::Arc::from(&b""[..])),

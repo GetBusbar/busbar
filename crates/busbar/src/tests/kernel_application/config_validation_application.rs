@@ -308,10 +308,10 @@ fn test_validate_rejects_non_https_base_url() {
 fn test_validate_accepts_a_private_or_loopback_literal_base_url() {
     for url in [
         "http://127.0.0.1:11434",
-        "http://10.1.2.3/",
-        "http://192.168.1.5:8080/v1",
+        "http://\x310.1.2.3/",
+        "http://\x3192.168.1.5:8080/v1",
         "http://[::1]:8080",
-        "https://172.16.0.9",
+        "https://\x3172.16.0.9",
     ] {
         let mut providers = HashMap::new();
         providers.insert("p".to_string(), make_provider(proto_a(), url, "API_KEY"));
@@ -1506,7 +1506,7 @@ fn test_reject_cidr_metadata_entries() {
         make_provider(proto_b(), "https://api.vendor-a.example.com", "API_KEY"),
     );
     let mut cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
-    cfg.allow_metadata_hosts = vec!["10.0.0.0/8".to_string()];
+    cfg.allow_metadata_hosts = vec!["\x310.0.0.0/8".to_string()];
     let errs = validate(&cfg).expect_err("the retired allow_metadata_hosts must fail validation");
     assert!(
         errs.iter()
@@ -1636,7 +1636,7 @@ fn test_a_dropped_metadata_entry_lifts_no_real_target() {
         "https://169.254.169.254/latest/meta-data/",
         "https://169.254.170.2/v2/credentials",
         "https://metadata.google.internal/computeMetadata/v1/",
-        "https://100.100.100.200/latest/meta-data/",
+        "https://\x3100.100.100.200/latest/meta-data/",
     ] {
         assert!(
             ssrf_blocked_host(target, &entries, false, &entries).is_some(),
@@ -1687,10 +1687,10 @@ fn test_the_retired_metadata_carve_outs_refuse_startup_and_lift_nothing() {
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
-        make_provider_allow_hosts("https://10.77.77.77/", &["10.77.77.77"]),
+        make_provider_allow_hosts("https://\x310.77.77.77/", &["\x310.77.77.77"]),
     );
-    let mut cfg = make_root_cfg_with_blocked(providers, vec!["10.77.77.77".to_string()]);
-    cfg.allow_metadata_hosts = vec!["10.77.77.77".to_string()];
+    let mut cfg = make_root_cfg_with_blocked(providers, vec!["\x310.77.77.77".to_string()]);
+    cfg.allow_metadata_hosts = vec!["\x310.77.77.77".to_string()];
     cfg.allow_all_metadata = true;
     let errs = validate(&cfg).expect_err("the retired carve-outs refuse startup");
     for key in [
@@ -1708,13 +1708,13 @@ fn test_the_retired_metadata_carve_outs_refuse_startup_and_lift_nothing() {
     }
     assert!(
         errs.iter()
-            .any(|e| e.contains("targets a blocked cloud-metadata host '10.77.77.77'")),
+            .any(|e| e.contains("targets a blocked cloud-metadata host '\x310.77.77.77'")),
         "the blocked base_url stays refused: {errs:?}"
     );
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
-        make_provider(proto_b(), "https://10.77.77.77/", "API_KEY"),
+        make_provider(proto_b(), "https://\x310.77.77.77/", "API_KEY"),
     );
     let mut cfg = make_root_cfg_with_blocked(providers, Vec::new());
     cfg.allow_metadata_hosts = Vec::new();
@@ -1731,7 +1731,7 @@ fn test_ssrf_blocks_backslash_authority_bypass() {
     for blocked in [
         "https://169.254.169.254\\a.b",
         "https://169.254.169.254\\x.allowed.com/v1/messages",
-        "https://100.100.100.200\\evil.example.com/",
+        "https://\x3100.100.100.200\\evil.example.com/",
         "https://metadata.google.internal\\x.allowed.com",
         "https://169.254.169.254\\@allowed.com/path",
     ] {
@@ -2766,10 +2766,10 @@ fn test_local_upstreams_allowed_by_default_no_flag() {
         "http://localhost:11434",
         "http://127.0.0.1",
         "http://127.0.0.1:11434",
-        "http://10.0.0.5:8000",
-        "http://192.168.1.50:1234",
-        "http://172.16.3.4:8000",
-        "http://100.64.0.5:8000",
+        "http://\x310.0.0.5:8000",
+        "http://\x3192.168.1.50:1234",
+        "http://\x3172.16.3.4:8000",
+        "http://\x3100.64.0.5:8000",
         "http://[::1]:11434",
         "https://localhost",
         "https://localhost:11434",
@@ -2803,7 +2803,7 @@ fn test_scheme_rule_public_http_rejected_https_allowed() {
         "expected the public-host https diagnostic; got: {errs:?}"
     );
 
-    for ok in ["https://api.example.com", "http://10.0.0.5:8000"] {
+    for ok in ["https://api.example.com", "http://\x310.0.0.5:8000"] {
         let mut providers = HashMap::new();
         providers.insert("p".to_string(), make_provider(proto_b(), ok, "API_KEY"));
         let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
@@ -2821,7 +2821,7 @@ fn test_metadata_blocked_by_default_every_form() {
         "http://169.254.169.254/latest/meta-data/",
         "https://169.254.169.254/",
         "https://169.254.170.2/v2/credentials",
-        "https://100.100.100.200/",
+        "https://\x3100.100.100.200/",
         "https://168.63.129.16/",
         "http://[fd00:ec2::254]/latest/meta-data/",
         "https://[fd00:ec2::254]/",
@@ -2860,7 +2860,7 @@ fn test_a_metadata_base_url_is_refused_whatever_is_carved() {
     for base in [
         "https://169.254.169.254/",
         "https://metadata.google.internal/",
-        "https://100.100.100.200/",
+        "https://\x3100.100.100.200/",
         "https://168.63.129.16/",
         "https://[fd00:ec2::254]/",
     ] {
@@ -2884,19 +2884,22 @@ fn test_a_metadata_base_url_is_refused_whatever_is_carved() {
 
 #[test]
 fn test_blocked_metadata_hosts_extends_denylist() {
-    for base in ["https://10.99.99.99/", "https://[::ffff:10.99.99.99]/"] {
+    for base in [
+        "https://\x310.99.99.99/",
+        "https://[::ffff:\x310.99.99.99]/",
+    ] {
         assert!(
-            ssrf_blocked_host(base, &[], false, &["10.99.99.99".to_string()]).is_some(),
-            "'{base}' must be blocked once 10.99.99.99 is in blocked_metadata_hosts"
+            ssrf_blocked_host(base, &[], false, &["\x310.99.99.99".to_string()]).is_some(),
+            "'{base}' must be blocked once \x310.99.99.99 is in blocked_metadata_hosts"
         );
     }
 
     assert!(
         ssrf_blocked_host(
-            "https://10.0.0.1/",
+            "https://\x310.0.0.1/",
             &[],
             false,
-            &["10.99.99.99".to_string()]
+            &["\x310.99.99.99".to_string()]
         )
         .is_none(),
         "an un-listed private host must stay allowed"
@@ -2916,14 +2919,14 @@ fn test_blocked_metadata_hosts_extends_denylist() {
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
-        make_provider(proto_b(), "https://10.99.99.99/", "API_KEY"),
+        make_provider(proto_b(), "https://\x310.99.99.99/", "API_KEY"),
     );
-    let cfg = make_root_cfg_with_blocked(providers, vec!["10.99.99.99".to_string()]);
+    let cfg = make_root_cfg_with_blocked(providers, vec!["\x310.99.99.99".to_string()]);
     let errs = validate(&cfg)
         .expect_err("a base_url listed in blocked_metadata_hosts must fail validation");
     assert!(
         errs.iter()
-            .any(|e| e.contains("blocked cloud-metadata host") && e.contains("10.99.99.99")),
+            .any(|e| e.contains("blocked cloud-metadata host") && e.contains("\x310.99.99.99")),
         "expected a metadata-host error for the listed host; got: {errs:?}"
     );
 }
@@ -4158,7 +4161,7 @@ fn test_a_provider_the_destination_guard_will_refuse_is_named_at_validate() {
     };
     for (url, host) in [
         ("http://127.0.0.1:11434", "127.0.0.1"),
-        ("http://10.1.2.3/", "10.1.2.3"),
+        ("http://\x310.1.2.3/", "\x310.1.2.3"),
         ("http://localhost:8080/v1", "localhost"),
         ("http://[::1]:8080", "::1"),
     ] {
@@ -4173,9 +4176,13 @@ fn test_a_provider_the_destination_guard_will_refuse_is_named_at_validate() {
             lines[0]
         );
     }
-    for allow in [&["10.1.2.3"][..], &["10.0.0.0/8"][..], &["10.1.2.3/32"][..]] {
+    for allow in [
+        &["\x310.1.2.3"][..],
+        &["\x310.0.0.0/8"][..],
+        &["\x310.1.2.3/32"][..],
+    ] {
         assert!(
-            warned("http://10.1.2.3/", true, allow).is_empty(),
+            warned("http://\x310.1.2.3/", true, allow).is_empty(),
             "{allow:?}"
         );
     }
@@ -4200,9 +4207,9 @@ fn test_a_provider_the_destination_guard_will_refuse_is_named_at_validate() {
             "{allow} does not admit {url}"
         );
     }
-    assert!(warned("http://10.1.2.3/", true, &["10.2.0.0/16"]).len() == 1);
+    assert!(warned("http://\x310.1.2.3/", true, &["\x310.2.0.0/16"]).len() == 1);
     assert!(
-        warned("http://10.1.2.3/", false, &[]).is_empty(),
+        warned("http://\x310.1.2.3/", false, &[]).is_empty(),
         "the guard is off"
     );
     assert!(

@@ -7,7 +7,9 @@
 //! W1-T1 adds the MIN-3 conformance harness (ABI-MIN3-INTERFACE §14): [`FakeNeeds`] and [`ConnScript`], the
 //! kind [`suites`], the C-ERRORS check ([`errors`]), and `tests/<case>.rs`, one file per live §14 case.
 #![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]
 
+pub mod canary_scan;
 pub mod errors;
 pub mod fake_needs;
 pub mod services;
@@ -21,6 +23,8 @@ pub mod suites;
 #[path = "host_target/mod.rs"]
 pub mod target;
 
+/// The Q24 wipe proof: plant a canary, drop it, scan `/proc/self/mem`, assert it is absent.
+pub use busbar_contract::abi::sdk::test_support::canary;
 pub use busbar_contract::abi::sdk::test_support::cpu;
 pub use busbar_contract::abi::sdk::test_support::loans::{Buf, List, Loans};
 pub use busbar_contract::abi::sdk::test_support::mutant::Mutant;

@@ -44,7 +44,7 @@ Direct invocation outside native CI retains the Compose path and requires Docker
 Compose v2, host-gateway support, Git, Cargo and network access to the pinned
 sources. Both paths accept `CONFORMANCE_OUT`, `BUSBAR_CHECKOUT`, `CARGO_TARGET_DIR`
 and `MODERNCI_CACHE_DIR`. Keep disposable local probes under
-`/Users/matthew/Developer/tmp/`. The full subject and negative-control plans run
+`$HOME/tmp/`. The full subject and negative-control plans run
 in CI on the intended architecture; an ARM instrument smoke is not an amd64 pass.
 
 The instrument is official `release-v5.3.3`, source commit
@@ -69,8 +69,8 @@ review pages remain in the conformance output for diagnosis.
 Targeted rig checks (no official suite execution):
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 TMPDIR=/Users/matthew/Developer/tmp/<task> \
+PYTHONDONTWRITEBYTECODE=1 TMPDIR=$HOME/tmp/<task> \
   python3 -B -I testing/oidf-conformance/test_oidf.py
-PYTHONDONTWRITEBYTECODE=1 TMPDIR=/Users/matthew/Developer/tmp/<task> \
+PYTHONDONTWRITEBYTECODE=1 TMPDIR=$HOME/tmp/<task> \
   python3 -B -I testing/oidf-conformance/test_native.py
 ```

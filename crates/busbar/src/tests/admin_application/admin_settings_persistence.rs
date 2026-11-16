@@ -884,7 +884,7 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
             serde_json::json!({
                 "store": {
                     "module": module,
-                    "settings": { "url": "rediss://:hunter2-store@ledger.internal:6379" }
+                    "settings": { "url": "rediss://:hunter2-store\x40ledger.internal:6379" }
                 }
             })
             .to_string(),

@@ -148,6 +148,7 @@ fn current_producer_output_verifies_with_wide_numbers_and_repeated_groups() {
             ..Controls::default()
         },
         correlation_hash: None,
+        unit: busbar_kernel_audit::UnitFacts::default(),
         seq: 1,
         prev_hash: String::new(),
         recipe: Recipe::V5,
@@ -468,4 +469,119 @@ fn mixed_v5_v6_v5_exact_quantity_chain_verifies_with_explicit_dispatch() {
         "noncanonical exact audit quantity"
     );
     assert_eq!(range["records"][0], original);
+}
+
+/// A `v7` RANGE VERIFIES AGAINST THE PUBLISHED `v7` PAGE (`docs/audit-chain-digest-v7.md`): an
+/// outside verifier recomputes every record from the page's field table, the attempts group
+/// included, and a changed unit fact is refused.
+#[test]
+fn v7_records_verify_against_the_published_page() {
+    use busbar_contract::caps::{Outcome, UnitKey};
+    use busbar_kernel_audit::{
+        Attempt, AttemptOutcome, AuditRecord, Controls, FinishClass, OpClassId, OutcomeFacts,
+        QuantitySource, Recipe, Subject, UnitFacts, Usage, UsageLine, What,
+    };
+    let mut records = Vec::new();
+    let mut previous = String::new();
+    for seq in 1..=2u64 {
+        let mut record = AuditRecord {
+            subject: Subject::PrincipalId("key-1".into()),
+            what: What {
+                unit_key: UnitKey::new(seq),
+                incarnation: 3,
+                op_class: OpClassId::new("chat.completion"),
+                destination: Some("pools-lane".into()),
+                parent: None,
+                pre_hook_head: None,
+                post_hook_head: None,
+            },
+            wall: 1_700_000_000,
+            mono: seq,
+            node: 9,
+            origin_kind: "client",
+            outcome: OutcomeFacts {
+                unit_end: Outcome::Completed,
+                step: None,
+                finish: FinishClass::Complete,
+                hook_failed: false,
+                emission_delta: 0,
+                stale_policy: false,
+            },
+            usage: Usage {
+                lines: vec![UsageLine {
+                    class: busbar_contract::MeterClassId::new("input"),
+                    quantity: busbar_contract::Count::parse(if seq == 1 { "27" } else { "27.5" })
+                        .unwrap(),
+                    source: QuantitySource::Count,
+                    estimated: false,
+                }],
+                tier_bp: 10_000,
+                fee_count: 1,
+                rate_card_version: Some([0x4a; 20]),
+                bucket_chain_ref: String::new(),
+            },
+            controls: Controls::default(),
+            correlation_hash: None,
+            unit: UnitFacts {
+                wall_ms: 1_700_000_000_250,
+                attribution: busbar_kernel_audit::attribution("team", "default", "acme"),
+                boot_nonce: [0xab; 16],
+                status: 200,
+                ttft_us: 1_500,
+                total_us: 9_000,
+                attempts: [
+                    Some(Attempt {
+                        outcome: AttemptOutcome::Failover,
+                        target: "lane-a".into(),
+                        reason: "upstream_5xx".into(),
+                        us: 0,
+                    }),
+                    Some(Attempt {
+                        outcome: AttemptOutcome::Ok,
+                        target: "lane-b".into(),
+                        reason: String::new(),
+                        us: 0,
+                    }),
+                    None,
+                    None,
+                ],
+                attempts_total: 2,
+            },
+            seq,
+            prev_hash: previous.clone(),
+            recipe: Recipe::V7,
+            hash: String::new(),
+            signature: None,
+            key_id: None,
+        };
+        record.hash = AuditChain::digest_of(&record);
+        record.signature = Some(signer().sign_digest(&record.hash));
+        record.key_id = Some(signer().key_id().into());
+        previous.clone_from(&record.hash);
+        records.push(record);
+    }
+    let chain = AuditChain::resume(&records);
+    let range: Value = serde_json::from_str(&busbar_kernel_audit::expose::range_body(
+        &chain, &records, 1, 2,
+    ))
+    .unwrap();
+    let head: Value =
+        serde_json::from_str(&busbar_kernel_audit::expose::head_body(&chain)).unwrap();
+    assert_eq!(range["recipe"], DIGEST_RECIPE_V7);
+    assert_eq!(range["records"][1]["recipe"], DIGEST_RECIPE_V7);
+    let report = verify(&keys(), &range, Some(&head)).unwrap();
+    assert_eq!(report["records"], 2);
+
+    let mut tampered = range.clone();
+    tampered["records"][0]["attribution"] = json!("team\u{1f}default\u{1f}other");
+    assert!(
+        verify(&keys(), &tampered, Some(&head)).is_err(),
+        "the attribution is digested"
+    );
+    let mut tampered = range;
+    tampered["records"][1]["attempts"][0]["outcome"] = json!("ok");
+    assert!(
+        verify(&keys(), &tampered, Some(&head)).is_err(),
+        "an attempt is digested"
+    );
 }

@@ -3,7 +3,7 @@
 
 //! The signature over a sealed record's digest, minted in the process that sealed it.
 
-use busbar_contract::crypto::ed25519::{SigningKey, VerifyingKey};
+use busbar_contract::crypto::ed25519::{self, SigningKey, VerifyingKey};
 
 /// The domain this signature is FOR, and the first bytes of every preimage.
 pub const SIGNATURE_DOMAIN: &str = "busbar.audit.record.v1";
@@ -226,6 +226,8 @@ impl AuditVerifyingKey {
     /// Read one from 64 lowercase hex characters, refusing a small-order point.
     pub fn from_hex(text: &str) -> Result<Self, KeyError> {
         let bytes = from_hex_exact::<32>(text.trim())?;
+        // A pinned key with no point on the curve is refused here, not first at a verify (QE).
+        ed25519::validate_public_key(&bytes).map_err(|_| KeyError::NotAKey)?;
         let inner = VerifyingKey::from_bytes(&bytes).map_err(|_| KeyError::NotAKey)?;
         if inner.is_weak() {
             return Err(KeyError::WeakKey);

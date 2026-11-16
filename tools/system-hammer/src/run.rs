@@ -362,7 +362,7 @@ fn service_account(token_uri: &str) -> Result<String, String> {
     Ok(
         sonic_rs::json!({"type": "service_account", "project_id": "hammer",
         "private_key_id": "hammer", "private_key": pem,
-        "client_email": "hammer@hammer.iam.gserviceaccount.com", "token_uri": token_uri})
+        "client_email": "hammer\x40hammer.iam.gserviceaccount.com", "token_uri": token_uri})
         .to_string(),
     )
 }

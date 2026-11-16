@@ -37,7 +37,7 @@ Build with `panic = "unwind"`. The SDK trampolines contain panics and report fau
 ## Start from the canonical scaffold
 
 Use the shared fleet generator's `plugin new <kind> <name>`.
-Add `--enterprise` for private BusbarInc source. The command creates a local repository; its
+Add `--enterprise` for private source. The command creates a local repository; its
 package identities must enter the trusted admission policy before publication through GitLab.
 Public mirrors follow qualified canonical dev publication. Private repositories and artifacts
 never enter a public mirror.

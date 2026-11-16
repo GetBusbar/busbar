@@ -12,7 +12,8 @@
 //! views, `Status`/`KindCode`/`Token`, the `Host` table, the `Plugin` header, `ChainBytes`, the slot table and
 //! `Out`'s in-place writes (wrapped by `records::Out`). The safe host methods are `host::HostExt`.
 
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]
 
 /// The `mechanism!` block (IF §7.5). It emits its items unchanged and records their tokens, doc comments
 /// included, as `stringify!` spells them; `fp::CORE_FP` folds the three blocks here (records.rs, host.rs,

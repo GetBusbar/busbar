@@ -59,7 +59,7 @@ impl Branching {
         Arc::new(Self {
             facts: DoorFacts {
                 dials: true,
-                name: "datagram-turn".to_owned(),
+                name: "datagram-turn".into(),
                 claims: vec!["datagram-turn"],
                 role: ROLE_FRAMER,
                 composes_over: Vec::new(),
@@ -295,18 +295,19 @@ fn a_failed_or_unwinding_recall_finishes_the_accepted_operation_once() {
 
 #[test]
 fn a_finite_pair_can_both_owe_same_op_recalls_before_either_host_batch_is_published() {
-    let now = std::time::Instant::now();
     let caller = Branching::new(Origin::Caller);
     let upstream = Branching::new(Origin::Upstream);
     let mut a = framing(&caller);
     let mut b = framing(&upstream);
-    let mut a_turn = a.emit_turn(CALLER_LINE, START, true, false, now).unwrap();
+    let mut a_turn = a
+        .emit_turn(CALLER_LINE, START, true, false, Instant::now())
+        .unwrap();
     let mut a_output = a_turn.next_batch().unwrap().unwrap();
     let mut a_batch = std::mem::take(&mut a_output.pieces).into_iter();
     drop(a_output);
     let first_a = a_batch.next().unwrap();
     let mut b_turn = b
-        .emit_turn(UPSTREAM_LINE, &first_a.bytes, true, false, now)
+        .emit_turn(UPSTREAM_LINE, &first_a.bytes, true, false, Instant::now())
         .unwrap();
     let b_batch = b_turn.next_batch().unwrap().unwrap();
 
@@ -341,14 +342,14 @@ fn a_finite_pair_can_both_owe_same_op_recalls_before_either_host_batch_is_publis
 /// Each real framer crossing answers at most two short pieces and completes immediately. The
 #[test]
 fn distinct_finite_emits_outgrow_two_retained_slots_without_using_the_recall_budget() {
-    let now = Instant::now();
     for fifo in [true, false] {
         for depth in [2_u8, 3, 5] {
             let caller = Branching::new(Origin::FiniteCaller);
             let upstream = Branching::new(Origin::FiniteUpstream);
             let mut a = framing(&caller);
             let mut b = framing(&upstream);
-            let mut awaiting = [(true, vec![depth])].into_iter().collect::<VecDeque<_>>();
+            let now = Instant::now();
+            let mut awaiting = VecDeque::from([(true, vec![depth])]);
             let mut high_water = awaiting.len();
             let mut delivered = Vec::new();
             loop {
