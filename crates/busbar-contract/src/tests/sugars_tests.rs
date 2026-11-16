@@ -146,9 +146,17 @@ fn shorthand_selects_one_configured_instance_or_its_implicit_word() {
         Some("primary")
     );
     assert_eq!(explicit.get("probe").unwrap().plugin, "fixture-source");
-    let error = sugars
+    let multiple = sugars
         .bind_instances(&[("primary", "fixture-source"), ("backup", "fixture-source")])
+        .unwrap();
+    let error = multiple
+        .get("probe")
+        .unwrap()
+        .checked_reference("v")
         .unwrap_err();
+    let canonical = crate::json::json!({"module":"backup","settings":{"key":"v"}});
+    let parsed: SecretRef = context::deserialize(canonical, &multiple).unwrap();
+    assert_eq!(parsed.source_module(), Some("backup"));
     assert!(error.contains("ambiguous"));
     assert!(error.contains("probe"));
     assert!(error.contains("module:"));
