@@ -188,7 +188,7 @@ fn lock_packages(lock: &str) -> Vec<(String, Vec<String>)> {
             in_deps = false;
         } else if let Some(name) = line.strip_prefix("name = ") {
             if let Some(package) = packages.last_mut() {
-                package.0 = name.trim_matches('"').to_owned();
+                name.trim_matches('"').clone_into(&mut package.0);
             }
         } else if line.starts_with("dependencies = [") {
             in_deps = true;

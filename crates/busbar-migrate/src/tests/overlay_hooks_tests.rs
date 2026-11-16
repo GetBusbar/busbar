@@ -123,8 +123,7 @@ auth:
   chain: [idp1]
   role_bindings:
     idp1:
-      "
-    * ": {}
+      \"*\": {}
 models:
   sonnet:
     provider: anthropic
