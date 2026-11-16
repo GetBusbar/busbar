@@ -923,7 +923,7 @@ diagnostics! {
     /// An admin `plane_record_write` named a record kind the kernel keeps its own records under; the write is refused.
     PLANE_RECORD_WRITE_KERNEL_KIND = 7107, Plane, Actionable, "plane-record-write-kernel-kind", "1.6.0", false,
         "An admin plane record write named a kernel record kind (the write is refused)",
-        "`POST /api/v1/admin/plane-record-write` named a record kind the kernel keeps its own records under (`audit`, `usage_residual`, `demotion`, `trust_decision` or `ticket`). A plane may declare one of these (a plane may declare `demotion`), but the rows under it are the kernel's own, for example its durable demotion record of a quarantined upstream, and no write made in a plane's name may alter them. busbar answers `403 forbidden` naming the kind, writes nothing, and seals the refusal on the administrative audit ring as `rejected`.",
+        "`POST /api/v1/admin/plane-record-write` named a record kind the kernel keeps its own records under (`audit`, `usage_residual`, `demotion`, `trust_decision` or `ticket`). A plane may declare one of these (for example `demotion`), but the rows under it are the kernel's own, for example its durable demotion record of a quarantined upstream, and no write made in a plane's name may alter them. busbar answers `403 forbidden` naming the kind, writes nothing, and seals the refusal on the administrative audit ring as `rejected`.",
         "Do not write kernel records through the plane record verb. To lift a quarantine, approve the counterparty with `POST /api/v1/admin/trust/approve`, which clears its durable demotion. Write a plane's own records under a kind that is not the kernel's.";
 
     /// A plane's JUDGE intent ran with no destination judge installed: core answers `DEST_INTERNAL` (fail closed).
@@ -1457,7 +1457,7 @@ diagnostics! {
     CONFIG_STORE_INVALID = 3120, Config, Fatal, "config-store-invalid", "1.6.0", false,
         "The store block is missing or names no module",
         "Busbar keeps keys, budgets, audit and configuration overlays in the store named by top-level `store:`. The block is missing or its `module:` is empty. 1.6.0 has no default store: a 1.5.5 config.yaml with no `store:` block ran on the store built into 1.5.5, and the one-time upgrade writes that block into it, so a config.yaml stamped `config_version: 1` must name its store itself.",
-        "Add `store: { module: <store plugin> }` (naming a store module and its `settings:`; see that plugin's own documentation). For what 1.5.5 did with no block (state kept in RAM, lost on restart), name an in-memory store module."
+        "Add `store: { module: <store plugin> }` (naming a store module and its `settings:`; see that plugin's own documentation). For what 1.5.5 did with no block (state kept in RAM, lost on restart), name the compiled-in `memory` store."
         => config_store_invalid(detail) "{detail}",
         example "store:\n  module: \"\"",
         detail "store.module must be non-empty; name the configured Store plugin";
