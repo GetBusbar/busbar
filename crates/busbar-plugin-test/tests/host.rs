@@ -930,3 +930,19 @@ fn a_linked_door_is_refused_when_it_states_another_plugins_statement() {
         wrong.err()
     );
 }
+
+/// STH-ROWS D-7: a plugin repository's `busbar-plugin-test` dev edge, with `test-seal` on it,
+/// opens a host with no second `busbar-contract` edge and no seal in its own code.
+#[cfg(feature = "test-seal")]
+#[test]
+fn the_facade_hands_out_a_sealed_host_only_under_test_seal() {
+    let h = busbar_plugin_test::host();
+    let t = h
+        .open(
+            Image::<Transport>::linked(transport_door::door),
+            "facade-host",
+            b"{}",
+        )
+        .expect("the facade's host opens a linked fixture");
+    drop(t);
+}

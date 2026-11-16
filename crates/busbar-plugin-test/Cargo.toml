@@ -100,7 +100,7 @@ busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 # probe (IF §14 round 19). A dev edge only: a plugin repository resolving this facade never sees it.
 busbar-kernel = { path = "../busbar-kernel", features = ["conformance"] }
 # The facade's own tests drive its targets; CI's test and red-proof jobs pass none of its features.
-busbar-plugin-test = { path = ".", features = ["target-http"] }
+busbar-plugin-test = { path = ".", features = ["target-http", "test-seal"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
 
 [lints]
