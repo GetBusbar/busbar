@@ -13,7 +13,7 @@ fn sync_zero_and_async_steady_state_three() {
 }
 
 #[test]
-#[ignore = "owner: W1-L3"]
+#[ignore = "owner: W1-L3; blocked (re-checked on dev 2026-11-16): the store adapter port_error(a, inst) is private and needs a live Instance; row 1 (store.rs request todo!) is in flight"]
 fn a_store_lane_entry_allocates_four() {
     todo!("owner: W1-L3 (C-ALLOC)")
 }

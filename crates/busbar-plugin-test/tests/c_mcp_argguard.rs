@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K8A"]
+#[ignore = "blocked: no JUDGE-per-destination driver reachable from this crate (plane-mcp image arg extraction is #217/plane-mcp); owner W1-K8A"]
 fn judge_per_extracted_destination() {
     todo!("owner: W1-K8A (C-MCP-ARGGUARD)")
 }

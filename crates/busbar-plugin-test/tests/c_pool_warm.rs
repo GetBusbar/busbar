@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-C1A"]
+#[ignore = "blocked: needs the connector pool plus DNS/guard/cert-resolve counters in busbar-core-connector, not a dependency of this crate (W1-C1A)"]
 fn reusable_opens_resolve_and_judge_once() {
     todo!("owner: W1-C1A (C-POOL-WARM)")
 }

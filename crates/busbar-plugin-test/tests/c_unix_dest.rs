@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-C1A"]
+#[ignore = "owner: W1-C1A (blocked: needs the connector's unix OPEN, a listening unix socket and the store-mysql/valkey P arms; busbar-core-connector is not a dev-dependency of this crate)"]
 fn unix_destinations() {
     todo!("owner: W1-C1A (C-UNIX-DEST)")
 }

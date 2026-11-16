@@ -287,40 +287,6 @@ impl ResolvedPolicy {
     }
 }
 
-pub const DEFAULT_HOOK_CONTENT_MAX_BYTES: usize = 0;
-
-static HOOK_CONTENT_MAX_BYTES: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(DEFAULT_HOOK_CONTENT_MAX_BYTES);
-
-pub fn set_hook_content_max_bytes(bytes: usize) {
-    HOOK_CONTENT_MAX_BYTES.store(bytes, std::sync::atomic::Ordering::Relaxed);
-}
-
-pub fn hook_content_max_bytes() -> usize {
-    HOOK_CONTENT_MAX_BYTES.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-#[must_use]
-pub fn content_capped(p: PromptProjection<'_>) -> PromptProjection<'_> {
-    let cap = hook_content_max_bytes();
-    if cap == 0 {
-        return p;
-    }
-    let bytes = p.system.as_deref().map(str::len).unwrap_or(0)
-        + p.messages
-            .iter()
-            .map(|(role, text)| role.len() + text.len())
-            .sum::<usize>();
-    if bytes <= cap {
-        return p;
-    }
-    metrics::counter!(crate::snapshot::HOOK_CONTENT_TRUNCATED_TOTAL).increment(1);
-    PromptProjection {
-        system: None,
-        messages: Vec::new(),
-    }
-}
-
 #[inline]
 #[must_use]
 pub fn failed_call_refuses(on_error: &crate::config::PolicyOnError) -> bool {

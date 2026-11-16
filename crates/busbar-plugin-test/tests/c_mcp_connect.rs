@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K10"]
+#[ignore = "blocked: CONNECT BEGIN/COMPLETE/refresh/revoke core arms need the root connection store (busbar crate), not a busbar-plugin-test dev dep; owner W1-K10"]
 fn connect_core_arms() {
     todo!("owner: W1-K10 (C-MCP-CONNECT)")
 }
