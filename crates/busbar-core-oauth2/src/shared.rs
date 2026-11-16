@@ -945,9 +945,7 @@ impl Shared {
 
             tokio::time::sleep(Duration::from_millis(u64::from(attempt.min(20)))).await;
         }
-        Err(StorageError::new(format!(
-            "oauth_as store: {kind_name}: no version won in {SWAP_ATTEMPTS} attempts"
-        )))
+        Err(super::cold::no_version_won(kind_name, SWAP_ATTEMPTS))
     }
 
     pub(crate) async fn bucket(&self, client_id: &str) -> Result<Bucket, StorageError> {
@@ -1236,10 +1234,14 @@ impl Shared {
     }
 
     pub(crate) async fn session_subject(&self, id: &str) -> Result<Option<String>, StorageError> {
+        self.session_subject_at(id, now_secs()).await
+    }
+
+    async fn session_subject_at(&self, id: &str, now: u64) -> Result<Option<String>, StorageError> {
         Ok(self
             .get::<SessionRow>("session", &digest(id))
             .await?
-            .filter(|row| row.until > now_secs())
+            .filter(|row| row.until > now)
             .map(|row| row.subject))
     }
 
@@ -1250,13 +1252,14 @@ impl Shared {
         approve: bool,
         ttl: Duration,
     ) -> Result<(), StorageError> {
-        if self.session_subject(id).await?.is_none() {
+        let now = now_secs();
+        if self.session_subject_at(id, now).await?.is_none() {
             return Ok(());
         }
         let row_id = format!("{}:{}", digest(id), digest(key));
         let row = StakeRow {
             approve,
-            until: now_secs() + ttl.as_secs(),
+            until: now + ttl.as_secs(),
             id: row_id,
             nonce: nonce()?,
         };
@@ -1343,9 +1346,9 @@ impl Shared {
             .map_err(|e| e.0)?
         {
             Decision::Applied => Ok(der),
-            Decision::ConditionConflict => read()
-                .await?
-                .ok_or_else(|| "the store did not keep the signing key".to_string()),
+            Decision::ConditionConflict => {
+                read().await?.ok_or_else(super::cold::signing_key_not_kept)
+            }
         }
     }
 }

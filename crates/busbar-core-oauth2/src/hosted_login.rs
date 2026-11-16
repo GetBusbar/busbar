@@ -83,7 +83,6 @@ fn refresh_rotates_under(
 fn chooser(app: &App) -> Response {
     let base_url = app.public_url.as_deref().unwrap_or("");
     let buttons: Vec<(String, (String, String))> = login_methods(app)
-        .into_iter()
         .filter(|m| m.has_button)
         .map(|m| {
             let brand = button_presentation(&m.name, m.presentation.as_ref());
