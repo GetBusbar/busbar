@@ -11,6 +11,10 @@ use busbar_kernel_wal::Entry;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
+#[path = "cut.rs"]
+mod cut;
+pub use cut::{CutProgress, JournalCut};
+
 #[derive(Debug, Clone, Copy)]
 pub struct BufferBudget {
     pub records: usize,
@@ -29,6 +33,8 @@ pub enum RuntimeError {
     Conflict,
     Closed,
     Backend(Failure),
+    /// (red stub) Cut below an Ephemeral journal's replay base (SEALING-FIX §3.9).
+    Truncated,
 }
 impl From<Error> for RuntimeError {
     fn from(error: Error) -> Self {
@@ -59,6 +65,11 @@ pub struct StagedRun {
 impl StagedRun {
     pub fn records(&self) -> &[Record] {
         &self.records
+    }
+    /// (red stub) No pins yet (SEALING-FIX §3.9 floor (d)).
+    #[must_use]
+    pub fn pin(&self) -> Option<Pin> {
+        None
     }
     /// The evidence this process holds for each original of the run: its sequence and the chain
     /// hash it sealed. It is evidence of a journal original only once `confirm` returned Ok.
@@ -397,6 +408,28 @@ impl RuntimeJournal {
         }
         replay.finish().map_err(RuntimeError::from)?;
         Ok(records)
+    }
+
+    /// (red stub) No kept copies yet (SEALING-FIX §3.9).
+    pub async fn read_node_walk(
+        &self,
+        node: u64,
+        budget: BufferBudget,
+    ) -> std::result::Result<NodeRecords, RuntimeError> {
+        Ok(NodeRecords {
+            kept: Vec::new(),
+            rows: self.read_node_records(node, budget).await?,
+        })
+    }
+
+    /// (red stub) The audit tail is not tracked yet (SEALING-FIX §3.9).
+    pub fn stage_audit_run(
+        &self,
+        entries: &[Entry],
+        _chain_seq: u64,
+        _fp: [u8; 32],
+    ) -> std::result::Result<Arc<StagedRun>, RuntimeError> {
+        self.stage_run(entries)
     }
 
     /// Synchronous hot sealing reserves one node's original sequence/hash chain.

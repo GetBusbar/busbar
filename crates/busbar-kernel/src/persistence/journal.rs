@@ -38,9 +38,14 @@ mod transfer;
 pub(crate) use transfer::Handover;
 mod recovery_hooks;
 pub(crate) use recovery_hooks::{RowChange, Selection};
+mod base;
+pub(crate) use base::Base;
+pub use base::{
+    journal_walk_restarts, AuditTail, NodeRecords, Pin, CUT_BATCH, KEEP_MAX, RETAIN_TAIL,
+};
 pub mod head_cell;
 pub mod runtime;
-pub use runtime::{BufferBudget, RuntimeError, RuntimeJournal, StagedRun};
+pub use runtime::{BufferBudget, CutProgress, JournalCut, RuntimeError, RuntimeJournal, StagedRun};
 
 #[derive(Debug)]
 pub(crate) enum Error {
@@ -56,6 +61,12 @@ pub(crate) enum Error {
     /// A frame failed WAL verification; callers fold it to corruption, so the break itself is not kept.
     Verification(()),
     IncompleteReplay,
+    /// (red stub) Rows below an Ephemeral journal's replay base `B@0` (SEALING-FIX §3.9).
+    Truncated,
+    /// (red stub) A cut moved the base past a cursor's next row (§3.9).
+    Rebased,
+    /// (red stub) A walk rebased too often (§3.9).
+    Busy,
 }
 type Result<T> = std::result::Result<T, Error>;
 impl From<AccessError> for Error {

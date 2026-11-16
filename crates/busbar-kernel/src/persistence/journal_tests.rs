@@ -82,6 +82,8 @@ struct Backend {
     /// Hold the first commit until `release_first` is notified.
     hold_first: AtomicBool,
     release_first: tokio::sync::Notify,
+    /// Report `Durability::Ephemeral` (SEALING-FIX §3.9: only such a journal is ever cut).
+    ephemeral: AtomicBool,
 }
 impl PersistenceBackend for Backend {
     fn info(&self) -> BackendInfo {
@@ -90,7 +92,11 @@ impl PersistenceBackend for Backend {
             atomic_domain: [2; 16],
             clock_authority: [3; 16],
             physical_version: busbar_contract::abi::sdk::store::v4::slot::PHYSICAL_VERSION,
-            durability: Durability::Local,
+            durability: if self.ephemeral.load(Ordering::SeqCst) {
+                Durability::Ephemeral
+            } else {
+                Durability::Local
+            },
         }
     }
     fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
@@ -1834,3 +1840,7 @@ async fn runtime_locates_frames_without_replay_live_and_reopened() {
         assert_eq!(reopened.locate(&proof, sequence).unwrap(), sequence);
     }
 }
+
+/// SEALING-FIX r20 §9 test 30, kernel parts: the Ephemeral journal cut.
+#[path = "tests/journal_cut_tests.rs"]
+mod cut;

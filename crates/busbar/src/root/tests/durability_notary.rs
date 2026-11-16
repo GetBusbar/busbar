@@ -27,6 +27,12 @@ fn verifying_key() -> AuditVerifyingKey {
 async fn notarised(every_ms: u64) -> (NativeFixture, Arc<Mutex<Durability>>, NotaryTask) {
     let fixture = NativeFixture::new(41).await;
     let book = Arc::new(Mutex::new(fixture.book().await));
+    let task = notary_over(&book, every_ms);
+    (fixture, book, task)
+}
+
+/// A running notary over `book` (`seal_every` = `every_ms`).
+fn notary_over(book: &Arc<Mutex<Durability>>, every_ms: u64) -> NotaryTask {
     let (notary, bootstrap) = AuditSigningKey::from_seed(&SEED)
         .into_grants(LiveSigner::SameAsBootstrap)
         .unwrap();
@@ -44,7 +50,7 @@ async fn notarised(every_ms: u64) -> (NativeFixture, Arc<Mutex<Durability>>, Not
             held.notary_start(),
         )
     };
-    let task = spawn(
+    spawn(
         NotaryConfig {
             node: journal.node(),
             host: "notary-test-host".into(),
@@ -55,8 +61,7 @@ async fn notarised(every_ms: u64) -> (NativeFixture, Arc<Mutex<Durability>>, Not
         journal,
         feed,
         signers.live,
-    );
-    (fixture, book, task)
+    )
 }
 
 async fn seal_n(book: &Arc<Mutex<Durability>>, from: u64, n: u64) {
@@ -252,4 +257,67 @@ fn the_book_holds_no_signing_capability() {
         no_signer(head);
         no_signer(resumed_head_node_seq);
     }
+}
+
+/// Journal rows held past the base once the notary's cut has caught up (polled for up to 5 s):
+/// head − base, every row at or below the base being deleted by the cut that moved it.
+async fn rows_past_base(
+    journal: &busbar_kernel::persistence::journal::RuntimeJournal,
+    bound: u64,
+) -> u64 {
+    let mut held = u64::MAX;
+    for _ in 0..500 {
+        let head = journal.ordinal_of(journal.next_seq().saturating_sub(1));
+        held = head.saturating_sub(journal.base_count());
+        if held <= bound {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    held
+}
+
+/// Test 30 (a), root part, `ephemeral_journal_is_bounded_after_n_requests` (SEALING-FIX §3.9):
+/// N units sealed through `seal_unit` and confirmed, with the notary running (`seal_every: 1`) on
+/// a store that reports `Durability::Ephemeral`. At N/2 and N the journal holds at most
+/// `RETAIN_TAIL + 2 × CUT_BATCH` rows past a base that has moved, and the notary's stop reports
+/// the cut settled. RSS is not asserted (receipts, §3.9 "Receipts").
+#[tokio::test]
+async fn ephemeral_journal_is_bounded_after_n_requests() {
+    use busbar_kernel::persistence::journal::{RuntimeJournal, CUT_BATCH, RETAIN_TAIL};
+    const N: u64 = 200_000;
+    let budget = crate::root::durability::tests::BUDGET;
+    let backend =
+        crate::root::real_store::EphemeralInfo(crate::root::real_store::native_backend().await);
+    let core = crate::root::real_store::core_over(Arc::new(backend)).await;
+    let journal = RuntimeJournal::open(core, 43, budget).await.unwrap();
+    assert!(journal.is_cut_capable());
+    let book = Arc::new(Mutex::new(
+        crate::root::durability::build_on_store(
+            &crate::root::durability::DurabilityConfig::default(),
+            43,
+            journal.clone(),
+            None,
+            budget,
+        )
+        .await
+        .unwrap(),
+    ));
+    let task = notary_over(&book, 1);
+    let mut sealed = 0;
+    for sample in [N / 2, N] {
+        seal_n(&book, sealed + 1, sample - sealed).await;
+        sealed = sample;
+        stamped_through(&task, sample).await;
+        let bound = RETAIN_TAIL + 2 * CUT_BATCH;
+        let held = rows_past_base(&journal, bound).await;
+        assert!(
+            held <= bound,
+            "{held} journal rows held past the base after {sample} units"
+        );
+        assert!(journal.base_count() > 0, "the base moved");
+        assert!(journal.base_tail().is_some_and(|tail| tail.chain_seq > 0));
+    }
+    let end = task.stop().await.unwrap();
+    assert!(end.halted.is_none(), "{:?}", end.halted);
 }

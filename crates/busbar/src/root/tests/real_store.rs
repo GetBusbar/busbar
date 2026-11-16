@@ -47,8 +47,9 @@ impl busbar_contract::persistence::PersistenceBackend for EphemeralInfo {
     fn commit(
         &self,
         candidate: busbar_contract::persistence::PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
     ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Decision> {
-        self.0.commit(candidate)
+        self.0.commit(candidate, key)
     }
     fn clock(
         &self,
