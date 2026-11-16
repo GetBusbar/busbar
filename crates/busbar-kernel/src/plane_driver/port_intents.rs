@@ -13,10 +13,12 @@
 //! caller-scoped SIGNAL all need a verified subject: without one core answers the refusal itself and the host is
 //! never asked (it would otherwise answer from the shared namespace).
 //!
-//! Left to later slices or MRs (PLANE-DRIVER.md): `Entitle`, `Judge`, `Mint`, `Sign`, `Trust*`, `Sight`,
-//! `Connect`, `Rendezvous`, `Obs*` stay undriven (`Answer::later`), and the production WORK decider over
-//! `host_work`/`host_recovery` (`DurableWork`) is not written: [`NoWork`] answers `R_UNSUPPORTED`, the fail-closed
-//! answer the IF defines, so a plane refuses paid dispatch as it does without a recovery runtime.
+//! The grant, trust, media and custody intents (`Entitle`, `Judge`, `Mint`, `Sign`, `Connect`, `Sight`, `Trust*`,
+//! `Rendezvous`, `Obs*`) are driven the same way, each onto its kernel service (`port_services::Services`); a service
+//! not installed answers its fail-closed value. WORK is decided by [`DurableDecider`] over [`DurableWork`]; with no
+//! decider installed [`NoWork`] answers `R_UNSUPPORTED`, the fail-closed answer the IF defines, so a plane refuses
+//! paid dispatch as it does without a recovery runtime. The store-backed [`DurableWork`] over `host_work/` and
+//! `host_recovery.rs` is the next piece (it needs the recovery binding the governance standing captures).
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -24,14 +26,14 @@ use std::time::{Duration, Instant};
 
 use busbar_plugin_abi::fail::failed::F_UNAVAILABLE;
 use busbar_plugin_abi::fail::refused::{R_DENIED, R_INVALID, R_RATE_LIMITED, R_UNSUPPORTED};
-use busbar_plugin_abi::host_side::caller::{CallStack, Caller, InstanceLimits};
+use busbar_plugin_abi::host_side::caller::{BoxFut, CallStack, Caller, InstanceLimits};
 use busbar_plugin_abi::plane::{
     CONNECT_BEGIN, CONNECT_REVOKE, CONNECT_STATUS, CONN_NONE, CONN_PENDING, CONN_REFUSED,
     DEST_INTERNAL, DISTRUST_UNKNOWN, FROM_CORE, LK_CALLER, LK_CHAIN, LK_PREFIX, MINT_ONCE,
     OBS_REFUSED, P_CHANNEL, P_COMMITTED, P_CONNECT, P_ENTITLE, P_ERROR, P_JUDGED, P_LOOKUP,
     P_MINTED, P_OBSERVED, P_RENDEZVOUS, P_RV_FAILED, P_SIGNAL, P_SIGNED, P_STORE_FAILED, P_TRUST,
     P_WORK, RV_ACCEPT, RV_REMOTE, SIGNED_MALFORMED_ROOT, SIGN_JWS_DETACHED, TRUST_SERVES,
-    TRUST_STATE,
+    TRUST_STATE, WORK_FIND, WORK_LIVE, WORK_OPEN, WORK_SETTLE, WORK_SETTLED,
 };
 use busbar_plugin_abi::records::{commit, tag, RecDelRec, RecPredRec, RecPutRec, Records, Reply};
 use busbar_plugin_abi::types::KindCode;
@@ -223,6 +225,8 @@ pub struct WorkIntent {
     pub op: u32,
     pub target: Option<String>,
     pub reference: Option<String>,
+    /// The request's identity records (ID_*): the principal the row binds to (§12.24).
+    pub identity: Vec<u8>,
 }
 
 /// One WORK_ANS (§8.6): `status` 0 = done, else a generic REFUSED code.
@@ -1166,6 +1170,9 @@ impl<'h> Resolver<'h> {
                     op: *op,
                     target: target.clone(),
                     reference: reference.clone(),
+                    identity: self
+                        .principal
+                        .map_or_else(Vec::new, |p| p.identity.to_vec()),
                 })
             };
             outcomes.push((*check, outcome));
@@ -1310,6 +1317,116 @@ pub struct KernelIntents<R: PluginRecords> {
 /// Decides WORK intents (§12.24).
 pub trait WorkDecider: Send + Sync + 'static {
     fn decide(&self, who: &Namespace, intent: &WorkIntent) -> WorkOutcome;
+}
+
+/// Durable paid work (IF §12.24): the store-backed rows over `host_work/` and the recovery runtime over
+/// `host_recovery.rs`. Every call is durable before it returns. `principal` = the request's identity records
+/// (ID_*); rows are scoped to `plane`'s configured instance name. Errors are generic REFUSED codes
+/// (`R_UNSUPPORTED`: core cannot recover here; `R_DENIED`: another principal's row; `R_NOT_FOUND`;
+/// `R_RATE_LIMITED`: the instance's live-work cap).
+pub trait DurableWork: Send + Sync + 'static {
+    /// WORK_OPEN (the target already matched to a ROUTE_RECOVERY route). Ok = the reference text.
+    fn open<'a>(
+        &'a self,
+        plane: &'a Caller<'_>,
+        principal: &'a [u8],
+        target: &'a str,
+    ) -> BoxFut<'a, Result<Box<str>, u32>>;
+    /// WORK_FIND: (WORK_LIVE | WORK_SETTLED, the row's target).
+    fn find<'a>(
+        &'a self,
+        plane: &'a Caller<'_>,
+        principal: &'a [u8],
+        reference: &'a str,
+    ) -> BoxFut<'a, Result<(u32, Box<str>), u32>>;
+    /// WORK_SETTLE (idempotent).
+    fn settle<'a>(
+        &'a self,
+        plane: &'a Caller<'_>,
+        principal: &'a [u8],
+        reference: &'a str,
+    ) -> BoxFut<'a, Result<(), u32>>;
+}
+
+/// The production [`WorkDecider`] (§12.24): the checks core owns, then [`DurableWork`]. OPEN needs a target on one
+/// of the instance's ROUTE_RECOVERY routes (`recovers`), else `R_INVALID`; FIND and SETTLE need a reference. The
+/// verified-principal rule is the resolver's: a WORK with no principal never reaches here.
+pub struct DurableDecider {
+    work: Arc<dyn DurableWork>,
+    recovers: Box<dyn Fn(&str) -> bool + Send + Sync>,
+    rt: Handle,
+}
+
+impl DurableDecider {
+    /// `recovers` says whether a path-and-query target matches one of the instance's ROUTE_RECOVERY patterns.
+    #[must_use]
+    pub fn new(
+        work: Arc<dyn DurableWork>,
+        recovers: Box<dyn Fn(&str) -> bool + Send + Sync>,
+        rt: Handle,
+    ) -> Self {
+        Self { work, recovers, rt }
+    }
+}
+
+impl WorkDecider for DurableDecider {
+    fn decide(&self, who: &Namespace, intent: &WorkIntent) -> WorkOutcome {
+        let plane = who.caller();
+        match intent.op {
+            WORK_OPEN => {
+                let Some(target) = intent.target.as_deref().filter(|t| (self.recovers)(t)) else {
+                    return WorkOutcome::refused(R_INVALID);
+                };
+                match self
+                    .rt
+                    .block_on(self.work.open(&plane, &intent.identity, target))
+                {
+                    Ok(reference) => WorkOutcome {
+                        status: 0,
+                        state: WORK_LIVE,
+                        reference: reference.into(),
+                        target: String::new(),
+                    },
+                    Err(code) => WorkOutcome::refused(code),
+                }
+            }
+            WORK_FIND => {
+                let Some(reference) = intent.reference.as_deref() else {
+                    return WorkOutcome::refused(R_INVALID);
+                };
+                match self
+                    .rt
+                    .block_on(self.work.find(&plane, &intent.identity, reference))
+                {
+                    Ok((state, target)) => WorkOutcome {
+                        status: 0,
+                        state,
+                        reference: reference.to_owned(),
+                        target: target.into(),
+                    },
+                    Err(code) => WorkOutcome::refused(code),
+                }
+            }
+            WORK_SETTLE => {
+                let Some(reference) = intent.reference.as_deref() else {
+                    return WorkOutcome::refused(R_INVALID);
+                };
+                match self
+                    .rt
+                    .block_on(self.work.settle(&plane, &intent.identity, reference))
+                {
+                    Ok(()) => WorkOutcome {
+                        status: 0,
+                        state: WORK_SETTLED,
+                        reference: String::new(),
+                        target: String::new(),
+                    },
+                    Err(code) => WorkOutcome::refused(code),
+                }
+            }
+            _ => WorkOutcome::refused(R_INVALID),
+        }
+    }
 }
 
 /// No recovery runtime: every WORK is `R_UNSUPPORTED`.
