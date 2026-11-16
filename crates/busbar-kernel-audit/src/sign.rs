@@ -171,6 +171,12 @@ impl AuditSigningKey {
         std::sync::Arc::clone(&self.key_id)
     }
 
+    /// The seed, for [`AuditSigningKey::into_grants`] alone: the crypto seam's signer is built from
+    /// it once, when the key is consumed into its two grants.
+    pub(crate) fn seed_bytes(&self) -> &[u8; 32] {
+        self.inner.seed()
+    }
+
     /// A 32-BYTE SECRET DERIVED FROM THIS KEY under `label`: HMAC-SHA256 keyed by the seed, over
     #[must_use]
     pub fn derived_secret(&self, label: &[u8]) -> [u8; 32] {
@@ -254,6 +260,16 @@ impl AuditVerifyingKey {
             self.inner.verify_strict(preimage, &raw)
         })
         .map_err(|_| KeyError::BadSignature)
+    }
+
+    /// Check one raw 64-byte signature over `message` (a stamp's or a break notice's preimage).
+    pub(crate) fn verify_raw(&self, message: &[u8], signature: &[u8]) -> Result<(), KeyError> {
+        let raw: &[u8; 64] = signature
+            .try_into()
+            .map_err(|_| KeyError::MalformedSignature)?;
+        self.inner
+            .verify_strict(message, raw)
+            .map_err(|_| KeyError::BadSignature)
     }
 }
 
