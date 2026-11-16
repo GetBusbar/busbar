@@ -435,14 +435,12 @@ fn configured(cfg: &RootCfg) -> Result<Vec<Configured>, String> {
     Ok(out)
 }
 
-/// The boot's configured upstreams (IF §12.1): one table, shared by every plane seat's egress walk and carrier.
-/// `upstreams:` is not a key of the config grammar yet (K7 carries only each upstream's `auth` and
-/// `upstream_credentials` in `cfg.min3.upstreams`, and its parse is still the W0 stub), so the table is typed over
-/// an empty section: every seat composes its walk and carrier over no upstream (a FORWARD is exhausted, a CHANNEL is
-/// `P_ERROR`) until the grammar carries the section, which then lands in [`upstreams_of`] and nowhere else. A
-/// binding naming an upstream with no entry still refuses the boot.
+/// The boot's configured upstreams (IF §12.1): one table, shared by every plane seat's egress walk and carrier,
+/// typed over the config's `upstreams:` section and each entry's parsed binding (`cfg.min3`, W1-K7). The load
+/// already typed the same section once (`config::resolve`), so a refusal here means the config changed shape
+/// between load and boot; a binding naming an upstream with no entry still refuses the boot.
 fn configured_upstreams(cfg: &RootCfg) -> Result<Arc<ConfiguredUpstreams>, String> {
-    upstreams_of(&serde_json::Map::new(), cfg)
+    upstreams_of(&cfg.min3.upstream_section, cfg)
 }
 
 /// The table typed over `section` (upstream name to entry) and the config's bindings; Err = every refusal, joined.

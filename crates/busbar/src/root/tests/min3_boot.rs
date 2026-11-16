@@ -135,3 +135,37 @@ fn work_is_opened_only_for_a_target_on_the_instances_recovery_routes() {
     assert!(!matches(""));
     assert!(!recovery_matcher(Vec::new())("/v1/jobs/42"));
 }
+
+/// K7: the boot's one upstream table is the config's `upstreams:` section, each entry typed with its binding
+/// (IF §12.1), so every plane seat's walk and carrier compose over what the operator configured.
+#[test]
+fn the_boot_s_upstream_table_is_the_configured_upstreams_section() {
+    use busbar_kernel::upstreams::Upstreams;
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {},
+            "models": {},
+            "upstreams": {
+                "docs": {"url": "https://docs.example/mcp", "auth": "corp-outbound"},
+                "local": {"command": {"argv": ["/opt/mcp/server"]}},
+            },
+        }),
+        &busbar_kernel::config::Grammar::empty(),
+    )
+    .expect("a config with an upstreams section parses");
+    let cfg =
+        busbar_kernel::config::resolve(&deploy, &Default::default()).expect("the config resolves");
+    let table = configured_upstreams(&cfg).expect("the table types");
+    assert_eq!(table.names().collect::<Vec<_>>(), ["docs", "local"]);
+    let docs = table.get("docs").expect("docs is configured");
+    assert_eq!(docs.url.as_deref(), Some("https://docs.example/mcp"));
+    assert_eq!(
+        docs.auth.as_ref().map(|auth| &*auth.instance),
+        Some("corp-outbound")
+    );
+    assert!(table
+        .get("local")
+        .expect("local is configured")
+        .command
+        .is_some());
+}
