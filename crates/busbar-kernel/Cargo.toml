@@ -13,6 +13,8 @@ path = "src/lib.rs"
 
 [dependencies]
 foldhash = { workspace = true }
+# The channel respawn schedule (IF §12.19: 100 ms doubling from `backon::ExponentialBuilder`).
+backon = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
 busbar-kernel-egress = { path = "../busbar-kernel-egress" }
 busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }

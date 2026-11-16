@@ -502,6 +502,7 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "axum",
+ "backon",
  "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel-audit",
