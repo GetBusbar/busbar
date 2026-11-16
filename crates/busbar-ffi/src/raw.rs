@@ -338,6 +338,14 @@ impl<'call> Out<'call> {
     pub fn host(&self) -> &'static Host {
         self.host
     }
+    /// The same channel for a shorter borrow (safe: it only reborrows `&mut RawOut`). The shims hand the
+    /// adapters `&mut Out`; plugin-abi's `records::Out` wraps one of these per call (W1-A4).
+    pub fn reborrow(&mut self) -> Out<'_> {
+        Out {
+            raw: &mut *self.raw,
+            host: self.host,
+        }
+    }
     /// Bytes written so far.
     pub fn written(&self) -> usize {
         self.raw.len
