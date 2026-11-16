@@ -8,6 +8,30 @@ mod generator {
 }
 use generator::linked_source;
 
+#[test]
+fn linked_min3_images_use_checked_admission_without_legacy_store_rows() {
+    let manifest = r#"
+[dependencies]
+neutral-store = "1"
+[features]
+optional-image = []
+[package.metadata.busbar.linked]
+store = "neutral-store"
+optional-image = "optional-plugin"
+[package.metadata.busbar.linked-axes]
+store = "min3-images"
+optional-image = "min3-images"
+"#;
+    let (source, _) = linked_source(manifest, &|_| false);
+    assert!(source.contains("admit_linked(&neutral_store::PLUGIN)"), "{source}");
+    assert!(!source.contains("optional_plugin"), "{source}");
+    assert!(!source.contains("neutral_store::linked"), "{source}");
+    assert!(!source.contains("neutral_store::STORE"), "{source}");
+    assert!(!source.contains("neutral_store::door"), "{source}");
+    let (enabled, _) = linked_source(manifest, &|_| true);
+    assert!(enabled.contains("admit_linked(&optional_plugin::PLUGIN)"), "{enabled}");
+}
+
 fn read(rel: &str) -> String {
     std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(rel))
         .unwrap_or_else(|e| panic!("{rel}: {e}"))
