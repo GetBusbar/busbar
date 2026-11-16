@@ -25,6 +25,7 @@ use busbar_plugin_abi::plane::{
 use busbar_plugin_loader::ports::plane::{PlaneIn, PlaneOut, PlanePort, PlaneSession, TargetIn};
 use busbar_plugin_loader::ports::{FactRef, FactVal, PortError};
 
+use super::port_channels::Channels;
 use super::port_intents::{Detach, Intent};
 use super::port_money::AuditRow;
 use super::usage::{SessionUsage, UsageInvalid};
@@ -681,6 +682,25 @@ impl Answer {
                 flags,
                 key: key.to_vec(),
             }),
+            PlaneOut::Channel {
+                exchange,
+                carrier,
+                flags,
+                framing,
+                key,
+                head,
+            } => self.intents.push(Intent::Channel {
+                exchange,
+                carrier,
+                flags,
+                framing,
+                key: key.to_owned(),
+                head: head.rest().to_vec(),
+            }),
+            PlaneOut::ChReady { exchange, tail } => self.intents.push(Intent::ChReady {
+                exchange,
+                tail: tail.to_vec(),
+            }),
             PlaneOut::WakeAt(mono_ns) => self.wake_at = Some(mono_ns),
             PlaneOut::Detach { ttl_s, flags, key } => {
                 self.detach = Some(Detach {
@@ -723,6 +743,8 @@ pub struct Task<'k, K: Calls + ?Sized> {
     session: Option<K::Session>,
     once: Once,
     usage: SessionUsage,
+    /// The channels this session holds, by exchange; dropping the task detaches them.
+    pub(super) held: Channels,
 }
 
 impl<'k, K: Calls + ?Sized> Task<'k, K> {
@@ -745,6 +767,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             session: Some(session),
             once,
             usage: SessionUsage::new(),
+            held: Channels::new(),
         };
         let answer = task.checked(answer)?;
         Ok((task, answer))
@@ -769,6 +792,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             session: Some(session),
             once,
             usage: SessionUsage::new(),
+            held: Channels::new(),
         };
         let answer = task.checked(answer)?;
         Ok((task, answer))

@@ -12,8 +12,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use busbar_contract::services::{Caller, Incarnation};
+use busbar_plugin_abi::fail::failed::F_INTERNAL;
 use busbar_plugin_abi::host_side::needs::Needs;
-use busbar_plugin_abi::plane::{ADMIN_CARRIER_END, ROUTE_LINE};
+use busbar_plugin_abi::plane::{ADMIN_CARRIER_END, ADMIN_TICK, ROUTE_LINE};
 use busbar_plugin_abi::records::{tag as g, Reply, U64Rec, Writer};
 use busbar_plugin_loader::instance::{InstanceSpec, OpenError, Registry};
 use busbar_plugin_loader::ports::plane::{PlaneIn, PlanePort};
@@ -25,6 +26,7 @@ use crate::host_services::KernelServices;
 use super::port_auth::{
     admit, effective_classes, refuse, subject_identity, Admitted, Credentials, NoTickets, Principal,
 };
+use super::port_channels::{decode_tick, TickOut};
 use super::port_money::write_audit;
 use super::port_session::{run_local, Effects, SessionError, ToClient};
 use super::{AuditSink, CoreAudit};
@@ -32,6 +34,9 @@ use crate::refusal::{ClientRefusal, RefusalMap};
 
 /// How long the plane has to drop its per-carrier state at a carrier's end.
 const CARRIER_END_GRACE: Duration = Duration::from_secs(5);
+
+/// How long the plane has to answer one tick.
+const TICK_GRACE: Duration = Duration::from_secs(30);
 
 /// Why a line got no answer line.
 #[derive(Debug)]
@@ -152,6 +157,42 @@ impl PortDriver {
     pub fn with_audit(mut self, audit: Arc<dyn AuditSink>) -> Self {
         self.audit = audit;
         self
+    }
+
+    /// D_TICK_S: the period core calls [`tick`](Self::tick) at, if the plane declares one.
+    #[must_use]
+    pub fn tick_s(&self) -> Option<u64> {
+        self.port.tick_s()
+    }
+
+    /// One `admin(ADMIN_TICK)` (§8.6): the plane's EMITs are written to their carriers at once (an ended carrier,
+    /// or one another instance owns, drops it and counts), and its PUSHes are returned for the push queue, which
+    /// belongs to the caller (it enqueues them under the instance's namespace, §12.9).
+    ///
+    /// # Errors
+    /// The plane refused, failed or faulted, or its answer is not records.
+    pub async fn tick(&self) -> Result<TickOut, PortError> {
+        let cx = CallCx {
+            deadline: Instant::now() + TICK_GRACE,
+            request_id: 0,
+            stack: Default::default(),
+        };
+        let answer = self.port.admin(cx, ADMIN_TICK, &[]).await?;
+        let out = decode_tick(&answer).map_err(|_| PortError::Failed {
+            code: F_INTERNAL,
+            text: "the plane tick answer is not records".into(),
+            retry_after_s: None,
+            backend_status: None,
+            error: None,
+        })?;
+        for (carrier, bytes) in &out.emits {
+            self.services.line_carriers().emit_from_plane(
+                self.caller.incarnation(),
+                *carrier,
+                bytes,
+            );
+        }
+        Ok(out)
     }
 
     /// Whether the plane declares a `ROUTE_LINE` route.

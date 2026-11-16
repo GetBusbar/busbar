@@ -22,20 +22,23 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use busbar_plugin_abi::fail::failed::F_UNAVAILABLE;
 use busbar_plugin_abi::fail::refused::{R_DENIED, R_INVALID, R_RATE_LIMITED, R_UNSUPPORTED};
 use busbar_plugin_abi::host_side::caller::{CallStack, Caller, InstanceLimits};
 use busbar_plugin_abi::plane::{
-    FROM_CORE, LK_CALLER, LK_CHAIN, LK_PREFIX, P_COMMITTED, P_LOOKUP, P_SIGNAL, P_STORE_FAILED,
-    P_WORK,
+    FROM_CORE, LK_CALLER, LK_CHAIN, LK_PREFIX, P_CHANNEL, P_COMMITTED, P_ERROR, P_LOOKUP, P_SIGNAL,
+    P_STORE_FAILED, P_WORK,
 };
 use busbar_plugin_abi::records::{commit, tag, RecDelRec, RecPredRec, RecPutRec, Records, Reply};
 use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::encode::plane::{
-    encode_chain_state, encode_committed, encode_lookup_hits, encode_work_answers,
+    encode_chain_state, encode_chan_attach, encode_committed, encode_lookup_hits, encode_refusal,
+    encode_work_answers,
 };
 use busbar_plugin_loader::ports::plane::WorkAnswer;
 use tokio::runtime::Handle;
 
+use super::port_channels::{ChannelAttach, ChannelHost, Channels};
 use super::port_session::{Answer, Calls, Effects, SessionError, Task, Violation};
 use crate::channels::SessionSignals;
 use crate::hashing::Sha256;
@@ -85,6 +88,20 @@ pub enum Intent {
     Signal {
         flags: u32,
         key: Vec<u8>,
+    },
+    /// CHANNEL: attach `exchange` to a shared upstream channel (§12.19); `head` = the nested HTTP head records.
+    Channel {
+        exchange: u32,
+        carrier: u32,
+        flags: u32,
+        framing: u32,
+        key: String,
+        head: Vec<u8>,
+    },
+    /// CH_READY: the greeting session's greeting is done; `tail` is handed to later attachers.
+    ChReady {
+        exchange: u32,
+        tail: Vec<u8>,
     },
 }
 
@@ -185,6 +202,8 @@ pub fn subject_scope(subject: &str) -> [u8; 32] {
 /// One result piece core delivers: `piece(FROM_CORE, 0, flags, bytes)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Piece {
+    /// The exchange the piece is for (0 for the client side and most FROM_CORE results).
+    pub exchange: u32,
     pub flags: u32,
     pub bytes: Vec<u8>,
 }
@@ -193,12 +212,24 @@ pub struct Piece {
 pub struct Resolver<'h> {
     host: &'h dyn IntentHost,
     subject: Option<[u8; 32]>,
+    channels: Option<&'h dyn ChannelHost>,
 }
 
 impl<'h> Resolver<'h> {
     #[must_use]
     pub fn new(host: &'h dyn IntentHost, subject: Option<[u8; 32]>) -> Self {
-        Self { host, subject }
+        Self {
+            host,
+            subject,
+            channels: None,
+        }
+    }
+
+    /// CHANNEL intents attach through `channels`; without it every CHANNEL is a `P_ERROR`.
+    #[must_use]
+    pub fn with_channels(mut self, channels: &'h dyn ChannelHost) -> Self {
+        self.channels = Some(channels);
+        self
     }
 
     /// The scope a flag word selects, or `None` when it asks for the caller's scope and there is no subject.
@@ -212,10 +243,11 @@ impl<'h> Resolver<'h> {
 
     /// Applies `intents` in answer order and returns the pieces to deliver, in the IF order.
     #[must_use]
-    pub fn resolve(&self, intents: &[Intent]) -> Vec<Piece> {
+    pub fn resolve(&self, intents: &[Intent], held: &mut Channels) -> Vec<Piece> {
         // STORE, DELETE, COMMIT, PUSH and SIGNAL first, in answer order; LOOKUP and WORK read what they wrote.
         let mut failed: Vec<&[u8]> = Vec::new();
         let mut committed: Vec<(u32, u32, u32, u32)> = Vec::new();
+        let mut channel_pieces: Vec<Piece> = Vec::new();
         for intent in intents {
             match intent {
                 Intent::Store {
@@ -254,18 +286,45 @@ impl<'h> Resolver<'h> {
                         self.host.signal(key, Some(subject));
                     }
                 }
+                Intent::Channel {
+                    exchange,
+                    carrier,
+                    flags,
+                    framing,
+                    key,
+                    head,
+                } => channel_pieces.push(self.channel(
+                    held,
+                    &ChannelAttach {
+                        exchange: *exchange,
+                        carrier: *carrier,
+                        flags: *flags,
+                        framing: *framing,
+                        key,
+                        subject: self.subject,
+                        head,
+                    },
+                )),
+                Intent::ChReady { exchange, tail } => {
+                    if let Some(channel) = held.get_mut(exchange) {
+                        channel.ready(tail);
+                    }
+                }
                 Intent::Lookup { .. } | Intent::Work { .. } => {}
+                Intent::Work { .. } => {}
             }
         }
         let mut pieces = Vec::new();
         for key in failed {
             pieces.push(Piece {
+                exchange: 0,
                 flags: P_STORE_FAILED,
                 bytes: key.to_vec(),
             });
         }
         if let Some(bytes) = self.lookups(intents) {
             pieces.push(Piece {
+                exchange: 0,
                 flags: P_LOOKUP,
                 bytes,
             });
@@ -276,17 +335,57 @@ impl<'h> Resolver<'h> {
             let put = encode_committed(&mut reply, &committed);
             debug_assert!(put.is_ok(), "COMMITTED answers fit a Reply");
             pieces.push(Piece {
+                exchange: 0,
                 flags: P_COMMITTED,
                 bytes: reply.as_bytes().to_vec(),
             });
         }
         if let Some(bytes) = self.works(intents) {
             pieces.push(Piece {
+                exchange: 0,
                 flags: P_WORK,
                 bytes,
             });
         }
+        pieces.extend(channel_pieces);
         pieces
+    }
+
+    /// One CHANNEL: the attachment as P_CHANNEL, or the P_ERROR the exchange ends with.
+    fn channel(&self, held: &mut Channels, attach: &ChannelAttach<'_>) -> Piece {
+        let attached = self
+            .channels
+            .ok_or(RecordsDenied::Unavailable)
+            .and_then(|host| host.attach(attach));
+        let mut reply = Reply::new();
+        match attached {
+            Ok(a) => {
+                held.insert(attach.exchange, a.held);
+                let put =
+                    encode_chan_attach(&mut reply, a.generation, a.slot, a.greet, &a.ready_tail);
+                debug_assert!(put.is_ok(), "a CH_ATTACH fits a Reply");
+                Piece {
+                    exchange: attach.exchange,
+                    flags: P_CHANNEL,
+                    bytes: reply.as_bytes().to_vec(),
+                }
+            }
+            Err(denied) => {
+                tracing::warn!(
+                    ?denied,
+                    exchange = attach.exchange,
+                    "a plane channel did not attach"
+                );
+                let put =
+                    encode_refusal(&mut reply, 502, F_UNAVAILABLE, "the channel is unavailable");
+                debug_assert!(put.is_ok(), "a REFUSAL fits a Reply");
+                Piece {
+                    exchange: attach.exchange,
+                    flags: P_ERROR,
+                    bytes: reply.as_bytes().to_vec(),
+                }
+            }
+        }
     }
 
     /// One COMMIT: (check, outcome, failed, status).
@@ -485,8 +584,14 @@ impl<K: Calls + ?Sized> Task<'_, K> {
             if rounds > MAX_ROUNDS {
                 return Err(SessionError::Violation(Violation::IntentStorm));
             }
-            for piece in resolver.resolve(&intents) {
-                let next = self.piece(FROM_CORE, 0, piece.flags, &piece.bytes, effects)?;
+            for piece in resolver.resolve(&intents, &mut self.held) {
+                let next = self.piece(
+                    FROM_CORE,
+                    piece.exchange,
+                    piece.flags,
+                    &piece.bytes,
+                    effects,
+                )?;
                 queue.push_back(next);
             }
         }
@@ -507,7 +612,7 @@ pub struct Namespace {
 }
 
 impl Namespace {
-    fn caller(&self) -> Caller<'_> {
+    pub(crate) fn caller(&self) -> Caller<'_> {
         Caller {
             plugin: &self.plugin,
             kind: KindCode::Plane,

@@ -18,7 +18,7 @@ use busbar_plugin_loader::ports::plane::{
 };
 use busbar_plugin_loader::ports::{CallCx, PortError};
 
-use super::{decode_tick, demux, ChannelAttach, ChannelHost, Attached, Held};
+use super::{decode_tick, demux, Attached, ChannelAttach, ChannelHost, Held};
 use crate::plane_driver::port_intents::Resolver;
 use crate::plane_driver::port_session::{Calls, Effects, Task};
 use crate::plugin_records::RecordsDenied;
@@ -182,10 +182,10 @@ struct Wire(Arc<Mutex<Vec<String>>>);
 
 impl Held for Wire {
     fn send(&mut self, message: &[u8], ask: bool) -> Result<(), RecordsDenied> {
-        self.0
-            .lock()
-            .unwrap()
-            .push(format!("send {} ask={ask}", String::from_utf8_lossy(message)));
+        self.0.lock().unwrap().push(format!(
+            "send {} ask={ask}",
+            String::from_utf8_lossy(message)
+        ));
         Ok(())
     }
 
@@ -300,7 +300,11 @@ fn a_channel_that_cannot_attach_is_a_p_error_with_a_refusal_on_that_exchange() {
         let got = script.pieces.lock().unwrap().clone();
         assert_eq!((got[0].1, got[0].2), (2, P_ERROR));
         let rec = Records::new(&got[0].3).next().unwrap().unwrap();
-        assert_eq!(rec.tag, t::REFUSAL, "one REFUSAL record to render in-stream");
+        assert_eq!(
+            rec.tag,
+            t::REFUSAL,
+            "one REFUSAL record to render in-stream"
+        );
     }
 }
 
@@ -484,7 +488,10 @@ fn demux_answers_the_slot_flags_and_tail_and_no_record_is_slot_zero() {
         tick: Vec::new(),
     };
     let d = demux(&port, "mcp", b"{}").unwrap().unwrap();
-    assert_eq!((d.slot, d.flags, &d.tail[..]), (0, DX_OUTSTANDING, &b"fallback"[..]));
+    assert_eq!(
+        (d.slot, d.flags, &d.tail[..]),
+        (0, DX_OUTSTANDING, &b"fallback"[..])
+    );
     let none = FakePort {
         demux: Vec::new(),
         tick: Vec::new(),
