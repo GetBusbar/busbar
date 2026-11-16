@@ -1166,7 +1166,7 @@ fn session_custody_routes(g: &mut Governed, pools_plane: bool) -> Arc<super::Dat
             lines.push(line);
         }
     }
-    Arc::new(super::DataRoutes {
+    super::DataRoutes::new(super::DispatchSnapshot {
         live: served
             .planes
             .iter()
@@ -1181,6 +1181,7 @@ fn session_custody_routes(g: &mut Governed, pools_plane: bool) -> Arc<super::Dat
         of_line,
         frames: Default::default(),
     })
+    .expect("complete fixture dispatch generation")
 }
 
 fn session_custody_request(g: &Governed, target: &str) -> super::DoorRequest {

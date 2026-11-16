@@ -1380,6 +1380,76 @@ fn keep_arrival_field(name: &[u8]) -> bool {
 }
 
 pub(crate) struct DataRoutes {
+    pub(crate) snapshot: Arc<DispatchSnapshot>,
+    pub(crate) generation: Option<Arc<busbar_kernel::host_services::ServingGeneration>>,
+}
+
+impl std::ops::Deref for DataRoutes {
+    type Target = DispatchSnapshot;
+    fn deref(&self) -> &Self::Target {
+        &self.snapshot
+    }
+}
+
+impl DataRoutes {
+    pub(crate) fn new(snapshot: DispatchSnapshot) -> Result<Arc<Self>, String> {
+        let snapshot = Arc::new(snapshot);
+        let generation = match snapshot.served.planes.first() {
+            Some(plane) => {
+                if snapshot
+                    .served
+                    .planes
+                    .iter()
+                    .any(|other| !Arc::ptr_eq(&plane.kernel, &other.kernel))
+                {
+                    return Err("listener planes do not share the same core services".into());
+                }
+                if snapshot
+                    .served
+                    .planes
+                    .iter()
+                    .any(|plane| plane.driver.invocation_caller().is_none())
+                {
+                    return Err("listener plane has no admitted invocation owner".into());
+                }
+                let runtime =
+                    tokio::runtime::Handle::try_current().map_err(|error| error.to_string())?;
+                Some(Arc::new(
+                    busbar_kernel::host_services::ServingGeneration::new(
+                        Arc::clone(&plane.kernel),
+                        Arc::new(DoorNests {
+                            routes: Arc::clone(&snapshot),
+                            runtime,
+                            detached: busbar_kernel::detached::worker_detached(),
+                        }),
+                    ),
+                ))
+            }
+            None => None,
+        };
+        Ok(Arc::new(Self {
+            snapshot,
+            generation,
+        }))
+    }
+
+    fn invocation_owner(
+        &self,
+        plane: usize,
+    ) -> Option<(Arc<busbar_kernel::host_services::ServingGeneration>, Caller)> {
+        Some((
+            Arc::clone(self.generation.as_ref()?),
+            self.served
+                .planes
+                .get(plane)?
+                .driver
+                .invocation_caller()?
+                .clone(),
+        ))
+    }
+}
+
+pub(crate) struct DispatchSnapshot {
     /// The plane configuration sealed with this listener dispatcher.
     pub(crate) live: Vec<Arc<DoorLive>>,
     pub(crate) entries: Vec<Arc<EntrySpans>>,
@@ -1416,7 +1486,7 @@ pub(crate) const NEST_PARENT_GONE: &str = "the nested unit's parent is not in fl
 pub(crate) const NEST_UNREAD: &str = "the nested unit's reply could not be read";
 
 pub(crate) struct DoorNests {
-    pub(crate) routes: NestRoutes,
+    pub(crate) routes: Arc<DispatchSnapshot>,
     pub(crate) runtime: tokio::runtime::Handle,
     pub(crate) detached: Option<Arc<busbar_kernel::detached::DetachedTasks>>,
 }
@@ -1426,18 +1496,15 @@ pub(crate) type NestRoutes = Arc<Mutex<Vec<std::sync::Weak<DataRoutes>>>>;
 impl busbar_kernel::host_services::NestRoute for DoorNests {
     fn nest(
         &self,
+        context: busbar_kernel::host_services::InvocationContext,
         nest: busbar_kernel::host_services::Nest,
         done: busbar_kernel::host_services::NestDone,
     ) {
-        // The listener generations are searched under their lock, never copied out.
-        let found = self
-            .routes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .filter_map(std::sync::Weak::upgrade)
-            .find_map(|routes| routes.parent_of(&nest).map(|bound| (routes, bound)));
-        let Some((routes, bound)) = found else {
+        let routes = Arc::new(DataRoutes {
+            snapshot: Arc::clone(&self.routes),
+            generation: Some(Arc::clone(context.generation())),
+        });
+        let Some(bound) = routes.parent_of(&nest) else {
             done(busbar_kernel::host_services::NestReply::Unserved(
                 NEST_PARENT_GONE,
             ));
@@ -1445,6 +1512,7 @@ impl busbar_kernel::host_services::NestRoute for DoorNests {
         };
 
         let child = async move {
+            let _parent_context = context;
             let limits = nest.constraints.clone();
             let run = routes.nested(nest, bound);
             let answer = if let Some(limits) = limits {
@@ -1755,6 +1823,7 @@ impl DataRoutes {
                 ticket: door.ticket,
             },
         )
+        .with_invocation_owner(self.invocation_owner(door.plane))
         .with_ticket_admission(
             door.host_ticket_admission,
             Arc::clone(&node.ticket_custody.nonce),
@@ -2382,6 +2451,7 @@ impl DataRoutes {
                 ticket,
             },
         )
+        .with_invocation_owner(self.invocation_owner(plane))
         .with_ticket_admission(
             host_ticket_admission,
             Arc::clone(&node.ticket_custody.nonce),

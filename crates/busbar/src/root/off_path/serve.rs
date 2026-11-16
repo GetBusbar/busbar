@@ -3197,8 +3197,7 @@ pub(crate) fn door_mounts_planned(
             }
         }
     }
-    let kernel = served.planes.first().map(|p| Arc::clone(&p.kernel));
-    let routes = Arc::new(DataRoutes {
+    let routes = DataRoutes::new(DispatchSnapshot {
         live: served
             .planes
             .iter()
@@ -3215,8 +3214,8 @@ pub(crate) fn door_mounts_planned(
             .map(|(line, (_, door))| (line, door))
             .collect(),
         frames: Mutex::default(),
-    });
-    if let Some((plan, _, at)) = plan {
+    })?;
+    if let Some((plan, _, _)) = plan {
         {
             let mut nests = plan
                 .nests
@@ -3225,11 +3224,6 @@ pub(crate) fn door_mounts_planned(
             nests.retain(|routes| routes.strong_count() != 0);
             nests.push(Arc::downgrade(&routes));
         }
-        if at == "listen" {
-            attach_nest_routes(kernel, Arc::clone(&plan.nests));
-        }
-    } else {
-        attach_nests(kernel, &routes);
     }
     let mut session_mounts: Vec<(String, RouteMethod, RouteAuth, DoorClaim)> = Vec::new();
     let mut sessions = Vec::new();
@@ -3465,8 +3459,7 @@ pub(crate) fn line_routes(
             crate::root::plane_node::node(),
         ))
     });
-    let kernel = served.planes.first().map(|p| Arc::clone(&p.kernel));
-    let routes = Arc::new(DataRoutes {
+    let routes = DataRoutes::new(DispatchSnapshot {
         live: served
             .planes
             .iter()
@@ -3480,32 +3473,14 @@ pub(crate) fn line_routes(
         guests,
         of_line,
         frames: Mutex::default(),
-    });
+    })?;
     if let Some(nests) = &routes.served.nests {
         nests
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(Arc::downgrade(&routes));
-        attach_nest_routes(kernel, Arc::clone(nests));
-    } else {
-        attach_nests(kernel, &routes);
     }
     Ok(routes)
-}
-
-pub(crate) fn attach_nests(kernel: Option<Arc<KernelServices>>, routes: &Arc<DataRoutes>) {
-    attach_nest_routes(kernel, Arc::new(Mutex::new(vec![Arc::downgrade(routes)])));
-}
-
-pub(crate) fn attach_nest_routes(kernel: Option<Arc<KernelServices>>, routes: NestRoutes) {
-    if let (Some(kernel), Ok(runtime)) = (kernel, tokio::runtime::Handle::try_current()) {
-        let detached = busbar_kernel::detached::worker_detached();
-        let _attached = kernel.attach_nest(Arc::new(DoorNests {
-            routes,
-            runtime,
-            detached,
-        }));
-    }
 }
 
 pub(crate) fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {

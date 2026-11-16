@@ -435,6 +435,11 @@ impl PlaneDriver {
         self
     }
 
+    /// The exact opened instance identity retained with its core service owner.
+    pub fn invocation_caller(&self) -> Option<&Caller> {
+        self.records.as_ref().map(|(_, caller)| caller)
+    }
+
     /// Host scheduler access to this exact opened instance's durable polling work.
     pub async fn recovery_work(
         &self,
