@@ -1124,3 +1124,33 @@ async fn a_terminal_stage_refusal_is_not_success_after_the_unit_has_completed() 
         assert_eq!(post.open_units(), 0);
     }
 }
+
+#[tokio::test]
+async fn a_session_terminal_stage_refusal_fails_finish() {
+    let node = Arc::new(Node::new());
+    let fixture = crate::root::durability::tests::NativeFixture::new(7).await;
+    let book = Arc::new(Mutex::new(fixture.book().await));
+    node.bind_book(book.clone());
+    let post = NodeEndPost::new(node.clone());
+    let (opened, _, slot) = node
+        .open_borrowed(
+            node.mint(),
+            node.arrived(),
+            &PrincipalId::new("acct:seal"),
+            &post,
+            &ToDestination,
+            None,
+            OpClassId::new("seal"),
+            None,
+        )
+        .await
+        .expect("session admitted before staging closes");
+    assert!(matches!(
+        opened,
+        busbar_kernel::teller::SessionOpen::Admitted { .. }
+    ));
+    fixture.journal.stop_staging().unwrap();
+    assert!(slot.finish(&post).await.is_err());
+    assert!(book.lock().unwrap().audit_records().is_empty());
+    assert_eq!(post.open_units(), 0);
+}
