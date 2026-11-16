@@ -36,6 +36,26 @@ fn an_open_answer_with_only_an_instance_has_no_settled_part() {
 }
 
 #[test]
+fn converting_open_requires_config_and_canonical_open_refuses_core_fragments() {
+    use crate::instance::OpenPurpose::{Canonical, ConvertUnstamped};
+    let empty = open();
+    assert!(for_purpose(Records::new(empty.as_bytes()), ConvertUnstamped).is_err());
+    assert!(for_purpose(Records::new(empty.as_bytes()), Canonical)
+        .unwrap()
+        .is_none());
+    let mut w = open();
+    w.put(tag::CONFIG, b"{}").unwrap();
+    assert!(for_purpose(Records::new(w.as_bytes()), ConvertUnstamped)
+        .unwrap()
+        .is_some());
+    cfg(&mut w, core_cfg::LIFT, "", br#""/token""#);
+    assert!(for_purpose(Records::new(w.as_bytes()), Canonical).is_err());
+    assert!(for_purpose(Records::new(w.as_bytes()), ConvertUnstamped)
+        .unwrap()
+        .is_some());
+}
+
+#[test]
 fn config_alone_and_config_with_core_cfg_are_borrowed_from_the_answer() {
     let mut w = open();
     w.put(tag::CONFIG, br#"{"a":1}"#).unwrap();

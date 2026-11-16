@@ -79,6 +79,13 @@ fn settled_records(mut recs: Records<'_>) -> Result<Option<SettledOut<'_>>, RecE
     }))
 }
 
+pub(crate) fn for_purpose<'a>(
+    recs: Records<'a>,
+    _purpose: crate::instance::OpenPurpose,
+) -> Result<Option<SettledOut<'a>>, RecErr> {
+    settled_records(recs)
+}
+
 #[cfg(test)]
 #[path = "settled_tests.rs"]
 mod tests;

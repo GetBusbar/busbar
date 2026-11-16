@@ -109,6 +109,13 @@ struct Applied {
 /// identity = which admitted plugin (verified stamp name); name = the operator's instance name (the config
 /// key, e.g. `planes.mcp-main`, `auth.openai-outbound`), stable across restart, reconfigure and replicas, unique
 /// per kind; every durable core state for the instance is keyed by (identity, name) (§10.3).
+/// Trusted host intent; never inferred from a plugin bag or represented as an ABI flag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpenPurpose {
+    Canonical,
+    ConvertUnstamped,
+}
+
 pub struct InstanceSpec<'a> {
     pub identity: &'a str,
     pub name: &'a str,
