@@ -349,7 +349,14 @@ impl Steps<'_> {
             Arc::from(spec.name),
             busbar_contract::abi::mechanism::KindCode::Plane,
         );
-        let driver = PortDriver::open(self.inner.registry, spec, services, caller).await?;
+        let driver = PortDriver::open(
+            self.inner.registry,
+            spec,
+            services,
+            caller,
+            Arc::new(busbar_kernel::refusal::CoreRefusals::new()),
+        )
+        .await?;
         self.seats
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
