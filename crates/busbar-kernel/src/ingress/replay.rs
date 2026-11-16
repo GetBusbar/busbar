@@ -36,7 +36,13 @@ impl<R: PluginRecords> ReplayGuard for StoreReplay<R> {
             let name = core_name(who.name, TAG);
             let ns = core_caller(who, &name);
             self.records
-                .claim(&ns, Scope::default(), key, b"1", ttl_s.clamp(MIN_TTL_S, MAX_TTL_S))
+                .claim(
+                    &ns,
+                    Scope::default(),
+                    key,
+                    b"1",
+                    ttl_s.clamp(MIN_TTL_S, MAX_TTL_S),
+                )
                 .await
         })
     }

@@ -16,9 +16,7 @@ use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
 use busbar_plugin_loader::ports::auth::Identity;
 
-use super::{
-    core_caller, core_name, TicketAdmitted, TicketDenied, TicketMint, Tickets,
-};
+use super::{core_caller, core_name, TicketAdmitted, TicketDenied, TicketMint, Tickets};
 use crate::plugin_records::{
     CommitOp, CommitOutcome, PluginRecords, RecordsDenied, Scope, MAX_TTL_S,
 };
@@ -105,7 +103,9 @@ impl<R: PluginRecords> SealedTickets<R> {
 
     fn open(&self, credential: &str) -> Option<Opened> {
         let at = credential.find(TICKET_MARKER)?;
-        let raw = URL_SAFE_NO_PAD.decode(&credential[at + TICKET_MARKER.len()..]).ok()?;
+        let raw = URL_SAFE_NO_PAD
+            .decode(&credential[at + TICKET_MARKER.len()..])
+            .ok()?;
         if raw.len() < IV + MAC {
             return None;
         }
@@ -202,7 +202,10 @@ impl<R: PluginRecords> Tickets for SealedTickets<R> {
                     .put(&ns, Scope::default(), &id, &row, ttl_s)
                     .await?;
             }
-            Ok((format!("{}{TICKET_MARKER}{sealed}", m.prefix).into(), expires_at))
+            Ok((
+                format!("{}{TICKET_MARKER}{sealed}", m.prefix).into(),
+                expires_at,
+            ))
         })
     }
 
@@ -238,7 +241,9 @@ impl<R: PluginRecords> Tickets for SealedTickets<R> {
                 let mut row = None::<Vec<u8>>;
                 let found = self
                     .records
-                    .get(&ns, Scope::default(), &t.id, &mut |v| row = Some(v.to_vec()))
+                    .get(&ns, Scope::default(), &t.id, &mut |v| {
+                        row = Some(v.to_vec())
+                    })
                     .await
                     .map_err(|_| TicketDenied::Unavailable)?;
                 let row = match (found, row) {

@@ -46,7 +46,10 @@ fn header<'a>(headers: &[Pair<'a>], name: &str) -> Option<&'a str> {
 
 /// The key bytes: `whsec_<base64>` decodes, anything else is used as written.
 fn key_bytes(secret: &[u8]) -> Option<SecureVec> {
-    match core::str::from_utf8(secret).ok()?.strip_prefix(SECRET_PREFIX) {
+    match core::str::from_utf8(secret)
+        .ok()?
+        .strip_prefix(SECRET_PREFIX)
+    {
         Some(b64) => STANDARD.decode(b64).ok().map(SecureVec::from),
         None => Some(SecureVec::from(secret)),
     }

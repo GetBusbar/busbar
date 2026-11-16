@@ -42,10 +42,9 @@ impl<G: GrantResolver> RequestGrants<G> {
             return Arc::clone(set);
         }
         let mut set = BTreeSet::new();
-        self.resolver
-            .grants(identity, &mut |grant| {
-                set.insert(Box::<str>::from(grant));
-            });
+        self.resolver.grants(identity, &mut |grant| {
+            set.insert(Box::<str>::from(grant));
+        });
         let set = Arc::new(set);
         Arc::clone(
             self.sets
