@@ -91,6 +91,7 @@ pub enum Refused {
 #[derive(Debug, Clone)]
 enum Source {
     Linked(DoorFn),
+    LinkedStated(DoorFn, Vec<u8>),
     Bytes {
         bytes: Vec<u8>,
         display: String,
@@ -158,8 +159,7 @@ impl<K: Kind> Image<K> {
     /// of another door.
     #[must_use]
     pub fn linked_stated(door: DoorFn, stated: &[u8]) -> Self {
-        let _ = stated;
-        Self::linked(door)
+        Self::of(Source::LinkedStated(door, stated.to_vec()))
     }
 
     /// A boundary-forged door (`Mutant`), admitted as a linked row.
@@ -178,6 +178,13 @@ impl<K: Kind> Image<K> {
     fn load(&self, bind: Bind) -> Result<Plugin<K>, LoadError> {
         match &self.source {
             Source::Linked(door) => load_linked::<K>(&LinkedRow::of_kind::<K>(*door)?, bind),
+            Source::LinkedStated(door, stated) => load_linked::<K>(
+                &LinkedRow {
+                    statement: stated.clone(),
+                    door: LinkedRow::of_kind::<K>(*door)?.door,
+                },
+                bind,
+            ),
             Source::Bytes {
                 bytes,
                 display,
