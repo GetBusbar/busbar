@@ -349,7 +349,16 @@ impl Steps<'_> {
             Arc::from(spec.name),
             busbar_contract::abi::mechanism::KindCode::Plane,
         );
-        let driver = PortDriver::open(self.inner.registry, spec, services, caller).await?;
+        let driver = PortDriver::open(
+            self.inner.registry,
+            spec,
+            services,
+            caller,
+            Arc::new(busbar_kernel::refusal::CoreRefusals::new()),
+            // The operator's `routes.<id>.auth` choice arrives with the K7 config (slice 9 leaves it unset).
+            &|_| None,
+        )
+        .await?;
         self.seats
             .lock()
             .unwrap_or_else(PoisonError::into_inner)

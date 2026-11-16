@@ -25,6 +25,8 @@ use busbar_plugin_abi::plane::{
 use busbar_plugin_loader::ports::plane::{PlaneIn, PlaneOut, PlanePort, PlaneSession, TargetIn};
 use busbar_plugin_loader::ports::{FactRef, FactVal, PortError};
 
+use super::port_channels::Channels;
+use super::port_intents::{Detach, Intent};
 use super::port_money::AuditRow;
 use super::usage::{SessionUsage, UsageInvalid};
 use super::{CallerEnd, HeadFields};
@@ -187,6 +189,8 @@ pub enum Violation {
     BadExchange,
     /// An `upstream` or `probe` answer that is neither ATT_DECLINE nor an exchange 0.
     MissingExchange,
+    /// A plane whose answers to core-resolved results keep stating more intents, past the round bound.
+    IntentStorm,
 }
 
 /// Why a session call produced no usable answer.
@@ -300,6 +304,12 @@ pub struct Answer {
     /// The exchanges this answer asks core to send, in the order they began.
     pub exchanges: Vec<UpExchange>,
     pub ex_msgs: Vec<ExMsgItem>,
+    /// The intents of the answer, in answer order: core resolves them (`Task::resolve`) before any other call.
+    pub intents: Vec<Intent>,
+    /// WAKE_AT: the monotonic time (ns) core answers with `P_TIMER` when it passes.
+    pub wake_at: Option<u64>,
+    /// DETACH: the session outlives its client response.
+    pub detach: Option<Detach>,
     pub violation: Option<Violation>,
     /// The exchange the answer is writing now (UP_CARRIER, UP_NEW, UP_METHOD start one), until a client item.
     up_open: Option<usize>,
@@ -629,6 +639,76 @@ impl Answer {
                     resource: resource.into(),
                 });
             }
+            PlaneOut::Lookup { flags, limit, key } => self.intents.push(Intent::Lookup {
+                flags,
+                limit,
+                key: key.to_vec(),
+            }),
+            PlaneOut::Store {
+                flags,
+                ttl_s,
+                key,
+                value,
+            } => self.intents.push(Intent::Store {
+                flags,
+                ttl_s,
+                key: key.to_vec(),
+                value: value.to_vec(),
+            }),
+            PlaneOut::Delete { flags, key } => self.intents.push(Intent::Delete {
+                flags,
+                key: key.to_vec(),
+            }),
+            PlaneOut::Commit { check, ops } => self.intents.push(Intent::Commit {
+                check,
+                ops: ops.rest().to_vec(),
+            }),
+            PlaneOut::Work {
+                check,
+                op,
+                target,
+                reference,
+            } => self.intents.push(Intent::Work {
+                check,
+                op,
+                target: target.map(str::to_owned),
+                reference: reference.map(str::to_owned),
+            }),
+            PlaneOut::Push { ttl_s, recs } => self.intents.push(Intent::Push {
+                ttl_s,
+                recs: recs.rest().to_vec(),
+            }),
+            PlaneOut::Signal { flags, key } => self.intents.push(Intent::Signal {
+                flags,
+                key: key.to_vec(),
+            }),
+            PlaneOut::Channel {
+                exchange,
+                carrier,
+                flags,
+                framing,
+                key,
+                head,
+            } => self.intents.push(Intent::Channel {
+                exchange,
+                carrier,
+                flags,
+                framing,
+                key: key.to_owned(),
+                head: head.rest().to_vec(),
+            }),
+            PlaneOut::ChReady { exchange, tail } => self.intents.push(Intent::ChReady {
+                exchange,
+                tail: tail.to_vec(),
+            }),
+            PlaneOut::WakeAt(mono_ns) => self.wake_at = Some(mono_ns),
+            PlaneOut::Detach { ttl_s, flags, key } => {
+                self.detach = Some(Detach {
+                    ttl_s,
+                    flags,
+                    key: key.into(),
+                });
+            }
             _ => self.later = true,
         }
         Ok(())
@@ -663,6 +743,8 @@ pub struct Task<'k, K: Calls + ?Sized> {
     session: Option<K::Session>,
     once: Once,
     usage: SessionUsage,
+    /// The channels this session holds, by exchange; dropping the task detaches them.
+    pub(super) held: Channels,
 }
 
 impl<'k, K: Calls + ?Sized> Task<'k, K> {
@@ -685,6 +767,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             session: Some(session),
             once,
             usage: SessionUsage::new(),
+            held: Channels::new(),
         };
         let answer = task.checked(answer)?;
         Ok((task, answer))
@@ -709,6 +792,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             session: Some(session),
             once,
             usage: SessionUsage::new(),
+            held: Channels::new(),
         };
         let answer = task.checked(answer)?;
         Ok((task, answer))
@@ -852,13 +936,13 @@ pub fn run_local<K: Calls + ?Sized>(
     effects: &dyn Effects,
 ) -> Result<Local, SessionError> {
     let (mut task, first) = Task::begin(calls, req, body, effects)?;
-    if first.forward.is_some() || first.later {
+    if first.forward.is_some() || first.later || !first.intents.is_empty() {
         return Err(SessionError::NotDriven);
     }
     let mut client = first.client;
     let mut audits = first.audits;
     let last = task.end(effects)?;
-    if last.forward.is_some() || last.later {
+    if last.forward.is_some() || last.later || !last.intents.is_empty() {
         return Err(SessionError::NotDriven);
     }
     client.extend(last.client);
@@ -892,6 +976,7 @@ pub fn render<K: Calls + ?Sized>(
     let answer = answer.seal();
     if answer.forward.is_some()
         || answer.later
+        || !answer.intents.is_empty()
         || answer.finish
         || !answer.usage.is_empty()
         || !answer.expects.is_empty()

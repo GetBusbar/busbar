@@ -1132,11 +1132,6 @@ impl<N: Needs> PlaneAdapter<N> {
         &self.proxy
     }
 
-    /// The D_ADMIN_OPENAPI fragment of this plane's ROUTE_ADMIN routes (round 8), for K8's admin document.
-    pub fn admin_openapi(&self) -> Option<&str> {
-        self.describe.admin_openapi.as_deref()
-    }
-
     fn live(&self) -> Result<usize, PortError> {
         let inst = self.proxy.instance();
         if inst.is_live() {
@@ -1285,6 +1280,10 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
 
     fn tick_s(&self) -> Option<u64> {
         self.describe.tick_s
+    }
+
+    fn admin_openapi(&self) -> Option<&str> {
+        self.describe.admin_openapi.as_deref()
     }
 
     fn request(
