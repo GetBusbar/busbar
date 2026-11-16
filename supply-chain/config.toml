@@ -1000,7 +1000,7 @@ criteria = "safe-to-deploy"
 [[exemptions.x509-cert]]
 version = "0.3.0"
 criteria = "safe-to-deploy"
-notes = "RustCrypto X.509 decoding (no crypto features) for the trust store's CA checks in busbar-core-connector and busbar-migrations; replaces x509-parser there (deny.toml keeps x509-parser rcgen-only) and drops the nom 7 duplicate. No imported audit from the trusted registries covers it."
+notes = "RustCrypto X.509 decoding (no crypto features) for the trust store's CA checks in busbar-core-connector; replaces x509-parser there (deny.toml keeps x509-parser rcgen-only) and drops the nom 7 duplicate. No imported audit from the trusted registries covers it."
 
 [[exemptions.x509-parser]]
 version = "0.18.1"

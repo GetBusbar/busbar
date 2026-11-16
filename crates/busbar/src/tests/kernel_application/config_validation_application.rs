@@ -3888,10 +3888,7 @@ advanced:
     assert_eq!(cfg.per_request_fee, 1);
     assert!(cfg.rate_card.as_ref().unwrap().contains_key("claude"));
     assert!(cfg.groups.contains_key("eng"));
-    assert_eq!(
-        cfg.store.as_ref().unwrap().module,
-        busbar_migrations::config::migrated_store_module()
-    );
+    assert_eq!(cfg.store.as_ref().unwrap().module, "memory");
     assert_eq!(cfg.limits.rate_sweep_interval, 256);
 }
 

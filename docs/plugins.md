@@ -139,7 +139,7 @@ than mis-called. The mechanism has its own version too, stamped in every door.
 the rebuild against the 1.6.0 SDK, and `busbar --validate` reports it without opening the library.
 A third-party plugin is rebuilt against the 1.6.0 SDK; install rebuilt releases before upgrading,
 and raise any `plugins.min_versions` floor to match. Your data carries over: a rebuilt store plugin
-opens its own database and upgrades it with its own `migrate()`. Build steps are in [Rebuilding a
+opens its own database and upgrades its own data during initialization. Build steps are in [Rebuilding a
 plugin against the 1.6.0 SDK](plugin-sdk-migration-1.6.md).
 
 ## Enabling plugins

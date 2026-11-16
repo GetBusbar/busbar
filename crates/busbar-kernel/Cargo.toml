@@ -12,6 +12,7 @@ name = "busbar_kernel"
 path = "src/lib.rs"
 
 [dependencies]
+busbar-ports = { path = "../busbar-ports" }
 foldhash = { workspace = true }
 # The channel respawn schedule (IF §12.19: 100 ms doubling from `backon::ExponentialBuilder`).
 backon = { workspace = true }

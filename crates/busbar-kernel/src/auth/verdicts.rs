@@ -12,8 +12,8 @@ use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use busbar_plugin_abi::auth::{FB_NEEDS_BODY, FB_NEEDS_BODY_HASH};
 use busbar_plugin_abi::host_side::caller::BoxFut;
-use busbar_plugin_loader::ports::auth::{Identity, Verdict};
-use busbar_plugin_loader::ports::PortError;
+use busbar_ports::auth::{Identity, Verdict};
+use busbar_ports::PortError;
 use foldhash::HashMap;
 use tokio::sync::oneshot;
 

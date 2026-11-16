@@ -465,7 +465,7 @@ fn inband_tls_is_verified_before_reuse_and_mismatches_discard() {
 fn instance_binder_maps_identical_handles_to_its_own_trust_and_revokes_on_unbind() {
     run(async {
         use crate::suites::harness::MemBinder;
-        use busbar_plugin_loader::binder::ConfigBinder;
+        use busbar_ports::binder::ConfigBinder;
         use std::sync::Arc;
         let (pem, key) = certificate();
         let (other, _) = certificate();
@@ -738,7 +738,7 @@ fn capacity_and_pool_keys_never_alias_instances_or_egress() {
 fn declared_client_identity_is_bound_and_verified_without_exposing_its_key() {
     run(async {
         use crate::suites::harness::MemBinder;
-        use busbar_plugin_loader::binder::ConfigBinder;
+        use busbar_ports::binder::ConfigBinder;
         use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
         use std::sync::Arc;
         let (server_pem, server_key) = certificate();

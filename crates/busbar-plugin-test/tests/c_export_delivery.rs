@@ -13,7 +13,7 @@ use busbar_plugin_abi::kinds::export::export::{
     CUSTODY_NONE, M_CONFIRM, M_DELIVER, M_RENDER, STREAM_CONTENT, STREAM_COUNT,
 };
 use busbar_plugin_abi::records::{tag as generic, Records, Reply, Writer};
-use busbar_plugin_loader::encode::export::decode_delivery;
+use busbar_ports::codec::export::decode_delivery;
 
 #[test]
 fn custody_and_delivery_records() {
@@ -100,7 +100,7 @@ fn confirm_and_delivery_describe_rules() {
 #[test]
 fn custody_answer_rules() {
     use busbar_plugin_loader::adapters::export::delivered_from;
-    use busbar_plugin_loader::ports::export::{Custody, Delivered};
+    use busbar_ports::export::{Custody, Delivered};
 
     // No CUSTODY reads ACCEPTED with no recheck.
     match delivered_from(3, None, None, 0).unwrap() {

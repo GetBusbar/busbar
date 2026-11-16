@@ -23,10 +23,8 @@ use busbar_plugin_abi::transport::{
     E_REFUSE_HEAD_SENT, ROLE_CLIENT, ROLE_DATAGRAM, ROLE_SERVER,
 };
 use busbar_plugin_abi::types::KindCode;
-use busbar_plugin_loader::ports::transport::{
-    ConnIn, TransportOut, TransportPort, TransportSession,
-};
-use busbar_plugin_loader::ports::PortError;
+use busbar_ports::transport::{ConnIn, TransportOut, TransportPort, TransportSession};
+use busbar_ports::PortError;
 
 use super::harness::Harness;
 use super::TransportConnCase;

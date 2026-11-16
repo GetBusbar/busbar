@@ -4,12 +4,12 @@
 //! A missing `store:` block is refused at the
 //! outermost surface — the REAL binary over the no-store fixture (`fixtures/no_store_1_5_5.yaml`):
 //!
-//! 1. `busbar --validate` REFUSES a config with no `store:` block (exit 1), requiring the
-//!    configured Store module and settings.
-//! 2. The migration inserts `store: {module: memory}` and says so.
-//! 3. The migrated config validates.
+//! `busbar --validate` REFUSES a config with no `store:` block (exit 1), requiring the configured
+//! Store module and settings. The boot migration writes the store 1.5.5 implied (busbar-migrate 1d,
+//! `absent_store_tests`).
 
 mod common;
+mod linked;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -76,37 +76,56 @@ fn validate_refuses_a_config_without_a_store_block() {
 
 #[test]
 fn migrate_inserts_the_memory_store_and_the_result_validates() {
-    let dir = workdir("migrate");
-    let (stdout, stderr) = common::migration_rows::migrate(
-        &std::fs::read_to_string(FIXTURE).expect("the fixture reads"),
-    );
     use busbar_contract::yaml::{self, prelude::*};
-    let doc: Value = yaml::from_str(&stdout).expect("YAML on stdout");
-    let want: Value = yaml::from_str("module: memory").unwrap();
-    assert_eq!(doc.get("store"), Some(&want), "stdout:\n{stdout}");
-    assert!(
-        stderr.contains("  - store: inserted `store: {module: memory}`"),
-        "the change is listed; stderr:\n{stderr}"
+    linked::install();
+    let dir = workdir("migrate");
+    let source = dir.join("source.yaml");
+    std::fs::write(&source, std::fs::read(FIXTURE).unwrap()).unwrap();
+    let grammar = busbar_kernel::config::Grammar::new(
+        busbar_kernel::config::secret::live_axis()
+            .map(busbar_contract::secret::SecretAxis::sugars)
+            .unwrap_or_default(),
+        Default::default(),
+        Vec::new(),
     );
-
+    let facts = busbar_migrate::Facts::of_process(
+        Vec::new(),
+        vec!["protocol".to_owned(), "base_url".to_owned()],
+    );
+    let check = |text: &str, _: Option<&str>| {
+        busbar_kernel::config::deploy_from_yaml_str(text, &grammar)
+            .map(drop)
+            .map_err(|error| error.to_string())
+    };
+    let plan = busbar_migrate::plan(&busbar_migrate::Inputs::new(&source, &facts, &check))
+        .expect("the no-store source plans");
+    let doc: Value = yaml::from_str(plan.planned()).expect("planned YAML");
+    let want: Value = yaml::from_str("module: memory").unwrap();
+    assert_eq!(doc.get("store"), Some(&want));
+    assert!(
+        plan.report()
+            .iter()
+            .any(|line| line.starts_with("store: added `store: {module: memory}`")),
+        "the added store is reported: {:?}",
+        plan.report()
+    );
     let migrated = dir.join("config.yaml");
-    std::fs::write(&migrated, &stdout).unwrap();
+    std::fs::write(&migrated, plan.planned()).unwrap();
     let out = validate(&dir, &migrated);
     let stderr = String::from_utf8_lossy(&out.stderr);
-
-    assert!(
-        !stderr.contains("store is required"),
-        "the migrated config carries its store; stderr:\n{stderr}"
-    );
-    let refusals: Vec<&str> = stderr.lines().filter(|l| l.starts_with("  - ")).collect();
+    assert!(!stderr.contains("store is required"), "{stderr}");
+    let refusals: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.starts_with("  - "))
+        .collect();
     if refusals.is_empty() {
         assert_eq!(out.status.code(), Some(0), "validates; stderr:\n{stderr}");
     } else {
         assert!(
             refusals
                 .iter()
-                .all(|l| l.contains("NO protocol with a wire codec compiled in")),
-            "only a build without the provider's codec may refuse, and only the provider; stderr:\n{stderr}"
+                .all(|line| line.contains("NO protocol with a wire codec compiled in")),
+            "only a build without the provider's codec may refuse: {stderr}"
         );
     }
     let _ = std::fs::remove_dir_all(&dir);

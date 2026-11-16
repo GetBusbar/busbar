@@ -7,7 +7,7 @@
 // The backoff shape core already has (IF §12.3 round 33: every `RetryPolicy` schedule uses it). These names were
 // `busbar_kernel::retry::*` before this module existed (`pub use busbar_contract::retry;`), and stay so.
 pub use busbar_contract::retry::{spread, unit, Backoff, FLOOR};
-pub use busbar_plugin_loader::ports::PortError;
+pub use busbar_ports::PortError;
 
 use std::time::Duration;
 

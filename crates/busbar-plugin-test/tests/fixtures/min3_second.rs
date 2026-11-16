@@ -51,10 +51,10 @@ use busbar_plugin_abi::plugin::{Describe, Endpoints, Plugin};
 use busbar_plugin_abi::records::{settled, tag, Full, Out, Records, Reply, Writer};
 use busbar_plugin_abi::types::Str;
 use busbar_plugin_loader::admit::admit_header;
-use busbar_plugin_loader::binder::ConfigBinder;
 use busbar_plugin_loader::instance::{Ceilings, InstanceSpec, Registry};
 use busbar_plugin_test::fake_needs::FakeNeeds;
 use busbar_plugin_test::suites::harness::{Harness, MemBinder};
+use busbar_ports::binder::ConfigBinder;
 
 /// The error numbers the probe image declares (D_ERRORS).
 pub const ERRORS: &[u16] = &[OPEN_ERROR, LOG_ERROR];

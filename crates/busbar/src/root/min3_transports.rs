@@ -25,7 +25,7 @@ use busbar_kernel::config::RootCfg;
 use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::admit::Admitted;
 use busbar_plugin_loader::instance::{BootPhase, InstanceSpec, OpenedPort};
-use busbar_plugin_loader::ports::transport::TransportPort;
+use busbar_ports::transport::TransportPort;
 
 use super::{Configured, MinRegistry};
 
