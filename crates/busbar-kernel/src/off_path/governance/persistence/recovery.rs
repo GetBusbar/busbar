@@ -561,7 +561,7 @@ impl<'a> History<'a> {
     fn carried_hash(&self, node: u64, sequence: u64) -> Option<Carried> {
         self.live.filter(|journal| journal.node() == node)?;
         let state = self.carried?.lock().unwrap_or_else(|p| p.into_inner());
-        state.carried.get(&sequence).map(|hash| Carried {
+        state.carried.get(&sequence).map(|(hash, _owners)| Carried {
             seq: sequence,
             hash: *hash,
         })
@@ -864,16 +864,17 @@ struct DriverState {
     /// The chain hash of each own Reconciliation original this process holds evidence for, by
     /// sequence (SHUTDOWN-HANG F1): inserted when its append is confirmed, or by the boot replay's
     /// verified walk; about 56 B each, RAM only.
-    carried: BTreeMap<u64, [u8; 32]>,
+    carried: BTreeMap<u64, ([u8; 32], usize)>,
     /// The carried sequences of each operation, dropped by `release(op)`.
     carried_by_op: BTreeMap<[u8; 16], Vec<u64>>,
 }
 impl DriverState {
     fn carry(&mut self, operation: [u8; 16], carried: Carried) {
-        self.carried.insert(carried.seq, carried.hash);
         let seqs = self.carried_by_op.entry(operation).or_default();
         if !seqs.contains(&carried.seq) {
             seqs.push(carried.seq);
+            let (_, owners) = self.carried.entry(carried.seq).or_insert((carried.hash, 0));
+            *owners += 1;
         }
     }
     /// Whether `operation`'s staged original belongs to the batch attempt that may still apply.
@@ -980,7 +981,7 @@ impl StoreRecovery {
             .unwrap_or_else(|p| p.into_inner())
             .carried
             .get(&seq)
-            .map(|hash| Carried { seq, hash: *hash })
+            .map(|(hash, _owners)| Carried { seq, hash: *hash })
     }
     fn carry(&self, operation: [u8; 16], carried: Option<Carried>) {
         if let Some(carried) = carried {
@@ -995,7 +996,12 @@ impl StoreRecovery {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(seqs) = state.carried_by_op.remove(&operation) {
             for seq in seqs {
-                state.carried.remove(&seq);
+                if let Some((_, owners)) = state.carried.get_mut(&seq) {
+                    *owners -= 1;
+                    if *owners == 0 {
+                        state.carried.remove(&seq);
+                    }
+                }
             }
         }
     }
