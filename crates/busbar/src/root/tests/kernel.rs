@@ -632,6 +632,7 @@ async fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_comm
     crate::root::serve::compose(judge.clone(), &late, credentials);
     crate::root::doors::install_plugin_logs(crate::root::boot::plugin_logs());
     crate::root::connector::boot(
+        tokio::runtime::Handle::current(),
         crate::LINKED_TRANSPORT_DOORS,
         &crate::root::policy::client_settings(&config.limits),
         judge,

@@ -170,7 +170,7 @@ async fn synchronous_config_resolution_progresses_on_the_owned_io_executor() {
     );
     let resolver = secrets.resolver(io.handle(), Default::default());
     let held = resolver
-        .resolve(&source("configured-source", "{}"), None)
+        .resolve(&source("configured-source", "{}"))
         .unwrap();
     assert_eq!(
         held.expose(&busbar_kernel::seal::lend()),
