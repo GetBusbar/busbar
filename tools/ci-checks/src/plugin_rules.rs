@@ -20,7 +20,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use busbar_contract::json::{self, JsonValueTrait};
+use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
 use proc_macro2::{TokenStream, TokenTree};
 use quote::ToTokens;
 use syn::Item;
