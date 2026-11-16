@@ -12,6 +12,7 @@
 //! staged and confirmed before the notary starts. The notary starts after the tail either way,
 //! so a live page never vouches for a line this phase did not seal.
 
+use busbar_kernel_audit::linked_record::{linked_record_from_journal_body, AuditLinkedRecord};
 use busbar_kernel_audit::{
     break_body, stamp_body, stamp_from_journal_body, walk_tail, AuditVerifyingKey, BreakAt,
     BreakNotice, Fingerprint, Stamp, StampKind, TailItem, WalkContext, WalkOutcome,
@@ -19,7 +20,7 @@ use busbar_kernel_audit::{
 use busbar_kernel_wal::{Entry, JournalRecord, RecordClass};
 
 use super::signer::{Seal, SignFailure, SignerHandle};
-use super::{decode_audit, Durability};
+use super::Durability;
 
 /// Why a node's records cannot be walked by this build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,9 +36,16 @@ pub(crate) fn tail_items(records: &[JournalRecord]) -> Result<Vec<TailItem>, Rec
         if record.class != RecordClass::Transaction {
             continue;
         }
-        match decode_audit(record) {
-            Ok(Some(line)) => items.push(TailItem::Line {
-                record: line,
+        match linked_record_from_journal_body(
+            &record.body,
+            &busbar_kernel::Registration::meter_class,
+        ) {
+            Ok(Some(AuditLinkedRecord::Unit(line))) => items.push(TailItem::Line {
+                record: *line,
+                node_seq: record.node_seq,
+            }),
+            Ok(Some(AuditLinkedRecord::NotaryKey(line))) => items.push(TailItem::Certificate {
+                record: *line,
                 node_seq: record.node_seq,
             }),
             Ok(None) => match stamp_from_journal_body(&record.body) {

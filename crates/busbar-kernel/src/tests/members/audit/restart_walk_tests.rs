@@ -140,7 +140,8 @@ impl Journal {
             key: &key,
             complete,
         };
-        let expected = walk_tail(&self.0, &cx);
+        let expected = busbar_kernel_audit::restart::reference_walk_tail(&self.0, &cx);
+        assert_eq!(walk_tail(&self.0, &cx), expected);
         let mut backward = busbar_kernel_audit::restart::BackwardWalk::default();
         let mut outcome = WalkOutcome::NeedMore;
         for item in self.0.iter().rev() {
