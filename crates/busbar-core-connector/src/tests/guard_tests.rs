@@ -1126,3 +1126,15 @@ fn strict_and_open_web_never_borrow_route_reach() {
         );
     }
 }
+
+#[test]
+fn resolved_route_reach_never_bypasses_blocked_metadata_host_names() {
+    let g = Guard::from_config(&Destinations {
+        blocked: vec!["blocked.test".into()],
+        ..Destinations::default()
+    }).unwrap();
+    assert_eq!(
+        verdict(g.judge_answer_with("blocked.test", &[ip("8.8.8.8")], EGRESS_PROVIDER, false, true)),
+        Some(DEST_METADATA)
+    );
+}
