@@ -147,8 +147,105 @@ pub(crate) async fn seal_own_node(
     key: &AuditVerifyingKey,
     host: &str,
 ) -> OwnSeal {
-    let _ = (durability, records, handle, key, host);
-    OwnSeal::Nothing
+    let node = durability.record.node();
+    let items = match tail_items(records) {
+        Ok(items) => items,
+        Err(RecipeUnsupported) => return refuse(
+            durability,
+            "AUDIT_RECIPE_UNSUPPORTED: the node's own audit lines use a recipe this build cannot \
+                 compute; nothing is sealed or recorded"
+                .into(),
+        ),
+    };
+    let outcome = walk_tail(
+        &items,
+        &WalkContext {
+            node,
+            host,
+            key,
+            complete: true,
+        },
+    );
+    let now_ms = busbar_kernel::store::now_ms();
+    match outcome {
+        WalkOutcome::Nothing { .. } | WalkOutcome::NeedMore => OwnSeal::Nothing,
+        WalkOutcome::Unsupported => refuse(
+            durability,
+            "AUDIT_RECIPE_UNSUPPORTED: a stamp of this node names a signature algorithm this build \
+             cannot verify; nothing is sealed or recorded"
+                .into(),
+        ),
+        WalkOutcome::Foreign { anchor_host } => {
+            busbar_kernel::diag_error!(
+                busbar_kernel::diagnostics::AUDIT_PREDECESSOR_REFUSED,
+                node,
+                reason = "foreign_host",
+                anchor_host = %anchor_host,
+                "this node's own last stamp names another host; nothing is sealed for it"
+            );
+            refuse(
+                durability,
+                format!(
+                    "audit restart seal: node {node}: its last stamp names host {anchor_host:?}, \
+                     not this host; nothing sealed"
+                ),
+            )
+        }
+        WalkOutcome::Clean {
+            from,
+            to,
+            fingerprint,
+            every,
+            down_from_ms,
+            ..
+        } => {
+            let tail = CleanTail {
+                from,
+                to,
+                fingerprint,
+                every,
+                down_from_ms,
+            };
+            let page = restart_page(node, node, host, tail, now_ms);
+            match handle.submit_restart(page).await {
+                Ok(signed) => match stage_stamp(durability, &signed).await {
+                    Ok(()) => {
+                        tracing::info!(
+                            diag = %busbar_kernel::diagnostics::AUDIT_SEALED_AFTER_RESTART.banner(),
+                            node, sealer = node, from, to,
+                            down_from_ms = signed.down_from_ms, down_to_ms = signed.down_to_ms,
+                            "the node's own unstamped audit tail was sealed after restart"
+                        );
+                        OwnSeal::Sealed { from, to }
+                    }
+                    Err(why) => refuse(durability, why),
+                },
+                Err(failure) => sign_failed(durability, node, failure),
+            }
+        }
+        WalkOutcome::Break(at) => {
+            let notice = break_notice(node, node, host, &at, now_ms);
+            match handle.submit_break(notice).await {
+                Ok(signed) => {
+                    let staged = stage_break(durability, &signed).await;
+                    let finding = broken_finding(node, &at);
+                    busbar_kernel::diag_error!(
+                        busbar_kernel::diagnostics::AUDIT_CHAIN_BROKEN_AT_BOOT,
+                        node, sealer = node, last_good = at.last_good,
+                        unsealed_from = at.unsealed_from, unsealed_to = at.unsealed_to,
+                        reason = at.reason.as_str(),
+                        "the node's own audit chain is broken after its last valid stamp; recorded, never sealed"
+                    );
+                    durability.restart_findings.push(finding);
+                    if let Err(why) = staged {
+                        durability.restart_findings.push(why);
+                    }
+                    OwnSeal::Broken(at)
+                }
+                Err(failure) => sign_failed(durability, node, failure),
+            }
+        }
+    }
 }
 
 /// The `restart_findings` text for a break.

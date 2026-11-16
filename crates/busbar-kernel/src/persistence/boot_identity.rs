@@ -307,6 +307,13 @@ impl WriterRetirements {
                 retry_at_ms: closable_ms,
             });
         }
+        let mark_address = super::scoped::migration_address(
+            true,
+            INSTANCE,
+            NODE_SCHEMA,
+            &predecessor_seal::fenced_key(epoch, writer),
+        )
+        .map_err(error)?;
         let fence = super::fences::writer(
             core.next_id().map_err(error)?,
             writer,
@@ -329,15 +336,29 @@ impl WriterRetirements {
                     expected: native::ExpectedValue::Exact(lease),
                 },
             ],
-            mutations: vec![native::Mutation::Put {
-                address: control_address,
-                value: Secret::new(
-                    permanently_closed
-                        .encode()
-                        .ok_or("invalid permanent fence")?
-                        .to_vec(),
-                ),
-            }],
+            mutations: vec![
+                native::Mutation::Put {
+                    address: control_address,
+                    value: Secret::new(
+                        permanently_closed
+                            .encode()
+                            .ok_or("invalid permanent fence")?
+                            .to_vec(),
+                    ),
+                },
+                // SEALING-FIX r11-r12 (decision 193): the fence mark commits with the fence, so a
+                // fenced node with no seal row is known to be between its fence and its seal.
+                native::Mutation::Put {
+                    address: mark_address,
+                    value: Secret::new(
+                        predecessor_seal::FenceMark {
+                            lease_expires_ms: lease_row.expires_ms,
+                            sealed: Vec::new(),
+                        }
+                        .bytes(),
+                    ),
+                },
+            ],
             time: Some(native::TimeGuard {
                 not_before: Some(closable_ms.div_ceil(1000)),
                 before: None,
@@ -795,7 +816,7 @@ impl BootIdentity {
                     {
                         return Ok(TakenNode {
                             id: assignment.id,
-                            taken_at_ms: 0,
+                            taken_at_ms: now,
                             lease: Some(NodeLease {
                                 owner: self.clone(),
                                 host: host.into(),
@@ -883,7 +904,7 @@ impl BootIdentity {
             if self.records.decide(predicates, mutations).await? {
                 return Ok(TakenNode {
                     id,
-                    taken_at_ms: 0,
+                    taken_at_ms: now,
                     lease: Some(NodeLease {
                         owner: self.clone(),
                         host: host.into(),

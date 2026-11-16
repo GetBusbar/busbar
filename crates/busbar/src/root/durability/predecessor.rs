@@ -107,8 +107,36 @@ pub(crate) async fn run(
     book: Option<Arc<Mutex<Durability>>>,
     stop: watch::Receiver<bool>,
 ) -> SealerDone {
-    let _ = (fence, sealing, book, stop);
-    SealerDone::default()
+    let mut done = SealerDone::default();
+    if let Some((inputs, handle)) = sealing {
+        match AuditVerifyingKey::from_hex(&inputs.key_hex) {
+            Ok(key) => {
+                let mut sealer = Sealer {
+                    host: fence.host().to_owned(),
+                    fence: Arc::clone(&fence),
+                    inputs,
+                    key,
+                    handle,
+                    book,
+                    stop: stop.clone(),
+                    alerted: BTreeSet::new(),
+                    done: SealerDone::default(),
+                    listed_ms: 0,
+                    listed_at: Instant::now(),
+                };
+                sealer.seal_all().await;
+                done = sealer.done;
+            }
+            Err(error) => tracing::info!(
+                ?error,
+                "the predecessor sealer has no usable deployment key; it seals nothing"
+            ),
+        }
+    }
+    if !*stop.borrow() {
+        fence.run(stop).await;
+    }
+    done
 }
 
 impl Sealer {
@@ -752,8 +780,20 @@ impl Sealer {
 /// A walk that kept [`WALK_LINES_MAX`] lines without an anchor: a `budget` break over the walked
 /// range (only after a long notary stall, already alerted).
 fn budget_break(items: &[TailItem]) -> WalkOutcome {
-    let _ = items;
-    WalkOutcome::NeedMore
+    let mut lines = items.iter().filter_map(|item| match item {
+        TailItem::Line { record, node_seq } => Some((record.seq, *node_seq)),
+        _ => None,
+    });
+    let first = lines.next().unwrap_or((1, 0));
+    let last = lines.last().unwrap_or(first);
+    WalkOutcome::Break(BreakAt {
+        last_good: first.0.saturating_sub(1),
+        unsealed_from: first.0,
+        unsealed_to: last.0,
+        journal_from: first.1,
+        journal_to: last.1,
+        reason: BreakReason::Budget,
+    })
 }
 
 #[cfg(test)]

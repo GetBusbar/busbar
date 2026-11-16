@@ -239,7 +239,80 @@ impl PredecessorFence {
     /// THE HOST SCAN: the `host:<host>` row and every `host:<host>\0…` archive row, each checked
     /// against its `id:` reservation, and each writer's lease row; `own` is left out.
     pub async fn host_nodes(&self, own: u64) -> Result<HostNodes, String> {
-        todo!("SEALING-FIX MR-5")
+        let records = &self.seals.records;
+        let host_key = super::host_key(&self.host);
+        let mut rows: Vec<(Vec<u8>, Secret<Vec<u8>>)> = Vec::new();
+        if let Some(value) = records.get(NODE_SCHEMA, &host_key).await.map_err(error)? {
+            rows.push((host_key.clone(), value));
+        }
+        let mut prefix = host_key;
+        prefix.push(0);
+        let mut cursor = None;
+        loop {
+            let page = records
+                .page(NODE_SCHEMA, &prefix, cursor.as_ref())
+                .await
+                .map_err(error)?;
+            rows.extend(page.rows);
+            match page.next {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        let mut out = HostNodes::default();
+        let mut seen = std::collections::BTreeSet::new();
+        for (_, value) in rows {
+            let bytes = value.expose(&crate::seal::lend());
+            let Ok(assignment) = Assignment::parse(bytes) else {
+                let id = (bytes.len() == 8)
+                    .then(|| bytes.try_into().ok().map(u64::from_be_bytes))
+                    .flatten();
+                if id != Some(own) {
+                    out.refused.push(RefusedNode {
+                        id,
+                        reason: "assignment",
+                    });
+                }
+                continue;
+            };
+            if assignment.id == own || !seen.insert(assignment.id) {
+                continue;
+            }
+            let reserved = records
+                .get(NODE_SCHEMA, &super::id_key(assignment.id))
+                .await
+                .map_err(error)?;
+            if reserved
+                .as_ref()
+                .map(|v| v.expose(&crate::seal::lend()).to_vec())
+                != Some(assignment.bytes())
+            {
+                out.refused.push(RefusedNode {
+                    id: Some(assignment.id),
+                    reason: "assignment",
+                });
+                continue;
+            }
+            let lease = records
+                .get(
+                    NODE_SCHEMA,
+                    &super::writer_lease_key(assignment.epoch, assignment.writer),
+                )
+                .await
+                .map_err(error)?;
+            let lease_expires_ms = match lease {
+                Some(v) => Some(LeaseRow::parse(v.expose(&crate::seal::lend()))?.expires_ms),
+                None => None,
+            };
+            out.nodes.push(HostNode {
+                id: assignment.id,
+                epoch: assignment.epoch,
+                writer: assignment.writer,
+                lease_expires_ms,
+            });
+        }
+        out.listed_ms = self.identity.now_ms().await?;
+        Ok(out)
     }
 
     /// STEP 1, THE FENCE: close the predecessor's writer for good through this task's own
@@ -250,7 +323,17 @@ impl PredecessorFence {
         writer: [u8; 16],
         seen: UndrainedWriter,
     ) -> Result<PredecessorRetire, String> {
-        todo!("SEALING-FIX MR-5")
+        match self
+            .retirements
+            .retire_after(&self.core, epoch, writer, 0, Some(seen))
+            .await?
+        {
+            WriterRetirement::Live { retry_at_ms } => Ok(PredecessorRetire::Live { retry_at_ms }),
+            WriterRetirement::Pending => Ok(PredecessorRetire::Pending),
+            WriterRetirement::Retired(_) => Ok(PredecessorRetire::Retired {
+                closed_open: self.retirements.take_closed_open(epoch, writer),
+            }),
+        }
     }
 
     /// Read node `id`'s seal row and its writer's fence mark (two point reads).
@@ -260,7 +343,26 @@ impl PredecessorFence {
         epoch: u64,
         writer: [u8; 16],
     ) -> Result<SealState, String> {
-        todo!("SEALING-FIX MR-5")
+        let mut values = self
+            .seals
+            .records
+            .read(&[
+                (NODE_SCHEMA, &sealed_key(id)),
+                (NODE_SCHEMA, &fenced_key(epoch, writer)),
+            ])
+            .await
+            .map_err(error)?
+            .into_iter();
+        let row = values.next().ok_or("seal row observation missing")?;
+        let mark_raw = values.next().ok_or("fence mark observation missing")?;
+        let mark = mark_raw
+            .as_ref()
+            .and_then(|v| FenceMark::parse(v.expose(&crate::seal::lend())).ok());
+        Ok(SealState {
+            row: row.map(|v| v.expose(&crate::seal::lend()).to_vec()),
+            mark_raw,
+            mark,
+        })
     }
 
     /// STEP 4, WRITE ONCE: one compare-and-set with the seal row absent and the mark exactly as
@@ -276,7 +378,21 @@ impl PredecessorFence {
         state: &SealState,
         add_to_mark: bool,
     ) -> Result<bool, String> {
-        todo!("SEALING-FIX MR-5")
+        let _gate = self.seals.gate.lock().await;
+        self.seals.resume().await?;
+        let mark_key = fenced_key(epoch, writer);
+        let predicates = vec![
+            predicate(NODE_SCHEMA, sealed_key(id), None),
+            predicate(NODE_SCHEMA, mark_key.clone(), state.mark_raw.clone()),
+        ];
+        let mut mutations = vec![put(NODE_SCHEMA, sealed_key(id), row.bytes())];
+        if add_to_mark {
+            let Some(mark) = state.mark.as_ref().filter(|m| m.is_open_for(id)) else {
+                return Err("the fence mark is not open for this node".into());
+            };
+            mutations.push(put(NODE_SCHEMA, mark_key, mark.with_sealed(id).bytes()));
+        }
+        self.seals.decide(predicates, mutations).await
     }
 
     /// Settle a seal write this task left retained (one round trip on a store that answers).

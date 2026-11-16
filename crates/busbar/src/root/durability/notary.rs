@@ -343,7 +343,63 @@ impl Notary {
     /// [`SIGN_DEADLINE`] and staged. The journal's final flush commits it after every staged page,
     /// so pages stay contiguous and never overlap. The drain detaches this task at its cut.
     async fn final_page(&mut self) -> Option<bool> {
-        None
+        if let Some(signing) = self.signing.take() {
+            let _ = tokio::time::timeout_at(signing.deadline, signing.rx).await;
+        }
+        if self.halted.is_some() {
+            return None;
+        }
+        let head = self.feed.head();
+        if head.seq <= self.committed_through {
+            return None;
+        }
+        let stamp = Stamp {
+            node: self.cfg.node,
+            from: self.committed_through.saturating_add(1),
+            to: head.seq,
+            fingerprint: Fingerprint(head.fp),
+            kind: StampKind::Final,
+            sealer: self.cfg.node,
+            host: self.cfg.host.clone(),
+            every: self.cfg.every_ms,
+            stamped_ms: busbar_kernel::store::now_ms(),
+            down_from_ms: 0,
+            down_to_ms: 0,
+            crypto: String::new(),
+            sig_alg: String::new(),
+            key_id: String::new(),
+            key_cert: self.cfg.key_cert,
+            signature: Vec::new(),
+        };
+        let signed = match self.live.submit(stamp) {
+            Ok(rx) => match tokio::time::timeout(SIGN_DEADLINE, rx).await {
+                Ok(Ok(Ok(stamp))) => stamp,
+                _ => return Some(false),
+            },
+            Err(_) => return Some(false),
+        };
+        let Ok(body) = stamp_body(&signed) else {
+            return Some(false);
+        };
+        let entry = Entry::new(RecordClass::Transaction, body).at(signed.stamped_ms / 1000, 0);
+        match self.journal.stage_run(&[entry]) {
+            Ok(_) => {
+                self.committed_through = head.seq;
+                self.publish_progress();
+                Some(true)
+            }
+            Err(refused) => {
+                if refused != RuntimeError::Closed {
+                    busbar_kernel::diag_error!(
+                        busbar_kernel::diagnostics::AUDIT_STAMP_FAILED,
+                        node = self.cfg.node,
+                        reason = %format!("{refused:?}"),
+                        "the final audit page was not staged; the next process on the host seals the tail"
+                    );
+                }
+                Some(false)
+            }
+        }
     }
 
     /// One tick (§3.3 "One tick"): read the head, account the stall age, judge the in-flight

@@ -138,15 +138,210 @@ struct Anchor<'a> {
 /// `SPAN` for an anchor stamp's `every`.
 #[must_use]
 pub fn span_ms(every: u64) -> u64 {
-    let _ = every;
-    0
+    every.saturating_mul(SPAN_PAGES).max(MIN_SPAN_MS)
 }
 
 /// THE WALK (§3.6.0): `items` are the node's records oldest first, through its tail.
 #[must_use]
 pub fn walk_tail(items: &[TailItem], cx: &WalkContext<'_>) -> WalkOutcome {
-    let _ = (items, cx);
-    WalkOutcome::NeedMore
+    // The node's lines in journal order, each with its item index and WAL position.
+    let lines: Vec<(&AuditRecord, u64, usize)> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(i, item)| match item {
+            TailItem::Line { record, node_seq } => Some((record, *node_seq, i)),
+            _ => None,
+        })
+        .collect();
+    let Some(&(tail, tail_node_seq, _)) = lines.last() else {
+        if !cx.complete {
+            return WalkOutcome::NeedMore;
+        }
+        return WalkOutcome::Nothing {
+            through: 0,
+            through_node_seq: 0,
+        };
+    };
+    let t = tail.seq;
+
+    // Step 1: candidates newest first, by journal position.
+    let mut candidates: Vec<(usize, Candidate<'_>)> = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        if let TailItem::Stamp { stamp, .. } = item {
+            candidates.push((i, Candidate::Stamp(stamp)));
+        }
+    }
+    for (li, (record, _, i)) in lines.iter().enumerate() {
+        if !record.recipe.is_link() && record.signature.is_some() {
+            candidates.push((*i, Candidate::Legacy(li)));
+        }
+    }
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    let has_stamps = candidates
+        .iter()
+        .any(|(_, c)| matches!(c, Candidate::Stamp(_)));
+
+    let mut stamp_failed = false;
+    let mut anchor: Option<Anchor<'_>> = None;
+    for (item_index, candidate) in &candidates {
+        match candidate {
+            Candidate::Stamp(stamp) => {
+                if stamp.sig_alg != SIGNATURE_ALGORITHM {
+                    return WalkOutcome::Unsupported;
+                }
+                let line = lines
+                    .iter()
+                    .position(|(record, _, at)| record.seq == stamp.to && at < item_index);
+                if line.is_none() && !cx.complete {
+                    return WalkOutcome::NeedMore;
+                }
+                let passes = line.is_some_and(|li| stamp_passes(stamp, lines[li].0, cx));
+                if passes {
+                    anchor = Some(Anchor {
+                        seq: stamp.to,
+                        line,
+                        stamp: Some(*stamp),
+                    });
+                    break;
+                }
+                stamp_failed = true;
+            }
+            Candidate::Legacy(li) => {
+                if AuditChain::verify_signature(lines[*li].0, cx.key).is_ok() {
+                    anchor = Some(Anchor {
+                        seq: lines[*li].0.seq,
+                        line: Some(*li),
+                        stamp: None,
+                    });
+                    break;
+                }
+            }
+        }
+    }
+    if anchor.is_none() && !cx.complete {
+        return WalkOutcome::NeedMore;
+    }
+    let anchor = anchor.unwrap_or(Anchor {
+        seq: 0,
+        line: None,
+        stamp: None,
+    });
+    let m = anchor.seq;
+    let first_after = anchor.line.map_or(0, |li| li + 1);
+    let journal_from_after = || {
+        lines
+            .get(first_after)
+            .map_or(tail_node_seq, |(_, node_seq, _)| *node_seq)
+    };
+    if stamp_failed || (has_stamps && m == 0) {
+        return WalkOutcome::Break(BreakAt {
+            last_good: m,
+            unsealed_from: m.saturating_add(1),
+            unsealed_to: t,
+            journal_from: journal_from_after(),
+            journal_to: tail_node_seq,
+            reason: BreakReason::Stamp,
+        });
+    }
+
+    // Step 2: walk M+1…T in journal order; the first failing record is the break.
+    let legacy_prefix = candidates.is_empty();
+    let start_item = anchor.line.map_or(0, |li| lines[li].2 + 1);
+    let (mut expected_prev, mut expected_seq): (&str, u64) = match anchor.line {
+        Some(li) => (&lines[li].0.hash, m.saturating_add(1)),
+        None => ("", 1),
+    };
+    let mut link_lines = false;
+    for item in &items[start_item..] {
+        let last_good = expected_seq.saturating_sub(1);
+        let broken = |reason: BreakReason, journal_from: u64| {
+            WalkOutcome::Break(BreakAt {
+                last_good,
+                unsealed_from: last_good.saturating_add(1),
+                unsealed_to: t.max(last_good.saturating_add(1)),
+                journal_from,
+                journal_to: tail_node_seq,
+                reason,
+            })
+        };
+        let (record, node_seq) = match item {
+            TailItem::Line { record, node_seq } => (record, *node_seq),
+            TailItem::Undecodable { node_seq } => return broken(BreakReason::Decode, *node_seq),
+            TailItem::Stamp { .. } => continue,
+        };
+        if record.node != cx.node {
+            return broken(BreakReason::Link, node_seq);
+        }
+        if let Some(kind) =
+            crate::record::link_break(&record.prev_hash, record.seq, expected_prev, expected_seq)
+        {
+            let reason = match kind {
+                AuditBreakKind::LinkMismatch => BreakReason::Link,
+                _ => BreakReason::Sequence,
+            };
+            return broken(reason, node_seq);
+        }
+        if AuditChain::digest_of(record) != record.hash {
+            return broken(BreakReason::Digest, node_seq);
+        }
+        if record.recipe.is_link() {
+            link_lines = true;
+        } else if !legacy_prefix || link_lines {
+            // A legacy line after the anchor carries no valid signature (else it would be a newer
+            // anchor), and a page never vouches for a legacy line (G5).
+            return broken(BreakReason::Unsigned, node_seq);
+        }
+        expected_prev = &record.hash;
+        expected_seq = expected_seq.saturating_add(1);
+    }
+    if t <= m || !link_lines {
+        return WalkOutcome::Nothing {
+            through: t,
+            through_node_seq: tail_node_seq,
+        };
+    }
+
+    // Step 3: the anchor is a genuine page of this node on this host, and the tail crash-sized.
+    let unsealed = |reason: BreakReason| {
+        WalkOutcome::Break(BreakAt {
+            last_good: m,
+            unsealed_from: m.saturating_add(1),
+            unsealed_to: t,
+            journal_from: journal_from_after(),
+            journal_to: tail_node_seq,
+            reason,
+        })
+    };
+    let Some(stamp) = anchor.stamp else {
+        return unsealed(BreakReason::Unanchored);
+    };
+    if stamp.host != cx.host {
+        return WalkOutcome::Foreign {
+            anchor_host: stamp.host.clone(),
+        };
+    }
+    if stamp.kind == StampKind::Final {
+        return unsealed(BreakReason::AfterFinal);
+    }
+    let span = span_ms(stamp.every);
+    let first = lines[first_after].0;
+    if tail.linked_ms.saturating_sub(first.linked_ms) > span
+        || first.linked_ms.saturating_add(span) < stamp.stamped_ms
+    {
+        return unsealed(BreakReason::Span);
+    }
+    let Some(fingerprint) = Fingerprint::from_hex(&tail.hash) else {
+        return unsealed(BreakReason::Digest);
+    };
+    WalkOutcome::Clean {
+        from: m.saturating_add(1),
+        to: t,
+        from_node_seq: lines[first_after].1,
+        fingerprint,
+        to_node_seq: tail_node_seq,
+        every: stamp.every,
+        down_from_ms: tail.linked_ms,
+    }
 }
 
 /// Whether one stamp candidate passes step 1 against its line `to`.
