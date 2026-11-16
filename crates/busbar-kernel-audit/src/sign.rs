@@ -166,7 +166,9 @@ impl AuditSigningKey {
         &self.key_id
     }
 
-    /// The key id, shared: every record this key signs names it without a copy.
+    /// The key id, shared: every record this key signs names it without a copy (legacy signing,
+    /// test builds only).
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn key_id_shared(&self) -> std::sync::Arc<str> {
         std::sync::Arc::clone(&self.key_id)
     }
@@ -201,7 +203,9 @@ impl AuditSigningKey {
         hex::encode(self.inner.verifying_key().to_bytes())
     }
 
-    /// Sign one record's digest. The answer is 128 lowercase hex characters.
+    /// Sign one record's digest: legacy per-line signing, for fixtures and the verify tool's tests.
+    /// Production signs no line: `keyset::bind` consumes the key into its grants before the request
+    /// path exists. The answer is 128 lowercase hex characters.
     #[must_use]
     pub fn sign_digest(&self, digest_hex: &str) -> String {
         hex::encode(with_signing_preimage(digest_hex, |preimage| {

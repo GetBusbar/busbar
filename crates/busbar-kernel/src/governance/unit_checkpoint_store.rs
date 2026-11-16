@@ -66,7 +66,11 @@ struct Head {
 #[async_trait]
 pub trait UnitCheckpointAudit: Send + Sync {
     fn keys(&self) -> AuditKeySet;
-    fn sign_checkpoint(&self, body: &[u8]) -> RecordStoreResult<Vec<u8>>;
+    /// SIGN A BATCH OF CHECKPOINT BODIES under the deployment key, one signature per body, in
+    /// order (SEALING-FIX §3.3 "Checkpoint signing"): one job on the root's Bootstrap signer
+    /// thread per persist call, never on the calling runtime. All or nothing: any failure fails
+    /// every body, and nothing is staged.
+    async fn sign_checkpoints(&self, bodies: &[&[u8]]) -> RecordStoreResult<Vec<Vec<u8>>>;
     /// Confirm a terminal unit's sealed audit line. `hint` is the line's carried evidence when
     /// this process sealed it (SHUTDOWN-HANG F1a): one read; `None` keeps the cold scan.
     async fn confirm(
@@ -156,7 +160,10 @@ impl UnitCheckpointEvidence {
     }
     /// Retain the exact signed audit and original sealed frame before native IO.
     /// Callers reuse pending_audit after uncertainty rather than sealing a new line.
-    pub async fn append_audit(&self, audit: AuditRecord) -> RecordStoreResult<()> {
+    /// Append a recovered running unit's audit line and confirm it. Returns the WAL `node_seq` of
+    /// the record that carries it (SEALING-FIX §3.5 r16), or 0 when the identical line was already
+    /// in the journal (found by scan, whose position this path does not keep).
+    pub async fn append_audit(&self, audit: AuditRecord) -> RecordStoreResult<u64> {
         let _driving = self.audit_driving.lock().await;
         let existing = self
             .audit_pending
@@ -174,7 +181,7 @@ impl UnitCheckpointEvidence {
                 .await?
             {
                 return if selected == audit {
-                    Ok(())
+                    Ok(0)
                 } else {
                     Err(refusal("running audit identity already differs"))
                 };
@@ -191,11 +198,12 @@ impl UnitCheckpointEvidence {
             pending
         };
         self.journal.confirm(&pending.run).await.map_err(error)?;
+        let node_seq = pending.run.records().first().map_or(0, |r| r.node_seq);
         self.audit_pending
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .take();
-        Ok(())
+        Ok(node_seq)
     }
 }
 
@@ -767,7 +775,7 @@ impl StoreUnitCheckpoints {
         if let Err(why) = self.no_foreign_pending() {
             return answered(out, &why);
         }
-        let mut entries = Vec::new();
+        let mut unsigned: Vec<(Vec<u8>, u64)> = Vec::new();
         let mut staged: Vec<(usize, Option<Secret<Vec<u8>>>)> = Vec::new();
         for (at, snapshot) in snapshots.iter().enumerate() {
             if out[at].is_some() {
@@ -784,8 +792,8 @@ impl StoreUnitCheckpoints {
             }
             match self.prepare_persist(snapshot).await {
                 Ok(None) => out[at] = Some(Ok(())),
-                Ok(Some((entry, previous))) => {
-                    entries.push(entry);
+                Ok(Some((body, arrived, previous))) => {
+                    unsigned.push((body, arrived));
                     staged.push((at, previous));
                 }
                 Err(why) => out[at] = Some(Err(why)),
@@ -794,6 +802,32 @@ impl StoreUnitCheckpoints {
         if staged.is_empty() {
             return answered(out, &refusal("unit checkpoint batch result missing"));
         }
+        // One signing job for the whole batch (SEALING-FIX §3.3): all or nothing, before staging.
+        let bodies: Vec<&[u8]> = unsigned.iter().map(|(body, _)| body.as_slice()).collect();
+        let signed = match self.audit.sign_checkpoints(&bodies).await {
+            Ok(signatures) if signatures.len() == unsigned.len() => Ok(signatures),
+            Ok(_) => Err(refusal("unit checkpoint signer answered a different count")),
+            Err(why) => Err(why),
+        };
+        let signatures = match signed {
+            Ok(signatures) => signatures,
+            Err(why) => {
+                for (at, _) in &staged {
+                    out[*at] = Some(Err(copied(&why)));
+                }
+                return answered(out, &why);
+            }
+        };
+        let entries: Vec<Entry> = unsigned
+            .into_iter()
+            .zip(signatures)
+            .map(|((mut signed, arrived), signature)| {
+                let mut field = BodyWriter::new();
+                field.bytes(&signature);
+                signed.extend_from_slice(&field.finish());
+                Entry::new(RecordClass::Checkpoint, signed).at(arrived, 0)
+            })
+            .collect();
         let run = match self.evidence.journal.stage_run(&entries).map_err(error) {
             Ok(run) => run,
             Err(why) => {
@@ -846,11 +880,12 @@ impl StoreUnitCheckpoints {
     }
 
     /// One checkpoint's pre-checks before staging: `None` when its exact revision is already
-    /// selected (confirmed in place), else its signed original and the head row it replaces.
+    /// selected (confirmed in place), else its unsigned original body, its arrival, and the head
+    /// row it replaces. The caller signs every body of the batch in one job.
     async fn prepare_persist(
         &self,
         snapshot: &UnitCheckpoint,
-    ) -> RecordStoreResult<Option<(Entry, Option<Secret<Vec<u8>>>)>> {
+    ) -> RecordStoreResult<Option<(Vec<u8>, u64, Option<Secret<Vec<u8>>>)>> {
         snapshot.validate()?;
         if snapshot.measurement.is_none() && snapshot.audit.is_none() {
             return Err(refusal("unit.accrued lacks captured admission audit facts"));
@@ -887,15 +922,7 @@ impl StoreUnitCheckpoints {
         }
         let mut body = BodyWriter::new();
         body.text(checkpoint_tag(snapshot)).bytes(&encoded);
-        let mut signed = body.finish();
-        let signature = self.audit.sign_checkpoint(&signed)?;
-        let mut field = BodyWriter::new();
-        field.bytes(&signature);
-        signed.extend_from_slice(&field.finish());
-        Ok(Some((
-            Entry::new(RecordClass::Checkpoint, signed).at(snapshot.arrived, 0),
-            previous,
-        )))
+        Ok(Some((body.finish(), snapshot.arrived, previous)))
     }
 
     /// Phase R (SHUTDOWN-HANG F3.1): each terminal checkpoint's audit is confirmed (by its carried

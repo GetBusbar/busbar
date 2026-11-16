@@ -48,9 +48,14 @@ pub(crate) use amend::verify_held;
 
 mod audit;
 
-pub(crate) use audit::AuditWindowAt;
+pub(crate) use audit::{AuditWindowAt, LineIdentity};
 
 mod audit_page;
+
+pub(crate) mod audit_services;
+pub(crate) mod notary;
+pub(crate) mod signer;
+pub(crate) use notary::HeadFeed;
 
 mod ring;
 pub(crate) use ring::AuditRing;
@@ -108,6 +113,13 @@ pub struct Durability {
     /// Where a sealed terminal unit's audit line is noted for its checkpoint removal
     /// (SHUTDOWN-HANG F1a). Weak: governance owns the checkpoint sink, which holds this book.
     pub audit_hints: Option<std::sync::Weak<busbar_kernel::governance::GovState>>,
+
+    /// THE NOTARY'S HEAD FEED (SEALING-FIX §3.2): every staged line is published here under this
+    /// book's lock, so the notary reads the head without taking it.
+    pub(crate) head: Arc<HeadFeed>,
+
+    /// The WAL `node_seq` of the newest audit line read back at reopen (0 for none).
+    resumed_head_node_seq: u64,
 }
 
 impl Durability {
@@ -454,6 +466,8 @@ pub struct NodeBook {
     pub runtime_journal: Arc<RuntimeJournal>,
     pub node_lease: Option<Arc<busbar_kernel::persistence::boot_identity::NodeLease>>,
     pub verb_store: crate::root::kernel::VerbStoreHandle,
+    /// The signer threads and the notary (SEALING-FIX §3.3); `None` on a keyless book.
+    pub audit: Option<Arc<audit_services::AuditServices>>,
 }
 impl NodeBook {
     #[cfg(test)]
@@ -486,6 +500,7 @@ pub(crate) async fn node_book(
         runtime_journal: journal,
         node_lease: None,
         verb_store: None,
+        audit: None,
     })
 }
 
@@ -516,6 +531,8 @@ pub(crate) async fn build_on_store(
         history_budget,
         resumed: true,
         audit_hints: None,
+        head: Arc::new(HeadFeed::default()),
+        resumed_head_node_seq: 0,
     };
     let mut findings = Vec::new();
     if let Some(cards) = cards {
@@ -525,6 +542,7 @@ pub(crate) async fn build_on_store(
             .map_err(|error| native_open_error(error.to_string()))?;
     }
     durability.resume_audit(&records);
+    durability.publish_resumed_head();
     findings.extend(
         durability
             .audit_findings

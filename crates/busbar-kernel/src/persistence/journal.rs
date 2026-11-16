@@ -38,6 +38,7 @@ mod transfer;
 pub(crate) use transfer::Handover;
 mod recovery_hooks;
 pub(crate) use recovery_hooks::{RowChange, Selection};
+pub mod head_cell;
 pub mod runtime;
 pub use runtime::{BufferBudget, RuntimeError, RuntimeJournal, StagedRun};
 

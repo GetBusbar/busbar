@@ -117,6 +117,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         health: HealthDefaultsCfg::default(),
         routing: RoutingCfg::default(),
         telemetry: Default::default(),
+        audit: Default::default(),
     }
 }
 
@@ -2744,7 +2745,7 @@ fn core_sections_parse_directly_and_are_named_in_unknown_field_errors() {
          `admin_require_mtls`, `auth`, `identity-providers`, `providers`, `models`, `pools`, \
          `hooks`, `groups`, `rate_card`, `plugin_rate_cards`, `per_request_fee`, `store`, \
          `secrets`, `advanced`, `export`, `plugins`, `security`, `limits`, `health`, `routing`, \
-         `telemetry` at line 3 column 1"
+         `telemetry`, `audit` at line 3 column 1"
     );
     for field in ["oauth_as", "credentials"] {
         let duplicate =
