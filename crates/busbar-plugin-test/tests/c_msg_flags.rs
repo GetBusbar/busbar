@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-L9"]
+#[ignore = "covered by unit test plugin-loader adapters::transport::tests::message_flags_cross_a_fragmented_message (adapter internals are not pub to this crate); owner W1-L9"]
 fn message_flags_cross_a_fragmented_message() {
     todo!("owner: W1-L9 (C-MSG-FLAGS)")
 }

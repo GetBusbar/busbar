@@ -7,7 +7,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K6"]
+#[ignore = "blocked: end-to-end arm needs the gateway request path with auth-header outbound-only; core arm is covered by busbar-kernel issued/tests.rs a_key_is_read_from_the_first_carrier_in_order"]
 fn key_carriers() {
-    todo!("owner: W1-K6 (C-KEY-CARRIERS)")
+    todo!("blocked: end-to-end arm needs the gateway request path with auth-header outbound-only; core arm is covered by busbar-kernel issued/tests.rs a_key_is_read_from_the_first_carrier_in_order (C-KEY-CARRIERS)")
 }

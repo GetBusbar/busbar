@@ -561,12 +561,6 @@ pub struct LimitView {
     /// Where `on_exhaust: downgrade` sends exhausted traffic. Present iff downgrading.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub downgrade_to: Option<String>,
-    /// Authored budget admission policy: exact (default when absent) or estimate.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub admission: Option<&'static str>,
-    /// Authored in-flight exhaustion policy: finish-unit (default when absent) or cut-stream.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub on_exhaustion: Option<&'static str>,
 }
 
 impl LimitView {
@@ -581,14 +575,6 @@ impl LimitView {
                 busbar_kernel::config::groups::OnExhaust::Downgrade => "downgrade",
             }),
             downgrade_to: l.downgrade_to.as_ref().map(|s| s.value.clone()),
-            admission: l.admission.map(|mode| match mode {
-                busbar_kernel::config::groups::AdmissionMode::Exact => "exact",
-                busbar_kernel::config::groups::AdmissionMode::Estimate => "estimate",
-            }),
-            on_exhaustion: l.on_exhaustion.map(|mode| match mode {
-                busbar_kernel::config::groups::ExhaustionMode::FinishUnit => "finish-unit",
-                busbar_kernel::config::groups::ExhaustionMode::CutStream => "cut-stream",
-            }),
         }
     }
 }
@@ -651,17 +637,6 @@ pub struct GroupBucketUsageView {
     pub requests_cap: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens_cap: Option<u64>,
-    /// Per-tier token caps mirroring the cost tiers, when configured (absent = uncapped on that
-    /// tier): `tokens_input` = uncached input, `tokens_output` = output, `tokens_cache_read`,
-    /// `tokens_cache_write` = cache creation.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tokens_input_cap: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tokens_output_cap: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tokens_cache_read_cap: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tokens_cache_write_cap: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub budget_cap: Option<i64>,
     /// Cents left under `budget_cap` (floored at 0); absent when no budget cap is set.

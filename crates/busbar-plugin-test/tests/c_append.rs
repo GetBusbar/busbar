@@ -7,7 +7,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K8C"]
+#[ignore = "owner: W1-K8C; blocked (re-checked on dev 2026-11-16): the kernel export pump, DiskSink and stream routing are not on dev (OUTSTANDING row 4)"]
 fn file_sink_appends() {
     todo!("owner: W1-K8C (C-APPEND)")
 }

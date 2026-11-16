@@ -241,7 +241,7 @@ fn decode_answer(recs: Records<'_>, scrub: &Scrub) -> Result<HookAnswer, RecErr>
 /// A REFUSED or FAILED answer as a `PortError`. The text is scrubbed whole, then cut (I14). The facts are the
 /// FAILED answer's own; a REFUSED answer never carries any.
 #[allow(clippy::too_many_arguments)]
-fn port_error(
+pub fn port_error(
     scrub: &Scrub,
     failed_answer: bool,
     code: u32,

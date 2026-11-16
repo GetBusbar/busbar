@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K8B"]
+#[ignore = "owner: W1-K8B; blocked (re-checked on dev 2026-11-16): the K8B head-authority to verify path was not found on dev (not traced in depth)"]
 fn an_h2_authority_reaches_verify() {
     todo!("owner: W1-K8B (C-AUTHORITY)")
 }
