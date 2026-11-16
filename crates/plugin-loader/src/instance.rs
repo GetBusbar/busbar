@@ -1904,3 +1904,127 @@ fn secret_handles(v: &serde_json::Value, out: &mut Vec<u32>) {
         _ => {}
     }
 }
+
+/// C-NEED-DECODE `bad_endpoint_records_are_invalid` (TRANSPORT-SECURITY-POLICY §8 test 10, IF §3 round 32; moved
+/// here from busbar-plugin-test `c_need_decode`, whose case index points at this module): a CHECK answer's
+/// ENDPOINT records decode in answer order; more than 16, a dest over 2,048 bytes or not UTF-8, an op other than
+/// OPEN/FETCH, an egress class above LOOPBACK_ALLOWED, the retired bit 0x200 or any other stray bit is INVALID,
+/// which refuses CONFIG naming the instance.
+#[cfg(test)]
+mod endpoint_decode_tests {
+    use super::*;
+    use busbar_plugin_abi::records::{Reply, Writer};
+
+    const NAME: &str = "store-x";
+
+    fn flags(tls: u32, class: u32) -> u32 {
+        tls | (class << 16)
+    }
+
+    fn answer(endpoints: &[(u32, u32, &[u8])]) -> Reply {
+        let mut out = Reply::new();
+        out.put_text(tag::TEXT, "a record of another tag is not an endpoint")
+            .expect("the test answer fits");
+        for &(op, flags, dest) in endpoints {
+            out.put_pod_tail(tag::ENDPOINT, &EndpointRec { op, flags }, dest)
+                .expect("the test answer fits");
+        }
+        out
+    }
+
+    /// The CONFIG refusal's text for `endpoints`; anything else fails the test.
+    fn invalid(endpoints: &[(u32, u32, &[u8])]) -> String {
+        match decode_endpoints(answer(endpoints).as_bytes(), NAME) {
+            Err(OpenError::Config { code, text, .. }) => {
+                assert_eq!(code, refused::R_CONFIG, "{text}");
+                assert!(
+                    text.starts_with("store-x: the plugin declared an invalid ENDPOINT ("),
+                    "the refusal names the instance: {text}"
+                );
+                text
+            }
+            other => panic!("an invalid ENDPOINT refuses CONFIG, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bad_endpoint_records_are_invalid() {
+        let db = flags(need_flag::TLS_REQUIRED, egress::OPERATOR_INFRASTRUCTURE);
+        let collector = flags(need_flag::TLS_NONE, egress::LOOPBACK_ALLOWED);
+        let decoded = decode_endpoints(
+            answer(&[
+                (op::OPEN, db, &b"db.internal:5432"[..]),
+                (
+                    op::FETCH,
+                    collector,
+                    &b"http://127.0.0.1:4318/v1/traces"[..],
+                ),
+            ])
+            .as_bytes(),
+            NAME,
+        )
+        .expect("two well-formed endpoints decode");
+        assert_eq!(
+            decoded,
+            vec![
+                DeclaredEndpoint {
+                    op: op::OPEN,
+                    flags: db,
+                    dest: "db.internal:5432".into(),
+                },
+                DeclaredEndpoint {
+                    op: op::FETCH,
+                    flags: collector,
+                    dest: "http://127.0.0.1:4318/v1/traces".into(),
+                },
+            ],
+            "in answer order, as declared"
+        );
+
+        // Sixteen is the bound; the seventeenth is INVALID.
+        let sixteen = [(op::OPEN, db, &b"h:1"[..]); 16];
+        assert_eq!(
+            decode_endpoints(answer(&sixteen).as_bytes(), NAME)
+                .expect("sixteen endpoints decode")
+                .len(),
+            16
+        );
+        let seventeen = [(op::OPEN, db, &b"h:1"[..]); 17];
+        assert!(invalid(&seventeen).contains("more than 16"));
+
+        // 2,048 dest bytes is the bound; one more is INVALID, and so is a dest that is not UTF-8.
+        let longest = [b'a'; 2_048];
+        assert_eq!(
+            decode_endpoints(answer(&[(op::OPEN, db, &longest[..])]).as_bytes(), NAME)
+                .expect("a 2,048-byte dest decodes")
+                .len(),
+            1
+        );
+        let over = [b'a'; 2_049];
+        assert!(invalid(&[(op::OPEN, db, &over[..])]).contains("dest over 2,048 bytes"));
+        assert!(invalid(&[(op::OPEN, db, &b"\xff\xfe:1"[..])]).contains("dest not UTF-8"));
+
+        // An op other than OPEN or FETCH.
+        for unknown in [0, 2, 0xFF, u32::MAX] {
+            assert!(
+                invalid(&[(unknown, db, &b"h:1"[..])]).contains("(op)"),
+                "op {unknown}"
+            );
+        }
+
+        // An egress class above LOOPBACK_ALLOWED, the retired 0x200 and any other stray bit.
+        for class in egress::LOOPBACK_ALLOWED + 1..=15 {
+            let bad = flags(need_flag::TLS_REQUIRED, class);
+            assert!(
+                invalid(&[(op::OPEN, bad, &b"h:1"[..])]).contains("(flags)"),
+                "class {class}"
+            );
+        }
+        for stray in [0x200, 0x10, 1 << 20, 1 << 31] {
+            assert!(
+                invalid(&[(op::FETCH, db | stray, &b"https://h/"[..])]).contains("(flags)"),
+                "bit {stray:#x}"
+            );
+        }
+    }
+}
