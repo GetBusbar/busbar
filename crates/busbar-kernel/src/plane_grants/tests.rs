@@ -17,7 +17,7 @@ use busbar_plugin_abi::types::{Bytes, KindCode, Pair, Str};
 use super::*;
 use crate::ingress::replay::StoreReplay;
 use crate::ingress::signed_ingress::{admit, check, Refused, RouteSecrets, StandardWebhooks};
-use crate::plugin_records::StoreRecords;
+use crate::plugin_records::{PluginRecords, StoreRecords};
 
 const NOW: u64 = 1_800_000_000;
 
