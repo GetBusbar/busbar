@@ -1339,7 +1339,7 @@ pub(crate) async fn finish(
     reactor: tokio::runtime::Handle,
     startup: Startup,
     services: Option<Arc<KernelServices>>,
-) -> Result<(Startup, busbar_kernel::directory::DirectoryRefresh), String> {
+) -> Result<(Startup, super::boot::workers::PreparedWorkers), String> {
     let ServingReady {
         built,
         instances,
@@ -1576,16 +1576,18 @@ pub(crate) async fn finish(
     if installed.is_err() {
         return Err("the MIN-3 boot ran twice in one process".to_owned());
     }
-    // The tick timer task of every seat whose plane states a period (§8.6 `tick_s`): its PUSHes queue under the
-    // instance's namespace, its EMITs go to their carriers.
+    // Retain dormant maintenance until root has published the serving routes.
+    let mut workers = super::boot::workers::PreparedWorkers::new();
+    workers.push(refresh.run());
     let queue: Arc<dyn PushQueue> = shared.push.clone();
-    for seat in &ticking {
-        tokio::spawn(seat.clone().tick_task(Arc::clone(&queue)));
+    for seat in ticking {
+        let queue = Arc::clone(&queue);
+        workers.push(async move { seat.tick_task(queue).await });
     }
     if let Some(held) = booted() {
         tracing::info!("{}", held.describe());
     }
-    Ok((startup, refresh))
+    Ok((startup, workers))
 }
 
 #[cfg(test)]

@@ -165,17 +165,25 @@ struct PreparedRefresh {
 }
 
 impl DirectoryRefresh {
-    /// Start each prepared refresh exactly once, after successful generation publication.
+    /// Test fixture convenience; production retains `run` under its generation worker owner.
+    #[cfg(test)]
     pub fn start(self) {
-        for worker in self.workers {
-            holds::spawn_refresh(
-                &worker.set,
+        tokio::spawn(self.run());
+    }
+
+    /// Drive the prepared refreshes inside their generation's owned worker task.
+    /// Dropping this future cancels all refreshes and releases their Store scopes.
+    pub async fn run(self) {
+        futures::future::join_all(self.workers.into_iter().map(|worker| {
+            holds::refresh(
+                Arc::downgrade(&worker.set),
                 worker.scope,
-                worker.every_ms,
+                std::time::Duration::from_millis(u64::from(worker.every_ms.max(1))),
                 worker.instance,
                 worker.events,
-            );
-        }
+            )
+        }))
+        .await;
     }
 }
 

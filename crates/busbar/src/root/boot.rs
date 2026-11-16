@@ -2538,6 +2538,7 @@ pub(crate) mod process;
 pub(crate) mod inputs;
 
 pub(crate) mod restricted;
+pub(crate) mod workers;
 
 #[cfg(test)]
 #[path = "tests/generation_workers.rs"]

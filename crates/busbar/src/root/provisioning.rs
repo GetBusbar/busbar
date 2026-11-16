@@ -48,7 +48,7 @@ impl ProvisioningAuth {
     }
 }
 
-/// S7's complete services and dormant work. Only S9 may consume `refresh.start()`.
+/// S7's complete services and dormant work. S9 starts `refresh.run()` with the generation's workers.
 pub(crate) struct PreparedProvisioning {
     pub(crate) directory: Arc<KernelDirectory>,
     pub(crate) holds: Arc<Holds>,

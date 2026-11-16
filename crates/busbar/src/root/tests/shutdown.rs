@@ -371,6 +371,7 @@ impl Fixture {
                 .map(|code| Box::pin(async move { code }) as Pin<Box<dyn Future<Output = i32>>>),
             threads: Vec::new(),
             work_recovery: tokio::spawn(async {}),
+            generation_workers: crate::root::boot::workers::PreparedWorkers::new().start(),
             control_drain: Box::pin(async {}),
             node_lease: None,
             flusher,

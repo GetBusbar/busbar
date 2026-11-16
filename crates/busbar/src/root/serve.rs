@@ -742,10 +742,10 @@ impl Services {
         self.kernel.clone()
     }
 
-    /// Start the retained kernel's flush loop only after the serving generation is published.
-    pub(crate) fn start(&self) {
+    /// Prepare the flush loop under the same lifecycle owner as the generation's other workers.
+    pub(crate) fn prepare_workers(&self, workers: &mut super::boot::workers::PreparedWorkers) {
         if let Some(kernel) = self.kernel() {
-            tokio::spawn(async move { kernel.flushes().await });
+            workers.push(async move { kernel.flushes().await });
         }
     }
 

@@ -378,6 +378,7 @@ pub(crate) struct PostServe<'a> {
     /// Data runtimes and transport-plugin listener threads: requests like any other.
     pub(crate) threads: Vec<std::thread::JoinHandle<()>>,
     pub(crate) work_recovery: JoinHandle<()>,
+    pub(crate) generation_workers: super::boot::workers::RunningWorkers,
     /// The control runtime's detached-task drain.
     pub(crate) control_drain: Pin<Box<dyn Future<Output = ()> + 'a>>,
     pub(crate) node_lease: Option<crate::root::boot::NodeLeaseTask>,
@@ -417,6 +418,7 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         lines,
         threads,
         work_recovery,
+        generation_workers,
         control_drain,
         node_lease,
         flusher,
@@ -457,6 +459,13 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
 
     // [1] Requests, all under C1: every request-serving join, then plane cleanup.
     drain.enter(Phase::Requests);
+    match drain.wait_requests(generation_workers.stop()).await {
+        Outcome::Done(Ok(())) => {}
+        Outcome::Done(Err(error)) => {
+            failures.push(format!("generation workers did not stop: {error}"))
+        }
+        _ => failures.push("generation workers did not stop by the request cut".into()),
+    }
     let mut detached_joins: Vec<DrainHandle<Result<(), JoinError>>> = Vec::new();
     let threads = DrainHandle::spawn(tokio::task::spawn_blocking(move || {
         for handle in threads {

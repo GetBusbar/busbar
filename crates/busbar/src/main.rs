@@ -1320,7 +1320,7 @@ async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: Con
             .unwrap_or_else(|error| die(format!("cold record bootstrap refused: {error}")));
     }
 
-    let (store_admission, directory_refresh) = root::min3_boot::finish(
+    let (store_admission, mut generation_workers) = root::min3_boot::finish(
         serving_ready,
         process_io.handle(),
         store_admission,
@@ -1431,7 +1431,7 @@ async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: Con
 
     drop(served);
     let app_handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
-    services.start();
+    services.prepare_workers(&mut generation_workers);
     let probes = Arc::new(busbar_kernel::endpoints::ProbeState::new(
         book.as_ref().map(|book| book.runtime_journal.clone()),
     ));
@@ -1478,7 +1478,7 @@ async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: Con
         root::inbound::stage(guests, refusals);
     }
     let _ = root::inbound::publish(&app_handle.load());
-    directory_refresh.start();
+    let generation_workers = generation_workers.start();
     app_handle.on_apply(Box::new({
         let plan = Arc::clone(&listener_plan);
         move |app| {
@@ -1830,6 +1830,7 @@ async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: Con
         lines,
         threads,
         work_recovery,
+        generation_workers,
         control_drain: Box::pin(control_work.drain()),
         node_lease: node_lease_task,
         flusher: budget_flusher,
