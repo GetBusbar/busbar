@@ -100,37 +100,13 @@ pub fn store_required() -> String {
         .into()
 }
 
-/// A top-level `secrets:` entry — MODULE-LEVEL initialization config for a `kind: secret` plugin,
-/// keyed by the module NAME (alias or canonical). This is the delivery path for the config a secret
-/// plugin needs in its `open()` (a Vault plugin's address / namespace / auth token / TLS CA), exactly
-/// as `store.settings` carries a store plugin's `open()` config. WITHOUT this block a `kind: secret`
-/// plugin's `open()` receives `{}`, forcing operators to repeat every piece of module config in EVERY
-/// individual `SecretRef.settings` (multiplying exposure of the Vault address/token). The built-in
-/// `env` / `file` modules take no module config and MUST NOT appear here (validated).
-///
-/// The `settings` are resolved against the BUILT-IN `env` / `file` secret resolvers ONLY (so
-/// `{ token: { env: VAULT_TOKEN } }` works) — NEVER against another secret plugin, which would be a
-/// bootstrap cycle (a secret module cannot resolve its OWN config through itself).
-///
-/// # FREEZE BLOCKER: `secrets:` IS A DELIBERATE EXEMPTION FROM THE NAMED-INSTANCE PATTERN
-///
-/// Every OTHER plugin-instance kind in 1.5.3 is a top-level NAMED-DEFINITION map — `hooks:`,
-/// `identity-providers:`, `export:`, `store:` are all `name → {module, settings, …}` and are
-/// referenced by bare name. **`secrets:` is deliberately NOT, and must stay that way.**
-///
-/// The reason is that `secrets:` does not configure an INSTANCE. It configures a MODULE's `open()` —
-/// the one-time initialization of the secret backend itself. There is nothing to reference by name:
-/// a `SecretRef` already names its module (`{ module: vault, settings: {…} }`), and the entry here
-/// supplies the module-wide half of that module's configuration. Wrapping it in a named map would
-/// invent an instance identity that no reference site can use, and would then require every
-/// `SecretRef` in the config to be rewritten to point at an instance name instead of a module — a
-/// large break that buys nothing.
-///
-/// This is recorded HERE, on the struct, precisely so nobody later "fixes" the inconsistency: the
-/// module-keyed shape is the correct shape for module-level `open()` config, and it is frozen.
+/// One named secret instance (IF §8.2): its image identity and opaque opening settings.
+/// References select the configured map key; shorthands select its unique instance.
 #[derive(Debug, Deserialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub struct SecretModuleCfg {
+    /// Admitted image identity or declared former name. Required in canonical 1.6 configuration.
+    pub module: String,
     /// The module's own opaque module-level settings, delivered to the plugin's `open()` as its config
     /// JSON. Any `SecretRef`-typed value (e.g. `token: { env: VAULT_TOKEN }`) is resolved via the
     /// built-in env/file modules before it crosses the ABI.
@@ -152,6 +128,7 @@ impl SecretModuleCfg {
     ) -> impl Serialize + 'a {
         #[derive(Serialize)]
         struct View<'a, F0: Serialize> {
+            module: &'a str,
             settings: F0,
             #[serde(skip_serializing_if = "Option::is_none")]
             limits: Option<&'a busbar_contract::yaml::Value>,
@@ -159,6 +136,7 @@ impl SecretModuleCfg {
             insecure_transport: Option<&'a busbar_contract::yaml::Value>,
         }
         View {
+            module: &self.module,
             settings: self.settings.authoring(seal),
             limits: self.limits.as_ref(),
             insecure_transport: self.insecure_transport.as_ref(),
@@ -651,4 +629,20 @@ fn seal_every_ms<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u6
         }
     }
     deserializer.deserialize_any(Ms)
+}
+
+#[cfg(test)]
+mod secret_instance_shape_tests {
+    use super::SecretModuleCfg;
+    #[test]
+    fn a_secret_instance_requires_its_image_separately_from_its_name() {
+        let configured: SecretModuleCfg =
+            busbar_contract::yaml::from_str("module: source-image\nsettings: {}\n").unwrap();
+        assert_eq!(configured.module, "source-image");
+        assert!(busbar_contract::yaml::from_str::<SecretModuleCfg>("settings: {}\n").is_err());
+        assert!(busbar_contract::yaml::from_str::<SecretModuleCfg>(
+            "module: source-image\nunknown: true\n"
+        )
+        .is_err());
+    }
 }
