@@ -32,8 +32,7 @@ fn declared_registrations_keep_private_reach_and_auth_isolated() {
     let other = declared("plane-b", &json!({}), &[], &anchor).unwrap();
     assert!(other.definitions.is_empty());
 
-    let config =
-        json!({"servers": {"c": {"url": "https://private.test", "auth": {"bearer": "none"}}}});
+    let config = json!({"servers": {"c": {"url": "https://private.test", "auth": {"bearer": {"module":"file", "settings":{"path":"/run/token"}}}}}});
     let a = declared("a-b", &config, &["/servers/*"], &anchor).unwrap();
     let b = declared(
         "a",
