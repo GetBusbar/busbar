@@ -61,7 +61,6 @@ use busbar_plugin_loader::instance::{
 use busbar_plugin_loader::ports::store::StoreHandle;
 
 use busbar_kernel::teller::Kernel;
-use busbar_kernel::upstreams::ConfiguredUpstreams;
 
 use super::plane_seats::{compose as compose_seat, ConnTable, SeatShared, SpawnCustody};
 use super::port_mount::Ingress;
@@ -482,12 +481,12 @@ fn admit_dropped_images(
 }
 
 /// One configured instance, owned until the plan borrows it.
-struct Configured {
-    kind: KindCode,
-    identity: String,
-    name: String,
-    config: Vec<u8>,
-    limits: busbar_plugin_abi::host_side::caller::InstanceLimits,
+pub(crate) struct Configured {
+    pub(crate) kind: KindCode,
+    pub(crate) identity: String,
+    pub(crate) name: String,
+    pub(crate) config: Vec<u8>,
+    pub(crate) limits: busbar_plugin_abi::host_side::caller::InstanceLimits,
 }
 
 /// One admitted MIN-3 plane image: its identity and its signed manifest's `alias` (today's plane name, IF §12.10:
@@ -586,22 +585,39 @@ fn configured(cfg: &RootCfg, planes: &[PlaneImage]) -> Result<Vec<Configured>, S
 /// typed over the config's `upstreams:` section and each entry's parsed binding (`cfg.min3`, W1-K7). The load
 /// already typed the same section once (`config::resolve`), so a refusal here means the config changed shape
 /// between load and boot; a binding naming an upstream with no entry still refuses the boot.
-fn configured_upstreams(cfg: &RootCfg) -> Result<Arc<ConfiguredUpstreams>, String> {
-    upstreams_of(&cfg.min3.upstream_section, cfg)
-}
-
-/// The table typed over `section` (upstream name to entry) and the config's bindings; Err = every refusal, joined.
-fn upstreams_of(
-    section: &serde_json::Map<String, serde_json::Value>,
-    cfg: &RootCfg,
-) -> Result<Arc<ConfiguredUpstreams>, String> {
-    ConfiguredUpstreams::from_config(
-        section,
-        &cfg.min3.upstreams,
-        &busbar_kernel::plugin_config::upstream_anchor,
-    )
-    .map(Arc::new)
-    .map_err(|refused| refused.join("; "))
+pub(crate) fn declared_planes(
+    registry: &MinRegistry,
+    instances: &mut [Configured],
+) -> Result<std::collections::BTreeMap<String, busbar_kernel::upstreams::Declared>, String> {
+    let mut declarations = std::collections::BTreeMap::new();
+    for instance in instances
+        .iter_mut()
+        .filter(|one| matches!(one.kind, KindCode::Plane))
+    {
+        let described = registry
+            .described(&instance.identity)
+            .ok_or_else(|| format!("{}: the plane image has not been admitted", instance.name))?;
+        let pointers: Vec<_> = described
+            .paths(busbar_plugin_abi::records::tag::D_UPSTREAM_PATH)
+            .collect();
+        let authored = busbar_contract::json::parse_value(&instance.config)
+            .map_err(|e| format!("{}: its authored config is invalid: {e}", instance.name))?;
+        let declared = busbar_kernel::upstreams::declared(
+            &instance.name,
+            &authored,
+            &pointers,
+            &busbar_kernel::plugin_config::upstream_anchor,
+        )
+        .map_err(|errors| errors.join("; "))?;
+        instance.config = busbar_contract::json::to_vec(&declared.visible_bag).map_err(|e| {
+            format!(
+                "{}: its visible config cannot be encoded: {e}",
+                instance.name
+            )
+        })?;
+        declarations.insert(instance.name.clone(), declared);
+    }
+    Ok(declarations)
 }
 
 /// The shorthands the admitted secret images declare, as the one `Sugars` the binder and the config parser read.
@@ -1061,6 +1077,7 @@ pub(crate) async fn run(
         &built.registry,
         &transport_images,
     )?);
+    let declared = declared_planes(&built.registry, &mut instances)?;
     let specs: Vec<(KindCode, InstanceSpec<'_>)> = instances
         .iter()
         .map(|one| {
@@ -1088,7 +1105,10 @@ pub(crate) async fn run(
         shared.work_store.clone(),
     );
     let seat = SeatShared {
-        upstreams: configured_upstreams(cfg)?,
+        upstreams: declared
+            .iter()
+            .map(|(name, split)| (name.clone(), Arc::new(split.definitions.clone())))
+            .collect(),
         signals: Arc::clone(&shared.signals),
         secrets: Arc::new(SpawnCustody(built.secrets)),
         kernel: Arc::new(Kernel::new()),

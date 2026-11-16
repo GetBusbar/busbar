@@ -14,7 +14,7 @@ use crate::plugin_config::TrustAnchor;
 
 /// Every `upstreams.<name>` of one config load, typed. Built once per load (a reload builds a new table); a lookup
 /// is one ordered-map probe and an `Arc` clone.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ConfiguredUpstreams {
     by_name: BTreeMap<Box<str>, Arc<UpstreamDef>>,
 }
