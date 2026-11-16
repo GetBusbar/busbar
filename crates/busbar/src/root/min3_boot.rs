@@ -27,7 +27,7 @@ use busbar_kernel::appbuild::boot_walk::{
 };
 use busbar_kernel::channels::signals::SignalRegistry;
 use busbar_kernel::channels::SessionSignals;
-use busbar_kernel::config::{AtRestCfg, PluginsCfg, RootCfg};
+use busbar_kernel::config::{PluginsCfg, RootCfg};
 use busbar_kernel::directory::{KernelDirectory, LateDirectory, LogEvents};
 use busbar_kernel::host_services::{DestJudge, KernelServices};
 use busbar_kernel::ingress::replay::StoreReplay;
@@ -58,7 +58,7 @@ use busbar_plugin_loader::admit::Admitted;
 use busbar_plugin_loader::instance::{
     Ceilings, InstanceSpec, OpenError, OpenedPort, Registry, StoreSeal,
 };
-use busbar_plugin_loader::ports::store::StoreHandle;
+use busbar_ports::store::StoreHandle;
 
 use busbar_kernel::teller::Kernel;
 use busbar_kernel::upstreams::ConfiguredUpstreams;
@@ -97,13 +97,11 @@ impl IssuedCredentials for Unissued {
 }
 
 /// Core's own secrets, resolved at boot through the secret kind into owned values (IF §11.2: the admin token,
-/// the signing key, the at-rest keys). `None` = the config states no such reference.
+/// the signing key). `None` = the config states no such reference.
 #[derive(Default)]
 pub(crate) struct CoreSecrets {
     pub(crate) operator_token: Option<SecureVec>,
     pub(crate) signing_key: Option<SecureVec>,
-    pub(crate) at_rest_key: Option<SecureVec>,
-    pub(crate) at_rest_previous: Option<SecureVec>,
 }
 
 /// The push queue the plane instances' PUSH intents and ticks enqueue into: filled once the store is open (the
@@ -297,15 +295,12 @@ impl Booted {
             .is_some();
         format!(
             "MIN-3 boot: {} planes served through ports, {} shorthands declared, deployment dep_{}, \
-             store attached: {attached}; core secrets: admin token {}, signing key {}, at-rest key {}, \
-             previous at-rest key {}",
+             store attached: {attached}; core secrets: admin token {}, signing key {}",
             self.seats.len(),
             self.registry.sugars().len(),
             hex::encode(self.deployment),
             held(&self.core.operator_token),
             held(&self.core.signing_key),
-            held(&self.core.at_rest_key),
-            held(&self.core.at_rest_previous),
         )
     }
 }
@@ -501,12 +496,10 @@ pub(crate) struct PlaneImage {
 /// (IF §12.23 rule 1: "no config word is added"), so each admitted plane image is one instance. Its name is the
 /// image's alias, so an instance keeps today's plane name (ADMIN-API A-1), else its identity. Its config is the
 /// document's top-level section of that name, the plane's 1.x bag, which its own `migrate` converts (IF §12.10 item
-/// 2), else `{}`. The config grammar has no `planes.<name>` block yet (K7 owns it); when it lands, it replaces this
-/// rule here and nowhere else. Two images answering one name are refused.
+/// 2), else `{}`. The config grammar has no `planes.<name>` block, so a plane runs at the kind's default limits. Two images answering one name are refused.
 fn plane_instances(
     images: &[PlaneImage],
     sections: &std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
-    limits: &dyn Fn(&str) -> busbar_plugin_abi::host_side::caller::InstanceLimits,
 ) -> Result<Vec<Configured>, String> {
     let mut out: Vec<Configured> = Vec::with_capacity(images.len());
     for image in images {
@@ -529,7 +522,7 @@ fn plane_instances(
         out.push(Configured {
             kind: KindCode::Plane,
             identity: image.identity.clone(),
-            limits: limits(&name),
+            limits: busbar_plugin_abi::host_side::caller::InstanceLimits::default(),
             name,
             config,
         });
@@ -577,7 +570,6 @@ fn configured(cfg: &RootCfg, planes: &[PlaneImage]) -> Result<Vec<Configured>, S
     out.extend(plane_instances(
         planes,
         &super::door_steps::raw_sections(cfg),
-        &|name| instance_limits(cfg, "planes", name),
     )?);
     Ok(out)
 }
@@ -684,17 +676,17 @@ fn build(guard: Guard, cfg: &RootCfg, images: Vec<Admitted>) -> Result<Built, St
         Arc::clone(&binder),
         NeedLimits::default(),
     );
-    let mut registry = Registry::new(
-        &HOST,
-        Arc::new(needs),
-        Arc::clone(&binder),
-        Ceilings::DEFAULT,
-    );
+    let slots = Arc::new(busbar_plugin_loader::instance::SlotTable::new());
+    busbar_plugin_loader::instance::install_sinks(&slots);
+    let mut described =
+        busbar_plugin_loader::instance::ImagesBuilder::new(&HOST, slots, Ceilings::DEFAULT);
     for image in images {
-        registry
-            .add(image)
+        described
+            .admit(image)
             .map_err(|refusal| format!("plugin image refused: {refusal}"))?;
     }
+    let registry = Registry::new(described.finish(), Arc::new(needs), Arc::clone(&binder));
+
     let sugars = sugars_of(&registry)?;
     binder.set_sugars(Arc::new(sugars.clone()));
     binder.set_ref_schemas(ref_schemas(&registry, cfg));
@@ -730,7 +722,7 @@ struct Steps<'r> {
     /// The process's secret kind: the open secret instances and the custody that resolves through them.
     secrets: &'static BootSecrets,
     /// `credentials.at_rest`: what the recoverable gate seals with, resolved before the store opens (2b).
-    at_rest: Option<AtRestCfg>,
+    at_rest: Option<SecretRef>,
     /// K9: what every seat's egress walk and carrier are composed over (the boot's one upstream table).
     seat: SeatShared,
     /// The seats' probe targets, held for their probers.
@@ -979,12 +971,6 @@ async fn core_secrets_of(cfg: &RootCfg, secrets: &BootSecrets) -> Result<CoreSec
             out.signing_key = Some(resolve("the signing key", reference).await?);
         }
     }
-    if let Some(keys) = &cfg.credentials.at_rest {
-        out.at_rest_key = Some(resolve("the at-rest key", &keys.key).await?);
-        if let Some(previous) = &keys.previous {
-            out.at_rest_previous = Some(resolve("the previous at-rest key", previous).await?);
-        }
-    }
     Ok(out)
 }
 
@@ -992,7 +978,7 @@ async fn core_secrets_of(cfg: &RootCfg, secrets: &BootSecrets) -> Result<CoreSec
 /// (2a) before the store (2b), so `credentials.at_rest` is resolved through them here, parsed exactly as the records
 /// step parses it, and published for `root::migrate::admit_for_host` before the store's open asks. `resolve` is the
 /// walk's core-secret resolution (by reference, the text naming only `what`).
-async fn publish_at_rest<F, Fut>(at_rest: Option<&AtRestCfg>, resolve: F)
+async fn publish_at_rest<F, Fut>(at_rest: Option<&SecretRef>, resolve: F)
 where
     F: Fn(&'static str, SecretRef) -> Fut,
     Fut: std::future::Future<Output = Result<SecureVec, String>>,
@@ -1005,18 +991,13 @@ where
 }
 
 /// Whether `keys` resolve and parse as at-rest keys; `Err` the first refusal's text.
-async fn at_rest_resolves<F, Fut>(keys: &AtRestCfg, resolve: F) -> Result<bool, String>
+async fn at_rest_resolves<F, Fut>(keys: &SecretRef, resolve: F) -> Result<bool, String>
 where
     F: Fn(&'static str, SecretRef) -> Fut,
     Fut: std::future::Future<Output = Result<SecureVec, String>>,
 {
-    let key = resolve("the at-rest key", keys.key.clone()).await?;
-    let previous = match &keys.previous {
-        Some(previous) => Some(resolve("the previous at-rest key", previous.clone()).await?),
-        None => None,
-    };
-    busbar_kernel::appbuild::records_keys_from(Some(&*key), previous.as_deref(), None)
-        .map(|parsed| parsed.at_rest.is_some())
+    let key = resolve("the signing key", keys.clone()).await?;
+    busbar_kernel::appbuild::records_keys_from(Some(&*key)).map(|parsed| parsed.at_rest.is_some())
 }
 
 /// Boot through the MIN-3 registry, before any listener serves. `Ok(false)`: the configured store is not a MIN-3
@@ -1105,7 +1086,7 @@ pub(crate) async fn run(
         shared: Arc::clone(&shared),
         signing_key: cfg.auth.as_ref().and_then(|auth| auth.signing_key.clone()),
         secrets: built.secrets,
-        at_rest: cfg.credentials.at_rest.clone(),
+        at_rest: cfg.auth.as_ref().and_then(|a| a.signing_key.clone()),
         seat,
         probes: Mutex::default(),
     };

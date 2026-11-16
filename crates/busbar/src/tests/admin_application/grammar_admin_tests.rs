@@ -259,7 +259,7 @@ async fn admin_validate_answers_needs_full_operator_where_apply_forbids() {
         "validate names the cause class and the field class: {view}"
     );
     assert!(
-        !errors.contains(".tar.gz") && !errors.contains("allow_unsigned"),
+        !errors.contains(".tar.gz") && !errors.contains("allow_untrusted"),
         "the answer carries no file name and no trust setting: {view}"
     );
 

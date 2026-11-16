@@ -335,8 +335,7 @@ fn admit_accepts_one_golden_candidate_per_writer_put_site() {
                 &[step(TARGET, Some(writer(0, 2)), writer(MAX, MAX))],
             ),
         ),
-        // busbar-migrations: cold-writer bootstrap, retire, reopen; stamped by the caller and the
-        // cold writer.
+        // Cold-writer bootstrap, retire, reopen; stamped by the caller and the cold writer.
         (
             "cold bootstrap",
             golden(bootstrap, 1, &[step(cold, None, writer(0, 1))]),

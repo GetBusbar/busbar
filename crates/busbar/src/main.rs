@@ -111,6 +111,10 @@ fn line_serve_requested(planes: &[&[root::linked::CliHelpRow]], argv: &root::cli
 
 const MAX_WORKER_THREADS: usize = 128;
 
+/// Allocation ceiling for each startup migration frame/page/semantic working buffer. Fixed; there
+/// is no config key for it.
+const MIGRATION_VALUE_BYTES: usize = 64 * 1024 * 1024;
+
 #[cfg(test)]
 fn worker_threads_from_env(name: &str) -> Option<usize> {
     let mut warnings = Vec::new();
@@ -666,8 +670,6 @@ async fn run(
         ))
     });
     let authoring_seal = busbar_kernel::seal::acquire();
-    root::measurements::configure(&base_cfg.plugin_rate_cards)
-        .unwrap_or_else(|error| die(format!("plugin measurement configuration: {error}")));
     let base_store_settings = serde_json::to_value(
         base_cfg
             .store
@@ -742,9 +744,9 @@ async fn run(
                     &prepared_store,
                     busbar_contract::persistence::lifecycle::Bounds {
                         items: 4096,
-                        bytes: u32::try_from(base_cfg.limits.migration_value_bytes)
+                        bytes: u32::try_from(MIGRATION_VALUE_BYTES)
                             .unwrap_or_else(|_| {
-                                die("limits.migration_value_bytes exceeds native frame capacity")
+                                die("startup migration value bytes exceed native frame capacity")
                             }),
                     },
                     &control_work.shutdown_rx,
@@ -991,6 +993,9 @@ async fn run(
             .as_ref()
             .map(|p| Duration::from_secs(p.retention_seconds)),
     );
+    // ADMIN-API-1.6 §3.5: what unit records keep of the end user and request headers, for the
+    // life of the process.
+    root::records_capture::configure(&deploy.records);
 
     let plugins_cfg = deploy.plugins.clone();
     root::measurements::maintenance(root::boot::admit_recovered_plugins(&plugins_cfg))
@@ -1037,8 +1042,6 @@ async fn run(
 
     let mut cfg =
         config::resolve(&deploy, &defs).unwrap_or_else(|errs| die_list("config errors", errs));
-    root::measurements::configure(&cfg.plugin_rate_cards)
-        .unwrap_or_else(|error| die(format!("plugin measurement configuration: {error}")));
 
     let door_kernel_sections = root::door_steps::kernel_sections(&cfg)
         .unwrap_or_else(|error| die_list("config errors", [error]));
@@ -1088,12 +1091,6 @@ async fn run(
     let admin_tls_cfg = cfg.admin_tls.clone();
     let req_body_max = cfg.limits.request_body_max_bytes;
     let max_inbound = cfg.limits.max_inbound_concurrent;
-    // `advanced.shutdown.drain_timeout` and `advanced.governance.max_pending_checkpoints`;
-    // validation already refused a value out of range, so this never clamps.
-    let drain_settings = cfg
-        .limits
-        .drain_settings()
-        .unwrap_or_else(|refusals| die_list("shutdown drain settings refused:", refusals));
 
     root::registry::check_or_exit(LINKED.claims);
 
@@ -1262,10 +1259,9 @@ async fn run(
         let kernel = late_services
             .kernel()
             .unwrap_or_else(|| die("record bootstrap has no installed kernel"));
-        let instance = receipt.instance.clone();
         kernel
             .arm_record_bootstrap(receipt, &fingerprint, |schema, key, value| {
-                root::boot::bootstrap_witness(&instance, schema, key, value)
+                root::boot::bootstrap_witness(schema, key, value)
             })
             .await
             .unwrap_or_else(|error| die(format!("fresh record bootstrap refused: {error}")));
@@ -1299,10 +1295,9 @@ async fn run(
         .unwrap_or_else(|error| die(format!("cold record bootstrap failed: {error}")));
         let receipt =
             receipt.unwrap_or_else(|error| die(format!("cold record bootstrap refused: {error}")));
-        let instance = receipt.instance.clone();
         kernel
             .arm_record_bootstrap(receipt, &fingerprint, |schema, key, value| {
-                root::boot::bootstrap_witness(&instance, schema, key, value)
+                root::boot::bootstrap_witness(schema, key, value)
             })
             .await
             .unwrap_or_else(|error| die(format!("cold record bootstrap refused: {error}")));
@@ -1366,7 +1361,6 @@ async fn run(
     listener_plan
         .share_claim_doors(&mut served)
         .unwrap_or_else(|e| die(e));
-    root::measurements::validate_bindings().unwrap_or_else(|e| die(e));
     root_rules.hold_owned_anchors(&served.need_trust());
     root_rules.hold_member_tls_sections(&served.member_tls_sections());
 
@@ -1447,9 +1441,13 @@ async fn run(
     let _ = door_live_handle.set(std::sync::Arc::downgrade(&app_handle));
 
     if let Some(kernel) = late_services.kernel() {
-        kernel.attach_tickets(std::sync::Arc::new(root::serve::LiveTickets(
-            std::sync::Arc::downgrade(&app_handle),
-        )));
+        let app = app_handle.load();
+        if let Some(governance) = &app.governance {
+            kernel.attach_tickets(Arc::new(root::serve::GenerationTickets {
+                governance: Arc::clone(governance),
+                block_max_ttl_secs: app.mint_policy.block_max_ttl_secs,
+            }));
+        }
     }
 
     let _ = root::inbound::install(root::doors::dispatcher());
@@ -1528,10 +1526,6 @@ async fn run(
         }));
     }
 
-    app_handle.on_apply(Box::new(|app| {
-        root::boot::follow_plugin_logs(root::boot::plugin_logs(), &app.plugins_cfg);
-    }));
-
     app_handle.on_apply(Box::new(|_| {
         let refused = root::doors::refresh_live(&root::policy::client_settings(
             &busbar_kernel::config::limits::installed().unwrap_or_default(),
@@ -1590,10 +1584,10 @@ async fn run(
         app_handle.attach_on_swap(spawn);
     }
 
-    // SHUTDOWN-HANG F4: one drain owner holds the budget from the first broadcast to exit. The
-    // budget and the terminal-backlog cap are `drain_settings`, read beside the other limits.
-    let drain_clock =
-        busbar_kernel::governance::drain::DrainClock::new(drain_settings.drain_timeout);
+    // SHUTDOWN-HANG F4: one drain owner holds the fixed budget from the first broadcast to exit.
+    let drain_clock = busbar_kernel::governance::drain::DrainClock::new(
+        busbar_kernel::governance::drain::DRAIN_TIMEOUT,
+    );
     let drain = root::shutdown::ShutdownDrain::new(Arc::clone(&drain_clock));
     let (shutdown_tx, _keep_open) = tokio::sync::broadcast::channel::<()>(1);
     // Persistence failure can request shutdown before a listener exists. A watch
@@ -1645,11 +1639,9 @@ async fn run(
     // The listener's handler drains on a signal from here on.
     let _ = signal_handoff.send(());
 
+    // Governed admission keeps its fixed terminal-backlog cap
+    // (`governance::drain::MAX_PENDING_CHECKPOINTS`), set when the gate is built.
     let governance = app_handle.load().governance.clone();
-    if let Some(gov) = &governance {
-        gov.admissions()
-            .set_cap(drain_settings.max_pending_checkpoints);
-    }
     let budget_flusher = governance.clone().map(|gov| {
         tokio::spawn(root::measurements::maintenance(
             busbar_kernel::governance::run_budget_flusher(
@@ -1943,7 +1935,7 @@ async fn refresh_node_lease(
 
 #[cfg(unix)]
 const ROOT_BIND_LIMITS: AcceptLimits = AcceptLimits {
-    max_conns: usize::MAX,
+    max_conns: busbar_core_connector::listen::DEFAULT_MAX_CONNS,
     handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
 };
 
@@ -2357,3 +2349,13 @@ mod dist_root_install;
 #[cfg(all(test, distribution_root))]
 #[path = "tests/distribution.rs"]
 mod distribution;
+
+#[cfg(all(test, unix))]
+#[test]
+fn root_listeners_keep_the_connector_connection_bound() {
+    assert_eq!(
+        ROOT_BIND_LIMITS.max_conns,
+        busbar_core_connector::listen::DEFAULT_MAX_CONNS,
+        "root data and admin binds must not disable connection admission"
+    );
+}

@@ -209,66 +209,6 @@ impl DoorAppliers {
     }
 }
 
-/// Validate configured child bindings against opened, typed plane facts before publication.
-pub(crate) fn validate_hook_children(
-    served: &Served,
-    app: &busbar_kernel::state::App,
-) -> Result<(), String> {
-    use busbar_kernel::guest::{Claimant, GuestList, Matched};
-    for (name, hook) in &app.hook_registry {
-        let Some(grant) = hook.child_dispatch.as_ref() else {
-            continue;
-        };
-        let at = format!("hooks.{name}.child_dispatch");
-        grant.validate().map_err(|why| format!("{at}: {why}"))?;
-        if hook.kind != busbar_kernel::config::HookKind::Gate
-            || !hook.fires_at_stage(busbar_kernel::config::HookStage::Request)
-            || app.governance.is_none()
-        {
-            return Err(format!(
-                "{at}: child dispatch requires a request-stage gate and governance"
-            ));
-        }
-        let plane = served
-            .planes
-            .iter()
-            .find(|plane| plane.instance == grant.plane)
-            .ok_or_else(|| format!("{at}: unknown configured plane '{}'", grant.plane))?;
-        if !plane
-            .live
-            .current()
-            .pools
-            .entries()
-            .contains(&grant.target_binding)
-        {
-            return Err(format!(
-                "{at}: unknown target binding '{}' in plane '{}'",
-                grant.target_binding, grant.plane
-            ));
-        }
-        let lines = plane
-            .snapshot
-            .claims
-            .iter()
-            .enumerate()
-            .filter(|(_, claim)| routed(claim))
-            .map(|(rung, claim)| {
-                claim_line(&plane.instance, rung as u32, claim, &[], &[], &[]).map(|(line, _)| line)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let claims = GuestList::seal(lines).map_err(|_| format!("{at}: ambiguous plane claims"))?;
-        let path = grant.target.split('?').next().unwrap_or_default();
-        if !matches!(claims.matched(&grant.operation, path, &[]), Matched::Line(line) if matches!(&line.claimant, Claimant::Plane(instance) if instance == &grant.plane))
-        {
-            return Err(format!(
-                "{at}: operation '{}' target '{}' is not a claim of plane '{}'",
-                grant.operation, grant.target, grant.plane
-            ));
-        }
-    }
-    Ok(())
-}
-
 impl Served {
     /// One process-owned scanner. Kept and joined by main before storage retirement.
     pub(crate) fn spawn_work_recovery(
@@ -517,7 +457,8 @@ pub(crate) async fn compose_served_checked(
         Arc::clone(&gov),
         crate::root::plane_node::node().kernel_and_keys().1,
         Arc::new(busbar_kernel::plane_driver::CoreAudit),
-    );
+    )
+    .with_journal(Arc::clone(&post) as Arc<dyn busbar_kernel::plane_driver::HookJournal>);
     let money = move || {
         Arc::new(PlaneMoney::new(
             Arc::clone(&gov),
@@ -1891,7 +1832,6 @@ impl ListenerPlan {
     ) -> Result<(), String> {
         use busbar_contract::abi::transport::route::PATH_EXACT;
         use busbar_kernel::guest::{Claimant, Line, LineAuth, Route};
-        validate_hook_children(served, app)?;
         let cfg = self.config(app)?;
         let chain: Vec<_> = cfg
             .data_chain
@@ -2062,7 +2002,6 @@ impl ListenerPlan {
         let Some(served) = self.served.get() else {
             return Ok(());
         };
-        validate_hook_children(served, app)?;
         let cfg = self.config(app)?;
         if cfg.listener_routes.get().is_some() {
             return Ok(());

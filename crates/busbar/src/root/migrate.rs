@@ -224,6 +224,18 @@ pub(crate) async fn records(
     crate::root::migrate_records::step4(core, config, stamped()).await
 }
 
+/// Step 4 using the secrets already resolved by the pre-publication boot stages.
+pub(crate) async fn records_with_keys(
+    core: std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>,
+    keys: crate::root::migrate_records::Keys,
+) -> Result<(), String> {
+    let config = CONFIG_PATH
+        .get()
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from(crate::root::cli::resolve_config_path(None)));
+    crate::root::migrate_records::step4_with_keys(core, keys, config, stamped()).await
+}
+
 /// Step 5 with what every instance's `open` settled (MIGRATE-ON-BOOT r42 §4, `Registry::take_settled`): the
 /// bags and CORE_CFG are filed into the re-run document, the lifted secret files written, then the stamp.
 /// A refusal of a settled answer writes nothing.
@@ -310,7 +322,7 @@ pub(crate) fn restart<T>(
 
 /// THE RECOVERABLE GATE (§3 step 2 (a); the loader's `migrate.admit` answer): whether this boot
 /// can seal the `n` recoverable 1.5.5 credentials a store's data step is about to hand core. Core
-/// answers from its own config alone, through the at-rest key the store bootstrap resolved before
+/// answers from its own config alone, through the signing key (the at-rest key derives from it) the store bootstrap resolved before
 /// the store opened, with the resolver it built from the store's secret instances. The text is the
 /// process's for its life (the host-service rule): at most one per store per boot.
 #[cold]
@@ -350,25 +362,24 @@ pub(crate) fn admit_answer(
         Some(Err(text)) => Err(format!("CONFIG: {text}")),
         None => Err(format!(
             "CONFIG: this 1.5.5 store holds `{n}` recoverable credentials stored in the clear, \
-             and this boot resolved no `credentials.at_rest` before the store opened, so it \
+             and this boot resolved no `auth.signing_key` before the store opened, so it \
              cannot seal them; nothing was written"
         )),
     }
 }
 
-/// TEXT_ADD_KEY (§3): core's text when a store holds `n` recoverable rows and no at-rest key is
+/// TEXT_ADD_KEY (§3): core's text when a store holds `n` recoverable rows and no signing key is
 /// configured, naming the absolute config directory `dir`.
 pub(crate) fn text_add_key(n: u64, dir: &Path) -> String {
-    let key = dir.join("at-rest.key");
+    let key = dir.join("signing.key");
     let key = key.display();
     format!(
         "CONFIG: this 1.5.5 store holds `{n}` recoverable credentials (SigV4 secret keys) stored \
-         in the clear, and 1.6.0 stores them only sealed. Nothing was written. Add an at-rest \
-         key, then boot 1.6.0 again:\n  (1) `openssl rand -hex 32 > {key} && chmod 600 {key}`. \
-         Use this same file on every node that shares this store.\n  (2) add to config.yaml: \
-         `credentials: {{at_rest: {{key: {{file: {key}}}}}}}`.\n1.5.5 does not accept this \
-         block, so add it only after every 1.5.5 instance has stopped. To roll back to 1.5.5 \
-         later, delete it from `config.yaml.1.5.5` first (docs/migration-1.6, \"At-rest key\")."
+         in the clear, and 1.6.0 stores them only sealed, under a key derived from \
+         `auth.signing_key`. Nothing was written. Set `auth.signing_key`, then boot 1.6.0 \
+         again:\n  (1) `openssl rand -hex 32 > {key} && chmod 600 {key}`. Use this same file \
+         on every node that shares this store.\n  (2) add to config.yaml: \
+         `auth: {{signing_key: {{file: {key}}}}}`."
     )
 }
 

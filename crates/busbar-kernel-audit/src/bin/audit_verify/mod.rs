@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::json::{self, JsonValueTrait, Value};
+use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait, Value};
 use busbar_kernel_audit::digest::{Digest, Framing};
 use busbar_kernel_audit::sign::{SIGNATURE_ALGORITHM, SIGNATURE_DOMAIN};
 use busbar_kernel_audit::{
@@ -106,6 +106,38 @@ fn fields(page: &str) -> Result<Vec<(&str, Kind)>> {
     Ok(fields)
 }
 
+/// The page's OPTIONAL TAIL: the rows of a four-column table (`Position`, `Field`, `Kind`,
+/// `Present`) numbered on from the main table. A record frames them only when it carries the
+/// tail's first member; one that does not ends at the main table's last field. Empty when the page
+/// has no such table.
+fn tail_fields(page: &str, after: usize) -> Result<Vec<(&str, Kind)>> {
+    let mut fields = Vec::new();
+    for line in page.lines() {
+        let cells: Vec<_> = line
+            .trim()
+            .trim_matches('|')
+            .split('|')
+            .map(str::trim)
+            .collect();
+        if cells.len() != 4 {
+            continue;
+        }
+        let Ok(position) = cells[0].parse::<usize>() else {
+            continue;
+        };
+        let kind = match cells[2] {
+            "text" => Kind::Text,
+            "number" => Kind::Number,
+            _ => return Err("the embedded optional digest field table is invalid"),
+        };
+        if position != after + fields.len() + 1 {
+            return Err("the embedded optional digest field table is not consecutive");
+        }
+        fields.push((cells[1].trim_matches('`'), kind));
+    }
+    Ok(fields)
+}
+
 fn feed(digest: &mut Digest, value: &Value, kind: Kind) -> Result<()> {
     match kind {
         Kind::Text => {
@@ -158,7 +190,15 @@ fn record_digest(record: &Value, default_recipe: &str) -> Result<String> {
             }
         }
     }
-    let order = fields(recipe(name)?)?;
+    let page = recipe(name)?;
+    let mut order = fields(page)?;
+    let tail = tail_fields(page, order.len())?;
+    if tail
+        .first()
+        .is_some_and(|(first, _)| record.get(*first).is_some())
+    {
+        order.extend(tail);
+    }
     let mut digest = Digest::new(Framing::LengthPrefixed);
     let mut index = 0;
     while index < order.len() {

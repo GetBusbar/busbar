@@ -760,31 +760,10 @@ fn judge_with_plugins(
                 }
             }
         };
-        let default_secs = policy
-            .default_ttl
-            .as_deref()
-            .and_then(|t| parse_policy_ttl("auth.policy.default_ttl", t, &mut errors));
         let max_secs = policy
             .max_ttl
             .as_deref()
             .and_then(|t| parse_policy_ttl("auth.policy.max_ttl", t, &mut errors));
-        if let (Some(d), Some(m)) = (default_secs, max_secs) {
-            if d > m {
-                errors.push(coded::config_auth_policy_invalid(format!(
-                    "auth.policy.default_ttl ('{}', {d}s) exceeds auth.policy.max_ttl ('{}', {m}s); \
-                     the default a mint falls back to cannot be longer than the ceiling",
-                    policy.default_ttl.as_deref().unwrap_or(""),
-                    policy.max_ttl.as_deref().unwrap_or(""),
-                )).into());
-            }
-        }
-        if policy.max_outstanding_tickets_per_key == Some(0) {
-            errors.push(
-                "auth.policy.max_outstanding_tickets_per_key is 0, which refuses every ephemeral \
-                 secret; set at least 1, or omit it for the default of 256"
-                    .to_string(),
-            );
-        }
         for (role, ceiling) in &policy.mint_ceilings {
             if let (Some(block), Some(modes)) = (&policy.binding_modes, &ceiling.binding_modes) {
                 for mode in modes.iter().filter(|m| !block.contains(m)) {
@@ -1201,9 +1180,6 @@ fn validate_limits_with(
     use crate::config::{REQUEST_BODY_MAX_BYTES_CEIL, REQUEST_BODY_MAX_BYTES_FLOOR};
 
     validate_limit_ceilings(limits, errors);
-    if let Err(refusals) = limits.drain_settings() {
-        errors.extend(refusals);
-    }
 
     if limits.upstream_request_timeout_secs < 1 {
         errors.push(coded::config_setting_out_of_range("limits.upstream_request_timeout_secs must be >= 1 (0 would time out every upstream call \
@@ -1246,11 +1222,6 @@ fn validate_limits_with(
             limits.request_body_max_bytes
         )).into());
     }
-    if limits.datagram_line_memory_bytes == Some(0) {
-        errors.push(coded::config_setting_out_of_range("limits.datagram_line_memory_bytes must be >= 1 when set (omit it or use null to disable the limit)"
-                ).into());
-    }
-
     if limits.upstream_error_body_max_bytes < 1 {
         errors.push(coded::config_setting_out_of_range("limits.upstream_error_body_max_bytes must be >= 1 (0 would buffer no upstream error body)"
                 ).into());
@@ -1299,17 +1270,7 @@ fn validate_limits_with(
 }
 
 fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut Vec<String>) {
-    if limits.migration_index_bytes == 0 || limits.migration_value_bytes == 0 {
-        errors.push(
-            coded::config_setting_out_of_range(
-                "limits.migration_index_bytes and limits.migration_value_bytes must be positive",
-            )
-            .into(),
-        );
-    }
     let crate::config::LimitsResolved {
-        migration_index_bytes: _,
-        migration_value_bytes: _,
         upstream_request_timeout_secs,
         pool_idle_timeout_secs,
         hard_down_cooldown_secs,
@@ -1325,8 +1286,6 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
         request_body_max_bytes: _,
         max_inbound_concurrent: _,
 
-        datagram_line_memory_bytes: _,
-
         pool_max_idle_per_host: _,
         max_keys_per_principal: _,
         max_auto_provisioned_groups: _,
@@ -1340,9 +1299,6 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
 
         upstream_http1_only: _,
         upstream_h2_prior_knowledge: _,
-
-        drain_timeout: _,
-        max_pending_checkpoints: _,
     } = limits;
     let secs = [
         (
@@ -1660,9 +1616,6 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
 }
 
 fn judge_cost_model(cfg: &RootCfg, errors: &mut Vec<String>, advisories: &mut Advisories) {
-    if let Err(error) = crate::config::measurement_rates::validate(&cfg.plugin_rate_cards) {
-        errors.push(coded::config_rate_card_invalid(error).into());
-    }
     if let Some(card) = &cfg.rate_card {
         for (key, r) in card {
             let (plane, lane) = split_plane_lane(key);

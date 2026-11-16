@@ -51,10 +51,10 @@ use busbar_plugin_abi::plugin::{Describe, Endpoints, Plugin};
 use busbar_plugin_abi::records::{settled, tag, Full, Out, Records, Reply, Writer};
 use busbar_plugin_abi::types::Str;
 use busbar_plugin_loader::admit::admit_header;
-use busbar_plugin_loader::binder::ConfigBinder;
 use busbar_plugin_loader::instance::{Ceilings, InstanceSpec, Registry};
 use busbar_plugin_test::fake_needs::FakeNeeds;
 use busbar_plugin_test::suites::harness::{Harness, MemBinder};
+use busbar_ports::binder::ConfigBinder;
 
 /// The error numbers the probe image declares (D_ERRORS).
 pub const ERRORS: &[u16] = &[OPEN_ERROR, LOG_ERROR];
@@ -728,10 +728,11 @@ pub fn registry<N: Needs>(
     plugins: &[&'static Plugin],
 ) -> Registry<N> {
     let binder: Arc<dyn ConfigBinder> = Arc::new(MemBinder::new());
-    let mut registry = Registry::new(
+    let slots = Arc::new(busbar_plugin_loader::instance::SlotTable::new());
+    busbar_plugin_loader::instance::install_sinks(&slots);
+    let mut images = busbar_plugin_loader::instance::ImagesBuilder::new(
         &HOST,
-        needs,
-        binder,
+        slots,
         Ceilings {
             max_steps,
             ..Ceilings::DEFAULT
@@ -739,11 +740,11 @@ pub fn registry<N: Needs>(
     );
     for plugin in plugins {
         let admitted = admit_header(*plugin).unwrap_or_else(|r| panic!("admit: {r:?}"));
-        registry
-            .add(admitted)
+        images
+            .admit(admitted)
             .unwrap_or_else(|r| panic!("add: {r:?}"));
     }
-    registry
+    Registry::new(images.finish(), needs, binder)
 }
 
 /// The spec of instance `name` of the image `module` names, with `config` and no limits.

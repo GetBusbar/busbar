@@ -32,17 +32,12 @@ fn provider<'a>(name: &'a str, protocol: &'a str) -> ProviderView<'a> {
     }
 }
 
-fn member<'a>(
-    plane: &'a str,
-    provider: &'a str,
-    model_protocol: Option<&'a str>,
-) -> MemberView<'a> {
+fn member<'a>(plane: &'a str, provider: &'a str) -> MemberView<'a> {
     MemberView {
         member: "m",
         plane,
         image: "llm",
         provider,
-        model_protocol,
     }
 }
 
@@ -79,15 +74,12 @@ fn plan<'a>(
     }
 }
 
-/// Guards C-DIALECT-AUTH (b): one provider reached under two dialects opens two implicit instances, one per
-/// dialect, each with its own style.
+/// Guards C-DIALECT-AUTH (b): two providers of two protocols open two implicit instances, one per
+/// dialect, each with its own style (a model reaches a second protocol through a second `providers:` entry).
 #[test]
-fn one_provider_under_two_dialects_gets_two_implicit_bindings() {
-    let providers = [provider("p", "openai")];
-    let members = [
-        member("llm1", "p", Some("anthropic")),
-        member("llm1", "p", None),
-    ];
+fn two_providers_of_two_dialects_get_two_implicit_bindings() {
+    let providers = [provider("p", "openai"), provider("q", "anthropic")];
+    let members = [member("llm1", "p"), member("llm1", "q")];
     let (rows, styles) = (rows(), styles());
     let got = bind_providers(&plan(&members, &providers, &rows, &styles, &[])).unwrap();
     let mut names: Vec<_> = got.implicit.iter().map(|i| (&*i.name, &*i.style)).collect();
@@ -95,8 +87,8 @@ fn one_provider_under_two_dialects_gets_two_implicit_bindings() {
     assert_eq!(
         names,
         [
-            ("p-anthropic-outbound", "api-key"),
-            ("p-openai-outbound", "bearer")
+            ("p-openai-outbound", "bearer"),
+            ("q-anthropic-outbound", "api-key")
         ]
     );
 }
@@ -105,7 +97,7 @@ fn one_provider_under_two_dialects_gets_two_implicit_bindings() {
 #[test]
 fn two_planes_with_equal_rows_share_one_implicit_binding() {
     let providers = [provider("p", "openai")];
-    let members = [member("llm1", "p", None), member("llm2", "p", None)];
+    let members = [member("llm1", "p"), member("llm2", "p")];
     let (rows, styles) = (rows(), styles());
     let got = bind_providers(&plan(&members, &providers, &rows, &styles, &[])).unwrap();
     assert_eq!(got.implicit.len(), 1);
@@ -117,11 +109,11 @@ fn two_planes_with_equal_rows_share_one_implicit_binding() {
 #[test]
 fn differing_rows_for_one_provider_dialect_name_by_the_first_plane() {
     let providers = [provider("p", "openai")];
-    let a = member("llm1", "p", None);
+    let a = member("llm1", "p");
     let b = MemberView {
         image: "stream",
         plane: "st1",
-        ..member("llm1", "p", None)
+        ..member("llm1", "p")
     };
     let mut rows = rows();
     rows.push(("stream", vec![header_row("openai", Some("x-goog-api-key"))]));
@@ -137,7 +129,7 @@ fn differing_rows_for_one_provider_dialect_name_by_the_first_plane() {
 #[test]
 fn no_row_for_a_keyed_provider_refuses_with_todays_text() {
     let providers = [provider("p", "cohere")];
-    let members = [member("llm1", "p", None)];
+    let members = [member("llm1", "p")];
     let (rows, styles) = (rows(), styles());
     let err = bind_providers(&plan(&members, &providers, &rows, &styles, &[]))
         .err()
@@ -152,7 +144,7 @@ fn no_row_for_a_keyed_provider_refuses_with_todays_text() {
 #[test]
 fn an_operator_instance_under_an_implicit_name_refuses() {
     let providers = [provider("p", "openai")];
-    let members = [member("llm1", "p", None)];
+    let members = [member("llm1", "p")];
     let (rows, styles) = (rows(), styles());
     let op = [OperatorAuth {
         name: "p-openai-outbound",
@@ -175,7 +167,7 @@ fn an_explicit_binding_of_the_rows_style_gets_the_absent_core_keys() {
     let mut p = provider("p", "openai");
     p.auth = ProviderAuth::Instance("mine");
     let providers = [p];
-    let members = [member("llm1", "p", None)];
+    let members = [member("llm1", "p")];
     let (rows, styles) = (rows(), styles());
     let op = [OperatorAuth {
         name: "mine",

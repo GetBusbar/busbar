@@ -185,8 +185,12 @@ mod dropped {
     #[test]
     fn bytes_with_no_stamp_are_refused_stamp_missing_after_integrity_and_signature() {
         let bytes = b"a 1.5.x library".to_vec();
-        let refusal =
-            admit_bytes(&bytes, &manifest("busbar-old", "1.5.5", &bytes)).expect_err("no stamp");
+        let refusal = admit_bytes(
+            &bytes,
+            &manifest("busbar-old", "1.5.5", &bytes),
+            "busbar-old",
+        )
+        .expect_err("no stamp");
         assert_eq!(refusal.code, RefusalCode::StampMissing);
         assert_eq!(
             refusal.plugin.as_deref(),
@@ -200,7 +204,8 @@ mod dropped {
         let bytes = stamped();
         let mut other = bytes.clone();
         other[0] ^= 1;
-        let refusal = admit_bytes(&other, &manifest(NAME, "1.6.0", &bytes)).expect_err("tampered");
+        let refusal =
+            admit_bytes(&other, &manifest(NAME, "1.6.0", &bytes), NAME).expect_err("tampered");
         assert_eq!(
             (refusal.code, refusal.field),
             (RefusalCode::Integrity, "sha256")
@@ -212,7 +217,7 @@ mod dropped {
         let bytes = stamped();
         let mut m = manifest(NAME, "1.6.0", &bytes);
         m = crate::sign::sign(&crate::sign::SigningKey::from_bytes(&[0x11; 32]), m, &bytes);
-        let refusal = admit_bytes(&bytes, &m).expect_err("not the test key");
+        let refusal = admit_bytes(&bytes, &m, NAME).expect_err("not the test key");
         assert_eq!(
             (refusal.code, refusal.field),
             (RefusalCode::Signature, "signature")
@@ -222,8 +227,8 @@ mod dropped {
     #[test]
     fn a_manifest_that_states_another_version_is_refused_manifest_mismatch() {
         let bytes = stamped();
-        let refusal =
-            admit_bytes(&bytes, &manifest(NAME, "9.9.9", &bytes)).expect_err("version differs");
+        let refusal = admit_bytes(&bytes, &manifest(NAME, "9.9.9", &bytes), NAME)
+            .expect_err("version differs");
         assert_eq!(refusal.code, RefusalCode::ManifestMismatch);
         assert_eq!(refusal.field, "manifest.version");
         assert_eq!(
@@ -236,7 +241,7 @@ mod dropped {
     fn a_verified_stamp_in_bytes_the_dynamic_loader_cannot_load_is_refused_at_dlopen() {
         let bytes = stamped();
         let refusal =
-            admit_bytes(&bytes, &manifest(NAME, "1.6.0", &bytes)).expect_err("not loadable");
+            admit_bytes(&bytes, &manifest(NAME, "1.6.0", &bytes), NAME).expect_err("not loadable");
         assert_eq!(
             (refusal.code, refusal.field),
             (RefusalCode::Target, "dlopen")
@@ -255,7 +260,7 @@ mod dropped {
         let refusal = admit(
             std::os::fd::OwnedFd::from(dir),
             &manifest(NAME, "1.6.0", &bytes),
-            &crate::test_host::test_trust(),
+            &crate::test_host::test_trust(NAME),
         )
         .expect_err("a directory");
         assert_eq!(

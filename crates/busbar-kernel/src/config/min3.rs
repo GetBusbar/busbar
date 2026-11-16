@@ -2,11 +2,12 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The MIN-3 config keys: the top-level `upstreams:` section with each entry's `auth` and `upstream_credentials`,
-//! `routes.<id>.auth_instances`, per-instance `limits` and `insecure_transport`, and the auth `provisioning:` block
-//! (IF §12.1, §12.11, §12.18, §12.22, §12.29; TRANSPORT-SECURITY-POLICY §4). Every key is additive (PRD-4: a 1.5.5
-//! config parses unchanged). W1-K7 parses the upstreams section, `limits` and `insecure_transport` into
-//! [`RootCfg::min3`](super::RootCfg::min3) at load ([`parse_min3`], called by `config::resolve`, which also calls
-//! W1-K6's [`check_upstream_credentials`] hook); `routes` and `provisioning` are still the W0 stubs.
+//! per-instance `insecure_transport`, and the auth `provisioning:` block (IF §12.1, §12.18, §12.29;
+//! TRANSPORT-SECURITY-POLICY §4). Every key is additive (PRD-4: a 1.5.5 config parses unchanged). W1-K7 parses the
+//! upstreams section and `insecure_transport` into [`RootCfg::min3`](super::RootCfg::min3) at load
+//! ([`parse_min3`], called by `config::resolve`, which also calls W1-K6's [`check_upstream_credentials`] hook);
+//! `provisioning` is still the W0 stub. There is no per-instance `limits` key and no `routes` section: an instance
+//! runs at its kind's defaults, and the plugin's settled LIMITS answer is applied in memory at its open.
 
 use std::collections::BTreeMap;
 
@@ -24,10 +25,6 @@ use super::DeployCfg;
 pub struct Min3Config {
     /// `upstreams.<name>`, by configured upstream name (IF §12.1, §12.18).
     pub upstreams: BTreeMap<Box<str>, UpstreamCfg>,
-    /// `routes.<id>`, by route id (IF §12.11 "Route credential header").
-    pub routes: BTreeMap<Box<str>, RouteCfg>,
-    /// `<kind>.<name>.limits`, by (kind section, configured instance name) (IF §12.22).
-    pub limits: InstanceLimitsMap,
     /// `auth.<name>.provisioning`, by configured auth instance name (IF §12.29).
     pub provisioning: BTreeMap<Box<str>, ProvisioningCfg>,
     /// `<kind>.<name>.insecure_transport`, by (kind section, configured instance name) (TRANSPORT-SECURITY-POLICY
@@ -37,9 +34,6 @@ pub struct Min3Config {
     /// [`crate::upstreams::ConfiguredUpstreams::from_config`] types over [`Self::upstreams`] (IF §12.1).
     pub upstream_section: JsonMap<String, JsonValue>,
 }
-
-/// Per-instance `limits`, by (kind section, configured instance name).
-pub type InstanceLimitsMap = BTreeMap<(Box<str>, Box<str>), InstanceLimitsCfg>;
 
 /// Per-instance `insecure_transport`, by (kind section, configured instance name).
 pub type InsecureTransportMap = BTreeMap<(Box<str>, Box<str>), InsecureTransport>;
@@ -90,25 +84,6 @@ pub enum UpstreamAuthForm {
     },
 }
 
-/// The MIN-3 keys of one `routes.<id>` entry.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct RouteCfg {
-    /// `routes.<id>.auth_instances`: the route's effective chain, configured auth instance names in order; None =
-    /// rule (2) or (3) of IF §12.11 "Route credential header".
-    pub auth_instances: Option<Vec<Box<str>>>,
-}
-
-/// `<kind>.<name>.limits`, beside `module` (IF §12.22). 0 = unset (the kind default) in every field. The
-/// `plaintext` row is deleted (owner ruling; transport security is `insecure_transport`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct InstanceLimitsCfg {
-    pub timeout_ms: u32,
-    pub connect_timeout_ms: u32,
-    pub max_inflight: u32,
-    /// Transport instances only.
-    pub stream_stall_ms: u32,
-}
-
 /// `auth.<name>.provisioning` (IF §12.29).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProvisioningCfg {
@@ -137,17 +112,15 @@ pub struct ProvisioningGuard {
 /// in the file; an `insecure_transport` refusal is BUSBAR-3163). Every key is additive: a 1.5.5-shaped document
 /// carries none of them and parses to the empty config.
 ///
-/// `limits` and `insecure_transport` sit beside `module` in an instance block of any kind (`store`,
-/// `secrets.<name>`, `identity-providers.<name>`, `hooks.<name>`, `export.<name>`; IF §12.22,
-/// TRANSPORT-SECURITY-POLICY §4). The typed section structs keep them as written, so the grammar admits them
-/// and the authoring view writes them back; they are never part of an instance's `settings`, the only bag a
-/// plugin is bound from, so they are stripped before binding by construction. Each is keyed here by (the
+/// `insecure_transport` sits beside `module` in an instance block of any kind (`store`,
+/// `secrets.<name>`, `identity-providers.<name>`, `hooks.<name>`, `export.<name>`;
+/// TRANSPORT-SECURITY-POLICY §4). The typed section structs keep it as written, so the grammar admits it
+/// and the authoring view writes it back; it is never part of an instance's `settings`, the only bag a
+/// plugin is bound from, so it is stripped before binding by construction. It is keyed here by (the
 /// section word, the configured instance name); the store is (`store`, `store`).
 pub fn parse_min3(deploy: &DeployCfg) -> Result<Min3Config, Vec<String>> {
     let mut refused = Vec::new();
     let upstreams = kept(parse_upstreams(deploy), &mut refused);
-    let routes = kept(parse_routes(deploy), &mut refused);
-    let limits = kept(parse_limits(deploy), &mut refused);
     let insecure_transport = kept(parse_insecure_transport(deploy), &mut refused);
     let provisioning = kept(parse_provisioning(deploy), &mut refused);
     if !refused.is_empty() {
@@ -155,8 +128,6 @@ pub fn parse_min3(deploy: &DeployCfg) -> Result<Min3Config, Vec<String>> {
     }
     Ok(Min3Config {
         upstreams,
-        routes,
-        limits,
         provisioning,
         insecure_transport,
         upstream_section: deploy.upstreams.clone().unwrap_or_default(),
@@ -171,7 +142,7 @@ fn kept<T: Default>(parsed: Result<T, Vec<String>>, refused: &mut Vec<String>) -
     })
 }
 
-/// One instance block that may carry `limits` and `insecure_transport` beside `module`.
+/// One instance block that may carry `insecure_transport` beside `module`.
 struct Block<'a> {
     /// The section word (`store`, `secrets`, `identity-providers`, `hooks`, `export`).
     section: &'static str,
@@ -179,7 +150,6 @@ struct Block<'a> {
     name: &'a str,
     /// The block's path in the file, as a refusal names it (`store`, `secrets.vault`).
     path: String,
-    limits: Option<&'a YamlValue>,
     insecure_transport: Option<&'a YamlValue>,
 }
 
@@ -193,7 +163,6 @@ fn blocks(deploy: &DeployCfg) -> Vec<Block<'_>> {
             section: STORE_INSTANCE,
             name: STORE_INSTANCE,
             path: STORE_INSTANCE.to_owned(),
-            limits: store.limits.as_ref(),
             insecure_transport: store.insecure_transport.as_ref(),
         });
     }
@@ -202,7 +171,6 @@ fn blocks(deploy: &DeployCfg) -> Vec<Block<'_>> {
             section: "secrets",
             name: name.as_str(),
             path: format!("secrets.{name}"),
-            limits: secret.limits.as_ref(),
             insecure_transport: secret.insecure_transport.as_ref(),
         });
     }
@@ -211,7 +179,6 @@ fn blocks(deploy: &DeployCfg) -> Vec<Block<'_>> {
             section: "identity-providers",
             name: name.as_str(),
             path: format!("identity-providers.{name}"),
-            limits: def.limits.as_ref(),
             insecure_transport: def.insecure_transport.as_ref(),
         });
     }
@@ -220,7 +187,6 @@ fn blocks(deploy: &DeployCfg) -> Vec<Block<'_>> {
             section: "hooks",
             name: name.as_str(),
             path: format!("hooks.{name}"),
-            limits: def.limits.as_ref(),
             insecure_transport: def.insecure_transport.as_ref(),
         });
     }
@@ -229,7 +195,6 @@ fn blocks(deploy: &DeployCfg) -> Vec<Block<'_>> {
             section: "export",
             name: name.as_str(),
             path: format!("export.{name}"),
-            limits: def.limits.as_ref(),
             insecure_transport: def.insecure_transport.as_ref(),
         });
     }
@@ -478,39 +443,6 @@ fn auth_secret(at: &str, key: &str, value: Option<&JsonValue>) -> Result<SecretR
     }
 }
 
-/// Parses `routes.<id>.auth_instances` (consumer W1-K8B). W0-ABI stub: none.
-pub fn parse_routes(deploy: &DeployCfg) -> Result<BTreeMap<Box<str>, RouteCfg>, Vec<String>> {
-    let _ = deploy;
-    Ok(BTreeMap::new())
-}
-
-/// Parses every instance's `limits` (consumers W1-K8D, W1-C1A; see [`parse_min3`] for where it sits and how it
-/// is stripped): an unknown key (`plaintext` included) or an out-of-bounds value refuses naming
-/// `<path>.limits[.<key>]`.
-pub fn parse_limits(deploy: &DeployCfg) -> Result<InstanceLimitsMap, Vec<String>> {
-    let mut out = InstanceLimitsMap::new();
-    let mut refused = Vec::new();
-    for block in blocks(deploy) {
-        let Some(value) = block.limits else {
-            continue;
-        };
-        let parsed = busbar_contract::yaml::from_value::<LimitsDoc>(value.clone())
-            .map_err(|e| format!("{}.limits: {e}", block.path))
-            .and_then(|doc| doc.resolve(&block.path));
-        match parsed {
-            Ok(limits) => {
-                out.insert((block.section.into(), block.name.into()), limits);
-            }
-            Err(why) => refused.push(why),
-        }
-    }
-    if refused.is_empty() {
-        Ok(out)
-    } else {
-        Err(refused)
-    }
-}
-
 /// Parses every instance's `insecure_transport` (TRANSPORT-SECURITY-POLICY §4; see [`parse_min3`]): every
 /// refusal is BUSBAR-3163 naming `<path>.insecure_transport[.<key>]`.
 fn parse_insecure_transport(deploy: &DeployCfg) -> Result<InsecureTransportMap, Vec<String>> {
@@ -609,61 +541,8 @@ pub fn check_upstream_credentials(min3: &Min3Config) -> Result<(), Vec<String>> 
     Ok(())
 }
 
-/// The longest any `limits` duration may be (IF §12.22).
-pub(crate) const MAX_LIMIT_MS: u64 = 600_000;
-/// The most concurrent port calls `limits.max_inflight` may name (IF §12.22).
-pub const MAX_INFLIGHT: u64 = 65_535;
 /// The longest a reason may be (TRANSPORT-SECURITY-POLICY §4).
 pub(crate) const MAX_REASON_CHARS: usize = 256;
-
-/// `<kind>.<name>.limits` as written: the grammar of the object, before validation. A key outside these four
-/// (`plaintext` included: the row is deleted) is refused as unknown.
-#[derive(Clone, Copy, Debug, Default, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LimitsDoc {
-    #[serde(default)]
-    pub timeout_ms: u64,
-    #[serde(default)]
-    pub connect_timeout_ms: u64,
-    #[serde(default)]
-    pub max_inflight: u64,
-    #[serde(default)]
-    pub stream_stall_ms: u64,
-}
-
-impl LimitsDoc {
-    /// Validates the object (numbers at most 600,000 ms and 65,535 in flight; `stream_stall_ms` 0 or
-    /// 1,000..=600,000) and returns the parsed limits. `path` is the instance's config path (`store.main`); the
-    /// refusal names `<path>.limits.<key>`.
-    pub fn resolve(self, path: &str) -> Result<InstanceLimitsCfg, String> {
-        let ms = |key: &str, v: u64| -> Result<u32, String> {
-            if v > MAX_LIMIT_MS {
-                return Err(format!(
-                    "{path}.limits.{key} is {v}: at most {MAX_LIMIT_MS} milliseconds"
-                ));
-            }
-            Ok(v as u32)
-        };
-        let stall = self.stream_stall_ms;
-        if stall != 0 && !(1_000..=MAX_LIMIT_MS).contains(&stall) {
-            return Err(format!(
-                "{path}.limits.stream_stall_ms is {stall}: 0 (the default) or 1000..={MAX_LIMIT_MS} milliseconds"
-            ));
-        }
-        if self.max_inflight > MAX_INFLIGHT {
-            return Err(format!(
-                "{path}.limits.max_inflight is {}: at most {MAX_INFLIGHT} calls in flight",
-                self.max_inflight
-            ));
-        }
-        Ok(InstanceLimitsCfg {
-            timeout_ms: ms("timeout_ms", self.timeout_ms)?,
-            connect_timeout_ms: ms("connect_timeout_ms", self.connect_timeout_ms)?,
-            max_inflight: self.max_inflight as u32,
-            stream_stall_ms: stall as u32,
-        })
-    }
-}
 
 /// One `accept` word.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]

@@ -23,8 +23,8 @@ use busbar_plugin_abi::plane::{
     TS_SIGHTED, WORK_FIND, WORK_LIVE, WORK_OPEN, WORK_SETTLE, WORK_SETTLED,
 };
 use busbar_plugin_abi::records::{commit, tag as g, RecPredRec, RecPutRec, Records, Reply, Writer};
-use busbar_plugin_loader::ports::plane::{PlaneIn, PlaneOut, TargetIn};
-use busbar_plugin_loader::ports::PortError;
+use busbar_ports::plane::{PlaneIn, PlaneOut, TargetIn};
+use busbar_ports::PortError;
 
 use super::{
     DurableDecider, DurableWork, Hit, IntentHost, Looked, Namespace, Resolver, WorkDecider,

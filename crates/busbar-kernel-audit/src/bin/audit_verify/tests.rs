@@ -482,7 +482,7 @@ fn v7_records_verify_against_the_published_page() {
     use busbar_contract::caps::{Outcome, UnitKey};
     use busbar_kernel_audit::{
         Attempt, AttemptOutcome, AuditRecord, Controls, FinishClass, OpClassId, OutcomeFacts,
-        QuantitySource, Recipe, Subject, UnitFacts, Usage, UsageLine, What,
+        QuantitySource, Recipe, RecordFacts, Subject, UnitFacts, Usage, UsageLine, What,
     };
     let mut records = Vec::new();
     let mut previous = String::new();
@@ -549,6 +549,7 @@ fn v7_records_verify_against_the_published_page() {
                     None,
                 ],
                 attempts_total: 2,
+                records: RecordFacts::default(),
             },
             linked_ms: 0,
             seq,
@@ -558,6 +559,13 @@ fn v7_records_verify_against_the_published_page() {
             signature: None,
             key_id: None,
         };
+        // The second record keeps `records.user` and `records.labels`: the optional tail.
+        if seq == 2 {
+            record.unit.records = RecordFacts {
+                user: Some("u_00112233445566778899aabbccddeeff".into()),
+                labels: vec![(std::sync::Arc::from("x-team"), "payments".into())],
+            };
+        }
         record.hash = AuditChain::digest_of(&record);
         record.signature = Some(signer().sign_digest(&record.hash));
         record.key_id = Some(signer().key_id().into());
@@ -575,6 +583,36 @@ fn v7_records_verify_against_the_published_page() {
     assert_eq!(range["records"][1]["recipe"], DIGEST_RECIPE_V7);
     let report = verify(&keys(), &range, Some(&head)).unwrap();
     assert_eq!(report["records"], 2);
+
+    assert!(
+        range["records"][0].get("user_present").is_none(),
+        "a record that keeps neither user nor labels frames no tail"
+    );
+    assert_eq!(
+        range["records"][1]["user"],
+        "u_00112233445566778899aabbccddeeff"
+    );
+    let mut tampered = range.clone();
+    tampered["records"][1]["labels"][0]["value"] = json::json!("billing");
+    assert!(
+        verify(&keys(), &tampered, Some(&head)).is_err(),
+        "a label is digested"
+    );
+    let mut tampered = range.clone();
+    tampered["records"][1]["user"] = json::json!("u_ffeeddccbbaa99887766554433221100");
+    assert!(
+        verify(&keys(), &tampered, Some(&head)).is_err(),
+        "the user is digested"
+    );
+    let mut stripped = range.clone();
+    let second = stripped["records"][1].as_object_mut().unwrap();
+    for member in ["user_present", "user", "labels_count", "labels"] {
+        second.remove(&member);
+    }
+    assert!(
+        verify(&keys(), &stripped, Some(&head)).is_err(),
+        "the records tail cannot be dropped"
+    );
 
     let mut tampered = range.clone();
     tampered["records"][0]["attribution"] = json::json!("team\u{1f}default\u{1f}other");

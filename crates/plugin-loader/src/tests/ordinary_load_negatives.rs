@@ -344,3 +344,43 @@ fn counted_raw_fault_crosses_the_dispatcher_and_sets_the_generic_login_call_flag
     assert!(LoginCall::faulted(&pending));
     assert_eq!(FAULT_CALLS.load(Ordering::SeqCst), before + 1);
 }
+
+#[test]
+fn every_direct_contract_kind_refuses_the_previous_host_table_cohort_before_operations() {
+    use crate::dispatch::kinds::{
+        auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret, store_v4::StoreV4,
+    };
+    use crate::dispatch::Kind;
+
+    fn rejects<K: Kind>(previous: u64) {
+        let real = witness_parts();
+        let statement = Box::leak(Box::new(Statement {
+            kind: K::CODE as u32,
+            kind_abi: K::ABI_VERSION,
+            ..busbar_contract::abi::sdk::door::statement("previous-host-table", "1.6.0", 1)
+        }));
+        let door = descriptor(DoorParts {
+            kind: K::CODE as u32,
+            kind_abi: K::ABI_VERSION,
+            statement,
+            layout: previous,
+            // The old cohort must be refused before operations can be read or a host loan made.
+            ops: std::ptr::null(),
+            ..real
+        });
+        let error = validate_door::<K>(door).err().expect("old cohort refused");
+        assert!(
+            matches!(error, LoadError::KindLayout { kind, stated, host, .. }
+            if kind == K::CODE && stated == previous && host == K::LAYOUT_FINGERPRINT),
+            "old {:?} cohort must fail fingerprint admission before operations: {error:?}",
+            K::CODE
+        );
+    }
+    rejects::<StoreV4>(0x5f47532174fb052b);
+    rejects::<Secret>(0x305714fde3324815);
+    rejects::<Auth>(0x5b57a4ca0d0cd422);
+    rejects::<Hook>(0x554fa343936df174);
+    rejects::<Export>(0xfe016c85b529734e);
+    rejects::<Plane>(0xf333cffc6e7801db);
+    rejects::<Transport>(0x284b380003b951b8);
+}

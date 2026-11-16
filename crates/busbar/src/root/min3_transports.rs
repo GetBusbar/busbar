@@ -25,11 +25,11 @@ use busbar_kernel::config::RootCfg;
 use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::admit::Admitted;
 use busbar_plugin_loader::instance::{BootPhase, InstanceSpec, OpenedPort};
-use busbar_plugin_loader::ports::transport::TransportPort;
+use busbar_ports::transport::TransportPort;
 
 use super::{Configured, MinRegistry};
 
-/// The limits section word a transport instance is keyed by (`<kind>.<name>.limits`, IF §12.22). The config
+/// The section word a transport instance is keyed by (`insecure_transport` lookups). The config
 /// grammar has no transport section, so every transport instance runs at the kind's defaults
 /// (`limits.stream_stall_ms` 60,000 included) until it gains one.
 const SECTION: &str = "transport";

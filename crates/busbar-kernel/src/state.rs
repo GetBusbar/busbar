@@ -72,6 +72,8 @@ pub struct App {
     pub grammar: crate::config::GrammarField,
     /// Configured changes whose physical activation needs a restart. Cleared only at boot.
     pub config_pending_restart: Vec<String>,
+    pub(crate) boot_restart_root: Option<Arc<crate::config::restart::Root>>,
+    pub(crate) boot_restart_source: Option<Arc<crate::config::restart::Source>>,
     /// Generation-local observations of synchronous ordinary plane refresh callbacks.
     pub plane_refresh: activation::PlaneRefreshReport,
     /// The kernel's own tables over the `pools:`/`models:` sections this generation resolved: the
@@ -734,6 +736,8 @@ impl App {
             grammar: crate::config::GrammarField::default(),
             providers_override: providers_path.clone(),
             config_pending_restart: Vec::new(),
+            boot_restart_root: None,
+            boot_restart_source: None,
             plane_refresh: activation::PlaneRefreshReport::default(),
             config_tables,
             store,

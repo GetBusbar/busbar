@@ -573,77 +573,6 @@ fn red_3g_deals_each_seat_its_section_and_positions_a_refusal() {
     );
 }
 
-#[test]
-fn an_applied_plugins_logs_level_reaches_a_live_sink() {
-    use crate::root::loader::dispatch::{Diagnostic, EnvelopeSink, NoSink, PluginLogConfig};
-    use busbar_contract::abi::mechanism::call::{DIAG_LOG, SEVERITY_INFO, SEVERITY_WARN};
-    let dir = scratch("logs-apply");
-    let words = |level: &str| {
-        let mut cfg = busbar_kernel::config::PluginsCfg::default();
-        cfg.logs.dir = Some(dir.display().to_string());
-        cfg.logs.level = Some(level.to_string());
-        cfg
-    };
-    let boot = words("warn");
-    let l = &boot.logs;
-    let logs = PluginLogConfig::from_words(
-        l.dir.as_deref(),
-        l.level.as_deref(),
-        &l.levels,
-        l.rotate_mb,
-        l.keep,
-    )
-    .expect("the boot words resolve");
-    let sink = logs
-        .clone()
-        .sink(
-            "applied",
-            busbar_contract::abi::mechanism::KindCode::Hook,
-            Arc::new(NoSink),
-        )
-        .expect("the sink opens");
-    let info = |text: &str| {
-        sink.diag(Diagnostic {
-            id: DIAG_LOG,
-            name: &[],
-            severity: SEVERITY_INFO,
-            text: text.as_bytes(),
-        });
-    };
-    info("under warn");
-    follow_plugin_logs(&logs, &words("info"));
-    info("under info");
-    follow_plugin_logs(&logs, &words("warn"));
-    info("under warn again");
-
-    sink.diag(Diagnostic {
-        id: DIAG_LOG,
-        name: &[],
-        severity: SEVERITY_WARN,
-        text: b"after the final level change",
-    });
-    let path = logs.path_for("applied", busbar_contract::abi::mechanism::KindCode::Hook);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let text = loop {
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
-        if text.contains("after the final level change") || std::time::Instant::now() > deadline {
-            break text;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    };
-    drop(sink);
-    let _ = std::fs::remove_dir_all(&dir);
-    assert!(
-        text.contains(" WARN  applied hook after the final level change"),
-        "the writer reached the final level change:\n{text}"
-    );
-    assert!(
-        text.contains(" INFO  applied hook under info"),
-        "the applied level reached the live sink:\n{text}"
-    );
-    assert!(!text.contains("under warn"), "{text}");
-}
-
 const HARNESS_KEY_VAR: &str = "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY";
 
 fn first_party_signed_by(
@@ -1295,4 +1224,21 @@ fn the_min3_walks_store_admission_is_the_boots() {
     assert_eq!(old_path, Ok(None));
     let refused = walk_admission(true, || None::<u8>).unwrap_err();
     assert!(refused.contains("no admission"), "{refused}");
+}
+
+/// MIGRATE-ON-BOOT r42 §7 D14 (C3): a record-bootstrap store witness resolves only through a
+/// compiled core schema. busbar-migrations' `legacy::archive` route (1.5.5 raw-record framing of a
+/// plugin instance's rows) is deleted with the crate, so an instance-scoped row is refused, never
+/// adopted into a migration-scope address.
+#[test]
+fn a_record_bootstrap_witness_resolves_only_compiled_core_schemas() {
+    use busbar_kernel::persistence::import_target::records::builtin_record_address;
+    let core = "busbar.principal-transition.v1";
+    let expected = builtin_record_address(core, b"head", b"baseline")
+        .expect("a core schema routes")
+        .expect("a compiled core schema");
+    assert_eq!(bootstrap_witness(core, b"head", b"baseline"), Ok(expected));
+    let scoped = busbar_kernel::host_records::record_key("plane", b"row");
+    assert!(bootstrap_witness("plane-schema", &scoped, b"body").is_err());
+    assert!(bootstrap_witness("unknown", b"row", b"body").is_err());
 }

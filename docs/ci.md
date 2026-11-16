@@ -1,6 +1,6 @@
 # What CI checks
 
-Core's CI runs on GitLab (`github.com`, GetBusbar/busbar). The pipeline definition is not in
+Core's CI runs in the private delivery system. The pipeline definition is not in
 this repository: core has no `.gitlab-ci.yml` of its own and includes the shared definition from
 GetBusbar/busbar-release, file `ci/core.yml` (with `ci/common.yml`, `ci/conformance.yml`,
 `ci/qa.yml`, `ci/drop.yml` and `ci/ghmirror.yml`). GitHub Actions is retired; the GitHub repository is
@@ -10,7 +10,11 @@ reader of this repository can see it.
 ## On every change to `dev`
 
 A change lands on `dev` and the `dev` pipeline judges it. `quick-check` runs first; every other check
-job waits for it, then they run in parallel.
+job that declares it as a dependency waits for it. Independent report jobs may run alongside it.
+
+Ordinary branch pushes and merge-request events do not start a pipeline under the current
+workflow. A successful MR status is not evidence that this revision compiled. The integrated
+`dev` pipeline supplies that evidence.
 
 | Job | What it runs | Blocking |
 |---|---|---|
@@ -25,7 +29,7 @@ job waits for it, then they run in parallel.
 | `unsafe-count` | the per-crate `unsafe` count against the forbid baseline; the report is published with each release tag | yes |
 | `miri` | the unit tests of `busbar-ffi`, the one crate that holds `unsafe`, under Miri (default features and `host`) | no: it reports and gates nothing yet |
 | `fuzz` | every `cargo-fuzz` target for a bounded time, on `dev` and the nightly; it starts when the tree gains a `fuzz/` workspace, which core does not have yet | no: it reports and gates nothing yet |
-| `coverage` | statement coverage of the workspace tests (`cargo llvm-cov`), on `dev` and the nightly, published as a report | no: a report, never a gate |
+| `coverage` | line coverage of the workspace tests (`cargo llvm-cov`), on `dev` and the nightly, published as a report | no: a report, never a gate |
 | `c-header` | the generated static asserts of `busbar_plugin.h` and its C fixture under `-std=c11 -Wall -Werror`, with two compilers | yes |
 | `conformance` | core's own conformance suites (`ci/conformance.yml`) | yes |
 | `red-proof` | on a commit whose message carries `[red-proof <crate>::<test>]` (not on `dev`): that one test must compile and then fail (nextest exit 100) | yes |
@@ -53,10 +57,22 @@ Nothing is published unless every blocking check of the pipeline passed.
 
 [docs/verify.md](verify.md) explains how to verify a release's signatures.
 
-## Not yet run
+## Coverage and execution evidence
 
 These are known gaps, also listed in the
 [security posture](security/1.6.0-security-posture.md) (section 4.2):
 
-- Statement coverage, Miri and fuzzing run as non-blocking jobs (above); none of them gates a merge or a release yet, and there is no fuzz target in core yet.
+- Coverage and Miri are configured as non-blocking jobs; fuzzing is conditional on a `fuzz/Cargo.toml` that this tree does not yet contain. Job definitions do not establish successful execution.
 - No sanitizer runs over `busbar-ffi`; it is held by clippy with warnings denied, its loom model and Miri.
+
+The coverage job emits `ci-reports/lcov.info` and `ci-reports/cobertura.xml` with 30-day
+artifact retention. Its displayed percentage reads LLVM's `totals.lines.percent`, even though
+the CI log labels it “Statement coverage”. This is line coverage, not proof of 80% statement
+coverage. There is no threshold gate and no public default-branch coverage report linked here.
+Issue #182 remains incomplete until public report publication and the requested execution
+evidence exist; a configured job or green pipeline with allowed failures does not satisfy it.
+
+The conformance execution catalog is [conformance/ci-coverage.json](../conformance/ci-coverage.json).
+Its scope is execution coverage, not passing verdicts or certification. Core's job selects its
+registered `dev` suites; plugins run their own suites against a published core pin. A suite's
+presence in the catalog does not establish that the latest core and plugin revisions passed.

@@ -7,11 +7,10 @@
 //! index (never the plugin's identity). On an unstamped boot this is step 5; on a stamped boot or a
 //! reload it is the seam's patch-writer edit of the same answer.
 //!
-//! Filing rules: UPSTREAM files `upstreams.<name>`, TRUST_APPROVAL `trust.<instance>.<name>`,
-//! ROUTE_MEDIA `routes.<name>.media`; a name two instances state with equal values is one entry, a
+//! Filing rules: UPSTREAM files `upstreams.<name>`; a name two instances state with equal values is one entry, a
 //! different value or a clash with what the operator wrote refuses CONFIG naming the instance
-//! indices. LIMITS fills the instance's own `limits` (empty name, once; an operator key wins and the
-//! fragment's value is dropped with a report line). LIFT (empty name, one JSON pointer, once per
+//! indices. LIMITS (empty name, once) is validated and filed nowhere (the plugin's answer is applied in
+//! memory at its open); TRUST_APPROVAL and ROUTE_MEDIA are filed nowhere either (no key in the grammar). LIFT (empty name, one JSON pointer, once per
 //! pointer) moves a literal secret out of the settings bag into a planned 0600 secret file under the
 //! config directory and leaves a `{file: <path>}` reference; the value never enters a report. Any
 //! other section, and any fragment at all on a stamped boot (a current config moves nothing), refuses
@@ -174,14 +173,9 @@ fn valid_name(name: &str) -> bool {
 }
 
 /// Where a named fragment lands: the document path, the section's word for the report.
-fn target(frag: &CoreCfg, instance: &str, index: u32) -> Result<Vec<String>, Refusal> {
+fn target(frag: &CoreCfg, index: u32) -> Result<Vec<String>, Refusal> {
     let (head, ok): (Vec<&str>, bool) = match frag.section {
         section::UPSTREAM => (vec!["upstreams"], valid_name(&frag.name)),
-        section::TRUST_APPROVAL => (vec!["trust", instance], valid_name(&frag.name)),
-        section::ROUTE_MEDIA => (
-            vec!["routes"],
-            !frag.name.is_empty() && frag.name.bytes().all(|b| b.is_ascii_digit()),
-        ),
         _ => (Vec::new(), false),
     };
     if !ok {
@@ -195,9 +189,6 @@ fn target(frag: &CoreCfg, instance: &str, index: u32) -> Result<Vec<String>, Ref
     }
     let mut path: Vec<String> = head.into_iter().map(str::to_owned).collect();
     path.push(frag.name.clone());
-    if frag.section == section::ROUTE_MEDIA {
-        path.push("media".to_owned());
-    }
     Ok(path)
 }
 
@@ -297,30 +288,13 @@ fn settle_block(
                     ));
                 }
                 limits_seen = true;
-                let Value::Map(fragment) = &frag.value else {
+                if !matches!(&frag.value, Value::Map(_)) {
                     return Err(refuse(index, "`limits` is not a mapping"));
-                };
-                let Value::Map(limits) =
-                    block.entry_or_insert_with("limits", || Value::Map(Pairs::new()))
-                else {
-                    return Err(refuse(index, &format!("`{shown}.limits` is not a mapping")));
-                };
-                for (key, value) in fragment {
-                    let held = limits
-                        .iter()
-                        .find(|(held_key, _)| held_key == key)
-                        .map(|(_, held)| held.clone());
-                    match held {
-                        None => limits.push((key.clone(), value.clone())),
-                        Some(held) if yaml::same_tree(&held, value) => {}
-                        Some(_) => report.push(format!(
-                            "{shown}.limits.{}: the operator's value is kept, and instance \
-                             {index}'s old setting is dropped (operator config is never \
-                             overwritten)",
-                            key.as_text().unwrap_or("?")
-                        )),
-                    }
                 }
+                report.push(format!(
+                    "{shown}: instance {index}'s old limits are not filed: the instance runs at its \
+                     kind's defaults, with the plugin's own answer applied in memory at its open"
+                ));
             }
             section::LIFT => {
                 let (Some(pointer), true) = (frag.value.as_text(), frag.name.is_empty()) else {
@@ -373,17 +347,16 @@ fn settle_block(
     Ok(())
 }
 
-/// File one named fragment (UPSTREAM, TRUST_APPROVAL, ROUTE_MEDIA) of `index`: one entry when another
+/// File one named fragment (UPSTREAM) of `index`: one entry when another
 /// instance stated it with an equal value, CONFIG naming both indices when the values differ.
 fn file_named(
     root: &mut Pairs,
     filed: &mut Vec<(String, Value, u32)>,
     frag: &CoreCfg,
-    instance: &str,
     index: u32,
     report: &mut Vec<String>,
 ) -> Result<(), Refusal> {
-    let path = target(frag, instance, index)?;
+    let path = target(frag, index)?;
     let id = path.join(".");
     if let Some((_, held, other)) = filed.iter().find(|(held_id, _, _)| *held_id == id) {
         if yaml::same_tree(held, &frag.value) {
@@ -458,12 +431,18 @@ pub fn apply_settled(
             )
         })?;
         settle_block(block, answer, &dir, &mut report, &mut secrets)?;
-        let instance = answer.path.last().map_or("", String::as_str);
         for frag in &answer.core_cfg {
             match frag.section {
                 section::LIMITS | section::LIFT => {}
-                section::UPSTREAM | section::TRUST_APPROVAL | section::ROUTE_MEDIA => {
-                    file_named(root, &mut filed, frag, instance, index, &mut report)?;
+                section::TRUST_APPROVAL | section::ROUTE_MEDIA => {
+                    report.push(format!(
+                        "{shown}: instance {index}'s core config section {} is not filed: \
+                         the grammar has no key for it",
+                        frag.section
+                    ));
+                }
+                section::UPSTREAM => {
+                    file_named(root, &mut filed, frag, index, &mut report)?;
                 }
                 other => {
                     return Err(refuse(

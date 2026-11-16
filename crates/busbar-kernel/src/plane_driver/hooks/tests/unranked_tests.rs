@@ -279,7 +279,6 @@ async fn a_gate_that_abstains_over_unpriced_members_logs_nothing() {
         Arc::new(Answers(Verdict::Abstain, "screen")),
         "screen",
         &[Signal::RequestTotalChars],
-        None,
     ));
     let hooks = unit_hooks(vec![(0, gate.clone())]);
     let view = Projection::empty("", "");
@@ -305,7 +304,6 @@ async fn a_gate_that_abstains_over_unpriced_members_logs_nothing() {
         Arc::new(Answers(Verdict::Prefer(vec![1, 0]), "least_busy")),
         "least_busy",
         &[],
-        None,
     ));
     match asked.decide(&ordering).await {
         (Decided::Order { order, name }, _) => {

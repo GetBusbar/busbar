@@ -422,9 +422,6 @@ mod unsupported_host {
         ) -> Stored {
             unreachable!("unsupported conditional host must not dispatch another service")
         }
-        fn entitlement_check(&self, _caller: &Caller, _unit: Option<u64>, _target: &str) -> Stored {
-            unreachable!("unsupported conditional host must not dispatch another service")
-        }
         fn session_emit(&self, _caller: &Caller, _session: u64, _bytes: &[u8]) -> Stored {
             unreachable!("unsupported conditional host must not dispatch another service")
         }

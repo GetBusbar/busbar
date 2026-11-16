@@ -77,9 +77,9 @@ fn the_2a_and_2b_recheck_sees_the_id_before_any_2c_open() {
     use busbar_plugin_abi::host_side::caller::BoxFut;
     use busbar_plugin_abi::types::KindCode;
     use busbar_plugin_loader::instance::{BootPhase, BootPlan, OpenError, OpenedPort};
-    use busbar_plugin_loader::ports::store::StoreHandle;
     use busbar_plugin_test::fake_needs::FakeNeeds;
     use busbar_plugin_test::suites::harness::Harness;
+    use busbar_ports::store::StoreHandle;
 
     use crate::{min3_second as probe, min3_store as store};
 
@@ -143,10 +143,14 @@ fn the_2a_and_2b_recheck_sees_the_id_before_any_2c_open() {
             (2, BootPhase::Rest),
         ],
     };
-    let mut h = Harness::admit(probe::probe::PLUGIN.plugin(), FakeNeeds::new())
-        .unwrap_or_else(|r| panic!("{r:?}"));
-    h.add(store::inline::PLUGIN.plugin())
-        .unwrap_or_else(|r| panic!("{r:?}"));
+    let h = Harness::admit_all(
+        &[
+            probe::probe::PLUGIN.plugin(),
+            store::inline::PLUGIN.plugin(),
+        ],
+        FakeNeeds::new(),
+    )
+    .unwrap_or_else(|r| panic!("{r:?}"));
     h.registry().set_store_seal(Box::new(|| {
         Box::new(busbar_contract::plugin::TestKernelSeal)
     }));

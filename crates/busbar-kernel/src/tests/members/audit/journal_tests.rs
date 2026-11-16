@@ -4,6 +4,7 @@
 use busbar_contract::caps::Pass;
 use busbar_contract::caps::{Audit as AuditStep, MeterClassId};
 use busbar_contract::json;
+use busbar_contract::json::JsonValueTrait as _;
 
 use busbar_kernel_audit::journal::{from_journal_body, journal_body, JOURNAL_TAG};
 use busbar_kernel_audit::record::{AuditBreakKind, AuditChain};
@@ -228,6 +229,7 @@ fn v7_frames_whole_and_fractional_quantities() {
                     None,
                 ],
                 attempts_total: 2,
+                records: Default::default(),
             };
             Audit::seal(
                 &mut chain,
@@ -302,6 +304,132 @@ fn v7_frames_whole_and_fractional_quantities() {
     assert_eq!(first["attempts"][1]["us"], "7");
     assert_eq!(first["attempts_total"], "2");
     assert_eq!(body["records"][1]["lines"][0]["quantity"], "27.5");
+}
+
+/// RED (ADMIN-API-1.6 §3.5): `records.user` and `records.labels` ride an optional tail after
+/// `attempts_total`. A record that keeps neither frames nothing new, so its body and digest are
+/// what `v7` sealed before the tail existed; one that keeps either seals, journals and publishes
+/// it, and every byte of it is digested.
+#[test]
+fn v7_records_tail_is_sealed_only_when_kept() {
+    use busbar_kernel_audit::record::UnitFacts;
+    use busbar_kernel_audit::{Audit, RecordFacts};
+    let signer = AuditSigningKey::from_seed(&[74; 32]);
+    let mut chain = AuditChain::new()
+        .signing_with(signer)
+        .sealing_as(SEALING_NODE);
+    let mut seal = |records: RecordFacts, unit: u64| {
+        let mut inputs = super::sign_tests::rich_inputs(unit);
+        inputs.unit = UnitFacts {
+            records,
+            ..UnitFacts::at(1_700_000_000_500 + unit)
+        };
+        Audit::seal(
+            &mut chain,
+            inputs,
+            &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+        )
+    };
+    let bare = seal(RecordFacts::default(), 1);
+    let user = "u_00112233445566778899aabbccddeeff";
+    let kept = seal(
+        RecordFacts {
+            user: Some(user.into()),
+            labels: vec![
+                (std::sync::Arc::from("x-team"), "payments".into()),
+                (std::sync::Arc::from("x-cost-center"), String::new()),
+            ],
+        },
+        2,
+    );
+    let labels_only = seal(
+        RecordFacts {
+            user: None,
+            labels: vec![(std::sync::Arc::from("x-team"), "search".into())],
+        },
+        3,
+    );
+
+    let names = |record: &busbar_kernel_audit::AuditRecord| -> Vec<&'static str> {
+        super::digest_fields(record)
+            .iter()
+            .map(|field| field.name)
+            .collect()
+    };
+    assert_eq!(
+        names(&bare).last(),
+        Some(&"attempts_total"),
+        "a record that keeps neither frames no tail"
+    );
+    let tail = names(&kept);
+    assert_eq!(
+        &tail[tail.len() - 7..],
+        [
+            "user_present",
+            "user",
+            "labels_count",
+            "labels[].name",
+            "labels[].value",
+            "labels[].name",
+            "labels[].value",
+        ]
+    );
+
+    for record in [&bare, &kept, &labels_only] {
+        let bytes = journal_body(record).unwrap();
+        let back = from_journal_body(&bytes, &declared).unwrap().unwrap();
+        assert_eq!(
+            &back, record,
+            "the journal keeps the records tail as sealed"
+        );
+        assert_eq!(journal_body(&back).unwrap(), bytes);
+        assert_eq!(AuditChain::digest_of(&back), record.hash);
+    }
+    let mut torn = journal_body(&kept).unwrap();
+    torn.pop();
+    assert!(
+        from_journal_body(&torn, &declared).is_err(),
+        "a torn records tail"
+    );
+
+    let mut forged = kept.clone();
+    forged.unit.records.user = Some("u_ffeeddccbbaa99887766554433221100".into());
+    assert_ne!(AuditChain::digest_of(&forged), kept.hash, "user");
+    let mut forged = kept.clone();
+    forged.unit.records.labels[0].1 = "billing".into();
+    assert_ne!(AuditChain::digest_of(&forged), kept.hash, "a label value");
+    let mut forged = kept.clone();
+    forged.unit.records.labels.pop();
+    assert_ne!(AuditChain::digest_of(&forged), kept.hash, "a dropped label");
+    let mut forged = labels_only.clone();
+    forged.unit.records = RecordFacts::default();
+    assert_ne!(
+        AuditChain::digest_of(&forged),
+        labels_only.hash,
+        "the tail cannot be dropped"
+    );
+    AuditChain::verify_chain(&[bare.clone(), kept.clone(), labels_only.clone()]).unwrap();
+
+    let body: json::Value = json::parse_value(
+        busbar_kernel_audit::expose::range_body(&chain, &[bare, kept, labels_only], 1, 3)
+            .as_bytes(),
+    )
+    .unwrap();
+    let first = &body["records"][0];
+    assert!(first.get("user_present").is_none(), "{first}");
+    assert!(first.get("labels").is_none(), "{first}");
+    let second = &body["records"][1];
+    assert_eq!(second["user_present"], "1");
+    assert_eq!(second["user"], user);
+    assert_eq!(second["labels_count"], "2");
+    assert_eq!(second["labels"][0]["name"], "x-team");
+    assert_eq!(second["labels"][0]["value"], "payments");
+    assert_eq!(second["labels"][1]["name"], "x-cost-center");
+    assert_eq!(second["labels"][1]["value"], "");
+    let third = &body["records"][2];
+    assert_eq!(third["user_present"], "0");
+    assert_eq!(third["user"], "");
+    assert_eq!(third["labels"][0]["value"], "search");
 }
 
 /// THE UNIT ID (ADMIN-API-1.6 §3.4): `node_<16 hex>.<32 hex nonce>.<unit key>`, one formatter;

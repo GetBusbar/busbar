@@ -411,6 +411,18 @@ pub(crate) struct Keys {
 }
 
 impl Keys {
+    /// Derive migration custody from the secrets owned by this boot, before publication.
+    pub(crate) fn from_core(core: &crate::root::min3_boot::CoreSecrets) -> Result<Self, String> {
+        let keys = busbar_kernel::appbuild::records_keys_from(core.signing_key.as_deref())?;
+        Ok(Self {
+            seed: keys
+                .signer
+                .as_ref()
+                .map(busbar_kernel::governance::signing::TokenSigner::secret_bytes),
+            at_rest: keys.at_rest,
+        })
+    }
+
     /// Moved out of the kernel's bootstrap (once per boot); none when no bootstrap resolved any.
     /// On a MIN-3 boot the store opened through the registry walk, so no old-ABI bootstrap ran: the keys are the
     /// walk's resolved core secrets (an unparsable key is treated as absent here; the boot's own preflight
@@ -418,12 +430,7 @@ impl Keys {
     pub(crate) fn from_bootstrap() -> Self {
         let keys = busbar_kernel::appbuild::take_bootstrap_records_keys().or_else(|| {
             let core = &crate::root::min3_boot::booted()?.core;
-            busbar_kernel::appbuild::records_keys_from(
-                core.at_rest_key.as_deref(),
-                core.at_rest_previous.as_deref(),
-                core.signing_key.as_deref(),
-            )
-            .ok()
+            busbar_kernel::appbuild::records_keys_from(core.signing_key.as_deref()).ok()
         });
         Self {
             seed: keys
@@ -495,10 +502,19 @@ pub(crate) async fn step4(
     config: PathBuf,
     stamped: bool,
 ) -> Result<(), String> {
+    step4_with_keys(core, Keys::from_bootstrap(), config, stamped).await
+}
+
+/// Step 4 with custody supplied by the boot owner, without consulting published MIN-3 state.
+pub(crate) async fn step4_with_keys(
+    core: Arc<CoreStore>,
+    keys: Keys,
+    config: PathBuf,
+    stamped: bool,
+) -> Result<(), String> {
     let runtime = tokio::runtime::Handle::current();
     tokio::task::spawn_blocking(move || {
         let store = Store::new(core, runtime);
-        let keys = Keys::from_bootstrap();
         run_blocking(&store, &keys, &config, stamped)
     })
     .await
@@ -599,4 +615,30 @@ pub(crate) fn write_with_attempt(
         }
     }
     written
+}
+
+#[cfg(test)]
+mod key_handoff_tests {
+    use super::Keys;
+    use crate::root::min3_boot::CoreSecrets;
+    use busbar_contract::secure::SecureVec;
+
+    #[test]
+    fn explicit_boot_keys_are_derived_before_publication_and_invalid_keys_refuse() {
+        let missing = Keys::from_core(&CoreSecrets::default()).unwrap();
+        assert!(missing.seed.is_none());
+        assert!(missing.at_rest.is_none());
+        let core = CoreSecrets {
+            signing_key: Some(SecureVec::from(&[7u8; 32][..])),
+            ..CoreSecrets::default()
+        };
+        let supplied = Keys::from_core(&core).unwrap();
+        assert_eq!(supplied.seed, Some([7u8; 32]));
+        assert!(supplied.at_rest.is_some());
+        let invalid = CoreSecrets {
+            signing_key: Some(SecureVec::from(&[7u8; 3][..])),
+            ..CoreSecrets::default()
+        };
+        assert!(Keys::from_core(&invalid).is_err());
+    }
 }

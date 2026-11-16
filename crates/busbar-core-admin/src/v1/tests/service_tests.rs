@@ -9,7 +9,6 @@ mod usage_adjustment_range;
 
 pub(crate) fn hook(kind: HookKind, global: bool) -> HookCfg {
     HookCfg {
-        child_dispatch: None,
         kind,
         plugin: "test-hook".to_string(),
         timeout_ms: 5,
@@ -82,13 +81,14 @@ fn inspect_reports_the_admissions_verdict_in_the_catalog_vocabulary() {
             alias: "v".into(),
             kind: "store".into(),
             version: "1.0.0".into(),
+            signature_present: false,
             publisher: "acme".into(),
             abi_version: 3,
             settings_schema: None,
             configuration: None,
         };
         let view = inspect_plugin_view(manifest, judged, |_| true);
-        assert_eq!(view["trust"], word, "{word}");
+        assert_eq!(view["trust"]["verdict"], word, "{word}");
         assert_eq!(view["name"], "acme-store-v");
         assert_eq!(view["kind"], "store");
         assert_eq!(view["restart_required_default"], true);
@@ -115,6 +115,7 @@ fn catalog_preserves_manifest_kinds_and_filters_store_queries() {
                 alias: kind.into(),
                 kind: kind.into(),
                 version: "1.0.0".into(),
+                signature_present: false,
                 publisher: "acme".into(),
                 abi_version: 3,
                 settings_schema: None,
@@ -203,7 +204,10 @@ fn linked_catalog_exposes_the_same_schema_and_error_as_inspection() {
             Some("/api/v1/admin/plugins/metrics/schema")
         );
         assert_eq!(listed.file, None);
-        assert_eq!(listed.trust, Some("trusted"));
+        assert_eq!(
+            listed.trust.as_ref().map(|trust| trust.verdict),
+            Some("trusted")
+        );
         let (schema, error) = manifest_schema(Some(text));
         assert_eq!(listed.schema_error, error);
         let inspected = inspect_plugin_view(
@@ -212,6 +216,7 @@ fn linked_catalog_exposes_the_same_schema_and_error_as_inspection() {
                 alias: "metrics".into(),
                 kind: "export".into(),
                 version: "1.6.0".into(),
+                signature_present: false,
                 publisher: "busbar".into(),
                 abi_version: 1,
                 settings_schema: Some(text.into()),
@@ -248,6 +253,7 @@ fn catalog_projects_each_inventory_row_into_the_catalog_vocabulary() {
                 alias: name.into(),
                 kind: "store".into(),
                 version: "2.1.0".into(),
+                signature_present: false,
                 publisher: "acme".into(),
                 abi_version: 3,
                 settings_schema: None,
@@ -269,11 +275,20 @@ fn catalog_projects_each_inventory_row_into_the_catalog_vocabulary() {
             .find(|p| p.target.as_deref() == Some(file))
             .unwrap_or_else(|| panic!("{file} is listed: {cat:?}"))
     };
-    assert_eq!(row("a.tar.gz").trust, Some("trusted"));
+    assert_eq!(
+        row("a.tar.gz").trust.as_ref().map(|trust| trust.verdict),
+        Some("trusted")
+    );
     assert_eq!(row("a.tar.gz").publisher.as_deref(), Some("acme"));
     assert_eq!(row("a.tar.gz").version.as_deref(), Some("2.1.0"));
-    assert_eq!(row("b.tar.gz").trust, Some("unverified"));
-    assert_eq!(row("c.tar.gz").trust, Some("rejected"));
+    assert_eq!(
+        row("b.tar.gz").trust.as_ref().map(|trust| trust.verdict),
+        Some("unverified")
+    );
+    assert_eq!(
+        row("c.tar.gz").trust.as_ref().map(|trust| trust.verdict),
+        Some("rejected")
+    );
     assert_eq!(row("c.tar.gz").valid, Some(false));
     assert!(row("c.tar.gz")
         .error
@@ -1496,6 +1511,7 @@ fn plugin_configuration_inspection_suppresses_refused_declarations() {
         alias: "fixture-plane".into(),
         kind: "plane".into(),
         version: "1.6.0".into(),
+        signature_present: false,
         publisher: "fixture".into(),
         abi_version: 1,
         settings_schema: None,
@@ -1537,6 +1553,7 @@ fn plugin_configuration_corrupt_and_unknown_inventory_have_no_store_ownership() 
             alias: "unknown-kind".into(),
             kind: "unknown".into(),
             version: "1.6.0".into(),
+            signature_present: false,
             publisher: "fixture".into(),
             abi_version: 1,
             settings_schema: None,

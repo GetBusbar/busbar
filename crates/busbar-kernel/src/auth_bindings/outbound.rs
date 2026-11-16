@@ -11,8 +11,8 @@ use std::time::Instant;
 
 use busbar_plugin_abi::host_side::caller::BoxFut;
 use busbar_plugin_abi::types::{Bytes, Pair, Str};
-use busbar_plugin_loader::ports::auth::{AuthPort, OutboundAnswer, UpstreamIn};
-use busbar_plugin_loader::ports::{CallCx, PortError};
+use busbar_ports::auth::{AuthPort, OutboundAnswer, UpstreamIn};
+use busbar_ports::{CallCx, PortError};
 
 use crate::custody::{CredGet, CredKey, CredentialCache};
 
