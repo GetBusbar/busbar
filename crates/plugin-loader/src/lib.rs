@@ -287,6 +287,7 @@ pub mod ports;
 pub mod refusal;
 #[deny(unsafe_code)]
 pub mod scan;
+mod upstream_paths;
 #[deny(unsafe_code)]
 pub mod watchdog;
 
