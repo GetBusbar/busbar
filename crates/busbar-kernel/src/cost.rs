@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use busbar_contract::records::ScopeRef;
 
-use crate::config::groups::{AdmissionMode, LimitMetric};
+use crate::config::groups::LimitMetric;
 
 pub use busbar_kernel_ledger::cost::{
     budget_remaining, plane_fee_lane, price_era, price_ledger, sum_spend, Author, CardEntryDraft,
@@ -75,10 +75,6 @@ pub struct GroupBucket {
     /// Total-token cap per window (`{ tokens: N, per: <window> }`), if any. Best-effort: tokens
     /// land post-response, so the cap blocks the NEXT request once crossed.
     pub tokens_cap: Option<u64>,
-    /// Per-class token caps (`{ tokens_<class>: N, per: <window> }`), each best-effort exactly
-    /// like `tokens_cap`, one per capped class, in check order ([`LimitMetric`]'s order). The
-    /// class is an opaque ledger class name ([`LimitMetric::capped_class`]).
-    pub class_caps: Vec<ClassCap>,
     /// Spend cap per window (`{ budget: N, per: <window> }`) in abstract cents, if any. Derived at
     /// check time from the cell's token ledger x the current rate card (+ the flat per-request
     /// fee x requests).
@@ -92,30 +88,6 @@ pub struct GroupBucket {
     /// several budget limits merge into this bucket, the MOST RESTRICTIVE (minimum) cap's
     /// behavior governs - it is the one that actually blocks.
     pub downgrade_to: Option<ScopeRef>,
-    /// How the bucket's budget admits (the design's budget modes): `exact` (the default, 1.5.5)
-    /// or `estimate` when ANY budget limit merged into this bucket declared it (the
-    /// strictest wins, as [`AdmissionMode::governing`] reads it).
-    pub budget_admission: AdmissionMode,
-}
-
-/// ONE PER-CLASS TOKEN CAP of a bucket: the limit's metric (its config word is the refusal's
-/// vocabulary), the ledger class it counts, and the cap.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ClassCap {
-    /// The limit metric the cap was configured under.
-    pub metric: LimitMetric,
-    /// The ledger class the cap counts ([`LimitMetric::capped_class`]).
-    pub class: &'static str,
-    /// The cap: the count at which the bucket blocks the next admission.
-    pub cap: u64,
-}
-
-impl GroupBucket {
-    pub fn class_cap(&self, metric: LimitMetric) -> Option<u64> {
-        (self.class_caps.iter())
-            .find(|c| c.metric == metric)
-            .map(|c| c.cap)
-    }
 }
 
 /// One resolved group: its enabled flag, in-flight cap, per-window enforcement buckets, and parent
@@ -147,8 +119,6 @@ pub(crate) struct ChainBucket<'a> {
     pub window: &'static str,
     pub requests_cap: Option<u64>,
     pub tokens_cap: Option<u64>,
-    /// The bucket's per-class token caps ([`GroupBucket::class_caps`]).
-    pub class_caps: &'a [ClassCap],
     pub budget_cap: Option<i64>,
     /// `Some(scope)` = the bucket is scope-qualified: it checks/charges/accrues ONLY when the
     /// request was dispatched through that scope (today, always `kind: "pool"`). `None` = applies
@@ -156,8 +126,6 @@ pub(crate) struct ChainBucket<'a> {
     pub scope: Option<&'a ScopeRef>,
     /// The budget limit's `downgrade_to` scope, when it declared `on_exhaust: downgrade`.
     pub downgrade_to: Option<&'a ScopeRef>,
-    /// The bucket's budget admission mode ([`GroupBucket::budget_admission`]).
-    pub budget_admission: AdmissionMode,
 }
 
 impl ChainBucket<'_> {
@@ -322,10 +290,7 @@ impl CostModel {
             .iter()
             .flat_map(|g| g.buckets.iter())
             .filter(|b| {
-                b.requests_cap.is_some()
-                    || b.tokens_cap.is_some()
-                    || !b.class_caps.is_empty()
-                    || b.budget_cap.is_some()
+                b.requests_cap.is_some() || b.tokens_cap.is_some() || b.budget_cap.is_some()
             })
             .map(|b| b.bucket_id.clone())
             .collect()
@@ -384,31 +349,11 @@ impl CostModel {
                                     bucket.requests_cap = min_u(bucket.requests_cap)
                                 }
                                 LimitMetric::Tokens => bucket.tokens_cap = min_u(bucket.tokens_cap),
-                                LimitMetric::TokensInput
-                                | LimitMetric::TokensOutput
-                                | LimitMetric::TokensCacheRead
-                                | LimitMetric::TokensCacheWrite => {
-                                    if let Some(class) = metric.capped_class() {
-                                        let caps = &mut bucket.class_caps;
-                                        match caps.iter_mut().find(|c| c.metric == metric) {
-                                            Some(c) => c.cap = c.cap.min(l.amount),
-                                            None => caps.push(ClassCap {
-                                                metric,
-                                                class,
-                                                cap: l.amount,
-                                            }),
-                                        }
-                                        caps.sort_by_key(|c| c.metric);
-                                    }
-                                }
                                 LimitMetric::Budget => {
                                     let amount = i64::try_from(l.amount).unwrap_or(i64::MAX);
 
                                     if bucket.budget_cap.is_none_or(|c| amount < c) {
                                         bucket.downgrade_to.clone_from(&l.downgrade_to);
-                                    }
-                                    if l.admission == Some(AdmissionMode::Estimate) {
-                                        bucket.budget_admission = AdmissionMode::Estimate;
                                     }
                                     bucket.budget_cap = Some(
                                         bucket.budget_cap.map_or(amount, |c: i64| c.min(amount)),
@@ -539,38 +484,6 @@ impl CostModel {
         busbar_kernel_ledger::cost::nanos_of_exact(tally.exact().ok()?).ok()
     }
 
-    pub fn estimate_minor(&self, models: &[&str], expected: &BTreeMap<String, u64>) -> Option<i64> {
-        if expected.values().all(|n| *n == 0) {
-            return Some(0);
-        }
-        let usage = busbar_contract::billing::Usage {
-            usage_units: expected.clone(),
-        };
-        let mut highest: u128 = 0;
-        for model in models {
-            highest = highest.max(self.price_usage_nanos(model, &usage)?);
-        }
-        let minor = highest.div_ceil(busbar_kernel_ledger::cost::NANOS_PER_CENT);
-        Some(i64::try_from(minor).unwrap_or(i64::MAX))
-    }
-
-    /// Price an exact admission estimate without rounding its measured quantities.
-    pub fn estimate_counts_minor(
-        &self,
-        models: &[&str],
-        expected: &BTreeMap<String, busbar_contract::Count>,
-    ) -> Option<i64> {
-        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::Estimate);
-        if expected.values().all(|count| count.is_zero()) {
-            return Some(0);
-        }
-        let mut highest = 0;
-        for model in models {
-            highest = highest.max(self.price_counts_nanos(model, expected)?);
-        }
-        i64::try_from(highest.div_ceil(busbar_kernel_ledger::cost::NANOS_PER_CENT)).ok()
-    }
-
     #[inline]
     pub fn model_unpriced(&self, model: &str) -> bool {
         self.card.lane_unpriced(model)
@@ -618,11 +531,9 @@ impl CostModel {
                     window: b.window,
                     requests_cap: b.requests_cap,
                     tokens_cap: b.tokens_cap,
-                    class_caps: &b.class_caps,
                     budget_cap: b.budget_cap,
                     scope: b.scope.as_ref(),
                     downgrade_to: b.downgrade_to.as_ref(),
-                    budget_admission: b.budget_admission,
                 });
             }
         }

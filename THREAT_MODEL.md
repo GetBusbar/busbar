@@ -172,12 +172,11 @@ A request must not be mis-routed, and one caller's failures must not corrupt ano
 (`crates/busbar-kernel-breaker/src/cell.rs`). The request budget is a compare-and-swap loop. Money
 is never stored: spend is derived from metered usage times the rate card and checked against the cap
 under the same held locks as the charge (`crates/busbar-kernel/src/governance/state.rs`,
-`try_admit_estimated`).
+`try_admit`).
 
-**Limits:** a clamped `Retry-After` can still park a destination for up to the ceiling. Under the
-default `admission: exact`, only an already-exhausted budget is refused and the estimate is not
-reserved, so concurrent in-flight requests can each overshoot a cap by up to one request (more for
-streams unless `cut-stream` is set). **Rewrite failure has distinct outcomes.** An optional
+**Limits:** a clamped `Retry-After` can still park a destination for up to the ceiling. Only an
+already-exhausted budget is refused and no estimate is reserved, so concurrent in-flight requests
+can each overshoot a cap by up to one request (more for streams). **Rewrite failure has distinct outcomes.** An optional
 transform failure can retain the original content; `on_error: reject` converts a transform
 failure to refusal. A returned rewrite that cannot be projected onto the protocol is refused,
 not silently replaced by the original body. A not-applicable transform or content omitted from
