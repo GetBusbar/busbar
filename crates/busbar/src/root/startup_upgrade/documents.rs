@@ -28,6 +28,10 @@ struct Document {
     /// its empty form is both original and target, and its file is never inspected as present,
     /// published or created.
     absent: bool,
+    /// The boot reads this document from a held migrate-on-boot plan, not from its file: the
+    /// file still holds the 1.5.5 bytes until `migrate::finish` writes the plan, so this custody
+    /// neither inspects, binds nor publishes it.
+    held: bool,
 }
 
 /// Complete document inventory, including unchanged documents. Debug is deliberately absent.
@@ -163,6 +167,7 @@ impl Documents {
                         restored_transform: None,
                         runtime_only: false,
                         absent: false,
+                        held: crate::root::migrate::held(path).is_some(),
                     });
                 if entry.kind != kind {
                     return Err("one file cannot be deployment and provider configuration".into());
@@ -366,6 +371,7 @@ impl Documents {
                 restored_transform: None,
                 runtime_only: false,
                 absent: true,
+                held: false,
             });
         if entry.kind != kind {
             return Err("one file cannot be deployment and provider configuration".into());
@@ -745,6 +751,7 @@ impl Documents {
                 restored_transform: None,
                 runtime_only: false,
                 absent: false,
+                held: crate::root::migrate::held(path).is_some(),
             });
         if entry.kind != ConfigDocument::Providers || entry.absent || entry.original.as_str() != raw
         {
@@ -823,6 +830,7 @@ impl Documents {
             let observed: BTreeMap<_, _> = state
                 .documents
                 .iter()
+                .filter(|(_, entry)| !entry.held)
                 .map(|(path, entry)| {
                     let runtime = entry
                         .runtime_only
@@ -910,6 +918,7 @@ impl Documents {
                         restored_transform: Some(publication.transform_id),
                         runtime_only,
                         absent: publication.absent,
+                        held: false,
                     },
                 )
                 .is_some()
@@ -945,9 +954,10 @@ impl Documents {
             .state
             .lock()
             .map_err(|_| "configuration custody failed")?;
+        let held_count = state.documents.values().filter(|entry| entry.held).count();
         if state.phase != phase
             || state.revision != revision
-            || state.documents.len() != observed.len()
+            || state.documents.len() - held_count != observed.len()
         {
             return Err("configuration phase changed during checkpoint recovery".into());
         }
@@ -955,7 +965,8 @@ impl Documents {
             .revision
             .checked_add(1)
             .ok_or("configuration phase exhausted")?;
-        state.documents = restored;
+        state.documents.retain(|_, entry| entry.held);
+        state.documents.extend(restored);
         state.secrets = secrets;
         state.secret_binding = None;
         state.locked |= locked;
@@ -969,6 +980,10 @@ impl Documents {
             .map_err(|_| "configuration custody failed")?;
         let mut outputs = Vec::with_capacity(state.documents.len());
         for (path, entry) in &state.documents {
+            // A held document is written by the migrate-on-boot plan, never by this custody.
+            if entry.held {
+                continue;
+            }
             let converted = entry
                 .converted
                 .as_ref()
