@@ -13,8 +13,8 @@ use crate::{
         commit::SubmitResult,
         facade::CoreStore,
         journal::{
-            runtime::{LiveChange, RuntimeJournal, StagedRun},
-            Selection, StoreJournal, VerifiedHead, WriteResult,
+            runtime::{Carried, LiveChange, RuntimeError, RuntimeJournal, StagedRun},
+            RowChange, Selection, StoreJournal, VerifiedHead, WriteResult,
         },
         partition,
     },
@@ -492,6 +492,19 @@ struct History<'a> {
     /// originals. This node's proof continues from it, reading only the
     /// originals appended after it; each must link to the one before.
     base: Option<Arc<VerifiedHead>>,
+    /// Beside the live owner only: the evidence this process carries for its own originals
+    /// (SHUTDOWN-HANG F1). An own hop it names is read once by its computed ordinal and checked
+    /// against the carried hash, with no proof of this node built at all.
+    carried: Option<&'a Mutex<DriverState>>,
+    /// An own original was read by carried evidence, so `finish` confirms this node's custody
+    /// even when no proof of it was built.
+    own_read: bool,
+    /// This node's head as the live owner vouched for it in `owned_with_history`, when no proof
+    /// of this node was built: confirming it needs one custody read, never the driver.
+    own_verified: Option<Arc<VerifiedHead>>,
+    /// Own originals read through a proof (not carried), as `(sequence, chain hash)`: the boot
+    /// replay carries them for operations still unsettled.
+    own_seen: Vec<Carried>,
 }
 impl<'a> History<'a> {
     fn new(store: &'a CoreStore) -> Self {
@@ -501,13 +514,31 @@ impl<'a> History<'a> {
             records: HistoryRecords::default(),
             live: None,
             base: None,
+            carried: None,
+            own_read: false,
+            own_verified: None,
+            own_seen: Vec::new(),
         }
+    }
+    /// The evidence carried for this node's own original `sequence`, if any.
+    fn carried_hash(&self, node: u64, sequence: u64) -> Option<Carried> {
+        self.live.filter(|journal| journal.node() == node)?;
+        let state = self.carried?.lock().unwrap_or_else(|p| p.into_inner());
+        state.carried.get(&sequence).map(|hash| Carried {
+            seq: sequence,
+            hash: *hash,
+        })
     }
     fn observing(store: &'a CoreStore, journal: &'a RuntimeJournal) -> Self {
         Self {
             live: Some(journal),
             ..Self::new(store)
         }
+    }
+    /// The same History, reading own hops by the evidence `state` carries (SHUTDOWN-HANG F1).
+    fn carrying(mut self, state: &'a Mutex<DriverState>) -> Self {
+        self.carried = Some(state);
+        self
     }
     /// Beside the live owner, continuing from this node's last verified proof
     /// and its cached recovery frames. Without one it is a plain observation.
@@ -566,27 +597,47 @@ impl<'a> History<'a> {
         Ok(proof)
     }
     async fn candidate(&mut self, at: &Head) -> Result<Candidate, RecoveryError> {
+        // (SHUTDOWN-HANG F1) An own original this process appended (or the boot replay verified)
+        // is read lane-free at its computed ordinal and must be the bytes it carried: no replay.
+        if let (Some(live), Some(carried)) = (self.live, self.carried_hash(at.node, at.sequence)) {
+            let record = live.record(carried).await.map_err(carried_error)?;
+            self.own_read = true;
+            return Self::decode_candidate(&record).map(|(candidate, _)| candidate);
+        }
         let proof = self.proof(at.node).await?;
         let journal = StoreJournal::new(self.store, at.node).map_err(unavailable)?;
-        if let Some((ordinal, record)) = self.records.records.get(&(at.node, at.sequence)) {
-            journal
-                .confirm_original_record(&proof, *ordinal, record)
+        let local = self.live.is_some_and(|live| live.node() == at.node);
+        let record = match self.records.records.get(&(at.node, at.sequence)) {
+            Some((ordinal, record)) => {
+                journal
+                    .confirm_original_record(&proof, *ordinal, record)
+                    .await
+                    .map_err(unavailable)?;
+                record.clone()
+            }
+            None => journal
+                .read_verified_record(&proof, at.sequence)
                 .await
-                .map_err(unavailable)?;
-            return Self::decode_candidate(record);
+                .map_err(unavailable)?,
+        };
+        let (candidate, hash) = Self::decode_candidate(&record)?;
+        if local {
+            self.own_seen.push(Carried {
+                seq: at.sequence,
+                hash,
+            });
         }
-        let record = journal
-            .read_verified_record(&proof, at.sequence)
-            .await
-            .map_err(unavailable)?;
-        Self::decode_candidate(&record)
+        Ok(candidate)
     }
-    fn decode_candidate(record: &Record) -> Result<Candidate, RecoveryError> {
+    /// The candidate a recovery original carries, and the original's chain hash.
+    fn decode_candidate(record: &Record) -> Result<(Candidate, [u8; 32]), RecoveryError> {
         let decoded = JournalRecord::decode(&record.body).map_err(|e| invalid_from(&e))?;
         if decoded.identity() != record.identity() {
             return Err(invalid("recovery key and sealed identity differ"));
         }
-        candidate(&decoded)?.ok_or_else(|| invalid("selected frame is not a recovery candidate"))
+        let candidate = candidate(&decoded)?
+            .ok_or_else(|| invalid("selected frame is not a recovery candidate"))?;
+        Ok((candidate, decoded.hash))
     }
     async fn finish(&self) -> Result<(), RecoveryError> {
         let live = self
@@ -613,6 +664,10 @@ impl<'a> History<'a> {
                     .await
                     .map_err(unavailable)?,
             }
+        } else if let Some(journal) = self.live.filter(|_| self.own_read) {
+            // Own originals read by carried evidence, with no proof of this node: one lane-free
+            // read of H, O and admission (SHUTDOWN-HANG F1 `confirm_with`).
+            journal.confirm_with(&[]).await.map_err(unavailable)?;
         }
         Ok(())
     }
@@ -705,6 +760,29 @@ struct Pending {
     /// A re-driven uncertain attempt met a definite no-effect: its first crossing may still
     /// land, so it is never resubmitted and only reconciliation resolves it.
     reconciling: bool,
+    /// Who may drive this staged original (SHUTDOWN-HANG F3.2).
+    owner: Owner,
+}
+/// A member of the unresolved batch is driven only by that batch, with exactly its membership;
+/// any other entry is driven by whichever driver comes next, reusing its staged original, so one
+/// Reconciliation original exists per (operation, revision).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Owner {
+    Single,
+    Batch(u64),
+}
+/// The one recovery batch attempt that may still apply (SHUTDOWN-HANG F3.2): one CAS selecting
+/// every member's staged original under one operation id.
+#[derive(Clone)]
+struct BatchAttempt {
+    id: u64,
+    operation: [u8; 16],
+    members: Vec<[u8; 16]>,
+    /// The proof the attempt CASes against, retained under the publication driver before any
+    /// native claim; `None` until its first crossing and after a definite no-effect re-arm.
+    proof: Option<Arc<VerifiedHead>>,
+    /// A re-driven in-doubt attempt met a definite no-effect: never resubmitted.
+    reconciling: bool,
 }
 #[derive(Clone)]
 struct PendingAdoption {
@@ -723,6 +801,64 @@ struct DriverState {
     pending: BTreeMap<[u8; 16], Pending>,
     adoptions: BTreeMap<[u8; 16], PendingAdoption>,
     driving: BTreeSet<[u8; 16]>,
+    /// At most one batch attempt may still apply (F3.2).
+    batch: Option<BatchAttempt>,
+    next_batch: u64,
+    /// The chain hash of each own Reconciliation original this process holds evidence for, by
+    /// sequence (SHUTDOWN-HANG F1): inserted when its append is confirmed, or by the boot replay's
+    /// verified walk; about 56 B each, RAM only.
+    carried: BTreeMap<u64, [u8; 32]>,
+    /// The carried sequences of each operation, dropped by `release(op)`.
+    carried_by_op: BTreeMap<[u8; 16], Vec<u64>>,
+}
+impl DriverState {
+    fn carry(&mut self, operation: [u8; 16], carried: Carried) {
+        self.carried.insert(carried.seq, carried.hash);
+        let seqs = self.carried_by_op.entry(operation).or_default();
+        if !seqs.contains(&carried.seq) {
+            seqs.push(carried.seq);
+        }
+    }
+    /// Whether `operation`'s staged original belongs to the batch attempt that may still apply.
+    fn batch_owned(&self, operation: &[u8; 16]) -> bool {
+        match self.pending.get(operation).map(|pending| pending.owner) {
+            Some(Owner::Batch(id)) => self.batch.as_ref().is_some_and(|batch| batch.id == id),
+            _ => false,
+        }
+    }
+}
+
+/// The evidence `run` carries for its original at `seq`.
+fn carried_of(run: &StagedRun, seq: u64) -> Option<Carried> {
+    run.carried().find(|carried| carried.seq == seq)
+}
+
+fn carried_error(error: RuntimeError) -> RecoveryError {
+    match error {
+        RuntimeError::Corrupt => {
+            invalid("recovery original differs from carried evidence (Corrupt)")
+        }
+        other => unavailable(other),
+    }
+}
+
+/// An operation's current selection: its head and the raw row (`None` before its first).
+type Current = Option<(Head, Secret<Vec<u8>>)>;
+
+/// Candidates whose pre-checks run at once in one batch (each is a few store reads).
+const PRECHECKS: usize = 16;
+
+/// What one batch crossing decided.
+enum Crossed {
+    /// Every member is selected; their events, for the post-write verification.
+    Applied(Vec<RecoveryEvent>),
+    /// A definite no-effect on the attempt's first crossing: `conflict` for a failed condition,
+    /// otherwise a refusal of the whole candidate.
+    Definite {
+        attempt: BatchAttempt,
+        conflict: bool,
+        why: RecoveryError,
+    },
 }
 
 /// Scoped recovery domain owner. Its only backend is the opened CoreStore and
@@ -737,6 +873,8 @@ pub struct StoreRecovery {
     /// the next persist beside the live owner continues from.
     verified: Mutex<Option<VerifiedJournal>>,
     retirements: crate::persistence::boot_identity::WriterRetirements,
+    /// Serialises batch drivers: one batch attempt at a time (F3.2).
+    batching: tokio::sync::Mutex<()>,
 }
 struct Driving<'a> {
     sink: &'a StoreRecovery,
@@ -770,15 +908,35 @@ impl StoreRecovery {
             state: Mutex::new(DriverState::default()),
             verified: Mutex::new(None),
             retirements: Default::default(),
+            batching: tokio::sync::Mutex::new(()),
         })
     }
-    /// Test probe: the evidence carried for this node's own original `seq` (stub: none yet).
+    /// Test probe: the evidence carried for this node's own original `seq`.
     #[cfg(test)]
-    pub(crate) fn carried(
-        &self,
-        _seq: u64,
-    ) -> Option<crate::persistence::journal::runtime::Carried> {
-        None
+    pub(crate) fn carried(&self, seq: u64) -> Option<Carried> {
+        self.state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .carried
+            .get(&seq)
+            .map(|hash| Carried { seq, hash: *hash })
+    }
+    fn carry(&self, operation: [u8; 16], carried: Option<Carried>) {
+        if let Some(carried) = carried {
+            self.state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .carry(operation, carried);
+        }
+    }
+    /// Drop every sequence carried for `operation` (F1 `RecoverySink::release`).
+    fn release_carried(&self, operation: [u8; 16]) {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(seqs) = state.carried_by_op.remove(&operation) {
+            for seq in seqs {
+                state.carried.remove(&seq);
+            }
+        }
     }
     fn drive(&self, operation: [u8; 16]) -> Result<Driving<'_>, RecoveryError> {
         if !self
@@ -829,7 +987,11 @@ impl StoreRecovery {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone();
-        History::continuing(&self.store, &self.journal, verified)
+        History::continuing(&self.store, &self.journal, verified).carrying(&self.state)
+    }
+    /// A History beside this node's live owner that reads own hops by carried evidence.
+    fn history(&self) -> History<'_> {
+        History::observing(&self.store, &self.journal).carrying(&self.state)
     }
     /// Keep `history`'s proof of this node once its whole verification has
     /// succeeded. A later proof never yields to an earlier one.
@@ -853,6 +1015,17 @@ impl StoreRecovery {
         &self,
         history: &mut History<'_>,
     ) -> Result<Arc<VerifiedHead>, RecoveryError> {
+        // (SHUTDOWN-HANG F1) Beside the live owner with carried evidence, and no proof of this
+        // node built yet: the owner's own verified head, confirmed in one lane-free read of H, O
+        // and admission. No original is replayed; own hops are read by their carried hashes.
+        if history.carried.is_some() && !history.proofs.contains_key(&self.node) {
+            if let Some(journal) = history.live.filter(|journal| journal.node() == self.node) {
+                journal.confirm_with(&[]).await.map_err(unavailable)?;
+                let verified = journal.verified().map_err(unavailable)?;
+                history.own_verified = Some(verified.clone());
+                return Ok(verified);
+            }
+        }
         let proof = history.proof(self.node).await?;
         self.confirm_local(history, &proof).await?;
         Ok(proof)
@@ -872,6 +1045,14 @@ impl StoreRecovery {
         proof: &VerifiedHead,
     ) -> Result<(), RecoveryError> {
         if let Some(journal) = history.live.filter(|journal| journal.node() == self.node) {
+            if history
+                .own_verified
+                .as_deref()
+                .is_some_and(|own| std::ptr::eq(own, proof))
+            {
+                // The owner's own head (F1): one lane-free custody read, never the driver.
+                return journal.confirm_with(&[]).await.map_err(unavailable);
+            }
             return confirm_this_node(&self.store, journal, proof).await;
         }
         StoreJournal::new(&self.store, self.node)
@@ -890,7 +1071,7 @@ impl StoreRecovery {
         Ok(())
     }
     async fn verify_origin_at(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
-        let mut history = History::observing(&self.store, &self.journal);
+        let mut history = self.history();
         self.verify_origin_with_history(event, Pin::Strict, &mut history)
             .await
     }
@@ -964,7 +1145,7 @@ impl StoreRecovery {
         event: &RecoveryEvent,
         owned: bool,
     ) -> Result<(), RecoveryError> {
-        let mut history = History::observing(&self.store, &self.journal);
+        let mut history = self.history();
         self.verify_checkpoint_with_history(event, owned, Pin::Strict, &mut history)
             .await
     }
@@ -1037,9 +1218,27 @@ impl StoreRecovery {
         operation: &[u8; 16],
         tip: &Head,
     ) -> Result<RecoverySelection, RecoveryError> {
-        let mut history = History::observing(&self.store, &self.journal);
+        let mut history = self.history();
         let selection = history.selection(operation, tip, |_, _| Ok(())).await?;
         history.finish().await?;
+        Ok(selection)
+    }
+    /// `selection`, carrying the verified own hops of an operation still unsettled (SHUTDOWN-HANG
+    /// F1, the boot replay): its next persist reads them by their hashes, with no replay.
+    async fn selection_carried(
+        &self,
+        operation: &[u8; 16],
+        tip: &Head,
+    ) -> Result<RecoverySelection, RecoveryError> {
+        let mut history = self.history();
+        let selection = history.selection(operation, tip, |_, _| Ok(())).await?;
+        history.finish().await?;
+        if selection.selected.state != RecoveryState::Settled {
+            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            for carried in history.own_seen.drain(..) {
+                state.carry(*operation, carried);
+            }
+        }
         Ok(selection)
     }
     async fn adopted_selection(
@@ -1090,6 +1289,20 @@ async fn confirm_this_node(
         .await
         .map_err(unavailable)
 }
+/// A crossing whose outcome our authority decides (SHUTDOWN-HANG F2.1(1)): an in-doubt send the
+/// store answered fenced or stale (`Reconcile`), or a fenced or stale decision. Never re-selected.
+fn fenced_shape(result: &WriteResult) -> bool {
+    match result {
+        WriteResult::Submitted(submission) => match &submission.result {
+            SubmitResult::Reconcile => true,
+            SubmitResult::Decided(decision) => {
+                matches!(decision.as_ref(), Decision::Fenced | Decision::Stale)
+            }
+            _ => false,
+        },
+        WriteResult::Busy => false,
+    }
+}
 fn applied(result: WriteResult) -> Result<bool, RecoveryError> {
     match result {
         WriteResult::Submitted(submission) => match submission.result {
@@ -1111,12 +1324,15 @@ impl StoreRecovery {
     async fn persist_at(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
         let _driving = self.drive(event.operation_id)?;
         let saved = {
-            self.state
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .pending
-                .get(&event.operation_id)
-                .cloned()
+            let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            if state.batch_owned(&event.operation_id) {
+                // (SHUTDOWN-HANG F3.2) The batch that staged this original may still apply: it is
+                // resolved with exactly its membership first, and nothing is staged twice.
+                return Err(unavailable(
+                    "recovery candidate is owned by an unresolved batch",
+                ));
+            }
+            state.pending.get(&event.operation_id).cloned()
         };
         let pending = if let Some(saved) = saved {
             if saved.event != *event {
@@ -1126,39 +1342,9 @@ impl StoreRecovery {
             }
             saved
         } else {
-            // One preflight attempt shares immutable evidence only until the
-            // staging boundary; every use still confirms live native guards.
-            // This node's own journal keeps taking request-path appends while
-            // the proof is verified, so it is confirmed beside the live owner,
-            // continuing from the last verified proof of this node.
-            let mut history = self.continuing();
-            let current = head(&self.store, &event.operation_id).await?;
-            let selected = if let Some((tip, _)) = &current {
-                if tip.node != self.node {
-                    return Err(RecoveryError::Conflict(
-                        "recovery operation belongs to another node".into(),
-                    ));
-                }
-                let selected = history
-                    .selection(&event.operation_id, tip, |_, _| Ok(()))
-                    .await?;
-                history.finish().await?;
-                Some(selected)
-            } else {
-                None
-            };
-            if selected.as_ref().is_some_and(|s| s.selected == *event) {
-                self.verify_checkpoint_with_history(event, true, Pin::Strict, &mut history)
-                    .await?;
-                self.keep_verified(&history);
+            let Some(current) = self.prepare(event).await? else {
                 return Ok(());
-            }
-            event.follows(selected.as_ref().map(|s| &s.selected))?;
-            self.verify_origin_with_history(event, Pin::Strict, &mut history)
-                .await?;
-            self.owned_with_history(&mut history).await?;
-            self.keep_verified(&history);
-            drop(history);
+            };
             let body = body(&Candidate {
                 event: event.clone(),
                 previous_head: current.as_ref().map(|(tip, _)| tip.clone()),
@@ -1184,6 +1370,7 @@ impl StoreRecovery {
                 run,
                 selection_proof: None,
                 reconciling: false,
+                owner: Owner::Single,
             };
             self.state
                 .lock()
@@ -1205,6 +1392,12 @@ impl StoreRecovery {
                 .confirm(&pending.run)
                 .await
                 .map_err(unavailable)?;
+            // (F1) The original is in the prefix at its sequence: evidence from here on, before
+            // the select and every post-write verification.
+            self.carry(
+                event.operation_id,
+                carried_of(&pending.run, pending.record.node_seq),
+            );
         }
         let selection = Selection {
             operation_id: event.operation_id,
@@ -1232,6 +1425,12 @@ impl StoreRecovery {
             )
             .await
             .map_err(unavailable)?;
+        if fenced_shape(&result) {
+            // (F2.1(1)) A fenced in-doubt send, or a fenced or stale decision, is never re-selected.
+            // Our authority decides it: lost, it is `Authority`; otherwise the attempt stays
+            // retained for reconciliation, as today.
+            self.authority().await?;
+        }
         let selected = applied(result)?;
         if !selected && redrive {
             // The re-drive's no-effect does not resolve the earlier crossing, which
@@ -1250,71 +1449,7 @@ impl StoreRecovery {
             ));
         }
         if !selected {
-            // (SHUTDOWN-HANG F2.1) Classify the definitive no-effect by one read of the selection
-            // row. Unchanged: the CAS ran under the driver against the live head, so it failed on
-            // our custody (fenced, epoch moved) or on one of our originals; neither is another
-            // selector, and the entry is kept.
-            let current = head(&self.store, &event.operation_id).await?;
-            let unchanged = match (current.as_ref(), pending.predecessor.as_ref()) {
-                (None, None) => true,
-                (Some((_, row)), Some(previous)) => {
-                    row.expose(&crate::seal::lend()) == previous.expose(&crate::seal::lend())
-                }
-                _ => false,
-            };
-            if unchanged {
-                if let Some(saved) = self
-                    .state
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .pending
-                    .get_mut(&event.operation_id)
-                {
-                    saved.selection_proof = None;
-                }
-                return Err(match self.journal.confirm_with(&[]).await {
-                    Err(lost) => unavailable(lost),
-                    Ok(()) => invalid("journal original differs at computed ordinal (Corrupt)"),
-                });
-            }
-            // A definitive no-effect may coincide with another exact selector.
-            // Its complete current ancestry remains the only acceptable proof.
-            // This node's ownership is re-proved first, then the selection.
-            // Only a genuine selection conflict discards the pending work; a
-            // transient refusal keeps it and the next attempt re-proves (PERFPASS-F2 T2c).
-            let verified = async {
-                let mut history = self.continuing();
-                self.owned_with_history(&mut history).await?;
-                drop(history);
-                self.verify_written_checkpoint(event).await
-            };
-            match verified.await {
-                Ok(()) => {}
-                Err(RecoveryError::Conflict(_)) => {
-                    self.state
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .pending
-                        .remove(&event.operation_id);
-                    return Err(RecoveryError::Conflict(
-                        "another recovery candidate won selection".into(),
-                    ));
-                }
-                Err(error) => {
-                    if let Some(saved) = self
-                        .state
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .pending
-                        .get_mut(&event.operation_id)
-                    {
-                        // The definite no-effect resolved that attempt: the next
-                        // one proves against the live head again.
-                        saved.selection_proof = None;
-                    }
-                    return Err(error);
-                }
-            }
+            self.no_effect(event, pending.predecessor.as_ref()).await?;
         } else {
             self.verify_written_checkpoint(event).await?;
         }
@@ -1324,6 +1459,125 @@ impl StoreRecovery {
             .pending
             .remove(&event.operation_id);
         Ok(())
+    }
+
+    /// One candidate's pre-checks before staging (shared by `persist_at` and the batch). `None`
+    /// when its exact event is already selected (verified in place); otherwise the current
+    /// selection it must follow (`None` when the operation has none yet).
+    async fn prepare(&self, event: &RecoveryEvent) -> Result<Option<Current>, RecoveryError> {
+        // One preflight attempt shares immutable evidence only until the
+        // staging boundary; every use still confirms live native guards.
+        // This node's own journal keeps taking request-path appends while
+        // the proof is verified, so it is confirmed beside the live owner,
+        // continuing from the last verified proof of this node.
+        let mut history = self.continuing();
+        let current = head(&self.store, &event.operation_id).await?;
+        let selected = if let Some((tip, _)) = &current {
+            if tip.node != self.node {
+                return Err(RecoveryError::Conflict(
+                    "recovery operation belongs to another node".into(),
+                ));
+            }
+            let selected = history
+                .selection(&event.operation_id, tip, |_, _| Ok(()))
+                .await?;
+            history.finish().await?;
+            Some(selected)
+        } else {
+            None
+        };
+        if selected.as_ref().is_some_and(|s| s.selected == *event) {
+            self.verify_checkpoint_with_history(event, true, Pin::Strict, &mut history)
+                .await?;
+            self.keep_verified(&history);
+            return Ok(None);
+        }
+        event.follows(selected.as_ref().map(|s| &s.selected))?;
+        self.verify_origin_with_history(event, Pin::Strict, &mut history)
+            .await?;
+        self.owned_with_history(&mut history).await?;
+        self.keep_verified(&history);
+        Ok(Some(current))
+    }
+
+    /// (SHUTDOWN-HANG F2.1, F3.2 step 4) Our authority, in one read of the dataset root, our
+    /// writer's control row, H and O: a fenced writer, a moved root epoch or an execution epoch no
+    /// longer admitted is `Authority`, and nothing is re-selected.
+    async fn authority(&self) -> Result<(), RecoveryError> {
+        self.journal.confirm_with(&[]).await.map_err(unavailable)
+    }
+
+    /// A definitive no-effect on a candidate's first crossing (SHUTDOWN-HANG F2.1), classified by
+    /// one read of its selection row. Ok when another driver selected this exact candidate.
+    async fn no_effect(
+        &self,
+        event: &RecoveryEvent,
+        predecessor: Option<&Secret<Vec<u8>>>,
+    ) -> Result<(), RecoveryError> {
+        // Unchanged: the CAS ran under the driver against the live head, so it failed on our
+        // custody (fenced, epoch moved) or on one of our originals; neither is another selector,
+        // and the entry is kept.
+        let current = head(&self.store, &event.operation_id).await?;
+        let unchanged = match (current.as_ref(), predecessor) {
+            (None, None) => true,
+            (Some((_, row)), Some(previous)) => {
+                row.expose(&crate::seal::lend()) == previous.expose(&crate::seal::lend())
+            }
+            _ => false,
+        };
+        if unchanged {
+            if let Some(saved) = self
+                .state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .pending
+                .get_mut(&event.operation_id)
+            {
+                saved.selection_proof = None;
+            }
+            return Err(match self.journal.confirm_with(&[]).await {
+                Err(lost) => unavailable(lost),
+                Ok(()) => invalid("journal original differs at computed ordinal (Corrupt)"),
+            });
+        }
+        // A definitive no-effect may coincide with another exact selector.
+        // Its complete current ancestry remains the only acceptable proof.
+        // This node's ownership is re-proved first, then the selection.
+        // Only a genuine selection conflict discards the pending work; a
+        // transient refusal keeps it and the next attempt re-proves (PERFPASS-F2 T2c).
+        let verified = async {
+            let mut history = self.continuing();
+            self.owned_with_history(&mut history).await?;
+            drop(history);
+            self.verify_written_checkpoint(event).await
+        };
+        match verified.await {
+            Ok(()) => Ok(()),
+            Err(RecoveryError::Conflict(_)) => {
+                self.state
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .pending
+                    .remove(&event.operation_id);
+                Err(RecoveryError::Conflict(
+                    "another recovery candidate won selection".into(),
+                ))
+            }
+            Err(error) => {
+                if let Some(saved) = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .pending
+                    .get_mut(&event.operation_id)
+                {
+                    // The definite no-effect resolved that attempt: the next
+                    // one proves against the live head again.
+                    saved.selection_proof = None;
+                }
+                Err(error)
+            }
+        }
     }
     async fn adopt_at(
         &self,
@@ -1547,10 +1801,587 @@ impl StoreRecovery {
         Ok(result)
     }
 }
+/// How a batch crossing failed.
+enum BatchFailed {
+    /// A definite no-effect: `conflict` for a failed condition, otherwise a refusal.
+    Definite { conflict: bool, why: RecoveryError },
+    /// The attempt may still apply, or needs reconciliation: it stays the unresolved batch.
+    Unresolved(RecoveryError),
+}
+
+fn batch_outcome(result: WriteResult) -> Result<(), BatchFailed> {
+    match result {
+        WriteResult::Submitted(submission) => match submission.result {
+            SubmitResult::Decided(decision) => match decision.as_ref() {
+                Decision::Applied(_) => Ok(()),
+                Decision::ConditionConflict => Err(BatchFailed::Definite {
+                    conflict: true,
+                    why: RecoveryError::Conflict(
+                        "recovery selection head or node fence changed".into(),
+                    ),
+                }),
+                Decision::TimeGuardFailed { .. } => Err(BatchFailed::Definite {
+                    conflict: false,
+                    why: unavailable("recovery temporal guard refused"),
+                }),
+                _ => Err(BatchFailed::Unresolved(unavailable(
+                    "recovery candidate requires reconciliation",
+                ))),
+            },
+            SubmitResult::NoEffect(failure) => Err(BatchFailed::Definite {
+                conflict: false,
+                why: unavailable(failure),
+            }),
+            _ => Err(BatchFailed::Unresolved(unavailable(
+                "recovery candidate remains retained and unconfirmed",
+            ))),
+        },
+        WriteResult::Busy => Err(BatchFailed::Unresolved(unavailable(
+            "recovery candidate has an active native submission",
+        ))),
+    }
+}
+
+impl StoreRecovery {
+    /// One keep phase over several operations (SHUTDOWN-HANG F3.2): every new original staged as
+    /// one run and appended once, and every member selected in one CAS. A batch of one is
+    /// `persist_at`; a batch over the store's per-call limit runs in parts of that limit.
+    async fn persist_rows(&self, events: &[RecoveryEvent]) -> Vec<Result<(), RecoveryError>> {
+        let limit = self.store.limits().scan_items.max(2);
+        let mut out = Vec::with_capacity(events.len());
+        for part in events.chunks(limit) {
+            if let [event] = part {
+                out.push(self.persist_at(event).await);
+            } else {
+                out.extend(self.persist_part(part).await);
+            }
+        }
+        out
+    }
+
+    async fn persist_part(&self, events: &[RecoveryEvent]) -> Vec<Result<(), RecoveryError>> {
+        let _batching = self.batching.lock().await;
+        let missing = || unavailable("recovery batch result missing");
+        let mut out: Vec<Option<Result<(), RecoveryError>>> = Vec::with_capacity(events.len());
+        out.resize_with(events.len(), || None);
+        // 1. The unresolved batch is driven first, with exactly its membership. While it stays in
+        //    doubt nothing new is staged.
+        if let Err(why) = self.resolve_batch().await {
+            return events.iter().map(|_| Err(why.clone())).collect();
+        }
+        // 2. Each operation's driver, then the pre-checks of every new candidate, run together.
+        //    A busy or conflicting operation fails alone.
+        let mut guards = Vec::with_capacity(events.len());
+        let mut fresh = Vec::with_capacity(events.len());
+        let mut deferred = Vec::new();
+        for (at, event) in events.iter().enumerate() {
+            if events[..at]
+                .iter()
+                .any(|earlier| earlier.operation_id == event.operation_id)
+            {
+                out[at] = Some(Err(RecoveryError::Conflict(
+                    "a recovery operation repeats in one batch".into(),
+                )));
+                continue;
+            }
+            let guard = match self.drive(event.operation_id) {
+                Ok(guard) => guard,
+                Err(why) => {
+                    out[at] = Some(Err(why));
+                    continue;
+                }
+            };
+            let saved = self
+                .state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .pending
+                .get(&event.operation_id)
+                .map(|pending| pending.event == *event);
+            match saved {
+                Some(false) => {
+                    out[at] = Some(Err(RecoveryError::Conflict(
+                        "another immutable recovery candidate is pending".into(),
+                    )))
+                }
+                // An original staged by an earlier attempt: driven alone after the batch, which
+                // reuses it, so no second original is ever staged.
+                Some(true) => deferred.push(at),
+                None => {
+                    guards.push(guard);
+                    fresh.push(at);
+                }
+            }
+        }
+        let prepared: Vec<_> = stream::iter(fresh)
+            .map(|at| async move { (at, self.prepare(&events[at]).await) })
+            .buffered(PRECHECKS)
+            .collect()
+            .await;
+        // 3. One run for every new original.
+        let now = crate::store::now_ms() / 1000;
+        let mut staged = Vec::with_capacity(prepared.len());
+        let mut entries = Vec::with_capacity(prepared.len());
+        for (at, prepared) in prepared {
+            match prepared {
+                Ok(None) => out[at] = Some(Ok(())),
+                Ok(Some(current)) => match body(&Candidate {
+                    event: events[at].clone(),
+                    previous_head: current.as_ref().map(|(tip, _)| tip.clone()),
+                    adoption: None,
+                }) {
+                    Ok(body) => {
+                        entries.push(Entry::new(RecordClass::Reconciliation, body).at(now, 0));
+                        staged.push((at, current));
+                    }
+                    Err(why) => out[at] = Some(Err(why)),
+                },
+                Err(why) => out[at] = Some(Err(why)),
+            }
+        }
+        if !staged.is_empty() {
+            match self.stage_batch(events, staged, &entries) {
+                Ok(attempt) => {
+                    // 4. One select for every member, bisected on a conflict.
+                    for (operation, answer) in self.drive_batch(attempt).await {
+                        if let Some(at) = events.iter().position(|e| e.operation_id == operation) {
+                            out[at].get_or_insert(answer);
+                        }
+                    }
+                }
+                Err((failed, why)) => {
+                    for at in failed {
+                        out[at] = Some(Err(why.clone()));
+                    }
+                }
+            }
+        }
+        // 5. The drivers are released when the call returns; the entries are not.
+        drop(guards);
+        for at in deferred {
+            out[at] = Some(self.persist_at(&events[at]).await);
+        }
+        out.into_iter()
+            .map(|answer| answer.unwrap_or_else(|| Err(missing())))
+            .collect()
+    }
+
+    /// (F3.2 step 3) One `stage_run` for every new original; each member's entry is inserted
+    /// owned by the new batch, which becomes the one unresolved attempt.
+    fn stage_batch(
+        &self,
+        events: &[RecoveryEvent],
+        staged: Vec<(usize, Current)>,
+        entries: &[Entry],
+    ) -> Result<BatchAttempt, (Vec<usize>, RecoveryError)> {
+        let at: Vec<usize> = staged.iter().map(|(at, _)| *at).collect();
+        let run = match self.journal.stage_run(entries) {
+            Ok(run) => run,
+            Err(why) => return Err((at, unavailable(why))),
+        };
+        let mut pendings = Vec::with_capacity(staged.len());
+        for (index, (position, current)) in staged.into_iter().enumerate() {
+            let event = &events[position];
+            let (Some(record), Ok(event_digest)) =
+                (run.records().get(index).cloned(), event.fingerprint())
+            else {
+                return Err((at, invalid("recovery batch staging is incomplete")));
+            };
+            pendings.push(Pending {
+                event: event.clone(),
+                head: Head {
+                    version: 1,
+                    node: self.node,
+                    sequence: record.node_seq,
+                    revision: event.revision,
+                    event_digest,
+                },
+                record,
+                predecessor: current.map(|(_, raw)| raw),
+                run: run.clone(),
+                selection_proof: None,
+                reconciling: false,
+                owner: Owner::Single,
+            });
+        }
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        state.next_batch = state.next_batch.wrapping_add(1);
+        let id = state.next_batch;
+        let mut members = Vec::with_capacity(pendings.len());
+        for mut pending in pendings {
+            pending.owner = Owner::Batch(id);
+            members.push(pending.event.operation_id);
+            state.pending.insert(pending.event.operation_id, pending);
+        }
+        let attempt = BatchAttempt {
+            id,
+            operation: crate::door::op_id().0,
+            members,
+            proof: None,
+            reconciling: false,
+        };
+        state.batch = Some(attempt.clone());
+        Ok(attempt)
+    }
+
+    /// (F3.2 step 1) The unresolved batch, driven with exactly its membership. `Err` while it
+    /// stays unresolved; members it selected are verified, the rest are free for any driver.
+    async fn resolve_batch(&self) -> Result<(), RecoveryError> {
+        let attempt = self
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .batch
+            .clone();
+        let Some(attempt) = attempt else {
+            return Ok(());
+        };
+        let answers = self.drive_batch(attempt).await;
+        if self
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .batch
+            .is_none()
+        {
+            return Ok(());
+        }
+        let why = answers
+            .into_iter()
+            .find_map(|(_, answer)| answer.err())
+            .map_or_else(String::new, |why| why.to_string());
+        Err(RecoveryError::Unavailable(format!(
+            "a recovery batch is unresolved: {why}"
+        )))
+    }
+
+    /// Drives `first` to an answer per member (SHUTDOWN-HANG F3.2 step 4).
+    /// - Applied: every member is selected, then verified by its post-write verification.
+    /// - In doubt: the attempt stays the unresolved batch with the same membership; its members
+    ///   and every member not yet tried answer unresolved.
+    /// - A definite condition conflict bisects: each half under a new operation id (safe after a
+    ///   definite no-effect), down to single members, each classified alone (F2.1).
+    /// - A definite refusal of the whole attempt is checked against our authority first (one
+    ///   read): fenced, nothing is split, re-selected or halved. Otherwise the batch limit halves
+    ///   for the rest of the pass and `UNIT_FLUSH_BATCH_REDUCED` is raised once.
+    ///
+    /// For one bad member of B, at most 2·log2 B extra crossings.
+    async fn drive_batch(&self, first: BatchAttempt) -> Vec<([u8; 16], Result<(), RecoveryError>)> {
+        let mut out = Vec::with_capacity(first.members.len());
+        let mut limit = first.members.len().max(1);
+        let mut reduced = false;
+        let mut blocked: Option<RecoveryError> = None;
+        let mut work = vec![first];
+        while let Some(next) = work.pop() {
+            if let Some(why) = &blocked {
+                // Never crossed under its own id (a part of a definite no-effect): free for any
+                // driver, which reuses its staged original.
+                self.free(&next.members);
+                out.extend(
+                    next.members
+                        .iter()
+                        .map(|member| (*member, Err(why.clone()))),
+                );
+                continue;
+            }
+            if next.members.len() > limit {
+                let (head, rest) = self.split(next, limit);
+                work.push(rest);
+                work.push(head);
+                continue;
+            }
+            let members = next.members.clone();
+            match self.cross(next).await {
+                Ok(Crossed::Applied(events)) => {
+                    let verified: Vec<_> = stream::iter(events)
+                        .map(|event| async move {
+                            let answer = self.verify_written_checkpoint(&event).await;
+                            (event.operation_id, answer)
+                        })
+                        .buffered(PRECHECKS)
+                        .collect()
+                        .await;
+                    out.extend(verified);
+                }
+                Err(why) => {
+                    out.extend(members.iter().map(|member| (*member, Err(why.clone()))));
+                    blocked = Some(why);
+                }
+                Ok(Crossed::Definite {
+                    attempt,
+                    conflict,
+                    why,
+                }) => {
+                    let width = attempt.members.len();
+                    if width == 1 {
+                        let answer = self.alone(attempt, conflict, why).await;
+                        out.push((members[0], answer));
+                    } else if conflict {
+                        self.clear_batch();
+                        let (head, rest) = self.split(attempt, width / 2);
+                        work.push(rest);
+                        work.push(head);
+                    } else if let Err(lost) = self.authority().await {
+                        // Fenced, or not read: re-armed whole, still the unresolved batch; the
+                        // next pass repeats only this check after its no-effect.
+                        self.rearm(attempt);
+                        out.extend(members.iter().map(|member| (*member, Err(lost.clone()))));
+                        blocked = Some(lost);
+                    } else {
+                        self.clear_batch();
+                        limit = limit.min(width / 2).max(1);
+                        reduced = true;
+                        let (head, rest) = self.split(attempt, width / 2);
+                        work.push(rest);
+                        work.push(head);
+                    }
+                }
+            }
+        }
+        if reduced {
+            crate::diag_warn!(
+                crate::diagnostics::UNIT_FLUSH_BATCH_REDUCED,
+                b = limit,
+                "the store refused a whole recovery batch; the rest of this pass used smaller ones"
+            );
+        }
+        out
+    }
+
+    /// One crossing of `attempt`, which becomes the unresolved batch before anything crosses: the
+    /// append of its members' originals if not yet confirmed (lane hold 1), then one CAS of every
+    /// member built under the publication driver against its live head or the exact retained
+    /// proof (lane hold 2). `Err` while it stays unresolved.
+    async fn cross(&self, mut attempt: BatchAttempt) -> Result<Crossed, RecoveryError> {
+        let rows: Vec<Pending> = {
+            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            let mut rows = Vec::with_capacity(attempt.members.len());
+            for member in &attempt.members {
+                if let Some(pending) = state.pending.get_mut(member) {
+                    pending.owner = Owner::Batch(attempt.id);
+                    rows.push(pending.clone());
+                }
+            }
+            if rows.len() != attempt.members.len() {
+                state.batch = None;
+                return Err(invalid("a recovery batch member lost its staged original"));
+            }
+            state.batch = Some(attempt.clone());
+            rows
+        };
+        if attempt.reconciling {
+            return Err(unavailable(
+                "recovery batch remains retained and unconfirmed",
+            ));
+        }
+        let redrive = attempt.proof.is_some();
+        if !redrive {
+            let mut confirmed: Vec<&Arc<StagedRun>> = Vec::new();
+            for row in &rows {
+                if confirmed.iter().any(|run| Arc::ptr_eq(run, &row.run)) {
+                    continue;
+                }
+                self.journal.confirm(&row.run).await.map_err(unavailable)?;
+                confirmed.push(&row.run);
+            }
+            // (F1) Every member's original is evidence from here on, before the select.
+            for row in &rows {
+                self.carry(
+                    row.event.operation_id,
+                    carried_of(&row.run, row.record.node_seq),
+                );
+            }
+        }
+        let mut changes = Vec::with_capacity(rows.len());
+        for row in &rows {
+            changes.push(RowChange {
+                records: std::slice::from_ref(&row.record),
+                address: address(&row.event.operation_id),
+                expected: row
+                    .predecessor
+                    .clone()
+                    .map_or(ExpectedValue::Absent, ExpectedValue::Exact),
+                value: Some(Secret::new(
+                    serde_json::to_vec(&row.head).map_err(|e| invalid_from(&e))?,
+                )),
+            });
+        }
+        let operation = attempt.operation;
+        let (used, result) = self
+            .journal
+            .change_rows_live(
+                operation,
+                &changes,
+                attempt.proof.clone(),
+                &|proof: &Arc<VerifiedHead>| self.retain_batch(operation, proof),
+            )
+            .await
+            .map_err(unavailable)?;
+        drop(changes);
+        let fenced = fenced_shape(&result);
+        match batch_outcome(result) {
+            Ok(()) => {
+                let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+                state.batch = None;
+                let mut events = Vec::with_capacity(rows.len());
+                for row in rows {
+                    state.pending.remove(&row.event.operation_id);
+                    events.push(row.event);
+                }
+                Ok(Crossed::Applied(events))
+            }
+            Err(BatchFailed::Unresolved(why)) => {
+                if fenced {
+                    // (F2.1(1)) Never re-selected; lost authority names itself.
+                    self.authority().await?;
+                }
+                Err(why)
+            }
+            Err(BatchFailed::Definite { .. }) if redrive => {
+                // The re-drive's no-effect does not resolve the earlier crossing, which may still
+                // land: keep the exact attempt, never resubmit it.
+                if let Some(batch) = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .batch
+                    .as_mut()
+                    .filter(|batch| batch.id == attempt.id)
+                {
+                    batch.reconciling = true;
+                }
+                Err(unavailable(
+                    "recovery batch remains retained and unconfirmed",
+                ))
+            }
+            Err(BatchFailed::Definite { conflict, why }) => {
+                attempt.proof = Some(used);
+                Ok(Crossed::Definite {
+                    attempt,
+                    conflict,
+                    why,
+                })
+            }
+        }
+    }
+
+    /// A definite no-effect for a single member on its first crossing (SHUTDOWN-HANG F2.1). Its
+    /// entry is kept and freed for any driver, unless another candidate won its row.
+    async fn alone(
+        &self,
+        attempt: BatchAttempt,
+        conflict: bool,
+        why: RecoveryError,
+    ) -> Result<(), RecoveryError> {
+        let operation = attempt.members.first().copied();
+        let freed = {
+            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            state.batch = None;
+            operation.and_then(|operation| {
+                state.pending.get_mut(&operation).map(|pending| {
+                    pending.owner = Owner::Single;
+                    pending.selection_proof = None;
+                    (
+                        operation,
+                        pending.event.clone(),
+                        pending.predecessor.clone(),
+                    )
+                })
+            })
+        };
+        let Some((operation, event, predecessor)) = freed else {
+            return Err(why);
+        };
+        if !conflict {
+            // A refusal of this one candidate: our authority first, never retried as benign.
+            self.authority().await?;
+            return Err(why);
+        }
+        self.no_effect(&event, predecessor.as_ref()).await?;
+        // Another driver selected this exact candidate.
+        self.state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .pending
+            .remove(&operation);
+        Ok(())
+    }
+
+    /// The first `at` members and the rest, each a fresh attempt under its own id and operation
+    /// id. Only an attempt that has definitely not applied, or never crossed, is split.
+    fn split(&self, attempt: BatchAttempt, at: usize) -> (BatchAttempt, BatchAttempt) {
+        let (first, rest) = attempt.members.split_at(at.min(attempt.members.len()));
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let mut half = |members: &[[u8; 16]]| {
+            state.next_batch = state.next_batch.wrapping_add(1);
+            BatchAttempt {
+                id: state.next_batch,
+                operation: crate::door::op_id().0,
+                members: members.to_vec(),
+                proof: None,
+                reconciling: false,
+            }
+        };
+        let head = half(first);
+        let rest = half(rest);
+        (head, rest)
+    }
+
+    /// The same members under a new operation id, against the live head on the next crossing;
+    /// still the unresolved batch.
+    fn rearm(&self, attempt: BatchAttempt) {
+        self.state.lock().unwrap_or_else(|p| p.into_inner()).batch = Some(BatchAttempt {
+            operation: crate::door::op_id().0,
+            proof: None,
+            reconciling: false,
+            ..attempt
+        });
+    }
+
+    fn clear_batch(&self) {
+        self.state.lock().unwrap_or_else(|p| p.into_inner()).batch = None;
+    }
+
+    /// Members no batch attempt in flight owns: any driver may reuse their staged originals.
+    fn free(&self, members: &[[u8; 16]]) {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let current = state.batch.as_ref().map(|batch| batch.id);
+        for member in members {
+            if let Some(pending) = state.pending.get_mut(member) {
+                if !matches!((pending.owner, current), (Owner::Batch(id), Some(now)) if id == now) {
+                    pending.owner = Owner::Single;
+                }
+            }
+        }
+    }
+
+    /// Save the proof `change_rows_live` will CAS against into the unresolved batch,
+    /// synchronously under its driver and before any native claim. Only the attempt with this
+    /// exact operation id is touched.
+    fn retain_batch(&self, operation: [u8; 16], proof: &Arc<VerifiedHead>) {
+        if let Some(batch) = self
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .batch
+            .as_mut()
+            .filter(|batch| batch.operation == operation)
+        {
+            batch.proof = Some(proof.clone());
+        }
+    }
+}
 #[async_trait::async_trait]
 impl RecoverySink for StoreRecovery {
     async fn persist(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
         self.persist_at(event).await
+    }
+    /// One staged run, one append and one selection CAS for the whole batch (SHUTDOWN-HANG F3.2).
+    async fn persist_batch(&self, events: &[RecoveryEvent]) -> Vec<Result<(), RecoveryError>> {
+        self.persist_rows(events).await
+    }
+    fn release(&self, operation_id: [u8; 16]) {
+        self.release_carried(operation_id);
     }
     async fn replay_selections(&self) -> Result<Vec<RecoverySelection>, RecoveryError> {
         self.adopt_pending().await?;
@@ -1558,7 +2389,7 @@ impl RecoverySink for StoreRecovery {
         let mut result = Vec::new();
         for (operation, tip) in heads(&self.store).await? {
             if tip.node == self.node {
-                let selected = self.selection(&operation, &tip).await?;
+                let selected = self.selection_carried(&operation, &tip).await?;
                 self.verify_checkpoint_at(&selected.selected, true).await?;
                 result.push(selected);
             }
