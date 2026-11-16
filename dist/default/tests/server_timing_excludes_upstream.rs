@@ -12,6 +12,7 @@
 
 mod common;
 
+use busbar_contract::json;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -219,7 +220,7 @@ fn spawn_delayed_upstream() -> u16 {
                 common::upstream::respond(
                     &mut stream,
                     200,
-                    &serde_json::json!({
+                    &json::json!({
                         "id": "chatcmpl-test",
                         "object": "chat.completion",
                         "created": 0,

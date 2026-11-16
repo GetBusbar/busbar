@@ -5,6 +5,7 @@ mod common;
 
 mod linked;
 
+use busbar_contract::json::{self, JsonContainerTrait};
 use busbar_contract::yaml::prelude::{MappingExt, Value, ValueExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -321,7 +322,7 @@ fn reload_refuses_a_root_yaml_zero_cache_write() {
     let version = |gateway: &common::chat_spend::Gateway| {
         let (status, info) = gateway.admin("GET", "/api/v1/admin/info", None);
         assert_eq!(status, 200, "{info}");
-        serde_json::from_str::<serde_json::Value>(&info).unwrap()["config_version"].clone()
+        json::parse_value(info.as_bytes()).unwrap()["config_version"].clone()
     };
     let before = version(&gateway);
 
@@ -345,7 +346,7 @@ fn reload_refuses_a_root_yaml_zero_cache_write() {
         let (status, audit) =
             gateway.admin("GET", &format!("/api/v1/admin/audit?action={action}"), None);
         assert_eq!(status, 200, "{audit}");
-        let audit: serde_json::Value = serde_json::from_str(&audit).unwrap();
+        let audit: json::Value = json::parse_value(audit.as_bytes()).unwrap();
         assert!(
             audit["items"]
                 .as_array()
