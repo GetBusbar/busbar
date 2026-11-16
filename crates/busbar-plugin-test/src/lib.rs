@@ -50,3 +50,28 @@ pub use busbar_plugin_loader::test_host::{
 pub use envelopes::{DiagRecord, Envelopes, MetricRecord};
 pub use fake_needs::{ConnScript, FakeNeeds};
 pub use services::Services;
+
+/// Plain re-exports with no policy (STH-ROWS D-7, D-9): the boot selector, a door's settings
+/// migration, a reference-field read and a rendered Statement's parse.
+pub use busbar_contract::abi::mechanism::extensions::reference_fields;
+pub use busbar_contract::abi::mechanism::rendering::{
+    read as read_rendering, Read as RenderedStatement, Unreadable,
+};
+pub use busbar_plugin_loader::boot::{select, Candidate, Selected, Uses};
+pub use busbar_plugin_loader::dispatch::migrate::migrate_door;
+
+#[cfg(feature = "test-seal")]
+pub use busbar_contract::abi::sdk::test_support::chip;
+/// The caller seal's test path (STH-ROWS D-7), behind `test-seal`; it goes with the seal's test
+/// path at W3-D.
+#[cfg(feature = "test-seal")]
+pub use busbar_contract::{
+    caps::KernelSeal, conn::admissions::AdmissionAuthority, services::test_caller_binding,
+};
+
+/// A [`Host`] bound to the seal's test caller binding (STH-ROWS D-7).
+#[cfg(feature = "test-seal")]
+#[must_use]
+pub fn host() -> Host {
+    Host::new(test_caller_binding())
+}

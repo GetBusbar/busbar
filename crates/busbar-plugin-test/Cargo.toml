@@ -75,6 +75,9 @@ path = "tests/cases.rs"
 # no direct h2, no tonic. Every crate here is already in core's lock.
 target = ["dep:sonic-rs"]
 target-http = ["target", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio"]
+# STH-ROWS D-7: the contract's caller seal for a plugin repository's test host, a loud dev-only opt-in on
+# its `busbar-plugin-test` DEV edge (the guard `test_seal_is_dev_only` allows this forward, never a normal edge).
+test-seal = ["busbar-contract/test-seal"]
 
 [dependencies]
 zeroize = { workspace = true }
