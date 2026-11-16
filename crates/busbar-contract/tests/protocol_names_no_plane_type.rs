@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! The protocol seam names no transport's types (BUSBAR-1.6.0.md Part 2 #49, "core names zero plane
 
 /// A claims predicate reads a head field by name in any case, and the first field whose value is

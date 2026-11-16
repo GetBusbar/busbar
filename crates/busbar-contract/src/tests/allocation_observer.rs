@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! Test-only observation of contract allocation counts and owned payload destruction.
 
 use std::alloc::{GlobalAlloc, Layout, System};

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use super::*;
 
 use crate::diagnostics::{diag_warn, LANE_HARD_DOWN_ALL_CELLS};
