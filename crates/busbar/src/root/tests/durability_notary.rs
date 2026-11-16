@@ -390,3 +390,63 @@ async fn first_shutdown_broadcast_stops_new_cuts_before_notary_stop() {
         "stop settles existing work but starts no new cut"
     );
 }
+
+/// Test 30(g): non-audit originals make the WAL advance much faster than the audit chain.
+/// The live cut must follow the stamp's WAL position, without passing its audit target.
+#[tokio::test]
+async fn interleaved_non_audit_rows_do_not_stop_the_retention_floor() {
+    use busbar_kernel::persistence::journal::{RuntimeJournal, CUT_BATCH, RETAIN_TAIL};
+    use busbar_kernel_wal::{Entry, RecordClass};
+    let budget = crate::root::durability::tests::BUDGET;
+    let backend =
+        crate::root::real_store::EphemeralInfo(crate::root::real_store::native_backend().await);
+    let core = crate::root::real_store::core_over(Arc::new(backend)).await;
+    let journal = RuntimeJournal::open(core, 45, budget).await.unwrap();
+    let book = Arc::new(Mutex::new(
+        crate::root::durability::build_on_store(
+            &crate::root::durability::DurabilityConfig::default(),
+            45,
+            journal.clone(),
+            None,
+            budget,
+        )
+        .await
+        .unwrap(),
+    ));
+    let task = notary_over(&book, 1);
+    let count = 3 * RETAIN_TAIL;
+    for unit in 1..=count {
+        let other = journal
+            .stage_run(&[
+                Entry::new(RecordClass::Checkpoint, vec![1]),
+                Entry::new(RecordClass::Checkpoint, vec![2]),
+                Entry::new(RecordClass::Reconciliation, vec![3]),
+            ])
+            .unwrap();
+        journal.confirm(&other).await.unwrap();
+        drop(other);
+        seal_n(&book, unit, 1).await;
+        if unit > count / 3 && unit % (CUT_BATCH / 4) == 0 {
+            stamped_through(&task, unit).await;
+            let bound = RETAIN_TAIL + 2 * CUT_BATCH;
+            assert!(
+                rows_past_base(&journal, bound).await <= bound,
+                "retention stays bounded even after WAL and chain seq drift apart"
+            );
+            if let Some(base) = journal.base_tail() {
+                assert!(
+                    base.chain_seq
+                        <= task
+                            .progress()
+                            .stamped_through
+                            .load(std::sync::atomic::Ordering::Relaxed()),
+                    "no cut passes the newest durable stamp's audit target"
+                );
+            }
+        }
+    }
+    stamped_through(&task, count).await;
+    let base = journal.base_tail().unwrap();
+    assert!(base.node_seq - base.chain_seq >= 3 * RETAIN_TAIL);
+    task.stop().await.unwrap();
+}
