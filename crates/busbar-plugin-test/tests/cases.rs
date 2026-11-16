@@ -18,6 +18,8 @@ mod c_a2a_card_redirect;
 mod c_a2a_push_url;
 #[path = "c_absent_store.rs"]
 mod c_absent_store;
+#[path = "c_admit_header.rs"]
+mod c_admit_header;
 #[path = "c_admit_unload.rs"]
 mod c_admit_unload;
 #[path = "c_affinity.rs"]

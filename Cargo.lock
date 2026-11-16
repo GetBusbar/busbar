@@ -747,7 +747,6 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "serde_json",
  "sonic-rs",
  "tikv-jemallocator",
  "tokio",

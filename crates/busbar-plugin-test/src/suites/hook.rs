@@ -546,7 +546,7 @@ fn check_answer(point: u32, case: &Case, answer: &Result<HookAnswer, PortError>)
         VERB_REWRITE => {
             assert_eq!(point, POINT_REWRITE, "REWRITE at point {point}");
             let body = a.rewrite.as_deref().expect("REWRITE without a body");
-            serde_json::from_slice::<serde_json::Value>(body)
+            busbar_contract::json::parse_value(body)
                 .expect("REWRITE body is the generic CONVERSATION JSON");
         }
         _ => unreachable!(),

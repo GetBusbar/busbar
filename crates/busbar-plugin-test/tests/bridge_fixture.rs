@@ -493,3 +493,13 @@ pub fn texts(lease: &OutLease) -> Vec<Vec<u8>> {
         .map(|(_, body)| body)
         .collect()
 }
+
+/// The fixture's header as the `&'static Plugin` the frozen suite signatures take (`PLUGIN.plugin()`).
+pub fn header() -> &'static busbar_ffi::Plugin {
+    PLUGIN.plugin()
+}
+
+/// The fixture's `LinkedPlugin` static.
+pub fn linked() -> &'static LinkedPlugin {
+    &PLUGIN
+}

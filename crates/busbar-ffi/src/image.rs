@@ -216,6 +216,19 @@ impl Admitted {
         }
     }
 
+    /// A compiled-in header held as the `&'static Plugin` the SDK suites' frozen signatures take (IF §14).
+    /// Safe: `Plugin`'s fields are private, so a `'static` one is a `LinkedPlugin`'s (`plugin()`). It runs the
+    /// null check `linked` runs, and the loader's admission still scans the stamp (A1).
+    pub fn from_header(plugin: &'static Plugin) -> Result<Admitted, ImageError> {
+        let admitted = Admitted {
+            plugin: core::ptr::from_ref(plugin).expose_provenance(),
+        };
+        match admitted.null_field() {
+            Some(field) => Err(ImageError::Null(field)),
+            None => Ok(admitted),
+        }
+    }
+
     /// The header.
     pub fn header(&self) -> &'static Plugin {
         let p = core::ptr::with_exposed_provenance::<Plugin>(self.plugin);

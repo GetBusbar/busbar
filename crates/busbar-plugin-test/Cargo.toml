@@ -90,7 +90,6 @@ hyper = { workspace = true, optional = true }
 hyper-util = { workspace = true, optional = true }
 http-body-util = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt", "time", "sync"] }
-serde_json = { workspace = true }
 tracing = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dev-dependencies]

@@ -18,13 +18,16 @@ use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use busbar_contract::json::{
+    self as facade, JsonContainerTrait, JsonValueMutTrait, JsonValueTrait, Value,
+};
 use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::host_side::caller::{BoxFut, InstanceLimits};
 use busbar_plugin_abi::host_side::HOST;
 use busbar_plugin_abi::plugin::__rt::LinkedPlugin;
 use busbar_plugin_abi::plugin::Plugin;
 use busbar_plugin_abi::types::KindCode;
-use busbar_plugin_loader::admit::admit_linked;
+use busbar_plugin_loader::admit::{admit_header, admit_linked, Admitted};
 use busbar_plugin_loader::binder::{BindError, ConfigBinder, DestDef, TrustAnchor};
 use busbar_plugin_loader::instance::{
     Ceilings, InstanceSpec, OpenError, OpenedPort, PluginCode, Registry, Settled,
@@ -37,7 +40,6 @@ use busbar_plugin_loader::ports::secret::SecretPort;
 use busbar_plugin_loader::ports::store::StoreHandle;
 use busbar_plugin_loader::ports::transport::TransportPort;
 use busbar_plugin_loader::refusal::{Refusal, RefusalCode};
-use serde_json::{Map, Value};
 use tracing::field::{Field, Visit};
 use tracing::{span, Event, Metadata, Subscriber};
 
@@ -84,29 +86,52 @@ fn escape(key: &str) -> String {
     key.replace('~', "~0").replace('/', "~1")
 }
 
-/// The concrete JSON pointers `pattern` names in `doc`.
-fn expand(doc: &Value, pattern: &str) -> Vec<String> {
-    let mut at = vec![String::new()];
-    for seg in pattern.split('/').skip(1) {
-        let mut next = Vec::new();
-        for p in &at {
-            if seg == "*" {
-                match doc.pointer(p) {
-                    Some(Value::Array(items)) => {
-                        next.extend((0..items.len()).map(|i| format!("{p}/{i}")));
-                    }
-                    Some(Value::Object(members)) => {
-                        next.extend(members.keys().map(|k| format!("{p}/{}", escape(k))));
-                    }
-                    _ => {}
+/// Hand `f` every node the pointer pattern `segs` names in `node` (`*` is every element of an array, or of an
+/// object in key order; a missing path names nothing).
+fn walk(node: &mut Value, segs: &[&str], f: &mut dyn FnMut(&mut Value)) {
+    let Some((seg, rest)) = segs.split_first() else {
+        f(node);
+        return;
+    };
+    if *seg == "*" {
+        if let Some(items) = node.as_array_mut() {
+            for item in items.iter_mut() {
+                walk(item, rest, f);
+            }
+        } else if let Some(members) = node.as_object_mut() {
+            let mut keys: Vec<String> = members.iter().map(|(k, _)| k.to_owned()).collect();
+            keys.sort();
+            for key in keys {
+                if let Some(child) = node.get_mut(key.as_str()) {
+                    walk(child, rest, f);
                 }
-            } else {
-                next.push(format!("{p}/{seg}"));
             }
         }
-        at = next;
+        return;
     }
-    at
+    let key = seg.replace("~1", "/").replace("~0", "~");
+    let child = if node.is_array() {
+        key.parse::<usize>().ok().and_then(|i| node.get_mut(i))
+    } else {
+        node.get_mut(key.as_str())
+    };
+    if let Some(child) = child {
+        walk(child, rest, f);
+    }
+}
+
+/// A JSON non-negative integer, whether the tree holds it typed or as its exact lexeme.
+fn count(value: &Value) -> Option<u64> {
+    value.as_u64().or_else(|| {
+        value
+            .as_raw_number()
+            .and_then(|n| n.as_str().parse::<u64>().ok())
+    })
+}
+
+/// The handle object `{marker: n}`.
+fn handle(marker: &str, n: usize) -> Value {
+    facade::parse_typed(format!("{{\"{marker}\":{n}}}").as_bytes()).expect("a handle is JSON")
 }
 
 /// Replace every node the `paths` name with `{marker: n}`, keeping the original in `saved`.
@@ -115,49 +140,41 @@ fn replace(doc: &mut Value, paths: &[&str], marker: &str, saved: &mut Vec<Value>
         if pattern.is_empty() {
             continue;
         }
-        for pointer in expand(doc, pattern) {
-            let Some(node) = doc.pointer_mut(&pointer) else {
-                continue;
-            };
+        let segs: Vec<&str> = pattern.split('/').skip(1).collect();
+        walk(doc, &segs, &mut |node| {
             if node.is_null() {
-                continue;
+                return;
             }
             saved.push(node.take());
-            let mut handle = Map::new();
-            handle.insert(
-                marker.to_owned(),
-                Value::from(u64::try_from(saved.len()).unwrap_or(u64::MAX)),
-            );
-            *node = Value::Object(handle);
-        }
+            *node = handle(marker, saved.len());
+        });
     }
 }
 
 /// The pointer of the first object that already looks like a bound handle.
 fn stray(node: &Value, at: &str) -> Option<String> {
-    match node {
-        Value::Object(members) => {
-            if [SECRET, TRUST, DEST]
-                .iter()
-                .any(|marker| members.contains_key(*marker))
-            {
-                return Some(at.to_owned());
-            }
-            members
-                .iter()
-                .find_map(|(k, v)| stray(v, &format!("{at}/{}", escape(k))))
+    if let Some(members) = node.as_object() {
+        if [SECRET, TRUST, DEST]
+            .iter()
+            .any(|marker| node.get(*marker).is_some())
+        {
+            return Some(at.to_owned());
         }
-        Value::Array(items) => items
+        return members
+            .iter()
+            .find_map(|(k, v)| stray(v, &format!("{at}/{}", escape(k))));
+    }
+    node.as_array().and_then(|items| {
+        items
             .iter()
             .enumerate()
-            .find_map(|(i, v)| stray(v, &format!("{at}/{i}"))),
-        _ => None,
-    }
+            .find_map(|(i, v)| stray(v, &format!("{at}/{i}")))
+    })
 }
 
 /// The original node for a handle object, or None when `node` is not one.
 fn original(node: &Value, bound: &Bound, at: &str) -> Result<Option<Value>, BindError> {
-    let Value::Object(members) = node else {
+    let Some(members) = node.as_object() else {
         return Ok(None);
     };
     if members.len() != 1 {
@@ -168,7 +185,7 @@ fn original(node: &Value, bound: &Bound, at: &str) -> Result<Option<Value>, Bind
         (TRUST, &bound.trust),
         (DEST, &bound.dests),
     ] {
-        if let Some(n) = members.get(marker).and_then(Value::as_u64) {
+        if let Some(n) = node.get(marker).and_then(count) {
             let found = usize::try_from(n)
                 .ok()
                 .and_then(|n| n.checked_sub(1))
@@ -187,18 +204,14 @@ fn restore(node: &mut Value, at: &str, bound: &Bound) -> Result<(), BindError> {
         *node = value;
         return Ok(());
     }
-    match node {
-        Value::Object(members) => {
-            for (k, v) in members.iter_mut() {
-                restore(v, &format!("{at}/{}", escape(k)), bound)?;
-            }
+    if let Some(members) = node.as_object_mut() {
+        for (k, v) in members.iter_mut() {
+            restore(v, &format!("{at}/{}", escape(k)), bound)?;
         }
-        Value::Array(items) => {
-            for (i, v) in items.iter_mut().enumerate() {
-                restore(v, &format!("{at}/{i}"), bound)?;
-            }
+    } else if let Some(items) = node.as_array_mut() {
+        for (i, v) in items.iter_mut().enumerate() {
+            restore(v, &format!("{at}/{i}"), bound)?;
         }
-        _ => {}
     }
     Ok(())
 }
@@ -211,7 +224,7 @@ impl MemBinder {
         paths: [&[&str]; 3],
         strict: bool,
     ) -> Result<Vec<u8>, BindError> {
-        let mut doc: Value = serde_json::from_slice(config)
+        let mut doc: Value = facade::parse_value(config)
             .map_err(|_| BindError::NotAReference { pointer: "".into() })?;
         if strict {
             if let Some(pointer) = stray(&doc, "") {
@@ -224,7 +237,7 @@ impl MemBinder {
         replace(&mut doc, paths[0], SECRET, &mut bound.secrets);
         replace(&mut doc, paths[1], TRUST, &mut bound.trust);
         replace(&mut doc, paths[2], DEST, &mut bound.dests);
-        let out = serde_json::to_vec(&doc).map_err(|_| BindError::TooMany)?;
+        let out = facade::to_vec(&doc).map_err(|_| BindError::TooMany)?;
         self.table().insert(instance, bound);
         Ok(out)
     }
@@ -282,14 +295,14 @@ impl ConfigBinder for MemBinder {
     }
 
     fn unbind_refs(&self, instance: u64, bound: &[u8]) -> Result<Vec<u8>, BindError> {
-        let mut doc: Value = serde_json::from_slice(bound)
+        let mut doc: Value = facade::parse_value(bound)
             .map_err(|_| BindError::NotAReference { pointer: "".into() })?;
         {
             let table = self.table();
             let empty = Bound::default();
             restore(&mut doc, "", table.get(&instance).unwrap_or(&empty))?;
         }
-        serde_json::to_vec(&doc).map_err(|_| BindError::TooMany)
+        facade::to_vec(&doc).map_err(|_| BindError::TooMany)
     }
 
     fn secret(
@@ -455,12 +468,19 @@ impl Harness {
     /// checks, compatibility) and `Registry::add` (describe, name conflicts, error book): a refusal comes back
     /// as it is. Capture of log lines starts here.
     pub fn admit(plugin: &'static Plugin, needs: FakeNeeds) -> Result<Harness, Refusal> {
-        Self::admit_linked(LinkedPlugin::of_header(plugin), needs)
+        Self::start(|| admit_header(plugin), needs)
     }
 
     /// [`Harness::admit`] for a caller that holds the `LinkedPlugin` static itself.
     pub fn admit_linked(
         linked: &'static LinkedPlugin,
+        needs: FakeNeeds,
+    ) -> Result<Harness, Refusal> {
+        Self::start(|| admit_linked(linked), needs)
+    }
+
+    fn start(
+        admit: impl FnOnce() -> Result<Admitted, Refusal>,
         needs: FakeNeeds,
     ) -> Result<Harness, Refusal> {
         let logs = Arc::new(LogBook::default());
@@ -484,7 +504,7 @@ impl Harness {
             Arc::clone(&binder) as Arc<dyn ConfigBinder>,
             Ceilings::DEFAULT,
         );
-        let admitted = admit_linked(linked)?;
+        let admitted = admit()?;
         let (identity, kind) = (admitted.identity().to_owned(), admitted.kind());
         registry.add(admitted)?;
         Ok(Harness {
@@ -706,14 +726,27 @@ mod tests {
         let bound = binder
             .bind(7, config, &["/a/k", "/list/*/v"], &[], &[], &[])
             .unwrap();
-        let doc: Value = serde_json::from_slice(&bound).unwrap();
-        assert_eq!(doc["a"]["k"]["$secret"], 1);
-        assert_eq!(doc["list"][0]["v"]["$secret"], 2);
-        assert_eq!(doc["list"][1]["v"]["$secret"], 3);
-        assert_eq!(doc["keep"], "x");
+        let doc: Value = facade::parse_value(&bound).unwrap();
+        let handle_of = |path: &[&str]| {
+            let mut node = &doc;
+            for seg in path {
+                node = match seg.parse::<usize>() {
+                    Ok(i) => node.get(i),
+                    Err(_) => node.get(*seg),
+                }
+                .unwrap();
+            }
+            count(node)
+        };
+        assert_eq!(handle_of(&["a", "k", "$secret"]), Some(1));
+        assert_eq!(handle_of(&["list", "0", "v", "$secret"]), Some(2));
+        assert_eq!(handle_of(&["list", "1", "v", "$secret"]), Some(3));
+        assert_eq!(doc.get("keep").and_then(|v| v.as_str()), Some("x"));
         let back = binder.unbind_refs(7, &bound).unwrap();
-        let want: Value = serde_json::from_slice(config).unwrap();
-        assert_eq!(serde_json::from_slice::<Value>(&back).unwrap(), want);
+        assert_eq!(
+            back,
+            facade::to_vec(&facade::parse_value(config).unwrap()).unwrap()
+        );
     }
 
     #[test]

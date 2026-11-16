@@ -21,9 +21,9 @@
 
 use std::sync::Arc;
 
+use busbar_contract::json::{self as facade, JsonValueMutTrait, JsonValueTrait, Value};
 use busbar_plugin_abi::fail::refused;
 use busbar_plugin_abi::plugin::Plugin;
-use serde_json::Value;
 
 use super::harness::{status_code, Harness};
 use super::MigrateExpect;
@@ -98,11 +98,33 @@ impl busbar_plugin_loader::adapters::auth::AuthCore for AuthCore {
     }
 }
 
-fn json(what: &str, bytes: &[u8]) -> Value {
-    match serde_json::from_slice(bytes) {
-        Ok(value) => value,
+/// `bytes` as JSON in a canonical text (object members sorted by key), so two documents compare as the tree
+/// they are, whatever order their members came in.
+fn json(what: &str, bytes: &[u8]) -> String {
+    match facade::parse_value(bytes) {
+        Ok(value) => canon(&value),
         Err(e) => panic!("migrate: {what} is not JSON ({e}): {}", lossy(bytes)),
     }
+}
+
+fn canon(value: &Value) -> String {
+    if let Some(members) = value.as_object() {
+        let mut rows: Vec<(String, String)> = members
+            .iter()
+            .map(|(k, v)| (k.to_owned(), canon(v)))
+            .collect();
+        rows.sort();
+        let rows: Vec<String> = rows
+            .into_iter()
+            .map(|(k, v)| format!("{}:{v}", facade::to_string(k.as_str()).unwrap_or_default()))
+            .collect();
+        return format!("{{{}}}", rows.join(","));
+    }
+    if let Some(items) = value.as_array() {
+        let rows: Vec<String> = items.iter().map(canon).collect();
+        return format!("[{}]", rows.join(","));
+    }
+    facade::to_string(value).unwrap_or_default()
 }
 
 fn lossy(bytes: &[u8]) -> String {
@@ -169,7 +191,7 @@ fn settled_case(
         (None, None) => bag.to_vec(),
     };
 
-    let mut got: Vec<(u32, String, Value)> = settled
+    let mut got: Vec<(u32, String, String)> = settled
         .iter()
         .flat_map(|s| s.core_cfg.iter())
         .map(|c| {
@@ -180,7 +202,7 @@ fn settled_case(
             )
         })
         .collect();
-    let mut want: Vec<(u32, String, Value)> = core_cfg
+    let mut want: Vec<(u32, String, String)> = core_cfg
         .iter()
         .map(|(section, name, value)| {
             (
@@ -223,13 +245,15 @@ fn fixed_point_case(harness: &Harness, canonical: &[u8]) {
 /// The canonical settings with their version marker raised above anything the plugin knows, or None when the
 /// settings carry no conventional numeric version key.
 fn newer_of(canonical: &[u8]) -> Option<Vec<u8>> {
-    let mut doc: Value = serde_json::from_slice(canonical).ok()?;
-    let members = doc.as_object_mut()?;
+    let mut doc: Value = facade::parse_typed(canonical).ok()?;
+    if !doc.is_object() {
+        return None;
+    }
     let key = VERSION_KEYS
         .into_iter()
-        .find(|k| members.get(*k).is_some_and(Value::is_u64))?;
-    members.insert(key.to_owned(), Value::from(NEWER));
-    serde_json::to_vec(&doc).ok()
+        .find(|k| doc.get(*k).is_some_and(|v| v.is_u64()))?;
+    *doc.get_mut(key)? = Value::from(NEWER);
+    facade::to_vec(&doc).ok()
 }
 
 /// Case 3: data newer than the plugin refuses R_VERSION, text `NEWER`, no instance, no write.
@@ -274,9 +298,9 @@ mod tests {
     #[test]
     fn newer_raises_the_first_conventional_version_key() {
         let newer = newer_of(br#"{"v":2,"timeout":5}"#).expect("a version key");
-        let doc: Value = serde_json::from_slice(&newer).expect("json");
-        assert_eq!(doc["v"], NEWER);
-        assert_eq!(doc["timeout"], 5);
+        let doc: Value = facade::parse_typed(&newer).expect("json");
+        assert_eq!(doc.get("v").and_then(|v| v.as_u64()), Some(NEWER));
+        assert_eq!(doc.get("timeout").and_then(|v| v.as_u64()), Some(5));
     }
 
     #[test]

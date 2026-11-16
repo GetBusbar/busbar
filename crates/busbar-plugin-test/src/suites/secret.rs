@@ -48,8 +48,8 @@ fn reference(raw: &[u8]) -> Vec<u8> {
     let name = String::from_utf8_lossy(raw);
     let mut out = br#"{"name":"#.to_vec();
     out.extend_from_slice(
-        serde_json::Value::String(name.into_owned())
-            .to_string()
+        busbar_contract::json::to_string(name.as_ref())
+            .expect("a string is JSON")
             .as_bytes(),
     );
     out.push(b'}');
