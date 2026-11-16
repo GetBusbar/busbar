@@ -2503,11 +2503,6 @@ pub(crate) fn walk_admission<T>(
     walked: bool,
     take: impl FnOnce() -> Option<T>,
 ) -> Result<Option<T>, String> {
-    // RED: the walk's answer is ignored, as main.rs ignored it (every boot prepares the old ABI store).
-    if true {
-        let _ = (walked, take);
-        return Ok(None);
-    }
     if !walked {
         return Ok(None);
     }
