@@ -57,8 +57,10 @@ async fn bootstrap_thread_certifies_and_stages_the_exact_chain_position() {
     record.verify(bootstrap.public_key()).unwrap();
     assert_eq!(run.records().len(), 1);
     let row = &run.records()[0];
+    let journal_row = busbar_kernel_wal::JournalRecord::decode(&row.body).unwrap();
+    assert_eq!(journal_row.node_seq, row.node_seq);
     assert_eq!(
-        notary_key_from_journal_body(&row.body).unwrap(),
+        notary_key_from_journal_body(&journal_row.body).unwrap(),
         Some(record.clone())
     );
     journal.confirm(&run).await.unwrap();
