@@ -20,13 +20,10 @@ memio = ["dep:hyper"]
 
 [dependencies]
 zerocopy = { version = "0.8", features = ["derive"] }
-<<<<<<< HEAD
 # The plugin boundary (UNSAFE-MIN r3.1): the views, Host table, Out sink, Plugin header, chain bytes and the 7 layouts live there; this crate re-exports them. `host` forwards its loader side.
 busbar-ffi = { path = "../busbar-ffi" }
-=======
 # Feature `memio` (IF §9): the hyper rt traits MemIo implements; already in core's lock.
 hyper = { workspace = true, optional = true }
->>>>>>> origin/min3/w1-a12
 # Feature `host` (IF §1): the crypto facade the Host marshals onto (never the backend), the scrubber's automaton,
 # lock-free snapshot swap and the encodings its needles are matched in. The arena/needle wipes use the unconditional zeroize below.
 busbar-crypto = { path = "../busbar-crypto", optional = true }
