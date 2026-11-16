@@ -1109,3 +1109,20 @@ fn provider_and_default_keep_identical_private_and_metadata_refusals() {
         );
     }
 }
+
+#[test]
+fn strict_and_open_web_never_borrow_route_reach() {
+    let g = Guard::default();
+    for (class, strict) in [(EGRESS_PROVIDER, true), (EGRESS_OPEN_WEB, false)] {
+        assert_eq!(
+            g.judge_name_with("localhost", class, strict, true)
+                .unwrap_err()
+                .verdict,
+            DEST_INTERNAL
+        );
+        assert_eq!(
+            verdict(g.judge_answer_with("backend.test", &[ip("10.0.0.7")], class, strict, true)),
+            Some(DEST_INTERNAL)
+        );
+    }
+}

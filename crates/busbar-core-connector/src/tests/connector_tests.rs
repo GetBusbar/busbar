@@ -4048,10 +4048,28 @@ fn a_registrations_private_reach_admits_its_own_opens_and_nothing_else() {
             Err(ConnError::Refused),
             "no reach yet"
         );
-        c.seal_reach(OWNER, NeedId(0), "inside", &far, true)
-            .expect("sealed");
-        c.seal_reach(OWNER, NeedId(0), "outside", &far, false)
-            .expect("nothing to seal");
+        c.anchor(
+            OWNER,
+            NeedId(0),
+            "inside",
+            &far,
+            &busbar_contract::transport::trust::Anchors {
+                private_reach: true,
+                ..Default::default()
+            },
+        )
+        .expect("sealed");
+        c.anchor(
+            OWNER,
+            NeedId(0),
+            "outside",
+            &far,
+            &busbar_contract::transport::trust::Anchors {
+                private_reach: false,
+                ..Default::default()
+            },
+        )
+        .expect("nothing to seal");
         let id = open_as(0, &far, "inside").expect("the registration's own open reaches");
         c.close(OWNER, id).unwrap();
         assert_eq!(
@@ -4070,17 +4088,44 @@ fn a_registrations_private_reach_admits_its_own_opens_and_nothing_else() {
             "the reach is the need's alone"
         );
         let metadata = "169.254.169.254:80";
-        c.seal_reach(OWNER, NeedId(0), "inside", metadata, true)
-            .expect("sealed");
+        c.anchor(
+            OWNER,
+            NeedId(0),
+            "inside",
+            metadata,
+            &busbar_contract::transport::trust::Anchors {
+                private_reach: true,
+                ..Default::default()
+            },
+        )
+        .expect("sealed");
         assert_eq!(
             open_as(0, metadata, "inside"),
             Err(ConnError::Refused),
             "a reach never admits cloud metadata"
         );
-        c.seal_reach(OWNER, NeedId(0), "inside", &far, true)
-            .expect("sealed");
-        c.seal_reach(OWNER, NeedId(0), "inside", &far, false)
-            .expect("dropped");
+        c.anchor(
+            OWNER,
+            NeedId(0),
+            "inside",
+            &far,
+            &busbar_contract::transport::trust::Anchors {
+                private_reach: true,
+                ..Default::default()
+            },
+        )
+        .expect("sealed");
+        c.anchor(
+            OWNER,
+            NeedId(0),
+            "inside",
+            &far,
+            &busbar_contract::transport::trust::Anchors {
+                private_reach: false,
+                ..Default::default()
+            },
+        )
+        .expect("dropped");
         assert_eq!(
             open_as(0, &far, "inside"),
             Err(ConnError::Refused),
