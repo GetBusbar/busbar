@@ -56,8 +56,6 @@ fn cost(rate: u64) -> Arc<CostModel> {
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
-                admission: None,
-                on_exhaustion: None,
             }],
             ..Default::default()
         },

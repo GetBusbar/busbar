@@ -24,6 +24,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
+use busbar_contract::json::{self, JsonValueMutTrait, JsonValueTrait};
+
 const ADMIN_TOKEN: &str = "store-min3-switch-admin";
 const OBSOLETE_ENV: &str = "SQLITE_OBSOLETE_LICENSE_SENTINEL";
 const BOOT: Duration = Duration::from_secs(30);
@@ -42,7 +44,7 @@ fn fixture_dir(tag: &str) -> PathBuf {
 }
 
 /// A stamped (`config_version: 1`) config over `store`, with the admin token the reload uses.
-fn write_config(dir: &Path, data: u16, admin: u16, store: &serde_json::Value) {
+fn write_config(dir: &Path, data: u16, admin: u16, store: &json::Value) {
     std::fs::write(
         dir.join("config.yaml"),
         format!(
@@ -59,10 +61,13 @@ fn write_config(dir: &Path, data: u16, admin: u16, store: &serde_json::Value) {
 
 /// The staged store-sqlite selection with its bag in the 1.5.5 shape: the obsolete `license_key` beside the
 /// current settings, as a 1.5.5 operator left it.
-fn sqlite_store_1_5_5(dir: &Path) -> serde_json::Value {
+fn sqlite_store_1_5_5(dir: &Path) -> json::Value {
     common::fresh_namespace::stage(dir);
-    let mut store = common::fresh_namespace::selection(dir).expect("the staged Store selection");
-    store["settings"]["license_key"] = serde_json::json!({ "env": OBSOLETE_ENV });
+    // Read through its JSON text, whichever JSON tree the shared fixture hands back.
+    let selection = common::fresh_namespace::selection(dir).expect("the staged Store selection");
+    let mut store =
+        json::parse_value(selection.to_string().as_bytes()).expect("the staged Store selection");
+    store["settings"]["license_key"] = json::json!({ "env": OBSOLETE_ENV });
     store
 }
 
@@ -139,8 +144,8 @@ impl Node {
     }
 }
 
-fn store_settings(config: &Path) -> serde_json::Value {
-    let doc: serde_json::Value =
+fn store_settings(config: &Path) -> json::Value {
+    let doc: json::Value =
         busbar_contract::yaml::from_str(&std::fs::read_to_string(config).unwrap())
             .expect("config.yaml parses");
     doc["store"]["settings"].clone()
@@ -193,7 +198,7 @@ fn a_1_5_5_store_bag_converts_in_open_and_the_second_boot_writes_nothing() {
          {settled}\n{log}"
     );
     let mut expected = store["settings"].clone();
-    expected.as_object_mut().unwrap().remove("license_key");
+    expected.as_object_mut().unwrap().remove(&"license_key");
     assert_eq!(
         settled, expected,
         "only the obsolete field left the bag; every other setting is as the operator wrote it"
@@ -219,7 +224,7 @@ fn a_refused_reload_open_leaves_the_old_store_instance_serving() {
     store["settings"]
         .as_object_mut()
         .unwrap()
-        .remove("license_key");
+        .remove(&"license_key");
     write_config(&dir, data, admin, &store);
     let config = dir.join("config.yaml");
     let node = Node::boot(&dir, "serving");
@@ -228,7 +233,7 @@ fn a_refused_reload_open_leaves_the_old_store_instance_serving() {
     let blocker = dir.join("not-a-directory");
     std::fs::write(&blocker, b"").unwrap();
     let mut refused = store.clone();
-    refused["settings"]["db_path"] = serde_json::json!(blocker.join("refused.sqlite"));
+    refused["settings"]["db_path"] = json::json!(blocker.join("refused.sqlite"));
     write_config(&dir, data, admin, &refused);
     let before = written(&config);
 
@@ -262,7 +267,7 @@ fn store_postgres_boots_through_the_min3_path() {
     let url = std::env::var("BUSBAR_TEST_POSTGRES_URL").expect("BUSBAR_TEST_POSTGRES_URL");
     let dir = fixture_dir("postgres");
     let (data, admin) = (common::boot::free_port(), common::boot::free_port());
-    let store = serde_json::json!({ "module": "postgres", "settings": { "url": url } });
+    let store = json::json!({ "module": "postgres", "settings": { "url": url } });
     write_config(&dir, data, admin, &store);
     let config = dir.join("config.yaml");
     let node = Node::boot(&dir, "postgres");

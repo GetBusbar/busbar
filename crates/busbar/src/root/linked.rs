@@ -646,7 +646,6 @@ pub(crate) fn logs() -> &'static crate::root::loader::dispatch::PluginLogConfig 
 pub(crate) const HOST_SERIES: &[&str] = &[
     busbar_kernel::snapshot::ROUTE_POLICY_SELECTIONS_TOTAL,
     busbar_kernel::snapshot::ROUTE_POLICY_REJECTIONS_TOTAL,
-    busbar_kernel::snapshot::HOOK_CONTENT_TRUNCATED_TOTAL,
     busbar_kernel::snapshot::HOOK_PROJECT_OVER_CAP_TOTAL,
     busbar_kernel::snapshot::BILLING_TRUNCATED_TOTAL,
     busbar_kernel::snapshot::PLUGIN_OBSERVATIONS_DROPPED_TOTAL,

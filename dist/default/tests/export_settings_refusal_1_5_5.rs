@@ -6,6 +6,7 @@
 
 mod common;
 
+use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
 use std::path::Path;
 use std::process::Command;
 
@@ -106,7 +107,8 @@ const REFUSALS_1_5_5: &str = include_str!(
 
 #[test]
 fn every_1_5_5_settings_refusal_remains_a_named_refusal() {
-    let doc: serde_json::Value = serde_json::from_str(REFUSALS_1_5_5).expect("the fixture is JSON");
+    let doc: json::Value =
+        json::parse_value(REFUSALS_1_5_5.as_bytes()).expect("the fixture is JSON");
     let dir = common::plugins::scratch("export-settings-1-5-5-lines");
     for case in doc["cases"].as_array().expect("cases") {
         let module = case["module"].as_str().expect("module");
