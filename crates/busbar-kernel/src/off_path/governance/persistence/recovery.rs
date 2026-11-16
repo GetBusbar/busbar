@@ -772,6 +772,14 @@ impl StoreRecovery {
             retirements: Default::default(),
         })
     }
+    /// Test probe: the evidence carried for this node's own original `seq` (stub: none yet).
+    #[cfg(test)]
+    pub(crate) fn carried(
+        &self,
+        _seq: u64,
+    ) -> Option<crate::persistence::journal::runtime::Carried> {
+        None
+    }
     fn drive(&self, operation: [u8; 16]) -> Result<Driving<'_>, RecoveryError> {
         if !self
             .state

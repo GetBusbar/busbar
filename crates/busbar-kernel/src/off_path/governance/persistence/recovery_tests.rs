@@ -83,6 +83,10 @@ struct Backend {
     conflict_selection: Mutex<Option<Address>>,
     /// One-shot: the next read that includes this address fails Unavailable.
     fail_read_of: Mutex<Option<Address>>,
+    /// One-shot: just before the next multi-row recovery selection applies, fence writer
+    /// `[1; 16]`: `true` advances the dataset root's writer epoch past it (its control row still
+    /// admits it), `false` ends its control row's admission of execution epoch 3.
+    fence_batch: Mutex<Option<bool>>,
 }
 impl Backend {
     fn read_rows(&self, request: &Read) -> ReadResult {
@@ -195,6 +199,34 @@ impl PersistenceBackend for Backend {
             }
             let mut state = self.state.lock().unwrap();
             let candidate = prepared.candidate();
+            if selects_recovery_row(&prepared) && candidate.mutations.len() > 1 {
+                if let Some(root) = self.fence_batch.lock().unwrap().take() {
+                    let (key, value) = if root {
+                        (
+                            control::DATASET_KEY.to_vec(),
+                            control::Dataset {
+                                id: DatasetId([1; 16]),
+                                writer_epoch: 3,
+                            }
+                            .encode()
+                            .unwrap()
+                            .to_vec(),
+                        )
+                    } else {
+                        (
+                            control::writer_key([1; 16]).to_vec(),
+                            control::Writer {
+                                retired_through: 2,
+                                admitted_through: 2,
+                            }
+                            .encode()
+                            .unwrap()
+                            .to_vec(),
+                        )
+                    };
+                    state.rows.insert(control_address(key), Secret::new(value));
+                }
+            }
             {
                 let mut conflict = self.conflict_selection.lock().unwrap();
                 let selects = conflict.as_ref().is_some_and(|target| {
@@ -1638,4 +1670,319 @@ async fn observing_history_refuses_a_forked_or_damaged_tail_after_its_proof() {
             "a rewritten tail after the proof is not this owner's history (fork: {fork})"
         );
     }
+}
+
+/// A store whose per-call limit holds a whole recovery batch.
+async fn attach_wide(backend: Arc<Backend>, writer: u8) -> CoreStore {
+    CoreStore::attach(
+        backend,
+        WriterAuthority {
+            writer_epoch: 2,
+            writer: [writer; 16],
+            execution_epoch: 3,
+        },
+        Limits {
+            pending_operations: 32,
+            conflict_retries: 1,
+            scan_items: 64,
+            scan_bytes: 1024 * 1024,
+        },
+    )
+    .await
+    .unwrap()
+}
+
+/// The Intent of operation `n`.
+fn numbered_intent(n: u8) -> RecoveryEvent {
+    RecoveryEvent {
+        operation_id: [n; 16],
+        ..intent()
+    }
+}
+
+/// Appends of node `node`'s journal the backend received: candidates that put its head row.
+fn journal_appends(backend: &Backend, node: u64) -> usize {
+    let node = node.to_be_bytes();
+    backend
+        .state
+        .lock()
+        .unwrap()
+        .sent
+        .iter()
+        .filter(|prepared| {
+            prepared.candidate().mutations.iter().any(|mutation| {
+                matches!(mutation, Mutation::Put { address, .. }
+                    if address.key.starts_with(b"busbar.journal4\0")
+                        && address.key.get(16..24) == Some(&node[..])
+                        && address.key.get(24) == Some(&b'H'))
+            })
+        })
+        .count()
+}
+
+/// WHO: the settlement flusher keeping one recovery phase for several operations.
+/// DOES: (SHUTDOWN-HANG F3.2, F1, 8.3) the batch is one append of its originals and one
+/// selection CAS; each original's sequence and hash are carried from its append, so the next
+/// revision of every member reads its own originals by that evidence with no journal replay,
+/// whatever the journal length; `release` drops the evidence.
+/// WHY: one append and one CAS per operation per state capped a drain at about one operation per
+/// store round trip, and every own-node replay grew with uptime (SHUTDOWN-HANG 1.7).
+#[tokio::test]
+async fn a_recovery_batch_is_one_append_and_one_selection_and_carries_its_originals() {
+    let backend = Arc::new(Backend::default());
+    let recovery = sink(Arc::new(attach_wide(backend.clone(), 1).await), 7).await;
+    let events: Vec<RecoveryEvent> = (1..=8u8).map(numbered_intent).collect();
+    let first = recovery.journal.next_seq();
+    let appends = journal_appends(&backend, 7);
+    for result in recovery.persist_batch(&events).await {
+        result.unwrap();
+    }
+    assert_eq!(
+        recovery_selections(&backend, 7).len(),
+        1,
+        "one selection CAS for the whole batch"
+    );
+    assert_eq!(
+        journal_appends(&backend, 7) - appends,
+        1,
+        "one append for the batch's originals"
+    );
+    for (at, event) in events.iter().enumerate() {
+        let tip = head(&recovery.store, &event.operation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(tip.sequence, first + at as u64);
+        assert!(
+            recovery.carried(tip.sequence).is_some(),
+            "the append confirmation carries each original"
+        );
+    }
+    for _ in 0..20 {
+        live_append(&recovery.journal).await;
+    }
+    let applied: Vec<RecoveryEvent> = events
+        .iter()
+        .map(|event| transition(event, RecoveryState::Applied))
+        .collect();
+    let replays = crate::persistence::journal::replays_on_this_thread();
+    for result in recovery.persist_batch(&applied).await {
+        result.unwrap();
+    }
+    assert_eq!(
+        crate::persistence::journal::replays_on_this_thread(),
+        replays,
+        "no journal replay on the live path"
+    );
+    assert_eq!(recovery_selections(&backend, 7).len(), 2);
+    for event in &applied {
+        recovery.confirm_owned_checkpoint(event).await.unwrap();
+    }
+    recovery.release(events[0].operation_id);
+    assert!(
+        recovery.carried(first).is_none(),
+        "release drops the operation's evidence"
+    );
+    assert!(recovery.carried(first + 1).is_some());
+}
+
+/// WHO: a metering flush driving one operation while the settlement flusher's recovery batch
+/// that holds it is in doubt (its select crossed and its reply was lost).
+/// DOES: (SHUTDOWN-HANG F3.2, 8.4(g)) the single driver gets `Unavailable` and stages nothing;
+/// the next pass resolves the batch with exactly its membership, and each operation is selected
+/// once, with one Reconciliation original per (operation, revision).
+/// WHY: a second staged original for the same revision is a fork the adopter cannot tell apart.
+#[tokio::test]
+async fn an_in_doubt_recovery_batch_owns_its_members() {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let backend = Arc::new(Backend::default());
+        let recovery = sink(Arc::new(attach_wide(backend.clone(), 1).await), 7).await;
+        let events: Vec<RecoveryEvent> = (1..=3u8).map(numbered_intent).collect();
+        backend.park_selection.store(true, Ordering::SeqCst);
+        tokio::select! {
+            result = recovery.persist_batch(&events) => {
+                panic!("the parked selection must not return: {result:?}")
+            }
+            _ = async {
+                while recovery_selections(&backend, 7).is_empty() {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            } => {}
+        }
+        let staged = recovery.journal.next_seq();
+        let refused = recovery.persist(&events[1]).await.unwrap_err().to_string();
+        assert!(refused.contains("unresolved batch"), "{refused}");
+        assert_eq!(
+            recovery.journal.next_seq(),
+            staged,
+            "nothing is staged twice"
+        );
+        assert_eq!(
+            recovery_selections(&backend, 7).len(),
+            1,
+            "the member is never selected alone"
+        );
+        for result in recovery.persist_batch(&events).await {
+            result.unwrap();
+        }
+        let selections = recovery_selections(&backend, 7);
+        assert_eq!(selections.len(), 2);
+        assert_eq!(
+            selections[1], selections[0],
+            "the batch is resolved with exactly its membership"
+        );
+        assert_eq!(
+            recovery.journal.next_seq(),
+            staged,
+            "one Reconciliation original per (operation, revision)"
+        );
+        for event in &events {
+            recovery.confirm_owned_checkpoint(event).await.unwrap();
+        }
+    })
+    .await
+    .expect("no hang");
+}
+
+/// WHO: the settlement flusher's recovery batch when this writer was fenced before its select:
+/// its control row no longer admits our execution epoch, or the dataset root's writer epoch has
+/// moved past ours while the control row still admits us.
+/// DOES: (SHUTDOWN-HANG F3.2 step 4, 8.4(h1), 8.4(h2)) the whole-batch no-effect is checked
+/// against our authority in one read and every member answers `Authority`; nothing is
+/// re-selected, the batch is not halved, and its members stay owned by it (nothing re-staged).
+/// WHY: a fenced send and a size refusal answer alike; treating a fence as a size refusal
+/// re-selected every member under lost authority.
+#[tokio::test]
+async fn a_fenced_writer_fails_a_recovery_batch_as_authority() {
+    for root in [false, true] {
+        let backend = Arc::new(Backend::default());
+        let recovery = sink(Arc::new(attach_wide(backend.clone(), 1).await), 7).await;
+        let events: Vec<RecoveryEvent> = (1..=3u8).map(numbered_intent).collect();
+        *backend.fence_batch.lock().unwrap() = Some(root);
+        for result in recovery.persist_batch(&events).await {
+            let why = result.unwrap_err().to_string();
+            assert!(why.contains("Authority"), "root moved {root}: {why}");
+        }
+        assert_eq!(
+            recovery_selections(&backend, 7).len(),
+            1,
+            "root moved {root}: never re-selected, never halved"
+        );
+        let staged = recovery.journal.next_seq();
+        let held = recovery.persist(&events[0]).await.unwrap_err().to_string();
+        assert!(
+            held.contains("unresolved batch"),
+            "root moved {root}: {held}"
+        );
+        assert_eq!(recovery.journal.next_seq(), staged, "root moved {root}");
+    }
+}
+
+/// WHO: recovery custody when one of its own Reconciliation originals was rewritten in the store
+/// with a self-consistent frame (same sequence, valid hash, H untouched).
+/// DOES: (SHUTDOWN-HANG F1, 8.5b) the next revision's persist refuses with the carried-evidence
+/// mismatch and selects nothing.
+/// WHY: without the carried hash, a rewritten own original below the last proof passed as
+/// history, and the next replay only failed after the ledger had applied it.
+#[tokio::test]
+async fn a_rewritten_recovery_original_is_refused_against_carried_evidence() {
+    let backend = Arc::new(Backend::default());
+    let recovery = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
+    let event = intent();
+    recovery.persist(&event).await.unwrap();
+    let seq = head(&recovery.store, &event.operation_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .0
+        .sequence;
+    {
+        let mut state = backend.state.lock().unwrap();
+        let (at, mut record) = state
+            .rows
+            .iter()
+            .find_map(|(at, raw)| {
+                let record = JournalRecord::decode(raw.expose(&crate::seal::lend())).ok()?;
+                (record.node == 7 && record.node_seq == seq).then(|| (at.clone(), record))
+            })
+            .expect("the selected original");
+        record.wall += 1;
+        record.hash = record.digest_of_chain();
+        state.rows.insert(at, Secret::new(record.encode()));
+    }
+    let refused = recovery
+        .persist(&transition(&event, RecoveryState::Applied))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("carried"), "{refused}");
+    assert_eq!(
+        head(&recovery.store, &event.operation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .0
+            .sequence,
+        seq,
+        "nothing is selected over the rewritten original"
+    );
+}
+
+/// WHO: the settlement flusher keeping recovery phases while four request-path writers keep
+/// appending to the same node journal.
+/// DOES: (SHUTDOWN-HANG 8.1, at the recovery sink) every batch selects on its first pass, with no
+/// `Authority`, condition conflict or lost selection, and confirmations almost never fall back to
+/// the publication driver.
+/// WHY: proofs replayed outside the append lane lost every CAS an interleaved own append made
+/// stale, and the misreported `Authority` stalled settlement under load.
+#[tokio::test]
+async fn recovery_batches_drain_during_concurrent_appends() {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let backend = Arc::new(Backend::default());
+        let recovery = sink(Arc::new(attach_wide(backend.clone(), 1).await), 7).await;
+        live_append(&recovery.journal).await;
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut appenders = Vec::new();
+        for _ in 0..4 {
+            let (journal, stop) = (recovery.journal.clone(), stop.clone());
+            appenders.push(tokio::spawn(async move {
+                while !stop.load(Ordering::SeqCst) {
+                    live_append(&journal).await;
+                    tokio::task::yield_now().await;
+                }
+            }));
+        }
+        for round in 0..10u8 {
+            let events: Vec<RecoveryEvent> =
+                (1..=8u8).map(|n| numbered_intent(round * 8 + n)).collect();
+            for result in recovery.persist_batch(&events).await {
+                result.unwrap();
+            }
+            let applied: Vec<RecoveryEvent> = events
+                .iter()
+                .map(|event| transition(event, RecoveryState::Applied))
+                .collect();
+            for result in recovery.persist_batch(&applied).await {
+                result.unwrap();
+            }
+            tokio::task::yield_now().await;
+        }
+        stop.store(true, Ordering::SeqCst);
+        for appender in appenders {
+            appender.await.unwrap();
+        }
+        assert_eq!(
+            recovery_selections(&backend, 7).len(),
+            20,
+            "every batch selected on its first pass"
+        );
+        let fallbacks = recovery.journal.lane_fallbacks();
+        assert!(
+            fallbacks <= 10,
+            "{fallbacks} confirmations fell back to the driver"
+        );
+    })
+    .await
+    .expect("no hang");
 }

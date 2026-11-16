@@ -44,6 +44,20 @@ pub trait RecoverySink: Send + Sync {
     async fn persist(&self, event: &RecoveryEvent) -> Result<(), RecoveryError>;
     async fn replay(&self) -> Result<Vec<RecoveryEvent>, RecoveryError>;
 
+    /// One keep phase of a flush pass (SHUTDOWN-HANG F3.1): a result per event, in order, so one
+    /// failure never fails its siblings. The default persists each event alone.
+    async fn persist_batch(&self, events: &[RecoveryEvent]) -> Vec<Result<(), RecoveryError>> {
+        let mut out = Vec::with_capacity(events.len());
+        for event in events {
+            out.push(self.persist(event).await);
+        }
+        out
+    }
+
+    /// The operation is settled in this process: drop the evidence carried for its own originals
+    /// (SHUTDOWN-HANG F1). Nothing is written.
+    fn release(&self, _operation_id: [u8; 16]) {}
+
     /// Return one bounded summary per operation only AFTER verifying its complete
     async fn replay_selections(&self) -> Result<Vec<RecoverySelection>, RecoveryError> {
         summarize_recovery_chains(self.replay().await?)

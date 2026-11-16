@@ -368,3 +368,48 @@ async fn laneless_trip_then_refusal_then_serve_keeps_bucket_admissible() {
         );
     }
 }
+
+/// WHO: the settlement flusher's pass over four terminal units, each with one metering
+/// operation to settle.
+/// DOES: (SHUTDOWN-HANG F3.3, 8.3) the pass keeps its recovery events phase by phase: every
+/// Intent in one keep (T), every Applied in one (K1), every Settled in one (K2). No event is
+/// kept outside its phase's batch, and every unit is settled and removed.
+/// WHY: one keep per operation per state made a drain cost three store round trips per
+/// operation, so settlement at shutdown was bounded by store latency (SHUTDOWN-HANG 1.7).
+#[tokio::test]
+async fn a_flush_pass_keeps_each_recovery_phase_in_one_batch() {
+    let store = crate::real_store::core().await;
+    let journal = Arc::new(Journal::default());
+    let sink = Arc::new(MemoryCheckpoint::default());
+    let cm = grouped_cost();
+    let key = key("vk_lockstep_phases", Some("g"));
+    store.identity().put_key(&key).await.unwrap();
+    let now = crate::store::now();
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
+    attach(&gov, &journal, &sink).await;
+    for id in 0x61..=0x64u8 {
+        let grant = gov.try_admit(&cm, &key, "", now).expect("admitted");
+        let mut unit = laneless_unit(&cm, &key, now, id);
+        unit.metered = true;
+        unit.provider = Some("lockstep".into());
+        assert!(gov.finish_unit_checkpoint(unit));
+        drop(grant);
+    }
+    gov.flush_unit_checkpoints().await.unwrap();
+    assert!(
+        sink.replay().await.unwrap().is_empty(),
+        "every unit is settled and removed"
+    );
+    assert_eq!(
+        journal.batches.lock().unwrap().clone(),
+        vec![4, 4, 4],
+        "T, K1 and K2: one keep of four events each"
+    );
+    assert_eq!(
+        journal.persists.load(std::sync::atomic::Ordering::Relaxed),
+        12,
+        "no event is kept outside its phase's batch"
+    );
+}
