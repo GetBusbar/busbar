@@ -1964,26 +1964,6 @@ pub(crate) async fn route(
     );
 
     let answer = if let Some(recovery) = recovery_verb(verb) {
-        // A recovery verb is a durable write like every other mutating verb: current authority
-        // must still admit it, and the guard is held until the store call resolves.
-        let _effect = match walk
-            .effect_context
-            .as_ref()
-            .zip(binding.effect_admission.as_ref())
-        {
-            Some((context, admit)) => match admit(context).await {
-                Ok(guard) => Some(guard),
-                Err(_) => {
-                    walk.answer = Some(admin_mount::error_answer_with_message(
-                        403,
-                        "forbidden",
-                        "current authority does not admit this effect",
-                    ));
-                    return Ok(());
-                }
-            },
-            None => None,
-        };
         let ran = match recovery {
             RecoveryVerb::ChainBreak => verbs.chain_break(admin, &actor, granted, request.at).await,
             RecoveryVerb::StoreRestore => {
