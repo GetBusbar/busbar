@@ -275,6 +275,8 @@ pub mod adapters;
 #[deny(unsafe_code)]
 pub mod admit;
 #[deny(unsafe_code)]
+pub mod binder;
+#[deny(unsafe_code)]
 pub mod encode;
 #[deny(unsafe_code)]
 pub mod instance;
@@ -284,6 +286,8 @@ pub mod ports;
 pub mod refusal;
 #[deny(unsafe_code)]
 pub mod scan;
+#[deny(unsafe_code)]
+pub mod watchdog;
 
 /// The safe test host (SDK-SAFE-TEST-HOST): tests load and drive plugins with no `unsafe`.
 #[cfg(any(test, feature = "test-support"))]
