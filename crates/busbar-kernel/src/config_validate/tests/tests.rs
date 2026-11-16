@@ -39,7 +39,6 @@ fn make_root_cfg(
         admin_auth: Vec::new(),
         groups: std::collections::BTreeMap::new(),
         rate_card: None,
-        plugin_rate_cards: Default::default(),
         per_request_fee: 0,
         plane_fees: Default::default(),
         store: Some(config::StoreCfg {
@@ -1122,17 +1121,6 @@ fn policy_errors(cfg: &RootCfg) -> Vec<String> {
 #[test]
 fn test_auth_policy_bad_duration_is_rejected() {
     let policy = config::AuthPolicyCfg {
-        default_ttl: Some("not-a-duration".to_string()),
-        ..Default::default()
-    };
-    let errs = policy_errors(&root_with_auth_policy(policy));
-    assert!(
-        errs.iter()
-            .any(|e| e.contains("auth.policy.default_ttl") && e.contains("not a valid duration")),
-        "a bad default_ttl must fail validation: {errs:?}"
-    );
-
-    let policy = config::AuthPolicyCfg {
         max_ttl: Some("90x".to_string()),
         ..Default::default()
     };
@@ -1141,21 +1129,6 @@ fn test_auth_policy_bad_duration_is_rejected() {
         errs.iter()
             .any(|e| e.contains("auth.policy.max_ttl") && e.contains("not a valid duration")),
         "a bad max_ttl must fail validation: {errs:?}"
-    );
-}
-
-#[test]
-fn test_auth_policy_default_exceeding_max_is_rejected() {
-    let policy = config::AuthPolicyCfg {
-        default_ttl: Some("90d".to_string()),
-        max_ttl: Some("24h".to_string()),
-        ..Default::default()
-    };
-    let errs = policy_errors(&root_with_auth_policy(policy));
-    assert!(
-        errs.iter()
-            .any(|e| e.contains("default_ttl") && e.contains("exceeds") && e.contains("max_ttl")),
-        "default_ttl > max_ttl must fail validation: {errs:?}"
     );
 }
 
@@ -1246,7 +1219,6 @@ fn test_auth_policy_valid_block_passes() {
             config::BindingMode::TimeBound,
             config::BindingMode::Both,
         ]),
-        default_ttl: Some("24h".to_string()),
         max_ttl: Some("90d".to_string()),
         mint_ceilings: ceilings,
         ..Default::default()

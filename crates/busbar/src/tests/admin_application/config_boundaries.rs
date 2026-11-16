@@ -226,12 +226,12 @@ async fn reload_refuses_env_policy_injection_without_publishing() {
         rotate.await;
     }
     const VAR: &str = "BUSBAR_TEST_KC_ADMIN_POLICY_TTL";
-    std::env::set_var(VAR, r#"90d"}, policy: {self_mint: true, default_ttl: "90d"#);
+    std::env::set_var(VAR, r#"90d"}, policy: {self_mint: true, max_ttl: "90d"#);
     let dir = plugins::scratch("admin-env-policy-source");
     let config_path = dir.join("config.yaml");
     let providers_path = dir.join("providers.yaml");
     std::fs::write(&providers_path, "{}\n").unwrap();
-    std::fs::write(&config_path, r#"{providers: {}, models: {}, store: {module: memory}, auth: {policy: {self_mint: false, max_ttl: 7d, default_ttl: "${BUSBAR_TEST_KC_ADMIN_POLICY_TTL}"}}}"#).unwrap();
+    std::fs::write(&config_path, r#"{providers: {}, models: {}, store: {module: memory}, auth: {policy: {self_mint: false, max_ttl: "${BUSBAR_TEST_KC_ADMIN_POLICY_TTL}"}}}"#).unwrap();
     app.config_path = Some(config_path);
     app.providers_path = Some(providers_path);
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(

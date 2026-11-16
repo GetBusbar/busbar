@@ -196,14 +196,6 @@
           "optional": true,
           "type": "Vec<BindingMode>"
         },
-        "default_ttl": {
-          "optional": true,
-          "type": "String"
-        },
-        "max_outstanding_tickets_per_key": {
-          "optional": true,
-          "type": "u32"
-        },
         "max_ttl": {
           "optional": true,
           "type": "String"
@@ -479,10 +471,6 @@
         "per_request_fee": {
           "optional": true,
           "type": "i64"
-        },
-        "plugin_rate_cards": {
-          "optional": true,
-          "type": "PluginRateCards"
         },
         "plugins": {
           "optional": true,
@@ -2130,10 +2118,6 @@
         "per_request_fee": {
           "optional": true,
           "type": "i64"
-        },
-        "plugin_rate_cards": {
-          "optional": true,
-          "type": "PluginRateCards"
         },
         "rate_card": {
           "optional": true,
