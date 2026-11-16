@@ -531,5 +531,8 @@ async fn final_page_is_not_staged_after_the_seal_cut() {
     let task = notary_over_clock(&book, 1, Some(clock));
     let end = task.stop().await.unwrap();
     assert_eq!(end.final_staged, Some(false));
-    assert!(stamps(&book).await.is_empty(), "a detached notary cannot stage a page after C3");
+    assert!(
+        stamps(&book).await.is_empty(),
+        "a detached notary cannot stage a page after C3"
+    );
 }
