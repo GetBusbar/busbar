@@ -140,11 +140,18 @@ all in the fingerprint. It cannot check what a server *does* when invoked. A ser
 identical surface and changes its behaviour on the backend is invisible to any proxy that sits in
 front of it, Busbar included.
 
-That residual risk is bounded by the other controls, not by the fingerprint: per-backend credential
-scoping (a `token_exchange:` registration spends a credential minted for *this* tool under *this*
-caller's grant; under the default `upstream_credentials: own`, the upstream sees the operator's
-per-server credential, never the caller's), egress/SSRF policy (where a call may go), and the audit
-chain (what happened). The maximally true claim is
+That residual risk is bounded by per-backend credential scoping, egress/SSRF policy (where a call
+may go), and the audit chain (what happened). The credential choices differ by plane:
+
+- **MCP:** `token_exchange:` obtains a target-scoped token narrowed to the caller's tool grants;
+  `upstream_credentials: connection` uses that caller's separately consented upstream OAuth
+  connection. With neither configured, no upstream credential is sent. Connection mode requires
+  HTTPS and host connection services, excludes stdio, and cannot be combined with token exchange.
+- **A2A:** `upstream_credentials: own` uses the operator-configured `upstream_credential:` for the
+  target agent, leased for the hop. Without that configuration, the hop carries no credential.
+
+Both planes refuse caller-credential passthrough: the caller's Busbar credential stays at Busbar.
+The maximally true claim is
 **"verified against the surface you approved, before every call"** — not a guarantee about the
 upstream's runtime behaviour.
 
