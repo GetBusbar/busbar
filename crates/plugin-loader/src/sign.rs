@@ -735,13 +735,7 @@ pub struct PublisherTrust {
     pub keys: Vec<PublisherKey>,
 }
 
-/// Retained cryptographic facts; absent values never mean an unverified claim was authenticated.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Verification {
-    pub root: Option<String>,
-    pub signers: Vec<String>,
-    pub keys_version: Option<u64>,
-}
+pub use busbar_contract::plugin_rows::Verification;
 
 /// Publisher name, exact allowed artifact names, and (public key hex, revoked) records.
 pub type PublisherInput<'a> = (&'a str, &'a [String], Vec<(&'a str, bool)>);
@@ -1499,8 +1493,8 @@ fn backend_admission(
             format!(
                 "plugin '{}' version {} is not busbar's own verified release, and this binary's \
                  crypto backend admits no external plugin (EXTERNAL_PLUGINS is false, as in a \
-                 FIPS build): {how}. No plugins.trust setting (publishers, allow_untrusted, \
-                 allow_untrusted) admits it. Install busbar's first-party release of the \
+                 FIPS build): {how}. No plugins.trust setting (publishers or allow_untrusted) \
+                 admits it. Install busbar's first-party release of the \
                  plugin, or run a build whose crypto backend admits external plugins.",
                 manifest.name, manifest.version
             ),

@@ -1541,11 +1541,12 @@ plugins:
     # zero configuration. This block is for THIRD-PARTY publishers and explicit opt-ins.
     publishers:                 # third-party ed25519 signing keys (allowlist)
       - name: acme
-        public_key: "<64-hex ed25519 public key>"
-    allow_unsigned: false       # default false: unsigned/tampered plugins are logged + skipped
-    allow_third_party: false    # default false: signed-but-unknown-publisher plugins are skipped
+        plugins: [acme-store-dynamo]
+        keys:
+          - { public_key: "<64-hex ed25519 public key>", revoked: false }
+    allow_untrusted: false      # default false: unsigned/unknown publisher code is refused
   min_versions:                 # anti-downgrade floors, keyed by manifest name (third-party;
-    acme-store-dynamo: "2.0.0"  # first-party is automatically floored at the binary's version)
+    acme-store-dynamo: "2.0.0"  # first-party tracks its own accepted version high-water mark)
   logs:                         # every plugin instance's own log file
     dir: logs/plugins           # <dir>/<section>.<instance>.log, e.g. export.metrics.log (default: logs/plugins)
     level: info                 # off | error | warn | info | debug | trace (default: info)
@@ -1560,11 +1561,10 @@ plugins:
 |---|---|---|---|---|
 | `enabled` | bool | no | `false` | Master switch. `false`/absent = NO plugin loads (drop-is-inert). A non-`memory` `store.module` with plugins disabled is a boot error naming this flag. |
 | `dir` | string | no | `plugins` | Directory holding the signed plugin tarballs (`*.tar.gz`), relative to the working directory. Filenames are irrelevant: identity comes from each tarball's signed manifest. |
-| `trust.publishers` | list | no | empty | Third-party publishers: `{ name, public_key }` pairs (hex ed25519). The name `busbar` is reserved for the embedded release key and cannot be configured. A RETIRED busbar release key (the 1.5 key `b18395a3…`) listed here under any other name is the explicit opt-in that loads a first-party plugin it signed; without the entry that plugin is refused (`retired_key`), and with it the boot warns that the plugin is unverified. |
-| `trust.allow_unsigned` | bool | no | `false` | EXPLICIT opt-in to load plugins with no valid signature (unsigned/tampered). Without it they are logged and skipped, never `dlopen`ed. It never admits a plugin signed by a RETIRED busbar release key: that is a revocation, refused (`retired_key`) unless the key is named under `trust.publishers`. |
-| `trust.allow_third_party` | bool | no | `false` | EXPLICIT opt-in to load validly-signed plugins from a publisher NOT in `publishers`. |
+| `trust.publishers` | list | no | empty | Entries contain `name`, a nonempty `plugins` list of exact canonical names, and nonempty `keys` records (`public_key`: hex Ed25519, `revoked`: default false). Valid active keys admit only those names automatically. Multiple keys allow rotation overlap; revoked keys refuse. Duplicate identities/keys, weak keys, empty scopes and the reserved `busbar` identity refuse. |
+| `trust.allow_untrusted` | bool | no | `false` | Explicit opt-in for unsigned or unknown-publisher code, always labelled unverified. Invalid known-publisher signatures, altered bytes, scope failures, revocations, incompatible ABI and trusted floors remain hard refusals. |
 | `fetch` | list | no | empty | Tarballs Busbar downloads into `dir` before the plugin preflight: at boot (a miss is fatal) and on `POST /plugins/reload` (a miss warns, BUSBAR-6001, and keeps the current artifact). Each entry is exactly one of `{ github: "org/repo@tag", sha256? }`, `{ url: "https://…/plugin.tar.gz", sha256? }` or `{ env: VAR }` (the variable holds a URL, optionally `url@sha256`); a complete-archive pin is required before dropped native bootstrap/check/migration code executes (see [Plugins](plugins.md#how-plugins-are-secured)); a URL must end in a tarball filename, and an unknown key fails the parse. `sha256` is an integrity pin and the download-skip cache key (a file in `dir` already hashing to it means no network); signature verification remains the trust gate. `--validate` does no network, so it does not fetch. |
-| `min_versions` | map | no | empty | Anti-downgrade floors: manifest `name` -> minimum `version`. A floored plugin must prove (trusted signature at/above the floor) that it meets it; no opt-in flag can bypass a floor. First-party plugins are automatically floored at the running binary's version. |
+| `min_versions` | map | no | empty | Anti-downgrade floors: manifest `name` -> minimum `version`. A floored plugin must prove (trusted signature at/above the floor) that it meets it; no opt-in flag can bypass a floor. First-party plugins are automatically floored at the highest accepted version of each plugin on this host. |
 | `logs.dir` | string | no | `logs/plugins` | Where each plugin instance's own log file goes: `<dir>/<section>.<instance>.log`: the instance name after its kind's config section (`export`, `secrets`, `store`, `identity-providers`, `hooks`, `providers`; a plane's instance is its own section), with every character outside `[A-Za-z0-9._-]` written as `_`. So the `metrics` export writes `export.metrics.log` and the memory store `store.memory.log`. |
 | `logs.level` | string | no | `info` | The level of an instance `logs.levels` does not name: `off`, `error`, `warn`, `info`, `debug` or `trace`. Any other word is a boot error naming the key. |
 | `logs.levels` | map | no | empty | Per-instance levels: instance name -> level word. |

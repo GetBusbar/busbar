@@ -13,7 +13,7 @@
 //!    error naming the file and the reason (never a partial boot).
 //! 2. **TRUST**: the signature verifies against the embedded busbar release key (first-party) or an
 //!    allowlisted publisher - else the plugin loads only under the matching explicit opt-in flag
-//!    (`allow_unsigned` / `allow_third_party`), otherwise it is logged and SKIPPED (never
+//!    (`allow_untrusted`), otherwise it is logged and SKIPPED (never
 //!    `dlopen`ed). Anti-downgrade floors are hard rejects inside this phase.
 //! 3. **CONFLICT** (over the loadable set): no two plugins share a `name`, no two share an `alias`,
 //!    and no alias collides with another plugin's `name`. Any collision is a HARD error naming

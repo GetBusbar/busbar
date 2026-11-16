@@ -18,6 +18,13 @@ impl PluginRows for PluginRegistry {
         PluginRegistry::resolve(self, name_or_alias).and_then(archive_sha256)
     }
 
+    fn verification(
+        &self,
+        name_or_alias: &str,
+    ) -> Option<busbar_contract::plugin_rows::Verification> {
+        PluginRegistry::resolve(self, name_or_alias).map(|image| image.verification.clone())
+    }
+
     fn unresolved_reason(&self, name_or_alias: &str) -> Option<Skipped> {
         PluginRegistry::unresolved_reason(self, name_or_alias).map(skipped)
     }
