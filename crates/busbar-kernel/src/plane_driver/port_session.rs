@@ -330,6 +330,12 @@ pub struct Answer {
 
 /// Effects the plane's answer has outside the client, applied at once, in sink order.
 pub trait Effects {
+    /// Execution context supplied by the root's admitted dispatch. Open/check and
+    /// health-only operations have no nested execution authority.
+    fn invocation(&self) -> Option<&crate::host_services::InvocationContext> {
+        None
+    }
+
     /// `PlaneOut::Emit`: bytes for a line carrier (§12.23).
     fn emit(&self, carrier: u64, bytes: &[u8]);
 
@@ -934,6 +940,7 @@ fn fact_val(value: FactRef<'_>) -> FactVal {
 
 /// One plane session under core's hand.
 pub struct Task<'k, K: Calls + ?Sized> {
+    invocation: Option<crate::host_services::InvocationContext>,
     calls: &'k K,
     session: Option<K::Session>,
     once: Once,
@@ -958,6 +965,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             })
             .map_err(SessionError::Port)?;
         let mut task = Self {
+            invocation: effects.invocation().cloned(),
             calls,
             session: Some(session),
             once,
@@ -983,6 +991,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             })
             .map_err(SessionError::Port)?;
         let mut task = Self {
+            invocation: effects.invocation().cloned(),
             calls,
             session: Some(session),
             once,
@@ -991,6 +1000,11 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         };
         let answer = task.checked(answer)?;
         Ok((task, answer))
+    }
+
+    /// The admitted generation remains owned through asynchronous and detached work.
+    pub fn invocation(&self) -> Option<&crate::host_services::InvocationContext> {
+        self.invocation.as_ref()
     }
 
     /// One `piece`.

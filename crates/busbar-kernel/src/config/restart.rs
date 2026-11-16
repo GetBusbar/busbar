@@ -48,7 +48,8 @@ fn same_secrets(
     a.len() == b.len()
         && a.iter().all(|(name, a)| {
             b.get(name).is_some_and(|b| {
-                a.settings == b.settings
+                a.module == b.module
+                    && a.settings == b.settings
                     && same_yaml(&a.limits, &b.limits)
                     && same_yaml(&a.insecure_transport, &b.insecure_transport)
             })
@@ -272,6 +273,22 @@ mod tests {
     }
 
     #[test]
+    fn changing_only_a_secret_instance_module_requires_restart() {
+        let mut boot = baseline();
+        boot.secrets.insert(
+            "credentials".into(),
+            busbar_contract::yaml::from_str("module: source-a\nsettings: {key: unchanged}\n")
+                .unwrap(),
+        );
+        let mut next = boot.clone();
+        next.secrets.get_mut("credentials").unwrap().module = "source-b".into();
+        assert_eq!(next.changed(&boot), ["/secrets"]);
+        assert_eq!(next.clone().changed(&boot), ["/secrets"]);
+        assert!(boot.changed(&boot).is_empty());
+        assert!(next.changed(&next).is_empty());
+    }
+
+    #[test]
     fn opaque_store_and_secret_settings_compare_without_public_serialization() {
         let mut boot = baseline();
         boot.store = Some(
@@ -279,7 +296,8 @@ mod tests {
         );
         boot.secrets.insert(
             "secret".into(),
-            busbar_contract::yaml::from_str("settings: {x: first}\n").unwrap(),
+            busbar_contract::yaml::from_str("module: neutral-secret\nsettings: {x: first}\n")
+                .unwrap(),
         );
         let mut next = boot.clone();
         next.store = Some(
@@ -287,7 +305,8 @@ mod tests {
         );
         next.secrets.insert(
             "secret".into(),
-            busbar_contract::yaml::from_str("settings: {x: second}\n").unwrap(),
+            busbar_contract::yaml::from_str("module: neutral-secret\nsettings: {x: second}\n")
+                .unwrap(),
         );
         assert_eq!(next.changed(&boot), ["/store", "/secrets"]);
     }
