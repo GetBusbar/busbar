@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use busbar_contract::secret_ref::Sugars;
+use busbar_contract::secret_ref::{SecretRef, Sugars};
 use busbar_contract::secure::SecureVec;
 use busbar_core_connector::guard::Guard;
 use busbar_core_connector::need::{HostNeeds, NeedLimits};
@@ -29,15 +29,24 @@ use busbar_kernel::channels::signals::SignalRegistry;
 use busbar_kernel::channels::SessionSignals;
 use busbar_kernel::config::{PluginsCfg, RootCfg};
 use busbar_kernel::directory::{KernelDirectory, LateDirectory, LogEvents};
-use busbar_kernel::host_services::KernelServices;
+use busbar_kernel::host_services::{DestJudge, KernelServices};
 use busbar_kernel::ingress::replay::StoreReplay;
+use busbar_kernel::ingress::signed_ingress::{RouteSecrets, StandardWebhooks};
 use busbar_kernel::issued::IssuedCredentials;
 use busbar_kernel::persistence::boot_identity::BootIdentity;
 use busbar_kernel::persistence::startup::Startup;
+use busbar_kernel::plane_driver::plane_judge::PlaneJudge;
 use busbar_kernel::plane_driver::port::{PortDriver, PortSeat};
-use busbar_kernel::plane_driver::port_intents::{KernelIntents, Namespace};
+use busbar_kernel::plane_driver::port_intents::{
+    DurableDecider, DurableWork, KernelIntents, Namespace,
+};
+use busbar_kernel::plane_driver::port_observations::ObsCustody;
 use busbar_kernel::plane_driver::port_serve::{LateDoor, TicketGate};
-use busbar_kernel::plane_grants::{SealedTickets, Tickets};
+use busbar_kernel::plane_driver::port_services::Services;
+use busbar_kernel::plane_driver::port_work::{governed_binder, LateBinder, LateStore, StoreWork};
+use busbar_kernel::plane_grants::{
+    SealedTickets, TicketAdmitted, TicketDenied, TicketMint, Tickets,
+};
 use busbar_kernel::plugin_config::{Binder, ConfigBinder};
 use busbar_kernel::plugin_records::{LateRecords, RecordsDenied, StoreRecords};
 use busbar_kernel::push::{PushQueue, StorePushQueue};
@@ -51,6 +60,7 @@ use busbar_plugin_loader::instance::{
 };
 use busbar_plugin_loader::ports::store::StoreHandle;
 
+use super::port_mount::Ingress;
 use super::secret_custody::{self, BootCustody, BootRefs};
 
 /// The records every Need handler, the replay guard and the plane driver share: filled once the store is open.
@@ -130,16 +140,108 @@ struct Shared {
     /// One per plane instance, with the namespace its gate asks the ticket store as.
     doors: Mutex<Vec<(LateDoor, Namespace)>>,
     next_instance: AtomicU64,
+    /// The ticket store MINT seals through, shut until `install_tickets`.
+    tickets: LateTickets,
+    /// The observation custody every seat's OBS_SCOPE and OBSERVE run on (units register as requests bill).
+    observations: ObsCustody,
+    /// The core store (filled at the deployment point) and the governance binder (filled when governance
+    /// attaches): the two things durable WORK waits for.
+    work_store: LateStore,
+    work_binder: LateBinder,
+    /// Durable WORK for every seat (rows are scoped by instance name).
+    work: Arc<StoreWork>,
+}
+
+/// The ticket store the plane instances' MINT intents seal through. Seats open before core's own secrets resolve, so
+/// each holds this and the boot fills it in `install_tickets`; until then nothing is a ticket and nothing mints.
+#[derive(Clone, Default)]
+pub(crate) struct LateTickets {
+    slot: Arc<OnceLock<Arc<dyn Tickets>>>,
+}
+
+impl LateTickets {
+    /// The store every clone uses from now on (the first install stays).
+    fn install(&self, tickets: Arc<dyn Tickets>) {
+        let _ = self.slot.set(tickets);
+    }
+}
+
+impl Tickets for LateTickets {
+    fn mint<'a>(
+        &'a self,
+        who: &'a LoaderCaller<'_>,
+        m: TicketMint<'a>,
+    ) -> BoxFut<'a, Result<(Box<str>, u64), RecordsDenied>> {
+        match self.slot.get() {
+            Some(tickets) => tickets.mint(who, m),
+            None => Box::pin(core::future::ready(Err(RecordsDenied::Unavailable))),
+        }
+    }
+
+    fn is_ticket(&self, credential: &str) -> bool {
+        self.slot
+            .get()
+            .is_some_and(|tickets| tickets.is_ticket(credential))
+    }
+
+    fn admit<'a>(
+        &'a self,
+        plane: &'a LoaderCaller<'_>,
+        audience: &'a str,
+        credential: &'a str,
+        now_s: u64,
+    ) -> BoxFut<'a, Result<TicketAdmitted, TicketDenied>> {
+        match self.slot.get() {
+            Some(tickets) => tickets.admit(plane, audience, credential, now_s),
+            None => Box::pin(core::future::ready(Err(TicketDenied::Unavailable))),
+        }
+    }
+}
+
+/// The services every plane seat's intents run on (IF §12.1, §12.11): what the boot can build. JUDGE is the
+/// deployment's one destination judge, or the fail-closed one (every destination internal, BUSBAR-7108) when the
+/// process has none. MINT is the late ticket store, OBS_SCOPE and OBSERVE the process's observation custody. ENTITLE,
+/// SIGN, CONNECT, SIGHT/TRUST and RENDEZVOUS have no production owner at boot yet (no grant resolver, host signing
+/// key, caller-connection store, trust book or media carrier is built here), so each answers its fail-closed value.
+fn plane_services(shared: &Shared, judge: Option<Arc<dyn DestJudge>>) -> Services {
+    Services {
+        judge: Some(judge.map_or_else(PlaneJudge::unavailable, PlaneJudge::new)),
+        tickets: Some(Arc::new(shared.tickets.clone())),
+        observations: Some(Arc::new(shared.observations.clone())),
+        ..Services::default()
+    }
+}
+
+/// Whether a WORK_OPEN target (a path and query) lies on one of the instance's ROUTE_RECOVERY patterns.
+fn recovery_matcher(patterns: Vec<Box<str>>) -> Box<dyn Fn(&str) -> bool + Send + Sync> {
+    use busbar_contract::abi::transport::route::{path_matches, PATH_PATTERN};
+    Box::new(move |target| {
+        let path = target.split(['?', '#']).next().unwrap_or_default();
+        patterns
+            .iter()
+            .any(|pattern| path_matches(PATH_PATTERN, pattern, path))
+    })
 }
 
 impl Shared {
     fn new(records: Records, push: LatePush) -> Self {
+        let work_store = LateStore::default();
+        let work_binder = LateBinder::default();
         Self {
             records,
             push,
             signals: SignalRegistry::new(),
             doors: Mutex::default(),
             next_instance: AtomicU64::new(1),
+            tickets: LateTickets::default(),
+            observations: ObsCustody::new(Arc::new(busbar_kernel::store::now_ms)),
+            work: Arc::new(StoreWork::new(
+                work_store.clone(),
+                work_binder.clone(),
+                Arc::new(busbar_kernel::store::now_ms),
+            )),
+            work_store,
+            work_binder,
         }
     }
 
@@ -171,6 +273,7 @@ impl Shared {
             return;
         };
         let tickets: Arc<dyn Tickets> = Arc::new(sealed);
+        self.tickets.install(Arc::clone(&tickets));
         for (door, who) in self
             .doors
             .lock()
@@ -190,6 +293,10 @@ pub(crate) struct Booted {
     pub(crate) deployment: [u8; 16],
     /// The format admission the walk attached the store through.
     pub(crate) startup: Mutex<Option<Startup>>,
+    /// Durable WORK: the governance binder, filled when governance attaches ([`attach_governance`]).
+    work_binder: LateBinder,
+    /// The records the signed-ingress replay claims are written through.
+    records: Records,
 }
 
 static BOOTED: OnceLock<Booted> = OnceLock::new();
@@ -232,6 +339,43 @@ pub(crate) fn booted() -> Option<&'static Booted> {
 /// The MIN-3 plane instances the boot opened, for `Served.ports`.
 pub(crate) fn seats() -> Vec<PortSeat> {
     booted().map(|b| b.seats.clone()).unwrap_or_default()
+}
+
+/// Governance is attached (after the app's first build): durable WORK binds a principal's recovery standing through
+/// it from now on. Until then every WORK_OPEN answers `R_UNSUPPORTED` (core cannot recover), the IF's fail-closed
+/// answer. A boot that took the old path has no MIN-3 instances and nothing to attach.
+pub(crate) fn attach_governance(handle: Arc<busbar_kernel::state::AppHandle>) {
+    if let Some(booted) = booted() {
+        booted.work_binder.install(governed_binder(handle));
+    }
+}
+
+/// Webhook secrets by reference, through custody (a route's secret resolves like any other reference: by reference,
+/// an empty call stack, no source named in an error). A reference that does not resolve verifies nothing.
+struct CustodySecrets;
+
+impl RouteSecrets for CustodySecrets {
+    fn resolve<'a>(&'a self, reference: &'a SecretRef) -> BoxFut<'a, Option<SecureVec>> {
+        Box::pin(async move {
+            secret_custody::the()
+                .resolve_ref(Instant::now() + CORE_SECRET_DEADLINE, reference)
+                .await
+                .ok()
+        })
+    }
+}
+
+/// What the plane routes of class AUTH_SIGNED_INGRESS verify with (IF §12.11, TRANSPORT-SECURITY-POLICY): core's
+/// Standard Webhooks verifier over custody and the replay claim in the core store. The IF names no config key for a
+/// route's webhook secret and K7's `Min3Config` carries none yet, so no route has one: every signed route answers
+/// `R_BAD_CREDENTIAL` until the operator's `routes.<id>` block supplies it (the same answer the unwired route gave).
+pub(crate) fn signed_ingress() -> Option<Arc<Ingress>> {
+    let booted = booted()?;
+    Some(Arc::new(Ingress {
+        verifier: Arc::new(StandardWebhooks::new(CustodySecrets)),
+        replay: Arc::new(StoreReplay::new(booted.records.clone())),
+        secrets: Arc::new(|_: &str, _: u32| None),
+    }))
 }
 
 /// The MIN-3 images the plugins directory's scan holds. The scan verified each one; admission re-verifies the
@@ -472,13 +616,27 @@ impl Steps<'_> {
             .unwrap_or_else(PoisonError::into_inner)
             .push((door.clone(), who.clone()));
         let driver = driver.with_tickets(Arc::new(door));
+        let rt = tokio::runtime::Handle::current();
+        // WORK is opened only for a target on this instance's ROUTE_RECOVERY routes.
+        let recovers = recovery_matcher(
+            driver
+                .routes()
+                .recovery
+                .iter()
+                .map(|route| route.pattern.clone())
+                .collect(),
+        );
+        let work: Arc<dyn DurableWork> = Arc::clone(&self.shared.work) as Arc<dyn DurableWork>;
+        let judge = self.services.as_ref().and_then(|s| s.dest_judge());
         let intents = KernelIntents::new(
             Arc::new(self.shared.records.clone()),
             Arc::new(self.shared.push.clone()),
             Arc::clone(&self.shared.signals) as Arc<dyn SessionSignals>,
             who.clone(),
-            tokio::runtime::Handle::current(),
-        );
+            rt.clone(),
+        )
+        .with_work(Arc::new(DurableDecider::new(work, recovers, rt)))
+        .with_services(plane_services(&self.shared, judge));
         self.seats
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -568,6 +726,7 @@ fn deployment_read(
     directory: Directory,
     startup: Arc<Mutex<Option<Startup>>>,
     push: LatePush,
+    work_store: LateStore,
 ) -> Box<DeploymentRead> {
     Box::new(
         move |handle: &StoreHandle| -> BoxFut<'static, Result<[u8; 16], String>> {
@@ -576,12 +735,14 @@ fn deployment_read(
             let directory = directory.clone();
             let startup = Arc::clone(&startup);
             let push = push.clone();
+            let work_store = work_store.clone();
             Box::pin(async move {
                 let admitted = super::boot::admit_format(backend, true).await?;
                 let core = admitted
                     .store()
                     .ok_or_else(|| "the store format admission left no core store".to_owned())?;
                 records.install(Arc::new(StoreRecords::new(Arc::clone(&core))));
+                work_store.install(Arc::clone(&core));
                 push.install(StorePushQueue::new(
                     Arc::clone(&core),
                     Arc::new(RetryPolicyImpl::default()),
@@ -677,6 +838,7 @@ pub(crate) async fn run(
         built.directory.clone(),
         Arc::clone(&startup),
         push,
+        shared.work_store.clone(),
     );
     let steps = Steps {
         inner: RegistryBoot {
@@ -700,11 +862,15 @@ pub(crate) async fn run(
         .into_inner()
         .unwrap_or_else(PoisonError::into_inner);
     let ticking = seats.clone();
+    // The admin listener serves the planes' ROUTE_ADMIN routes from here on.
+    busbar_kernel::plane_driver::port_admin::install(seats.clone());
     let installed = BOOTED.set(Booted {
         registry: built.registry,
         seats,
         core,
         deployment: walked.deployment,
+        work_binder: shared.work_binder.clone(),
+        records: built.records.clone(),
         startup: Mutex::new(
             startup
                 .lock()
@@ -726,3 +892,7 @@ pub(crate) async fn run(
     }
     Ok(true)
 }
+
+#[cfg(test)]
+#[path = "tests/min3_boot.rs"]
+mod tests;

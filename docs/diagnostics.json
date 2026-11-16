@@ -2088,6 +2088,18 @@
     "retired": false
   },
   {
+    "code": "BUSBAR-7108",
+    "number": 7108,
+    "class": "plane",
+    "slug": "plane-judge-unavailable",
+    "title": "A plane's destination judge is not installed (every JUDGE answers internal)",
+    "severity": "actionable",
+    "summary": "A plane asked core to judge a destination (the JUDGE intent) and the process has no destination judge installed, so core answered `DEST_INTERNAL` (fail closed) for it, and every later JUDGE answers the same until a judge is installed. The plane never learns an address, and a plane that dials nothing is unaffected. busbar logs this once per process.",
+    "action": "Install the destination judge the process builds at boot (the egress guard that backs `dest.judge`), then restart. Until then a plane that depends on JUDGE refuses the destinations it would have judged.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
     "code": "BUSBAR-7109",
     "number": 7109,
     "class": "plane",

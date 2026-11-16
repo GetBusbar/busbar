@@ -926,6 +926,12 @@ diagnostics! {
         "`POST /api/v1/admin/plane-record-write` named a record kind the kernel keeps its own records under (`audit`, `usage_residual`, `demotion`, `trust_decision` or `ticket`). A plane may declare one of these (plane-mcp declares `demotion`), but the rows under it are the kernel's own, for example its durable demotion record of a quarantined upstream, and no write made in a plane's name may alter them. busbar answers `403 forbidden` naming the kind, writes nothing, and seals the refusal on the administrative audit ring as `rejected`.",
         "Do not write kernel records through the plane record verb. To lift a quarantine, approve the counterparty with `POST /api/v1/admin/trust/approve`, which clears its durable demotion. Write a plane's own records under a kind that is not the kernel's.";
 
+    /// A plane's JUDGE intent ran with no destination judge installed: core answers `DEST_INTERNAL` (fail closed).
+    PLANE_JUDGE_UNAVAILABLE = 7108, Plane, Actionable, "plane-judge-unavailable", "1.6.0", false,
+        "A plane's destination judge is not installed (every JUDGE answers internal)",
+        "A plane asked core to judge a destination (the JUDGE intent) and the process has no destination judge installed, so core answered `DEST_INTERNAL` (fail closed) for it, and every later JUDGE answers the same until a judge is installed. The plane never learns an address, and a plane that dials nothing is unaffected. busbar logs this once per process.",
+        "Install the destination judge the process builds at boot (the egress guard that backs `dest.judge`), then restart. Until then a plane that depends on JUDGE refuses the destinations it would have judged.";
+
     TRUST_VERIFY_REFUSED_ON_DRIFT = 7097, Plane, BenignRecurring, "trust-verify-refused-on-drift", "1.6.0", true,
         "Verify-on-call refused a call because the upstream's advertised surface drifted — RETIRED",
         "RETIRED. Nothing emits this code: the verify-on-call gate that refused a drifted call is deleted (Q128 p8#3); a registration whose upstream drifted is demoted by the trust book.",
