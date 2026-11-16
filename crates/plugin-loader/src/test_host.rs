@@ -1019,13 +1019,21 @@ pub fn test_key() -> crate::sign::SigningKey {
     crate::sign::SigningKey::from_bytes(&[0x5a; 32])
 }
 
-/// A `plugins.trust` that trusts [`TEST_PUBLISHER`]'s [`test_key`] and nothing else (no opt-in flag).
+/// A `plugins.trust` that trusts [`TEST_PUBLISHER`]'s [`test_key`] only for `expected_scope`
+/// (no opt-in flag). The scope must come from the fixture's expectation, not the manifest under test.
 #[must_use]
-pub fn test_trust() -> crate::admit::TrustConfig {
+pub fn test_trust(expected_scope: &str) -> crate::admit::TrustConfig {
     let mut trust = crate::sign::TrustPolicy::default();
-    trust
-        .publishers
-        .insert(TEST_PUBLISHER.to_string(), test_key().verifying_key());
+    trust.publishers.insert(
+        TEST_PUBLISHER.to_string(),
+        crate::sign::PublisherTrust {
+            plugins: [expected_scope.to_string()].into_iter().collect(),
+            keys: vec![crate::sign::PublisherKey {
+                key: test_key().verifying_key(),
+                revoked: false,
+            }],
+        },
+    );
     trust
 }
 
@@ -1075,7 +1083,8 @@ pub fn admit_linked(
 }
 
 /// A dropped-in MIN-3 image: `bytes` written to a private file, opened read-only, unlinked, and admitted from
-/// that descriptor through the loader's `admit` under [`test_trust`] (every step production runs).
+/// that descriptor through the loader's `admit` under [`test_trust`] for the explicit expected plugin
+/// scope (every step production runs).
 ///
 /// # Errors
 /// The loader's refusal.
@@ -1086,6 +1095,7 @@ pub fn admit_linked(
 pub fn admit_bytes(
     bytes: &[u8],
     manifest: &crate::admit::SignedManifest,
+    expected_scope: &str,
 ) -> Result<crate::admit::Admitted, crate::refusal::Refusal> {
     use std::io::Write as _;
     let path = std::env::temp_dir().join(format!(
@@ -1104,11 +1114,15 @@ pub fn admit_bytes(
     let file = std::fs::File::open(&path)
         .unwrap_or_else(|e| panic!("open the scratch image {}: {e}", path.display()));
     let _ = std::fs::remove_file(&path);
-    crate::admit::admit(std::os::fd::OwnedFd::from(file), manifest, &test_trust())
+    crate::admit::admit(
+        std::os::fd::OwnedFd::from(file),
+        manifest,
+        &test_trust(expected_scope),
+    )
 }
 
 /// The cdylib built from `lib_name` (found as [`Image::cdylib`] finds it), admitted through `admit` under a
-/// [`test_manifest`] stating `former_names`.
+/// [`test_manifest`] stating `former_names`, trusted only for the explicit `expected_scope`.
 ///
 /// # Errors
 /// The loader's refusal.
@@ -1119,12 +1133,13 @@ pub fn admit_bytes(
 pub fn admit_cdylib(
     lib_name: &str,
     former_names: &[&str],
+    expected_scope: &str,
 ) -> Result<crate::admit::Admitted, crate::refusal::Refusal> {
     let path = locate(lib_name);
     let bytes =
         std::fs::read(&path).unwrap_or_else(|e| panic!("read the cdylib {}: {e}", path.display()));
     let manifest = test_manifest(&bytes, former_names)?;
-    admit_bytes(&bytes, &manifest)
+    admit_bytes(&bytes, &manifest, expected_scope)
 }
 
 /// How long a settled submission waits for its worker's retirement barrier before its loans are

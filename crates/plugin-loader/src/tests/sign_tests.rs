@@ -1414,41 +1414,38 @@ fn a_signed_need_retention_policy_must_equal_the_actual_modules_policy() {
 #[test]
 fn from_config_keeps_its_refusal_bytes_and_carries_every_floor_exactly() {
     let none = BTreeMap::new();
-    let input = |publishers| TrustInput {
-        publishers,
+    let input = TrustInput {
+        publishers: &[],
         allow_untrusted: false,
         min_versions: &none,
         first_party_floors: &none,
         binary_version: "1.6.0",
     };
     assert_eq!(
-        TrustPolicy::from_config(input(&[(
-            "busbar",
-            &["acme-p".to_string()],
-            vec![("00", false)]
-        )]))
+        TrustPolicy::from_config(TrustInput {
+            publishers: &[("busbar", &["acme-p".to_string()], vec![("00", false)])],
+            ..input
+        })
         .map(drop)
         .unwrap_err(),
         "plugins.trust.publishers['busbar']: the publisher name 'busbar' is reserved for busbar's \
          embedded release key and cannot be configured"
     );
     assert_eq!(
-        TrustPolicy::from_config(input(&[(
-            "acme",
-            &["acme-p".to_string()],
-            vec![("zz", false)]
-        )]))
+        TrustPolicy::from_config(TrustInput {
+            publishers: &[("acme", &["acme-p".to_string()], vec![("zz", false)])],
+            ..input
+        })
         .map(drop)
         .unwrap_err(),
         "plugins.trust.publishers['acme']: public key not valid hex: Invalid character 'z' at \
          position 0"
     );
     assert_eq!(
-        TrustPolicy::from_config(input(&[(
-            "acme",
-            &["acme-p".to_string()],
-            vec![("00", false)]
-        )]))
+        TrustPolicy::from_config(TrustInput {
+            publishers: &[("acme", &["acme-p".to_string()], vec![("00", false)])],
+            ..input
+        })
         .map(drop)
         .unwrap_err(),
         "plugins.trust.publishers['acme']: public key must be 32 bytes, got 1"

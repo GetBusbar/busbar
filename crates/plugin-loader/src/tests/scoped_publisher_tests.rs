@@ -128,7 +128,7 @@ fn publisher_config_rejects_duplicates_weak_keys_and_empty_scope() {
     let key = hex::encode(SigningKey::from_bytes(&[77; 32]).verifying_key().to_bytes());
     let names = vec!["acme-store".into()];
     let none = BTreeMap::new();
-    let check = |publishers| {
+    let check = |publishers: &[PublisherInput<'_>]| {
         TrustPolicy::from_config(TrustInput {
             publishers,
             allow_untrusted: false,
