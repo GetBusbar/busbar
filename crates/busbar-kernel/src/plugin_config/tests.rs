@@ -33,9 +33,7 @@ fn sugars() -> Arc<Sugars> {
 }
 
 fn binder(value: &'static str) -> Binder {
-    let b = Binder::new(Arc::new(Fixed(value)));
-    b.set_sugars(sugars());
-    b
+    Binder::new(Arc::new(Fixed(value)), sugars(), Vec::new())
 }
 
 fn bytes(v: &Value) -> Vec<u8> {
@@ -173,11 +171,16 @@ fn an_undeclared_shorthand_at_a_ref_path_refuses() {
 
 #[test]
 fn a_reference_failing_its_secret_instances_ref_schema_is_bad_reference() {
-    let b = binder("unused");
-    b.set_ref_schemas(vec![(
-        Arc::from("env"),
-        Box::from(r#"{"type":"object","properties":{"name":{"type":"string","pattern":"^[A-Z_]+$"}},"required":["name"]}"#),
-    )]);
+    let b = Binder::new(
+        Arc::new(Fixed("unused")),
+        sugars(),
+        vec![(
+            Arc::from("env"),
+            Box::from(
+                r#"{"type":"object","properties":{"name":{"type":"string","pattern":"^[A-Z_]+$"}},"required":["name"]}"#,
+            ),
+        )],
+    );
     let good = json!({"token": {"env": "TOKEN"}});
     assert!(b.bind(1, &bytes(&good), &["/token"], &[], &[], &[]).is_ok());
     let bad = json!({"token": {"env": "lower"}});
