@@ -3,6 +3,9 @@
 
 use super::*;
 
+use busbar_kernel::persistence::journal::head_cell::Head;
+use busbar_kernel_audit::{Fingerprint, LineAt, Linked, Prepared};
+
 impl Durability {
     pub(super) fn resume_audit(&mut self, records: &[JournalRecord]) {
         let mut sealed = Vec::new();
@@ -14,6 +17,7 @@ impl Durability {
                     if keyed && self.audit_signed_from.is_none() {
                         self.audit_signed_from = Some(audit.seq);
                     }
+                    self.resumed_head_node_seq = record.node_seq;
                     sealed.push(audit);
                 }
                 Ok(None) => {}
@@ -29,27 +33,108 @@ impl Durability {
         self.audit_ring = AuditRing::from_sealed(sealed);
     }
 
-    /// Bound memory-only hot sealing. Returning this pair is not persistence;
-    /// its shared native owner must confirm the exact run before publication.
-    pub(crate) fn stage_unit(
+    /// Publish the chain's resumed tail to the head feed, so the notary starts from it.
+    pub(super) fn publish_resumed_head(&mut self) {
+        let Some(last) = self.audit_records().last() else {
+            return;
+        };
+        let Some(fp) = Fingerprint::from_hex(&last.hash) else {
+            return;
+        };
+        self.head.publish(&Head {
+            seq: last.seq,
+            node_seq: self.resumed_head_node_seq,
+            fp: fp.0,
+            wall_ms: last.linked_ms,
+        });
+    }
+
+    /// The resumed head the notary starts from: everything at or below it was written before this
+    /// boot took the node (the boot phase seals or records it), and is never live-stamped.
+    #[must_use]
+    pub(crate) fn notary_start(&self) -> super::notary::NotaryStart {
+        let head = self.head.head();
+        super::notary::NotaryStart {
+            stamped_through: head.seq,
+            stamped_node_seq: head.node_seq,
+        }
+    }
+
+    /// The boot incarnation and node every line of this book names: boot constants, copied out
+    /// once so a line can be prepared before the lock ([`AuditChain::prepare`]).
+    #[must_use]
+    pub(crate) fn line_identity(&self) -> LineIdentity {
+        LineIdentity {
+            node: self.record.node(),
+            incarnation: self.incarnation,
+        }
+    }
+
+    /// LINK, STAGE AND PUBLISH ONE PREPARED LINE under this book's lock (SEALING-FIX §3.2): read
+    /// the clock, link, stage the one-record run; on success advance the chain, publish the head
+    /// and move the record into the ring (no clone). A refused stage advances nothing: the next
+    /// line links to the same tail. Signs nothing.
+    pub(crate) fn stage_prepared(
+        &mut self,
+        prepared: Prepared,
+        pass: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
+        token: &Grant<DurableWrite>,
+    ) -> Result<(LineAt, Arc<StagedRun>), DurabilityLost> {
+        let linked_ms = busbar_kernel::store::now_ms();
+        let linked: Linked = self.record.link(prepared, linked_ms, pass);
+        let entry = audit_entry(linked.record())
+            .map_err(|_| DurabilityLost::observed(token, StepName::Audit))?;
+        let run = self
+            .journal
+            .stage_run(&[entry])
+            .map_err(|_| DurabilityLost::observed(token, StepName::Audit))?;
+        self.record.advance(&linked);
+        let line = LineAt {
+            chain_seq: linked.record().seq,
+            node_seq: run.records().first().map_or(0, |r| r.node_seq),
+            fp: linked.fingerprint(),
+        };
+        self.head.publish(&Head {
+            seq: line.chain_seq,
+            node_seq: line.node_seq,
+            fp: line.fp.0,
+            wall_ms: linked_ms,
+        });
+        let record = linked.into_record();
+        if record.key_id.is_some() && self.audit_signed_from.is_none() {
+            self.audit_signed_from = Some(record.seq);
+        }
+        self.audit_ring.push(record);
+        Ok((line, run))
+    }
+
+    /// The request path's stage when the caller could not prepare before the lock: prepare here,
+    /// then [`Durability::stage_prepared`]. Returns the line's hint, never the record.
+    pub(crate) fn stage_line(
         &mut self,
         mut inputs: AuditInputs,
         pass: busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
         token: &Grant<DurableWrite>,
-    ) -> Result<(AuditRecord, Arc<StagedRun>), DurabilityLost> {
+    ) -> Result<(LineAt, Arc<StagedRun>), DurabilityLost> {
         inputs.what.incarnation = self.incarnation;
-        let journal = self.journal.clone();
-        let (record, run) = self.record.seal_for_journal(inputs, &pass, |record| {
-            let entry = audit_entry(record)
-                .map_err(|_| DurabilityLost::observed(token, StepName::Audit))?;
-            journal
-                .stage_run(&[entry])
-                .map_err(|_| DurabilityLost::observed(token, StepName::Audit))
-        })?;
-        if record.key_id.is_some() && self.audit_signed_from.is_none() {
-            self.audit_signed_from = Some(record.seq);
-        }
-        self.audit_ring.push(record.clone());
+        let prepared = AuditChain::prepare(inputs, self.record.node());
+        self.stage_prepared(prepared, &pass, token)
+    }
+
+    /// Admin `seal_unit` and the tests that read the sealed record: [`Durability::stage_line`],
+    /// then a clone of the record from the ring, off the request path.
+    pub(crate) fn stage_unit(
+        &mut self,
+        inputs: AuditInputs,
+        pass: busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
+        token: &Grant<DurableWrite>,
+    ) -> Result<(AuditRecord, Arc<StagedRun>), DurabilityLost> {
+        let (_, run) = self.stage_line(inputs, pass, token)?;
+        let record = self
+            .audit_records()
+            .last()
+            .cloned()
+            .ok_or_else(|| DurabilityLost::observed(token, StepName::Audit))?;
         Ok((record, run))
     }
 
@@ -204,3 +289,13 @@ pub(super) mod tests;
 #[cfg(test)]
 #[path = "../tests/durability_audit_node.rs"]
 mod node_tests;
+
+/// THE BOOT CONSTANTS A LINE NAMES, copied out of the book at bind so the request path prepares
+/// (hashes) its line before taking the book's lock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct LineIdentity {
+    /// The node the book seals as.
+    pub(crate) node: u64,
+    /// This boot's incarnation of the node's journal.
+    pub(crate) incarnation: u64,
+}

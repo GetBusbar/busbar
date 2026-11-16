@@ -113,18 +113,19 @@ fn load_config_from_disk_refuses_a_real_legacy_config_file_loudly() {
 
     let err = match result {
         Ok(_) => panic!(
-            "an authored historical document whose normalization refuses must not be \
-             silently interpreted as current configuration by the real boot entry point"
+            "a 1.4.x document must not be silently interpreted as current configuration by the \
+             real boot entry point"
         ),
         Err(e) => e,
     };
     assert!(
-        err.contains("supported configuration normalization refused the authored document"),
-        "the real boot entry point must report the historical normalization refusal: {err}"
+        err.contains("unknown field `governance`"),
+        "the real boot entry point reads only current bytes: its strict parse refuses the \
+         retired key by name (MIGRATE-ON-BOOT C1 (lg1)): {err}"
     );
     assert!(
         std::fs::read_to_string(&config_path).unwrap() == BOOT_LEGACY_14X_CONFIG,
-        "a refused normalization must retain every original authored byte"
+        "a refused read must retain every original authored byte"
     );
 
     std::fs::remove_dir_all(&dir).ok();
@@ -287,107 +288,6 @@ fn boot_default_config_defers_store_overlay_recovery_until_the_anchor_opens() {
         std::fs::read_dir(&dir).unwrap().count(),
         2,
         "only operator input files exist"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-    println!("{WITNESS}");
-}
-#[test]
-fn boot_mutable_historical_overlay_selector_is_normalized_without_changing_values() {
-    const CHILD: &str = "BUSBAR_CENTRAL2_DISK_CHILD";
-    const WITNESS: &str = "actual root disk config assertions completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root test"),
-        );
-        let until = Instant::now() + Duration::from_secs(60);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root usage witness failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                Instant::now() < until,
-                "the actual-root usage witness timed out"
-            );
-            std::thread::park_timeout(Duration::from_millis(5));
-        }
-    }
-    crate::dist_root_install::install();
-    let cfg = "providers: {}\nmodels: {}\nstore: {module: memory}\nauth: {chain: [], admin_auth: []}\nconfig:\n  locked: false\n  overlay: false\n";
-    let (dir, config_path, _p) = boot_config_dir("no-backend", cfg);
-    let rules = crate::root::door_steps::Rules::default();
-    let normalized = busbar_kernel::appbuild::RootRules::normalize_document(
-        &rules,
-        busbar_kernel::appbuild::ConfigDocument::Deployment,
-        &config_path,
-        cfg,
-    )
-    .expect("the actual startup normalizes the historical selector")
-    .expect("the obsolete field requires a converted document");
-    let normalized: Value = yaml::from_str(&normalized).unwrap();
-    assert!(
-        normalized.at("config").get("overlay").is_none(),
-        "the converted document contains no obsolete selector"
-    );
-    assert_eq!(normalized.at("config").at("locked"), &Value::Bool(false));
-    assert_eq!(normalized.at("store").at("module").as_str(), Some("memory"));
-    let loaded = load_config_from_disk(
-        &config_path,
-        None,
-        false,
-        busbar_kernel::config::EnvSubst::Strict,
-        &rules,
-    )
-    .expect("the normal startup accepts the lossless historical conversion");
-    assert!(!loaded.deploy.config.locked);
-    assert_eq!(
-        std::fs::read_to_string(&config_path).unwrap(),
-        cfg,
-        "normalization never rewrites the authored source"
-    );
-    std::fs::write(&config_path, cfg.replace("  overlay: false\n", "")).unwrap();
-    assert!(
-        load_config_from_disk(
-            &config_path,
-            None,
-            false,
-            busbar_kernel::config::EnvSubst::Strict,
-            &crate::root::door_steps::Rules::default(),
-        )
-        .is_ok(),
-        "otherwise identical mutable configuration uses its configured Store without an overlay selector"
     );
     let _ = std::fs::remove_dir_all(&dir);
     println!("{WITNESS}");

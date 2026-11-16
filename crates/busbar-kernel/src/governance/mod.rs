@@ -895,8 +895,8 @@ mod state;
 pub use state::identity_runtime::{IdentityClaimKey, IdentityMutationGuard};
 pub(crate) use state::key_row_expired;
 pub use state::{
-    metering_lane, AdjustRefused, Adjustment, KeyMutationError, MintError, PricedBucket,
-    UsageAdjustment, ADJUST_DOWN_BUCKET, ADJUST_UP_BUCKET,
+    metering_lane, self_subject_id, AdjustRefused, Adjustment, KeyMutationError, MintError,
+    PricedBucket, UsageAdjustment, ADJUST_DOWN_BUCKET, ADJUST_UP_BUCKET,
 };
 
 pub(crate) mod tickets;
