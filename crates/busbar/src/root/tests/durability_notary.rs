@@ -405,6 +405,7 @@ async fn first_shutdown_broadcast_stops_new_cuts_before_notary_stop() {
 struct SlowNotary {
     inner: busbar_contract::crypto::LocalSigner,
     signs: Arc<std::sync::atomic::AtomicU64>,
+    paused: Arc<std::sync::atomic::AtomicBool>,
 }
 impl busbar_contract::crypto::Signer for SlowNotary {
     fn public_key(&self) -> &busbar_contract::crypto::PublicKey {
@@ -416,9 +417,20 @@ impl busbar_contract::crypto::Signer for SlowNotary {
         out: &mut Vec<u8>,
     ) -> Result<(), busbar_contract::crypto::SignError> {
         std::thread::sleep(Duration::from_millis(5));
+        while self.paused.load(std::sync::atomic::Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
         self.signs
             .fetch_add(1, std::sync::atomic::Ordering::Release);
         busbar_contract::crypto::Signer::sign(&self.inner, msg, out)
+    }
+}
+
+/// Release even when a fixture assertion unwinds, so no detached test signer remains blocked.
+struct SigningPause(Arc<std::sync::atomic::AtomicBool>);
+impl Drop for SigningPause {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -445,6 +457,7 @@ async fn interleaved_non_audit_rows_do_not_stop_the_retention_floor() {
         .unwrap(),
     ));
     let signs = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let pause = SigningPause(Arc::new(std::sync::atomic::AtomicBool::new(false)));
     let task = notary_over_signer(
         &book,
         1,
@@ -452,9 +465,11 @@ async fn interleaved_non_audit_rows_do_not_stop_the_retention_floor() {
         LiveSigner::Delegated(Box::new(SlowNotary {
             inner: busbar_contract::crypto::LocalSigner::from_seed(&SEED).unwrap(),
             signs: signs.clone(),
+            paused: pause.0.clone(),
         })),
     );
     let count = 3 * RETAIN_TAIL;
+    let mut observed_unstamped = false;
     for unit in 1..=count {
         let other = journal
             .stage_run(&[
@@ -465,7 +480,45 @@ async fn interleaved_non_audit_rows_do_not_stop_the_retention_floor() {
             .unwrap();
         journal.confirm(&other).await.unwrap();
         drop(other);
+        if unit % (CUT_BATCH / 4) == 0 {
+            pause.0.store(true, std::sync::atomic::Ordering::Release);
+        }
         seal_n(&book, unit, 1).await;
+        if unit % (CUT_BATCH / 4) == 0 {
+            let records = journal
+                .read_records(busbar_kernel::persistence::journal::BufferBudget {
+                    records: 65_536,
+                    bytes: 64 * 1024 * 1024,
+                })
+                .await
+                .unwrap();
+            let readable: std::collections::BTreeSet<_> = records
+                .iter()
+                .filter(|record| record.class == RecordClass::Transaction)
+                .filter_map(|record| {
+                    busbar_kernel_audit::from_journal_body(
+                        &record.body,
+                        &busbar_kernel::Registration::meter_class,
+                    )
+                    .unwrap()
+                })
+                .map(|audit| audit.seq)
+                .collect();
+            // Read the confirmed frontier after the snapshot: a page confirmed during the read
+            // may legitimately permit a later cut; every line still unstamped must be present.
+            let stamped = task
+                .progress()
+                .stamped_through
+                .load(std::sync::atomic::Ordering::Acquire);
+            for sequence in stamped + 1..=unit {
+                observed_unstamped = true;
+                assert!(
+                    readable.contains(&sequence),
+                    "unstamped line {sequence} remains readable"
+                );
+            }
+        }
+        pause.0.store(false, std::sync::atomic::Ordering::Release);
         if unit > count / 3 && unit % (CUT_BATCH / 4) == 0 {
             stamped_through(&task, unit).await;
             let bound = RETAIN_TAIL + 2 * CUT_BATCH;
@@ -485,6 +538,10 @@ async fn interleaved_non_audit_rows_do_not_stop_the_retention_floor() {
             }
         }
     }
+    assert!(
+        observed_unstamped,
+        "the delayed signer leaves a measurable unstamped tail"
+    );
     stamped_through(&task, count).await;
     let base = journal.base_tail().unwrap();
     assert!(base.node_seq - base.chain_seq >= 3 * RETAIN_TAIL);
