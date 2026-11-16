@@ -760,31 +760,10 @@ fn judge_with_plugins(
                 }
             }
         };
-        let default_secs = policy
-            .default_ttl
-            .as_deref()
-            .and_then(|t| parse_policy_ttl("auth.policy.default_ttl", t, &mut errors));
         let max_secs = policy
             .max_ttl
             .as_deref()
             .and_then(|t| parse_policy_ttl("auth.policy.max_ttl", t, &mut errors));
-        if let (Some(d), Some(m)) = (default_secs, max_secs) {
-            if d > m {
-                errors.push(coded::config_auth_policy_invalid(format!(
-                    "auth.policy.default_ttl ('{}', {d}s) exceeds auth.policy.max_ttl ('{}', {m}s); \
-                     the default a mint falls back to cannot be longer than the ceiling",
-                    policy.default_ttl.as_deref().unwrap_or(""),
-                    policy.max_ttl.as_deref().unwrap_or(""),
-                )).into());
-            }
-        }
-        if policy.max_outstanding_tickets_per_key == Some(0) {
-            errors.push(
-                "auth.policy.max_outstanding_tickets_per_key is 0, which refuses every ephemeral \
-                 secret; set at least 1, or omit it for the default of 256"
-                    .to_string(),
-            );
-        }
         for (role, ceiling) in &policy.mint_ceilings {
             if let (Some(block), Some(modes)) = (&policy.binding_modes, &ceiling.binding_modes) {
                 for mode in modes.iter().filter(|m| !block.contains(m)) {
@@ -1637,9 +1616,6 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
 }
 
 fn judge_cost_model(cfg: &RootCfg, errors: &mut Vec<String>, advisories: &mut Advisories) {
-    if let Err(error) = crate::config::measurement_rates::validate(&cfg.plugin_rate_cards) {
-        errors.push(coded::config_rate_card_invalid(error).into());
-    }
     if let Some(card) = &cfg.rate_card {
         for (key, r) in card {
             let (plane, lane) = split_plane_lane(key);

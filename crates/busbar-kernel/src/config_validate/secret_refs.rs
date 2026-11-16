@@ -189,7 +189,6 @@ fn walk_secret_refs_with_boot_token<'a>(
 
         groups: _,
         rate_card: _,
-        plugin_rate_cards: _,
         per_request_fee: _,
         plane_fees: _,
         limits: _,

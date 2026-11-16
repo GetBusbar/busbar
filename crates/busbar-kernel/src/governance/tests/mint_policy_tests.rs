@@ -30,7 +30,6 @@ fn role_policy(role: &str, ceiling: RoleCeiling, block_max_ttl: Option<u64>) -> 
         block_max_ttl_secs: block_max_ttl,
         block_binding_modes: None,
         ceilings,
-        max_outstanding_tickets_per_key: None,
     }
 }
 
@@ -210,7 +209,6 @@ fn mint_ceiling_no_role_ceiling_falls_back_to_block() {
         block_max_ttl_secs: Some(14 * DAY),
         block_binding_modes: None,
         ceilings: std::collections::BTreeMap::new(),
-        max_outstanding_tickets_per_key: None,
     };
     let roles = vec!["some-unrelated-role".to_string()];
 

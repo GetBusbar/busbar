@@ -86,9 +86,8 @@ pub(crate) fn compose(
 const TICKET_CUSTODY_CAP: usize = 4_096;
 /// The tickets one sweep observes.
 pub(crate) const TICKET_SWEEP_BATCH: usize = 256;
-/// The most unredeemed tickets one key holds on one node, unless
-/// `auth.policy.max_outstanding_tickets_per_key` says otherwise. At these defaults, 16 saturated
-/// keys are needed to fill a node.
+/// The most unredeemed tickets one key holds on one node. At these defaults, 16 saturated keys are
+/// needed to fill a node.
 pub(crate) const TICKET_CUSTODY_PER_KEY: usize = 256;
 /// One full sweep cycle, in seconds: the sweep visits every held ticket in this many passes.
 const TICKET_SWEEP_CYCLE_SECS: u64 = (TICKET_CUSTODY_CAP / TICKET_SWEEP_BATCH) as u64;
@@ -361,10 +360,7 @@ impl TicketCustody {
             instance_nonce: Arc::clone(&live.ticket_nonce),
             live: Arc::downgrade(&served.live),
             unit,
-            per_key: app
-                .mint_policy
-                .max_outstanding_tickets_per_key
-                .map_or(TICKET_CUSTODY_PER_KEY, |n| n as usize),
+            per_key: TICKET_CUSTODY_PER_KEY,
             actual: Mutex::new(None),
             reserved: std::sync::atomic::AtomicBool::new(false),
             active: std::sync::atomic::AtomicBool::new(true),

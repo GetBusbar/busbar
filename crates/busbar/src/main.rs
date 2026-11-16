@@ -670,8 +670,6 @@ async fn run(
         ))
     });
     let authoring_seal = busbar_kernel::seal::acquire();
-    root::measurements::configure(&base_cfg.plugin_rate_cards)
-        .unwrap_or_else(|error| die(format!("plugin measurement configuration: {error}")));
     let base_store_settings = serde_json::to_value(
         base_cfg
             .store
@@ -1044,8 +1042,6 @@ async fn run(
 
     let mut cfg =
         config::resolve(&deploy, &defs).unwrap_or_else(|errs| die_list("config errors", errs));
-    root::measurements::configure(&cfg.plugin_rate_cards)
-        .unwrap_or_else(|error| die(format!("plugin measurement configuration: {error}")));
 
     let door_kernel_sections = root::door_steps::kernel_sections(&cfg)
         .unwrap_or_else(|error| die_list("config errors", [error]));
@@ -1365,7 +1361,6 @@ async fn run(
     listener_plan
         .share_claim_doors(&mut served)
         .unwrap_or_else(|e| die(e));
-    root::measurements::validate_bindings().unwrap_or_else(|e| die(e));
     root_rules.hold_owned_anchors(&served.need_trust());
     root_rules.hold_member_tls_sections(&served.member_tls_sections());
 

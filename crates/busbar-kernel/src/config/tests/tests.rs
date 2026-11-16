@@ -104,7 +104,6 @@ pub(crate) fn base_deploy() -> DeployCfg {
         hooks: Default::default(),
         groups: Default::default(),
         rate_card: None,
-        plugin_rate_cards: Default::default(),
         per_request_fee: 0,
         plane_rate_cards: Default::default(),
         plane_fees: Default::default(),
@@ -2735,7 +2734,7 @@ fn core_sections_parse_directly_and_are_named_in_unknown_field_errors() {
          `public_url`, `tls`, \
          `admin_listen`, `config`, `providers_file`, `oauth_as`, `credentials`, `admin_tls`, \
          `admin_require_mtls`, `auth`, `identity-providers`, `providers`, `models`, `pools`, \
-         `hooks`, `groups`, `rate_card`, `plugin_rate_cards`, `per_request_fee`, `store`, \
+         `hooks`, `groups`, `rate_card`, `per_request_fee`, `store`, \
          `secrets`, `advanced`, `export`, `plugins`, `security`, `limits`, `health`, `routing`, \
          `telemetry`, `records`, `audit` at line 3 column 1"
     );

@@ -379,21 +379,13 @@ pub struct AuthPolicyCfg {
     /// narrows what a minter may request; a mint of a mode outside it IS refused at
     /// `MintPolicy::check_mint` (`admin/mod.rs`).
     pub binding_modes: Option<Vec<BindingMode>>,
-    /// The DEFAULT TTL applied to a minted token when the request names none, a duration string.
-    /// Absent ⇒ the built-in `DEFAULT_KEY_TTL_SECS` path (via `auth.key_ttl`) is unchanged.
-    pub default_ttl: Option<String>,
     /// The MAX TTL any minted token may carry, a duration string. Absent ⇒ no policy ceiling (the
-    /// admin API's own default applies). When both are set, `default_ttl` must be ≤ `max_ttl`
-    /// (enforced at validate, fail boot).
+    /// admin API's own default applies).
     pub max_ttl: Option<String>,
     /// Per-role mint ceilings (`mint_ceilings.<role>:`) — the delegated-app-admin caps (review H2/H3).
     /// Empty by default.
     #[serde(default)]
     pub mint_ceilings: std::collections::BTreeMap<String, MintCeilingCfg>,
-    /// The most unredeemed tickets (ephemeral secrets, `POST /v1/realtime/client_secrets`) one key
-    /// may hold on one node. Absent ⇒ 256. A key over it is refused 429 with `Retry-After`; other
-    /// keys are unaffected. At least 1 (enforced at validate, fail boot).
-    pub max_outstanding_tickets_per_key: Option<u32>,
     /// ADMIN-API-1.6 6.2: when `true`, a guarded config mutation without `If-Match` is refused 428
     /// (`invalid_request` / `if_match_required`). Absent or `false` ⇒ a missing `If-Match` is accepted.
     pub require_if_match: Option<bool>,
