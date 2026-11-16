@@ -133,6 +133,19 @@ pub struct Ceilings {
     pub max_steps: u32,
 }
 
+impl Ceilings {
+    /// The IF's defaults (§10.5, §10.6, §11.2): `max_out` 1 MiB (a store's 16 MiB), a sync method 50 ms, one poll
+    /// 2 s, the cold entries 5 s, 10,000 driver steps.
+    pub const DEFAULT: Ceilings = Ceilings {
+        max_out: 1 << 20,
+        max_out_store: 16 << 20,
+        sync_ceiling_us: 50_000,
+        poll_ceiling_us: 2_000_000,
+        cold_ceiling_us: 5_000_000,
+        max_steps: 10_000,
+    };
+}
+
 impl<N: Needs> Registry<N> {
     /// Round 35 (R7b): `ConfigBinder` is the loader's own trait (`crate::binder`), so `new` names it here.
     /// The first registry in the process also starts the §10.6 watch table and installs the entry fault sink and the
@@ -172,6 +185,14 @@ impl<N: Needs> Registry<N> {
     /// The registry's slot table (the watchdog thread and the adapters' leases).
     pub(crate) fn slots(&self) -> &Arc<SlotTable> {
         &self.slots
+    }
+
+    /// The scrub set of the instance that owns watchdog slot `slot` (its slot record, §10.6): what custody
+    /// registers every value it hands that instance in (§12.2 step 5). None: the slot is not live.
+    pub fn scrub_of(&self, slot: u32) -> Option<Arc<Scrub>> {
+        self.slots
+            .record(slot)
+            .map(|record| Arc::clone(&record.scrub))
     }
 
     /// `add` after its describe ran: every check that reads only the decoded describe. NameConflict first (the
@@ -871,6 +892,13 @@ impl<N: Needs> Registry<N> {
                     .iter()
                     .find(|e| e.former_names.iter().any(|w| &**w == module))
             })
+    }
+
+    /// The canonical identity of the admitted image the operator's `module` word names (identity, then a
+    /// `former_names` word), or None when no admitted image answers to it.
+    pub fn identity_of(&self, module: &str) -> Option<String> {
+        self.resolve_module(module)
+            .map(|(identity, _, _)| identity.to_owned())
     }
 
     /// The kernel's seal factory the store adapter installs from (`StoreAdapter::new`, once per store open).
