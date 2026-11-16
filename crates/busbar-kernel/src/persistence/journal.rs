@@ -48,7 +48,9 @@ pub use base::{
 };
 pub mod head_cell;
 pub mod runtime;
+pub(crate) mod tail;
 pub use runtime::{BufferBudget, CutProgress, JournalCut, RuntimeError, RuntimeJournal, StagedRun};
+pub use tail::TailView;
 
 #[derive(Debug)]
 pub(crate) enum Error {

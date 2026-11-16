@@ -2075,6 +2075,7 @@ enum BookPhase {
     BuildDurability,
     BootPrices,
     BindKeyset,
+    SealAfterRestart,
     RestoreAmendments,
     AttachRecovery,
     Hydrate,
@@ -2272,6 +2273,32 @@ impl BookPreparation {
             .map_err(|error| format!("the audit signer threads did not start: {error}"))?;
             (Arc::new(services), checkpoint)
         };
+        // SEALING-FIX §3.6.1: seal this node's own crash leftover (a same-holder re-take) from the
+        // records read at reopen, on the Bootstrap thread, before the notary or recovery runs.
+        self.phase = BookPhase::SealAfterRestart;
+        {
+            let durability = self.durability.as_mut().unwrap();
+            let records = durability.take_boot_records();
+            let key_hex = durability.record.public_key_hex();
+            let key = key_hex
+                .as_deref()
+                .and_then(|hex| busbar_kernel_audit::AuditVerifyingKey::from_hex(hex).ok());
+            if let (Some(handle), Some(key)) = (audit.take_boot_handle(), key) {
+                let sealed = super::durability::restart_seal::seal_own_node(
+                    durability, &records, &handle, &key, &host,
+                )
+                .await;
+                tracing::debug!(node, ?sealed, "own-node restart seal");
+            }
+            drop(records);
+            if let Some(key_hex) = key_hex {
+                audit.set_predecessor_inputs(super::durability::predecessor::PredecessorInputs {
+                    own: node,
+                    taken_at_ms: self.taken.as_ref().map_or(0, |taken| taken.taken_at_ms),
+                    key_hex,
+                });
+            }
+        }
         self.phase = BookPhase::RestoreAmendments;
         let durability = self.durability.as_mut().unwrap();
         durability

@@ -601,7 +601,7 @@ pub(crate) async fn unit_checkpoint_store_find_audit(
     journal: &crate::persistence::journal::runtime::RuntimeJournal,
     unit: u64,
     incarnation: u64,
-) -> RecordStoreResult<Option<busbar_kernel_audit::AuditRecord>> {
+) -> RecordStoreResult<Option<(u64, busbar_kernel_audit::AuditRecord)>> {
     use busbar_kernel_wal::{JournalRecord, RecordClass};
     let error = |e: &dyn std::fmt::Debug| RecordStoreError(format!("unit checkpoint: {e:?}"));
     journal.flush().await.map_err(|e| error(&e))?;
@@ -610,7 +610,7 @@ pub(crate) async fn unit_checkpoint_store_find_audit(
     // duplicate check; the target is above the floor by (b), so a restart still finds it. Kept
     // copies are context, never audit lines.
     use crate::persistence::journal::Error as WalkError;
-    type Found = (Option<busbar_kernel_audit::AuditRecord>, bool);
+    type Found = (Option<(u64, busbar_kernel_audit::AuditRecord)>, bool);
     let walked = history
         .walk(
             || (None, false),
@@ -631,7 +631,7 @@ pub(crate) async fn unit_checkpoint_store_find_audit(
                 if let Some(audit) = audit {
                     if audit.what.unit_key.get() == unit && audit.what.incarnation == incarnation {
                         *duplicate = found.is_some();
-                        *found = Some(audit);
+                        *found = Some((original.node_seq, audit));
                     }
                 }
                 Ok(())

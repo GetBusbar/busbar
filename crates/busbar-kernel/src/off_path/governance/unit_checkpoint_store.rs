@@ -114,7 +114,7 @@ impl UnitCheckpointEvidence {
     async fn proof(&self) -> RecordStoreResult<Arc<VerifiedHead>> {
         self.journal.live_proof().await.map_err(error)
     }
-    pub fn pending_audit(&self, unit: u64, incarnation: u64) -> Option<AuditRecord> {
+    pub fn pending_audit(&self, unit: u64, incarnation: u64) -> Option<(u64, AuditRecord)> {
         self.audit_pending
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -122,14 +122,19 @@ impl UnitCheckpointEvidence {
             .filter(|p| {
                 p.audit.what.unit_key.get() == unit && p.audit.what.incarnation == incarnation
             })
-            .map(|p| p.audit.clone())
+            .and_then(|p| {
+                p.run
+                    .records()
+                    .first()
+                    .map(|record| (record.node_seq, p.audit.clone()))
+            })
     }
     /// Complete the native chain before returning any reconstructed audit facts.
     pub async fn find_audit(
         &self,
         unit: u64,
         incarnation: u64,
-    ) -> RecordStoreResult<Option<AuditRecord>> {
+    ) -> RecordStoreResult<Option<(u64, AuditRecord)>> {
         crate::off_path::governance::runtime::unit_checkpoint_store_find_audit(
             &self.journal,
             unit,
@@ -162,8 +167,8 @@ impl UnitCheckpointEvidence {
     /// Retain the exact signed audit and original sealed frame before native IO.
     /// Callers reuse pending_audit after uncertainty rather than sealing a new line.
     /// Append a recovered running unit's audit line and confirm it. Returns the WAL `node_seq` of
-    /// the record that carries it (SEALING-FIX §3.5 r16), or 0 when the identical line was already
-    /// in the journal (found by scan, whose position this path does not keep).
+    /// the record that carries it (SEALING-FIX §3.5 r16), including when the identical line was
+    /// already confirmed in the journal by an earlier attempt.
     pub async fn append_audit(&self, audit: AuditRecord) -> RecordStoreResult<u64> {
         let _driving = self.audit_driving.lock().await;
         let existing = self
@@ -177,12 +182,12 @@ impl UnitCheckpointEvidence {
             }
             pending
         } else {
-            if let Some(selected) = self
+            if let Some((node_seq, selected)) = self
                 .find_audit(audit.what.unit_key.get(), audit.what.incarnation)
                 .await?
             {
                 return if selected == audit {
-                    Ok(0)
+                    Ok(node_seq)
                 } else {
                     Err(refusal("running audit identity already differs"))
                 };
@@ -199,7 +204,12 @@ impl UnitCheckpointEvidence {
             pending
         };
         self.journal.confirm(&pending.run).await.map_err(error)?;
-        let node_seq = pending.run.records().first().map_or(0, |r| r.node_seq);
+        let node_seq = pending
+            .run
+            .records()
+            .first()
+            .ok_or_else(|| refusal("running audit staging produced no original"))?
+            .node_seq;
         self.audit_pending
             .lock()
             .unwrap_or_else(|p| p.into_inner())

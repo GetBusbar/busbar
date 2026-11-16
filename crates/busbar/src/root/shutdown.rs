@@ -646,6 +646,9 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
                 if let Some(cut) = end.journal_cut.label() {
                     eprintln!("busbar: shutdown journal_cut={cut}");
                 }
+                if end.final_staged == Some(false) {
+                    eprintln!("busbar: shutdown audit_final=signer_failed");
+                }
             }
             // Lines are durable and linked; the next process on the host seals the tail.
             Joined::Done(Err(_)) => eprintln!("busbar: shutdown audit_notary=panicked"),

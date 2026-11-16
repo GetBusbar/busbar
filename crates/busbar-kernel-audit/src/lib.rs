@@ -107,6 +107,9 @@ pub mod stamp;
 // The audit signing capabilities (SEALING-FIX §5.3): consumed once at boot, used on the signer
 // threads only.
 pub mod grant;
+// The restart walk (SEALING-FIX §3.6.0): run at boot and by the predecessor sealer, never per
+// request.
+pub mod restart;
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -180,6 +183,7 @@ pub use record::{
     OutcomeFacts, QuantitySource, Subject, UnitFacts, UnitId, Usage, UsageLine, What,
     ATTEMPT_SLOTS, ATTRIBUTION_SEP,
 };
+pub use restart::{span_ms, walk_tail, BreakAt, TailItem, WalkContext, WalkOutcome};
 pub use sign::{
     checkpoint_preimage, AuditKeySet, AuditSigningKey, AuditVerifyingKey, KeyError,
     CHECKPOINT_SIGNATURE_DOMAIN, SIGNATURE_ALGORITHM, SIGNATURE_DOMAIN,
