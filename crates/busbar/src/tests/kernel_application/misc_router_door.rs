@@ -62,7 +62,7 @@ async fn data_router(doors: Vec<PlaneRouteSpec>) -> Router {
         "auth": { "chain": [], "admin_auth": [operator] },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": {"file": operator_token},

@@ -67,7 +67,7 @@ async fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module.clone(), "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )

@@ -966,7 +966,7 @@ async fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals
             "providers": {}, "models": {},
             "auth": {"chain": [], "admin_auth": []},
             "store": {"module": module, "settings": settings},
-            "advanced": {"allow_destinations": ["127.0.0.1"]},
+            "advanced": {},
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -1629,7 +1629,7 @@ async fn answer_over_counts(
         "rate_card": one_lane_rates(),
         "auth": {"chain": [], "admin_auth": []},
         "store": {"module": module, "settings": settings},
-        "advanced": {"allow_destinations": ["127.0.0.1"]},
+        "advanced": {},
     }), &crate::root::boot::axis_test_grammar())
     .expect("the real admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &providers)
@@ -1888,7 +1888,7 @@ async fn real_admin_dispatch() -> RouterDispatch {
             "providers": {}, "models": {},
             "auth": {"chain": [], "admin_auth": []},
             "store": {"module": module, "settings": settings},
-            "advanced": {"allow_destinations": ["127.0.0.1"]},
+            "advanced": {},
         }),
         &crate::root::boot::axis_test_grammar(),
     )

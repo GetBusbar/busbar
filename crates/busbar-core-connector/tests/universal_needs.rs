@@ -915,7 +915,6 @@ fn guarded(blocked: &[&str]) -> std::sync::Arc<dyn busbar_core_connector::DialJu
     let destinations = busbar_kernel::config::Destinations {
         block_private_addresses: true,
         blocked: blocked.iter().map(|b| (*b).to_owned()).collect(),
-        ..busbar_kernel::config::Destinations::default()
     };
     busbar_core_connector::process::judge(
         busbar_core_connector::process::dest_judge(&destinations).expect("a valid guard"),
@@ -990,7 +989,7 @@ fn a_pended_guard_refusal_names_busbars_policy_and_dials_nothing() {
     assert!(
         err.ends_with(
             ": busbar refused it before connecting: the destination guard refuses an internal or \
-             loopback address (list it in advanced.allow_destinations to allow it)"
+             loopback address (enable allow_private on its upstream registration to allow it)"
         ),
         "{err}"
     );

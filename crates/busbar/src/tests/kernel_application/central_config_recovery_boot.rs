@@ -39,7 +39,7 @@ async fn base_store_bootstrap_and_effective_build_share_the_same_opened_store() 
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -130,7 +130,7 @@ async fn a_cross_node_sibling_update_and_intervening_get_cannot_authorize_a_stal
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -266,7 +266,7 @@ async fn bootstrap_opens_the_anchor_before_requiring_modules_whose_pins_it_must_
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -353,7 +353,7 @@ async fn root_recovery_can_run_before_hydration_without_changing_standalone_buil
                 "models": {},
                 "auth": { "chain": [], "admin_auth": [] },
                 "store": { "module": module, "settings": settings },
-                "advanced": { "allow_destinations": ["127.0.0.1"] },
+                "advanced": {  },
             }),
             &crate::root::boot::axis_test_grammar(),
         )

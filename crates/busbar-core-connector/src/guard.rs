@@ -17,10 +17,6 @@ use busbar_contract::net::{
     is_link_local_v6, judged_host, IpNet, METADATA_HOSTS,
 };
 use busbar_kernel::config::Destinations;
-use foldhash::HashSet;
-
-#[cfg(test)]
-use crate::off_path::egress::guard::entry;
 
 /// THE DEFAULT POLICY, ONE TABLE: the egress classes whose dials the private address refusal holds
 pub const PRIVATE_REFUSED_IN: &[u32] = &[
@@ -67,9 +63,6 @@ pub fn judged_class(class: u32, configured: bool) -> u32 {
     }
 }
 
-/// The config key an allowlist refusal at boot names.
-pub(crate) const ALLOW_KEY: &str = "advanced.allow_destinations";
-
 /// Why the guard refused a destination: the `DEST_*` verdict, the target name, and the address
 /// when an answered (or literal) address decided it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,12 +90,11 @@ impl std::fmt::Display for Refusal {
             ),
             (DEST_INTERNAL, Some(a)) => write!(
                 f,
-                "host `{h}` resolves to the internal address {a}; list it in {ALLOW_KEY} to \
-                 allow it"
+                "host `{h}` resolves to the internal address {a}; enable allow_private on its upstream registration to allow it"
             ),
             (DEST_INTERNAL, None) => write!(
                 f,
-                "host `{h}` is a loopback name; list it in {ALLOW_KEY} to allow it"
+                "host `{h}` is a loopback name; enable allow_private on its upstream registration to allow it"
             ),
             (DEST_NO_HOST, _) => write!(
                 f,
@@ -127,13 +119,11 @@ impl std::fmt::Display for Refusal {
 
 impl std::error::Error for Refusal {}
 
-/// One allowlist (or extra-refusal) entry.
+/// One configured metadata refusal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Entry {
     /// An exact host, lowercased, no trailing dot.
     Host(String),
-    /// A `*.domain` wildcard, held as `.domain`: names under it, on a label boundary.
-    Under(String),
     /// An IP network (a bare IP is host-length): the shared [`IpNet`] reader and matcher.
     Net(IpNet),
 }
@@ -142,7 +132,6 @@ impl Entry {
     fn names(&self, host: &str) -> bool {
         match self {
             Entry::Host(h) => h == host,
-            Entry::Under(suffix) => host.ends_with(suffix.as_str()),
             Entry::Net(..) => false,
         }
     }
@@ -152,29 +141,6 @@ impl Entry {
             return false;
         };
         net.covers(addr)
-    }
-}
-
-/// THE ALLOWLIST, INDEXED once per config commit: an exact host and a `*.domain` suffix are looked
-/// up by key (one lookup per label of the judged name, never a sweep of the list); a network is
-/// held as its entry.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct Allow {
-    /// Exact hosts, lowercased, no trailing dot.
-    pub(crate) hosts: HashSet<String>,
-    /// `*.domain` wildcards, each held as `.domain`.
-    pub(crate) under: HashSet<String>,
-    /// IP networks ([`Entry::Net`]).
-    pub(crate) nets: Vec<Entry>,
-}
-
-impl Allow {
-    /// Whether an entry names `host`: an exact host, or a wildcard on one of its label boundaries.
-    fn names(&self, host: &str) -> bool {
-        self.hosts.contains(host)
-            || host
-                .match_indices('.')
-                .any(|(at, _)| self.under.contains(&host[at..]))
     }
 }
 
@@ -207,8 +173,6 @@ pub(crate) struct Metadata {
 #[derive(Debug, Clone)]
 pub struct Guard {
     block_private: bool,
-    /// `advanced.allow_destinations`.
-    allow: Allow,
     /// The 1.5.5 metadata lists in force, replaced whole at a commit.
     metadata: Arc<RwLock<Arc<Metadata>>>,
     /// The node's own listen ports and bound addresses, replaced whole when the boot metadata is
@@ -229,7 +193,6 @@ impl Default for Guard {
     fn default() -> Self {
         Guard {
             block_private: true,
-            allow: Allow::default(),
             metadata: Arc::default(),
             node: Arc::default(),
         }
@@ -241,7 +204,6 @@ impl Guard {
     pub fn from_config(d: &Destinations) -> Result<Guard, String> {
         Ok(Guard {
             block_private: d.block_private_addresses,
-            allow: crate::off_path::egress::guard::allow_list(d)?,
             metadata: Arc::new(RwLock::new(Arc::new(Metadata::from_config(d)))),
             node: Arc::default(),
         })
@@ -334,7 +296,7 @@ impl Guard {
             return refuse(DEST_NO_HOST);
         };
         let m = self.metadata();
-        let allowed = self.allow.names(&name);
+        let reach = reach && !strict && class != connector::EGRESS_OPEN_WEB;
         if METADATA_HOSTS.iter().any(|h| name == *h) || m.blocked.iter().any(|e| e.names(&name)) {
             return refuse(DEST_METADATA);
         }
@@ -350,7 +312,7 @@ impl Guard {
         }
 
         let loopback_name = name == "localhost" || name.ends_with(".localhost");
-        if loopback_name && self.refuses_private(class, strict) && !allowed && !reach {
+        if loopback_name && self.refuses_private(class, strict) && !reach {
             return refuse(DEST_INTERNAL);
         }
         Ok(None)
@@ -396,10 +358,12 @@ impl Guard {
         let link_local = matches!(canonical(addr), IpAddr::V6(v6) if is_link_local_v6(&v6));
         let listed = |l: &[Entry]| l.iter().any(|e| e.covers(addr));
 
-        let denied = metadata || listed(&m.blocked);
-        let allowlisted = !denied && !link_local && listed(&self.allow.nets);
+        let denied = metadata
+            || listed(&m.blocked)
+            || METADATA_HOSTS.contains(&name.as_str())
+            || m.blocked.iter().any(|e| e.names(&name));
         let admitted =
-            allowlisted || (!denied && !link_local && (self.allow.names(&name) || reach));
+            !denied && !link_local && reach && !strict && class != connector::EGRESS_OPEN_WEB;
         if admitted {
             return Ok(());
         }

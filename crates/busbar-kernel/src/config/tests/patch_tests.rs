@@ -65,7 +65,6 @@ fn every_patch_mirrors_every_field_of_its_section() {
         upstream_h2_prior_knowledge: _,
 
         block_private_addresses: _,
-        allow_destinations: _,
         tls: _,
         proxy_resolution: _,
         trusted_proxies: _,

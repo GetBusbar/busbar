@@ -1896,11 +1896,12 @@ restart. Full catalogue, rationale for defaulting off, and exactly when each hea
 
 **The destination guard.** One check applies to every outbound connection busbar makes (provider
 upstreams, token endpoints, health probes, export sinks, plugin fetches, plane and plugin dials). It
-is always on and has no switch. A destination that comes from request data or the network (a
+applies the default private-address refusal to a destination that comes from request data or the network (a
 target a caller or a plane names) is refused when it is, or resolves to, a private (RFC 1918),
 loopback, link-local, CGNAT, IPv6 unique-local (`fc00::/7`) or IPv6 site-local (`fec0::/10`)
-address. Operator infrastructure that configuration names (a provider upstream such as a local
-vLLM host, a database, a secret service, a directory) may be private or loopback without an entry.
+address. A core-selected provider route may reach its own configured base/token origins.
+Declared operator-infrastructure Needs, such as a database, secret service or directory, retain
+their declared-target policy. Neither grants arbitrary requests permission to the same hostname.
 A cloud-metadata address is refused for every destination, configured ones included (a configured
 name that later resolves to one is refused). The check runs after name resolution, and the
 connection is made to the address that was checked; an IP address written in a URL is checked as
@@ -1914,15 +1915,18 @@ every egress class and nothing admits it. Of the 1.5.5 keys, `security.blocked_m
 still loads and extends the same check; `security.allow_metadata_hosts`,
 `security.allow_all_metadata` and `providers.<p>.allow_metadata_hosts` are retired and refused
 (BUSBAR-3136).
-<!-- docs-truth: depends on !2676 (unmerged; deletes `advanced.block_private_addresses`, fixed true) and on !2665 (unmerged; deletes `advanced.proxy_resolution`, fixed `local`). Owner ruling 23:15Z deletes `advanced.allow_destinations` and returns per-registration `allow_private`; !2676 left `allow_destinations` in place and no MR yet reinstates `allow_private` or exempts configured provider hosts in guard.rs. Re-check at the release-candidate pass. -->
 
-**One setting governs every outbound connection, plugins included.** No plugin and no transport
+**One guard governs every outbound connection, plugins included.** No plugin and no transport
 dials on its own: a plugin declares what it needs (a transport and an egress class), and busbar's
 connector resolves the name, applies this check to every answered address, and lets the transport
 open only the address it checked. So the guard governs an export sink, a hook's outbound call, an
 identity provider fetch, a plane's upstream (an MCP server, an A2A agent) and every other plugin
-dial alike. There is no global private-address switch: a plane registration that must reach a
-private target carries its own `allow_private` (see the plane's own documentation). The scheme a
+dial alike. There is no global hostname allowlist: a plane registration that must reach a
+private target carries its own core-owned `allow_private` on its declared registration. The
+connector restricts this grant to that selected route's origin. Configured providers retain
+private reach only on their own base/token origins; other requests, strict JUDGE/OPEN_WEB checks,
+redirects to other origins and callbacks cannot borrow it. `advanced.allow_destinations` is
+removed and refused as an unknown field. The scheme a
 destination may use is part of the same check: an export sink or hook on the `loopback-allowed`
 class takes `https://`, or plaintext `http://` only to loopback; an `open-web` destination (a
 webhook sink, an identity provider's documents) takes `https://` only.
