@@ -63,6 +63,10 @@ pub(super) struct FlushBackend {
     pub(super) budget: Mutex<Option<Arc<FlushGate>>>,
     pub(super) metering: Mutex<Option<Arc<FlushGate>>>,
     pub(super) journal: Mutex<Option<Arc<FlushGate>>>,
+    /// A unit checkpoint selection or delete (`busbar.unitcp.v1` rows).
+    pub(super) unitcp: Mutex<Option<Arc<FlushGate>>>,
+    /// A usage recovery selection (`busbar.recover1` rows).
+    pub(super) recovery: Mutex<Option<Arc<FlushGate>>>,
     /// Every other commit (the lease release, retirement, identity rows).
     pub(super) other: Mutex<Option<Arc<FlushGate>>>,
     pub(super) fail_accounting: AtomicBool,
@@ -95,10 +99,19 @@ impl PersistenceBackend for FlushBackend {
             let budget = is(b"U");
             let metering = is(b"M");
             let journal = is(b"busbar.journal4\0");
+            let unitcp = candidate.candidate().mutations.iter().any(|mutation| {
+                matches!(mutation, Mutation::Put { address, .. } | Mutation::Delete(address)
+                    if address.key.starts_with(b"busbar.unitcp.v1"))
+            });
+            let recovery = is(b"busbar.recover1\0");
             let gate = if budget {
                 self.budget.lock().unwrap().take()
             } else if metering {
                 self.metering.lock().unwrap().take()
+            } else if unitcp {
+                self.unitcp.lock().unwrap().take()
+            } else if recovery {
+                self.recovery.lock().unwrap().take()
             } else if journal {
                 self.journal.lock().unwrap().take()
             } else {
@@ -169,6 +182,8 @@ impl Fixture {
             budget: Mutex::new(None),
             metering: Mutex::new(None),
             journal: Mutex::new(None),
+            unitcp: Mutex::new(None),
+            recovery: Mutex::new(None),
             other: Mutex::new(None),
             fail_accounting: AtomicBool::new(false),
             panic_budget: AtomicBool::new(false),
@@ -252,6 +267,82 @@ impl Fixture {
             &units,
             now,
         );
+    }
+    /// Attaches the store-backed usage recovery and unit checkpoint sinks over this fixture's own
+    /// node journal, as boot does, with a deployment signing key for `unit.accrued`.
+    pub(super) async fn attach_sinks(&self) {
+        {
+            let mut durability = self
+                .book
+                .durability
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            durability.record = std::mem::take(&mut durability.record)
+                .signing_with(busbar_kernel_audit::AuditSigningKey::from_seed(&[0x53; 32]));
+        }
+        let journal = self.book.runtime_journal.clone();
+        self.seen
+            .gov
+            .attach_recovery_sink(
+                crate::root::durability::usage_recovery_sink(journal.clone()).unwrap(),
+            )
+            .await
+            .unwrap();
+        self.seen
+            .gov
+            .attach_unit_checkpoint_sink(
+                crate::root::durability::unit_checkpoint_sink(&self.book.durability, journal)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(self.seen.gov.unit_checkpoints_enabled());
+    }
+    /// One governed unit's checkpoint with its captured admission audit facts.
+    pub(super) fn unit(&self) -> busbar_kernel::governance::unit_checkpoint::UnitCheckpoint {
+        busbar_kernel::Registration::new()
+            .key("work")
+            .expect("test meter class registered");
+        let audit = crate::root::durability::RunningAudit {
+            incarnation: 7,
+            principal: self.seen.key.id.clone(),
+            op_class: "shutdown.drain".into(),
+            origin: "client".into(),
+            parent: None,
+            wall: 1_700_000_000,
+            mono: 91,
+            destination: Some("verified-destination".into()),
+            rate_card: None,
+            policy_epoch: 3,
+            hooks: Vec::new(),
+        };
+        busbar_kernel::governance::unit_checkpoint::UnitCheckpoint {
+            id: busbar_kernel::door::op_id().0,
+            revision: 0,
+            unit: 17,
+            principal: self.seen.key.id.clone(),
+            group: String::new(),
+            arrived: 1_700_000_000,
+            lane: format!("shutdown{}lane", busbar_kernel::governance::PLANE_LANE_SEP),
+            provider: Some("shutdown".into()),
+            era_at: 42,
+            era_entry: None,
+            units: std::collections::BTreeMap::from([(
+                "work".into(),
+                busbar_contract::Count::parse("0.125").unwrap(),
+            )]),
+            targets: vec![busbar_kernel::governance::unit_checkpoint::UnitTarget {
+                bucket: self.seen.key.id.clone(),
+                window: 0,
+                group: None,
+            }],
+            metered: true,
+            ended: false,
+            terminal: None,
+            audit: Some(serde_json::to_vec(&audit).unwrap()),
+            measurement: None,
+            unread: None,
+        }
     }
     pub(super) fn stage(&self, count: usize) {
         let entries: Vec<_> = (0..count)

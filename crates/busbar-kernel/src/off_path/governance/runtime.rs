@@ -596,8 +596,6 @@ pub(crate) fn unit_checkpoint_counts_bucket(bucket: &str) -> String {
 /// `unit_checkpoint_store`: a recovered unit's original audit line, found by one historical
 /// journal replay once per terminal unit (A27c §8b bounds it), confirmed against the live head.
 pub(crate) async fn unit_checkpoint_store_find_audit(
-    store: &crate::persistence::facade::CoreStore,
-    node: u64,
     journal: &crate::persistence::journal::runtime::RuntimeJournal,
     unit: u64,
     incarnation: u64,
@@ -605,9 +603,8 @@ pub(crate) async fn unit_checkpoint_store_find_audit(
     use busbar_kernel_wal::{JournalRecord, RecordClass};
     let error = |e: &dyn std::fmt::Debug| RecordStoreError(format!("unit checkpoint: {e:?}"));
     journal.flush().await.map_err(|e| error(&e))?;
-    let history =
-        crate::persistence::journal::StoreJournal::new(store, node).map_err(|e| error(&e))?;
-    let mut replay = history.historical_replay().await.map_err(|e| error(&e))?;
+    let history = journal.history().map_err(|e| error(&e))?;
+    let mut replay = history.replay().await.map_err(|e| error(&e))?;
     let mut found = None;
     while let Some(original) = replay.next().await.map_err(|e| error(&e))? {
         let record = JournalRecord::decode(&original.body).map_err(|e| error(&e))?;
