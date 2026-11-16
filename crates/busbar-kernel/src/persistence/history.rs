@@ -501,6 +501,60 @@ impl<'a> History<'a> {
         }
         Ok(Observed { rows, life })
     }
+    /// The one row an append at `seq` could replay, read without the rest of the partition. The
+    /// partition's namespace generation is still guarded by the scan, so a concurrent writer
+    /// conflicts exactly as it did when the whole partition was observed.
+    async fn observe_append(
+        &self,
+        plan: &mut Plan<'_>,
+        kind: &str,
+        identity: &str,
+        seq: u64,
+    ) -> Result<Option<Row>> {
+        let declaration = self.declaration(kind)?;
+        let meta_at = self.address(kind, identity, b'M', seq)?;
+        let body_at = self.address(kind, identity, b'B', seq)?;
+        let life_at = self.address(kind, identity, b'L', 0)?;
+        let found = plan
+            .scan(self.namespace(kind, identity), meta_at.key.clone())
+            .await?;
+        let body = plan.one(body_at.clone()).await?;
+        // An append partition never carries a life row.
+        let life = plan.one(life_at).await?;
+        if life.is_some()
+            || (plan.initialization.is_some() && (!found.is_empty() || body.is_some()))
+        {
+            return Err(Error::Corrupt);
+        }
+        let mut found = found.into_iter();
+        let Some((at, bytes)) = found.next() else {
+            return if body.is_some() {
+                Err(Error::Corrupt)
+            } else {
+                Ok(None)
+            };
+        };
+        let meta: Metadata = decode(&bytes)?;
+        let record_identity = meta.parent.as_deref().unwrap_or(&meta.id);
+        if found.next().is_some()
+            || at != meta_at
+            || meta.seq != seq
+            || meta.kind != kind
+            || record_identity != identity
+            || declaration.parent.is_some() != meta.parent_life.is_some()
+            || meta.parent_life == Some(0)
+            || declaration.parent.is_some() && meta.parent.is_none()
+        {
+            return Err(Error::Corrupt);
+        }
+        let body = body.ok_or(Error::Corrupt)?;
+        Ok(Some(Row {
+            meta,
+            body,
+            meta_at,
+            body_at,
+        }))
+    }
     async fn identities(&self, plan: &mut Plan<'_>, kind: &str) -> Result<Vec<String>> {
         self.declaration(kind)?;
         let rows = plan
@@ -637,10 +691,15 @@ impl<'a> History<'a> {
         } else {
             None
         };
-        let observed = self.observe(&mut plan, record.kind, identity).await?;
         let meta = Metadata::new(record, parent_life);
         if mode == Mode::Append {
-            if let Some(existing) = observed.rows.iter().find(|r| r.meta.seq == record.seq) {
+            // An append reads only its own sequence, never the whole partition: the audit chain
+            // grows without bound, and a full scan per append made a long chain quadratic. The
+            // namespace-generation guard still orders it against every concurrent writer.
+            let existing = self
+                .observe_append(&mut plan, record.kind, identity, record.seq)
+                .await?;
+            if let Some(existing) = existing {
                 if existing.meta != meta
                     || existing.body.expose(&crate::seal::lend()) != record.body
                 {
@@ -650,6 +709,7 @@ impl<'a> History<'a> {
                 return plan.submit().await;
             }
         } else {
+            let observed = self.observe(&mut plan, record.kind, identity).await?;
             let serial = match observed.life {
                 Some(life) if life.alive => life.serial,
                 Some(life) => life.serial.checked_add(1).ok_or(Error::Overflow)?,
