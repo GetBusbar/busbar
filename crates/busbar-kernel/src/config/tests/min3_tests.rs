@@ -406,3 +406,72 @@ export:
     let min3 = parse_min3(&deploy).expect("nothing to refuse");
     assert!(min3 == Min3Config::default(), "no MIN-3 key was written");
 }
+
+/// `<kind>.<name>.limits` is not a config key: an instance block of every kind that carries it is refused as an
+/// unknown field naming `limits` (an instance runs at its kind's defaults; `insecure_transport` stays).
+#[test]
+fn a_limits_key_on_any_instance_is_refused_as_unknown() {
+    for (kind, block) in [
+        (
+            "store",
+            "store:\n  module: sqlite\n  limits: { timeout_ms: 5000 }\n",
+        ),
+        (
+            "secrets",
+            "secrets:\n  vault:\n    limits: { connect_timeout_ms: 2000 }\n",
+        ),
+        (
+            "identity-providers",
+            "identity-providers:\n  corp-ldap:\n    module: ldap\n    limits: { max_inflight: 4 }\n",
+        ),
+        (
+            "hooks",
+            "hooks:\n  pii:\n    module: pii-scan\n    limits: { stream_stall_ms: 5000 }\n",
+        ),
+        (
+            "export",
+            "export:\n  traces:\n    module: otlp\n    limits: { timeout_ms: 3000 }\n",
+        ),
+    ] {
+        let yaml = format!("providers: {{}}\nmodels: {{}}\n{block}");
+        let refused = crate::config::deploy_from_yaml_str(&yaml, &crate::config::Grammar::empty())
+            .err()
+            .unwrap_or_else(|| panic!("{kind}: `limits` is accepted"));
+        let text = refused.to_string();
+        assert!(
+            text.contains("limits") && text.contains("unknown field"),
+            "{kind}: {text}"
+        );
+    }
+}
+
+/// A 1.5.5-shaped config still parses with the key gone: the hook keeps its 1.5.5 `timeout_ms`, and
+/// `insecure_transport` (kept) lands in the instance's `accept` while every number stays the kind's default.
+#[test]
+fn a_1_5_5_shaped_config_with_hook_timeout_ms_parses_and_instances_run_at_kind_defaults() {
+    let deploy = deploy(
+        r#"
+providers: {}
+models: {}
+store:
+  module: sqlite
+  settings: { db_path: /var/lib/busbar/busbar.db }
+hooks:
+  pii:
+    module: pii-scan
+    timeout_ms: 20
+"#,
+    );
+    assert_eq!(deploy.hooks["pii"].timeout_ms, Some(20));
+    let cfg = crate::config::resolve(&deploy, &std::collections::HashMap::new()).expect("resolves");
+    let store = crate::appbuild::instance_limits(&cfg, "store", "store");
+    assert_eq!(
+        (
+            store.timeout_ms,
+            store.connect_timeout_ms,
+            store.max_inflight
+        ),
+        (0, 0, 0),
+        "0 is the kind's default in every number"
+    );
+}

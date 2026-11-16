@@ -341,3 +341,25 @@ fn a_converted_store_bag_is_written_as_answered() {
     assert!(!applied.text().contains("junk"));
     assert!(applied.text().ends_with("listen: y\n"));
 }
+
+/// The settled LIMITS, TRUST_APPROVAL and ROUTE_MEDIA answers are never filed into config.yaml: the grammar has no
+/// `limits`, `trust` or `routes` key, so writing one would break the next boot. The document comes out as it went in.
+#[test]
+fn settled_limits_trust_and_route_media_are_not_written_to_the_config() {
+    let text = "config_version: 1\nstore: {module: m, settings: {url: old}}\n";
+    let frags = vec![
+        cfg(
+            section::LIMITS,
+            "",
+            r#"{"timeout_ms": 3000, "max_inflight": 8}"#,
+        ),
+        cfg(section::TRUST_APPROVAL, "up1", r#"{"root": "r"}"#),
+        cfg(section::ROUTE_MEDIA, "12", r#"{"inline": true}"#),
+    ];
+    let applied = apply(text, &[store(0, None, frags)], false).unwrap();
+    let written = applied.text();
+    for key in ["limits", "trust", "routes", "timeout_ms", "inline"] {
+        assert!(!written.contains(key), "`{key}` was filed:\n{written}");
+    }
+    assert_eq!(written, text, "nothing else moved");
+}
