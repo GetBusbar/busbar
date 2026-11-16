@@ -311,7 +311,6 @@ impl<'h> Resolver<'h> {
                     }
                 }
                 Intent::Lookup { .. } | Intent::Work { .. } => {}
-                Intent::Work { .. } => {}
             }
         }
         let mut pieces = Vec::new();
