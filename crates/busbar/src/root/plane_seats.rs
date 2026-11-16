@@ -275,7 +275,7 @@ impl Events for SeatEvents {
 
 /// Child `env` references resolved through the process's custody at every spawn (§12.2: by reference, an empty
 /// call stack, no source named in an error).
-pub(crate) struct SpawnCustody(pub(crate) &'static BootSecrets);
+pub(crate) struct SpawnCustody(pub(crate) Arc<BootSecrets>);
 
 impl SpawnSecrets for SpawnCustody {
     fn resolve<'a>(&'a self, secret: &'a SecretRef) -> BoxFut<'a, Option<String>> {

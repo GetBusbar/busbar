@@ -58,7 +58,7 @@ use busbar_kernel::teller::Kernel;
 
 use super::plane_seats::{compose as compose_seat, ConnTable, SeatShared, SpawnCustody};
 use super::port_mount::Ingress;
-use super::secret_custody::{self, BootCustody, BootRefs, BootSecrets};
+use super::secret_custody::{BootCustody, BootRefs, BootSecrets};
 
 /// The records every Need handler, the replay guard and the plane driver share: filled once the store is open.
 pub(crate) type Records = LateRecords<Arc<StoreRecords>>;
@@ -237,7 +237,7 @@ pub(crate) struct Booted {
     pub(crate) seats: Vec<PortSeat>,
     pub(crate) core: CoreSecrets,
     /// The secret kind the boot opened its secret instances into (webhook secrets resolve through it).
-    pub(crate) secrets: &'static BootSecrets,
+    pub(crate) secrets: Arc<BootSecrets>,
     pub(crate) resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     pub(crate) deployment: [u8; 16],
     /// The format admission the walk attached the store through.
@@ -373,7 +373,7 @@ pub(crate) async fn recover_ports(app: Arc<busbar_kernel::state::App>) -> usize 
 
 /// Webhook secrets by reference, through custody (a route's secret resolves like any other reference: by reference,
 /// an empty call stack, no source named in an error). A reference that does not resolve verifies nothing.
-struct CustodySecrets(&'static BootSecrets);
+struct CustodySecrets(Arc<BootSecrets>);
 
 impl RouteSecrets for CustodySecrets {
     fn resolve<'a>(&'a self, reference: &'a SecretRef) -> BoxFut<'a, Option<SecureVec>> {
@@ -393,7 +393,9 @@ impl RouteSecrets for CustodySecrets {
 pub(crate) fn signed_ingress() -> Option<Arc<Ingress>> {
     let booted = booted()?;
     Some(Arc::new(Ingress {
-        verifier: Arc::new(StandardWebhooks::new(CustodySecrets(booted.secrets))),
+        verifier: Arc::new(StandardWebhooks::new(CustodySecrets(Arc::clone(
+            &booted.secrets,
+        )))),
         replay: Arc::new(StoreReplay::new(booted.records.clone())),
         secrets: Arc::new(|_: &str, _: u32| None),
     }))
@@ -618,12 +620,26 @@ fn ref_schemas(cfg: &RootCfg) -> Result<Vec<(Arc<str>, Box<str>)>, String> {
 /// schemas, custody attached to the binder and the registry's scrub sets, and the kernel's sides installed.
 /// `store` carries what the deployment step fills.
 struct Built {
-    needs: Arc<Needs>,
     registry: Arc<MinRegistry>,
     sugars: Sugars,
-    secrets: &'static BootSecrets,
+    secrets: Arc<BootSecrets>,
     records: Records,
     directory: Directory,
+    binder: Arc<dyn ConfigBinder>,
+    guard: Guard,
+}
+
+impl Built {
+    fn needs_for(&self, prefix: Arc<BootSecrets>) -> Arc<Needs> {
+        Arc::new(HostNeeds::production(
+            self.guard.clone(),
+            BootCustody(prefix),
+            self.records.clone(),
+            self.directory.clone(),
+            Arc::clone(&self.binder),
+            NeedLimits::default(),
+        ))
+    }
 }
 
 fn build(
@@ -634,21 +650,9 @@ fn build(
 ) -> Result<Built, String> {
     let binder: Arc<dyn ConfigBinder> = Arc::new(Binder::new(Arc::new(BootRefs)));
     // The process's one secret kind, built over the binder and kept for the life of the process.
-    let secrets: &'static BootSecrets = Box::leak(Box::new(BootSecrets::new(
-        Arc::clone(&binder),
-        Arc::clone(process.slots()),
-    )));
+    let secrets = BootSecrets::empty(Arc::clone(&binder), Arc::clone(process.slots()));
     let records = Records::default();
     let directory = Directory::default();
-    let needs = HostNeeds::production(
-        guard,
-        BootCustody(secrets),
-        records.clone(),
-        directory.clone(),
-        Arc::clone(&binder),
-        NeedLimits::default(),
-    );
-    let needs = Arc::new(needs);
     let registry = Registry::new(images, Arc::clone(&binder), Arc::clone(process.ids()));
 
     let sugars = cfg.grammar().map_err(|error| error.0)?.sugars.clone();
@@ -656,27 +660,32 @@ fn build(
     binder.set_ref_schemas(ref_schemas(cfg)?);
     let registry = Arc::new(registry);
     Ok(Built {
-        needs,
         registry,
         sugars,
         secrets,
         records,
         directory,
+        binder,
+        guard,
     })
 }
 
-/// The walk's steps: the registry's own, except that a secret instance opens through `open_secret_steps` (its
-/// port enters the table the store's SECRET Needs read, at once) and a plane through `PortDriver` (which opens
-/// the instance and keeps its seat).
+/// Root's sequential opening plan. Every open captures the completed secret prefix;
+/// a successful secret open extends only the prefix used for subsequent instances.
 struct Steps<'r> {
-    inner: RegistryBoot<'r, Needs>,
+    registry: &'r MinRegistry,
+    instances: &'r [(KindCode, InstanceSpec<'r>)],
+    deployment: &'r DeploymentRead,
+    store_seal: busbar_plugin_loader::instance::StoreSeal,
     services: Option<Arc<KernelServices>>,
     seats: Mutex<Vec<PortSeat>>,
     shared: Arc<Shared>,
     /// `auth.signing_key`: the reference the ticket host key is derived from (IF §12.11).
     signing_key: Option<SecretRef>,
     /// The process's secret kind: the open secret instances and the custody that resolves through them.
-    secrets: &'static BootSecrets,
+    // Orchestration state only: every opened instance receives an immutable prefix.
+    secrets: Mutex<Arc<BootSecrets>>,
+    built: &'r Built,
     /// `credentials.at_rest`: what the recoverable gate seals with, resolved before the store opens (2b).
     at_rest: Option<AtRestCfg>,
     /// K9: what every seat's egress walk and carrier are composed over (the boot's one upstream table).
@@ -686,6 +695,23 @@ struct Steps<'r> {
 }
 
 impl Steps<'_> {
+    fn prefix(&self) -> Arc<BootSecrets> {
+        Arc::clone(&self.secrets.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    async fn open_port(&self, index: u32) -> Result<OpenedPort, OpenError> {
+        let needs = self.built.needs_for(self.prefix());
+        RegistryBoot {
+            registry: self.registry,
+            needs: &needs,
+            store_seal: Arc::clone(&self.store_seal),
+            instances: self.instances,
+            deployment: self.deployment,
+        }
+        .open(index)
+        .await
+    }
+
     async fn open_plane(&self, spec: &InstanceSpec<'_>) -> Result<(), OpenError> {
         let services = self.services.clone().ok_or_else(|| {
             OpenError::Unknown("the kernel services are not installed: a plane cannot open".into())
@@ -696,18 +722,16 @@ impl Steps<'_> {
             Arc::from(spec.name),
             busbar_contract::abi::mechanism::KindCode::Plane,
         );
-        let prepared = self.inner.registry.reserve(spec)?;
+        let prepared = self.registry.reserve(spec)?;
         let who = Namespace {
             plugin: Arc::from(prepared.identity()),
             name: Arc::from(prepared.name()),
             instance: prepared.id(),
             slot: prepared.slot(),
         };
-        let port = self
-            .inner
-            .registry
-            .open_plane_reserved(prepared, self.inner.needs)
-            .await?;
+        let prefix = self.prefix();
+        let needs = self.built.needs_for(Arc::clone(&prefix));
+        let port = self.registry.open_plane_reserved(prepared, &needs).await?;
         let driver = PortDriver::new(
             port,
             services,
@@ -721,7 +745,7 @@ impl Steps<'_> {
         // MINT store are built whole, with the key, before the seat exists.
         let signing = match &self.signing_key {
             Some(reference) => Some(
-                self.secrets
+                prefix
                     .resolve_ref(Instant::now() + CORE_SECRET_DEADLINE, reference)
                     .await
                     .map_err(|denied| {
@@ -738,8 +762,15 @@ impl Steps<'_> {
         let rt = tokio::runtime::Handle::current();
         // K9: the seat's egress walk and carrier over the boot's upstream table, under the instance's core-held
         // `insecure_transport.accept`.
+        let seat = SeatShared {
+            upstreams: self.seat.upstreams.clone(),
+            signals: Arc::clone(&self.seat.signals),
+            secrets: Arc::new(SpawnCustody(prefix)),
+            kernel: Arc::clone(&self.seat.kernel),
+            table: self.seat.table.clone(),
+        };
         let wiring = compose_seat(
-            &self.seat,
+            &seat,
             spec.name,
             spec.limits.accept,
             &who,
@@ -808,7 +839,7 @@ impl BootSteps for Steps<'_> {
     fn open(&self, index: u32) -> BoxFut<'_, Result<Option<OpenedPort>, OpenError>> {
         let found = usize::try_from(index)
             .ok()
-            .and_then(|at| self.inner.instances.get(at));
+            .and_then(|at| self.instances.get(at));
         let Some((kind, spec)) = found else {
             return Box::pin(core::future::ready(Err(OpenError::Unknown(format!(
                 "the boot plan names instance {index}, which is not configured"
@@ -816,51 +847,61 @@ impl BootSteps for Steps<'_> {
         };
         match kind {
             KindCode::Secret => Box::pin(async move {
-                secret_custody::open_secret_steps(
-                    self.secrets,
-                    self.inner.registry,
-                    self.inner.needs,
-                    &[index],
-                    self.inner.instances,
-                )
-                .await?;
-                self.secrets
-                    .port(spec.name)
-                    .map(|port| Some(OpenedPort::Secret(port)))
-                    .ok_or_else(|| {
-                        OpenError::Unknown(format!(
-                            "secret instance {index} opened but is not in the process table"
-                        ))
-                    })
+                let prefix = self.prefix();
+                let needs = self.built.needs_for(Arc::clone(&prefix));
+                let prepared = self.registry.reserve(spec)?;
+                let id = prepared.id();
+                let port = self.registry.open_secret_reserved(prepared, &needs).await?;
+                let next = prefix
+                    .with_opened(
+                        spec.name,
+                        busbar_kernel::custody::SecretSource {
+                            instance: id,
+                            port: Arc::clone(&port),
+                        },
+                    )
+                    .map_err(|_| OpenError::Unknown("secret prefix extension refused".into()))?;
+                *self.secrets.lock().unwrap_or_else(PoisonError::into_inner) = next;
+                Ok(Some(OpenedPort::Secret(port)))
             }),
             KindCode::Plane
                 if spec.purpose
                     == busbar_plugin_loader::instance::OpenPurpose::ConvertUnstamped =>
             {
-                Box::pin(async move { self.inner.open(index).await.map(Some) })
+                Box::pin(async move { self.open_port(index).await.map(Some) })
             }
             KindCode::Plane => Box::pin(async move { self.open_plane(spec).await.map(|()| None) }),
             KindCode::Store => Box::pin(async move {
                 // The secret instances are open (2a): the gate's key is published before the store's open asks.
-                let secrets = self.secrets;
-                publish_at_rest(self.at_rest.as_ref(), |what, reference| async move {
-                    secrets
-                        .resolve_ref(Instant::now() + CORE_SECRET_DEADLINE, &reference)
-                        .await
-                        .map_err(|denied| format!("{what} could not be resolved ({denied:?})"))
+                let secrets = self.prefix();
+                publish_at_rest(self.at_rest.as_ref(), |what, reference| {
+                    let secrets = Arc::clone(&secrets);
+                    async move {
+                        secrets
+                            .resolve_ref(Instant::now() + CORE_SECRET_DEADLINE, &reference)
+                            .await
+                            .map_err(|denied| format!("{what} could not be resolved ({denied:?})"))
+                    }
                 })
                 .await;
-                self.inner.open(index).await.map(Some)
+                self.open_port(index).await.map(Some)
             }),
             _ => {
-                let opened = self.inner.open(index);
+                let opened = self.open_port(index);
                 Box::pin(async move { opened.await.map(Some) })
             }
         }
     }
 
     fn check(&self, index: u32) -> BoxFut<'_, Result<(), OpenError>> {
-        self.inner.check(index)
+        match self.instances.get(index as usize) {
+            Some((_, spec)) => self.registry.check(spec),
+            None => Box::pin(async move {
+                Err(OpenError::Unknown(format!(
+                    "unconfigured boot step {index}"
+                )))
+            }),
+        }
     }
 
     fn deployment<'a>(
@@ -868,7 +909,8 @@ impl BootSteps for Steps<'_> {
         store: &'a Option<OpenedPort>,
     ) -> BoxFut<'a, Result<[u8; 16], String>> {
         match store {
-            Some(port) => self.inner.deployment(port),
+            Some(OpenedPort::Store(port)) => (self.deployment)(port),
+            Some(_) => Box::pin(async { Err("the step-2b instance is not a store".to_owned()) }),
             None => Box::pin(core::future::ready(Err(
                 "the step-2b instance did not open as a store".to_owned(),
             ))),
@@ -1072,23 +1114,21 @@ pub(crate) async fn run(
             .map(|(name, split)| (name.clone(), Arc::new(split.definitions.clone())))
             .collect(),
         signals: Arc::clone(&shared.signals),
-        secrets: Arc::new(SpawnCustody(built.secrets)),
+        secrets: Arc::new(SpawnCustody(Arc::clone(&built.secrets))),
         kernel: Arc::new(Kernel::new()),
         table: ConnTable::installed(),
     };
     let steps = Steps {
-        inner: RegistryBoot {
-            registry: &*built.registry,
-            needs: &built.needs,
-            store_seal: Arc::new(|| Box::new(busbar_kernel::seal::lend())),
-            instances: &specs,
-            deployment: &*reader,
-        },
+        registry: &built.registry,
+        instances: &specs,
+        deployment: &*reader,
+        store_seal: Arc::new(|| Box::new(busbar_kernel::seal::lend())),
         services,
         seats: Mutex::default(),
         shared: Arc::clone(&shared),
         signing_key: cfg.auth.as_ref().and_then(|auth| auth.signing_key.clone()),
-        secrets: built.secrets,
+        secrets: Mutex::new(Arc::clone(&built.secrets)),
+        built: &built,
         at_rest: cfg.credentials.at_rest.clone(),
         seat,
         probes: Mutex::default(),
@@ -1149,23 +1189,13 @@ pub(crate) async fn run(
         )
         .await?
         .ok_or("CONFIG: conversion lost its pending source plan")?;
-        let secret_names: Vec<_> = instances
-            .iter()
-            .filter(|one| one.kind == KindCode::Secret)
-            .map(|one| one.name.clone())
-            .collect();
         drop(steps);
         drop(specs);
         drop(reader);
         return Err(super::migrate::restart(
             written,
             (opened, admission, core, built, shared),
-            move |owners| {
-                for name in secret_names {
-                    owners.3.secrets.closed(&name);
-                }
-                drop(owners);
-            },
+            drop,
             super::migrate::reexec,
         ));
     }
@@ -1227,7 +1257,8 @@ pub(crate) async fn run(
     )
     .await?;
     transports::publish(transports::opened(&walked.opened, &specs))?;
-    let core = core_secrets_of(cfg, built.secrets).await?;
+    let secrets = steps.prefix();
+    let core = core_secrets_of(cfg, &secrets).await?;
     let seats = steps
         .seats
         .into_inner()
@@ -1240,11 +1271,11 @@ pub(crate) async fn run(
     // The admin listener serves the planes' ROUTE_ADMIN routes from here on.
     busbar_kernel::plane_driver::port_admin::install(seats.clone());
     let installed = BOOTED.set(Booted {
-        resolver: built.secrets.resolver(reactor, built.sugars.clone()),
+        resolver: secrets.resolver(reactor, built.sugars.clone()),
         registry: built.registry,
         seats,
         core,
-        secrets: built.secrets,
+        secrets,
         deployment: walked.deployment,
         work_binder: shared.work_binder.clone(),
         work: Arc::clone(&shared.work),
