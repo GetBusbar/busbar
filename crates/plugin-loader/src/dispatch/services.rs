@@ -11,12 +11,12 @@ use std::sync::{Arc, Mutex, Weak};
 use busbar_contract::abi::host::service::{
     self as svc, check_bufs, check_disk_append_in, check_head, check_hook_call_in,
     check_random_fill_in, check_records_claim_in, check_work_record, may_pend, op, ClockNowIn,
-    ClockReading, ContentScanIn, DestJudgeIn, DiskAppendIn, DiskWritten, EntitlementCheckIn,
-    HookCallIn, HostSlots, OutboundAuthorizeIn, RandomFillIn, RecordsClaimIn, RecordsGetIn,
-    RecordsListIn, RecordsSecretIn, ServiceBufs, ServiceHead, ServiceOut, SessionEmitIn, SignIn,
-    SnapshotReadIn, TicketMintIn, TicketTakeIn, TrustDecideIn, TrustDueIn, TrustServesIn,
-    TrustSightIn, TrustSightItemIn, TrustStateIn, TrustVerifyIn, UnitNestIn, VerifyLookupIn,
-    VerifyStoreIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, WorkStatusIn, SERVICES,
+    ClockReading, ContentScanIn, DestJudgeIn, DiskAppendIn, DiskWritten, HookCallIn, HostSlots,
+    OutboundAuthorizeIn, RandomFillIn, RecordsClaimIn, RecordsGetIn, RecordsListIn,
+    RecordsSecretIn, ServiceBufs, ServiceHead, ServiceOut, SessionEmitIn, SignIn, SnapshotReadIn,
+    TicketMintIn, TicketTakeIn, TrustDecideIn, TrustDueIn, TrustServesIn, TrustSightIn,
+    TrustSightItemIn, TrustStateIn, TrustVerifyIn, UnitNestIn, VerifyLookupIn, VerifyStoreIn,
+    WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, WorkStatusIn, SERVICES,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::check;
@@ -824,9 +824,6 @@ pub(crate) fn host_slots(kind: busbar_contract::abi::mechanism::KindCode) -> &'s
             verify_store: busbar_contract::abi::host::access::service(op::VERIFY_STORE)
                 .filter(|p| p.admits(kind))
                 .map(|_| verify_store as svc::ServiceFn),
-            entitlement_check: busbar_contract::abi::host::access::service(op::ENTITLEMENT_CHECK)
-                .filter(|p| p.admits(kind))
-                .map(|_| entitlement_check as svc::ServiceFn),
             content_scan: busbar_contract::abi::host::access::service(op::CONTENT_SCAN)
                 .filter(|p| p.admits(kind))
                 .map(|_| content_scan as svc::ServiceFn),
@@ -938,7 +935,6 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
     trust_due: Some(trust_due),
     verify_lookup: Some(verify_lookup),
     verify_store: Some(verify_store),
-    entitlement_check: Some(entitlement_check),
     content_scan: Some(content_scan),
     hook_call: Some(hook_call),
     random_fill: Some(random_fill),
@@ -1687,23 +1683,6 @@ fn op_remaining() -> Option<std::time::Duration> {
     OP_DEADLINE
         .with(std::cell::Cell::get)
         .map(|d| std::time::Duration::from_nanos(d.saturating_sub(super::now_ns())))
-}
-
-service! {
-    entitlement_check, scoped, op::ENTITLEMENT_CHECK, EntitlementCheckIn, |served, route, head, caller, i| {
-        let Some(target) = text_of(i.target, "entitlement_check.target") else {
-            return Answered::fault();
-        };
-        let unit = serving_unit();
-        let provider = served.provider;
-        // SAFETY: no buffer is named.
-        unsafe {
-            let req = Fp::of(&[target.as_bytes()]);
-            serve(served.store, &route, &head, req, None, |_| {
-                Ran::Now(provider.entitlement_check(caller, unit, &target))
-            })
-        }
-    }
 }
 
 service! {

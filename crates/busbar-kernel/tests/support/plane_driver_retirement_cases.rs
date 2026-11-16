@@ -87,8 +87,6 @@ async fn the_first_checkpoint_prices_its_answer_lane_on_the_admitted_card() {
                     scope: None,
                     on_exhaust: None,
                     downgrade_to: None,
-                    admission: None,
-                    on_exhaustion: None,
                 }],
                 ..Default::default()
             },

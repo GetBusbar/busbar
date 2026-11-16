@@ -3,6 +3,7 @@
 
 use crate::v1::service::project_hook_view;
 use crate::v1::service::tests::hook;
+use busbar_contract::json::{self, JsonValueTrait as _};
 use busbar_kernel::config::{HookCfg, HookKind, HookStage, ALL_HOOK_STAGES, CORE_HOOK_PHASES};
 
 #[test]
@@ -14,7 +15,7 @@ fn a_phase_scoped_hook_reads_back_its_stages() {
     let view = project_hook_view("audit", &cfg, &[]);
 
     assert_eq!(view.phase, vec!["response"], "the `phase:` list, echoed");
-    assert!(serde_json::to_value(&view).unwrap().get("at").is_none());
+    assert!(json::to_value(&view).unwrap().get("at").is_none());
     assert_eq!(
         view.fires_at,
         vec!["response"],
@@ -104,9 +105,8 @@ fn hook_replacement_fields_read_back_authored_values() {
                 default,
                 ..hook(HookKind::Gate, false)
             };
-            let authored =
-                serde_json::to_value(cfg.authoring(&busbar_kernel::seal::acquire())).unwrap();
-            let read = serde_json::to_value(project_hook_view("ranking", &cfg, &[])).unwrap();
+            let authored = json::to_value(&cfg.authoring(&busbar_kernel::seal::acquire())).unwrap();
+            let read = json::to_value(&project_hook_view("ranking", &cfg, &[])).unwrap();
             for field in ["on_empty", "signals", "default"] {
                 assert_eq!(read[field], authored[field], "replacement loses {field}");
             }
@@ -115,14 +115,14 @@ fn hook_replacement_fields_read_back_authored_values() {
         }
     }
 
-    let read = serde_json::to_value(project_hook_view(
+    let read = json::to_value(&project_hook_view(
         "default-values",
         &hook(HookKind::Gate, false),
         &[],
     ))
     .unwrap();
     assert!(read["on_empty"].is_null());
-    assert_eq!(read["signals"], serde_json::json!([]));
+    assert_eq!(read["signals"], json::json!([]));
     assert_eq!(read["default"], false);
 }
 

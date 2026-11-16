@@ -24,15 +24,15 @@ use busbar_plugin_abi::host_side::answer::Answer;
 use busbar_plugin_abi::host_side::caller::{CallStack, Caller};
 use busbar_plugin_abi::host_side::driver::{Driver, Instance};
 use busbar_plugin_abi::host_side::needs::Needs;
-use busbar_plugin_abi::host_side::pool::{sync_bufs, PooledOut};
+use busbar_plugin_abi::host_side::pool::{sync_bufs, Pool, PooledOut};
 use busbar_plugin_abi::host_side::scrub::fail_text;
 use busbar_plugin_abi::kinds::store::store::{self as wire, Proxy};
 use busbar_plugin_abi::records::Full;
 use busbar_plugin_abi::types::Status;
 
-use crate::encode::store::{self as codec, ScanOutcome};
 use crate::instance::OpenError;
-use crate::ports::PortError;
+use busbar_ports::codec::store::{self as codec, ScanOutcome};
+use busbar_ports::PortError;
 
 /// A store call's chain deadline when the operator set no `limits.timeout_ms` (today's store deadline).
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -92,6 +92,7 @@ struct State<N: Needs> {
     needs: Arc<N>,
     info: BackendInfo,
     lane: Option<StoreLane>,
+    seal: Box<dyn KernelSeal + Send + Sync>,
 }
 
 /// One store request, owning what the kernel handed over, so a lane job can carry it.
@@ -104,8 +105,8 @@ enum Op {
 
 impl<N: Needs> StoreAdapter<N> {
     /// Called by the registry right after INSTANCE and before `open_store` returns (inside the lane job for a lane
-    /// store). Installs the kernel seal the candidate encoder reads values with (W1-A5 Q1; the first install
-    /// wins), makes the one sync `info` call, refuses a refused, failed or malformed answer and a durability that
+    /// store). Retains the store's kernel seal for candidate encoding, makes the one sync `info` call,
+    /// refuses a refused, failed or malformed answer and a durability that
     /// disagrees with the describe facts, and picks the lane by `F_BLOCKING_FILE`.
     pub fn new(
         proxy: Proxy,
@@ -113,7 +114,6 @@ impl<N: Needs> StoreAdapter<N> {
         rt: &tokio::runtime::Handle,
         seal: Box<dyn KernelSeal + Send + Sync>,
     ) -> Result<Self, OpenError> {
-        codec::install_seal(seal);
         let inst: &Instance = proxy.instance();
         let facts = inst.facts;
         let info = sync_bufs(inst.max_out, |_, out| {
@@ -126,6 +126,7 @@ impl<N: Needs> StoreAdapter<N> {
             needs,
             info,
             lane: lane_for(facts, rt),
+            seal,
         };
         Ok(Self {
             state: Arc::new(state),
@@ -209,7 +210,7 @@ impl<N: Needs> State<N> {
             return Err(Failure::Overloaded);
         };
         let inst: &Instance = proxy.instance();
-        let req = request(inst.max_out, op).map_err(|_| Failure::Overloaded)?;
+        let req = request(inst.max_out, op, &*self.seal).map_err(|_| Failure::Overloaded)?;
         let mut drv = Driver::new(&*self.needs, caller(inst));
         let answer = match op {
             Op::Read(_) => proxy.read(&mut drv, req).await,
@@ -239,12 +240,19 @@ impl<N: Needs> Drop for State<N> {
 }
 
 /// The request records of `op` in a pooled buffer of the instance's `max_out` class (§8.8 encoders).
-fn request(max_out: usize, op: &Op) -> Result<PooledOut, Full> {
-    // W1-H1 gap: `impl Writer for PooledOut` (IF §10.1) is not on dev, so no encoder can write a pooled buffer.
-    // With it this body is `let mut req = Pool::global().acquire(max_out);` then `encode_read` / `encode_scan` /
-    // `encode_candidate(&mut req, c, k)` / `encode_dataset` by `op`, then `Ok(req)`.
-    let _ = (max_out, op);
-    todo!("W1-H1: impl Writer for PooledOut")
+fn request(
+    max_out: usize,
+    op: &Op,
+    seal: &(dyn KernelSeal + Send + Sync),
+) -> Result<PooledOut, Full> {
+    let mut req = Pool::global().acquire(max_out);
+    match op {
+        Op::Read(r) => codec::encode_read(&mut req, r)?,
+        Op::Scan(s) => codec::encode_scan(&mut req, s)?,
+        Op::Commit(c, k) => codec::encode_candidate(&mut req, c, k, seal)?,
+        Op::Clock(d) => codec::encode_dataset(&mut req, d)?,
+    }
+    Ok(req)
 }
 
 /// The chain's caller, borrowed from the instance (round 14: no refcount RMW); `Driver::new` mints `chain`.

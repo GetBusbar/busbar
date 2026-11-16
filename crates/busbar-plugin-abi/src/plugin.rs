@@ -218,7 +218,12 @@ impl Describe<'_> {
         let rec = crate::records::CeilingRec { method, micros };
         self.write(|w| w.put_pod(tag::D_CEILING, &rec))
     }
-    /// A config position that holds a secret reference (D_SECRET_PATH, JSON Pointer, `*` = any array index).
+    /// Plane registration map (D_UPSTREAM_PATH): RFC 6901 pointer ending in an object-member `*`.
+    /// Core strips its upstream fields from each registration before schema/check/open.
+    pub fn upstream_path(&mut self, pointer: &'static str) -> &mut Self {
+        self.write(|w| w.put_text(tag::D_UPSTREAM_PATH, pointer))
+    }
+    /// A config position that holds a secret reference.
     pub fn secret_path(&mut self, pointer: &'static str) -> &mut Self {
         self.write(|w| w.put_text(tag::D_SECRET_PATH, pointer))
     }

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait as _};
+
 #[tokio::test]
 async fn test_create_list_usage_roundtrip_through_spawn_blocking() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_4BB2BCB58411";
@@ -38,12 +40,12 @@ async fn test_create_list_usage_roundtrip_through_spawn_blocking() {
     let created = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "k1"}))
+        .json(&json::json!({"name": "k1"}))
         .send()
         .await
         .unwrap();
     assert_eq!(created.status().as_u16(), 201);
-    let body: serde_json::Value = created.json().await.unwrap();
+    let body = json::parse_value(&created.bytes().await.unwrap()).unwrap();
     let id = body["id"].as_str().unwrap().to_string();
     assert!(
         body["token"]
@@ -63,7 +65,7 @@ async fn test_create_list_usage_roundtrip_through_spawn_blocking() {
         .await
         .unwrap();
     assert_eq!(listed.status().as_u16(), 200);
-    let lb: serde_json::Value = listed.json().await.unwrap();
+    let lb = json::parse_value(&listed.bytes().await.unwrap()).unwrap();
     assert_eq!(lb["items"].as_array().unwrap().len(), 1);
     assert!(
         lb["items"][0]["secret"].is_null(),
@@ -77,7 +79,7 @@ async fn test_create_list_usage_roundtrip_through_spawn_blocking() {
         .await
         .unwrap();
     assert_eq!(usage.status().as_u16(), 200);
-    let ub: serde_json::Value = usage.json().await.unwrap();
+    let ub = json::parse_value(&usage.bytes().await.unwrap()).unwrap();
     assert_eq!(ub["id"], id);
     assert!(
         ub["rate_headroom"].is_null(),
@@ -126,7 +128,7 @@ async fn test_create_key_rejects_removed_budget_period_field() {
         let resp = client
             .post(&url)
             .header("x-admin-token", "admintok")
-            .json(&serde_json::json!({"name": "k", "budget_period": removed}))
+            .json(&json::json!({"name": "k", "budget_period": removed}))
             .send()
             .await
             .unwrap();
@@ -135,7 +137,7 @@ async fn test_create_key_rejects_removed_budget_period_field() {
             400,
             "the removed budget_period field must 400 via deny_unknown_fields (value '{removed}')"
         );
-        let body: serde_json::Value = resp.json().await.unwrap();
+        let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
         assert_eq!(
             body["error"]["code"],
             "invalid_request", // frozen v1 envelope: keys speak the SAME code enum
@@ -146,12 +148,12 @@ async fn test_create_key_rejects_removed_budget_period_field() {
     let resp = client
         .post(&url)
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "k"}))
+        .json(&json::json!({"name": "k"}))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 201, "a pure-auth body still mints");
-    let body: serde_json::Value = resp.json().await.unwrap();
+    let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
     assert!(
         body.get("budget_period").is_none() || body["budget_period"].is_null(),
         "the key surface no longer carries budget_period: {body}"
@@ -195,27 +197,27 @@ async fn test_create_key_rejects_unsafe_labels() {
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/api/v1/admin/keys");
 
-    let post = |labels: serde_json::Value| {
+    let post = |labels: json::Value| {
         let client = client.clone();
         let url = url.clone();
         async move {
             client
                 .post(&url)
                 .header("x-admin-token", "admintok")
-                .json(&serde_json::json!({"name": "k", "labels": labels}))
+                .json(&json::json!({"name": "k", "labels": labels}))
                 .send()
                 .await
                 .unwrap()
         }
     };
 
-    let resp = post(serde_json::json!({"key": "oops"})).await;
+    let resp = post(json::json!({"key": "oops"})).await;
     assert_eq!(
         resp.status().as_u16(),
         400,
         "a reserved 'key' label must be rejected"
     );
-    let body: serde_json::Value = resp.json().await.unwrap();
+    let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["code"], "invalid_request");
     assert!(
         body["error"]["message"]
@@ -226,7 +228,7 @@ async fn test_create_key_rejects_unsafe_labels() {
     );
 
     for reserved in ["bucket", "model", "tier"] {
-        let resp = post(serde_json::json!({ reserved: "x" })).await;
+        let resp = post(json::json!({ reserved: "x" })).await;
         assert_eq!(
             resp.status().as_u16(),
             400,
@@ -234,43 +236,43 @@ async fn test_create_key_rejects_unsafe_labels() {
         );
     }
 
-    let mut many = serde_json::Map::new();
+    let mut many = json::Map::new();
     for i in 0..100 {
-        many.insert(format!("l{i}"), serde_json::json!("v"));
+        many.insert(&format!("l{i}"), json::json!("v"));
     }
-    let resp = post(serde_json::Value::Object(many)).await;
+    let resp = post(json::Value::from(many)).await;
     assert_eq!(resp.status().as_u16(), 400, "100 labels must be rejected");
     assert!(
-        resp.json::<serde_json::Value>().await.unwrap()["error"]["message"]
+        json::parse_value(&resp.bytes().await.unwrap()).unwrap()["error"]["message"]
             .as_str()
             .unwrap_or("")
             .contains("too many labels"),
     );
 
-    let resp = post(serde_json::json!({"team-name": "growth"})).await;
+    let resp = post(json::json!({"team-name": "growth"})).await;
     assert_eq!(
         resp.status().as_u16(),
         400,
         "an invalid label name (hyphen) must be rejected"
     );
 
-    let resp = post(serde_json::json!({"1team": "growth"})).await;
+    let resp = post(json::json!({"1team": "growth"})).await;
     assert_eq!(resp.status().as_u16(), 400, "leading-digit name rejected");
 
-    let resp = post(serde_json::json!({"team": "x".repeat(257)})).await;
+    let resp = post(json::json!({"team": "x".repeat(257)})).await;
     assert_eq!(
         resp.status().as_u16(),
         400,
         "an over-long label value must be rejected"
     );
 
-    let resp = post(serde_json::json!({"team": "growth", "env": "prod"})).await;
+    let resp = post(json::json!({"team": "growth", "env": "prod"})).await;
     assert_eq!(
         resp.status().as_u16(),
         201,
         "a valid label set must still mint"
     );
-    let body: serde_json::Value = resp.json().await.unwrap();
+    let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
     assert_eq!(body["labels"]["team"], "growth");
     assert_eq!(body["labels"]["env"], "prod");
 
@@ -320,7 +322,7 @@ async fn test_create_key_name_length_boundary_is_exact() {
             client
                 .post(&url)
                 .header("x-admin-token", "admintok")
-                .json(&serde_json::json!({"name": name}))
+                .json(&json::json!({"name": name}))
                 .send()
                 .await
                 .unwrap()
@@ -342,7 +344,7 @@ async fn test_create_key_name_length_boundary_is_exact() {
         400,
         "a name of 257 chars must be rejected"
     );
-    let body: serde_json::Value = resp.json().await.unwrap();
+    let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["code"], "invalid_request");
     assert!(
         body["error"]["message"]
@@ -395,7 +397,7 @@ async fn test_create_key_rejects_removed_max_budget_cents_field() {
         let resp = client
             .post(&url)
             .header("x-admin-token", "admintok")
-            .json(&serde_json::json!({"name": "k", "max_budget_cents": value}))
+            .json(&json::json!({"name": "k", "max_budget_cents": value}))
             .send()
             .await
             .unwrap();
@@ -404,7 +406,7 @@ async fn test_create_key_rejects_removed_max_budget_cents_field() {
             400,
             "the removed max_budget_cents field must 400 via deny_unknown_fields (value {value})"
         );
-        let body: serde_json::Value = resp.json().await.unwrap();
+        let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
         assert_eq!(
             body["error"]["code"], "invalid_request",
             "400 error code must be invalid_request: {body}"
@@ -414,12 +416,12 @@ async fn test_create_key_rejects_removed_max_budget_cents_field() {
     let resp = client
         .post(&url)
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "k"}))
+        .json(&json::json!({"name": "k"}))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 201, "a pure-auth body still mints");
-    let body: serde_json::Value = resp.json().await.unwrap();
+    let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
     assert!(
         body.get("max_budget_cents").is_none() || body["max_budget_cents"].is_null(),
         "the key surface no longer carries max_budget_cents: {body}"
@@ -464,22 +466,25 @@ async fn test_patch_key_enables_disables_and_validates_at_create_parity() {
     let client = reqwest::Client::new();
     let base = format!("http://{addr}/api/v1/admin/keys");
 
-    let created: serde_json::Value = client
-        .post(&base)
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "k"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let created = json::parse_value(
+        &client
+            .post(&base)
+            .header("x-admin-token", "admintok")
+            .json(&json::json!({"name": "k"}))
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     let id = created["id"].as_str().unwrap().to_string();
     let key_url = format!("{base}/{id}");
 
     let no_tok = client
         .patch(&key_url)
-        .json(&serde_json::json!({"enabled": false}))
+        .json(&json::json!({"enabled": false}))
         .send()
         .await
         .unwrap();
@@ -488,18 +493,18 @@ async fn test_patch_key_enables_disables_and_validates_at_create_parity() {
     let disabled = client
         .patch(&key_url)
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"enabled": false}))
+        .json(&json::json!({"enabled": false}))
         .send()
         .await
         .unwrap();
     assert_eq!(disabled.status().as_u16(), 200);
-    let body: serde_json::Value = disabled.json().await.unwrap();
+    let body = json::parse_value(&disabled.bytes().await.unwrap()).unwrap();
     assert_eq!(body["enabled"], false, "key is disabled: {body}");
 
     for bad in [
-        serde_json::json!({"max_budget_cents": -1}),
-        serde_json::json!({"rpm_limit": 0}),
-        serde_json::json!({"tpm_limit": 0}),
+        json::json!({"max_budget_cents": -1}),
+        json::json!({"rpm_limit": 0}),
+        json::json!({"tpm_limit": 0}),
     ] {
         let r = client
             .patch(&key_url)
@@ -514,7 +519,7 @@ async fn test_patch_key_enables_disables_and_validates_at_create_parity() {
     let missing = client
         .patch(format!("{base}/vk_nope"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"enabled": true}))
+        .json(&json::json!({"enabled": true}))
         .send()
         .await
         .unwrap();
@@ -532,7 +537,7 @@ async fn test_patch_key_enables_disables_and_validates_at_create_parity() {
     let reenable = client
         .patch(&key_url)
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"enabled": true}))
+        .json(&json::json!({"enabled": true}))
         .send()
         .await
         .unwrap();
@@ -541,24 +546,27 @@ async fn test_patch_key_enables_disables_and_validates_at_create_parity() {
         409,
         "a revoked key is never re-enabled"
     );
-    let body: serde_json::Value = reenable.json().await.unwrap();
+    let body = json::parse_value(&reenable.bytes().await.unwrap()).unwrap();
     assert_eq!(
         body,
-        serde_json::json!({"error": {"code": "conflict", "message": format!(
+        json::json!({"error": {"code": "conflict", "message": format!(
             "BUSBAR-4044: key '{id}' is revoked, and a revoked key is never re-enabled; delete it \
              instead, and a self-serve subject's next sign-in issues a new key. See \
              https://getbusbar.com/docs/1.6/errors/BUSBAR-4044"
         )}}),
     );
-    let after: serde_json::Value = client
-        .get(&key_url)
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let after = json::parse_value(
+        &client
+            .get(&key_url)
+            .header("x-admin-token", "admintok")
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(after["enabled"], false, "the key stays revoked: {after}");
     assert_eq!(after["state"], "revoked", "the key stays revoked: {after}");
 
@@ -606,7 +614,7 @@ async fn test_create_key_rejects_removed_rate_limit_fields() {
             let resp = client
                 .post(&url)
                 .header("x-admin-token", "admintok")
-                .json(&serde_json::json!({"name": "k", field: value}))
+                .json(&json::json!({"name": "k", field: value}))
                 .send()
                 .await
                 .unwrap();
@@ -615,7 +623,7 @@ async fn test_create_key_rejects_removed_rate_limit_fields() {
                 400,
                 "the removed {field} field must 400 via deny_unknown_fields (value {value})"
             );
-            let body: serde_json::Value = resp.json().await.unwrap();
+            let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
             assert_eq!(
                 body["error"]["code"], "invalid_request",
                 "400 error code must be invalid_request: {body}"
@@ -626,12 +634,12 @@ async fn test_create_key_rejects_removed_rate_limit_fields() {
     let resp = client
         .post(&url)
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "k"}))
+        .json(&json::json!({"name": "k"}))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 201, "a pure-auth body still mints");
-    let body: serde_json::Value = resp.json().await.unwrap();
+    let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
     assert!(
         body.get("rpm_limit").is_none() || body["rpm_limit"].is_null(),
         "the key surface no longer carries rpm_limit: {body}"

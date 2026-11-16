@@ -29,11 +29,14 @@ fn a_wire_rewrite_reply_is_moved_out_of_its_parsed_value() {
     );
 }
 
+/// Aikido 1074606968 (#103): a reply that asks for a rewrite but carries a malformed one is a
+/// failed hook call, so the hook's `on_error` decides (docs/hooks.md: "A malformed/oversized
+/// rewrite follows `on_error`"). It is not an abstention, which would skip `on_error: reject`
+/// and forward the original body.
 #[test]
-fn a_malformed_wire_rewrite_reply_still_abstains() {
+fn a_malformed_wire_rewrite_reply_fails_the_call() {
     for reply in [
         br#"{}"#.as_slice(),
-        br#"{"messages":[]}"#,
         br#"{"messages":"hi"}"#,
         br#"{"messages":[{}],"tools":"x"}"#,
         br#""hi""#,
@@ -42,10 +45,20 @@ fn a_malformed_wire_rewrite_reply_still_abstains() {
         assert!(
             matches!(
                 super::policy::transformed(VERB_REWRITE, 0, String::new, || reply.to_vec()),
-                TransformOutcome::Abstain
+                TransformOutcome::Failed { .. }
             ),
             "{}",
             String::from_utf8_lossy(reply)
         );
     }
+}
+
+/// An empty rewrite keeps the original body, as the SDK's `lower_transform_reply` reads it.
+#[test]
+fn an_empty_wire_rewrite_reply_abstains() {
+    assert!(matches!(
+        super::policy::transformed(VERB_REWRITE, 0, String::new, || br#"{"messages":[]}"#
+            .to_vec()),
+        TransformOutcome::Abstain
+    ));
 }

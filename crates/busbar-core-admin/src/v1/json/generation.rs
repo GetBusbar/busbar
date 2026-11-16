@@ -510,7 +510,7 @@ pub(crate) async fn get_operation(
         Looked::InFlight {
             request_sha256,
             received_at,
-        } => serde_json::json!({
+        } => busbar_contract::json::json!({
             "idempotency_key": key, "principal": actor, "operation_id": operation_id,
             "state": "in_flight", "status": null,
             "request_sha256": hex::encode(request_sha256), "received_at": received_at,
@@ -528,15 +528,15 @@ pub(crate) async fn get_operation(
                     "the stored answer is unreadable",
                 );
             };
-            serde_json::json!({
+            busbar_contract::json::json!({
                 "idempotency_key": key, "principal": actor, "operation_id": operation_id,
                 "state": if done.status >= 400 { "rejected" } else { "applied" },
                 "status": done.status,
                 "request_sha256": hex::encode(done.fingerprint),
                 "received_at": done.received_at, "completed_at": completed_at,
                 "config_generation": done.generation, "audit_seq": null,
-                "response": serde_json::from_slice::<serde_json::Value>(done.body)
-                    .unwrap_or(serde_json::Value::Null),
+                "response": busbar_contract::json::parse_value(done.body)
+                    .unwrap_or_default(),
             })
         }
     };

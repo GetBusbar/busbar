@@ -25,6 +25,35 @@ pub use fixture::{data_framer, DATA_SCHEME};
 
 const READ_CHUNK: usize = 16 * 1024;
 
+/// Process-wide payload admission across every framed listener; no configuration override.
+const INBOUND_BODY_BUDGET_BYTES: usize = 256 * 1024 * 1024;
+const BODY_BUDGET_REFUSAL: u32 = 503;
+static INBOUND_BODY_BUDGET: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(INBOUND_BODY_BUDGET_BYTES)));
+
+#[derive(Default)]
+struct BodyCharge(std::sync::Mutex<Option<tokio::sync::OwnedSemaphorePermit>>);
+
+impl BodyCharge {
+    fn take(&self, budget: &Arc<tokio::sync::Semaphore>, bytes: usize) -> bool {
+        let Ok(bytes) = u32::try_from(bytes) else {
+            return false;
+        };
+        let Ok(permit) = Arc::clone(budget).try_acquire_many_owned(bytes) else {
+            return false;
+        };
+        let mut held = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match held.as_mut() {
+            Some(held) => held.merge(permit),
+            None => *held = Some(permit),
+        }
+        true
+    }
+}
+
 const WRITE_ROOM: usize = 256 * 1024;
 
 /// The capacity a drained reply buffer keeps; above it, a drained buffer gives its memory back.
@@ -242,6 +271,7 @@ impl Emitter {
 struct StreamEnd(
     Emitter,
     Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+    Option<Arc<BodyCharge>>,
 );
 
 impl Drop for StreamEnd {
@@ -249,12 +279,14 @@ impl Drop for StreamEnd {
         self.0.send(Op::Ended {
             scope: self.1.take(),
         });
+        self.2.take();
     }
 }
 
 type BodyError = Box<dyn std::error::Error + Send + Sync>;
 
 struct Inflow {
+    body_charge: Arc<BodyCharge>,
     admission: Option<busbar_kernel::inbound::RequestAdmission>,
     body: Option<mpsc::UnboundedSender<Result<Bytes, BodyError>>>,
     task: tokio::task::AbortHandle,
@@ -268,6 +300,40 @@ struct Inflow {
 struct InboundBody {
     pieces: mpsc::UnboundedReceiver<Result<Bytes, BodyError>>,
     ended: bool,
+}
+
+async fn gather_body(
+    mut body: InboundBody,
+    body_limit: u64,
+    timeout: std::time::Duration,
+) -> Result<Bytes, busbar_contract::caps::ReasonCode> {
+    use busbar_contract::caps::ReasonCode;
+    let mut whole = Gathered::default();
+    let started = tokio::time::Instant::now();
+    let deadline = started + super::total_body_deadline();
+    while !body.ended {
+        let piece_deadline = (tokio::time::Instant::now() + timeout).min(deadline);
+        match tokio::time::timeout_at(piece_deadline, body.pieces.recv()).await {
+            Ok(Some(Ok(bytes))) => {
+                let oversized = whole
+                    .len()
+                    .checked_add(bytes.len())
+                    .is_none_or(|size| body_limit != 0 && size as u64 > body_limit);
+                if oversized {
+                    return Err(ReasonCode::BodyTooLarge);
+                }
+                whole.push(bytes);
+            }
+            Ok(None) => body.ended = true,
+            Ok(Some(Err(_))) => return Err(ReasonCode::DecodeFailed),
+            Err(_) => return Err(ReasonCode::DeadlineExceeded),
+        }
+        let elapsed = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        if super::check_body_bounds(0, elapsed, whole.len() as u64).is_some() {
+            return Err(ReasonCode::DeadlineExceeded);
+        }
+    }
+    Ok(whole.into_bytes())
 }
 
 /// A request body gathered from its pieces: a body that arrives in one piece is kept as received
@@ -977,6 +1043,28 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                         return;
                     }
                     inflow.received = received.expect("checked above");
+                    if !inflow
+                        .body_charge
+                        .take(&INBOUND_BODY_BUDGET, piece.bytes.len())
+                    {
+                        inflow.refused = true;
+                        inflow.body = None;
+                        inflow.task.abort();
+                        if let Some(admission) = &inflow.admission {
+                            admission.refuse(
+                                busbar_contract::caps::StepName::Arrival,
+                                busbar_contract::caps::ReasonCode::InFlightCap,
+                            );
+                        }
+                        self.pending.push_back((
+                            piece.stream,
+                            Op::Refuse {
+                                status: BODY_BUDGET_REFUSAL,
+                                head_sent: inflow.head_sent,
+                            },
+                        ));
+                        return;
+                    }
                     if let Some(body) = &inflow.body {
                         let _ = body.send(Ok(Bytes::from(piece.bytes)));
                     }
@@ -1025,7 +1113,8 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             scope.admit_stream(stream);
             admission = Some(request);
         }
-        let ended = StreamEnd(out.clone(), scope);
+        let body_charge = Arc::new(BodyCharge::default());
+        let ended = StreamEnd(out.clone(), scope, Some(Arc::clone(&body_charge)));
         let permit = self
             .framer
             .inbound_limit
@@ -1121,6 +1210,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         self.inflows.insert(
             stream,
             Inflow {
+                body_charge,
                 admission,
                 body: (!piece.end).then_some(body_tx),
                 task,
@@ -1281,7 +1371,9 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             }
             Op::Refuse { status, head_sent } => {
                 if let Some(inflow) = self.inflows.get_mut(&stream).filter(|i| i.refused) {
-                    if status != BODY_LIMIT_REFUSAL || inflow.refusal_sent {
+                    if !matches!(status, BODY_LIMIT_REFUSAL | BODY_BUDGET_REFUSAL)
+                        || inflow.refusal_sent
+                    {
                         return Step::Done;
                     }
                     inflow.refusal_sent = true;
@@ -1858,7 +1950,7 @@ pub(in crate::root) async fn serve_admitted_wire_test(
             },
             SessionSlot::default(),
             emitter.clone(),
-            StreamEnd(emitter, None),
+            StreamEnd(emitter, None, None),
             busbar_contract::abi::host::service::SCHEME_SECURE,
             std::time::Duration::from_secs(1),
             None,
@@ -1876,7 +1968,7 @@ pub(in crate::root) async fn serve_admitted_wire_test(
 async fn serve_data(
     routes: Arc<crate::root::serve::DataRoutes>,
     admission: busbar_kernel::inbound::RequestAdmission,
-    mut body: InboundBody,
+    body: InboundBody,
     slot: SessionSlot,
     out: Emitter,
     _end: StreamEnd,
@@ -1909,31 +2001,13 @@ async fn serve_data(
                 return None;
             }
         };
-        let mut whole = Gathered::default();
-        while !body.ended {
-            match tokio::time::timeout(timeout, body.pieces.recv()).await {
-                Ok(Some(Ok(bytes))) => {
-                    let oversized = whole.len().checked_add(bytes.len()).is_none_or(|size| {
-                        admission.body_limit() != 0 && size as u64 > admission.body_limit()
-                    });
-                    if oversized {
-                        refuse_data(&routes, &admission, &caller, ReasonCode::BodyTooLarge).await;
-                        return None;
-                    }
-                    whole.push(bytes);
-                }
-                Ok(None) => body.ended = true,
-                Ok(Some(Err(_))) => {
-                    refuse_data(&routes, &admission, &caller, ReasonCode::DecodeFailed).await;
-                    return None;
-                }
-                Err(_) => {
-                    refuse_data(&routes, &admission, &caller, ReasonCode::DeadlineExceeded).await;
-                    return None;
-                }
+        let body = match gather_body(body, admission.body_limit(), timeout).await {
+            Ok(body) => body,
+            Err(reason) => {
+                refuse_data(&routes, &admission, &caller, reason).await;
+                return None;
             }
-        }
-        let body = whole.into_bytes();
+        };
         *caller
             .body
             .lock()

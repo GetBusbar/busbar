@@ -5,6 +5,7 @@
 //! clock, and the windows it is admitted and billed in are the ones that reading names, never the
 //! clock as it stands when the money lands.
 
+use busbar_contract::json;
 use std::sync::Arc;
 
 use axum::http::StatusCode;
@@ -16,8 +17,8 @@ use crate::root::plane_node::Arrived;
 const FEE_CENTS: i64 = 1;
 const EPOCH: u64 = 1_700_000_000;
 
-fn chat() -> serde_json::Value {
-    serde_json::json!({
+fn chat() -> json::Value {
+    json::json!({
         "model": POOL,
         "messages": [{"role": "user", "content": "hi"}],
     })
@@ -26,7 +27,7 @@ fn chat() -> serde_json::Value {
 fn answer() -> String {
     reply(
         "application/json",
-        &serde_json::json!({
+        &json::json!({
             "id": "chatcmpl-root", "object": "chat.completion", "created": 0,
             "model": LANE,
             "choices": [{"index": 0, "finish_reason": "stop",
@@ -51,8 +52,6 @@ fn budget_per_day(amount: u64) -> busbar_kernel::config::groups::LimitCfg {
         scope: None,
         on_exhaust: None,
         downgrade_to: None,
-        admission: None,
-        on_exhaustion: None,
     }
 }
 

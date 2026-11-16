@@ -25,3 +25,10 @@ pub(crate) fn scheme_of(url: &str) -> String {
         _ => String::new(),
     }
 }
+
+/// A URL as a refusal repeats it, owned, through core's one redactor (`abi::host::scrub::mask_url`,
+/// IF §12.16): spelled only when a URL is refused, or once when configuration is checked.
+#[cold]
+pub(crate) fn redact_userinfo(url: &str) -> String {
+    busbar_plugin_abi::host_side::scrub::mask_url(url).into_owned()
+}

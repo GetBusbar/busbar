@@ -54,8 +54,8 @@ async fn an_unverified_load_seals_one_degraded_plugin_trust_record() {
         version: "1.0.0".into(),
         abi_version: 3,
         trust: Trust::Allowed {
-            reason: "plugin manifest is unsigned|x; loaded because allow_unsigned is set".into(),
-            setting: "allow_unsigned",
+            reason: "plugin manifest is unsigned|x; loaded because allow_untrusted is set".into(),
+            setting: "allow_untrusted",
         },
         ephemeral: false,
         in_process: false,
@@ -67,7 +67,8 @@ async fn an_unverified_load_seals_one_degraded_plugin_trust_record() {
 
     log_scanned_rows(&[row], &[], &[], "/plugins");
 
-    let resource = plugin_refusal_resource("file", "item1-unsigned-probe.tar.gz", "allow_unsigned");
+    let resource =
+        plugin_refusal_resource("file", "item1-unsigned-probe.tar.gz", "allow_untrusted");
     crate::audit::auditlog::flush_pending()
         .await
         .expect("native refusal audit confirmed");
@@ -109,13 +110,13 @@ fn allowed_row(file: &str, setting: &'static str) -> Row {
 }
 
 /// SEC-4 / PRD-5: the audit record of an opt-in admission names WHICH `plugins.trust` setting
-/// admitted the plugin, so an operator reading the chain can tell unsigned from third-party.
+/// admitted the plugin; the unified override covers unsigned and unknown publishers.
 #[tokio::test]
-async fn each_trust_opt_in_seals_a_record_naming_its_own_setting() {
+async fn each_untrusted_admission_seals_a_record_naming_the_override() {
     ensure_global_audit_stream_registered().await;
     for (file, setting) in [
-        ("trust-optin-third-party.tar.gz", "allow_third_party"),
-        ("trust-optin-retired-key.tar.gz", "retired_key"),
+        ("trust-optin-third-party.tar.gz", "allow_untrusted"),
+        ("trust-optin-unsigned.tar.gz", "allow_untrusted"),
     ] {
         log_scanned_rows(&[allowed_row(file, setting)], &[], &[], "/plugins");
         crate::audit::auditlog::flush_pending()
@@ -141,7 +142,7 @@ async fn a_retired_key_skip_seals_one_rejected_plugin_trust_record() {
         alias: "sec-allowuns-retired-probe".into(),
         reason:
             "first-party manifest signed by the RETIRED busbar release key b18395|x (retired); \
-         refusing to load it. plugins.trust.allow_unsigned does not admit a retired key"
+         refusing to load it. plugins.trust.allow_untrusted does not admit a retired key"
                 .into(),
         code: "retired_key",
     };
@@ -211,8 +212,7 @@ async fn a_fips_backend_refusal_of_an_unsigned_drop_in_seals_one_external_crypto
         .expect("package the probe");
     std::fs::write(dir.join(file), tarball).expect("write the probe tarball");
     let policy = TrustPolicy {
-        allow_unsigned: true,
-        allow_third_party: true,
+        allow_untrusted: true,
         binary_version: "1.6.0".into(),
         ..TrustPolicy::default()
     };
@@ -227,7 +227,7 @@ async fn a_fips_backend_refusal_of_an_unsigned_drop_in_seals_one_external_crypto
     let skipped = PluginRows::skipped(&registry);
     assert!(
         loadable.is_empty(),
-        "a FIPS backend loads no unsigned plugin, allow_unsigned or not: {loadable:?}"
+        "a FIPS backend loads no unsigned plugin, allow_untrusted or not: {loadable:?}"
     );
     assert_eq!(skipped.len(), 1, "the refusal is a skip: {skipped:?}");
     assert_eq!(skipped[0].code, "external_crypto", "{}", skipped[0].reason);

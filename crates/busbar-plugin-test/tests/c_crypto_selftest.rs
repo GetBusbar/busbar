@@ -103,21 +103,66 @@ fn self_test_answers_rng_with_empty_out_and_no_fault() {
     );
 }
 
-/// Arms (a)-(c) through host_vt itself over the CRYPTO-SEAM stub backend (SelfTest from `fill_checked`, then from
-/// `hmac_sha256` and `ecdsa_p256` signing after N good calls), with `HOST_FAULTS[SELF_TEST]` moving (busbar#262).
+/// Arms (a)-(c) through host_vt itself over the CRYPTO-SEAM stub backend (busbar#262; the scratch build is
+/// `c_unavailable::stub_host_vt`), inside one entry: (a) with the stub's `fill` failing its self-test
+/// (`SelfTest("crngt")` through `fill_checked`), `random` runs first, before any other crypto call, and answers RNG
+/// with `out` EMPTY and `HOST_FAULTS[SELF_TEST]` +1; `hmac_sha256` and ECDSA P-256 signing answer OK twice (the
+/// stub's bytes) and then `SelfTest("pct")`: `crypto(HMAC_SHA256)` and `crypto(SIGN_ES256)` answer RNG with `out`
+/// EMPTY (the safe layer's `Err(Rng)`), each moving the counter by one; (b) with `fill` answering `Rng`, `random`
+/// answers RNG and the counter does not move; (c) the facade's own `fill` on the same stub still returns
+/// `Err(RngError)` while `fill_checked` forwards the backend's error. No panic (`HOST_FAULTS[HOST_PANIC]` flat), no
+/// abort (the probe exits cleanly) and no plugin fault (the entry completes); the plugin's `?` is FAILED
+/// F_UNAVAILABLE. The audit row and metric are W1-L2's arm below.
 #[test]
-#[ignore = "owner: busbar#262 (host_vt over the stub backend)"]
 fn self_test_through_host_vt_on_the_stub_backend() {
-    todo!("owner: busbar#262 (C-CRYPTO-SELFTEST)")
+    let rng = crypto_status::RNG;
+    for (fill, random, checked) in [
+        ("crngt", [1, 2], r#"Err(SelfTest("crngt"))"#),
+        ("rng", [0, 0], "Err(Rng(RngError))"),
+    ] {
+        let [after_raw, after_safe] = random;
+        let pct = after_safe;
+        let got = crate::c_unavailable::stub_host_vt::probe("self-test", fill, "2");
+        let want = format!(
+            "outside={rng}/0\n\
+             random={rng}/0 self_test={after_raw}\n\
+             random16=Err(Rng) self_test={after_safe}\n\
+             hmac1=Ok(true)\n\
+             hmac2=Ok(true)\n\
+             hmac3=Err(Rng) self_test={}\n\
+             hmac4={rng}/0 self_test={}\n\
+             sign1=Ok(true)\n\
+             sign2=Ok(true)\n\
+             sign3=Err(Rng) self_test={}\n\
+             sign4={rng}/0 self_test={}\n\
+             fill_checked={checked}\n\
+             fill=Err(RngError)\n\
+             host_panic=0\n\
+             entry=ran\n",
+            pct + 1,
+            pct + 2,
+            pct + 3,
+            pct + 4,
+        );
+        assert_eq!(got, want, "BUSBAR_STUB_FILL={fill}");
+    }
+    let fail = Fail::from(CryptoErr::Rng);
+    assert_eq!(
+        (fail.status(), fail.code()),
+        (Status::FAILED, failed::F_UNAVAILABLE)
+    );
 }
+
+/// The stub backend this arm needs is in place (busbar#262: `self_test_through_host_vt_on_the_stub_backend` above
+/// drives `HOST_FAULTS[SELF_TEST]` through host_vt, one per failing call); what is missing is the reader.
 #[test]
-#[ignore = "owner: W1-L2"]
+#[ignore = "owner: W1-L2; blocked (re-checked 2026-11-16): nothing reads HOST_FAULTS outside host_vt: the registry watchdog (crates/plugin-loader/src/watchdog.rs) has no host-fault tick, and no crypto_self_test_failed audit row or plugin_host_fault_total metric exists in crates/; the stub backend half is done (busbar#262)"]
 fn one_crypto_self_test_failed_row_and_metric_within_a_tick() {
     todo!("owner: W1-L2 (C-CRYPTO-SELFTEST)")
 }
 
 #[test]
-#[ignore = "owner: W1-K8D"]
+#[ignore = "owner: W1-K8D; blocked (re-checked on dev 2026-11-16): the kernel admission path that reads error_codes_refused and the crypto self-test row is not on dev (OUTSTANDING row 5)"]
 fn self_test_reaches_each_port_as_failed_unavailable() {
     todo!("owner: W1-K8D (C-CRYPTO-SELFTEST)")
 }
@@ -135,7 +180,7 @@ fn unsupported_is_refused_unsupported_and_moves_no_counter() {
     use busbar_plugin_abi::host_side::host_vt::HOST_FAULTS;
     use busbar_plugin_abi::host_side::scrub::Scrub;
     use busbar_plugin_loader::adapters::auth::verify_refusal;
-    use busbar_plugin_loader::ports::PortError;
+    use busbar_ports::PortError;
 
     let before: Vec<u64> = HOST_FAULTS
         .iter()

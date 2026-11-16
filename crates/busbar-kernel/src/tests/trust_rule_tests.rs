@@ -207,6 +207,59 @@ fn plugin_revoke_retains_its_existing_expected_digest_semantics() {
     assert_eq!(served(&k), Err(Distrust::NotApproved));
 }
 
+/// Aikido 1074596877 (#103): a flattened `instance/counterparty[/item]` key can name two rows
+/// when a registration name contains `/` (registration `cp/tool` and item `tool` on `cp` both
+/// flatten to `inst/cp/tool`). An admin ruling on such a key must decide nothing, never land on
+/// whichever row sorts first, which an upstream can choose by naming a tool.
+#[test]
+fn an_ambiguous_flattened_trust_key_is_refused() {
+    use super::TrustRefused;
+    let entry = || TrustEntry {
+        pin: None,
+        policy: Policy {
+            ttl_ms: 0,
+            recovery_backoff_ms: 0,
+        },
+        approved: Default::default(),
+    };
+    let k = KernelServices::new();
+    ready(k.admit(
+        "inst",
+        InstanceFacts {
+            trust: vec![
+                ("cp".to_string(), entry()),
+                ("cp/tool".to_string(), entry()),
+            ],
+            ..InstanceFacts::default()
+        },
+    ))
+    .expect("admitted");
+    let later: Later = Box::new(|_| {});
+    assert!(matches!(
+        k.trust_sight(&caller(), "cp/tool", "registration", later),
+        Ran::Now(_)
+    ));
+    sight(&k, "catalogue");
+    ready(k.trust_rule("inst/cp", Ruling::Approve)).unwrap();
+    immediate(|later| k.trust_sight_item(&caller(), "cp", "tool", "upstream", later));
+    assert_eq!(
+        k.trust_rows()
+            .iter()
+            .filter(|r| r.key() == "inst/cp/tool")
+            .count(),
+        2,
+        "two rows flatten to one key"
+    );
+    let before = k.trust_rows();
+    for ruling in [Ruling::Approve, Ruling::Revoke] {
+        assert_eq!(
+            ready(k.trust_rule_if_seen("inst/cp/tool", ruling, None)),
+            Err(TrustRefused::Ambiguous)
+        );
+        assert_eq!(k.trust_rows(), before, "an ambiguous key decides nothing");
+    }
+}
+
 fn ready<T>(future: impl std::future::Future<Output = T>) -> T {
     use futures::FutureExt;
     future

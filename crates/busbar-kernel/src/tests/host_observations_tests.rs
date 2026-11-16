@@ -8,6 +8,7 @@ use crate::governance::GovState;
 use crate::persistence::host_records::tests::{attach, Backend};
 use crate::persistence::observations::ObservationStore;
 use crate::plane_driver::{Checkpoint, EndPost, FeeRefund, MoneySeam, UnitMoney};
+use busbar_contract::json;
 use busbar_contract::{records::VirtualKey, Count};
 use std::collections::BTreeMap;
 
@@ -52,8 +53,6 @@ fn cost(rate: u64) -> Arc<CostModel> {
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
-                admission: None,
-                on_exhaustion: None,
             }],
             ..Default::default()
         },
@@ -125,7 +124,7 @@ async fn submit(
         )
         .unwrap();
     let bytes = rx.await.unwrap().unwrap();
-    serde_json::from_slice(extensions::unique(&bytes, wire::RESULT).unwrap().unwrap()).unwrap()
+    json::parse(extensions::unique(&bytes, wire::RESULT).unwrap().unwrap()).unwrap()
 }
 
 #[tokio::test]
@@ -197,7 +196,7 @@ async fn neutral_runtime_custody_reserves_settles_and_reattaches_original_tariff
     );
     assert!(money.observation_scope(UnitKey::new(1)).is_none());
     assert!(gov
-        .check_observation_admission(&original_cost, &key, "", 100, None)
+        .check_observation_admission(&original_cost, &key, "", 100)
         .await
         .is_ok());
     scope_request(
@@ -217,7 +216,7 @@ async fn neutral_runtime_custody_reserves_settles_and_reattaches_original_tariff
     .unwrap()
     .unwrap();
     assert!(gov
-        .check_observation_admission(&original_cost, &key, "", 100, None)
+        .check_observation_admission(&original_cost, &key, "", 100)
         .await
         .is_err());
     let observation = Observation::new(id, b"event".to_vec(), b"part".to_vec())
@@ -280,7 +279,7 @@ async fn neutral_runtime_custody_reserves_settles_and_reattaches_original_tariff
         })
     );
     assert!(gov
-        .check_observation_admission(&original_cost, &key, "", 100, None)
+        .check_observation_admission(&original_cost, &key, "", 100)
         .await
         .is_ok());
     let owner = ObservationStore::open(core).unwrap();

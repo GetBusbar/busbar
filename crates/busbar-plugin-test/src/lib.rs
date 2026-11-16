@@ -79,3 +79,16 @@ pub use busbar_contract::{
 pub fn host() -> Host {
     Host::new(test_caller_binding())
 }
+
+#[cfg(all(test, feature = "target-sockets"))]
+#[path = "host_target/socket_tests.rs"]
+mod socket_tests;
+
+/// Explicit loopback sockets for MIN-3 SDK store tests.
+#[cfg(feature = "target-sockets")]
+#[path = "host_target/sockets.rs"]
+pub mod sockets;
+
+/// Typed live store test requests and harness; never exports a production KernelSeal.
+#[cfg(feature = "test-seal")]
+pub mod store;

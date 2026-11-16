@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::root::test_plugins as plugins;
+use busbar_contract::json::{self, JsonValueTrait};
 use busbar_kernel::config::groups::{LimitMetric, LimitWindow};
 use busbar_kernel::config::{GroupCfg, LimitCfg};
 use std::collections::BTreeMap;
@@ -15,8 +16,6 @@ fn budget(cents: u64, per: LimitWindow) -> LimitCfg {
         scope: None,
         on_exhaust: None,
         downgrade_to: None,
-        admission: None,
-        on_exhaustion: None,
     }
 }
 
@@ -281,7 +280,7 @@ async fn build_without_group_conflict_when_still_a_parent() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 409);
-    let error: serde_json::Value = response.json().await.unwrap();
+    let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "conflict");
     assert!(
         error["error"]["message"].as_str().unwrap().contains("team"),
@@ -412,7 +411,7 @@ async fn build_without_group_not_found() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 404);
-    let error: serde_json::Value = response.json().await.unwrap();
+    let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "not_found");
     assert!(
         error["error"]["message"]
@@ -570,7 +569,7 @@ async fn build_without_group_conflict_when_keys_still_bound() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 409);
-    let error: serde_json::Value = response.json().await.unwrap();
+    let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "conflict");
     assert!(
         error["error"]["message"].as_str().unwrap().contains("team"),

@@ -561,12 +561,6 @@ pub struct LimitView {
     /// Where `on_exhaust: downgrade` sends exhausted traffic. Present iff downgrading.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub downgrade_to: Option<String>,
-    /// Authored budget admission policy: exact (default when absent) or estimate.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub admission: Option<&'static str>,
-    /// Authored in-flight exhaustion policy: finish-unit (default when absent) or cut-stream.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub on_exhaustion: Option<&'static str>,
 }
 
 impl LimitView {
@@ -581,14 +575,6 @@ impl LimitView {
                 busbar_kernel::config::groups::OnExhaust::Downgrade => "downgrade",
             }),
             downgrade_to: l.downgrade_to.as_ref().map(|s| s.value.clone()),
-            admission: l.admission.map(|mode| match mode {
-                busbar_kernel::config::groups::AdmissionMode::Exact => "exact",
-                busbar_kernel::config::groups::AdmissionMode::Estimate => "estimate",
-            }),
-            on_exhaustion: l.on_exhaustion.map(|mode| match mode {
-                busbar_kernel::config::groups::ExhaustionMode::FinishUnit => "finish-unit",
-                busbar_kernel::config::groups::ExhaustionMode::CutStream => "cut-stream",
-            }),
         }
     }
 }
@@ -651,17 +637,6 @@ pub struct GroupBucketUsageView {
     pub requests_cap: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens_cap: Option<u64>,
-    /// Per-tier token caps mirroring the cost tiers, when configured (absent = uncapped on that
-    /// tier): `tokens_input` = uncached input, `tokens_output` = output, `tokens_cache_read`,
-    /// `tokens_cache_write` = cache creation.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tokens_input_cap: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tokens_output_cap: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tokens_cache_read_cap: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tokens_cache_write_cap: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub budget_cap: Option<i64>,
     /// Cents left under `budget_cap` (floored at 0); absent when no budget cap is set.
@@ -700,6 +675,39 @@ pub struct HookHealthView {
     /// A short human note on the resolution (why `false`, or the resolved plugin's kind). Never a
     /// secret.
     pub detail: Option<String>,
+}
+
+/// Signed admin image trust evidence (ADMIN-API-1.6.r5 §16.3). Signature presence
+/// is informational; only a satisfying verifier result supplies a fingerprint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub struct PluginTrustView {
+    pub signature_present: bool,
+    pub key_fingerprint: Option<String>,
+    pub verdict: &'static str,
+    pub keys_doc_version: Option<u64>,
+}
+
+impl PluginTrustView {
+    pub fn from_verification(
+        signature_present: bool,
+        verdict: &'static str,
+        proof: &busbar_contract::plugin_rows::Verification,
+    ) -> Self {
+        Self {
+            signature_present,
+            // The verifier supplies only satisfying signer ids. Retain all
+            // signers and the vouching root internally; this signed singular image field names
+            // the lexicographically first satisfying signer, never an unverified claimed key id.
+            key_fingerprint: (verdict == "trusted")
+                .then(|| proof.signers.iter().min().cloned())
+                .flatten(),
+            verdict,
+            keys_doc_version: (verdict == "trusted")
+                .then_some(proof.keys_version)
+                .flatten(),
+        }
+    }
 }
 
 /// One plugin in the plugin catalog (`GET /api/v1/admin/plugins?type=`). A plugin is either
@@ -757,12 +765,9 @@ pub struct PluginView {
     /// manifest). Operator-facing name for the "ABI" the engine speaks.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interface_version: Option<u32>,
-    /// The server-side trust verdict for a dynamic-library plugin, re-evaluated against the running
-    /// `plugins.trust` posture: `"trusted"` (signed by an allowlisted publisher), `"unverified"`
-    /// (loaded but not verified, the posture permits it), or `"rejected"` (the `halt` posture would
-    /// refuse it). `None` for compiled-in/external.
+    /// Image trust evidence for the represented generation; declared publisher names are not proof.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub trust: Option<&'static str>,
+    pub trust: Option<PluginTrustView>,
     /// For a dynamic-library plugin: whether the library validated as a busbar store plugin the engine
     /// can load (ABI handshake). `None` for compiled-in/external.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -835,11 +840,11 @@ pub struct PluginInstallView {
     pub interface_version: u32,
     /// The server-side trust verdict from the RE-VERIFY: `"trusted"` | `"unverified"`. (A `"rejected"`
     /// verdict is an error, never a success body.)
-    pub trust: &'static str,
+    pub trust: PluginTrustView,
     /// The manifest version, when the upload carried a signed manifest.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// The manifest publisher, when signed.
+    /// The manifest-declared publisher; trust evidence determines verified attribution.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub publisher: Option<String>,
     /// A human note: this install is durable in the folder but takes effect on the next store (re)load.

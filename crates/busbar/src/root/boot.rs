@@ -87,21 +87,74 @@ fn authorize_native_image(bytes: &[u8], display: &str) -> Result<(), String> {
     }
 }
 
-/// Only the native prepared session may supply a checkpoint-bound recovery backend.
-/// A recovery target must already contain the confirmed current-format manifest.
-pub(crate) async fn admit_prepared_store(
-    prepared: &busbar_migrations::RecoveryPending,
+/// THE OLD ABI STORE'S OPEN (until #274 deletes that ABI): inspect the prepared native store and OPEN an empty or
+/// current dataset, then admit its format. 1.6.0 converts a 1.5.5 store only inside a MIN-3 store's own open, so
+/// any other inspected state is refused before the store is opened or written.
+pub(crate) async fn open_current_store(
+    prepared: &busbar_contract::persistence::lifecycle::axis::Prepared,
+    bounds: busbar_contract::persistence::lifecycle::Bounds,
+    shutdown: &tokio::sync::watch::Receiver<bool>,
 ) -> Result<busbar_kernel::persistence::startup::Startup, String> {
-    if let Some(recovery) = &prepared.recovery {
-        if recovery.upgrade != prepared.upgrade_id
-            || recovery.target != prepared.backend.info().dataset
-            || recovery.activation_receipt_digest == [0; 32]
-            || recovery.selector_digest == [0; 32]
-        {
-            return Err("native cold recovery binding does not match its prepared target".into());
+    use busbar_contract::persistence::lifecycle::{
+        Error, InspectionState, OpenBinding, Request, Response,
+    };
+    const RETRY: std::time::Duration = std::time::Duration::from_millis(250);
+    let request = Arc::new(Request::Inspect { bounds });
+    let binding = loop {
+        if *shutdown.borrow() {
+            return Err("shutdown requested during native Store inspection".into());
         }
-    }
-    admit_format(prepared.backend.clone(), prepared.recovery.is_none()).await
+        let inspected = match prepared.bootstrap(Arc::clone(&request)).await {
+            Ok(inspected) => inspected,
+            Err(Error::Pending | Error::Busy | Error::Unknown) => {
+                tokio::time::sleep(RETRY).await;
+                continue;
+            }
+            Err(error) => return Err(format!("Store inspection refused: {error:?}")),
+        };
+        let Response::Inspected(inspection) = &*inspected else {
+            return Err("Store inspection answered with something other than an inspection".into());
+        };
+        match inspection.state {
+            InspectionState::Empty => break OpenBinding::Empty,
+            InspectionState::Current => {
+                let source = inspection
+                    .source
+                    .clone()
+                    .ok_or("a current Store answered no source identity")?;
+                let marker = inspection
+                    .admission_marker
+                    .as_ref()
+                    .ok_or("a current Store answered no admission marker")?;
+                break OpenBinding::Current {
+                    source,
+                    admission_marker_digest: busbar_contract::crypto::sha256(
+                        marker.expose(&busbar_kernel::seal::lend()),
+                    ),
+                };
+            }
+            InspectionState::Busy => tokio::time::sleep(RETRY).await,
+            _ => {
+                return Err(
+                    "UNSUPPORTED: this store holds data this store plugin's old ABI build cannot open \
+                     as 1.6.0; install the plugin's 1.6.0 (MIN-3) build, whose own open upgrades it. \
+                     Nothing was written"
+                        .into(),
+                )
+            }
+        }
+    };
+    let backend = loop {
+        if *shutdown.borrow() {
+            return Err("shutdown requested during native Store open".into());
+        }
+        match prepared.open(binding.clone()).await {
+            Ok(backend) => break backend,
+            Err(Error::Pending | Error::Busy | Error::Unknown) => tokio::time::sleep(RETRY).await,
+            Err(error) => return Err(format!("Store open refused: {error:?}")),
+        }
+    };
+    admit_format(backend, true).await
 }
 
 pub(crate) async fn admit_format(
@@ -112,6 +165,7 @@ pub(crate) async fn admit_format(
         facade::Limits,
         startup::{Progress, Startup},
     };
+    let stored = backend.clone();
     let mut startup = Startup::new(
         backend,
         Limits {
@@ -128,11 +182,13 @@ pub(crate) async fn admit_format(
     .map_err(|error| format!("Store format admission refused: {error:?}"))?;
     let mut waits = 0u32;
     loop {
-        match startup
-            .advance()
-            .await
-            .map_err(|error| format!("Store format admission refused: {error:?}"))?
-        {
+        let advanced = match startup.advance().await {
+            Err(busbar_kernel::persistence::startup::Error::UnsupportedFormat) => {
+                return Err(stored_format_refusal(stored.as_ref()).await);
+            }
+            other => other,
+        };
+        match advanced.map_err(|error| format!("Store format admission refused: {error:?}"))? {
             Progress::Advanced => {}
             Progress::Admitted => return Ok(startup),
             Progress::Pending => {
@@ -386,8 +442,7 @@ pub fn trust_policy(
     let mut policy =
         super::loader::sign::TrustPolicy::from_config(super::loader::sign::TrustInput {
             publishers: &cfg.publisher_keys(),
-            allow_unsigned: cfg.trust.allow_unsigned,
-            allow_third_party: cfg.trust.allow_third_party,
+            allow_untrusted: cfg.trust.allow_untrusted,
             min_versions: &cfg.min_versions,
             first_party_floors: &cfg.first_party_floors,
             binary_version,
@@ -1278,21 +1333,6 @@ pub(crate) fn phase_one(
     )
 }
 
-/// Phase 1 over the `plugins:` block of an interpolated deployment `text` (a retained or migrated
-/// document read outside the loader): an absent block admits the linked rows alone; a block that
-/// does not read as the current shape refuses.
-pub(crate) fn grammar_of_text(text: &str) -> Result<busbar_kernel::config::Grammar, String> {
-    use busbar_contract::yaml::ValueExt;
-    let doc = busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(text)
-        .map_err(|_| "the deployment document does not read as YAML".to_owned())?;
-    let plugins = match doc.get("plugins") {
-        None => PluginsCfg::default(),
-        Some(block) => busbar_contract::yaml::from_value::<PluginsCfg>(block.clone())
-            .map_err(|e| format!("plugins: {e}"))?,
-    };
-    phase_one(&busbar_kernel::config::grammar::PhaseOneIn::of(&plugins)).map_err(String::from)
-}
-
 /// The scan of `plugins`' directory under its trust policy, with `linked`, and the secret modules
 /// it admits judged together with the linked secret rows: one owner per word, name and alias.
 fn judge(linked: Vec<LinkedPlugin>, plugins: &PluginsCfg) -> Result<Judged, String> {
@@ -1966,7 +2006,25 @@ pub(crate) async fn compose_book(
     )
     .await
     .map_err(|e| format!("the native boot journal could not be opened: {e}"))?;
-    bind_boot_keyset(&mut durability, identity, token, now).await?;
+    // A composed test book is a legacy-signing book (SEALING-FIX §3.2): its fixtures read
+    // per-line signatures. Production binds through `bind_boot_keyset`.
+    loop {
+        match super::keyset::bind(
+            &mut durability,
+            identity,
+            token,
+            busbar_contract::caps::StepName::Meter,
+            now,
+        )
+        .await
+        {
+            Ok(_) => break,
+            Err(super::keyset::KeysetError::PendingOriginal { .. }) => {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
     Ok(durability)
 }
 
@@ -2190,25 +2248,37 @@ impl BookPreparation {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
         self.phase = BookPhase::BindKeyset;
-        bind_boot_keyset(
+        let bound = bind_boot_keyset(
             self.durability.as_mut().unwrap(),
             &self.identity,
             self.token.as_ref().unwrap(),
             now,
         )
         .await?;
+        // SEALING-FIX §3.3, §5.3: the key's signing power goes to the two signer threads; the book
+        // keeps only the public half. The notary starts from the resumed head, read before any
+        // recovery line is appended, once serving begins (`main`).
+        let (audit, checkpoint) = {
+            let durability = self.durability.as_ref().unwrap();
+            let (services, checkpoint) = super::durability::audit_services::AuditServices::spawn(
+                busbar_kernel_audit::Notary::new(bound.notary),
+                busbar_kernel_audit::BootstrapSigner::new(bound.bootstrap),
+                durability.record.node(),
+                durability.journal.clone(),
+                Arc::clone(&durability.head),
+                durability.notary_start(),
+            )
+            .map_err(|error| format!("the audit signer threads did not start: {error}"))?;
+            (Arc::new(services), checkpoint)
+        };
         self.phase = BookPhase::RestoreAmendments;
         let durability = self.durability.as_mut().unwrap();
         durability
             .restore_amendments(&app.amendments, self.token.as_ref().unwrap())
             .await?;
         super::durability::report_operator_breaks(durability).await;
-        if let Some(material) = durability
-            .record
-            .derived_secret(super::keyset::CALLER_REF_MATERIAL)
-        {
-            self.governance.bind_deployment_caller_ref(material);
-        }
+        self.governance.bind_deployment_caller_ref(bound.caller_ref);
+        super::records_capture::warn_unkeyed();
         self.shared = Some(Arc::new(std::sync::Mutex::new(
             self.durability.take().unwrap(),
         )));
@@ -2228,7 +2298,7 @@ impl BookPreparation {
             .map_err(|error| format!("usage recovery: {error}"))?;
         self.governance
             .attach_unit_checkpoint_sink(
-                super::durability::unit_checkpoint_sink(shared, journal.clone())
+                super::durability::unit_checkpoint_sink(shared, journal.clone(), Some(checkpoint))
                     .map_err(|error| error.to_string())?,
             )
             .await
@@ -2251,6 +2321,7 @@ impl BookPreparation {
             runtime_journal: self.journal.take().unwrap(),
             node_lease: self.node_lease.take(),
             verb_store,
+            audit: Some(audit),
         })
     }
 }
@@ -2259,9 +2330,9 @@ async fn bind_boot_keyset(
     identity: &busbar_kernel::persistence::boot_identity::BootIdentity,
     token: &busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
     now: u64,
-) -> Result<(), String> {
+) -> Result<super::keyset::BoundKey, String> {
     loop {
-        match super::keyset::bind(
+        match super::keyset::bind_split(
             durability,
             identity,
             token,
@@ -2270,7 +2341,7 @@ async fn bind_boot_keyset(
         )
         .await
         {
-            Ok(_) => return Ok(()),
+            Ok((_, bound)) => return Ok(bound),
             Err(super::keyset::KeysetError::PendingOriginal { .. }) => {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await
             }
@@ -2423,28 +2494,74 @@ fn locate_provider_destination_with(
     })
 }
 
-/// Resolve only compiled core schemas or the attested instance's exact historical
-/// raw-record framing. An unscoped unknown schema is never guessed into a namespace.
+/// Resolve a record-bootstrap store witness through a compiled core schema only (MIGRATE-ON-BOOT
+/// r42 §7 D14). A plugin instance's row, and any unknown schema, is never guessed into a namespace.
 pub(crate) fn bootstrap_witness(
-    instance: &str,
     schema: &str,
     key: &[u8],
     value: &[u8],
 ) -> Result<busbar_contract::persistence::Address, &'static str> {
-    use busbar_migrations::legacy::archive::{route_record, Binding, Route, Scope};
-    let bindings = [Binding {
-        schema,
-        instance,
-        private: false,
-        source_scope: Scope::Instance,
-    }];
-    match route_record(schema, key, value, &bindings)
-        .map_err(|_| "unsupported or ambiguous bootstrap witness binding")?
-    {
-        Route::Record {
-            address,
-            value: mapped,
-        } if mapped == value => Ok(address),
-        _ => Err("bootstrap witness requires an explicit supported exact-record binding"),
+    busbar_kernel::persistence::import_target::records::builtin_record_address(schema, key, value)
+        .map_err(|_| "unsupported bootstrap witness record")?
+        .ok_or("bootstrap witness requires a compiled core schema record")
+}
+
+/// Step 3's refusal of a manifest that is not current (MIGRATE-ON-BOOT r42 §3 3, §6a): admission
+/// classifies the stored format record and names the word, so a store a newer busbar wrote is
+/// refused NEWER, never relabelled. Nothing was written.
+pub(crate) async fn stored_format_refusal(
+    backend: &dyn busbar_contract::persistence::PersistenceBackend,
+) -> String {
+    use busbar_kernel::persistence::startup::{classify, Format};
+    let read = backend
+        .read(std::sync::Arc::new(busbar_contract::persistence::Read {
+            dataset: backend.info().dataset,
+            addresses: vec![busbar_kernel::persistence::import_target::target::manifest_address()],
+            time: None,
+        }))
+        .await;
+    let format = match read {
+        Ok(busbar_contract::persistence::ReadResult::Values { values, .. }) => {
+            values.into_iter().next().flatten().map(|bytes| {
+                classify(
+                    bytes.expose(&busbar_kernel::seal::lend()),
+                    busbar_migrate::records::has_step,
+                )
+            })
+        }
+        _ => None,
+    };
+    let word = match format {
+        Some(Format::Newer) => {
+            "NEWER: a newer busbar wrote or began migrating this store's records; run that version"
+        }
+        Some(Format::Unsupported) => {
+            "UNSUPPORTED: this store's records are not a format this busbar reads; upgrade through \
+             the release that last read it first"
+        }
+        Some(Format::Corrupt) => "CORRUPT: the store's format record disagrees with itself",
+        _ => "UNSUPPORTED: the store's format record is not this busbar's",
+    };
+    format!("Store format admission refused: {word}; nothing was written")
+}
+
+/// Which admission the boot's store runs under (COORD-STORE-C2; MIGRATE-ON-BOOT r42 §3 2b, 3). `walked` is the
+/// MIN-3 boot's answer: `true` when the walk opened the configured store through the registry and admitted it, and
+/// `take` hands that admission over (once). Then it is the boot's store admission, and the old ABI's preparation is
+/// never entered (a store built only for the new ABI has no v4 statement to prepare). `Ok(None)`: no MIN-3 store
+/// image, the old ABI path until #274 deletes it.
+///
+/// # Errors
+/// The walk reported a store it did not admit.
+pub(crate) fn walk_admission<T>(
+    walked: bool,
+    take: impl FnOnce() -> Option<T>,
+) -> Result<Option<T>, String> {
+    if !walked {
+        return Ok(None);
     }
+    take().map(Some).ok_or_else(|| {
+        "the MIN-3 boot opened the store but handed over no admission; serving remains closed"
+            .to_owned()
+    })
 }

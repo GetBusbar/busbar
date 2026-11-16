@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! The admin error envelope: 1.5.5's `{"error":{"code","message"}}` with the ADMIN-API-1.6 section 1.2
 //! additions (`reason`, `request_id`, `retryable`, `details`), plus the catalog code as a top-level
 //! `code` (owner decision 2026-11-12).

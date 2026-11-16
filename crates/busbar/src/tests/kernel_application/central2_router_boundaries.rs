@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 use crate::root::test_plugins as plugins;
+use busbar_contract::json::{self, JsonValueTrait as _};
 use std::sync::Arc;
 #[tokio::test]
 async fn oversized_request_413_is_reshaped_on_the_live_stack() {
@@ -84,7 +85,7 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
     let (mut router, _handle) =
         busbar_kernel::build_router_with_limits(Arc::new(app), 64, 1024, false);
     let oversized = "x".repeat(4096);
-    let payload = serde_json::json!({"pad": oversized}).to_string();
+    let payload = json::json!({"pad": oversized}).to_string();
     let req = axum::http::Request::builder()
         .method(axum::http::Method::POST)
         .uri("/v1/chat/completions")
@@ -116,7 +117,7 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
         "an oversized-body 413 must speak JSON, not the bare `{body}` router tell (content-type \
          was `{ct}`) — the reshape layer's sentinel no longer matches what axum emits"
     );
-    let v: serde_json::Value = serde_json::from_str(&body)
+    let v: json::Value = json::parse_value(body.as_bytes())
         .unwrap_or_else(|e| panic!("the 413 body must be JSON ({e}): {body}"));
     assert!(
         v.get("error").is_some(),

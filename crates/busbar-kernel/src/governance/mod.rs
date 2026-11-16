@@ -19,7 +19,7 @@ mod metering_flush;
 pub(crate) mod raw_recovery;
 pub mod unit_checkpoint;
 mod unit_checkpoint_counts;
-pub mod unit_checkpoint_store;
+pub use crate::off_path::governance::unit_checkpoint_store;
 
 use crate::diagnostics::{
     diag_debug, diag_warn, GOVERNANCE_KEY_RESERVED_NAMESPACE_COLLISION, LIMIT_WINDOW_UNRECOGNIZED,
@@ -430,6 +430,7 @@ impl BudgetCell {
         token_total(self.models.iter().map(|m| &m.cur))
     }
 
+    #[cfg(test)]
     fn total_tier(&self, unit: &str) -> Count {
         Count::total(
             self.models
@@ -894,8 +895,8 @@ mod state;
 pub use state::identity_runtime::{IdentityClaimKey, IdentityMutationGuard};
 pub(crate) use state::key_row_expired;
 pub use state::{
-    metering_lane, AdjustRefused, Adjustment, KeyMutationError, MintError, PricedBucket,
-    UsageAdjustment, ADJUST_DOWN_BUCKET, ADJUST_UP_BUCKET,
+    metering_lane, self_subject_id, AdjustRefused, Adjustment, KeyMutationError, MintError,
+    PricedBucket, UsageAdjustment, ADJUST_DOWN_BUCKET, ADJUST_UP_BUCKET,
 };
 
 pub(crate) mod tickets;
@@ -1079,8 +1080,9 @@ pub fn synthesize_bound_key(
         module,
         roles: &principal.roles,
     };
-    serde_json::to_writer(&mut marker, &fields).expect("a borrowed marker always serializes");
-    key.generation_hash = String::from_utf8(marker).expect("serde_json writes UTF-8");
+    busbar_contract::json::to_writer(&mut marker, &fields)
+        .expect("a borrowed marker always serializes");
+    key.generation_hash = String::from_utf8(marker).expect("the JSON writer writes UTF-8");
     Some(Arc::new(key))
 }
 
@@ -1092,7 +1094,7 @@ pub fn bound_admission(key: &VirtualKey) -> Option<(String, crate::auth::Princip
         roles: Vec<String>,
     }
     let json = key.generation_hash.strip_prefix(PRINCIPAL_MARKER_PREFIX)?;
-    let m: Marker = serde_json::from_str(json).ok()?;
+    let m: Marker = busbar_contract::json::parse_str(json).ok()?;
     if m.id != key.id {
         return None;
     }

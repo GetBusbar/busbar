@@ -299,7 +299,7 @@ fn open(door: DoorFn, second: bool) -> AuthInstance {
         sink,
         dispatcher,
         SELECTED,
-        &serde_json::to_vec(&second).unwrap(),
+        &busbar_contract::json::to_vec(&second).unwrap(),
         Vec::new(),
     )
     .unwrap()

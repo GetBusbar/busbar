@@ -6,8 +6,9 @@
 use busbar_contract::crypto::Sha256;
 use foldhash::{HashMap, HashSet};
 
-use crate::note::{Bridge, QuarantineNote};
-use crate::record::Record;
+use crate::note::Bridge;
+use crate::off_path::bridges_of;
+pub use crate::off_path::decode_run;
 
 /// The four bytes every journal record's header opens with.
 pub(crate) const JOURNAL_MAGIC: [u8; 4] = *b"BJRN";
@@ -19,7 +20,7 @@ pub(crate) const JOURNAL_VERSION: u16 = 1;
 pub const JOURNAL_HEADER_BYTES: usize = 160;
 
 /// Where in the header each field sits. Offsets are named rather than spelled at each use so that a
-mod at {
+pub(crate) mod at {
     /// The magic.
     pub const MAGIC: usize = 0;
     /// The layout version.
@@ -236,61 +237,6 @@ impl JournalRecord {
         bytes[JOURNAL_HEADER_BYTES..].copy_from_slice(&self.body);
     }
 
-    /// Read one record back out of its bytes.
-    pub fn decode(bytes: &[u8]) -> Result<Self, JournalBreak> {
-        if bytes.len() < JOURNAL_HEADER_BYTES {
-            return Err(JournalBreak {
-                at_index: 0,
-                kind: JournalBreakKind::NotARecord,
-            });
-        }
-        if bytes[at::MAGIC..at::MAGIC + 4] != JOURNAL_MAGIC {
-            return Err(JournalBreak {
-                at_index: 0,
-                kind: JournalBreakKind::NotARecord,
-            });
-        }
-        let version = u16::from_le_bytes([bytes[at::VERSION], bytes[at::VERSION + 1]]);
-        if version != JOURNAL_VERSION {
-            return Err(JournalBreak {
-                at_index: 0,
-                kind: JournalBreakKind::UnknownVersion { found: version },
-            });
-        }
-        let Some(class) = RecordClass::from_code(bytes[at::CLASS]) else {
-            return Err(JournalBreak {
-                at_index: 0,
-                kind: JournalBreakKind::UnknownClass {
-                    found: bytes[at::CLASS],
-                },
-            });
-        };
-        let body_len = u32::from_le_bytes(read4(bytes, at::BODY_LEN)) as usize;
-        if bytes.len() != JOURNAL_HEADER_BYTES + body_len {
-            return Err(JournalBreak {
-                at_index: 0,
-                kind: JournalBreakKind::BodyLength {
-                    claimed: body_len,
-                    found: bytes.len().saturating_sub(JOURNAL_HEADER_BYTES),
-                },
-            });
-        }
-        let body = bytes[JOURNAL_HEADER_BYTES..].to_vec();
-        Ok(JournalRecord {
-            class,
-            node: u64::from_le_bytes(read8(bytes, at::NODE)),
-            node_seq: u64::from_le_bytes(read8(bytes, at::NODE_SEQ)),
-            lease_epoch: u64::from_le_bytes(read8(bytes, at::LEASE_EPOCH)),
-            policy_epoch: u64::from_le_bytes(read8(bytes, at::POLICY_EPOCH)),
-            wall: u64::from_le_bytes(read8(bytes, at::WALL)),
-            mono: u64::from_le_bytes(read8(bytes, at::MONO)),
-            body,
-            body_hash: read32(bytes, at::BODY_HASH),
-            prev_hash: read32(bytes, at::PREV_HASH),
-            hash: read32(bytes, at::HASH),
-        })
-    }
-
     /// The digest this record's body should carry.
     #[must_use]
     pub fn digest_of_body(&self) -> [u8; 32] {
@@ -364,15 +310,15 @@ impl std::fmt::Debug for Hex<'_> {
     }
 }
 
-fn read4(bytes: &[u8], at: usize) -> [u8; 4] {
+pub(crate) fn read4(bytes: &[u8], at: usize) -> [u8; 4] {
     bytes[at..at + 4].try_into().unwrap_or([0; 4])
 }
 
-fn read8(bytes: &[u8], at: usize) -> [u8; 8] {
+pub(crate) fn read8(bytes: &[u8], at: usize) -> [u8; 8] {
     bytes[at..at + 8].try_into().unwrap_or([0; 8])
 }
 
-fn read32(bytes: &[u8], at: usize) -> [u8; 32] {
+pub(crate) fn read32(bytes: &[u8], at: usize) -> [u8; 32] {
     bytes[at..at + 32].try_into().unwrap_or([0; 32])
 }
 
@@ -537,20 +483,6 @@ fn verify_bridged(records: &[JournalRecord], known: &[Bridge]) -> Result<(), Jou
     Ok(())
 }
 
-/// The holes a run may cross — `known`, then every quarantine `ChainBreak` in `records` — and the
-/// records they are anchored on. Only a chain that already carries a break gets here.
-fn bridges_of(records: &[JournalRecord], known: &[Bridge]) -> (Vec<Bridge>, HashSet<(u64, u64)>) {
-    let mut bridges: Vec<Bridge> = known.to_vec();
-    bridges.extend(
-        records
-            .iter()
-            .filter(|r| r.class == RecordClass::ChainBreak)
-            .filter_map(|r| QuarantineNote::read(&r.body).and_then(|note| note.bridge)),
-    );
-    let anchors: HashSet<(u64, u64)> = bridges.iter().map(|b| b.before).collect();
-    (bridges, anchors)
-}
-
 impl Bridge {
     /// Whether `record`, coming after `prev` in a run, crosses this hole. See [`verify`].
     fn crosses(
@@ -571,21 +503,6 @@ impl Bridge {
         (named_after || self.after.is_none())
             && anchored.get(&self.before) == Some(&record.prev_hash)
     }
-}
-
-/// Decode a run of log records into journal records, in order.
-pub fn decode_run(records: &[Record]) -> Result<Vec<JournalRecord>, JournalBreak> {
-    let decoded = records
-        .iter()
-        .enumerate()
-        .map(|(i, r)| {
-            JournalRecord::decode(&r.body).map_err(|mut e| {
-                e.at_index = i + 1;
-                e
-            })
-        })
-        .collect();
-    decoded
 }
 
 /// Where a node's own chain has reached in a run of records: the head to link onto and the sequence

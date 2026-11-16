@@ -21,7 +21,7 @@ use busbar_plugin_abi::fail::CallError;
 use busbar_plugin_abi::kinds::auth::auth::{
     BAD_CREDENTIAL, EXPIRED, KEYS_STALE, NOT_MINE, SECURITY_CHECK,
 };
-use busbar_plugin_loader::ports::PortError;
+use busbar_ports::PortError;
 
 /// Encoded with `plane::encode_refusal` (§8.8).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -218,7 +218,7 @@ impl RefusalMap for CoreRefusals {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use busbar_plugin_loader::instance::PluginCode;
+    use busbar_ports::PluginCode;
 
     const PLUGIN_WORDS: &str = "secret-backend-said: token=abc BUSBAR-acme-auth-0042";
 

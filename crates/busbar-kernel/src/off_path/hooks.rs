@@ -66,7 +66,7 @@ pub struct HookEnv {
     /// Declared paths read once outside cache admission. Reading a linked row's Statement may
     /// invoke its door, so the cache key must consult this snapshot instead of the registry.
     pub(crate) resolution_paths: Arc<resolution::Paths>,
-    /// The secret resolver turns typed hook references, such as a `licenseKey`, into their raw values before settings cross the ABI at open/configure. It is the same fail-closed resolver shared with store and auth opens, held through the neutral [`busbar_contract::secret::SecretResolve`] trait rather than the concrete engine resolver. Wiring supplies the identical resolver instance; only the static type at the hook boundary is narrowed.
+    /// The secret resolver turns typed hook references, such as a `accessToken`, into their raw values before settings cross the ABI at open/configure. It is the same fail-closed resolver shared with store and auth opens, held through the neutral [`busbar_contract::secret::SecretResolve`] trait rather than the concrete engine resolver. Wiring supplies the identical resolver instance; only the static type at the hook boundary is narrowed.
     ///
     ///
     ///
@@ -442,13 +442,14 @@ pub fn resolve_pool_rewrites(
             policy,
             timeout,
             on_error,
+            on_error_chain,
             ..
         }) = resolve_gate_transport(name, hook, hooks, env, settings_version)
         {
             ranked.push((
                 hook.priority,
                 timeout,
-                with_rewrite_on_error(policy, on_error),
+                with_rewrite_on_error(policy, on_error, on_error_chain),
             ));
         }
     }
@@ -459,10 +460,12 @@ pub fn resolve_pool_rewrites(
 pub(crate) fn with_rewrite_on_error(
     policy: Arc<dyn RoutingPolicy>,
     on_error: crate::config::PolicyOnError,
+    on_error_chain: Vec<FallbackHook>,
 ) -> Arc<dyn RoutingPolicy> {
     Arc::new(RewriteOnError {
         inner: policy,
         on_error,
+        on_error_chain,
     })
 }
 
@@ -888,7 +891,7 @@ pub(crate) mod resolution {
         super::policy_timeout(hook.timeout_ms).hash(&mut h);
         settings.hash(&mut h);
         hook.signals.hash(&mut h);
-        serde_json::to_writer(HashWriter(&mut h), &hook.child_dispatch).ok()?;
+        busbar_contract::json::to_writer(HashWriter(&mut h), &hook.child_dispatch).ok()?;
         Some(h.finish())
     }
 
@@ -1235,13 +1238,14 @@ pub fn resolve_rewrite_hooks(
             policy,
             timeout,
             on_error,
+            on_error_chain,
             ..
         }) = resolve_gate_transport(name, hook, hooks, env, settings_version)
         {
             ranked.push((
                 hook.priority,
                 timeout,
-                with_rewrite_on_error(policy, on_error),
+                with_rewrite_on_error(policy, on_error, on_error_chain),
             ));
         }
     }
@@ -1337,4 +1341,28 @@ where
         }
     }
     out
+}
+
+/// A pool's resolved strategy binding, owning its word and instance name (`hooks::strategy`): built
+/// once per config load for each pool that names a strategy word, never per request.
+pub(crate) fn strategy_binding(
+    word: &str,
+    implicit: bool,
+) -> crate::hooks::strategy::StrategyBinding {
+    crate::hooks::strategy::StrategyBinding {
+        word: Box::from(word),
+        instance: Box::from(word),
+        implicit,
+    }
+}
+
+/// A hook's `status` metrics, parsed (per admin status read or snapshot refresh) off the request
+/// path as 1.5.5 does, with every cut reported against hook `name` (`hooks::text_cut`).
+pub fn parse_hook_status_metrics(
+    name: &str,
+    raw: &[serde_json::Value],
+) -> Vec<busbar_contract::hook_wire::reply::HookMetric> {
+    let (metrics, cuts) = busbar_contract::hook_wire::reply::parse_status_metrics_counted(raw);
+    crate::hooks::text_cut::report_cuts(name, &cuts, crate::hooks::text_cut::cap_of);
+    metrics
 }

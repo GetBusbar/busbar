@@ -12,7 +12,6 @@ members = [
     "crates/busbar-contract",
     "crates/busbar-crypto",
     "crates/busbar-kernel",
-    "crates/busbar-migrations",
     "crates/busbar-migrate",
     "crates/busbar-kernel-identity",
     "crates/busbar-kernel-ledger",
@@ -21,6 +20,7 @@ members = [
     "crates/busbar-kernel-wal",
     "crates/busbar-kernel-audit",
     "crates/plugin-loader",
+    "crates/busbar-ports",
     "crates/busbar-ffi",
     "crates/busbar-plugin-abi",
     "crates/busbar-plugin-bench",
@@ -133,7 +133,10 @@ smallvec = "1"
 socket2 = { version = "0.6", features = ["all"] }
 # THE JSON SEAM (DEP-3): sonic-rs behind `busbar_contract::json`. `arbitrary_precision` keeps every
 # number's lexeme (SERDE-NUMBERS r17), through the MattJackson fork in [patch.crates-io].
-sonic-rs = { version = "0.5", features = ["arbitrary_precision"] }
+# `sort_keys` keeps a built or edited `Value` object in key order (sonic's default is a hash map, so
+# its members would be written in no fixed order): core's JSON answers, audit lines and digests stay
+# byte-stable, in the key order serde_json's `Map` wrote (#162, SERDE-JSON-EXIT CORE-A).
+sonic-rs = { version = "0.5", features = ["arbitrary_precision", "sort_keys"] }
 # The event-stream line parser (`parser::parse_line`) under busbar-contract's SSE framer
 # (DEPENDENCY-LADDER C17); no default features, so no client, JSON or retry layer.
 sseer = { version = "0.3.1", default-features = false }

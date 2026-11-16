@@ -278,6 +278,6 @@ fn routing_policy_status_default_is_none() {
 #[test]
 fn parse_restrict_refuses_a_non_string_tag() {
     use busbar_contract::hook_wire::parse_restrict;
-    assert!(parse_restrict(&serde_json::json!({"tags_any": ["gpu", 7]})).is_none());
-    assert!(parse_restrict(&serde_json::json!({"tags_any": ["gpu", " b "]})).is_some());
+    assert!(parse_restrict(&busbar_contract::json::json!({"tags_any": ["gpu", 7]})).is_none());
+    assert!(parse_restrict(&busbar_contract::json::json!({"tags_any": ["gpu", " b "]})).is_some());
 }

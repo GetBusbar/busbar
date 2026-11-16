@@ -123,9 +123,23 @@ fn file_registries(manifest: Manifest) -> [PluginRegistry; 2] {
     } else {
         busbar_plugin_loader::sign::SigningKey::from_bytes(&[22; 32])
     };
-    let publisher = (manifest.publisher.clone(), signer.verifying_key());
+    let publisher = (
+        manifest.publisher.clone(),
+        busbar_plugin_loader::sign::PublisherTrust {
+            plugins: [manifest.name.clone()].into_iter().collect(),
+            keys: vec![busbar_plugin_loader::sign::PublisherKey {
+                key: signer.verifying_key(),
+                revoked: false,
+            }],
+        },
+    );
+    let first_party = manifest.publisher == busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER;
     let bytes = std::fs::read(witness_path()).unwrap();
-    let signed = busbar_plugin_loader::sign::sign(&signer, manifest, &bytes);
+    let signed = if first_party {
+        busbar_plugin_loader::sign::seal_test_artifact(&signer, manifest, &bytes)
+    } else {
+        busbar_plugin_loader::sign::sign(&signer, manifest, &bytes)
+    };
     let dir = scratch("neutral-disk-package");
     std::fs::write(
         dir.join("exporter.tar.gz"),
@@ -138,7 +152,7 @@ fn file_registries(manifest: Manifest) -> [PluginRegistry; 2] {
             release.verifying_key(),
         )],
         publishers: std::iter::once(publisher)
-            .filter(|(_, key)| *key != release.verifying_key())
+            .filter(|_| !first_party)
             .collect(),
         binary_version: signed.version.clone(),
         ..Default::default()

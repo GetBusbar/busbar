@@ -14,7 +14,7 @@ path = "src/lib.rs"
 [dependencies]
 hex = { workspace = true }
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
-busbar-contract = { path = "../busbar-contract" }
+busbar-contract = { path = "../busbar-contract", features = ["axum"] }
 busbar-plugin-abi = { path = "../busbar-plugin-abi", features = ["host"] }
 axum = { workspace = true }
 serde = { workspace = true }

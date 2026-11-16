@@ -292,9 +292,9 @@ impl ResolveRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use busbar_contract::json::{self, json, JsonValueMutTrait as _};
 
-    fn request() -> serde_json::Value {
+    fn request() -> json::Value {
         json!({
             "operation_id": "00112233445566778899aabbccddeeff",
             "body_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn list_is_bounded_and_rejects_foreign_cursors() {
-        let empty: ListRequest = serde_json::from_value(json!({})).unwrap();
+        let empty: ListRequest = json::from_value(&json!({})).unwrap();
         assert_eq!(empty.page().unwrap(), (None, 200));
         for body in [
             json!({"limit": 0}),
@@ -316,19 +316,18 @@ mod tests {
             json!({"cursor": "keys:v1:123"}),
             json!({"cursor": "00112233445566778899aabbccddeeff"}),
         ] {
-            assert!(serde_json::from_value::<ListRequest>(body)
+            assert!(json::from_value::<ListRequest>(&body)
                 .unwrap()
                 .page()
                 .is_err());
         }
         let cursor = format!("{CURSOR_PREFIX}00112233445566778899aabbccddeeff");
-        let page: ListRequest =
-            serde_json::from_value(json!({"cursor":cursor,"limit":1000})).unwrap();
+        let page: ListRequest = json::from_value(&json!({"cursor":cursor,"limit":1000})).unwrap();
         assert_eq!(
             page.page().unwrap(),
             (lower_hex("00112233445566778899aabbccddeeff"), 1000)
         );
-        assert!(serde_json::from_value::<ListRequest>(json!({"force":true})).is_err());
+        assert!(json::from_value::<ListRequest>(&json!({"force":true})).is_err());
     }
 
     #[tokio::test]
@@ -355,7 +354,7 @@ mod tests {
             let bytes = axum::body::to_bytes(response.into_body(), 4096)
                 .await
                 .unwrap();
-            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            let body = json::parse_value(&bytes).unwrap();
             assert_eq!(body["error"]["code"], code);
             assert!(!String::from_utf8_lossy(&bytes).contains("private-"));
         }
@@ -363,7 +362,7 @@ mod tests {
 
     #[test]
     fn verdict_requires_the_inspected_operation_and_explicit_evidence() {
-        let parsed: ResolveRequest = serde_json::from_value(request()).unwrap();
+        let parsed: ResolveRequest = json::from_value(&request()).unwrap();
         assert_eq!(parsed.recovery_version, 7);
         assert_eq!(parsed.verdict, Verdict::NotLanded);
         assert!(parsed.validate().is_ok());
@@ -377,16 +376,16 @@ mod tests {
             "backend_quiesced",
         ] {
             let mut body = request();
-            body.as_object_mut().unwrap().remove(field);
+            body.as_object_mut().unwrap().remove(&field);
             assert!(
-                serde_json::from_value::<ResolveRequest>(body).is_err(),
+                json::from_value::<ResolveRequest>(&body).is_err(),
                 "{field}"
             );
         }
         for reason in ["".to_string(), "  \t\n".to_string(), "x".repeat(1025)] {
             let mut body = request();
             body["reason"] = json!(reason);
-            assert!(serde_json::from_value::<ResolveRequest>(body)
+            assert!(json::from_value::<ResolveRequest>(&body)
                 .unwrap()
                 .validate()
                 .is_err());
@@ -399,7 +398,7 @@ mod tests {
             let mut body = request();
             body["sender_quiesced"] = json!(sender);
             body["backend_quiesced"] = json!(backend);
-            assert!(serde_json::from_value::<ResolveRequest>(body)
+            assert!(json::from_value::<ResolveRequest>(&body)
                 .unwrap()
                 .validate()
                 .is_err());
@@ -408,7 +407,7 @@ mod tests {
             for value in [json!("true"), json!(1), json!(null)] {
                 let mut body = request();
                 body[field] = value;
-                assert!(serde_json::from_value::<ResolveRequest>(body).is_err());
+                assert!(json::from_value::<ResolveRequest>(&body).is_err());
             }
         }
     }
@@ -425,7 +424,7 @@ mod tests {
             let mut body = request();
             body[field] = json!(true);
             assert!(
-                serde_json::from_value::<ResolveRequest>(body).is_err(),
+                json::from_value::<ResolveRequest>(&body).is_err(),
                 "{field}"
             );
         }
@@ -433,7 +432,7 @@ mod tests {
             let mut body = request();
             body["verdict"] = json!(verdict);
             assert!(
-                serde_json::from_value::<ResolveRequest>(body).is_err(),
+                json::from_value::<ResolveRequest>(&body).is_err(),
                 "{verdict}"
             );
         }
@@ -452,7 +451,7 @@ mod tests {
                 let mut body = request();
                 body[field] = json!(value);
                 assert!(
-                    serde_json::from_value::<ResolveRequest>(body)
+                    json::from_value::<ResolveRequest>(&body)
                         .unwrap()
                         .validate()
                         .is_err(),

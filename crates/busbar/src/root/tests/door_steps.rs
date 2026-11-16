@@ -691,12 +691,12 @@ fn a_member_granted_pool_route_is_judged_on_the_member_it_is_addressed_to() {
         "an empty grant reaches no member"
     );
     assert!(
-        granted(&key(&[]), None),
-        "no counterparty stated: the members are the plane's to judge"
+        !granted(&key(&[]), None),
+        "no counterparty stated: core refuses the scoped key"
     );
     assert!(
-        granted(&key(&[]), Some("elsewhere")),
-        "a counterparty outside the pool names no member of it"
+        !granted(&key(&[]), Some("elsewhere")),
+        "a counterparty outside the pool is refused by core"
     );
     assert!(
         p.granted_to(
@@ -1069,8 +1069,6 @@ fn downgrading(pool: &str, amount: u64, to: &str) -> busbar_kernel::config::grou
         scope: Some(busbar_contract::records::ScopeRef::pool(pool)),
         on_exhaust: Some(OnExhaust::Downgrade),
         downgrade_to: Some(busbar_contract::records::ScopeRef::pool(to)),
-        admission: None,
-        on_exhaustion: None,
     }
 }
 
@@ -1343,8 +1341,6 @@ async fn a_live_parent_at_the_request_cap_admits_and_ledgers_its_child() {
             scope: None,
             on_exhaust: None,
             downgrade_to: None,
-            admission: None,
-            on_exhaustion: None,
         }],
         None,
     )
@@ -1620,6 +1616,134 @@ async fn a_downgrade_never_routes_a_key_into_a_pool_it_may_not_use() {
     );
 }
 
+/// A MEMBER-GRANTED pool's grants are core's (#108, Aikido 1074606971): a unit routed over one is
+/// approved only on a member of the pool that its key's `allowed_<kind>s` grant (the role
+/// binding's plane grant), never on the pool's name and never left to the plane, and a budget
+/// downgrade into one reaches only the members the key grants.
+#[tokio::test]
+async fn a_member_granted_pool_reaches_only_the_members_the_key_grants() {
+    use busbar_contract::records::{ScopeRef, VirtualKey};
+    use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
+    use std::sync::Arc;
+
+    let pools = pools(&format!(
+        "{DOWNGRADE_SECTION}\n  crew:\n    members: [small, tiny]\n    member_granted: true"
+    ));
+    let seats = |names: &[&str]| {
+        Some(
+            names
+                .iter()
+                .map(|n| ScopeRef {
+                    kind: "seat".to_string(),
+                    value: (*n).to_string(),
+                })
+                .collect::<Vec<_>>(),
+        )
+    };
+    let small = VirtualKey {
+        allowed_scopes: seats(&["small"]),
+        ..VirtualKey::default()
+    };
+    let approved = |key: &VirtualKey, counterparty: Option<&str>| {
+        pools.granted_to(
+            Some("seat"),
+            Some(key),
+            (ROUTE_POOL, Some(b"crew".as_slice())),
+            counterparty.map(str::as_bytes),
+            None,
+        )
+    };
+    assert!(
+        approved(&small, Some("small")),
+        "the member the key's grant names"
+    );
+    assert!(
+        !approved(&small, None),
+        "no member stated: refused, never left to the plane"
+    );
+    assert!(
+        !approved(&small, Some("tiny")),
+        "a member the key's allowed_seats do not name"
+    );
+    assert!(
+        !approved(&small, Some("elsewhere")),
+        "a counterparty the pool does not list is no member of it"
+    );
+
+    let (app, minted) = downgrade_book(vec![downgrading("frontier", 25, "crew")], None).await;
+    let key = Arc::new(VirtualKey {
+        allowed_scopes: seats(&["small"]),
+        ..(*minted).clone()
+    });
+    let gov = Arc::clone(app.governance.as_ref().expect("a governed generation"));
+    let post = Arc::new(crate::root::plane_node::NodeEndPost::new(Arc::new(
+        crate::root::plane_node::Node::new(),
+    )));
+    let money = PlaneMoney::new(Arc::clone(&gov), post as Arc<dyn EndPost>);
+    let facts = super::door_facts(
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("").unwrap(),
+        &["seat"],
+        &[],
+        &[],
+        "door",
+        Vec::new(),
+    );
+    let arrived = busbar_kernel::store::now();
+    let charge = |unit: u64| {
+        let steps = super::DoorSteps::new(
+            &facts,
+            &pools,
+            Arc::new(|_: &str| None),
+            Arc::clone(&app),
+            Some(&money),
+            super::DoorCaller {
+                principal: busbar_contract::caps::PrincipalId::new(key.id.as_str()),
+                key: Some(Arc::clone(&key)),
+                open: false,
+                arrived,
+                records: None,
+                depth: 0,
+                credential: None,
+                ticket: None,
+            },
+        );
+        steps.lock().routed = pools.resolve(ROUTE_POOL, Some(b"frontier"));
+        let ctx = busbar_kernel::teller::UnitCtx {
+            call: busbar_contract::caps::CallId::UNBOUND,
+            key: busbar_contract::UnitKey::new(unit),
+            origin: busbar_contract::caps::OriginKind::Client,
+            session: None,
+            generation: busbar_kernel::registry::Generation::FIRST,
+            admin_listener: false,
+            kernel_verb_only: false,
+        };
+        let admitted = steps
+            .charge(&ctx, &key)
+            .map(|_| ())
+            .map_err(|refusal| refusal.reason());
+        (admitted, steps.routed(), steps.downgraded())
+    };
+    for unit in 1..=2 {
+        assert_eq!(
+            charge(unit).0,
+            Ok(()),
+            "unit {unit} is under the frontier cap"
+        );
+    }
+    let (admitted, routed, downgraded) = charge(3);
+    assert_eq!(
+        admitted,
+        Ok(()),
+        "downgraded, not refused: the key holds a member of crew"
+    );
+    assert_eq!(downgraded.as_deref(), Some("crew"));
+    assert_eq!(
+        routed,
+        owned("crew", &["small"]),
+        "the downgrade reaches only the member the key grants, never `tiny`"
+    );
+}
+
 /// The baseline llm configuration the A31 upgrade cells serve: `oracle-fo` walks two weighted
 /// models, `oracle-fb` spills into it, and `m-other` is a model in no pool.
 fn llm_baseline() -> busbar_kernel::config::RootCfg {
@@ -1725,8 +1849,6 @@ async fn exhausted_pool_walk_bills_under_a_member_lane() {
             scope: None,
             on_exhaust: None,
             downgrade_to: None,
-            admission: None,
-            on_exhaustion: None,
         }],
         None,
         Some(card),
@@ -1816,14 +1938,7 @@ async fn exhausted_pool_walk_bills_under_a_member_lane() {
         )
         .await
         .expect("a fresh key in the same group");
-    let admitted = gov.try_admit_estimated_counts(
-        &app.cost,
-        &fresh,
-        "oracle-fo",
-        busbar_kernel::store::now(),
-        &["m-openai-chat", "m-anthropic"],
-        &std::collections::BTreeMap::new(),
-    );
+    let admitted = gov.try_admit(&app.cost, &fresh, "oracle-fo", busbar_kernel::store::now());
     assert!(
         admitted.is_ok(),
         "the group is still served after one exhausted walk: {:?}",
@@ -1974,8 +2089,6 @@ fn one_request_a_day() -> busbar_kernel::config::groups::LimitCfg {
         scope: None,
         on_exhaust: None,
         downgrade_to: None,
-        admission: None,
-        on_exhaustion: None,
     }
 }
 
@@ -5243,8 +5356,6 @@ async fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() 
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
-                admission: None,
-                on_exhaustion: None,
             }],
             ..Default::default()
         },

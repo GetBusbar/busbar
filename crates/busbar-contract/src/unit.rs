@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! The refusal codes and the facts the teller's steps seal.
 
 use crate::bounded::{BoundedVec, MAX_USAGE_LINES};

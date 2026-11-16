@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait as _};
 use busbar_contract::secure::{SecureString, SecureVec, Tail};
 use std::collections::HashSet;
 use std::io::{Read, Write};
@@ -245,13 +246,13 @@ async fn an_idempotent_mint_retried_after_a_restart_is_refused_not_minted_twice(
         .header("x-admin-token", "admintok")
         .header("content-type", "application/json")
         .header("idempotency-key", "restart-mint")
-        .body(serde_json::json!({"name": "once"}).to_string())
+        .body(json::json!({"name": "once"}).to_string())
         .send()
         .await
         .unwrap();
     if first {
         assert_eq!(response.status().as_u16(), 201);
-        let minted: serde_json::Value = response.json().await.unwrap();
+        let minted = json::parse_value(&response.bytes().await.unwrap()).unwrap();
         send_handoff(minted["id"].as_str().expect("the mint names its key"), None);
     } else {
         assert_eq!(
@@ -259,7 +260,7 @@ async fn an_idempotent_mint_retried_after_a_restart_is_refused_not_minted_twice(
             409,
             "a retry after a process restart must not mint again"
         );
-        let retry: serde_json::Value = response.json().await.unwrap();
+        let retry = json::parse_value(&response.bytes().await.unwrap()).unwrap();
         let id = handoff
             .lines()
             .next()
@@ -315,12 +316,12 @@ async fn an_idempotent_rotate_retried_after_a_restart_is_refused_not_rotated_twi
         let response = client
             .post(format!("http://{addr}/api/v1/admin/keys"))
             .header("x-admin-token", "admintok")
-            .json(&serde_json::json!({"name": "rotated"}))
+            .json(&json::json!({"name": "rotated"}))
             .send()
             .await
             .unwrap();
         assert_eq!(response.status().as_u16(), 201);
-        let created: serde_json::Value = response.json().await.unwrap();
+        let created = json::parse_value(&response.bytes().await.unwrap()).unwrap();
         created["id"].as_str().unwrap().to_string()
     } else {
         handoff
@@ -339,7 +340,7 @@ async fn an_idempotent_rotate_retried_after_a_restart_is_refused_not_rotated_twi
         .unwrap();
     if first {
         assert_eq!(response.status().as_u16(), 200);
-        let rotated: serde_json::Value = response.json().await.unwrap();
+        let rotated = json::parse_value(&response.bytes().await.unwrap()).unwrap();
         send_handoff(
             &id,
             Some(

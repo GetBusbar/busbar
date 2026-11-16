@@ -74,7 +74,16 @@ fn packed_tarball_verifies_end_to_end() {
     let tarball = busbar_plugin_loader::tarball::package(&signed, "lib.so", lib).unwrap();
     let up = busbar_plugin_loader::tarball::unpack(&tarball).unwrap();
     let mut policy = busbar_plugin_loader::sign::TrustPolicy::default();
-    policy.publishers.insert("acme".into(), key.verifying_key());
+    policy.publishers.insert(
+        "acme".into(),
+        crate::sign::PublisherTrust {
+            plugins: [up.manifest.name.clone()].into_iter().collect(),
+            keys: vec![crate::sign::PublisherKey {
+                key: key.verifying_key(),
+                revoked: false,
+            }],
+        },
+    );
     assert!(matches!(
         busbar_plugin_loader::sign::evaluate(&up.lib_bytes, &up.manifest, &policy).unwrap(),
         busbar_plugin_loader::sign::Verdict::Trusted { .. }
@@ -82,7 +91,7 @@ fn packed_tarball_verifies_end_to_end() {
 }
 
 #[test]
-fn pack_cli_respects_allow_unsigned_and_returns_the_right_exit_code() {
+fn pack_cli_respects_allow_untrusted_and_returns_the_right_exit_code() {
     std::env::remove_var(SIGN_KEY_ENV);
     let dir = std::env::temp_dir().join(format!("plugin-pack-cli-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -395,7 +404,7 @@ fn packed_hook_needs_prompt_rw_is_signed() {
         statement: None,
         former_names: Vec::new(),
     };
-    let signed = sign(&key, m, lib);
+    let signed = crate::sign::seal_test_artifact(&key, m, lib);
     assert_eq!(signed.needs.prompt, NeedLevel::Rw);
     busbar_plugin_loader::sign::validate_structure(
         &signed,

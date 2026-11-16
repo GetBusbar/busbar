@@ -13,7 +13,7 @@
 //! final page is the flip (manifest (f+1, 0), cursor deleted, RECORDS_EVOLVED) in one commit.
 //! Nothing serves until the manifest is current, so mixed-format rows are read only here.
 
-use busbar_contract::abi::sdk::store::cells::{self, Cell};
+use busbar_contract::persistence::cells::{self, Cell};
 use busbar_contract::persistence::NamespaceId;
 use busbar_contract::secure::SecureVec;
 

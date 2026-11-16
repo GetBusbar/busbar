@@ -14,8 +14,8 @@ use busbar_plugin_abi::fail::refused::{
 };
 use busbar_plugin_abi::fail::CallError;
 use busbar_plugin_abi::kinds::auth::auth::{BAD_CREDENTIAL, NOT_MINE};
-use busbar_plugin_loader::instance::PluginCode;
-use busbar_plugin_loader::ports::PortError;
+use busbar_ports::PluginCode;
+use busbar_ports::PortError;
 
 const WORDS: &str = "backend-said: token=abc BUSBAR-acme-auth-0042";
 

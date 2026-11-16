@@ -201,8 +201,6 @@ async fn test_scrape_gauges_uncapped_group_bucket_no_remaining() {
                     scope: None,
                     on_exhaust: None,
                     downgrade_to: None,
-                    admission: None,
-                    on_exhaustion: None,
                 }],
                 ..Default::default()
             },
@@ -266,8 +264,6 @@ async fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
-                admission: None,
-                on_exhaustion: None,
             }],
             ..Default::default()
         },

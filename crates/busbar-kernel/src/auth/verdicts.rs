@@ -12,8 +12,8 @@ use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use busbar_plugin_abi::auth::{FB_NEEDS_BODY, FB_NEEDS_BODY_HASH};
 use busbar_plugin_abi::host_side::caller::BoxFut;
-use busbar_plugin_loader::ports::auth::{Identity, Verdict};
-use busbar_plugin_loader::ports::PortError;
+use busbar_ports::auth::{Identity, Verdict};
+use busbar_ports::PortError;
 use foldhash::HashMap;
 use tokio::sync::oneshot;
 
@@ -21,7 +21,7 @@ use tokio::sync::oneshot;
 pub const LEAD_MS: u64 = 30_000;
 /// The most callers that wait on one lead; one more verifies unshared (`Bypass`, never refused).
 pub const MAX_FOLLOWERS: usize = 1024;
-const LEAD_S: u64 = LEAD_MS / 1_000;
+pub(crate) const LEAD_S: u64 = LEAD_MS / 1_000;
 const SHARDS: usize = 16;
 
 /// The credential a verify read, by hash only (the credential itself is never stored). `credential` = SHA-256
@@ -234,16 +234,16 @@ pub trait VerdictCache: Send + Sync + 'static {
 }
 
 /// One key of one instance's cache (VerifyBook's `Slot`).
-struct Slot<V, O> {
+pub(crate) struct Slot<V, O> {
     /// The stored value and when it goes stale (seconds, the caller's `now_s` clock).
-    entry: Option<(V, u64)>,
+    pub(crate) entry: Option<(V, u64)>,
     /// When the standing lead lapses; `None` = no lead.
-    lead_until: Option<u64>,
+    pub(crate) lead_until: Option<u64>,
     /// The callers waiting on the lead, in arrival order.
-    followers: VecDeque<oneshot::Sender<Handoff<O>>>,
+    pub(crate) followers: VecDeque<oneshot::Sender<Handoff<O>>>,
 }
 
-enum Handoff<O> {
+pub(crate) enum Handoff<O> {
     Outcome(O),
     Lead,
 }
@@ -259,22 +259,22 @@ impl<V, O> Default for Slot<V, O> {
 }
 
 impl<V, O> Slot<V, O> {
-    fn fresh(&self, now_s: u64) -> Option<&V> {
+    pub(crate) fn fresh(&self, now_s: u64) -> Option<&V> {
         self.entry
             .as_ref()
             .filter(|(_, until)| now_s < *until)
             .map(|(value, _)| value)
     }
 
-    fn idle(&self) -> bool {
+    pub(crate) fn idle(&self) -> bool {
         self.lead_until.is_none() && self.followers.is_empty()
     }
 }
 
 /// One instance's keys and its flush epoch (rule 6).
-struct Keys<V, O> {
-    epoch: AtomicU64,
-    keys: HashMap<[u8; 32], Slot<V, O>>,
+pub(crate) struct Keys<V, O> {
+    pub(crate) epoch: AtomicU64,
+    pub(crate) keys: HashMap<[u8; 32], Slot<V, O>>,
 }
 
 impl<V, O> Default for Keys<V, O> {
@@ -290,7 +290,7 @@ impl<V, O> Default for Keys<V, O> {
 pub struct Verdicts<V = Identity, O = Outcome> {
     policy: VerdictPolicy,
     fill: Fill<V, O>,
-    shards: [RwLock<HashMap<u64, Keys<V, O>>>; SHARDS],
+    pub(crate) shards: [RwLock<HashMap<u64, Keys<V, O>>>; SHARDS],
 }
 
 impl Verdicts {
@@ -320,7 +320,10 @@ impl<V, O> Verdicts<V, O> {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn write(&self, auth_instance: u64) -> RwLockWriteGuard<'_, HashMap<u64, Keys<V, O>>> {
+    pub(crate) fn write(
+        &self,
+        auth_instance: u64,
+    ) -> RwLockWriteGuard<'_, HashMap<u64, Keys<V, O>>> {
         self.shard(auth_instance)
             .write()
             .unwrap_or_else(PoisonError::into_inner)
@@ -393,43 +396,6 @@ impl<V: Clone + Send + Sync + 'static, O: Clone + Send + Sync + 'static> Verdict
             .map_or(0, |keys| keys.epoch.load(Ordering::Relaxed))
     }
 
-    /// Rule 6: drop every entry of the instance and move its epoch, so no lead begun before fills; standing
-    /// leads and their followers stay.
-    pub fn flush(&self, auth_instance: u64) {
-        let mut book = self.write(auth_instance);
-        if let Some(keys) = book.get_mut(&auth_instance) {
-            keys.epoch.fetch_add(1, Ordering::Relaxed);
-            keys.keys.retain(|_, slot| !slot.idle());
-            for slot in keys.keys.values_mut() {
-                slot.entry = None;
-            }
-        }
-    }
-
-    /// The watchdog tick (rule 4, VerifyBook's `expire`): a lapsed lead passes to its first live follower, or
-    /// ends; idle stale keys and empty instances go. Returns how many leads were handed on.
-    pub fn expire(&self, now_s: u64) -> usize {
-        let mut handed = 0;
-        for shard in &self.shards {
-            let mut book = shard.write().unwrap_or_else(PoisonError::into_inner);
-            for keys in book.values_mut() {
-                for slot in keys.keys.values_mut() {
-                    if !slot.lead_until.is_some_and(|until| now_s >= until) {
-                        continue;
-                    }
-                    if hand(slot) {
-                        slot.lead_until = Some(now_s.saturating_add(LEAD_S));
-                        handed += 1;
-                    }
-                }
-                keys.keys
-                    .retain(|_, slot| !(slot.idle() && slot.fresh(now_s).is_none()));
-            }
-            book.retain(|_, keys| !keys.keys.is_empty());
-        }
-        handed
-    }
-
     /// How many keys the instance holds (VerifyBook's `keys`).
     pub fn keys(&self, auth_instance: u64) -> usize {
         self.read(auth_instance)
@@ -453,7 +419,7 @@ impl VerdictCache for Verdicts {
 }
 
 /// Pass a slot's lead to its first follower still waiting; with none left, the lead ends.
-fn hand<V, O>(slot: &mut Slot<V, O>) -> bool {
+pub(crate) fn hand<V, O>(slot: &mut Slot<V, O>) -> bool {
     while let Some(next) = slot.followers.pop_front() {
         if next.send(Handoff::Lead).is_ok() {
             return true;

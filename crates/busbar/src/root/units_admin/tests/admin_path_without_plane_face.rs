@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! THE ADMIN REQUEST CHAIN, END TO END, WITH NO PLANE ENTRY FACE ANYWHERE ON IT.
 //!
 //! The administrative surface serves operators on its own listener. It is a compiled-in core-admin surface, not a plugin or traffic `Plane`, and there is no `control` kind.

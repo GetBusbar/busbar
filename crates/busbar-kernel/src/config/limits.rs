@@ -92,9 +92,6 @@ pub fn default_max_keys_per_principal() -> usize {
 pub fn default_max_auto_provisioned_groups() -> usize {
     0
 }
-pub fn default_hook_content_max_bytes() -> usize {
-    crate::hooks::DEFAULT_HOOK_CONTENT_MAX_BYTES
-}
 pub fn default_hard_down_cooldown_secs() -> u64 {
     DEFAULT_HARD_DOWN_COOLDOWN_SECS
 }
@@ -167,17 +164,6 @@ pub struct LimitsCfg {
     /// Explicitly configured groups are unaffected: the ceiling gates auto-provisioning only.
     #[serde(default = "default_max_auto_provisioned_groups")]
     pub max_auto_provisioned_groups: usize,
-    /// Ceiling, in bytes, on the request CONTENT a hook holding a `prompt: ro|rw` grant is shown in
-    /// one projection (default 65536). Over-cap content is OMITTED WHOLE — never truncated
-    /// mid-value, because a guardrail that screens half a payload and passes it is worse than one
-    /// that refuses — and the hook is sent an EMPTY content projection, which the wire distinguishes
-    /// from an ungranted one; the always-present size bucket still reports the real total, so the
-    /// omission is visible in the payload rather than silent. `busbar_hook_content_truncated_total`
-    /// counts it. This bounds a widening: a content-granted hook now also sees tool-call arguments
-    /// and tool-result content, which on an agent request is bounded by neither a context window nor
-    /// a token count. `0` = unlimited.
-    #[serde(default = "default_hook_content_max_bytes")]
-    pub hook_content_max_bytes: usize,
     #[serde(default = "default_hard_down_cooldown_secs")]
     pub hard_down_cooldown_secs: u64,
     #[serde(default = "default_upstream_error_body_max_bytes")]
@@ -249,7 +235,6 @@ impl Default for LimitsCfg {
             max_inbound_concurrent: default_max_inbound_concurrent(),
             max_keys_per_principal: default_max_keys_per_principal(),
             max_auto_provisioned_groups: default_max_auto_provisioned_groups(),
-            hook_content_max_bytes: default_hook_content_max_bytes(),
             hard_down_cooldown_secs: default_hard_down_cooldown_secs(),
             upstream_error_body_max_bytes: default_upstream_error_body_max_bytes(),
             tls_handshake_timeout_secs: default_tls_handshake_timeout_secs(),
@@ -377,9 +362,6 @@ pub struct LimitsResolved {
     /// Max groups a mint may AUTO-PROVISION (0 = unlimited) — the sibling anti-sprawl cap on the
     /// SHAPE of the limit tree, not just its contents.
     pub max_auto_provisioned_groups: usize,
-    /// Ceiling on the request CONTENT a `prompt: ro|rw` hook is shown in one projection (0 =
-    /// unlimited). Over-cap content is omitted WHOLE, never truncated mid-value.
-    pub hook_content_max_bytes: usize,
     pub hard_down_cooldown_secs: u64,
     pub upstream_error_body_max_bytes: usize,
     pub tls_handshake_timeout_secs: u64,
@@ -432,7 +414,6 @@ impl LimitsResolved {
             max_inbound_concurrent: limits.max_inbound_concurrent,
             max_keys_per_principal: limits.max_keys_per_principal,
             max_auto_provisioned_groups: limits.max_auto_provisioned_groups,
-            hook_content_max_bytes: limits.hook_content_max_bytes,
             hard_down_cooldown_secs: limits.hard_down_cooldown_secs,
             upstream_error_body_max_bytes: limits.upstream_error_body_max_bytes,
             tls_handshake_timeout_secs: limits.tls_handshake_timeout_secs,
@@ -525,9 +506,4 @@ fn mirror_derived_caps(slot: Option<&LimitsResolved>) {
         .map(|l| l.request_body_max_bytes)
         .unwrap_or(DEFAULT_REQUEST_BODY_MAX_BYTES);
     busbar_kernel_egress::upstream::set_max_translate_body_bytes(translate_cap);
-
-    let hook_content = slot
-        .map(|l| l.hook_content_max_bytes)
-        .unwrap_or(crate::hooks::DEFAULT_HOOK_CONTENT_MAX_BYTES);
-    crate::hooks::set_hook_content_max_bytes(hook_content);
 }

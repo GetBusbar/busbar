@@ -242,7 +242,7 @@ use crate::caps::ReasonCode;
 pub const ABI_VERSION: u32 = crate::abi::versions::PLANE.raw();
 
 /// The plane kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-pub const LAYOUT_FINGERPRINT: u64 = 0xf333cffc6e7801db;
+pub const LAYOUT_FINGERPRINT: u64 = 0x3943afecefc5949d;
 
 /// The plane kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
 pub const LAYOUT_SHAPES: &[&[u64]] = &[
@@ -347,6 +347,7 @@ pub const LAYOUT_SHAPES: &[&[u64]] = &[
         head, view, body, signals_needed, _reserved, arena_written, arena_needed, prompt, end_user,
         rewritten, messages_needed, _reserved2
     ),
+    crate::abi::host::service::HOST_SLOTS_LAYOUT,
 ];
 
 /// [`crate::abi::mechanism::call::InHead::op`] of each plane op, in table order: kind op `k` is

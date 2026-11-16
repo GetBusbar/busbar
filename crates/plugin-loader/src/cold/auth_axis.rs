@@ -184,7 +184,7 @@ pub(crate) fn open_failed(name: &str, e: &str) -> String {
 pub(crate) fn outbound_settings<S: serde::Serialize + ?Sized>(
     settings: &S,
 ) -> Result<Vec<u8>, String> {
-    serde_json::to_vec(settings).map_err(|e| e.to_string())
+    busbar_contract::json::to_vec(settings).map_err(|e| e.to_string())
 }
 
 /// Config: an auth plugin's stated aliases, read when config names a module.

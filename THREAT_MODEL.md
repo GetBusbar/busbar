@@ -172,12 +172,11 @@ A request must not be mis-routed, and one caller's failures must not corrupt ano
 (`crates/busbar-kernel-breaker/src/cell.rs`). The request budget is a compare-and-swap loop. Money
 is never stored: spend is derived from metered usage times the rate card and checked against the cap
 under the same held locks as the charge (`crates/busbar-kernel/src/governance/state.rs`,
-`try_admit_estimated`).
+`try_admit`).
 
-**Limits:** a clamped `Retry-After` can still park a destination for up to the ceiling. Under the
-default `admission: exact`, only an already-exhausted budget is refused and the estimate is not
-reserved, so concurrent in-flight requests can each overshoot a cap by up to one request (more for
-streams unless `cut-stream` is set). **Rewrite failure has distinct outcomes.** An optional
+**Limits:** a clamped `Retry-After` can still park a destination for up to the ceiling. Only an
+already-exhausted budget is refused and no estimate is reserved, so concurrent in-flight requests
+can each overshoot a cap by up to one request (more for streams). **Rewrite failure has distinct outcomes.** An optional
 transform failure can retain the original content; `on_error: reject` converts a transform
 failure to refusal. A returned rewrite that cannot be projected onto the protocol is refused,
 not silently replaced by the original body. A not-applicable transform or content omitted from
@@ -214,13 +213,13 @@ code-execution foothold. **Mitigation:**
 - **Off by default.** `plugins.enabled` defaults to `false`; with it off, nothing in the plugins
   directory is read, and a config that references a plugin that is not available refuses boot
   (`crates/busbar-kernel/src/config/mod.rs`, `crates/busbar/src/root/boot.rs`).
-- **Signed.** Every dropped-in plugin's signed manifest is verified (`verify_strict`) against the
-  Ed25519 release key embedded in the binary at build time (first party, no config) or a publisher
-  key the operator allowlisted under `plugins.trust.publishers`; unsigned or third-party plugins
-  load only with `allow_unsigned` / `allow_third_party`, both `false` by default
-  (`crates/plugin-loader/src/sign.rs`). An untrusted plugin is logged and skipped, never loaded.
-  Only a first-party plugin may claim a first-party egress class
-  (`crates/plugin-loader/src/registry.rs`).
+- **Authenticated provenance.** Busbar releases verify through the embedded root, a root-signed
+  keys document and delegated release signatures. Configured publisher keys authenticate only
+  the exact plugin names the operator permits. Multiple keys allow overlap, and explicit revoked
+  keys cannot admit code. `allow_untrusted`, default false, permits unsigned or unknown-publisher
+  code with an unverified audit/admin verdict. Invalid known-publisher signatures, altered bytes,
+  out-of-scope names and authenticated revocations are hard refusals regardless of that flag
+  (`crates/plugin-loader/src/sign.rs`). Signature provenance grants no runtime egress privilege.
 - **No replay of older builds.** `plugins.min_versions` floors any trusted plugin. A first-party
   plugin is also floored at the highest version this host has loaded (kept in `data_dir` and in the
   store); loading below it refuses boot unless an operator records a rollback through the audited
@@ -296,7 +295,7 @@ stop someone who holds both from re-signing history.
   configured store.
 - Operators who deliberately configure Busbar insecurely (`admin_require_mtls: false` on an exposed
   admin listener, an empty auth chain in production,
-  `allow_unsigned`, `allow_third_party`): documented foot-guns behind explicit settings, warned at
+  `allow_untrusted`): documented foot-guns behind explicit settings, warned at
   boot.
 - Physical access and side channels beyond the constant-time comparisons noted above.
 - A malicious plugin reading a credential out of Busbar's own process memory (T10's accepted

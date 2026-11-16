@@ -7,9 +7,10 @@
 //! its write still lands: nothing is cancelled), and returns 75 or 70 by the custody rule, never
 //! 1. `finish` returns the code instead of exiting; that is the test seam.
 //!
-//! Not here (they need a running gateway, a live plane or a successor process): every
-//! successor/adoption assertion, (a)-(c) and (g), (h) and its variants v2-v7, (i), the notary,
-//! the predecessor fence cases and the slow-store backlog.
+//! (a) and (b) run here over the store-backed unit checkpoint and recovery sinks. Not here (they
+//! need a running gateway, a live plane or a successor process): every successor/adoption
+//! assertion, (c) (its removal first confirms a sealed audit line), (g), (h) and its variants
+//! v2-v7, (i), the notary, the predecessor fence cases and the slow-store backlog.
 
 use super::tests::{money_driver, Fixture, FlushGate};
 use super::*;
@@ -273,4 +274,66 @@ async fn serving_longer_than_the_budget_cuts_nothing_before_the_first_signal() {
     assert!(started.elapsed() >= budget + Duration::from_secs(1));
     assert_eq!(code, 0, "nothing was cut, so the writer retires");
     assert_eq!(drain.detached(), 0, "no detach before the first broadcast");
+}
+
+/// (a) A running unit's persist select the store never answers, and (b) a finished unit's
+/// recovery select the store never answers: the money driver's unit pass holds that write, is
+/// detached at C3 (never aborted), and the exit is 70 with the running unit flush `in_doubt`;
+/// released, the held write still lands.
+#[tokio::test(flavor = "current_thread")]
+async fn a_held_unit_select_detaches_the_money_driver_and_exits_70() {
+    for recovery in [false, true] {
+        let fixture = Fixture::new(16).await;
+        fixture.attach_sinks().await;
+        let unit = fixture.unit();
+        if recovery {
+            assert!(fixture.seen.gov.finish_unit_checkpoint(unit));
+        } else {
+            fixture.seen.gov.stage_unit_checkpoint(unit);
+        }
+        let gate = Arc::new(FlushGate::default());
+        let held = if recovery {
+            &fixture.seen.backend.recovery
+        } else {
+            &fixture.seen.backend.unitcp
+        };
+        *held.lock().unwrap() = Some(gate.clone());
+        let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
+        let clock = DrainClock::new(SHORT);
+        let flusher = money_driver(&fixture.seen.gov, &clock, &shutdown_tx);
+        let (post, seen) = fixture.post(true, Some(flusher), &shutdown_tx, None);
+        let drain = ShutdownDrain::new(clock);
+        let (code, _) = finished(post, &drain).await;
+        assert_eq!(
+            code, 70,
+            "recovery={recovery}: the held unit write is in doubt"
+        );
+        assert!(
+            drain.detached() >= 1,
+            "recovery={recovery}: the money driver was detached at C3"
+        );
+        let custody = seen.gov.spend_custody();
+        assert!(
+            custody
+                .in_doubt
+                .iter()
+                .any(|item| item.kind == "unit_flush"),
+            "recovery={recovery}: {custody:?}"
+        );
+        gate.release();
+        let gov = Arc::clone(&seen.gov);
+        eventually(
+            "the detached unit pass ends once its write lands",
+            move || {
+                let gov = Arc::clone(&gov);
+                async move {
+                    !gov.spend_custody()
+                        .in_doubt
+                        .iter()
+                        .any(|item| item.kind == "unit_flush")
+                }
+            },
+        )
+        .await;
+    }
 }

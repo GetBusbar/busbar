@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use busbar_contract::json::{self, JsonValueTrait as _};
 use busbar_kernel::governance::NewKeySpec;
 
 fn budget_limit(cents: u64) -> busbar_kernel::config::groups::LimitCfg {
@@ -14,8 +15,6 @@ fn budget_limit(cents: u64) -> busbar_kernel::config::groups::LimitCfg {
         scope: None,
         on_exhaust: None,
         downgrade_to: None,
-        admission: None,
-        on_exhaustion: None,
     }
 }
 
@@ -36,8 +35,6 @@ async fn test_create_key_budget_group_and_labels_roundtrip_and_missing_group_400
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
-                admission: None,
-                on_exhaustion: None,
             }],
             ..Default::default()
         },
@@ -76,12 +73,12 @@ async fn test_create_key_budget_group_and_labels_roundtrip_and_missing_group_400
     let resp = client
         .post(&url)
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "k", "group": "ghost"}))
+        .json(&json::json!({"name": "k", "group": "ghost"}))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 400);
-    let body: serde_json::Value = resp.json().await.unwrap();
+    let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
     assert!(
         body["error"]["message"]
             .as_str()
@@ -93,7 +90,7 @@ async fn test_create_key_budget_group_and_labels_roundtrip_and_missing_group_400
     let resp = client
         .post(&url)
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({
+        .json(&json::json!({
             "name": "grouped",
             "group": "growth",
             "labels": {"team": "growth", "env": "prod"}
@@ -102,20 +99,23 @@ async fn test_create_key_budget_group_and_labels_roundtrip_and_missing_group_400
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 201, "configured group mints");
-    let body: serde_json::Value = resp.json().await.unwrap();
+    let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
     assert_eq!(body["group"], "growth");
     assert_eq!(body["labels"]["env"], "prod");
     let id = body["id"].as_str().unwrap().to_string();
 
-    let list: serde_json::Value = client
-        .get(&url)
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let list = json::parse_value(
+        &client
+            .get(&url)
+            .header("x-admin-token", "admintok")
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     let row = list["items"]
         .as_array()
         .unwrap()
@@ -240,7 +240,7 @@ async fn test_admin_v1_patch_no_op_on_an_already_counted_key_is_not_an_admission
     let noop = client
         .patch(format!("http://{addr}/api/v1/admin/keys/{}", a.id))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({}))
+        .json(&json::json!({}))
         .send()
         .await
         .unwrap();

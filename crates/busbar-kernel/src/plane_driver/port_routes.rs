@@ -23,8 +23,8 @@ use busbar_plugin_abi::plane::{
     ADMIN_CATALOG, ADMIN_HYDRATE, AUTH_OPERATOR, AUTH_PRINCIPAL, ROUTE_ADMIN, ROUTE_CATALOG,
     ROUTE_LINE, ROUTE_RECOVERY, ROUTE_UPGRADE, RQ_RECOVERY,
 };
-use busbar_plugin_loader::ports::plane::{PlaneIn, PlanePort, RouteInfo};
-use busbar_plugin_loader::ports::{CallCx, PortError};
+use busbar_ports::plane::{PlaneIn, PlanePort, RouteInfo};
+use busbar_ports::{CallCx, PortError};
 
 use super::port_auth::effective_classes;
 

@@ -21,7 +21,7 @@ use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
 use busbar_contract::Secret;
 
 use crate::persistence::facade::CoreStore;
-use crate::persistence::scoped::ScopedStore;
+use crate::persistence::scoped::{Expected, Mutation, Predicate, Request, ScopedStore};
 use crate::plugin_records::store::{denied, expiry, label, live, operation, InDoubt};
 use crate::plugin_records::RecordsDenied;
 use crate::retry::{PortError, Retry, RetryPolicy, RetrySite};
@@ -164,17 +164,20 @@ fn envelope(expires_at: u64, next_at: u64, attempt: u32, recs: &[u8]) -> Secret<
 }
 
 fn decode(key: Vec<u8>, raw: Secret<Vec<u8>>) -> Option<Row> {
-    let seal = crate::seal::lend();
-    let bytes = raw.expose(&seal);
-    let (&version, rest) = bytes.split_first()?;
-    if version != 1 || rest.len() < 20 {
-        return None;
-    }
-    let expires_at = u64::from_be_bytes(rest[..8].try_into().ok()?);
-    let next_at = u64::from_be_bytes(rest[8..16].try_into().ok()?);
-    let attempt = u32::from_be_bytes(rest[16..20].try_into().ok()?);
-    let recs = rest[20..].to_vec();
-    drop(seal);
+    let (expires_at, next_at, attempt, recs) = {
+        let seal = crate::seal::lend();
+        let bytes = raw.expose(&seal);
+        let (&version, rest) = bytes.split_first()?;
+        if version != 1 || rest.len() < 20 {
+            return None;
+        }
+        (
+            u64::from_be_bytes(rest[..8].try_into().ok()?),
+            u64::from_be_bytes(rest[8..16].try_into().ok()?),
+            u32::from_be_bytes(rest[16..20].try_into().ok()?),
+            rest[20..].to_vec(),
+        )
+    };
     Some(Row {
         key,
         raw,
@@ -296,9 +299,25 @@ impl StorePushQueue {
                                 attempt,
                                 &row.recs,
                             );
-                            let first = records.put(PUSHES, &row.key, value).await;
-                            self.in_doubt.decided(&records, first).await?;
-                            round.retried += 1;
+                            // A removal or another worker may have settled this row while the
+                            // connector was in flight. Retry only the version we delivered.
+                            let request = Request {
+                                op_id: operation(&self.store)?,
+                                predicates: vec![Predicate {
+                                    schema: PUSHES.into(),
+                                    key: row.key.clone(),
+                                    expected: Expected::Exact(row.raw.clone()),
+                                }],
+                                mutations: vec![Mutation::Put {
+                                    schema: PUSHES.into(),
+                                    key: row.key.clone(),
+                                    value,
+                                }],
+                            };
+                            let first = records.conditional_native(&request).await;
+                            if self.in_doubt.decided(&records, first).await? {
+                                round.retried += 1;
+                            }
                         }
                     }
                 }
