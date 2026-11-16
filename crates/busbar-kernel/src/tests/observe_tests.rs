@@ -618,7 +618,7 @@ fn a_first_party_plugins_diagnostic_is_written_as_the_hosts_own_line() {
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines.len(), 3, "{text}");
     assert_eq!(lines[0], lines[1], "the first-party line is the host's own");
-    assert!(lines[2].contains("kind=k9c-third-party"), "{text}");
+    assert!(lines[2].contains("plugin=k9c-third-party"), "{text}");
 }
 
 /// What the loader granted at open, as these tests state it: the composition root hands the
