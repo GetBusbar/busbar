@@ -167,7 +167,10 @@ fn a_conflicting_config_backup_refuses_before_store_migration() {
     assert_eq!(refused.word(), "CONFIG");
     assert!(refused.to_string().contains("config.yaml.1.5.5"));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), CONFIG_1_5_5);
-    assert_eq!(std::fs::read_to_string(backup).unwrap(), "listen: elsewhere\n");
+    assert_eq!(
+        std::fs::read_to_string(backup).unwrap(),
+        "listen: elsewhere\n"
+    );
 }
 
 /// (e): a crash after the backup link and before the rename leaves the original config.yaml and an

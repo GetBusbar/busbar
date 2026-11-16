@@ -212,8 +212,17 @@ fn read(source: &Path) -> Result<String, Refusal> {
 /// then rename it into place. A file already there with the same bytes (an interrupted upgrade's)
 /// is kept; one with other bytes is refused, nothing written.
 pub(crate) fn write(planned: &Planned) -> Result<(), Refusal> {
+    if check_destination(planned)? {
+        return Ok(());
+    }
+    let fresh = files::create_like_at(&planned.source, &planned.path, planned.text.as_bytes())?;
+    files::replace(&fresh, &planned.path)
+}
+
+/// Read-only preflight, repeated at write: true means an identical destination exists.
+pub(crate) fn check_destination(planned: &Planned) -> Result<bool, Refusal> {
     match fs::read(&planned.path) {
-        Ok(bytes) if bytes == planned.text.as_bytes() => return Ok(()),
+        Ok(bytes) if bytes == planned.text.as_bytes() => return Ok(true),
         Ok(_) => {
             return Err(Refusal::Config(format!(
                 "{} is present and holds other bytes than the catalog this upgrade plans; move it \
@@ -229,8 +238,7 @@ pub(crate) fn write(planned: &Planned) -> Result<(), Refusal> {
             )))
         }
     }
-    let fresh = files::create_like_at(&planned.source, &planned.path, planned.text.as_bytes())?;
-    files::replace(&fresh, &planned.path)
+    Ok(false)
 }
 
 #[cfg(test)]
