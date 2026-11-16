@@ -258,8 +258,12 @@ pub(crate) async fn bind_split(
     let public = AuditVerifyingKey::from_hex(&key.public_key_hex())
         .map_err(|_| KeysetError::Store("the deployment key's public half is invalid".into()))?;
     let caller_ref = key.derived_secret(CALLER_REF_MATERIAL);
+    let deployment_id = identity
+        .keep_deployment_id()
+        .await
+        .map_err(KeysetError::Store)?;
     super::records_capture::bind_user_key(key.derived_key(
-        identity.deployment_id().as_bytes(),
+        deployment_id.as_bytes(),
         super::records_capture::USER_KEY_INFO,
     ));
     let (notary, bootstrap) = key
