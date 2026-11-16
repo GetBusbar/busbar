@@ -29,6 +29,88 @@ const INPUT_USED: u64 = 17;
 /// A budget no step of these tests comes near: every phase ends on its own work.
 const ROOMY: Duration = Duration::from_secs(30);
 
+async fn fixture_with_running_cut(clock: Arc<DrainClock>) -> (Fixture, Arc<FlushGate>) {
+    use crate::root::durability::{
+        audit_services::AuditServices,
+        tests::{audit_inputs, audit_pass, token},
+        Durability,
+    };
+    use busbar_kernel::persistence::journal::{CUT_BATCH, RETAIN_TAIL};
+    use busbar_kernel_audit::{AuditSigningKey, BootstrapSigner, LiveSigner, Notary};
+    let mut fixture = Fixture::with_ephemeral(8192, true).await;
+    let (live, boot) = AuditSigningKey::from_seed(&[0x75; 32])
+        .into_grants(LiveSigner::SameAsBootstrap)
+        .unwrap();
+    let (feed, start) = {
+        let held = fixture.book.durability.lock().unwrap();
+        (held.head.clone(), held.notary_start())
+    };
+    let (audit, _) = AuditServices::spawn(
+        Notary::new(live),
+        BootstrapSigner::new(boot),
+        fixture.seen.journal.node(),
+        fixture.seen.journal.clone(),
+        feed,
+        start,
+    )
+    .unwrap();
+    let audit = Arc::new(audit);
+    let gate = Arc::new(FlushGate::default());
+    *fixture.seen.backend.cut.lock().unwrap() = Some(gate.clone());
+    audit.start_notary(1, clock, None);
+    fixture.book.audit = Some(audit);
+    for unit in 1..=(RETAIN_TAIL + 3 * CUT_BATCH) {
+        Durability::seal_unit(
+            &fixture.book.durability,
+            audit_inputs(unit),
+            audit_pass(),
+            &token(),
+        )
+        .await
+        .unwrap();
+    }
+    gate.entered().await;
+    assert!(fixture.book.audit.as_ref().unwrap().cut_retained(),
+        "an in-flight cut is reported retained before its first Store answer");
+    (fixture, gate)
+}
+
+/// SF-6 test 30(e): exact cut settlement participates in the real shutdown/retirement path.
+#[tokio::test]
+async fn retained_cut_at_shutdown_returns_75_and_keeps_the_writer_admitted() {
+    let clock = DrainClock::new(Duration::from_millis(500));
+    let (fixture, gate) = fixture_with_running_cut(clock.clone()).await;
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
+    let (post, seen) = fixture.post(false, None, &shutdown_tx, None);
+    let drain = ShutdownDrain::new(clock.clone());
+    clock.arm(tokio::time::Instant::now() + clock.budget());
+    let code = tokio::time::timeout(WAIT, finish(post, &drain))
+        .await
+        .unwrap();
+    assert_eq!(
+        code, 75,
+        "an undecided cut refuses writer retirement without a spend failure"
+    );
+    assert!(drain.detached() > 0);
+    seen.still_admitted().await;
+    gate.release();
+}
+
+#[tokio::test]
+async fn a_cut_settled_during_shutdown_allows_exit_zero() {
+    let clock = DrainClock::new(ROOMY);
+    let (fixture, gate) = fixture_with_running_cut(clock.clone()).await;
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
+    let (post, _) = fixture.post(false, None, &shutdown_tx, None);
+    let drain = ShutdownDrain::new(clock.clone());
+    clock.arm(tokio::time::Instant::now() + clock.budget());
+    let mut finishing = std::pin::pin!(finish(post, &drain));
+    still_running(finishing.as_mut()).await;
+    gate.release();
+    assert_eq!(tokio::time::timeout(WAIT, finishing).await.unwrap(), 0);
+    assert_eq!(drain.detached(), 0);
+}
+
 pub(super) struct FlushGate {
     entered: Notify,
     released: Semaphore,
@@ -60,6 +142,8 @@ impl FlushGate {
 /// encoding, guarded mutation planning, and retained attempts stay in CoreStore.
 pub(super) struct FlushBackend {
     inner: Arc<dyn PersistenceBackend>,
+    ephemeral: bool,
+    cut: Mutex<Option<Arc<FlushGate>>>,
     pub(super) budget: Mutex<Option<Arc<FlushGate>>>,
     pub(super) metering: Mutex<Option<Arc<FlushGate>>>,
     pub(super) journal: Mutex<Option<Arc<FlushGate>>>,
@@ -74,7 +158,11 @@ pub(super) struct FlushBackend {
 }
 impl PersistenceBackend for FlushBackend {
     fn info(&self) -> BackendInfo {
-        self.inner.info()
+        let mut info = self.inner.info();
+        if self.ephemeral {
+            info.durability = busbar_contract::persistence::Durability::Ephemeral;
+        }
+        info
     }
     fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
         self.inner.read(request)
@@ -104,7 +192,13 @@ impl PersistenceBackend for FlushBackend {
                     if address.key.starts_with(b"busbar.unitcp.v1"))
             });
             let recovery = is(b"busbar.recover1\0");
-            let gate = if budget {
+            let cut = candidate.candidate().mutations.iter().any(|mutation| {
+                matches!(mutation, Mutation::Put { address, .. }
+                    if address.key.starts_with(b"busbar.journal4\0") && address.key.get(24) == Some(&b'B'))
+            });
+            let gate = if cut {
+                self.cut.lock().unwrap().take()
+            } else if budget {
                 self.budget.lock().unwrap().take()
             } else if metering {
                 self.metering.lock().unwrap().take()
@@ -177,8 +271,13 @@ pub(super) struct Fixture {
 }
 impl Fixture {
     pub(super) async fn new(capacity: usize) -> Self {
+        Self::with_ephemeral(capacity, false).await
+    }
+    async fn with_ephemeral(capacity: usize, ephemeral: bool) -> Self {
         let backend = Arc::new(FlushBackend {
             inner: crate::root::real_store::native_backend().await,
+            ephemeral,
+            cut: Mutex::new(None),
             budget: Mutex::new(None),
             metering: Mutex::new(None),
             journal: Mutex::new(None),

@@ -52,6 +52,11 @@ impl std::fmt::Debug for AuditServices {
 pub(crate) type CheckpointHandle = SignerHandle<Checkpoint>;
 
 impl AuditServices {
+    #[cfg(test)]
+    pub(crate) fn cut_retained(&self) -> bool {
+        self.notary.lock().unwrap_or_else(|p| p.into_inner()).as_ref()
+            .is_some_and(|task| task.progress().journal_cut_retained.load(Ordering::Acquire))
+    }
     /// START THE SIGNER THREADS from the bound key's capabilities. `start` is the resumed head the
     /// notary will begin after (read before recovery appends anything).
     pub(crate) fn spawn(
