@@ -385,48 +385,60 @@ fn only_an_authenticated_trusted_seal_returns_store_floor_evidence() {
 
 #[test]
 fn expired_install_checks_cannot_mask_hard_revocation_or_rollback_vetoes() {
-    let r = Release::new();
-    let m = unsealed();
-    let e = entry(&m.name, &m.version, PLUGIN_TARGET, &listed(&m));
-    let expired = TrustPolicy {
-        release_clock: Some(NOW + 365 * 86_400),
-        release_enforce_expiry: true,
-        allow_untrusted: true,
-        ..r.policy()
-    };
+    for allow_untrusted in [false, true] {
+        for release_enforce_expiry in [false, true] {
+            let r = Release::new();
+            let m = unsealed();
+            let e = entry(&m.name, &m.version, PLUGIN_TARGET, &listed(&m));
+            let expired = TrustPolicy {
+                release_clock: Some(NOW + 365 * 86_400),
+                release_enforce_expiry,
+                allow_untrusted,
+                ..r.policy()
+            };
 
-    let mut keys = keys_doc(&[&r.signer]);
-    keys.revoked_digests.insert(listed(&m), "pulled".into());
-    let sealed = r.seal(m.clone(), &keys, &r.kms, vec![e.clone()], &r.signer);
-    refused(
-        evaluate(LIB, &sealed, &expired),
-        RejectKind::Revoked,
-        "digest-revoked",
-    );
+            let mut keys = keys_doc(&[&r.signer]);
+            keys.revoked_digests.insert(listed(&m), "pulled".into());
+            let sealed = r.seal(m.clone(), &keys, &r.kms, vec![e.clone()], &r.signer);
+            refused(
+                evaluate(LIB, &sealed, &expired),
+                RejectKind::Revoked,
+                "digest-revoked",
+            );
 
-    let mut keys = keys_doc(&[&r.signer]);
-    keys.revoked_keyids.insert(r.signer.id());
-    let sealed = r.seal(m.clone(), &keys, &r.kms, vec![e], &r.signer);
-    refused(
-        evaluate(LIB, &sealed, &expired),
-        RejectKind::Revoked,
-        "signer-revoked",
-    );
+            let mut keys = keys_doc(&[&r.signer]);
+            keys.revoked_keyids.insert(r.signer.id());
+            let sealed = r.seal(m.clone(), &keys, &r.kms, vec![e], &r.signer);
+            refused(
+                evaluate(LIB, &sealed, &expired),
+                RejectKind::Revoked,
+                "signer-revoked",
+            );
 
-    let sealed = r.good(m, &r.kms);
-    let floored = TrustPolicy {
-        release_keys_floor: 2,
-        ..expired.clone()
-    };
-    refused(
-        evaluate(LIB, &sealed, &floored),
-        RejectKind::AntiDowngrade,
-        "keys-rollback",
-    );
-    assert!(
-        evaluate_with_evidence(LIB, &sealed, &expired).is_err(),
-        "an expired prospective Busbar seal never uses the override"
-    );
+            let sealed = r.good(m, &r.kms);
+            let floored = TrustPolicy {
+                release_keys_floor: 2,
+                ..expired.clone()
+            };
+            refused(
+                evaluate(LIB, &sealed, &floored),
+                RejectKind::AntiDowngrade,
+                "keys-rollback",
+            );
+            if release_enforce_expiry {
+                assert!(
+                    evaluate_with_evidence(LIB, &sealed, &expired).is_err(),
+                    "an expired prospective Busbar seal never uses the override"
+                );
+            } else {
+                assert_eq!(
+                    evaluate_with_evidence(LIB, &sealed, &expired),
+                    Ok((first_party(), Some(1))),
+                    "installed boot still authenticates the expired seal"
+                );
+            }
+        }
+    }
 }
 
 #[test]
