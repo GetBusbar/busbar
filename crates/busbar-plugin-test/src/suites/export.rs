@@ -94,6 +94,11 @@ pub(super) fn run(plugin: &'static Plugin, config: &[u8], needs: FakeNeeds) {
     let junk = h.check("suite-junk", b"\xff\xfe not a config");
     assert!(junk.is_err(), "export suite: a non-document config opened");
 
+    // DRY_RUN of the suite's own config: the ENDPOINTs it declares are what every Need below must match.
+    if let Err(e) = h.check("suite-check", config) {
+        panic!("export suite: check refused the suite's own config: {e:?}");
+    }
+
     // Open, and again under a second name (instances do not share state).
     let port = h
         .open_export("suite-a", config)
@@ -232,4 +237,5 @@ pub(super) fn run(plugin: &'static Plugin, config: &[u8], needs: FakeNeeds) {
         refusals.len() == 1,
         "export suite: unexpected refusals: {refusals:?}"
     );
+    h.assert_needs_declared("export");
 }

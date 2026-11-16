@@ -213,4 +213,5 @@ pub(super) fn run(
         expected_refusals,
         "auth suite: refusals beyond the bad-config probe: {refusals:?}"
     );
+    harness.assert_needs_declared("auth");
 }
