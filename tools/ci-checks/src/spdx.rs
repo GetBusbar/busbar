@@ -28,24 +28,23 @@ pub(crate) fn in_scope(path: &str) -> bool {
 
 /// The finding for one file's text, if its header is missing or names another licence.
 pub(crate) fn header_finding(path: &str, text: &str) -> Option<String> {
-    let found = text
-        .lines()
-        .take(HEAD_LINES)
-        .find_map(|line| line.split_once(TAG).map(|(_, id)| id));
-    match found {
-        None => Some(format!(
-            "{path}: no `{TAG} {WANT}` in the first {HEAD_LINES} lines (#277)"
-        )),
-        Some(id) => {
+    let mut found = false;
+    for line in text.lines().take(HEAD_LINES) {
+        if let Some((_, id)) = line.split_once(TAG) {
+            found = true;
             let id = id
                 .trim()
                 .trim_end_matches("*/")
                 .trim_end_matches("-->")
                 .trim();
-            (id != WANT)
-                .then(|| format!("{path}: names `{id}`, but the tree is {WANT} (LICENSE; #277)"))
+            if id != WANT {
+                return Some(format!(
+                    "{path}: names `{id}`, but the tree is {WANT} (LICENSE; #277)"
+                ));
+            }
         }
     }
+    (!found).then(|| format!("{path}: no `{TAG} {WANT}` in the first {HEAD_LINES} lines (#277)"))
 }
 
 pub(crate) fn spdx_headers(root: &Path) -> Outcome {
@@ -75,9 +74,6 @@ pub(crate) fn spdx_headers(root: &Path) -> Outcome {
             continue;
         }
         let file = root.join(path);
-        if !file.is_file() {
-            continue;
-        }
         let bytes = std::fs::read(&file).map_err(|error| format!("{path}: {error}"))?;
         checked += 1;
         findings.extend(header_finding(path, &String::from_utf8_lossy(&bytes)));

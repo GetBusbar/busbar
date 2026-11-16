@@ -1,6 +1,6 @@
 # cargo-about configuration: generates THIRD-PARTY-LICENSES (template: about.hbs), shipped beside LICENSE and
 # NOTICE in every release archive and image. Run by the release build:
-#   cargo about generate --locked --fail --target <triple> --config about.toml --output-file THIRD-PARTY-LICENSES about.hbs
+#   cargo about generate --workspace --all-features --locked --fail --config about.toml --output-file THIRD-PARTY-LICENSES about.hbs
 # The accepted list is deny.toml's [licenses] allow list: cargo-deny gates what may enter the graph, cargo-about
 # reproduces the notices for what did.
 accepted = [
@@ -21,8 +21,9 @@ accepted = [
     "CDLA-Permissive-2.0",
     "Unlicense",
 ]
-# Dependencies that never reach the shipped binary are not attributed.
+# Keep build dependencies: native build crates can embed third-party code in the binary.
+# Conservatively include all targets and features so every shipped variant is covered.
 ignore-dev-dependencies = true
-ignore-build-dependencies = true
+ignore-build-dependencies = false
 # The workspace's own crates (publish = false) are Busbar's: LICENSE covers them.
 private = { ignore = true }

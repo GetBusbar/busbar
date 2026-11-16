@@ -279,8 +279,9 @@ fi
 
 # Third-party attribution (Apache-2.0 s4 and the MIT/BSD/ISC/OpenSSL notice terms) ships with the
 # binary: LICENSE, NOTICE and this generated file are archive members beside it.
+# cargo-about (https://github.com/EmbarkStudios/cargo-about) reads about.toml and about.hbs; CI installs it.
 THIRD_PARTY_LICENSES="$EVIDENCE_DIR/THIRD-PARTY-LICENSES"
-scripts/release/third-party-licenses.sh "$SPEC_TRIPLE" "$THIRD_PARTY_LICENSES"
+cargo about generate --workspace --all-features --locked --fail --config about.toml --output-file "$THIRD_PARTY_LICENSES" about.hbs
 export THIRD_PARTY_LICENSES
 
 # ── PACKAGE ─────────────────────────────────────────────────────────────────────────────────────
