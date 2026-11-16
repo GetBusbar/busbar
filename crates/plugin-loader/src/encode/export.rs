@@ -243,6 +243,41 @@ mod tests {
     }
 
     #[test]
+    fn confirm_accepts_none_and_each_positive_custody_level() {
+        for level in CUSTODY_NONE..=CUSTODY_INDEXED {
+            let mut w = Reply::new();
+            cust(&mut w, level, 7);
+            let found = confirmed(Records::new(w.as_bytes())).unwrap();
+            assert_eq!((found.level, found.recheck_s), (level, 7));
+        }
+    }
+
+    #[test]
+    fn confirm_refuses_missing_duplicate_or_out_of_range_custody() {
+        assert!(confirmed(Records::new(&[])).is_err());
+        let mut w = Reply::new();
+        cust(&mut w, CUSTODY_INDEXED + 1, 0);
+        assert!(confirmed(Records::new(w.as_bytes())).is_err());
+        let mut w = Reply::new();
+        cust(&mut w, CUSTODY_ACCEPTED, 0);
+        cust(&mut w, CUSTODY_INDEXED, 0);
+        assert!(confirmed(Records::new(w.as_bytes())).is_err());
+    }
+
+    #[test]
+    fn confirm_does_not_accept_a_delivery_ack_or_body() {
+        let mut w = Reply::new();
+        ack(&mut w, 1);
+        cust(&mut w, CUSTODY_INDEXED, 0);
+        assert!(confirmed(Records::new(w.as_bytes())).is_err());
+        let mut w = Reply::new();
+        cust(&mut w, CUSTODY_INDEXED, 0);
+        w.put(tag::BODY, b"must not be returned on confirm")
+            .unwrap();
+        assert!(confirmed(Records::new(w.as_bytes())).is_err());
+    }
+
+    #[test]
     fn an_ack_alone_and_with_custody() {
         let mut w = Reply::new();
         ack(&mut w, 5);
