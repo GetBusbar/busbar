@@ -79,3 +79,7 @@ impl PlaneJudge {
 fn verdict_of(verdict: u64) -> u32 {
     u32::try_from(verdict).unwrap_or(DEST_INTERNAL)
 }
+
+#[cfg(test)]
+#[path = "tests/plane_judge_tests.rs"]
+mod tests;
