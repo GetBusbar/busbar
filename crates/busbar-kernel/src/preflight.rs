@@ -597,7 +597,9 @@ fn missing_plugin_error(
     want: PluginRef<'_>,
     loadable: &[busbar_contract::plugin_rows::Row],
 ) -> String {
-    format!(
+    // On the upgrade boot of an unstamped config, a name no installed plugin answers may predate
+    // 1.5.5: the refusal carries the one generic upgrade line (MIGRATE-ON-BOOT §A2).
+    busbar_contract::upgrade::unknown_module(format!(
         "{} is installed in '{dir}' (plugins ARE enabled; loadable: [{}]). Two things to \
                  check: is the plugin subsystem enabled? (it is) — and is the signed {}tarball \
                  actually IN the folder? \
@@ -610,7 +612,7 @@ fn missing_plugin_error(
             .join(", "),
         want.label,
         want.remedy
-    )
+    ))
 }
 
 fn require_plugin(
@@ -858,7 +860,7 @@ pub fn plugins_preflight(
                          it was not loaded: {}",
                         s.name, s.file, s.reason
                     ),
-                    None => format!(
+                    None => busbar_contract::upgrade::unknown_module(format!(
                         "identity-providers.{name}.module: no `kind: auth` plugin named or aliased \
                          '{module}' is installed in '{}' (plugins ARE enabled), and it is not a \
                          built-in. The modules a provider may name right now are: {}. Check the \
@@ -866,7 +868,7 @@ pub fn plugins_preflight(
                          add the signed tarball to the plugins directory, or name a built-in.",
                         plugins_cfg.dir,
                         valid_identity_provider_modules(rows)
-                    ),
+                    )),
                 });
             }
         }

@@ -86,7 +86,7 @@ The field-by-field reference, every pool and member field with its type, default
 
 In short: a pool takes a list of `members`, an optional `hooks` list (one ordering strategy, `weighted`/`cheapest`/`fastest`/`least_busy`/`usage`, plus any gates as inline `kind: hook` plugin refs), and optional `affinity`, `breaker`, `failover`, and `on_exhausted` blocks.
 
-A member is written as it has been since 1.5: a `model:` naming an entry in `models:`, with an optional `weight:` and any per-member capabilities (`context_max`, `attempt_timeout_ms`, `reasoning`, `tier`, `tags`) beside it. That is the canonical form, it is what the field reference documents, and it is what `busbar --migrate-config` leaves exactly as you wrote it.
+A member is written as it has been since 1.5: a `model:` naming an entry in `models:`, with an optional `weight:` and any per-member capabilities (`context_max`, `attempt_timeout_ms`, `reasoning`, `tier`, `tags`) beside it. That is the canonical form, it is what the field reference documents, and it is what the first-boot migration leaves exactly as you wrote it.
 
 ```yaml
 pools:

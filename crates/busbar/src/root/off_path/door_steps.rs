@@ -680,6 +680,15 @@ pub(crate) fn unloaded_plane_refusal(
 }
 
 impl busbar_kernel::appbuild::RootRules for Rules {
+    /// An unstamped boot runs the planned document, not the 1.5.5 bytes on disk (MIGRATE-ON-BOOT
+    /// r42 §3 step 2).
+    fn held_document(
+        &self,
+        _kind: busbar_kernel::appbuild::ConfigDocument,
+        path: &std::path::Path,
+    ) -> Option<busbar_contract::secure::SecureString> {
+        crate::root::migrate::held(path)
+    }
     fn normalize_document(
         &self,
         kind: busbar_kernel::appbuild::ConfigDocument,

@@ -253,7 +253,8 @@ fn a_registration_writing_the_retired_private_reach_is_refused_whatever_its_valu
                 "{written}: {refusal}"
             );
             assert!(refusal.contains("advanced.allow_destinations"), "{refusal}");
-            assert!(refusal.contains("busbar --migrate-config"), "{refusal}");
+            assert!(refusal.contains("remove `inside:`"), "{refusal}");
+            assert!(!refusal.contains("--migrate-config"), "{refusal}");
         }
         assert!(!private_reach(&entry(written), REACHING), "{written}");
     }

@@ -1551,7 +1551,8 @@ fn compute_layout() -> String {
             directory_count,
             directory_create,
             directory_apply,
-            directory_delete
+            directory_delete,
+            migrate_admit
         ]
     );
     record!(
@@ -1624,6 +1625,7 @@ fn compute_layout() -> String {
         [head, kind, _reserved, id, expected_version, result]
     );
     record!(s, hsvc::NeedAdmitIn, [head, need, _reserved]);
+    record!(s, hsvc::MigrateAdmitIn, [head, recoverable]);
     record!(s, hsvc::SessionEmitIn, [head, session, bytes]);
     record!(s, hsvc::TicketMintIn, [head, ttl_secs, record, into]);
     record!(s, hsvc::TicketTakeIn, [head, into]);
