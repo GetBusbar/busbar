@@ -1,25 +1,149 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The secret adapter: `SecretPort` over the secret kind's `Proxy` (IF §11.3). W0-ABI stub: the adapter type only;
-//! L4 fills it.
+//! The secret adapter: `SecretPort` over the secret kind's `Proxy` (IF §11.3, §8.2). One async method: it takes
+//! one pooled request buffer, writes the reference with the §8.8 encoder, runs the proxy's step loop on a
+//! borrowed `Caller`, and decodes the answer straight into `SecretAnswer` (VALUE, FACT(F_LEASE_S)?). The only
+//! box is the port's.
 
-use busbar_plugin_abi::kinds::secret::secret::Proxy;
+use std::sync::Arc;
+
+use busbar_contract::secure::SecureVec;
+use busbar_plugin_abi::fail::{fact, refused, CallError, FaultReason};
+use busbar_plugin_abi::host_side::answer::Answer;
+use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
+use busbar_plugin_abi::host_side::driver::Driver;
+use busbar_plugin_abi::host_side::needs::Needs;
+use busbar_plugin_abi::host_side::pool::Pool;
+use busbar_plugin_abi::host_side::scrub::{fail_text, Scrub};
+use busbar_plugin_abi::kinds::secret::secret::{tag, Proxy, F_LEASE_S};
+use busbar_plugin_abi::records::{FactRec, RecErr, Records};
+use busbar_plugin_abi::types::Status;
+
+use crate::encode::secret::encode_reference;
+use crate::instance::PluginCode;
+use crate::ports::secret::{SecretAnswer, SecretPort};
+use crate::ports::{CallCx, PortError};
 
 /// The secret port over one instance's proxy.
-pub struct SecretAdapter {
+pub struct SecretAdapter<N: Needs> {
     proxy: Proxy,
+    needs: Arc<N>,
 }
 
-// W0-ABI: impl SecretPort for SecretAdapter lands with W1-L4.
-impl SecretAdapter {
-    // W0-ABI: not in the IF (the IF names no adapter type); a minimal seam so the stub is warning-free. W1-L4
-    // replaces it with the real constructor and state.
-    pub fn new(proxy: Proxy) -> Self {
-        Self { proxy }
-    }
-
-    pub fn proxy(&self) -> &Proxy {
-        &self.proxy
+impl<N: Needs> SecretAdapter<N> {
+    pub fn new(proxy: Proxy, needs: Arc<N>) -> Self {
+        Self { proxy, needs }
     }
 }
+
+impl<N: Needs> SecretPort for SecretAdapter<N> {
+    fn resolve<'a>(
+        &'a self,
+        cx: CallCx,
+        reference: &'a [u8],
+    ) -> BoxFut<'a, Result<SecretAnswer, PortError>> {
+        Box::pin(async move {
+            let inst = self.proxy.instance();
+            let mut req = Pool::global().acquire(inst.max_out);
+            if encode_reference(&mut req, reference).is_err() {
+                return Err(port_failure(
+                    &inst.scrub,
+                    false,
+                    refused::R_INVALID,
+                    "the secret reference does not fit the request buffer",
+                    None,
+                    None,
+                    None,
+                ));
+            }
+            // Borrowed from the instance the proxy already borrows: no refcount traffic. `Driver::new` writes the
+            // chain id; the stack is the one outside this call (custody pushed the caller already, §12.2).
+            let caller = Caller {
+                plugin: &inst.identity,
+                kind: inst.kind,
+                name: &inst.name,
+                instance: inst.id,
+                slot: inst.slot,
+                chain: 0,
+                deadline: cx.deadline,
+                stack: cx.stack,
+                out_of_process: false,
+                limits: inst.limits,
+            };
+            let mut drv = Driver::new(&*self.needs, caller);
+            let owned = self
+                .proxy
+                .resolve(&mut drv, req)
+                .await
+                .map_err(PortError::Call)?;
+            match decode_answer(&inst.scrub, &owned.answer()) {
+                Ok(answer) => Ok(answer),
+                Err(e @ PortError::Call(_)) => {
+                    inst.quarantine();
+                    Err(e)
+                }
+                Err(e) => Err(e),
+            }
+        })
+    }
+}
+
+/// The answer to a `PortError` or a `SecretAnswer`: REFUSED and FAILED become the port's refusal and failure
+/// (text through `fail_text`, FAILED facts), an OK answer is `answer_value`, and a malformed OK answer is
+/// `Call(Fault(BadRecords))` (the caller quarantines).
+fn decode_answer(scrub: &Scrub, a: &Answer<'_>) -> Result<SecretAnswer, PortError> {
+    if a.is_ok() {
+        return answer_value(a.records())
+            .map_err(|e| PortError::Call(CallError::Fault(FaultReason::BadRecords(e))));
+    }
+    let (code, text) = a
+        .fail()
+        .ok_or(PortError::Call(CallError::Fault(FaultReason::MissingFail)))?;
+    let failed = a.status == Status::FAILED;
+    // Round 34: `error` waits for the instance's `ErrorBook` (L2's shared builder, §11.2).
+    Err(port_failure(
+        scrub,
+        failed,
+        code,
+        text,
+        a.fail_fact(fact::FACT_RETRY_AFTER_S),
+        a.fail_fact(fact::FACT_BACKEND_STATUS),
+        None,
+    ))
+}
+
+/// The OK answer of `resolve`: exactly one VALUE and at most one FACT(F_LEASE_S) (IF §8.2). Anything else is a
+/// contract break (`Unknown` for a foreign tag, `Size` for a missing or repeated record or another fact).
+pub fn answer_value(recs: Records<'_>) -> Result<SecretAnswer, RecErr> {
+    let _ = recs;
+    todo!()
+}
+
+/// The one failure shape of a REFUSED or FAILED answer: the plugin's text scrubbed whole, then cut to the shown
+/// bound (`fail_text`, §12.16), and, for FAILED only, the backend's two facts as it stated them. A refusal
+/// carries no facts.
+pub fn port_failure(
+    scrub: &Scrub,
+    failed: bool,
+    code: u32,
+    text: &str,
+    retry_after_s: Option<u64>,
+    backend_status: Option<u64>,
+    error: Option<PluginCode>,
+) -> PortError {
+    let _ = (
+        scrub,
+        failed,
+        code,
+        text,
+        retry_after_s,
+        backend_status,
+        error,
+    );
+    todo!()
+}
+
+#[cfg(test)]
+#[path = "secret_tests.rs"]
+mod tests;

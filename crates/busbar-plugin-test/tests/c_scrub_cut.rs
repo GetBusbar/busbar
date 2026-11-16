@@ -58,10 +58,27 @@ fn the_store_adapters_port_error_log_line_and_audit_row_hold() {
     todo!("owner: W1-L3 (C-SCRUB-CUT)")
 }
 
+/// The `PortError` arm; the secret adapter writes no log line or audit row of its own (custody audits, K8).
 #[test]
-#[ignore = "owner: W1-L4"]
 fn the_secret_adapters_port_error_log_line_and_audit_row_hold() {
-    todo!("owner: W1-L4 (C-SCRUB-CUT)")
+    use busbar_plugin_loader::adapters::secret::port_failure;
+    use busbar_plugin_loader::ports::PortError;
+
+    let scrub = Scrub::new();
+    scrub.register(1, &[SECRET.as_bytes()]);
+    for form in &needles(SECRET.as_bytes()) {
+        let form = core::str::from_utf8(form).expect("ASCII");
+        let text = format!("{}{form}{}", "a".repeat(500), "b".repeat(60));
+        for failed in [true, false] {
+            let (PortError::Failed { text: shown, .. } | PortError::Refused { text: shown, .. }) =
+                port_failure(&scrub, failed, 1, &text, None, None, None)
+            else {
+                unreachable!()
+            };
+            assert!(shown.len() <= FAIL_TEXT_SHOWN);
+            assert!(!leaks(&shown, form.as_bytes()), "{form}");
+        }
+    }
 }
 
 #[test]

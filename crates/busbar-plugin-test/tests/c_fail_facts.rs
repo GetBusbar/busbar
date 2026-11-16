@@ -50,9 +50,43 @@ fn store_adapter_maps_the_facts() {
 }
 
 #[test]
-#[ignore = "owner: W1-L4"]
 fn secret_adapter_maps_the_facts() {
-    todo!("owner: W1-L4 (C-FAIL-FACTS)")
+    use busbar_plugin_abi::host_side::scrub::Scrub;
+    use busbar_plugin_loader::adapters::secret::port_failure;
+    use busbar_plugin_loader::ports::PortError;
+
+    let scrub = Scrub::new();
+    assert_eq!(
+        port_failure(
+            &scrub,
+            true,
+            3,
+            "the backend said 503",
+            Some(30),
+            Some(503),
+            None
+        ),
+        PortError::Failed {
+            code: 3,
+            text: "the backend said 503".into(),
+            retry_after_s: Some(30),
+            backend_status: Some(503),
+            error: None,
+        }
+    );
+    assert!(matches!(
+        port_failure(&scrub, true, 3, "down", None, None, None),
+        PortError::Failed {
+            retry_after_s: None,
+            backend_status: None,
+            ..
+        }
+    ));
+    // A refusal never carries facts.
+    assert!(matches!(
+        port_failure(&scrub, false, 5, "no", Some(1), Some(1), None),
+        PortError::Refused { .. }
+    ));
 }
 
 #[test]
