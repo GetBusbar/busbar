@@ -154,6 +154,46 @@ pub(crate) fn the() -> &'static BootSecrets {
     SECRETS.get_or_init(BootSecrets::default)
 }
 
+/// The boot walk's secret steps (IF §11.2; boot steps 2a and 2c): every `Secret` step of `plan`, in plan order,
+/// is opened through `registry.open_secret` and its port entered in the table under the instance's configured
+/// name, with a process-unique runtime id (the §12.2 cycle check keys on it). `instances` is the same slice the
+/// plan was built over. The first refusal stops the walk: a secret instance that cannot open refuses the boot.
+pub(crate) async fn open_secret_steps<N: busbar_plugin_abi::host_side::needs::Needs>(
+    registry: &busbar_plugin_loader::instance::Registry<N>,
+    plan: &busbar_plugin_loader::instance::BootPlan,
+    instances: &[(
+        busbar_plugin_abi::types::KindCode,
+        busbar_plugin_loader::instance::InstanceSpec<'_>,
+    )],
+) -> Result<usize, busbar_plugin_loader::instance::OpenError> {
+    let secrets = the();
+    let mut opened = 0;
+    for (at, _phase) in &plan.steps {
+        let Some((kind, spec)) = instances.get(*at as usize) else {
+            continue;
+        };
+        if *kind != busbar_plugin_abi::types::KindCode::Secret {
+            continue;
+        }
+        let port = registry.open_secret(spec).await?;
+        let instance = next_instance_id();
+        if let Some(old) = secrets
+            .table()
+            .opened(spec.name, SecretSource { instance, port })
+        {
+            secrets.custody.drop_instance(old.instance);
+        }
+        opened += 1;
+    }
+    Ok(opened)
+}
+
+/// A process-unique, non-zero runtime id for an opened secret instance.
+fn next_instance_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 #[cfg(test)]
 #[path = "tests/secret_switch_over.rs"]
 mod tests;
