@@ -1,8 +1,16 @@
 # Health, metrics, and observability
 
-Busbar exposes its liveness, per-lane topology, and Prometheus metrics on three endpoints. This page documents each, plus the signals worth alerting on.
+Busbar exposes separate liveness and readiness probes, per-lane topology, and Prometheus metrics. This page documents each, plus the signals worth alerting on.
 
 Cross-references: [Circuit breaker](/docs/circuit-breaker/) · [In-flight failover](/docs/failover/) · [Configuration](/docs/configuration/#export) · [MCP](/docs/mcp/) and [A2A](/docs/a2a/) (what each of the other two planes emits).
+
+## /livez and /readyz
+
+Use `GET /livez` for Kubernetes liveness and startup probes, and `GET /readyz` for readiness and load-balancer checks. Both are available without HTTP credentials on the root data and administration listeners; listener TLS/mTLS requirements still apply. GET returns `text/plain; charset=utf-8`; HEAD returns the same status with no body.
+
+`/livez` returns `200 ok` whenever the process dispatches the request, regardless of upstream outages, spent budgets, store pressure or draining. An irreversible plugin-dispatch halt returns `503 plugin dispatch halted; restart required`.
+
+`/readyz` returns `200 ok` only when the process is not stopping, every configured plane has opened, and at least one lane is usable when lanes exist. Configured governance must admit new work: its admission gate is open and its terminal custody backlog is below the cap. A configured native journal must also accept staging, with available store slots and journal custody capacity. Failure returns `503 not ready`. The checks read admission state without acquiring a grant or a half-open breaker probe. They report observed availability, not an instantaneous remote-store reachability guarantee. An engine with neither governance nor a native journal has no durability condition to satisfy.
 
 ## /healthz
 
@@ -12,7 +20,7 @@ GET /healthz
 
 No auth required. Returns `200 OK` (body: `ok`) if any lane is usable: meaning at least one lane across all configured pools has a Closed or HalfOpen breaker in any of its cells, and is not permanently dead. Returns `503 Service Unavailable` (body: `no usable lanes`) if every lane is unusable. A deployment that configures no provider and no model (an admin-only engine) has no lanes to count: it returns `200 OK` while every other configured plane is open, and `503` (body: `plane '<key>' configured but not open`) naming the first configured plane that is not.
 
-Use as a Kubernetes readiness and liveness probe. The check is side-effect-free: it never steals a HalfOpen recovery probe slot.
+This compatibility endpoint retains its existing status and explanatory bodies. Use `/livez` and `/readyz` for probes. Never use `/healthz` as a restart-triggering liveness check: downstream failure does not mean the process needs restarting. The check is side-effect-free: it never steals a HalfOpen recovery probe slot.
 
 A `503` from `/healthz` means all lanes are either tripped/cooling, hard-down, budget-exhausted, or permanently dead. Check `/stats` for details. If instead `/healthz` answers `503` with body `plugin dispatch halted; restart required`, the engine has latched a plugin-dispatch halt and only a restart clears it; that check runs before the lane check.
 

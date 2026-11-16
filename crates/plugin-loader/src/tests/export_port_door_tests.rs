@@ -25,6 +25,24 @@ const ACCEPTED: Custody = Custody {
     recheck_s: 0,
 };
 
+#[test]
+fn retry_wait_keeps_the_host_floor_and_shared_backoff_ceiling() {
+    for hint in [None, Some(0)] {
+        let wait = super::Shared::resend_wait(2, hint);
+        assert!(wait >= Duration::from_millis(100));
+        assert!(wait <= Duration::from_millis(250));
+    }
+    assert!(super::Shared::resend_wait(u32::MAX, None) <= Duration::from_secs(60));
+    assert_eq!(
+        super::Shared::resend_wait(2, Some(2)),
+        Duration::from_secs(2)
+    );
+    assert_eq!(
+        super::Shared::resend_wait(2, Some(301)),
+        Duration::from_secs(300)
+    );
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct Call {
     stream: u32,
@@ -125,6 +143,18 @@ impl ExportPort for Double {
     }
     fn custody_ceiling(&self) -> Option<u32> {
         self.ceiling
+    }
+    fn pending_capacity(&self) -> Option<u64> {
+        None
+    }
+    fn confirm(&self, _cx: CallCx, _delivery: u64) -> BoxFut<'_, Result<Custody, PortError>> {
+        Box::pin(async {
+            Err(PortError::Refused {
+                code: busbar_plugin_abi::fail::refused::R_UNSUPPORTED,
+                text: "the double does not declare confirm".into(),
+                error: None,
+            })
+        })
     }
     fn render(
         &self,

@@ -17,7 +17,9 @@ mod outbound;
 mod upstream;
 
 pub use outbound::{upstream_credential, OwnedUpstreamIn};
-pub use upstream::{bind_upstreams, check_upstream_credentials, UpstreamBinding, UpstreamView};
+pub use upstream::{
+    bind_upstreams, bind_upstreams_for, check_upstream_credentials, UpstreamBinding, UpstreamView,
+};
 
 /// Where an implicit instance's `credential` reference comes from. The binder reads that reference from the
 /// config it already walked (no second copy of a secret reference is held here).
