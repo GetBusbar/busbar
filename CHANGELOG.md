@@ -11,6 +11,9 @@ All notable changes to Busbar are documented here. The format is based on
 - **A secret or auth plugin's own rotating credential is re-lent without a reload.**
   1.6.0 Changed: every 30 seconds busbar re-reads the secret references a secret or auth plugin instance was opened with (a workload-identity token file, for example); a changed value is handed to the plugin's `refresh`, or, for a plugin with no `refresh`, to a new instance of the same artifact that is swapped in. A refusal keeps the running instance (`BUSBAR-8028`). Secret plugins may open in two steps (PENDING), and their `tick` is driven; a failed tick is retried rather than ending the schedule (`BUSBAR-8029`).
 
+- **`GET /stats` lanes drop the `limit` alias.**
+  1.6.0 Removed: `limit` is gone from each lane record (owner CLEAN-1.6, no aliases); read `max_concurrent`, which carries the same value.
+
 - **Hook API change:** configuration and admin writes require `module` and `phase`; use
   `phase: [response]` for a single stage. Hook responses omit `at`; clients read `fires_at`.
   One-shot configuration and overlay migration convert old `plugin`/`at` fields.

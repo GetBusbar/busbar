@@ -304,6 +304,7 @@ See the [1.6.0 advisories](advisories/1.6.0/README.md) for the full disclosures.
 
 - Hook writes require `module:` (not `plugin:`) and `phase: [...]` (not `at:`). Hook reads no longer
   return `at`; read `fires_at` and `phase`.
+- `GET /stats` lanes no longer carry `limit`; read `max_concurrent` (same value).
 - Remove `persist` from `PUT /api/v1/admin/config/settings` requests; it is refused with 400.
   Every successful change is saved to the store.
 - A `rate_card` written through the admin API must include the `units:` map below.

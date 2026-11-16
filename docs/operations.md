@@ -274,8 +274,7 @@ directly exposed to untrusted networks is not recommended.
 | `GET /metrics` | virtual key | Prometheus exposition. OPT-IN: mounted only when an `export:` instance with `module: prometheus` is configured (with its required `settings.buffer_seconds`); otherwise the path 404s like any other. Requires a valid key with a non-empty `auth.chain`, open under `chain: []`. Restrict at the network layer if unauthenticated scraping is needed. |
 | `GET /stats` | virtual key | Per-lane health snapshot + pool membership, JSON. |
 
-`/stats` returns, per lane: `model`, `provider`, `max_concurrent`, `limit` (alias of
-`max_concurrent`), `inflight`, `free_slots`, `available` (free permits for a bounded lane,
+`/stats` returns, per lane: `model`, `provider`, `max_concurrent`, `inflight`, `free_slots`, `available` (free permits for a bounded lane,
 or `"unbounded"`), `at_capacity` (`true` when a bounded lane is at its `max_concurrent`
 limit and is therefore shedding/spilling rather than queueing), `availability`,
 `recovery_hint_ms`, `breaker_state`, `ok`, `err`, `usable`, `dead`, `dead_reason`,
