@@ -104,7 +104,7 @@ pub(crate) async fn admit_prepared_store(
     admit_format(prepared.backend.clone(), prepared.recovery.is_none()).await
 }
 
-async fn admit_format(
+pub(crate) async fn admit_format(
     backend: busbar_contract::persistence::axis::OpenedBackend,
     initialize_empty: bool,
 ) -> Result<busbar_kernel::persistence::startup::Startup, String> {
