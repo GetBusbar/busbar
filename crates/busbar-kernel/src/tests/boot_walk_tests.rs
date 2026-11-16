@@ -36,7 +36,7 @@ struct Recording {
 fn refusal(index: u32) -> OpenError {
     OpenError::Config {
         code: 7,
-        text: format!("instance {index} refused"),
+        text: format!("wrong install binding for {index}"),
         error: None,
     }
 }
@@ -187,7 +187,9 @@ async fn a_refused_recheck_refuses_the_boot_before_any_2c_open() {
         "{refused:?}"
     );
     assert!(
-        refused.to_string().contains("instance 2 refused"),
+        refused
+            .to_string()
+            .contains("config 7: wrong install binding for 2"),
         "{refused}"
     );
     assert!(!steps.opened_before(3) && !steps.opened_before(4));

@@ -16,6 +16,9 @@ use busbar_kernel::plane_driver::route_input::{
     LaneInput, OnExhaustedInput, PoolInput, PoolMemberInput,
 };
 
+/// The MIN-3 boot: one generic walk over `Registry::boot_plan` (IF §11.2, §12.10 item 4).
+pub mod boot_walk;
+
 pub const ENV_CONFIG: &str = "BUSBAR_CONFIG";
 
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/busbar/config.yaml";
