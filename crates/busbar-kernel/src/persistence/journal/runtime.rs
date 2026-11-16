@@ -818,6 +818,47 @@ impl RuntimeJournal {
         self.live_head()
     }
 
+    /// Read-only view of ANOTHER node's journal (SHUTDOWN-HANG F1, R15). This node's own journal
+    /// is refused: its proofs exist only under this owner.
+    pub(crate) fn foreign(
+        &self,
+        node: u64,
+    ) -> std::result::Result<super::ForeignJournal<'_>, RuntimeError> {
+        if node == self.node {
+            return Err(RuntimeError::Authority);
+        }
+        super::ForeignJournal::new(&self.store, node).map_err(RuntimeError::from)
+    }
+
+    /// This node's own journal, read cold: boot scans and hops with no carried evidence (R15).
+    pub(crate) fn history(&self) -> std::result::Result<super::OwnHistory<'_>, RuntimeError> {
+        super::OwnHistory::new(&self.store, self.node).map_err(RuntimeError::from)
+    }
+
+    /// Exact custody of `proof` of this node: H and O equal `proof`'s and our admission holds, in
+    /// one read, without the driver. Cold paths only; the live path uses [`Self::confirm_with`].
+    pub(crate) async fn confirm_exact(
+        &self,
+        proof: &VerifiedHead,
+    ) -> std::result::Result<(), RuntimeError> {
+        StoreJournal::new(&self.store, self.node)
+            .map_err(RuntimeError::from)?
+            .confirm_owned(proof)
+            .await
+            .map_err(RuntimeError::from)
+    }
+
+    /// The H and O predicates of `proof` of this node, refused unless it names this owner.
+    pub(crate) fn owned_predicates(
+        &self,
+        proof: &VerifiedHead,
+    ) -> std::result::Result<Vec<Predicate>, RuntimeError> {
+        StoreJournal::new(&self.store, self.node)
+            .map_err(RuntimeError::from)?
+            .owned_predicates(proof)
+            .map_err(RuntimeError::from)
+    }
+
     /// Custody and admission of this owner plus `guards`, in one read, without the publication
     /// driver (SHUTDOWN-HANG F1). While O is ours and admission holds, only this owner's appends
     /// move H, serially, each from the verified head to its pinned group's `next` in one CAS. So

@@ -14,7 +14,7 @@ use crate::{
         facade::CoreStore,
         journal::{
             runtime::{Carried, LiveChange, RuntimeError, RuntimeJournal, StagedRun},
-            RowChange, Selection, StoreJournal, VerifiedHead, WriteResult,
+            ForeignJournal, OwnHistory, Replay, RowChange, Selection, VerifiedHead, WriteResult,
         },
         partition,
     },
@@ -474,6 +474,43 @@ fn history_records_bound_allocations_and_leave_misses_for_verified_fallback() {
     assert_eq!(cache.bytes, 1);
 }
 
+/// One node's journal as a History reads it (SHUTDOWN-HANG R15): this node's own, cold, from its
+/// custody owner, or another node's, read-only. Neither has a CAS or a custody check.
+enum NodeJournal<'a> {
+    Own(OwnHistory<'a>),
+    Foreign(ForeignJournal<'a>),
+}
+impl<'a> NodeJournal<'a> {
+    /// The historical verifier; this node's own continues from `base` when given.
+    async fn replay(&self, base: Option<&VerifiedHead>) -> Result<Replay<'_, 'a>, RecoveryError> {
+        match (self, base) {
+            (Self::Own(own), Some(base)) => own.replay_after(base).await,
+            (Self::Own(own), None) => own.replay().await,
+            (Self::Foreign(foreign), _) => foreign.proof().await,
+        }
+        .map_err(unavailable)
+    }
+    async fn record(&self, proof: &VerifiedHead, sequence: u64) -> Result<Record, RecoveryError> {
+        match self {
+            Self::Own(own) => own.record(proof, sequence).await,
+            Self::Foreign(foreign) => foreign.record(proof, sequence).await,
+        }
+        .map_err(unavailable)
+    }
+    async fn confirm_original(
+        &self,
+        proof: &VerifiedHead,
+        ordinal: u64,
+        original: &Record,
+    ) -> Result<(), RecoveryError> {
+        match self {
+            Self::Own(own) => own.confirm_original(proof, ordinal, original).await,
+            Self::Foreign(foreign) => foreign.confirm_original(proof, ordinal, original).await,
+        }
+        .map_err(unavailable)
+    }
+}
+
 /// One verification attempt streams and proves the complete immutable prefix.
 /// Its bounded frame cache avoids replaying that prefix for each ancestry link;
 /// cache misses still use the original verified reader.
@@ -563,17 +600,42 @@ impl<'a> History<'a> {
             records: self.records.of_node(node),
         })
     }
+    /// `node`'s journal as this History may read it (R15): this node's own through the live
+    /// owner, any other node read-only through it. A History with no owner reads nothing outside
+    /// tests.
+    fn journal_of(&self, node: u64) -> Result<NodeJournal<'a>, RecoveryError> {
+        match self.live {
+            Some(live) if live.node() == node => {
+                live.history().map(NodeJournal::Own).map_err(unavailable)
+            }
+            Some(live) => live
+                .foreign(node)
+                .map(NodeJournal::Foreign)
+                .map_err(unavailable),
+            None => Self::unowned(self.store, node),
+        }
+    }
+    #[cfg(test)]
+    fn unowned(store: &'a CoreStore, node: u64) -> Result<NodeJournal<'a>, RecoveryError> {
+        ForeignJournal::unowned(store, node)
+            .map(NodeJournal::Foreign)
+            .map_err(unavailable)
+    }
+    #[cfg(not(test))]
+    fn unowned(_: &'a CoreStore, _: u64) -> Result<NodeJournal<'a>, RecoveryError> {
+        Err(invalid(
+            "a recovery history without its journal owner reads no journal",
+        ))
+    }
     async fn proof(&mut self, node: u64) -> Result<Arc<VerifiedHead>, RecoveryError> {
         if let Some(proof) = self.proofs.get(&node) {
             return Ok(proof.clone());
         }
-        let journal = StoreJournal::new(self.store, node).map_err(unavailable)?;
-        let local = self.live.is_some_and(|live| live.node() == node);
-        let mut cursor = match self.base.as_deref().filter(|_| local) {
-            Some(base) => journal.historical_replay_after(base).await,
-            None => journal.historical_replay().await,
-        }
-        .map_err(unavailable)?;
+        let journal = self.journal_of(node)?;
+        let local = matches!(journal, NodeJournal::Own(_));
+        let mut cursor = journal
+            .replay(self.base.as_deref().filter(|_| local))
+            .await?;
         // Keep staging private until the entire prefix and its seal are valid.
         // Taking the old cache also bounds the total retained allocation while
         // proving another node; a failed proof simply discards cached frames.
@@ -605,20 +667,14 @@ impl<'a> History<'a> {
             return Self::decode_candidate(&record).map(|(candidate, _)| candidate);
         }
         let proof = self.proof(at.node).await?;
-        let journal = StoreJournal::new(self.store, at.node).map_err(unavailable)?;
-        let local = self.live.is_some_and(|live| live.node() == at.node);
+        let journal = self.journal_of(at.node)?;
+        let local = matches!(journal, NodeJournal::Own(_));
         let record = match self.records.records.get(&(at.node, at.sequence)) {
             Some((ordinal, record)) => {
-                journal
-                    .confirm_original_record(&proof, *ordinal, record)
-                    .await
-                    .map_err(unavailable)?;
+                journal.confirm_original(&proof, *ordinal, record).await?;
                 record.clone()
             }
-            None => journal
-                .read_verified_record(&proof, at.sequence)
-                .await
-                .map_err(unavailable)?,
+            None => journal.record(&proof, at.sequence).await?,
         };
         let (candidate, hash) = Self::decode_candidate(&record)?;
         if local {
@@ -648,17 +704,17 @@ impl<'a> History<'a> {
             if live.is_some_and(|journal| journal.node() == *node) {
                 continue;
             }
-            predicates.extend(
-                StoreJournal::new(self.store, *node)
-                    .map_err(unavailable)?
-                    .selected_predicates(proof)
-                    .map_err(unavailable)?,
-            );
+            match self.journal_of(*node)? {
+                NodeJournal::Foreign(foreign) => {
+                    predicates.extend(foreign.predicates(proof).map_err(unavailable)?)
+                }
+                NodeJournal::Own(_) => continue,
+            }
         }
         check(self.store, predicates).await?;
         if let Some(journal) = live {
             match self.proofs.get(&journal.node()) {
-                Some(proof) => confirm_this_node(self.store, journal, proof).await?,
+                Some(proof) => confirm_this_node(journal, proof).await?,
                 None => journal
                     .confirm_live_owned(None)
                     .await
@@ -1058,13 +1114,9 @@ impl StoreRecovery {
                 // The owner's own head (F1): one lane-free custody read, never the driver.
                 return journal.confirm_with(&[]).await.map_err(unavailable);
             }
-            return confirm_this_node(&self.store, journal, proof).await;
+            return confirm_this_node(journal, proof).await;
         }
-        StoreJournal::new(&self.store, self.node)
-            .map_err(unavailable)?
-            .confirm_owned(proof)
-            .await
-            .map_err(unavailable)
+        self.journal.confirm_exact(proof).await.map_err(unavailable)
     }
     /// Verify a checkpoint this owner just wrote (or found already written):
     /// complete ancestry and ownership, beside its own live journal.
@@ -1201,10 +1253,7 @@ impl StoreRecovery {
             {
                 check(
                     &self.store,
-                    StoreJournal::new(&self.store, self.node)
-                        .map_err(unavailable)?
-                        .owned_predicates(&proof)
-                        .map_err(unavailable)?,
+                    self.journal.owned_predicates(&proof).map_err(unavailable)?,
                 )
                 .await?;
             }
@@ -1278,14 +1327,10 @@ impl StoreRecovery {
 /// the writer's driver). The writer keeps appending on the request path, so an
 /// exact match alone would lose to every append made since the proof.
 async fn confirm_this_node(
-    store: &CoreStore,
     journal: &RuntimeJournal,
     proof: &VerifiedHead,
 ) -> Result<(), RecoveryError> {
-    let exact = StoreJournal::new(store, journal.node())
-        .map_err(unavailable)?
-        .confirm_owned(proof)
-        .await;
+    let exact = journal.confirm_exact(proof).await;
     if exact.is_ok() {
         return Ok(());
     }
@@ -2504,7 +2549,7 @@ impl RecoverySink for StoreRecovery {
                 result.push(selected);
             }
         }
-        confirm_this_node(&self.store, &self.journal, &local).await?;
+        confirm_this_node(&self.journal, &local).await?;
         Ok(result)
     }
     async fn replay(&self) -> Result<Vec<RecoveryEvent>, RecoveryError> {
@@ -2528,7 +2573,7 @@ impl RecoverySink for StoreRecovery {
                 events.extend(chain);
             }
         }
-        confirm_this_node(&self.store, &self.journal, &local).await?;
+        confirm_this_node(&self.journal, &local).await?;
         Ok(events)
     }
     async fn verify_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {

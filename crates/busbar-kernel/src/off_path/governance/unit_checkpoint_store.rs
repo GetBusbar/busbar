@@ -10,7 +10,7 @@ use crate::persistence::{
     facade::CoreStore,
     journal::{
         runtime::{Carried, RuntimeError, RuntimeJournal, StagedRun},
-        RowChange, StoreJournal, VerifiedHead, WriteResult,
+        RowChange, VerifiedHead, WriteResult,
     },
     partition,
 };
@@ -127,8 +127,6 @@ impl UnitCheckpointEvidence {
         incarnation: u64,
     ) -> RecordStoreResult<Option<AuditRecord>> {
         crate::off_path::governance::runtime::unit_checkpoint_store_find_audit(
-            &self.store,
-            self.node,
             &self.journal,
             unit,
             incarnation,
@@ -357,7 +355,7 @@ impl StoreUnitCheckpoints {
         if head.version != 1 || head.node != self.evidence.node || head.sequence == 0 {
             return Err(refusal("invalid running money head"));
         }
-        let journal = StoreJournal::new(&self.evidence.store, head.node).map_err(error)?;
+        let journal = self.evidence.journal.history().map_err(error)?;
         // Every record is located in O(1) from the runtime's segment map (W1); no replay.
         let ordinal = self
             .evidence
@@ -374,7 +372,7 @@ impl StoreUnitCheckpoints {
                 .await
                 .map_err(carried_error)?,
             None => journal
-                .read_verified_record_at(proof, head.sequence, ordinal)
+                .record_at(proof, head.sequence, ordinal)
                 .await
                 .map_err(error)?,
         };
@@ -717,7 +715,7 @@ impl StoreUnitCheckpoints {
         // Under the driver a no-effect is a real fence, epoch or foreign change, or changed
         // original bytes: name a changed original as such instead of a moved head.
         let mut diagnosis = None;
-        match StoreJournal::new(&self.evidence.store, self.evidence.node) {
+        match self.evidence.journal.history() {
             Ok(journal) => {
                 let ordinal = self
                     .evidence
@@ -726,9 +724,7 @@ impl StoreUnitCheckpoints {
                     .ok()
                     .or(row.ordinal);
                 if let Some(ordinal) = ordinal {
-                    if let Err(failed) = journal
-                        .confirm_original_record(&used, ordinal, &row.record)
-                        .await
+                    if let Err(failed) = journal.confirm_original(&used, ordinal, &row.record).await
                     {
                         diagnosis = Some(error(failed));
                     }

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 use super::*;
 use crate::persistence::facade::{Limits, WriterAuthority};
+use crate::persistence::journal::StoreJournal;
 use busbar_contract::persistence::{
     control, BackendInfo, Call, ClockObservation, DatasetId, Durability, Failure, Mutation, Page,
     PersistenceBackend, PreparedCandidate,
@@ -2413,4 +2414,34 @@ async fn an_origin_parent_moved_after_the_pre_check_fails_the_post_write_verific
             "foreign {foreign}: no re-select"
         );
     }
+}
+
+/// WHO: recovery code holding this node's journal owner.
+/// DOES: (SHUTDOWN-HANG F1, R15) the read-only foreign view refuses this node; another node's
+/// journal is proved through it, and that proof's predicates hold until the other node appends.
+/// WHY: an own-node proof taken outside custody goes stale under the next request-path append,
+/// which is the misreported `Authority` R15 removes by construction.
+#[tokio::test]
+async fn the_foreign_view_refuses_this_node() {
+    let backend = Arc::new(Backend::default());
+    let recovery = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
+    let other = sink(Arc::new(attach(backend.clone(), 2).await), 8).await;
+    other.persist(&intent()).await.unwrap();
+    assert!(matches!(
+        recovery.journal.foreign(7),
+        Err(RuntimeError::Authority)
+    ));
+    let view = recovery.journal.foreign(8).unwrap();
+    let mut replay = view.proof().await.unwrap();
+    while replay.next().await.unwrap().is_some() {}
+    let proof = replay.finish().unwrap();
+    check(&recovery.store, view.predicates(&proof).unwrap())
+        .await
+        .unwrap();
+    let mut next = intent();
+    next.operation_id = [2; 16];
+    other.persist(&next).await.unwrap();
+    assert!(check(&recovery.store, view.predicates(&proof).unwrap())
+        .await
+        .is_err());
 }

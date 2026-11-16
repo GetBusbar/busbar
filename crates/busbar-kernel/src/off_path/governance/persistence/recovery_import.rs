@@ -248,7 +248,7 @@ impl StoreRecovery {
     async fn retire_native_owner(&self, node: u64) -> Result<Vec<Predicate>, RecoveryError> {
         use crate::persistence::boot_identity::WriterRetirement;
         loop {
-            let mut history = History::new(&self.store);
+            let mut history = History::observing(&self.store, &self.journal);
             let proof = history.proof(node).await?;
             let (epoch, writer) = proof.owner_identity().ok_or_else(|| {
                 unavailable("current recovery journal has no native owner identity")
@@ -279,15 +279,16 @@ impl StoreRecovery {
                     }
                     // Re-read after closure: a live writer may have appended or
                     // transferred custody while its lease was still running.
-                    let mut closed = History::new(&self.store);
+                    let mut closed = History::observing(&self.store, &self.journal);
                     let current = closed.proof(node).await?;
                     if current.owner_identity() != Some((epoch, writer)) {
                         continue;
                     }
                     guards.extend(
-                        StoreJournal::new(&self.store, node)
+                        self.journal
+                            .foreign(node)
                             .map_err(unavailable)?
-                            .selected_predicates(&current)
+                            .predicates(&current)
                             .map_err(unavailable)?,
                     );
                     closed.finish().await?;
