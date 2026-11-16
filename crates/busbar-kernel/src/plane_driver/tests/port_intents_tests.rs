@@ -8,27 +8,58 @@
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
-use busbar_plugin_abi::fail::refused::{R_DENIED, R_UNSUPPORTED};
+use busbar_plugin_abi::fail::failed::F_UNAVAILABLE;
+use busbar_plugin_abi::fail::refused::{R_DENIED, R_INVALID, R_UNSUPPORTED};
 use busbar_plugin_abi::plane::{
-    CommittedRec, ConnectAns, LookupHit, MintedRec, SignedRec, TrustAns, TrustItemState, WorkAns,
-    CONNECT_BEGIN, CONNECT_STATUS, CONN_READY, CONN_REFUSED, DEST_ALLOWED, DEST_INTERNAL,
-    DISTRUST_CHANGED, DISTRUST_NONE, DISTRUST_NOT_APPROVED, DISTRUST_UNSIGHTED, FROM_CORE,
-    JUDGE_REFUSE_PRIVATE, JUDGE_RESOLVE, LK_CALLER, LK_PREFIX, MINT_ONCE, P_COMMITTED, P_CONNECT,
-    P_ENTITLE, P_JUDGED, P_LOOKUP, P_MINTED, P_SIGNED, P_STORE_FAILED, P_TRUST, P_WORK,
-    SIGNED_ALGORITHM, SIGNED_VERIFIED, SIGN_JWS_COMPACT, SIGN_JWS_DETACHED, TRUST_SERVES,
-    TRUST_STATE, TS_APPROVED, TS_SIGHTED, WORK_OPEN,
+    CommittedRec, ConnectAns, LookupHit, MintedRec, ObsReceipt, ObsScopeAns, RefusalRec, SignedRec,
+    TrustAns, TrustItemState, UsageRec, WorkAns, CONNECT_BEGIN, CONNECT_STATUS, CONN_READY,
+    CONN_REFUSED, DEST_ALLOWED, DEST_INTERNAL, DISTRUST_CHANGED, DISTRUST_NONE,
+    DISTRUST_NOT_APPROVED, DISTRUST_UNSIGHTED, FROM_CORE, JUDGE_REFUSE_PRIVATE, JUDGE_RESOLVE,
+    LK_CALLER, LK_PREFIX, MINT_ONCE, OBS_ATTACH, OBS_CREATE, OBS_FINAL, OBS_READY, OBS_REFUSED,
+    P_COMMITTED, P_CONNECT, P_ENTITLE, P_JUDGED, P_LOOKUP, P_MINTED, P_OBSERVED, P_RENDEZVOUS,
+    P_RV_FAILED, P_SIGNED, P_STORE_FAILED, P_TRUST, P_WORK, RV_ACCEPT, RV_REMOTE, SIGNED_ALGORITHM,
+    SIGNED_VERIFIED, SIGN_JWS_COMPACT, SIGN_JWS_DETACHED, TRUST_SERVES, TRUST_STATE, TS_APPROVED,
+    TS_SIGHTED, WORK_OPEN,
 };
 use busbar_plugin_abi::records::{commit, tag as g, RecPredRec, RecPutRec, Records, Reply, Writer};
 use busbar_plugin_loader::ports::plane::{PlaneIn, PlaneOut, TargetIn};
 use busbar_plugin_loader::ports::PortError;
 
 use super::{Hit, IntentHost, Looked, Resolver, WorkIntent, WorkOutcome};
-use crate::plane_driver::port_services::TrustItemOwned;
+use crate::plane_driver::port_channels::Held;
+use crate::plane_driver::port_services::{ObservationIn, TrustItemOwned};
 use crate::plane_driver::port_session::{Calls, Effects, SessionError, Task, ToClient, Violation};
 use crate::plane_grants::{SignedJws, TicketMint};
 use crate::plugin_records::{CommitOp, CommitOutcome, RecordsDenied, Scope};
 
+/// A held media bridge: writes what the resolver asks of it into the host's call log.
+struct Bridge {
+    log: std::sync::Arc<Mutex<Vec<String>>>,
+    mirrored: Option<&'static str>,
+}
+
+impl Held for Bridge {
+    fn send(&mut self, _: &[u8], _: bool) -> Result<(), RecordsDenied> {
+        Err(RecordsDenied::Invalid)
+    }
+    fn ready(&mut self, _: &[u8]) {}
+    fn remote(&mut self, description: &str) -> Result<(), RecordsDenied> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("remote {description}"));
+        match self.mirrored {
+            Some(_) => Err(RecordsDenied::Invalid),
+            None => Ok(()),
+        }
+    }
+    fn refusal(&self) -> Option<String> {
+        self.mirrored.map(str::to_owned)
+    }
+}
+
 /// One scripted sink item, owned.
+
 #[derive(Clone)]
 enum It {
     Respond(u16),
@@ -77,6 +108,16 @@ enum It {
     },
     TrustState,
     TrustVerify,
+    Rendezvous {
+        exchange: u32,
+        flags: u32,
+        description: &'static str,
+    },
+    ObsScope {
+        op: u32,
+        scope: Option<[u8; 32]>,
+    },
+    Observe,
     Mint {
         flags: u32,
         record: Option<&'static [u8]>,
@@ -163,6 +204,53 @@ fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
                 party: "github",
                 item: None,
             }),
+            It::Rendezvous {
+                exchange,
+                flags,
+                description,
+            } => sink(PlaneOut::Rendezvous {
+                exchange: *exchange,
+                flags: *flags,
+                description,
+            }),
+            It::ObsScope { op, scope } => {
+                let mut require = Reply::new();
+                require
+                    .put_text(busbar_plugin_abi::plane::tag::OBS_REQUIRE, "tokens")
+                    .unwrap();
+                sink(PlaneOut::ObsScope {
+                    check: 11,
+                    op: *op,
+                    scope: *scope,
+                    require: Records::new(require.as_bytes()),
+                });
+            }
+            It::Observe => {
+                let mut counts = Reply::new();
+                counts
+                    .put_pod_tail(
+                        busbar_plugin_abi::plane::tag::OBS_COUNT,
+                        &UsageRec {
+                            amount: 42,
+                            scale: 3,
+                            source: 1,
+                        },
+                        b"tokens",
+                    )
+                    .unwrap();
+                sink(PlaneOut::Observe {
+                    check: 12,
+                    state: OBS_FINAL,
+                    rated_subject: 0,
+                    revision_order: 7,
+                    scope: [9; 32],
+                    event: b"ev",
+                    component: b"comp",
+                    revision: Some(b"rev"),
+                    counts: Records::new(counts.as_bytes()),
+                    evidence: Some(b"evid"),
+                });
+            }
             It::TrustVerify => sink(PlaneOut::TrustVerify {
                 check: 10,
                 party: "github",
@@ -306,7 +394,7 @@ impl Effects for Quiet {
 /// The host: records what it was asked, in order, and answers from its fields.
 #[derive(Default)]
 struct Host {
-    calls: Mutex<Vec<String>>,
+    calls: std::sync::Arc<Mutex<Vec<String>>>,
     present: Vec<(Vec<u8>, Vec<u8>)>,
     store_denied: bool,
     conflict_at: Option<u32>,
@@ -320,6 +408,9 @@ struct Host {
     signed: (u32, &'static str),
     state_items: Vec<TrustItemOwned>,
     sight_denied: bool,
+    rendezvous: Option<RecordsDenied>,
+    mirrored: Option<&'static str>,
+    obs_status: u32,
 }
 
 impl Host {
@@ -499,6 +590,54 @@ impl IntentHost for Host {
             String::from_utf8_lossy(signatures)
         ));
         (self.signed.0, self.signed.1.to_owned())
+    }
+
+    fn rendezvous_accept(
+        &self,
+        route: u32,
+        offer: &str,
+    ) -> Result<(Box<str>, Box<dyn Held>), RecordsDenied> {
+        self.note(format!("accept route={route} offer={offer}"));
+        match self.rendezvous.clone() {
+            Some(denied) => Err(denied),
+            None => Ok((
+                "local-answer".into(),
+                Box::new(Bridge {
+                    log: self.calls.clone(),
+                    mirrored: self.mirrored,
+                }),
+            )),
+        }
+    }
+
+    fn obs_scope(
+        &self,
+        identity: &[u8],
+        op: u32,
+        scope: Option<[u8; 32]>,
+        require: &[&str],
+    ) -> (u32, Option<[u8; 32]>) {
+        self.note(format!(
+            "obs_scope identity={} op={op} scope={} require={require:?}",
+            String::from_utf8_lossy(identity),
+            scope.is_some()
+        ));
+        (self.obs_status, Some([6; 32]))
+    }
+
+    fn observe(&self, identity: &[u8], o: &ObservationIn<'_>) -> (u32, Vec<u8>) {
+        self.note(format!(
+            "observe identity={} scope={} event={} component={} revision={:?} state={} counts={:?} evidence={}",
+            String::from_utf8_lossy(identity),
+            o.scope == [9; 32],
+            String::from_utf8_lossy(o.event),
+            String::from_utf8_lossy(o.component),
+            o.revision.map(|(r, order)| (String::from_utf8_lossy(r).into_owned(), order)),
+            o.state,
+            o.counts,
+            String::from_utf8_lossy(o.evidence)
+        ));
+        (self.obs_status, b"receipt".to_vec())
     }
 
     fn connect(
@@ -1479,4 +1618,285 @@ fn a_host_with_no_service_installed_answers_fail_closed() {
     assert!(items.is_empty());
     assert_ne!(host.trust_verify("github", b"d", b"[]").0, SIGNED_VERIFIED);
     assert!(host.sight("github", None, &[]).is_err());
+}
+
+fn refusal_of_piece(bytes: &[u8]) -> (u32, u32, String) {
+    let rec = Records::new(bytes).next().unwrap().unwrap();
+    assert_eq!(rec.tag, busbar_plugin_abi::plane::tag::REFUSAL);
+    let (head, text) = rec.pod_tail::<RefusalRec>().unwrap();
+    (
+        head.status,
+        head.code,
+        String::from_utf8(text.to_vec()).unwrap(),
+    )
+}
+
+#[test]
+fn a_client_offer_is_accepted_on_the_requests_route_and_the_local_answer_comes_back_on_its_exchange(
+) {
+    let script = Script {
+        request: vec![It::Rendezvous {
+            exchange: 4,
+            flags: RV_ACCEPT,
+            description: "v=0 offer",
+        }],
+        ..Script::default()
+    };
+    let host = Host::default();
+    let (mut task, first) = Task::begin(&script, &req(), b"", &Quiet).unwrap();
+    let resolver = Resolver::new(&host, None).with_route(7);
+    task.resolve(first, &resolver, &Quiet).unwrap();
+    assert_eq!(host.seen(), ["accept route=7 offer=v=0 offer"]);
+    assert_eq!(
+        script.got(),
+        vec![(FROM_CORE, P_RENDEZVOUS, b"local-answer".to_vec())]
+    );
+    assert!(
+        task.held_exchanges().contains(&4),
+        "the session holds the bridge under its exchange: dropping it closes the media session"
+    );
+}
+
+#[test]
+fn an_offer_that_cannot_be_accepted_is_p_rv_failed_with_a_refusal_on_that_exchange() {
+    let script = Script {
+        request: vec![It::Rendezvous {
+            exchange: 4,
+            flags: RV_ACCEPT,
+            description: "offer",
+        }],
+        ..Script::default()
+    };
+    let host = Host {
+        rendezvous: Some(RecordsDenied::Unavailable),
+        ..Host::default()
+    };
+    let (mut task, first) = Task::begin(&script, &req(), b"", &Quiet).unwrap();
+    task.resolve(first, &Resolver::new(&host, None), &Quiet)
+        .unwrap();
+    let got = script.got();
+    assert_eq!((got[0].0, got[0].1), (FROM_CORE, P_RV_FAILED));
+    let (status, code, text) = refusal_of_piece(&got[0].2);
+    assert_eq!((status, code), (502, F_UNAVAILABLE));
+    assert!(!text.is_empty(), "core's own fixed text");
+    assert!(task.held_exchanges().is_empty());
+}
+
+#[test]
+fn the_far_ends_answer_goes_to_the_held_bridge_and_a_mirror_failure_is_p_rv_failed_with_its_text() {
+    let remote = |mirrored: Option<&'static str>| {
+        let script = Script {
+            request: vec![It::Rendezvous {
+                exchange: 4,
+                flags: RV_ACCEPT,
+                description: "offer",
+            }],
+            ..Script::default()
+        }
+        .answering(vec![vec![It::Rendezvous {
+            exchange: 4,
+            flags: RV_REMOTE,
+            description: "far answer",
+        }]]);
+        let host = Host {
+            mirrored,
+            ..Host::default()
+        };
+        run(&script, &host, None).unwrap();
+        (host.seen(), script.got())
+    };
+    let (seen, got) = remote(None);
+    assert_eq!(seen, ["accept route=0 offer=offer", "remote far answer"]);
+    assert_eq!(got.len(), 1, "an accepted answer is not answered");
+
+    let (_, got) = remote(Some(
+        "line 0 is `audio` on the caller's leg and `video` upstream",
+    ));
+    assert_eq!(got.len(), 2);
+    assert_eq!((got[1].0, got[1].1), (FROM_CORE, P_RV_FAILED));
+    let (status, code, text) = refusal_of_piece(&got[1].2);
+    assert_eq!((status, code), (400, R_INVALID));
+    assert_eq!(
+        text,
+        "line 0 is `audio` on the caller's leg and `video` upstream"
+    );
+}
+
+#[test]
+fn a_far_end_answer_for_an_exchange_with_no_bridge_is_p_rv_failed() {
+    let script = Script {
+        request: vec![It::Rendezvous {
+            exchange: 9,
+            flags: RV_REMOTE,
+            description: "far answer",
+        }],
+        ..Script::default()
+    };
+    run(&script, &Host::default(), None).unwrap();
+    let got = script.got();
+    assert_eq!((got[0].0, got[0].1), (FROM_CORE, P_RV_FAILED));
+    assert_eq!(refusal_of_piece(&got[0].2).1, R_INVALID);
+}
+
+fn observed(bytes: &[u8]) -> Vec<(u16, u32, u32, Vec<u8>)> {
+    Records::new(bytes)
+        .map(|rec| {
+            let rec = rec.unwrap();
+            match rec.tag {
+                busbar_plugin_abi::plane::tag::OBS_SCOPE_ANS => {
+                    let (a, t) = rec.pod_tail::<ObsScopeAns>().unwrap();
+                    (rec.tag, a.check, a.status, t.to_vec())
+                }
+                busbar_plugin_abi::plane::tag::OBS_RECEIPT => {
+                    let (a, t) = rec.pod_tail::<ObsReceipt>().unwrap();
+                    (rec.tag, a.check, a.status, t.to_vec())
+                }
+                other => panic!("unexpected tag {other:#x}"),
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn obs_scope_and_observe_run_as_the_verified_principal_and_answer_in_intent_order_in_one_p_observed(
+) {
+    let script = Script {
+        request: vec![
+            It::ObsScope {
+                op: OBS_CREATE,
+                scope: None,
+            },
+            It::Observe,
+        ],
+        ..Script::default()
+    };
+    let host = Host {
+        obs_status: OBS_READY,
+        ..Host::default()
+    };
+    run_as(&script, &host, b"ID").unwrap();
+    assert_eq!(
+        host.seen(),
+        [
+            "obs_scope identity=ID op=1 scope=false require=[\"tokens\"]",
+            "observe identity=ID scope=true event=ev component=comp revision=Some((\"rev\", 7)) state=2 counts=[(\"tokens\", 42, 3)] evidence=evid"
+        ]
+    );
+    let bytes = only_piece(&script, P_OBSERVED);
+    assert_eq!(
+        observed(&bytes),
+        [
+            (
+                busbar_plugin_abi::plane::tag::OBS_SCOPE_ANS,
+                11,
+                OBS_READY,
+                vec![6; 32]
+            ),
+            (
+                busbar_plugin_abi::plane::tag::OBS_RECEIPT,
+                12,
+                OBS_READY,
+                b"receipt".to_vec()
+            )
+        ]
+    );
+}
+
+#[test]
+fn custody_is_the_verified_principals_so_without_one_it_is_refused_and_the_host_never_asked() {
+    let script = Script {
+        request: vec![
+            It::ObsScope {
+                op: OBS_ATTACH,
+                scope: Some([6; 32]),
+            },
+            It::Observe,
+        ],
+        ..Script::default()
+    };
+    let host = Host {
+        obs_status: OBS_READY,
+        ..Host::default()
+    };
+    run(&script, &host, None).unwrap();
+    assert!(host.seen().is_empty());
+    let bytes = only_piece(&script, P_OBSERVED);
+    assert_eq!(
+        observed(&bytes),
+        [
+            (
+                busbar_plugin_abi::plane::tag::OBS_SCOPE_ANS,
+                11,
+                OBS_REFUSED,
+                vec![]
+            ),
+            (
+                busbar_plugin_abi::plane::tag::OBS_RECEIPT,
+                12,
+                OBS_REFUSED,
+                vec![]
+            )
+        ]
+    );
+}
+
+#[test]
+fn p_observed_comes_after_p_committed_and_before_p_work() {
+    let mut ops = Reply::new();
+    ops.put_pod_tail(
+        g::REC_PUT,
+        &RecPutRec {
+            flags: 0,
+            key_len: 1,
+            ttl_s: 0,
+        },
+        b"cv",
+    )
+    .unwrap();
+    let script = Script {
+        request: vec![
+            It::Work {
+                op: WORK_OPEN,
+                target: Some("/poll"),
+            },
+            It::Observe,
+            It::Commit {
+                ops: ops.as_bytes().to_vec(),
+            },
+            It::Rendezvous {
+                exchange: 2,
+                flags: RV_ACCEPT,
+                description: "o",
+            },
+            It::Connect {
+                op: CONNECT_STATUS,
+                return_to: None,
+            },
+        ],
+        ..Script::default()
+    };
+    run_as(&script, &Host::default(), b"ID").unwrap();
+    let kinds: Vec<u32> = script.got().iter().map(|p| p.1).collect();
+    assert_eq!(
+        kinds,
+        [P_COMMITTED, P_OBSERVED, P_WORK, P_CONNECT, P_RENDEZVOUS]
+    );
+}
+
+#[test]
+fn a_host_with_no_media_or_observation_service_answers_fail_closed() {
+    let host = Bare;
+    assert!(host.rendezvous_accept(1, "offer").is_err());
+    assert_eq!(host.obs_scope(b"ID", OBS_CREATE, None, &[]).0, OBS_REFUSED);
+    let o = ObservationIn {
+        scope: [0; 32],
+        event: b"e",
+        component: b"c",
+        revision: None,
+        state: OBS_FINAL,
+        counts: &[],
+        rated_subject: 0,
+        evidence: b"",
+    };
+    assert_eq!(host.observe(b"ID", &o).0, OBS_REFUSED);
 }
