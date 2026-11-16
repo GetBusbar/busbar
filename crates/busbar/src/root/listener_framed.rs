@@ -302,6 +302,40 @@ struct InboundBody {
     ended: bool,
 }
 
+async fn gather_body(
+    mut body: InboundBody,
+    body_limit: u64,
+    timeout: std::time::Duration,
+) -> Result<Bytes, busbar_contract::caps::ReasonCode> {
+    use busbar_contract::caps::ReasonCode;
+    let mut whole = Gathered::default();
+    let started = tokio::time::Instant::now();
+    let deadline = started + super::total_body_deadline();
+    while !body.ended {
+        let piece_deadline = (tokio::time::Instant::now() + timeout).min(deadline);
+        match tokio::time::timeout_at(piece_deadline, body.pieces.recv()).await {
+            Ok(Some(Ok(bytes))) => {
+                let oversized = whole
+                    .len()
+                    .checked_add(bytes.len())
+                    .is_none_or(|size| body_limit != 0 && size as u64 > body_limit);
+                if oversized {
+                    return Err(ReasonCode::BodyTooLarge);
+                }
+                whole.push(bytes);
+            }
+            Ok(None) => body.ended = true,
+            Ok(Some(Err(_))) => return Err(ReasonCode::DecodeFailed),
+            Err(_) => return Err(ReasonCode::DeadlineExceeded),
+        }
+        let elapsed = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        if super::check_body_bounds(0, elapsed, whole.len() as u64).is_some() {
+            return Err(ReasonCode::DeadlineExceeded);
+        }
+    }
+    Ok(whole.into_bytes())
+}
+
 /// A request body gathered from its pieces: a body that arrives in one piece is kept as received
 /// (no copy); only one that arrives in several is joined.
 #[derive(Default)]
@@ -1953,7 +1987,7 @@ pub(in crate::root) async fn serve_admitted_wire_test(
 async fn serve_data(
     routes: Arc<crate::root::serve::DataRoutes>,
     admission: busbar_kernel::inbound::RequestAdmission,
-    mut body: InboundBody,
+    body: InboundBody,
     slot: SessionSlot,
     out: Emitter,
     _end: StreamEnd,
@@ -1986,31 +2020,13 @@ async fn serve_data(
                 return None;
             }
         };
-        let mut whole = Gathered::default();
-        while !body.ended {
-            match tokio::time::timeout(timeout, body.pieces.recv()).await {
-                Ok(Some(Ok(bytes))) => {
-                    let oversized = whole.len().checked_add(bytes.len()).is_none_or(|size| {
-                        admission.body_limit() != 0 && size as u64 > admission.body_limit()
-                    });
-                    if oversized {
-                        refuse_data(&routes, &admission, &caller, ReasonCode::BodyTooLarge).await;
-                        return None;
-                    }
-                    whole.push(bytes);
-                }
-                Ok(None) => body.ended = true,
-                Ok(Some(Err(_))) => {
-                    refuse_data(&routes, &admission, &caller, ReasonCode::DecodeFailed).await;
-                    return None;
-                }
-                Err(_) => {
-                    refuse_data(&routes, &admission, &caller, ReasonCode::DeadlineExceeded).await;
-                    return None;
-                }
+        let body = match gather_body(body, admission.body_limit(), timeout).await {
+            Ok(body) => body,
+            Err(reason) => {
+                refuse_data(&routes, &admission, &caller, reason).await;
+                return None;
             }
-        }
-        let body = whole.into_bytes();
+        };
         *caller
             .body
             .lock()
