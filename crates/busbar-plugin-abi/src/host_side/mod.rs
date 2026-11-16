@@ -10,6 +10,7 @@ pub mod entry;
 pub mod host_vt;
 pub mod needs;
 pub mod pool;
+pub mod proxy;
 pub mod scrub;
 pub mod watch;
 

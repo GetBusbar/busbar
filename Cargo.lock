@@ -666,6 +666,7 @@ dependencies = [
  "busbar-ffi",
  "crossbeam-queue",
  "hex",
+ "hyper",
  "percent-encoding",
  "zerocopy",
  "zeroize",
