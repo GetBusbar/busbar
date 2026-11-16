@@ -88,7 +88,8 @@ Changing any key byte or the presence flag changes the preimage.
 
 ## Journal representation
 
-New records use tag `audit.v5` and recipe `busbar.audit.digest.v5`. The old common
+This is verify-only: this build seals every new record as [V7](audit-chain-digest-v7.md). A V5 record
+uses tag `audit.v5` and recipe `busbar.audit.digest.v5`. The old common
 prefix and suffix remain, except that the ordinal slot is replaced by a presence
 number 0 or 1 and, only when present, a u32-length-prefixed binary blob of exactly
 twenty key bytes. It is not UTF-8 text. A reader rejects any other blob length,
