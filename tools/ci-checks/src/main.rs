@@ -48,7 +48,7 @@ const CHECKS: [&str; 7] = [
     "core-scan",
 ];
 /// Checks that take arguments (a plugin repo, files). Named first, the rest of the command line is theirs.
-const ARG_CHECKS: [&str; 8] = [
+const ARG_CHECKS: [&str; 7] = [
     "template-drift",
     "patch-drift",
     "no-host-link",
@@ -56,7 +56,6 @@ const ARG_CHECKS: [&str; 8] = [
     "c-alias",
     "core-scan",
     "loc-report",
-    "fleet-manifest",
 ];
 
 /// A check's findings, or the error that stopped it.
