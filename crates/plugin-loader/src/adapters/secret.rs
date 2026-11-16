@@ -116,8 +116,34 @@ fn decode_answer(scrub: &Scrub, a: &Answer<'_>) -> Result<SecretAnswer, PortErro
 /// The OK answer of `resolve`: exactly one VALUE and at most one FACT(F_LEASE_S) (IF §8.2). Anything else is a
 /// contract break (`Unknown` for a foreign tag, `Size` for a missing or repeated record or another fact).
 pub fn answer_value(recs: Records<'_>) -> Result<SecretAnswer, RecErr> {
-    let _ = recs;
-    todo!()
+    let mut value = None;
+    let mut lease_s = None;
+    for rec in recs {
+        let rec = rec?;
+        match rec.tag {
+            tag::VALUE if value.is_none() => {
+                let mut v = SecureVec::new();
+                v.extend_from_slice(rec.body);
+                value = Some(v);
+            }
+            busbar_plugin_abi::records::tag::FACT if lease_s.is_none() => {
+                let f = rec.pod::<FactRec>()?;
+                if f._r != 0 {
+                    return Err(RecErr::Reserved);
+                }
+                if f.key != F_LEASE_S {
+                    return Err(RecErr::Size);
+                }
+                lease_s = Some(f.value);
+            }
+            tag::VALUE | busbar_plugin_abi::records::tag::FACT => return Err(RecErr::Size),
+            other => return Err(RecErr::Unknown(other)),
+        }
+    }
+    Ok(SecretAnswer {
+        value: value.ok_or(RecErr::Size)?,
+        lease_s,
+    })
 }
 
 /// The one failure shape of a REFUSED or FAILED answer: the plugin's text scrubbed whole, then cut to the shown
@@ -132,16 +158,18 @@ pub fn port_failure(
     backend_status: Option<u64>,
     error: Option<PluginCode>,
 ) -> PortError {
-    let _ = (
-        scrub,
-        failed,
-        code,
-        text,
-        retry_after_s,
-        backend_status,
-        error,
-    );
-    todo!()
+    let text: Box<str> = fail_text(scrub, text).into_owned().into_boxed_str();
+    if failed {
+        PortError::Failed {
+            code,
+            text,
+            retry_after_s,
+            backend_status,
+            error,
+        }
+    } else {
+        PortError::Refused { code, text, error }
+    }
 }
 
 #[cfg(test)]
