@@ -24,6 +24,44 @@ fn datagram_line_memory_limit_applies_to_new_connections_without_restart() {
     }
 }
 
+#[test]
+fn removed_pre_release_limits_and_drain_keys_are_refused_at_the_settings_door() {
+    for (body, key) in [
+        (
+            serde_json::json!({"limits": {"datagram_line_memory_bytes": 12345}}),
+            "datagram_line_memory_bytes",
+        ),
+        (
+            serde_json::json!({"limits": {"datagram_line_memory_bytes": null}}),
+            "datagram_line_memory_bytes",
+        ),
+        (
+            serde_json::json!({"limits": {"migration_index_bytes": 1048576}}),
+            "migration_index_bytes",
+        ),
+        (
+            serde_json::json!({"limits": {"migration_value_bytes": 1048576}}),
+            "migration_value_bytes",
+        ),
+        (
+            serde_json::json!({"advanced": {"shutdown": {"drain_timeout": "30s"}}}),
+            "shutdown",
+        ),
+        (
+            serde_json::json!({"advanced": {"governance": {"max_pending_checkpoints": 7}}}),
+            "governance",
+        ),
+    ] {
+        let err = serde_json::from_value::<busbar_kernel::config::overlay::RootSettings>(body)
+            .expect_err("PUT /config/settings refuses a removed pre-release key");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown field") && msg.contains(key),
+            "expected an unknown-field error naming `{key}`; got: {msg}"
+        );
+    }
+}
+
 fn budget(cents: u64) -> LimitCfg {
     LimitCfg {
         metric: LimitMetric::Budget,

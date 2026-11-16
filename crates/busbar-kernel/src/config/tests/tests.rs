@@ -284,6 +284,49 @@ fn current_reader_rejects_retired_observability_fields() {
     }
 }
 
+/// The pre-release `limits.migration_index_bytes`, `limits.migration_value_bytes`,
+/// `limits.datagram_line_memory_bytes`, `advanced.shutdown` and `advanced.governance` keys were
+/// removed before 1.6.0 shipped (fixed values replace them): a config that sets one is refused as an
+/// unknown key, never silently ignored.
+#[test]
+fn removed_pre_release_limits_and_drain_keys_are_refused_as_unknown() {
+    for (document, key) in [
+        (
+            "limits:\n  migration_index_bytes: 1048576\n",
+            "migration_index_bytes",
+        ),
+        (
+            "limits:\n  migration_value_bytes: 1048576\n",
+            "migration_value_bytes",
+        ),
+        (
+            "limits:\n  datagram_line_memory_bytes: 4096\n",
+            "datagram_line_memory_bytes",
+        ),
+        (
+            "limits:\n  datagram_line_memory_bytes: null\n",
+            "datagram_line_memory_bytes",
+        ),
+        (
+            "advanced:\n  shutdown:\n    drain_timeout: 30s\n",
+            "shutdown",
+        ),
+        (
+            "advanced:\n  governance:\n    max_pending_checkpoints: 7\n",
+            "governance",
+        ),
+    ] {
+        let yaml = format!("providers: {{}}\nmodels: {{}}\n{document}");
+        let err = deploy_from_yaml_str(&yaml, &crate::config::Grammar::empty())
+            .expect_err("a removed pre-release key must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown field") && msg.contains(key),
+            "expected an unknown-field error naming `{key}`; got: {msg}"
+        );
+    }
+}
+
 #[test]
 fn test_emit_server_timing_moved_to_advanced_response_headers() {
     let err = busbar_contract::yaml::from_str::<DeployCfg>(
