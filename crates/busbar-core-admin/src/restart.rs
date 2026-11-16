@@ -5,7 +5,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
 use tokio::sync::broadcast;
 
-static SHUTDOWN: OnceLock<broadcast::Sender<()>> = OnceLock::new();
+struct Shutdown {
+    sender: broadcast::Sender<()>,
+    probes: std::sync::Arc<busbar_kernel::endpoints::ProbeState>,
+}
+
+static SHUTDOWN: OnceLock<Shutdown> = OnceLock::new();
 
 static DRAIN_AT_EXIT: AtomicBool = AtomicBool::new(false);
 
@@ -57,8 +62,11 @@ fn asking_unit() -> u64 {
     ASKING_UNIT.try_with(|unit| *unit).unwrap_or(UNKEYED_UNIT)
 }
 
-pub fn publish_shutdown(tx: broadcast::Sender<()>) {
-    let _ = SHUTDOWN.set(tx);
+pub fn publish_shutdown(
+    sender: broadcast::Sender<()>,
+    probes: std::sync::Arc<busbar_kernel::endpoints::ProbeState>,
+) {
+    let _ = SHUTDOWN.set(Shutdown { sender, probes });
 }
 
 pub fn drain_released_at_exit() {
@@ -77,8 +85,9 @@ fn release_asked_drain(unit: u64) -> bool {
 }
 
 fn send_shutdown() {
-    if let Some(tx) = SHUTDOWN.get() {
-        let _ = tx.send(());
+    if let Some(shutdown) = SHUTDOWN.get() {
+        shutdown.probes.begin_stopping();
+        let _ = shutdown.sender.send(());
     }
 }
 
