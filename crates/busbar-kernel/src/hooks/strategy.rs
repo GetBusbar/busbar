@@ -62,18 +62,8 @@ pub fn resolve_strategy(
     }
 }
 
-fn owned(s: &str) -> Box<str> {
-    let mut out = String::with_capacity(s.len());
-    out.push_str(s);
-    out.into_boxed_str()
-}
-
 fn binding(word: &str, implicit: bool) -> StrategyBinding {
-    StrategyBinding {
-        word: owned(word),
-        instance: owned(word),
-        implicit,
-    }
+    crate::off_path::hooks::strategy_binding(word, implicit)
 }
 
 fn text(parts: &[&str]) -> ConfigRefused {

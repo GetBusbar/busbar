@@ -366,12 +366,12 @@ fn without_query_where(
     axum::http::Uri::from_parts(parts).ok()
 }
 
-/// Strip consumed query keys without requiring the enclosing target to be an HTTP URI.
-pub(crate) fn without_query_keys_text(query: &str, keys: &[&str]) -> Option<String> {
-    without_query_text_where(query, &|key| keys.contains(&key))
-}
-
-fn without_query_text_where(query: &str, is_key: &dyn Fn(&str) -> bool) -> Option<String> {
+/// `query` without the pairs whose key (raw or form-decoded) `is_key` picks, written once into the
+/// one owned text; `None` when no pair is picked. It needs no enclosing HTTP URI.
+pub(crate) fn without_query_text_where(
+    query: &str,
+    is_key: &dyn Fn(&str) -> bool,
+) -> Option<String> {
     let named = |pair: &&str| {
         let key = pair.split_once('=').map_or(*pair, |(k, _)| k);
         is_key(key)
@@ -382,8 +382,14 @@ fn without_query_text_where(query: &str, is_key: &dyn Fn(&str) -> bool) -> Optio
     if !query.split('&').any(|p| named(&p)) {
         return None;
     }
-    let kept: Vec<&str> = query.split('&').filter(|p| !named(p)).collect();
-    Some(kept.join("&"))
+    let mut kept = String::with_capacity(query.len());
+    for (at, pair) in query.split('&').filter(|p| !named(p)).enumerate() {
+        if at > 0 {
+            kept.push('&');
+        }
+        kept.push_str(pair);
+    }
+    Some(kept)
 }
 
 const AUTH_ADMISSION_MAX_INFLIGHT: usize = 64;
