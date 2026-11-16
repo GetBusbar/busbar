@@ -773,6 +773,22 @@ mod tests {
     }
 
     #[test]
+    fn record_capture_edits_require_restart_without_matching_unrelated_keys() {
+        let paths = [
+            "/records",
+            "/records/user",
+            "/records/labels/0",
+            "/records_extra",
+            "/limits/request_body_max_bytes",
+        ]
+        .map(str::to_owned);
+        assert_eq!(
+            restart_paths(&paths),
+            ["/records", "/records/user", "/records/labels/0"]
+        );
+    }
+
+    #[test]
     fn boot_changes_remain_explicitly_pending_and_live_limits_do_not() {
         let paths = [
             "/advanced/worker_threads",
