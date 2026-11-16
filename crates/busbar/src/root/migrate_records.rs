@@ -20,7 +20,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use busbar_contract::abi::sdk::store::cells::{self, Cell, IMPORT_NS};
+use busbar_contract::persistence::cells::{self, Cell, IMPORT_NS};
 use busbar_contract::persistence::{Address, NamespaceId};
 use busbar_contract::records::{AuditRecord, MeteringRow, ModelTokens, UsageLedger};
 use busbar_contract::secure::SecureVec;

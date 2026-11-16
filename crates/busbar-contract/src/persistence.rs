@@ -14,6 +14,7 @@ use crate::redacted::{Kernel, Secret};
 
 pub mod archive;
 pub mod axis;
+pub mod cells;
 mod commit_key;
 pub mod control;
 pub mod legacy_row;

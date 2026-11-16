@@ -3,7 +3,6 @@
 
 //! Primitive Store adapter and shared native connection mechanics.
 
-pub mod cells;
 pub mod v4;
 pub mod wire;
 

@@ -426,7 +426,7 @@ fn a_stamped_boot_writes_the_settled_answer_back_once() {
 mod records_step {
     use super::Scratch;
     use crate::root::migrate_records::{self, Keys, Store, AUDIT_NS};
-    use busbar_contract::abi::sdk::store::cells::{self, table, Cell, HEADLESS, IMPORT_NS};
+    use busbar_contract::persistence::cells::{self, table, Cell, HEADLESS, IMPORT_NS};
     use busbar_contract::persistence::NamespaceId;
     use busbar_contract::secure::SecureVec;
     use busbar_migrate::records::{Candidate, RecordStore};
