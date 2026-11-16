@@ -14,6 +14,7 @@ use super::unit_checkpoint_store::{
 use super::RecordStoreResult;
 use crate::persistence::facade::{CoreStore, Limits, WriterAuthority};
 use crate::persistence::journal::runtime::{BufferBudget, RuntimeJournal};
+use busbar_contract::json::{self, JsonValueTrait as _};
 use busbar_contract::persistence::{
     control, Address, BackendInfo, Call, ClockObservation, DatasetId, Decision, Durability,
     ExpectedValue, Mutation, Page, PersistenceBackend, PreparedCandidate, Read, ReadResult, Scan,
@@ -281,7 +282,7 @@ impl PersistenceBackend for Mem {
             dataset: DatasetId([1; 16]),
             atomic_domain: [2; 16],
             clock_authority: [3; 16],
-            physical_version: busbar_contract::abi::sdk::store::v4::slot::PHYSICAL_VERSION,
+            physical_version: busbar_contract::persistence::PHYSICAL_VERSION,
             durability: Durability::Local,
         }
     }
@@ -577,7 +578,7 @@ fn selected_revision(backend: &Mem) -> Option<u64> {
         .rows
         .iter()
         .find(|(at, _)| at.key.starts_with(UNITCP))?;
-    let head: serde_json::Value = serde_json::from_slice(raw.expose(&crate::seal::lend())).unwrap();
+    let head: json::Value = json::parse_value(raw.expose(&crate::seal::lend())).unwrap();
     head["revision"].as_u64()
 }
 fn selected_raw(backend: &Mem) -> Option<Secret<Vec<u8>>> {

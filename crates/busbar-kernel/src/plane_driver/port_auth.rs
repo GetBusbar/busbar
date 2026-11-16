@@ -25,9 +25,9 @@ use busbar_plugin_abi::plane::{
     RENDER_REFUSAL,
 };
 use busbar_plugin_abi::records::{tag as g, Reply, Writer};
-use busbar_plugin_loader::encode::plane::encode_refusal;
-use busbar_plugin_loader::ports::plane::PlaneIn;
-use busbar_plugin_loader::ports::PortError;
+use busbar_ports::codec::plane::encode_refusal;
+use busbar_ports::plane::PlaneIn;
+use busbar_ports::PortError;
 
 use super::port_session::{render, Calls, Effects, SessionError, ToClient};
 use crate::plane_grants::{TicketAdmitted, TicketDenied};
@@ -331,7 +331,7 @@ pub fn catalog<K: Calls + ?Sized>(
     effects: &dyn Effects,
 ) -> Result<Vec<ToClient>, SessionError> {
     let mut arg = Reply::new();
-    busbar_plugin_loader::encode::plane::encode_catalog(&mut arg, models)
+    busbar_ports::codec::plane::encode_catalog(&mut arg, models)
         .map_err(|_| SessionError::Encode)?;
     render(
         calls,

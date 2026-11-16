@@ -76,6 +76,7 @@ const GROUPS: &[(&str, &str)] = &[
     ("hooks_count", "hooks"),
     ("children_count", "children"),
     ("attempts_count", "attempts"),
+    ("labels_count", "labels"),
 ];
 
 /// The array a count field opened, as the range read is filling it.

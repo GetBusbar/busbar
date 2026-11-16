@@ -535,3 +535,51 @@ fn overloaded_admission_stops_and_renders_the_exact_verifier_unavailable_envelop
         );
     }
 }
+
+/// Aikido 1074606963 (#108): `DECISION_STOP` means the transport stops the request
+/// (abi/auth), whatever the verdict beside it. An identity or a pass carrying it is denied and
+/// keeps no identity, so the unit is never handed in; continue keeps today's reading and an
+/// overload keeps its own answer.
+#[test]
+fn a_stop_decision_denies_the_request_whatever_the_verdict() {
+    use busbar_contract::auth_calls::Decision;
+    let answer = |verified: Verified, decision: Decision| VerifyAnswer {
+        verified,
+        decision,
+        strips: Vec::new(),
+        reason: None,
+    };
+    for verified in [
+        Verified::Identity(VerifiedIdentity {
+            subject: "alice".into(),
+            ..VerifiedIdentity::default()
+        }),
+        Verified::Pass,
+    ] {
+        let (judged, identity, _) = judged_answer(answer(verified.clone(), Decision::Stop));
+        assert_eq!(judged, Judged::Denied, "{verified:?} with a stop decision");
+        assert_eq!(identity, None, "a stopped answer keeps no identity");
+    }
+    let (judged, identity, _) = judged_answer(answer(
+        Verified::Identity(VerifiedIdentity {
+            subject: "alice".into(),
+            ..VerifiedIdentity::default()
+        }),
+        Decision::Continue,
+    ));
+    assert_eq!(judged, Judged::Identity);
+    assert_eq!(identity.map(|id| id.subject), Some("alice".to_string()));
+    let (judged, _, _) = judged_answer(answer(Verified::Pass, Decision::Continue));
+    assert_eq!(judged, Judged::Pass);
+    let (judged, _, _) = judged_answer(answer(Verified::Overloaded, Decision::Stop));
+    assert_eq!(judged, Judged::Overloaded);
+    // The signed reader's pass with a stop is final, so it never moves on to the keys arm.
+    assert!(matches!(
+        signed_reader_step(Some(answer(Verified::Pass, Decision::Stop)), false),
+        SignedReaderStep::Final(_)
+    ));
+    assert!(matches!(
+        signed_reader_step(Some(answer(Verified::Pass, Decision::Continue)), false),
+        SignedReaderStep::Pass(_)
+    ));
+}

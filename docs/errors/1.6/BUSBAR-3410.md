@@ -12,7 +12,7 @@ An MCP server (`tools.<server>`) or A2A agent (`agents.<agent>`) set the retired
 
 ## How to fix it
 
-Review the listed hosts. Move a non-loopback `http://` registration to `https://`; per-destination plaintext arrives after 1.6.0.
+Review the listed hosts. Move a non-loopback `http://` registration to `https://`; busbar has no per-destination plaintext switch.
 
 ---
 

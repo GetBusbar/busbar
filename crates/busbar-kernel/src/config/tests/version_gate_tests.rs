@@ -8,8 +8,8 @@ use crate::config::overlay::{
 #[tokio::test]
 async fn newer_store_overlay_is_refused_without_overwrite() {
     let store = crate::real_store::core().await;
-    let bytes = serde_json::to_vec(
-        &serde_json::json!({"version":OVERLAY_VERSION+1,"future_security":{"required":true}}),
+    let bytes = busbar_contract::json::to_vec(
+        &busbar_contract::json::json!({"version":OVERLAY_VERSION+1,"future_security":{"required":true}}),
     )
     .unwrap();
     seed_bytes(store.clone(), &bytes).await;

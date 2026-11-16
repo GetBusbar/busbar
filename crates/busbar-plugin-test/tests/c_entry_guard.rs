@@ -15,8 +15,88 @@ fn grow_to_16_mib_and_the_arena_is_zero_when_the_open_step_returns() {
     todo!("owner: W1-H1 (C-ENTRY-GUARD)")
 }
 
+/// W1-L2, over the loud probe (min3_second.rs `loud`): its describe answers a D_SCHEMA of 64 KiB and logs a line;
+/// its `open` (round 31: the migrate entry is the open chain) resolves the password, logs a line holding it and
+/// answers a 64 KiB canonical CONFIG beside INSTANCE; its `close` logs a line holding the password. The image is
+/// admitted, the open succeeds and core keeps the whole CONFIG; each line reaches the log sink attributed (the
+/// open and close lines to the configured name, the describe line to the kind: §10.7 gives describe no
+/// instance) and scrubbed with the slot's set (custody registered the password before the open held it); and
+/// describe, open and close each ran on this thread, the one that called `add`, `open_secret` and dropped the port.
 #[test]
-#[ignore = "owner: W1-L2; blocked (re-checked on dev 2026-11-16): no test constructor for Registry<N> (Needs impl, ConfigBinder, Ceilings, a static Host) and no second-identity MIN-3 fixture image exist in busbar-plugin-test on dev"]
 fn describe_open_and_close_log_lines_are_attributed_and_scrubbed_and_64_kib_answers_pass() {
-    todo!("owner: W1-L2 (C-ENTRY-GUARD)")
+    use busbar_contract::json::{self as facade, JsonValueTrait};
+    use busbar_plugin_abi::host::level;
+    use busbar_plugin_abi::types::KindCode;
+    use busbar_plugin_test::fake_needs::FakeNeeds;
+
+    use crate::min3_second::{self as fx, CLOSE_LINE, DESCRIBE_LINE, OPEN_LINE};
+
+    const SECRET: &str = "pw-entry-guard-2290";
+    let me = std::thread::current().id();
+    let mut needs = FakeNeeds::new();
+    needs.secret("/password", SECRET.as_bytes());
+    let (h, _) = fx::scrubbed(fx::loud::PLUGIN.plugin(), needs);
+
+    let schema = h
+        .registry()
+        .described(fx::LOUD)
+        .and_then(|d| d.schema)
+        .expect("the loud image was admitted with its schema");
+    assert!(schema.len() > fx::BIG, "a {} byte D_SCHEMA", schema.len());
+    let described: Vec<_> = h
+        .logs()
+        .into_iter()
+        .filter(|line| line.message == DESCRIBE_LINE)
+        .collect();
+    assert_eq!(
+        described.len(),
+        1,
+        "describe logged one line: {described:?}"
+    );
+    assert_eq!(described[0].kind, KindCode::Secret as u32);
+    assert_eq!(described[0].level, level::WARN);
+
+    let config = format!(
+        r#"{{"tag":"guard-a","password":"the operator's reference","open_log":true,"close_log":true,"settle_pad":{}}}"#,
+        fx::BIG
+    );
+    let port = h
+        .open_secret("guard-a", config.as_bytes())
+        .unwrap_or_else(|e| panic!("the open answering 64 KiB: {e:?}"));
+    let settled = h
+        .settled("guard-a")
+        .expect("core kept the canonical CONFIG");
+    let bag = facade::parse_typed(&settled.config_json).expect("JSON");
+    assert_eq!(
+        bag.get("pad").and_then(|p| p.as_str()).map(str::len),
+        Some(fx::BIG),
+        "the whole 64 KiB CONFIG came through"
+    );
+    drop(port);
+
+    for (prefix, entry) in [(OPEN_LINE, "open"), (CLOSE_LINE, "close")] {
+        let lines: Vec<_> = h
+            .logs()
+            .into_iter()
+            .filter(|line| line.message.starts_with(prefix))
+            .collect();
+        assert_eq!(lines.len(), 1, "{entry} logged one line: {lines:?}");
+        assert_eq!(
+            lines[0].instance, "guard-a",
+            "the {entry} line is attributed"
+        );
+        assert_eq!(lines[0].kind, KindCode::Secret as u32);
+        assert!(
+            !lines[0].message.contains(SECRET) && lines[0].message.contains("***"),
+            "the {entry} line is scrubbed: {}",
+            lines[0].message
+        );
+    }
+    assert_eq!(
+        fx::threads("describe", "describe"),
+        vec![me],
+        "describe inline"
+    );
+    assert_eq!(fx::threads("guard-a", "open"), vec![me], "open inline");
+    assert_eq!(fx::threads("guard-a", "close"), vec![me], "close inline");
 }

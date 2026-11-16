@@ -278,8 +278,12 @@ command, `CMD keys.signed keys.sig`), and `busbar-plugin-pack envelope --key <ro
 
 1. **Expiry.** Resolved: expiry is judged at install, fetch and update, and only for new bytes.
    It is not judged at boot (see "When expiry is judged").
-2. **Root count.** `the_default_release_key_input_is_the_real_release_key_list` requires at least
-   two committed keys. With only the KMS root committed, it stays red until the PIV root exists.
+2. **Root count.** The design wants two roots (the KMS root and the PIV root). No root key is committed
+   in this repository: the list is the `BUSBAR_RELEASE_PUBKEY` build input, and `.cargo/config.toml`
+   says none is committed until the 1.6.0 key ceremony (#1713). No test in this tree enforces the
+   count.
+
+   <!-- docs-truth: pending the key ceremony (#1713); the two-root requirement is a release task, not shipped behaviour. -->
 3. **ModernCI requirement 1** ("ModernCI never holds a private key that can sign a release on its
    own") does not hold for the interim signer, which the owner ruled is held in ModernCI's secret
    store until the feature ships.

@@ -37,6 +37,8 @@ pub use admitted::{admitted_context, AdmittedContext, AdmittedRefusal};
 const AUTH_SCHEME_BEARER: &str = "bearer";
 
 pub const HEALTHZ_PATH: &str = "/healthz";
+pub const LIVEZ_PATH: &str = "/livez";
+pub const READYZ_PATH: &str = "/readyz";
 
 pub const ADMIN_PATH: &str = "/api";
 

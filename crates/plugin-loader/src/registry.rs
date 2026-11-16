@@ -528,7 +528,6 @@ impl SkippedPlugin {
             RejectKind::Superseded => "superseded",
             RejectKind::AntiDowngrade => "below its version floor (anti-downgrade)",
             RejectKind::UntrustedFloored => "untrusted below floor",
-            RejectKind::EgressGrant => "provider egress refused: not first-party",
             RejectKind::ExternalCrypto => "not busbar's own release, on a FIPS crypto backend",
         };
         let escaped = self.file.escape_debug().to_string();
@@ -1195,19 +1194,7 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
                 configuration_statement,
             };
 
-            match plugin.first_party() {
-                true => FileOutcome::Loadable(plugin),
-                false => match crate::sign::egress_grant(&plugin.manifest) {
-                    Ok(()) => FileOutcome::Loadable(plugin),
-                    Err(reason) => FileOutcome::Skipped(SkippedPlugin {
-                        file: plugin.file,
-                        manifest: plugin.manifest,
-                        reason,
-                        kind: crate::sign::RejectKind::EgressGrant,
-                        trusted_keys: Vec::new(),
-                    }),
-                },
-            }
+            FileOutcome::Loadable(plugin)
         }
         Err(rejected) => FileOutcome::Skipped(SkippedPlugin {
             file,
@@ -1444,7 +1431,6 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                     RejectKind::UnknownPublisher => "unknown-publisher",
                     RejectKind::Tampered => "tampered",
                     RejectKind::Unsigned => "unsigned",
-                    RejectKind::EgressGrant => "third-party (egress grant)",
                     RejectKind::ExternalCrypto => "not first-party (FIPS backend)",
                     RejectKind::Superseded => "superseded",
                     RejectKind::RetiredKey => "retired-key",
@@ -1453,7 +1439,6 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                 .to_string();
                 let status = match s.kind {
                     RejectKind::AntiDowngrade
-                    | RejectKind::EgressGrant
                     | RejectKind::Revoked
                     | RejectKind::ExternalCrypto => {
                         format!("REJECTED: {}", s.reason)

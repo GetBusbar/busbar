@@ -447,6 +447,12 @@ pub fn plan(inputs: &Inputs<'_>) -> Result<Plan, Refusal> {
         Some(selected) => Some(overlay::read(selected, inputs.ignore_overlay)?),
         None => None,
     };
+    // Refuse existing conflicts before boot opens or converts the store. Step 5 repeats
+    // these checks under its lock because another writer can change the files meanwhile.
+    files::backup_absent_or_equal(&backup_path(inputs.path), source.as_bytes())?;
+    if let Some(read) = &read {
+        overlay::backup_absent_or_equal(read)?;
+    }
     match &read {
         Some(read) => {
             report.push(read.line());
@@ -464,6 +470,9 @@ pub fn plan(inputs: &Inputs<'_>) -> Result<Plan, Refusal> {
         &mut report,
     )?;
     judge(&chained, inputs.facts, inputs.check)?;
+    if let Some(catalog) = &chained.catalog {
+        catalog::check_destination(catalog)?;
+    }
     Ok(Plan {
         path: inputs.path.to_path_buf(),
         from,
@@ -540,6 +549,40 @@ pub fn write_settled(
     settled: &[Settled],
     check: Check<'_>,
 ) -> Result<Written, Refusal> {
+    write_attempted(plan, settled, check, None)
+}
+
+/// The store side of step 5 (§3 5, §A6 "Attempts"), which the seam implements over the opened store:
+/// 5S records the attempt once every read-only precondition of the write held and before its first
+/// write; 5d marks this directory's attempt just before the rename over config.yaml. Its refusal
+/// stops the write with nothing renamed.
+pub trait Attempted {
+    /// 5S: `digest` is the plan's ([`Plan::digest`]), `written_sha256` the SHA-256 of the stamped
+    /// document about to be written.
+    ///
+    /// # Errors
+    /// The store's refusal; nothing was written.
+    fn begin(&self, digest: [u8; 32], written_sha256: [u8; 32]) -> Result<(), Refusal>;
+    /// 5d, just before the rename: this directory names the attempt as its own.
+    ///
+    /// # Errors
+    /// The marker could not be written; config.yaml is not renamed.
+    fn before_rename(&self) -> Result<(), Refusal>;
+}
+
+/// [`write_settled`] with the store side of step 5: `attempted` begins (5S) after the re-run and the
+/// read-only preconditions and before 5a, and marks (5d) before the rename. `None` writes no attempt.
+///
+/// # Errors
+/// As [`write_settled`], and the attempt's refusal.
+#[cold]
+#[inline(never)]
+pub fn write_attempted(
+    plan: &Plan,
+    settled: &[Settled],
+    check: Check<'_>,
+    attempted: Option<&dyn Attempted>,
+) -> Result<Written, Refusal> {
     entered!(write);
     let _held = lock::Held::take(&plan.path)?;
     if let Some(selected) = &plan.overlay {
@@ -579,7 +622,7 @@ pub fn write_settled(
             "the upgrade of {} did not plan the same document twice from the same bytes ({}); \
              nothing was written",
             plan.path.display(),
-            first_difference(
+            where_plans_differ(
                 &plan.planned,
                 &again.text,
                 plan.catalog.is_some(),
@@ -595,6 +638,12 @@ pub fn write_settled(
     if let Some(read) = &read {
         overlay::backup_absent_or_equal(read)?;
     }
+    if let Some(attempted) = attempted {
+        attempted.begin(
+            plan.digest,
+            busbar_contract::crypto::sha256_parts(&[again.text.as_bytes()]),
+        )?;
+    }
     write_secrets(applied.secrets())?;
     if let Some(planned) = &again.catalog {
         catalog::write(planned)?;
@@ -608,38 +657,14 @@ pub fn write_settled(
             return Err(refusal);
         }
     }
-    files::replace(&fresh, &plan.path)?;
-    Ok(Written::Stamped)
-}
-
-/// Where the planned document and the re-run one first differ: the line number and both lines,
-/// or the catalog when the documents are equal.
-fn first_difference(
-    planned: &str,
-    again: &str,
-    planned_catalog: bool,
-    again_catalog: bool,
-) -> String {
-    let mut was = planned.lines();
-    let mut now = again.lines();
-    let mut number = 1_usize;
-    loop {
-        match (was.next(), now.next()) {
-            (None, None) => {
-                return format!(
-                    "the documents are equal; the catalog differs (planned: {planned_catalog}, re-run: {again_catalog})"
-                );
-            }
-            (a, b) if a == b => number += 1,
-            (a, b) => {
-                return format!(
-                    "first difference at line {number}: planned {:?}, re-run {:?}",
-                    a.unwrap_or("<end>"),
-                    b.unwrap_or("<end>")
-                );
-            }
+    if let Some(attempted) = attempted {
+        if let Err(refusal) = attempted.before_rename() {
+            let _ = std::fs::remove_file(&fresh);
+            return Err(refusal);
         }
     }
+    files::replace(&fresh, &plan.path)?;
+    Ok(Written::Stamped)
 }
 
 /// How [`write_back`] ended. Every outcome but [`WroteBack::Written`] left config.yaml as it was.
@@ -725,6 +750,30 @@ fn chain(
         text: patch::stamp(&text, CONFIG_FORMAT)?,
         catalog: work.catalog,
     })
+}
+
+/// Where two plans of the same bytes part, for the refusal: the first differing line and the lengths
+/// (never the text, which may hold a literal secret).
+fn where_plans_differ(
+    first: &str,
+    second: &str,
+    first_catalog: bool,
+    second_catalog: bool,
+) -> String {
+    if first == second {
+        return format!("the catalog differs: planned {first_catalog}, then {second_catalog}");
+    }
+    let line = first
+        .lines()
+        .zip(second.lines())
+        .position(|(a, b)| a != b)
+        .unwrap_or(first.lines().count().min(second.lines().count()))
+        + 1;
+    format!(
+        "the document differs at line {line}: {} bytes, then {} bytes",
+        first.len(),
+        second.len()
+    )
 }
 
 /// Proof three (§A7 "Authored text"): the planned document and catalog, interpolated as every later

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use super::*;
 use busbar_contract::yaml::ValueExt;
 
@@ -118,7 +121,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         health: HealthDefaultsCfg::default(),
         routing: RoutingCfg::default(),
         telemetry: Default::default(),
-        audit: Default::default(),
+        records: Default::default(),
     }
 }
 
@@ -2748,7 +2751,7 @@ fn core_sections_parse_directly_and_are_named_in_unknown_field_errors() {
          `admin_require_mtls`, `auth`, `identity-providers`, `providers`, `models`, `pools`, \
          `hooks`, `groups`, `rate_card`, `plugin_rate_cards`, `per_request_fee`, `store`, \
          `secrets`, `advanced`, `export`, `plugins`, `security`, `limits`, `health`, `routing`, \
-         `telemetry`, `audit` at line 3 column 1"
+         `telemetry`, `records`, `audit` at line 3 column 1"
     );
     for field in ["oauth_as", "credentials"] {
         let duplicate =
@@ -2767,6 +2770,79 @@ fn core_sections_parse_directly_and_are_named_in_unknown_field_errors() {
     let typo = parse("credentials:\n  unknowable: true\n").expect_err("strict credential schema");
     assert!(typo.to_string().contains("unknown field `unknowable`"));
     assert_eq!(typo.location().unwrap().line(), 4);
+}
+
+fn parse_records(tail: &str) -> Result<DeployCfg, String> {
+    crate::config::deploy_from_yaml_str(
+        &format!("providers: {{}}\nmodels: {{}}\n{tail}"),
+        &crate::config::Grammar::empty(),
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// RED (ADMIN-API-1.6 §3.5): `records:` is off by default, reads `user` and up to eight `labels`,
+/// and refuses a ninth label loudly, naming the key and the bound.
+#[test]
+fn records_labels_refuse_a_ninth_header() {
+    use crate::config::{RecordsCfg, RecordsUser};
+    let absent = parse_records("").expect("no records section");
+    assert_eq!(absent.records, RecordsCfg::default());
+    assert_eq!(absent.records.user, RecordsUser::Off);
+    assert!(absent.records.labels.is_empty());
+
+    let eight = parse_records(
+        "records:\n  user: pseudonymous\n  labels: [x-a, x-b, x-c, x-d, x-e, x-f, x-g, x-h]\n",
+    )
+    .expect("eight labels");
+    assert_eq!(eight.records.user, RecordsUser::Pseudonymous);
+    assert_eq!(eight.records.labels.len(), 8);
+    for (text, mode) in [
+        ("off", RecordsUser::Off),
+        ("plain", RecordsUser::Plain),
+        ("pseudonymous", RecordsUser::Pseudonymous),
+    ] {
+        let read = parse_records(&format!("records:\n  user: {text}\n")).expect(text);
+        assert_eq!(read.records.user, mode, "{text}");
+    }
+
+    let nine = parse_records("records:\n  labels: [x-a, x-b, x-c, x-d, x-e, x-f, x-g, x-h, x-i]\n")
+        .expect_err("a ninth label is refused");
+    assert!(
+        nine.contains("records.labels") && nine.contains("at most 8"),
+        "{nine}"
+    );
+}
+
+/// RED (ADMIN-API-1.6 §3.5): `records:` denies unknown fields like its siblings (no body paths),
+/// an unknown mode, a malformed or repeated header name, and a header that carries a credential.
+#[test]
+fn records_refuse_unknown_fields_and_bad_names() {
+    let unknown = parse_records("records:\n  user: plain\n  body_paths: [$.user]\n")
+        .expect_err("an unknown records field is refused");
+    assert!(unknown.contains("unknown field `body_paths`"), "{unknown}");
+    let mode = parse_records("records:\n  user: hashed\n").expect_err("an unknown mode");
+    assert!(mode.contains("hashed"), "{mode}");
+    for bad in ["''", "'x team'", "'x:team'"] {
+        let refused = parse_records(&format!("records:\n  labels: [{bad}]\n"))
+            .expect_err("not a header name");
+        assert!(refused.contains("records.labels"), "{bad}: {refused}");
+    }
+    let repeated =
+        parse_records("records:\n  labels: [x-team, X-Team]\n").expect_err("a header named twice");
+    assert!(repeated.contains("records.labels"), "{repeated}");
+    for credential in [
+        "authorization",
+        "Cookie",
+        "proxy-authorization",
+        "x-api-key",
+    ] {
+        let refused = parse_records(&format!("records:\n  labels: [{credential}]\n"))
+            .expect_err("a credential header is never sealed");
+        assert!(
+            refused.contains("records.labels"),
+            "{credential}: {refused}"
+        );
+    }
 }
 
 #[test]

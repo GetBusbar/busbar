@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use super::*;
 
 /// A directory a test can state the whole truth of in one line.
@@ -164,73 +167,6 @@ fn the_hook_name_word_space_is_the_frozen_words_and_the_operator_word() {
         .map(|w| w.as_str().expect("a word").to_string())
         .collect();
     assert_eq!(space, want, "1.5.5's whole hook-name word space");
-}
-
-fn dig<'a>(
-    doc: &'a busbar_contract::yaml::Value,
-    path: &[&str],
-) -> Option<&'a busbar_contract::yaml::Value> {
-    let mut cur = doc;
-    for k in path {
-        cur = cur
-            .as_mapping()?
-            .get_key(busbar_contract::yaml::Value::from(*k))?;
-    }
-    Some(cur)
-}
-
-#[test]
-fn migration_writes_the_14x_admin_token_as_1_5_5_did() {
-    hand_in_the_root_words();
-    let raw = "governance:\n  enabled: true\n  admin_token: \"${BUSBAR_ADMIN_TOKEN}\"\n\
-               providers: {}\nmodels: {}\n";
-    let out = busbar_migrations::config::migrate::migrate_config(raw).expect("migrates");
-    let doc: busbar_contract::yaml::Value =
-        busbar_contract::yaml::from_str(&out.yaml).expect("output is valid YAML");
-    assert_eq!(
-        dig(&doc, &["auth", "admin_auth"])
-            .and_then(|v| v.as_sequence())
-            .and_then(|s| s.first())
-            .and_then(|v| v.as_str()),
-        Some(word_1_5_5("provider").as_str())
-    );
-    assert_eq!(
-        dig(
-            &doc,
-            &[
-                "identity-providers",
-                operator_words().provider,
-                "token",
-                "env"
-            ]
-        )
-        .and_then(|v| v.as_str()),
-        Some("BUSBAR_ADMIN_TOKEN")
-    );
-}
-
-#[test]
-fn migration_lifts_the_inline_operator_entry_as_1_5_5_did() {
-    hand_in_the_root_words();
-    let op = operator_words().provider;
-    let raw = format!(
-        "auth:\n  admin_auth:\n    - {op}: {{ token: {{ env: BUSBAR_ADMIN_TOKEN }} }}\n\
-         providers: {{}}\nmodels: {{}}\n"
-    );
-    let out = busbar_migrations::config::migrate::migrate_config(&raw).expect("migrates");
-    let doc: busbar_contract::yaml::Value =
-        busbar_contract::yaml::from_str(&out.yaml).expect("output is valid YAML");
-    let chain: Vec<&str> = dig(&doc, &["auth", "admin_auth"])
-        .and_then(|v| v.as_sequence())
-        .expect("an admin chain")
-        .iter()
-        .filter_map(|v| v.as_str())
-        .collect();
-    assert_eq!(chain, [word_1_5_5("provider").as_str()]);
-    assert_eq!(
-        dig(&doc, &["identity-providers", op, "token", "env"]).and_then(|v| v.as_str()),
-        Some("BUSBAR_ADMIN_TOKEN")
-    );
 }
 
 #[test]

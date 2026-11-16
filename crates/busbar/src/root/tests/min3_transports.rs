@@ -5,10 +5,8 @@
 //! `Registry::open_transport` (an ffi handle, run by the image suite); these are the seams the boot builds around
 //! it: the settings each instance is opened with, the ports the walk hands back, and the D_PROTOCOL table.
 
-use busbar_plugin_loader::ports::transport::{
-    ConnIn, TransportEvent, TransportOut, TransportSession,
-};
-use busbar_plugin_loader::ports::PortError;
+use busbar_ports::transport::{ConnIn, TransportEvent, TransportOut, TransportSession};
+use busbar_ports::PortError;
 
 use super::*;
 

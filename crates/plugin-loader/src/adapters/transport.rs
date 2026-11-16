@@ -27,12 +27,13 @@ use busbar_plugin_abi::transport::{
 };
 use busbar_plugin_abi::types::{Bytes, Status, Str};
 
-use crate::encode::transport::{decode_offer, encode_keying, encode_path, Offer};
-use crate::instance::{ErrorBook, PluginCode};
-use crate::ports::transport::{
+use crate::instance::ErrorBook;
+use busbar_ports::codec::transport::{decode_offer, encode_keying, encode_path, Offer};
+use busbar_ports::transport::{
     ConnIn, TransportEvent, TransportOut, TransportPort, TransportSession,
 };
-use crate::ports::PortError;
+use busbar_ports::PluginCode;
+use busbar_ports::PortError;
 
 /// The HTTP status of the one head an UPGRADE may answer (RFC 9110 §15.2.2).
 const SWITCHING_PROTOCOLS: u32 = 101;
@@ -234,7 +235,8 @@ impl TransportPort for TransportAdapter {
 
     /// The argument is one record (R6b): EVENT_PATH and EVENT_KEYING through the §8.8 encoders, EV_RENDEZVOUS
     /// one generic TEXT. It is written into a `Reply`, which zeroes its bytes on growth and drop (I11: the
-    /// keying material), until W1-H1's `impl Writer for PooledOut` lets it use the thread's `args` buffer.
+    /// keying material). `impl Writer for PooledOut` is on dev; moving this onto the thread's `args` buffer is a later
+    /// optimisation, not a correctness gap.
     fn event(
         &self,
         s: &mut TransportSession,

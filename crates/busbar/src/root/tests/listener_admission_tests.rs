@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+use busbar_contract::json;
 use http_body::{Body, Frame};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -45,17 +49,17 @@ async fn app(auth: RouteAuth, calls: &Arc<AtomicUsize>) -> Arc<busbar_kernel::st
             "the actual root registers its operator product"
         );
         (
-            serde_json::json!({"chain": [], "admin_auth": [operator]}),
-            serde_json::json!({(operator): {"module": operator, "token": {"file": credential}}}),
+            json::json!({"chain": [], "admin_auth": [operator]}),
+            json::json!({(operator): {"module": operator, "token": {"file": credential}}}),
         )
     } else {
         (
-            serde_json::json!({"chain": [], "admin_auth": []}),
-            serde_json::json!({}),
+            json::json!({"chain": [], "admin_auth": []}),
+            json::json!({}),
         )
     };
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        serde_json::json!({
+        &json::json!({
             "store": {"module": "memory"}, "auth": auth_config,
             "identity-providers": providers, "providers": {}, "models": {},
         }),

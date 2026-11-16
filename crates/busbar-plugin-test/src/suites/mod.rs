@@ -28,8 +28,8 @@ pub use busbar_plugin_abi::plugin::Plugin;
 /// The case-input types the suite signatures and case structs mention, public so a plugin's tests name them
 /// as `busbar_plugin_test::suites::{AuthIn, PlaneIn, Pair, Plugin}` (IF §14).
 pub use busbar_plugin_abi::types::Pair;
-pub use busbar_plugin_loader::ports::auth::AuthIn;
-pub use busbar_plugin_loader::ports::plane::PlaneIn;
+pub use busbar_ports::auth::AuthIn;
+pub use busbar_ports::plane::PlaneIn;
 
 use crate::fake_needs::FakeNeeds;
 
@@ -57,11 +57,69 @@ pub struct PlaneCase<'a> {
     pub expect_status: u16,
 }
 
+/// One scripted transport case. ROLE_CLIENT: after `begin` the suite opens the stream the way core does, with
+/// `emit(E_HEAD)` on stream 0 (IF §8.7) carrying a default dial head (GET `/`, authority `peer.test`, scheme
+/// `https`), then feeds `input`. The fields are frozen (IF §14); conn facts a case may need beyond them
+/// (CONN_UPGRADED and the adopted head, leftover bytes, its own dial head) go on a [`TransportConnCase`].
+#[derive(Clone, Copy)]
 pub struct TransportCase<'a> {
     pub role: u32,
     pub alpn: &'a str,
     pub input: &'a [&'a [u8]],
     pub expect_streams: u32,
+}
+
+/// A [`TransportCase`] with the conn facts the suite otherwise leaves at their defaults, run by
+/// [`transport_conns`]. Additive to IF §14: `TransportCase` and `transport` stay as frozen, so every existing
+/// struct literal still builds. Build one with [`TransportConnCase::new`] (or `From<TransportCase>`) and the
+/// builder methods.
+#[derive(Clone, Copy)]
+pub struct TransportConnCase<'a> {
+    pub case: TransportCase<'a>,
+    /// `ConnInfo.flags`: CONN_UPGRADED on a ROLE_SERVER conn core adopted from an UPGRADE. Default 0.
+    pub flags: u32,
+    /// `ConnInfo.head`: with CONN_UPGRADED, the adopted request's head records (H_METHOD, H_PATH, H_AUTHORITY,
+    /// PAIR*, then H_STATUS(101) and the plane's RESPOND PAIR*). Default empty.
+    pub head: &'a [u8],
+    /// `ConnInfo.leftover`: bytes adopted from the UPGRADE. Default empty.
+    pub leftover: &'a [u8],
+    /// ROLE_CLIENT only: the head records the suite's `emit(E_HEAD)` on stream 0 carries. Empty = the suite's
+    /// default dial head.
+    pub dial_head: &'a [u8],
+}
+
+impl<'a> TransportConnCase<'a> {
+    pub const fn new(case: TransportCase<'a>) -> Self {
+        TransportConnCase {
+            case,
+            flags: 0,
+            head: &[],
+            leftover: &[],
+            dial_head: &[],
+        }
+    }
+    pub const fn flags(mut self, flags: u32) -> Self {
+        self.flags = flags;
+        self
+    }
+    pub const fn head(mut self, head: &'a [u8]) -> Self {
+        self.head = head;
+        self
+    }
+    pub const fn leftover(mut self, leftover: &'a [u8]) -> Self {
+        self.leftover = leftover;
+        self
+    }
+    pub const fn dial_head(mut self, dial_head: &'a [u8]) -> Self {
+        self.dial_head = dial_head;
+        self
+    }
+}
+
+impl<'a> From<TransportCase<'a>> for TransportConnCase<'a> {
+    fn from(case: TransportCase<'a>) -> Self {
+        Self::new(case)
+    }
 }
 
 pub enum Expect<'a> {
@@ -106,6 +164,14 @@ pub fn plane(plugin: &'static Plugin, config: &[u8], needs: FakeNeeds, cases: &[
 }
 
 pub fn transport(plugin: &'static Plugin, config: &[u8], cases: &[TransportCase<'_>]) {
+    let cases: Vec<TransportConnCase<'_>> =
+        cases.iter().copied().map(TransportConnCase::new).collect();
+    transport::run(plugin, config, &cases);
+}
+
+/// Additive to IF §14: [`transport`] over cases that state their conn facts (an upgraded server conn, a dial
+/// with its own head).
+pub fn transport_conns(plugin: &'static Plugin, config: &[u8], cases: &[TransportConnCase<'_>]) {
     transport::run(plugin, config, cases);
 }
 

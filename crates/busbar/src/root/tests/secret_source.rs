@@ -27,8 +27,8 @@ pub(super) fn source_needles() -> Vec<String> {
     SOURCE_SCAN_NEEDLES
         .iter()
         .flat_map(|json| {
-            let needles: Vec<String> =
-                serde_json::from_str(json).expect("the source owner's scan needles are strings");
+            let needles: Vec<String> = busbar_contract::json::parse_str(json)
+                .expect("the source owner's scan needles are strings");
             assert!(
                 !needles.is_empty() && needles.iter().all(|needle| !needle.trim().is_empty()),
                 "the source owner's scan needles must not be empty"

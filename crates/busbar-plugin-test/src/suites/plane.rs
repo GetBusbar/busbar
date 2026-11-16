@@ -22,12 +22,12 @@ use busbar_plugin_abi::plane as p;
 use busbar_plugin_abi::plugin::Plugin;
 use busbar_plugin_abi::records::Reply;
 use busbar_plugin_abi::types::KindCode;
-use busbar_plugin_loader::encode::plane::{
+use busbar_ports::codec::plane::{
     encode_catalog, encode_entitle_answers, encode_judged, encode_lookup_hits, encode_refusal,
     encode_upstream_head,
 };
-use busbar_plugin_loader::ports::plane::{PlaneIn, PlaneOut, PlanePort, PlaneSession, TargetIn};
-use busbar_plugin_loader::ports::PortError;
+use busbar_ports::plane::{PlaneIn, PlaneOut, PlanePort, PlaneSession, TargetIn};
+use busbar_ports::PortError;
 
 use super::harness::Harness;
 use super::PlaneCase;
@@ -548,4 +548,5 @@ pub(super) fn run(
     if let Err(error) = harness.check(NAME, config) {
         panic!("plane suite: the instance no longer checks after the cases: {error:?}");
     }
+    harness.assert_needs_declared("plane");
 }

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use axum::Router;
 
 use crate::off_path::router::base_data_router_scoped;
@@ -1117,6 +1120,18 @@ pub fn build_admin_router_on_with_dispatch_layer(
             busbar_contract::abi::mechanism::route::RouteMethod::Get,
             busbar_contract::abi::mechanism::route::RouteAuth::None,
             endpoints::healthz,
+        )
+        .route(
+            crate::auth::LIVEZ_PATH,
+            busbar_contract::abi::mechanism::route::RouteMethod::Get,
+            busbar_contract::abi::mechanism::route::RouteAuth::None,
+            endpoints::livez,
+        )
+        .route(
+            crate::auth::READYZ_PATH,
+            busbar_contract::abi::mechanism::route::RouteMethod::Get,
+            busbar_contract::abi::mechanism::route::RouteAuth::None,
+            endpoints::readyz,
         )
         .into_parts();
     let admin = crate::admin::seam::mount_admin(admin);

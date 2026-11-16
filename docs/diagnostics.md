@@ -283,6 +283,17 @@ The oldest audit line no stamp covers yet is older than the alert threshold (ten
 
 **What to do:** Look for BUSBAR-2049 just before this line and act on its reason. The gauge audit_unstamped_age_ms shows the current age.
 
+<a id="terminal-audit-stage-failed"></a>
+### BUSBAR-2051 — A request terminal audit original could not be staged
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `terminal-audit-stage-failed`
+
+The journal refused the terminal audit original before native confirmation. The request fails instead of reporting success without its audit evidence; an already streaming response terminates with an error. The journal and audit chain positions do not advance for the refused original. The counter busbar_audit_stage_failures_total counts these failures.
+
+**What to do:** Check store availability and journal custody pressure. A closed journal can also indicate shutdown. Do not assume an upstream operation was undone when its terminal audit failed.
+
 ## 3xxx — Config
 
 <a id="config-overlay-corrupt-refuse-write"></a>
@@ -2603,9 +2614,9 @@ A graceful-shutdown signal handler (SIGINT/ctrl_c, SIGTERM on unix, or CTRL_CLOS
 - **Since:** 1.6.0
 - **Slug:** `jemalloc-idle-purge-fallback-unavailable`
 
-The fallback idle-purge helper (for targets where jemalloc's background purge threads are compiled out, e.g. static-musl or macOS) could not start — its worker thread failed to spawn, or it could not read `opt.dirty_decay_ms`. A fully IDLE process may therefore hold freed-but-unpurged dirty pages and its RSS can ratchet at the last burst's peak until traffic resumes. Request behavior is unaffected.
+The fallback idle-purge helper (for targets where jemalloc's background purge threads are compiled out, e.g. macOS) could not start — its worker thread failed to spawn, or it could not read `opt.dirty_decay_ms`. A fully IDLE process may therefore hold freed-but-unpurged dirty pages and its RSS can ratchet at the last burst's peak until traffic resumes. Request behavior is unaffected.
 
-**What to do:** Usually benign — RSS is reclaimed the moment traffic resumes, and under load the helper does nothing. If steady idle RSS on a musl/macOS build matters, investigate the logged spawn/mallctl error; the gateway serves normally regardless.
+**What to do:** Usually benign — RSS is reclaimed the moment traffic resumes, and under load the helper does nothing. If steady idle RSS on a macOS build matters, investigate the logged spawn/mallctl error; the gateway serves normally regardless.
 
 <a id="signing-key-generation-failed"></a>
 ### BUSBAR-9011 — --generate-signing-key could not mint a key (OS entropy source unavailable)

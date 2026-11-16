@@ -32,7 +32,8 @@ async fn checkpoint_final_fold_rejects_raw_head_advance_and_retired_authority() 
                     let state = backend.state.lock().unwrap();
                     let raw = state.rows[&address(&event.operation_id)].clone();
                     (
-                        serde_json::from_slice::<Head>(raw.expose(&crate::seal::lend())).unwrap(),
+                        busbar_contract::json::parse::<Head>(raw.expose(&crate::seal::lend()))
+                            .unwrap(),
                         raw,
                     )
                 };

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! The plane kind: what bytes mean. A plane names a transport only as a claim, never holds a
 //! connection.
 

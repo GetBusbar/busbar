@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! Tests for `neutral_handles.rs`. Lifted out of the implementation file so its line count
 
 use super::*;

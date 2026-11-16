@@ -36,6 +36,9 @@ static PENDING: OnceLock<Plan> = OnceLock::new();
 /// The absolute directory of config.yaml, which TEXT_ADD_KEY names. Set by [`run`].
 static CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();
 
+/// config.yaml as the boot resolved it: step 4 reads its attempt marker there. Set by [`run`].
+static CONFIG_PATH: OnceLock<PathBuf> = OnceLock::new();
+
 /// What step 1 reads from outside the process: the environment and config.yaml (`None`: absent).
 /// The boot passes the real ones; a test counts what a stamped boot touches.
 pub(crate) struct Probe<'a> {
@@ -59,6 +62,7 @@ pub(crate) type Parse<'a> = &'a dyn Fn(&str) -> Result<Vec<String>, String>;
 #[inline(never)]
 pub(crate) fn run(config: &Path, providers_flag: bool, ignore_overlay: bool) -> Result<(), String> {
     let _ = CONFIG_DIR.set(config_dir(config));
+    let _ = CONFIG_PATH.set(config.to_path_buf());
     let _ = busbar_plugin_loader::dispatch::migrate::install_admit(migrate_admit);
     let env = |name: &str| std::env::var_os(name);
     run_in(
@@ -191,8 +195,33 @@ pub(crate) fn held_in(plan: Option<&Plan>, path: &Path) -> Option<SecureString> 
 /// The write's refusal (LIVE_WRITER, CONFIG); config.yaml is then unchanged, never half written.
 #[cold]
 #[inline(never)]
-pub(crate) async fn finish() -> Result<Option<Written>, String> {
-    finish_settled(Vec::new()).await
+pub(crate) async fn finish(
+    core: Option<std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>>,
+) -> Result<Option<Written>, String> {
+    finish_settled(Vec::new(), core).await
+}
+
+/// Whether this boot runs a stamped config.yaml (or none): no plan is held. Step 4's final records
+/// commit then carries MIGRATION_COMPLETED, else RECORDS_MIGRATED (§3 4b).
+pub(crate) fn stamped() -> bool {
+    PENDING.get().is_none()
+}
+
+/// Step 4 (§3 4a, 4b) over the store FST admission handed the boot, before step 5 and before anything
+/// serves: the 1.5.5 rows a store's data step left under IMPORT become native records.
+///
+/// # Errors
+/// The records step's refusal text; the boot refuses with it.
+#[cold]
+#[inline(never)]
+pub(crate) async fn records(
+    core: std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>,
+) -> Result<(), String> {
+    let config = CONFIG_PATH
+        .get()
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from(crate::root::cli::resolve_config_path(None)));
+    crate::root::migrate_records::step4(core, config, stamped()).await
 }
 
 /// Step 5 with what every instance's `open` settled (MIGRATE-ON-BOOT r42 §4, `Registry::take_settled`): the
@@ -205,12 +234,23 @@ pub(crate) async fn finish() -> Result<Option<Written>, String> {
 #[inline(never)]
 pub(crate) async fn finish_settled(
     settled: Vec<busbar_migrate::Settled>,
+    core: Option<std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>>,
 ) -> Result<Option<Written>, String> {
     let Some(plan) = PENDING.get() else {
         return Ok(None);
     };
-    tokio::task::spawn_blocking(move || {
-        busbar_migrate::write_settled(plan, &settled, &strict_parse)
+    let runtime = tokio::runtime::Handle::current();
+    let config = CONFIG_PATH.get().cloned().unwrap_or_default();
+    tokio::task::spawn_blocking(move || match core {
+        // 5S, 5d and 5C over the opened store (§A6 "Attempts").
+        Some(core) => crate::root::migrate_records::write_with_attempt(
+            &crate::root::migrate_records::Store::new(core, runtime),
+            plan,
+            &settled,
+            &strict_parse,
+            &config,
+        ),
+        None => busbar_migrate::write_settled(plan, &settled, &strict_parse),
     })
     .await
     .map_err(|error| format!("the config.yaml upgrade did not finish its write: {error}"))?

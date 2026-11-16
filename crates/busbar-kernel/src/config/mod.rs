@@ -1101,6 +1101,10 @@ pub struct DeployCfg {
     /// The `telemetry:` block (the metric registry; default on).
     #[serde(default)]
     pub telemetry: TelemetryCfg,
+    /// The `records:` block (ADMIN-API-1.6 §3.5): what each unit's record keeps of the end user and
+    /// of allow-listed request headers. Absent: off, at no cost. Applied at boot.
+    #[serde(default)]
+    pub records: RecordsCfg,
     /// The `audit:` block (SEALING-FIX §3.4): `seal_every`, the notary's stamp cadence in ms.
     #[serde(default)]
     pub audit: AuditCfg,
@@ -1139,6 +1143,7 @@ impl DeployCfg {
 }
 
 pub use busbar_kernel::config::sections::{Destinations, SecurityCfg};
+pub use busbar_kernel::config::sections::{RecordsCfg, RecordsUser, RECORDS_LABELS_MAX};
 
 /// The top-level `plugins:` block — the ONLY configuration surface of the dynamic plugin subsystem.
 /// A plugin is a plugin: store, auth, and hook plugins share this one block (one directory, one
@@ -2335,6 +2340,7 @@ impl std::fmt::Debug for DeployCfg {
             .field("limits", &self.limits)
             .field("health", &self.health)
             .field("routing", &self.routing)
+            .field("records", &self.records)
             .finish()
     }
 }

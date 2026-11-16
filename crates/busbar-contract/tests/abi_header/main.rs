@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! THE C HEADER GENERATOR, DRIVEN OVER SYNTHETIC SOURCES AND OVER THE REAL TREE.
 
 mod render;

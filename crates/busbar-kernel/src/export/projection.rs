@@ -289,7 +289,7 @@ pub(crate) struct Rendered {
 }
 
 /// A JSON writer over the one buffer a record is rendered into. Strings and floats are written by
-/// serde_json itself, so the bytes are exactly a serialized document's.
+/// the JSON facade itself, so the bytes are exactly a serialized document's.
 pub(crate) struct JsonOut(pub(crate) Vec<u8>);
 
 impl JsonOut {
@@ -305,7 +305,7 @@ impl JsonOut {
     }
 
     pub(crate) fn str(&mut self, s: &str) {
-        let _ = serde_json::to_writer(&mut self.0, s);
+        let _ = busbar_contract::json::to_writer(&mut self.0, s);
     }
 
     /// Already-rendered JSON, appended as is.
@@ -331,7 +331,7 @@ impl JsonOut {
     /// reserved for typed floats in the neutral trace record; strings stay strings.
     pub(crate) fn f64(&mut self, v: f64) {
         if v.is_finite() {
-            let _ = serde_json::to_writer(&mut self.0, &v);
+            let _ = busbar_contract::json::to_writer(&mut self.0, &v);
         } else {
             use std::io::Write as _;
             let _ = write!(self.0, "{{\"$busbar_f64\":\"{v}\"}}");

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait as _};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -101,7 +102,7 @@ async fn test_admin_v1_config_settings_boot_scoped_limits_flagged_reload_to_appl
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
         .body(
-            serde_json::json!({
+            json::json!({
                 "limits": { "pool_max_idle_per_host": 16 }
             })
             .to_string(),
@@ -110,7 +111,7 @@ async fn test_admin_v1_config_settings_boot_scoped_limits_flagged_reload_to_appl
         .await
         .unwrap();
     assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
-    let body: serde_json::Value = put.json().await.unwrap();
+    let body = json::parse_value(&put.bytes().await.unwrap()).unwrap();
     let flagged: Vec<&str> = body["reload_to_apply"]
         .as_array()
         .unwrap()
@@ -223,7 +224,7 @@ async fn test_admin_v1_config_settings_max_inbound_concurrent_flagged_reload_to_
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
         .body(
-            serde_json::json!({
+            json::json!({
                 "limits": { "max_inbound_concurrent": 512 }
             })
             .to_string(),
@@ -232,7 +233,7 @@ async fn test_admin_v1_config_settings_max_inbound_concurrent_flagged_reload_to_
         .await
         .unwrap();
     assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
-    let body: serde_json::Value = put.json().await.unwrap();
+    let body = json::parse_value(&put.bytes().await.unwrap()).unwrap();
     let flagged: Vec<&str> = body["reload_to_apply"]
         .as_array()
         .unwrap()
@@ -343,7 +344,7 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
         .body(
-            serde_json::json!({
+            json::json!({
                 "advanced": {
                     "response_headers": { "server_timing": true, "route_policy": true }
                 }
@@ -354,7 +355,7 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
         .await
         .unwrap();
     assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
-    let body: serde_json::Value = put.json().await.unwrap();
+    let body = json::parse_value(&put.bytes().await.unwrap()).unwrap();
     let flagged: Vec<&str> = body["reload_to_apply"]
         .as_array()
         .unwrap()
@@ -369,7 +370,7 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
 
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
-        .body(serde_json::json!({ "observability": { "otlp_url": "https://o:4317" } }).to_string())
+        .body(json::json!({ "observability": { "otlp_url": "https://o:4317" } }).to_string())
         .send()
         .await
         .unwrap();
@@ -479,12 +480,12 @@ async fn test_admin_v1_config_settings_stale_if_match_conflicts() {
     let stale = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
         .header("if-match", "\"999999\"")
-        .body(serde_json::json!({ "per_request_fee": 1 }).to_string())
+        .body(json::json!({ "per_request_fee": 1 }).to_string())
         .send()
         .await
         .unwrap();
     assert_eq!(stale.status().as_u16(), 409, "stale If-Match is a conflict");
-    let body: serde_json::Value = stale.json().await.unwrap();
+    let body = json::parse_value(&stale.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["code"], "version_conflict");
 
     let get = admin(client.get(format!("http://{addr}/api/v1/admin/config/settings")))
@@ -595,12 +596,12 @@ async fn test_admin_v1_config_settings_unknown_field_400() {
 
     let bad = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
-        .body(serde_json::json!({ "lissten": "0.0.0.0:9000" }).to_string())
+        .body(json::json!({ "lissten": "0.0.0.0:9000" }).to_string())
         .send()
         .await
         .unwrap();
     assert_eq!(bad.status().as_u16(), 400, "a typo'd field is rejected");
-    let body: serde_json::Value = bad.json().await.unwrap();
+    let body = json::parse_value(&bad.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["code"], "invalid_request");
 
     handle.abort();

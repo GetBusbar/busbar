@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json;
 use busbar_core_admin::v1::contract::AdminError;
 use busbar_kernel::config::transaction::{config_transaction, Outcome};
 use std::sync::{
@@ -555,7 +556,7 @@ async fn plugin_install_is_serialized_by_the_mutation_domain() {
 
     let _ = reqwest::Client::new()
         .post(format!("http://{addr}/api/v1/admin/plugins"))
-        .json(&serde_json::json!({ "file": "x.tar.gz", "tarball_b64": "bm90IGEgdGFyYmFsbA==" }))
+        .json(&json::json!({ "file": "x.tar.gz", "tarball_b64": "bm90IGEgdGFyYmFsbA==" }))
         .send()
         .await
         .unwrap();
