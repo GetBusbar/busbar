@@ -576,9 +576,15 @@ pub fn write_settled(
     }
     if again.text != plan.planned || again.catalog != plan.catalog {
         return Err(Refusal::Config(format!(
-            "the upgrade of {} did not plan the same document twice from the same bytes; nothing \
-             was written",
-            plan.path.display()
+            "the upgrade of {} did not plan the same document twice from the same bytes ({}); \
+             nothing was written",
+            plan.path.display(),
+            first_difference(
+                &plan.planned,
+                &again.text,
+                plan.catalog.is_some(),
+                again.catalog.is_some()
+            )
         )));
     }
     let applied = apply_settled(&again.text, &plan.path, settled, false, plan.facts.env)?;
@@ -604,6 +610,36 @@ pub fn write_settled(
     }
     files::replace(&fresh, &plan.path)?;
     Ok(Written::Stamped)
+}
+
+/// Where the planned document and the re-run one first differ: the line number and both lines,
+/// or the catalog when the documents are equal.
+fn first_difference(
+    planned: &str,
+    again: &str,
+    planned_catalog: bool,
+    again_catalog: bool,
+) -> String {
+    let mut was = planned.lines();
+    let mut now = again.lines();
+    let mut number = 1_usize;
+    loop {
+        match (was.next(), now.next()) {
+            (None, None) => {
+                return format!(
+                    "the documents are equal; the catalog differs (planned: {planned_catalog}, re-run: {again_catalog})"
+                );
+            }
+            (a, b) if a == b => number += 1,
+            (a, b) => {
+                return format!(
+                    "first difference at line {number}: planned {:?}, re-run {:?}",
+                    a.unwrap_or("<end>"),
+                    b.unwrap_or("<end>")
+                );
+            }
+        }
+    }
 }
 
 /// How [`write_back`] ended. Every outcome but [`WroteBack::Written`] left config.yaml as it was.
