@@ -860,3 +860,39 @@ fn an_instance_with_a_forgotten_submission_is_poisoned_not_closed() {
         "a poisoned instance skips CLOSE: the plugin may still hold the leaked loans"
     );
 }
+
+#[test]
+fn a_mutant_renders_what_its_door_states_and_a_tailless_or_cut_tail_is_refused() {
+    use busbar_plugin_test::{rendering, rendering_of};
+    assert_eq!(
+        rendering(Mutant::of(transport_door::door)),
+        rendering_of(transport_door::door),
+        "an unchanged mutant renders exactly what its door states"
+    );
+    for (name, mutant) in [
+        ("mutant-no-tail", Mutant::of(transport_door::door).no_tail()),
+        (
+            "mutant-cut-tail",
+            Mutant::of(transport_door::door).tail_size(4),
+        ),
+    ] {
+        let refused = host().open(Image::<Transport>::mutant(mutant), name, b"{}");
+        assert!(
+            matches!(refused, Err(Refused::Load(_))),
+            "{name}: a transport whose tail is missing or cut below its head is refused at load: {:?}",
+            refused.err()
+        );
+    }
+}
+
+#[test]
+#[should_panic(expected = "beyond the tail's own size")]
+fn a_tail_row_never_grows_a_tail() {
+    let _ = Mutant::of(transport_door::door).tail_size(u32::MAX);
+}
+
+#[test]
+#[should_panic(expected = "this row edits a Plane tail only")]
+fn the_media_row_refuses_a_transport_s_door() {
+    let _ = Mutant::of(transport_door::door).no_streaming_types();
+}

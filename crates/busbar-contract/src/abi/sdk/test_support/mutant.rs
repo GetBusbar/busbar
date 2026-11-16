@@ -453,6 +453,25 @@ impl Mutant {
         self.retail::<PlaneTail>(KindCode::Plane, |t| t.answer_layout = n)
     }
 
+    /// The door states no kind tail (STH-ROWS D-3). RED: unchanged yet.
+    #[must_use]
+    pub fn no_tail(self) -> Self {
+        self
+    }
+
+    /// The kind tail's head states size `n` (STH-ROWS D-3). RED: unchanged yet.
+    #[must_use]
+    pub fn tail_size(self, n: u32) -> Self {
+        let _ = n;
+        self
+    }
+
+    /// A plane's tail states no streaming media types (STH-ROWS D-3). RED: unchanged yet.
+    #[must_use]
+    pub fn no_streaming_types(self) -> Self {
+        self
+    }
+
     /// The door's READY answers FAILED with `text` (every crossing counted by
     /// [`Mutant::failed_readies`]).
     #[must_use]

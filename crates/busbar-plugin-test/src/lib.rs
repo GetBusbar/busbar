@@ -41,8 +41,8 @@ pub use busbar_plugin_loader::dispatch::kinds::{
 };
 pub use busbar_plugin_loader::dispatch::{rendering_of, ConnTable, LoadError};
 pub use busbar_plugin_loader::test_host::{
-    both, Answer, Called, Done, Host, Image, Life, Loaded, Opened, Opening, Pending, Refused,
-    Submitted, TimedOut,
+    both, rendering, Answer, Called, Done, Host, Image, Life, Loaded, Opened, Opening, Pending,
+    Refused, Submitted, TimedOut,
 };
 pub use fake_needs::{ConnScript, FakeNeeds};
 pub use services::Services;
