@@ -647,6 +647,7 @@ impl busbar_kernel_egress::ports::Telemetry for ModelTelemetry {
             return;
         };
         app.store.record_latency_in("", lane, ms);
+        busbar_kernel::telemetry::lane_request_finished(&app, lane, ms / 1000.0);
 
         if app
             .requested_signals

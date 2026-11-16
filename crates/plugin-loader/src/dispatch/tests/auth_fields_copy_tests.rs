@@ -200,11 +200,8 @@ fn an_in_flight_lend_holds_the_shared_secret_until_its_crossing_retires() {
         Some(true),
         "the plugin reads the credential intact while only its lend holds it"
     );
-    // At least `HOLD` of 1 ms naps, counted rather than clocked.
-    for _ in 0..HOLD.as_millis() {
-        if watch.released() {
-            break;
-        }
+    let retired = std::time::Instant::now() + HOLD;
+    while !watch.released() && std::time::Instant::now() < retired {
         std::thread::sleep(Duration::from_millis(1));
     }
     assert!(

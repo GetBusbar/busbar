@@ -32,8 +32,8 @@
 //!
 //! # Report scopes
 //!
-//! * **Process-wide:** `BUSBAR_TIMING=1` dumps the full sorted table at process exit (an
-//!   `atexit(3)` hook, installed once when enabled) and on demand via [`dump`]. It merges every
+//! * **Process-wide:** `BUSBAR_TIMING=1` dumps the full sorted table on demand via [`dump`]. No
+//!   exit hook is installed (UNSAFE-MIN ASK-8): a caller that wants the table at exit calls it. It merges every
 //!   thread's accumulator INCLUDING the threads that have already exited: accumulation is
 //!   thread-local while a thread runs, and a thread MOVES its samples into a process-wide
 //!   accumulator as it ends. A short-lived worker's rows therefore still appear in a table printed
@@ -109,8 +109,7 @@ pub use crate::timeit;
 #[cfg(feature = "timing")]
 mod imp {
     use foldhash::HashMap;
-    use std::panic::catch_unwind;
-    use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+    use std::sync::atomic::{AtomicU8, Ordering};
     use std::sync::{Arc, Mutex, OnceLock, Weak};
 
     /// The profiler's one clock seam: every sample is `now() - start`, both readings taken on the
@@ -253,7 +252,6 @@ mod imp {
     }
 
     static ENABLED: AtomicU8 = AtomicU8::new(0);
-    static ATEXIT_INSTALLED: AtomicBool = AtomicBool::new(false);
 
     #[inline]
     pub fn enabled() -> bool {
@@ -270,9 +268,6 @@ mod imp {
             _ => {
                 let on = env_says_on();
                 ENABLED.store(if on { 2 } else { 1 }, Ordering::Relaxed);
-                if on {
-                    install_atexit();
-                }
                 on
             }
         }
@@ -280,26 +275,6 @@ mod imp {
 
     pub fn set_enabled(on: bool) {
         ENABLED.store(if on { 2 } else { 1 }, Ordering::Relaxed);
-        if on {
-            install_atexit();
-        }
-    }
-
-    fn install_atexit() {
-        if ATEXIT_INSTALLED
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            // SAFETY: `atexit` stores a plain `extern "C"` fn pointer that takes no args and returns
-            // nothing; `timing_atexit` matches that ABI and only reads process-global state.
-            unsafe {
-                libc::atexit(timing_atexit);
-            }
-        }
-    }
-
-    extern "C" fn timing_atexit() {
-        let _ = catch_unwind(dump);
     }
 
     #[inline]

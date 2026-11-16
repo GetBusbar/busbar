@@ -99,24 +99,22 @@ fn public_program_reads_publish_frames_and_eof_after_unlocking() {
             .poll_read(OWNER, id, &mut Context::from_waker(&waker), &mut [0; 64])
             .is_pending());
         assert_eq!(c.write(OWNER, id, b"answer\n", false, false), Ok(7));
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let mut body = Vec::new();
-        // The runtime's timer bounds the wait; the loop reads no clock.
-        tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                let mut buf = [0; 64];
-                match c.poll_read(OWNER, id, &mut Context::from_waker(&waker), &mut buf) {
-                    Poll::Ready(Ok(piece)) if piece.kind == PieceKind::Body => {
-                        body.extend_from_slice(&buf[..piece.len])
-                    }
-                    Poll::Ready(Ok(piece)) if piece.kind == PieceKind::Completion => break,
-                    Poll::Ready(Ok(_)) => {}
-                    Poll::Pending => tokio::task::yield_now().await,
-                    other => panic!("program did not deliver its body and end: {other:?}"),
+        loop {
+            let mut buf = [0; 64];
+            match c.poll_read(OWNER, id, &mut Context::from_waker(&waker), &mut buf) {
+                Poll::Ready(Ok(piece)) if piece.kind == PieceKind::Body => {
+                    body.extend_from_slice(&buf[..piece.len])
                 }
+                Poll::Ready(Ok(piece)) if piece.kind == PieceKind::Completion => break,
+                Poll::Ready(Ok(_)) => {}
+                Poll::Pending if std::time::Instant::now() < deadline => {
+                    tokio::task::yield_now().await
+                }
+                other => panic!("program did not deliver its body and end: {other:?}"),
             }
-        })
-        .await
-        .expect("program did not deliver its body and end: still pending");
+        }
         assert_eq!(body, b"answer\n");
         assert!(probe.wakes.load(Ordering::SeqCst) > 0);
         probe.assert_unlocked();

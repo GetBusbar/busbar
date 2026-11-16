@@ -77,6 +77,7 @@ target = ["dep:sonic-rs"]
 target-http = ["target", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio"]
 
 [dependencies]
+zeroize = { workspace = true }
 busbar-contract = { path = "../busbar-contract", features = ["test-support", "abi-scan"] }
 busbar-plugin-loader = { path = "../plugin-loader", features = ["test-support"] }
 # The MIN-3 interface the conformance harness drives (IF §14): `FakeNeeds` implements its host-side `Needs`.
@@ -87,9 +88,18 @@ hyper-util = { workspace = true, optional = true }
 http-body-util = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt", "net", "time", "sync"] }
 
+[target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
+tikv-jemallocator = { workspace = true }
+
 [dev-dependencies]
+<<<<<<< HEAD
 # W1-K8B: the head-authority and card-redirect arms build URLs.
 url = { workspace = true }
+=======
+# The bridge fixture image (W1-A3, `tests/bridge_fixture.rs`) is wired by hand over busbar-ffi's safe adapter and host
+# API, as `plugin!` wires an image; never `host` here (the loader side reaches it through busbar-plugin-abi).
+busbar-ffi = { path = "../busbar-ffi" }
+>>>>>>> origin/dev
 busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 # W1-K2: the custody arms of C-SCRUB and C-SCRUB-HIT drive the kernel's custody, with its `conformance` miss-path
 # probe (IF §14 round 19). A dev edge only: a plugin repository resolving this facade never sees it.

@@ -186,6 +186,7 @@ fn signed_binding(spec: NewKeySpec, now: u64) -> RecordStoreResult<(VirtualKey, 
 
         minted_by: spec.minted_by,
         binding_mode: spec.binding_mode,
+        admin: spec.admin,
         ..Default::default()
     };
     Ok((binding, generation))
@@ -291,6 +292,27 @@ impl GovState {
             }
         };
         self.standing_key(&claims, now)
+    }
+
+    /// WHY `verify_token` refused `token`, as the closed admin 401 reason (ADMIN-API r5 section
+    /// 2.1): `credential_expired` (the token or its key row is past its expiry), `credential_revoked`
+    /// (the subject is on the denylist, or the key is disabled) or `credential_invalid` (anything
+    /// else, including a token no key holds). A failure-path read; the admission itself is
+    /// `verify_token`.
+    pub fn token_refusal(&self, token: &str, now: u64, expected_aud: Option<&str>) -> &'static str {
+        let Some(material) = self.signing_material() else {
+            return "credential_invalid";
+        };
+        match material.verifier.verify(token, now, expected_aud) {
+            Err(super::signing::VerifyError::Expired) => "credential_expired",
+            Err(_) => "credential_invalid",
+            Ok(claims) => match self.lookup_by_sub(&claims.sub) {
+                _ if self.is_revoked_at(&claims.sub, now) => "credential_revoked",
+                Some(key) if key_row_expired(&key, now) => "credential_expired",
+                Some(key) if !key.enabled => "credential_revoked",
+                _ => "credential_invalid",
+            },
+        }
     }
 
     pub(super) fn standing_key(

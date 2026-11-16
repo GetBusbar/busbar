@@ -31,9 +31,10 @@ async fn admitted(secret: &str) -> (Kit, UnitRef, crate::auth::AdmittedContext) 
     );
     let bindings = crate::config::RoleBindings::from([(
         "body".to_string(),
-        [(ROLE.to_string(), crate::config::RoleBindingCfg::default())]
-            .into_iter()
-            .collect(),
+        std::collections::BTreeMap::from([(
+            ROLE.to_string(),
+            crate::config::RoleBindingCfg::default(),
+        )]),
     )]);
     let k = mixed_bound(reader, &[head, body], bindings);
     let answer = two_points(&k, &seen).await;

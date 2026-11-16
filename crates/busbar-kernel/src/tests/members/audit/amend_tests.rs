@@ -511,6 +511,7 @@ fn an_amendment_names_the_audit_record_it_amends() {
             },
             controls: Controls::default(),
             correlation_label: None,
+            unit: busbar_kernel_audit::UnitFacts::default(),
         },
         &Pass::<AuditStep>::mint(&crate::seal::acquire()),
     );

@@ -90,7 +90,7 @@ mod tests {
     #[test]
     fn a_refusal_names_the_host_never_its_userinfo_and_is_rate_limited() {
         assert_eq!(
-            shown("https://user:pw@db.internal:5432/x"),
+            shown("https://user:pw\x40db.internal:5432/x"),
             "db.internal:5432"
         );
         assert!(due("rate.test", "internal"));

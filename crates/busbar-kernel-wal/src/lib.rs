@@ -23,6 +23,7 @@
 //! quarantine note a written journal can carry. The store journal seals and verifies with these.
 
 #![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 

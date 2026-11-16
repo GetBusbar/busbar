@@ -82,8 +82,8 @@ mod view;
 /// The exact count type the one function prices — re-exported so a caller driving a
 pub use busbar_contract::count::Count;
 pub use history::{
-    Author, CardEntry, CardEntryDraft, EntryId, EntryKey, History, HistorySeq, HistoryView,
-    RawRateEra, ENTRY_ID_LEN, ENTRY_KEY_LEN,
+    price_era, Author, CardEntry, CardEntryDraft, EntryId, EntryKey, History, HistorySeq,
+    HistoryView, RawRateEra, ENTRY_ID_LEN, ENTRY_KEY_LEN,
 };
 pub use posting::{
     checked_apply_tier, price, price_at_card, price_fail_closed, Posting, Priced, PricedLine,

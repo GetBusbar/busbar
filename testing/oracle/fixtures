@@ -1,0 +1,4 @@
+# Plugins the oracle files use as test fixtures, not as the product: each one's newest green dev cdylib is
+# copied into the oracle's test profile directory (common/plugins cdylib_path finds it there).
+# busbar-auth-oidc: the token-verifying `kind: auth` cdylib common/credentials.rs installs for a case.
+busbar-auth-oidc

@@ -76,6 +76,22 @@ pub(crate) struct CreateKeyReq {
     /// model) so a Bedrock-SDK client can authenticate via inbound SigV4. Both are returned ONCE.
     #[serde(default)]
     issue_aws_credential: bool,
+    /// Make this key an ADMIN credential (ADMIN-API r5 section 2.1): a scope ceiling and the verbs
+    /// held. Only a `full` principal may mint one, and an admin key carries no other grant.
+    #[serde(default)]
+    admin: Option<AdminReq>,
+}
+
+/// `POST /keys` `admin`: the grant that makes the key an admin credential.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub(crate) struct AdminReq {
+    /// `read-only` or `full`: the ceiling of every verb the key holds.
+    scope: String,
+    /// The verbs held, each from the closed verb table. Absent or empty = every verb within `scope`.
+    #[serde(default)]
+    verbs: Option<Vec<String>>,
 }
 
 impl CreateKeyReq {
@@ -91,6 +107,48 @@ impl CreateKeyReq {
             return Err("audience cannot be combined with issue_aws_credential");
         }
         Ok(())
+    }
+
+    /// The admin grant this mint asks for (ADMIN-API r5 section 2.1): refused when it is mixed with
+    /// any other grant, spells an unknown scope, or names a verb the closed table does not declare.
+    pub(crate) fn admin_grant(
+        &self,
+        has_plane_grants: bool,
+    ) -> Result<Option<busbar_contract::records::AdminGrant>, String> {
+        let Some(admin) = &self.admin else {
+            return Ok(None);
+        };
+        if busbar_contract::authz::Scope::parse(&admin.scope).is_none() {
+            return Err("admin.scope must be `read-only` or `full`".into());
+        }
+        let mixed = self.group.is_some()
+            || self.parent.is_some()
+            || self.audience.is_some()
+            || self.issue_aws_credential
+            || has_plane_grants
+            || self
+                .allowed_pools
+                .as_ref()
+                .is_some_and(|pools| !pools.is_empty());
+        if mixed {
+            return Err(
+                "an `admin` key carries no other grant: no group, audience, pool or plane grant, and no AWS credential"
+                    .into(),
+            );
+        }
+        let verbs = admin.verbs.clone().unwrap_or_default();
+        if let Some(unknown) = verbs
+            .iter()
+            .find(|verb| crate::admin_codec::verbs::named_rung(verb).is_none())
+        {
+            return Err(format!(
+                "admin.verbs names `{unknown}`, which is not a verb of the closed verb table"
+            ));
+        }
+        Ok(Some(busbar_contract::records::AdminGrant {
+            scope: admin.scope.clone(),
+            verbs,
+        }))
     }
 }
 
@@ -301,13 +359,19 @@ fn etag_basis(k: &VirtualKey) -> Value {
     for (field, values) in by_kind {
         meta[field] = json!(values);
     }
-    let stored: [(&str, Option<Value>); 6] = [
+    let stored: [(&str, Option<Value>); 7] = [
         ("expires_at", k.expires_at.map(|v| json!(v))),
         ("deleted_at", k.deleted_at.map(|v| json!(v))),
         ("minted_by", k.minted_by.as_ref().map(|v| json!(v))),
         ("minted_via", k.idp_provider.as_ref().map(|v| json!(v))),
         ("idp_subject", k.idp_subject.as_ref().map(|v| json!(v))),
         ("binding_mode", k.binding_mode.as_ref().map(|v| json!(v))),
+        (
+            "admin",
+            k.admin.as_ref().map(
+                |g| json!({ "scope": g.scope, "verbs": g.verbs, "verbs_all": g.verbs.is_empty() }),
+            ),
+        ),
     ];
     for (field, value) in stored {
         if let Some(value) = value {
@@ -344,6 +408,7 @@ fn key_meta(k: &VirtualKey) -> Value {
         "minted_via",
         "idp_subject",
         "binding_mode",
+        "admin",
     ] {
         if meta.get(field).is_none() {
             meta[field] = Value::Null;
@@ -516,8 +581,6 @@ impl KeyFilter {
                     }
                     _ => return Err("invalid `grant` filter: expected <kind>:<value>".into()),
                 },
-                // No key carries an admin grant until per-verb authorization lands, so
-                // `admin=false` matches every key and `admin=true` none.
                 "admin" => {
                     filter.admin =
                         Some(value.parse::<bool>().map_err(|_| {
@@ -549,7 +612,7 @@ impl KeyFilter {
                 .grant
                 .as_ref()
                 .is_none_or(|(kind, value)| k.scope_allowed(kind, value))
-            && self.admin.is_none_or(|admin| !admin)
+            && self.admin.is_none_or(|want| k.admin.is_some() == want)
             && self
                 .minted_via
                 .as_deref()
@@ -820,11 +883,19 @@ pub(crate) async fn create_key(
     headers: axum::http::HeaderMap,
 
     axum::Extension(replays): axum::Extension<std::sync::Arc<KeyReplayCache>>,
+    minter: Option<axum::Extension<busbar_kernel::auth::AdminWhoSlot>>,
     body: Bytes,
 ) -> Response {
     complete_key_mutation(
         "create_key",
-        create_key_owned(handle, principal, headers, replays, body),
+        create_key_owned(
+            handle,
+            principal,
+            headers,
+            replays,
+            minter.map(|m| m.0),
+            body,
+        ),
     )
     .await
 }
@@ -834,6 +905,7 @@ async fn create_key_owned(
     principal: busbar_kernel::auth::AuthPrincipal,
     headers: axum::http::HeaderMap,
     replays: std::sync::Arc<KeyReplayCache>,
+    minter: Option<busbar_kernel::auth::AdminWhoSlot>,
     body: Bytes,
 ) -> Response {
     let app = handle.load();
@@ -888,7 +960,7 @@ async fn create_key_owned(
                 .ok()
                 .map(|req| (req, plane))
         });
-    let (req, plane_scopes) = match parsed {
+    let (mut req, plane_scopes) = match parsed {
         Some(req) => req,
         None => {
             diag_debug!(
@@ -910,6 +982,23 @@ async fn create_key_owned(
             &AdminError::Validation(message.into()),
             Cond::MalformedBody,
         );
+    }
+
+    let admin_grant = match req.admin_grant(plane_scopes.as_ref().is_some_and(|p| !p.is_empty())) {
+        Ok(grant) => grant,
+        Err(message) => {
+            return key_err(who, &AdminError::Validation(message), Cond::MalformedBody);
+        }
+    };
+    if admin_grant.is_some() {
+        let caller = crate::v1::json::whoami_of(&app, minter, &headers).await;
+        let full = caller
+            .as_ref()
+            .is_some_and(|c| busbar_kernel::auth::effect::full_operator(&c.door));
+        if !full {
+            return key_effect_forbidden(who);
+        }
+        req.allowed_pools = Some(Vec::new());
     }
 
     if req.name.len() > MAX_KEY_NAME_LEN {
@@ -1053,6 +1142,7 @@ async fn create_key_owned(
         labels: req.labels,
         minted_by: Some(actor.clone()),
         binding_mode: Some(requested_binding_mode.to_string()),
+        admin: admin_grant,
     };
 
     let audience = req.audience;
@@ -1574,18 +1664,10 @@ pub(crate) async fn list_keys(
             }
         },
     };
-    let start = match q.get("cursor") {
-        Some(c) => match crate::v1::contract::decode_offset_cursor(c) {
-            Some(n) => n,
-            None => {
-                return key_err(
-                    KeyAudit::Read,
-                    &AdminError::Validation("invalid pagination cursor".into()),
-                    Cond::MalformedCursor,
-                )
-            }
-        },
-        None => 0,
+    let digest = crate::v1::json::cursor::filter_digest_of_pairs(&pairs);
+    let window = match crate::v1::json::cursor::window(&q, "keys", &digest, limit) {
+        Ok(w) => w,
+        Err(response) => return *response,
     };
 
     let include_tombstoned = match q.get("include") {
@@ -1644,17 +1726,38 @@ pub(crate) async fn list_keys(
                 .collect();
 
             filtered.sort_by(|(a, _), (b, _)| a.id.cmp(&b.id));
-            let total = filtered.len();
+            let more = filtered
+                .iter()
+                .filter(|(k, _)| {
+                    window
+                        .after
+                        .as_deref()
+                        .is_none_or(|after| k.id.as_str() > after)
+                })
+                .count()
+                > limit;
             let mut page = Vec::new();
-            for (k, _) in filtered.into_iter().skip(start).take(limit) {
+            let mut last_id = None;
+            for (k, _) in filtered
+                .into_iter()
+                .filter(|(k, _)| {
+                    window
+                        .after
+                        .as_deref()
+                        .is_none_or(|after| k.id.as_str() > after)
+                })
+                .take(limit)
+            {
+                last_id = Some(k.id.clone());
                 match key_view(&listed_gov, k, Some(&revocations)).await {
                     Ok(view) => page.push(view),
                     Err(e) => return internal_error("list_keys", &e),
                 }
             }
 
-            let end = start.saturating_add(page.len());
-            let next_cursor = (end < total).then(|| crate::v1::contract::encode_offset_cursor(end));
+            let next_cursor = last_id
+                .filter(|_| more)
+                .map(|id| crate::v1::json::cursor::encode("keys", &digest, &id));
             json_response(
                 StatusCode::OK,
                 json!({ "items": page, "next_cursor": next_cursor }),

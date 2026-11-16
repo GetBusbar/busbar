@@ -46,13 +46,8 @@ fn input(row: &UsageLedger) -> u64 {
         })
         .sum()
 }
-fn one_unit<T>(class: &str, count: T) -> BTreeMap<String, T> {
-    let mut units = BTreeMap::new();
-    units.insert(class.to_owned(), count);
-    units
-}
 fn delta() -> BTreeMap<String, i64> {
-    one_unit(busbar_contract::records::UNIT_INPUT, SUBTRACT_INPUT)
+    BTreeMap::from([(busbar_contract::records::UNIT_INPUT.into(), SUBTRACT_INPUT)])
 }
 
 async fn metered_entry(store: &CoreStore, key: &VirtualKey, era: RawRateEra, now: u64) {
@@ -239,7 +234,7 @@ async fn correction_captures_u64_local_facts_without_signed_saturation() {
     let now = crate::store::now();
     gov.record_usage(&cm, &key, "", MODEL, &toks(ABOVE_SIGNED_COUNT, 0), now);
     metered(&gov, &key.id, MODEL, ABOVE_SIGNED_COUNT, now).await;
-    let delta = one_unit(busbar_contract::records::UNIT_INPUT, -1);
+    let delta = BTreeMap::from([(busbar_contract::records::UNIT_INPUT.into(), -1)]);
     gov.adjust_usage_async(&cm, &correction(&key, &delta, now))
         .await
         .unwrap()
@@ -505,7 +500,6 @@ async fn correction_excludes_a_same_window_inflight_flush_without_changing_raw_f
 
 #[tokio::test]
 async fn a_future_usage_epoch_refuses_both_signs_without_changing_recorded_facts() {
-    let now_ms = crate::store::now_ms();
     for change in [-1, 1] {
         let store = crate::real_store::core().await;
         let gov = GovState::new_with_core(store.core(), None, None)
@@ -514,8 +508,8 @@ async fn a_future_usage_epoch_refuses_both_signs_without_changing_recorded_facts
         let key = key("vk_correction_future", None);
         store.identity().put_key(&key).await.unwrap();
         let cm = model(&[]);
-        let now = now_ms / 1_000;
-        let future = now_ms + 60_000;
+        let now = crate::store::now();
+        let future = crate::store::now_ms() + 60_000;
         gov.record_usage(&cm, &key, "", MODEL, &toks(INITIAL_INPUT, 0), now);
         metered(&gov, &key.id, MODEL, INITIAL_INPUT, future / 1_000).await;
         gov.flush_budgets().await;
@@ -544,7 +538,7 @@ async fn a_future_usage_epoch_refuses_both_signs_without_changing_recorded_facts
             )
         };
         let before = facts().await;
-        let delta = one_unit(busbar_contract::records::UNIT_INPUT, change);
+        let delta = BTreeMap::from([(busbar_contract::records::UNIT_INPUT.into(), change)]);
         let adj = super::super::Adjustment {
             card_epoch_ms: future,
             ..correction(&key, &delta, now)
@@ -1345,7 +1339,7 @@ async fn independent_entry_refund_posts_while_only_the_matching_entry_negative_i
     let lane = plane_fee_lane("tcp");
     let entry_a = RawRateEra::entry(0, EntryId([81; 12]));
     let entry_b = RawRateEra::entry(0, EntryId([82; 12]));
-    let one = one_unit(PER_SESSION, 1);
+    let one = BTreeMap::from([(PER_SESSION.to_string(), 1)]);
     first.record_usage_served_in_era(&cm, &key, "", &lane, None, &one, now, entry_b);
     store
         .ledger()
@@ -1371,7 +1365,7 @@ async fn independent_entry_refund_posts_while_only_the_matching_entry_negative_i
         })
         .await
         .unwrap();
-    let increase = one_unit(PER_SESSION, 1);
+    let increase = BTreeMap::from([(PER_SESSION.to_string(), 1)]);
     journal
         .fail_after_write
         .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1558,10 +1552,10 @@ async fn exact_scale_six_adjustment_survives_store_readback() {
         era,
     );
     metered_entry(store.core().as_ref(), &key, era, now).await;
-    let delta = one_unit(
-        busbar_contract::records::UNIT_INPUT,
+    let delta = BTreeMap::from([(
+        busbar_contract::records::UNIT_INPUT.into(),
         Count::parse("-0.000001").unwrap(),
-    );
+    )]);
     let adj = super::super::Adjustment {
         key_id: &key.id,
         pool: "",

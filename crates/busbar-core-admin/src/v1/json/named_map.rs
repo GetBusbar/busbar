@@ -101,10 +101,16 @@ async fn read_snapshot(
 async fn list(
     State(handle): State<Arc<AppHandle>>,
     Extension(section): Extension<NamedMapSection>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     if let Some(resp) = plane_gate(&handle, section) {
         return resp;
     }
+    let op = format!("named_map:{}", section.singular().replace('.', "_"));
+    let w = match super::cursor::window(&q, &op, "", crate::v1::contract::LIST_LIMIT_DEFAULT) {
+        Ok(w) => w,
+        Err(resp) => return *resp,
+    };
     let (current, pending) = match read_snapshot(&handle, section, None).await {
         Ok(snapshot) => snapshot,
         Err(error) => return err_json(&error),
@@ -113,7 +119,12 @@ async fn list(
     with_config_etag(
         respond(
             StatusCode::OK,
-            crate::v1::service::AdminService::new(current).list_named_defs(section, &pending),
+            super::cursor::paged(
+                crate::v1::service::AdminService::new(current).list_named_defs(section, &pending),
+                &w,
+                &op,
+                |def| def.name.clone(),
+            ),
         ),
         version,
     )

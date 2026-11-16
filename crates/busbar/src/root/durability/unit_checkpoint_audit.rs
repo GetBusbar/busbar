@@ -202,6 +202,16 @@ pub(super) async fn recover(
             ..Controls::default()
         },
         correlation_label: None,
+        // A recovered unit ran in a predecessor process: its nonce is not this one's, so none is
+        // sealed (no unit id), and its pool was not checkpointed.
+        unit: busbar_kernel_audit::UnitFacts {
+            attribution: busbar_kernel_audit::attribution(
+                &snapshot.group,
+                "",
+                snapshot.provider.as_deref().unwrap_or_default(),
+            ),
+            ..busbar_kernel_audit::UnitFacts::at(facts.wall.saturating_mul(1_000))
+        },
     };
     let record = {
         let mut book = book.lock().unwrap_or_else(|p| p.into_inner());

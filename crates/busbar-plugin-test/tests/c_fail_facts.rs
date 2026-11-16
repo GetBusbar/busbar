@@ -7,10 +7,34 @@
 //! WBS rule 10: each arm is ignored for the task that lands the last piece it needs; that task writes
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
+/// The shim arm (W1-A3): a FAILED Fail with both facts answers FAIL then exactly FACT(1, 30), FACT(2, 503).
 #[test]
-#[ignore = "owner: W1-A3"]
 fn the_shim_writes_fail_then_its_facts() {
-    todo!("owner: W1-A3 (C-FAIL-FACTS)")
+    use busbar_plugin_abi::fail::{fact, failed};
+    use busbar_plugin_abi::records::{tag, FailRec};
+
+    use crate::bridge_fixture::{self as fx, Status};
+
+    let instance = fx::instance();
+    let mut lease = fx::lease();
+    assert!(matches!(
+        fx::start(&instance, b"fail-facts", &mut lease),
+        fx::Started::Done(Status::FAILED)
+    ));
+    assert_eq!(fx::tags(&lease), [tag::FAIL, tag::FACT, tag::FACT]);
+    assert_eq!(
+        fx::facts(&lease),
+        [
+            (fact::FACT_RETRY_AFTER_S, 30),
+            (fact::FACT_BACKEND_STATUS, 503)
+        ]
+    );
+    let answer = fx::answer(&lease);
+    let fail = &answer[0].1;
+    let head = core::mem::size_of::<FailRec>();
+    assert_eq!(&fail[..4], &Status::FAILED.0.to_le_bytes());
+    assert_eq!(&fail[4..8], &failed::F_UPSTREAM.to_le_bytes());
+    assert_eq!(&fail[head..], b"the backend said 503");
 }
 
 #[test]

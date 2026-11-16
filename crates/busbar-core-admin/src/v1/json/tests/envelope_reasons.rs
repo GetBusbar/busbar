@@ -432,3 +432,37 @@ async fn forbidden_names_the_scope_it_needed() {
     assert_eq!(body["error"]["reason"], "scope_insufficient");
     assert_eq!(body["error"]["details"]["needed_scope"], "full");
 }
+
+/// `components.x-busbar-unit-reasons` (ADMIN-API-1.6 §3.4) COVERS EVERY FAILURE: each refusal
+/// and failure `ReasonCode` has one row with its `class` (`client`, `policy`, `upstream` or
+/// `engine`, the record's own) and its `steps`, plus `timed_out`, which a record names without one.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn unit_reasons_cover_failures() {
+    use busbar_contract::caps::ReasonCode;
+    let doc = crate::v1::json::handlers::openapi_doc();
+    let table = doc["components"]["x-busbar-unit-reasons"]
+        .as_object()
+        .expect("components.x-busbar-unit-reasons is generated");
+    for reason in ReasonCode::ALL {
+        let row = table
+            .get(reason.as_str())
+            .unwrap_or_else(|| panic!("{} has no unit-reason row", reason.as_str()));
+        let class = row["class"].as_str().expect("a class");
+        assert!(
+            ["client", "policy", "upstream", "engine"].contains(&class),
+            "{}: {class}",
+            reason.as_str()
+        );
+        assert_eq!(class, crate::v1::records::unit_reason_class(*reason));
+        assert!(!row["steps"].as_array().expect("steps").is_empty());
+    }
+    for extra in ["superseded", "timed_out"] {
+        assert!(table.contains_key(extra), "{extra} has no unit-reason row");
+    }
+    assert_eq!(
+        table.len(),
+        ReasonCode::ALL.len() + 1,
+        "only timed_out beside them"
+    );
+}

@@ -1401,11 +1401,17 @@ impl Worker {
                         Self::schedule(st, idx, Action::Cancel);
                         return true;
                     }
-                    let (keep, gone): (VecDeque<_>, VecDeque<_>) = std::mem::take(&mut e.queue)
-                        .into_iter()
-                        .partition(|(m, _)| m.class == DeadlineClass::WriteBehind);
-                    e.queue = keep;
-                    for (mut m, _) in gone {
+                    // One pass over this client's own queue, in place: each crossing that is not
+                    // write-behind is settled (the work is one settle per dropped crossing), the
+                    // write-behind ones rotate back in their order. No second queue is built.
+                    for _ in 0..e.queue.len() {
+                        let Some((mut m, rest)) = e.queue.pop_front() else {
+                            break;
+                        };
+                        if m.class == DeadlineClass::WriteBehind {
+                            e.queue.push_back((m, rest));
+                            continue;
+                        }
                         m.give_back();
                         m.reply.settle(
                             m.instance.timeout,

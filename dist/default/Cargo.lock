@@ -303,6 +303,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2f6c7dbe95a6ed67ad9f18e57daf93a2f034c524b99fd2b76d18fdfeb6660aa"
 dependencies = [
  "hybrid-array",
+ "zeroize",
 ]
 
 [[package]]
@@ -367,7 +368,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oidc"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=0c26d739e1671effa5979e811873d24eea200c0a#0c26d739e1671effa5979e811873d24eea200c0a"
+source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=7877ca767f9f4da677df369afc022b2cbd5633cf#7877ca767f9f4da677df369afc022b2cbd5633cf"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -383,7 +384,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oidc-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=0c26d739e1671effa5979e811873d24eea200c0a#0c26d739e1671effa5979e811873d24eea200c0a"
+source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=7877ca767f9f4da677df369afc022b2cbd5633cf#7877ca767f9f4da677df369afc022b2cbd5633cf"
 dependencies = [
  "busbar-auth-oidc",
  "busbar-contract",
@@ -546,8 +547,9 @@ name = "busbar-crypto-backend"
 version = "1.6.0"
 dependencies = [
  "aws-lc-rs",
- "aws-lc-sys",
+ "curve25519-dalek",
  "dimpl",
+ "md-5",
  "rcgen",
  "rustls",
  "rustls-webpki",
@@ -721,6 +723,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-ffi"
+version = "1.6.0"
+dependencies = [
+ "libloading",
+ "loom",
+ "object",
+ "zerocopy",
+]
+
+[[package]]
 name = "busbar-hook-complexity"
 version = "1.6.0"
 source = "git+https://github.com/GetBusbar/busbar-hook-complexity?rev=372b3a6f618fbe387d343d4fbac10956b02932e4#372b3a6f618fbe387d343d4fbac10956b02932e4"
@@ -744,7 +756,7 @@ dependencies = [
 [[package]]
 name = "busbar-hook-webrequest"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-hook-webrequest?rev=fed283660ab0e20f06ed4a49bb32c48bb5677aae#fed283660ab0e20f06ed4a49bb32c48bb5677aae"
+source = "git+https://github.com/GetBusbar/busbar-hook-webrequest?rev=bea74851f4c7da848c4ad4cbf5d811d0defb656f#bea74851f4c7da848c4ad4cbf5d811d0defb656f"
 dependencies = [
  "busbar-contract",
  "http",
@@ -779,7 +791,6 @@ dependencies = [
  "http",
  "http-body-util",
  "indexmap",
- "libc",
  "loom",
  "metrics",
  "metrics-util",
@@ -788,7 +799,6 @@ dependencies = [
  "serde_json",
  "smallvec",
  "sonic-rs",
- "tikv-jemalloc-sys",
  "tokio",
  "tokio-util",
  "tower",
@@ -879,13 +889,17 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=31b6dc630a38caafe07620227ece0989012f079c#31b6dc630a38caafe07620227ece0989012f079c"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=19b37e81f00fd0c93be2dc7c16dcf0e40fe4b026#19b37e81f00fd0c93be2dc7c16dcf0e40fe4b026"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
+ "foldhash 0.2.0",
+ "httpdate",
  "indexmap",
+ "memchr",
  "pbjson",
  "pbjson-build",
+ "percent-encoding",
  "proc-macro2",
  "prost",
  "prost-build",
@@ -901,9 +915,10 @@ dependencies = [
 [[package]]
 name = "busbar-plane-decisions"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=a3169c86ab964f29ca62d8758e9fe2212a7a5b68#a3169c86ab964f29ca62d8758e9fe2212a7a5b68"
+source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=ae965dc8163be4073876adf08fe213dc21a56424#ae965dc8163be4073876adf08fe213dc21a56424"
 dependencies = [
  "busbar-contract",
+ "memchr",
  "serde",
  "serde_json",
  "tracing",
@@ -912,14 +927,18 @@ dependencies = [
 [[package]]
 name = "busbar-plane-llm"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=17e1c0980ad204fda8046580f1bc3882c3192349#17e1c0980ad204fda8046580f1bc3882c3192349"
+source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=17372bd6ed66bb1830a635ec745c4880d6b91d56#17372bd6ed66bb1830a635ec745c4880d6b91d56"
 dependencies = [
+ "base64 0.22.1",
  "busbar-contract",
  "bytes",
  "crc32fast",
+ "foldhash 0.2.0",
  "hex",
+ "percent-encoding",
  "serde",
  "serde_json",
+ "siphasher",
  "tracing",
  "zeroize",
 ]
@@ -927,17 +946,19 @@ dependencies = [
 [[package]]
 name = "busbar-plane-mcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=a655611d211e422a71eb1734ad38a0aa4544a1e5#a655611d211e422a71eb1734ad38a0aa4544a1e5"
+source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=0fe33ef5207a828457976be8e165f07300cca4da#0fe33ef5207a828457976be8e165f07300cca4da"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
+ "foldhash 0.2.0",
  "indexmap",
  "jsonschema",
+ "percent-encoding",
+ "ring",
  "serde",
  "serde_json",
  "tracing",
  "url",
- "zeroize",
 ]
 
 [[package]]
@@ -963,6 +984,7 @@ dependencies = [
  "arc-swap",
  "base64 0.22.1",
  "busbar-crypto",
+ "busbar-ffi",
  "hex",
  "percent-encoding",
  "zerocopy",
@@ -985,6 +1007,7 @@ dependencies = [
  "olpc-cjson",
  "serde",
  "serde_json",
+ "sonic-rs",
  "tar",
  "time",
  "tokio",
@@ -1030,7 +1053,7 @@ dependencies = [
 [[package]]
 name = "busbar-store-postgres"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=71de427908220f6093e531c28a477901d9d2fe44#71de427908220f6093e531c28a477901d9d2fe44"
+source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=eb40baa7b52c6a3209357bf298fa513fe48ab46e#eb40baa7b52c6a3209357bf298fa513fe48ab46e"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -1050,7 +1073,7 @@ dependencies = [
 [[package]]
 name = "busbar-store-sqlite"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-sqlite?rev=a87fc3b32c1e2b33e7fec6b9c75d96efaf569ae5#a87fc3b32c1e2b33e7fec6b9c75d96efaf569ae5"
+source = "git+https://github.com/GetBusbar/busbar-store-sqlite?rev=4102868e504e32b22f1c6f19e6f5a363c1c1d980#4102868e504e32b22f1c6f19e6f5a363c1c1d980"
 dependencies = [
  "busbar-contract",
  "foldhash 0.2.0",
@@ -1110,7 +1133,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-tcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=c11873ea3d1fc2dfda82ac9cfd4aff614fe06715#c11873ea3d1fc2dfda82ac9cfd4aff614fe06715"
+source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=213adb20132938ce6f4575ea691a9f620f9e55f0#213adb20132938ce6f4575ea691a9f620f9e55f0"
 dependencies = [
  "busbar-contract",
  "foldhash 0.2.0",
@@ -1119,7 +1142,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-tcp-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=c11873ea3d1fc2dfda82ac9cfd4aff614fe06715#c11873ea3d1fc2dfda82ac9cfd4aff614fe06715"
+source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=213adb20132938ce6f4575ea691a9f620f9e55f0#213adb20132938ce6f4575ea691a9f620f9e55f0"
 dependencies = [
  "busbar-contract",
  "busbar-transport-tcp",
@@ -1128,21 +1151,22 @@ dependencies = [
 [[package]]
 name = "busbar-transport-webrtc"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-webrtc?rev=4177564a501289867c8991605b42030ff784ef1d#4177564a501289867c8991605b42030ff784ef1d"
+source = "git+https://github.com/GetBusbar/busbar-transport-webrtc?rev=624ad1e78cda33033671937786b13c7b02882da8#624ad1e78cda33033671937786b13c7b02882da8"
 dependencies = [
  "aes",
  "busbar-contract",
+ "foldhash 0.2.0",
  "ring",
  "str0m",
- "zeroize",
 ]
 
 [[package]]
 name = "busbar-transport-ws"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=58f24f3e49081ca8682651d88c70dd5c7c489f4d#58f24f3e49081ca8682651d88c70dd5c7c489f4d"
+source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=21ab18eb964d2819857dacc62d52c66e940bbd7b#21ab18eb964d2819857dacc62d52c66e940bbd7b"
 dependencies = [
  "busbar-contract",
+ "foldhash 0.2.0",
  "httpdate",
  "tungstenite",
  "zeroize",
@@ -1388,6 +1412,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "curve25519-dalek"
+version = "4.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97fb8b7c4503de7d6ae7b42ab72a5a59857b4c937ec27a3d4539dba95b5ab2be"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "curve25519-dalek-derive",
+ "fiat-crypto",
+ "rustc_version",
+ "subtle",
+]
+
+[[package]]
+name = "curve25519-dalek-derive"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f46882e17999c6cc590af592290432be3bce0428cb0d5f8b6715e4dc7b383eb3"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "data-encoding"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1456,6 +1505,7 @@ dependencies = [
  "const-oid",
  "crypto-common 0.2.2",
  "ctutils",
+ "zeroize",
 ]
 
 [[package]]
@@ -1595,6 +1645,12 @@ dependencies = [
  "serde",
  "simdutf8",
 ]
+
+[[package]]
+name = "fiat-crypto"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
 
 [[package]]
 name = "filetime"
@@ -2568,6 +2624,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "object"
+version = "0.37.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "oid-registry"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2582,7 +2647,7 @@ version = "0.1.4"
 source = "git+https://github.com/MattJackson/olpc-cjson?rev=0a96a65b1122a2bbb93fd36cae3b36dd2b045c7e#0a96a65b1122a2bbb93fd36cae3b36dd2b045c7e"
 dependencies = [
  "serde",
- "serde_json",
+ "sonic-rs",
  "unicode-normalization",
 ]
 
@@ -3321,6 +3386,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94300abf3f1ae2e2b8ffb7b58043de3d399c73fa6f4b73826402a5c457614dbe"
 
 [[package]]
+name = "rustc_version"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92"
+dependencies = [
+ "semver",
+]
+
+[[package]]
 name = "rusticata-macros"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3442,6 +3516,12 @@ dependencies = [
  "slab",
  "thiserror",
 ]
+
+[[package]]
+name = "semver"
+version = "1.0.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
 name = "serde"
@@ -3595,6 +3675,12 @@ name = "simdutf8"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+
+[[package]]
+name = "siphasher"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33f4fe9184a62d842c9ef383018f3306d8ba224fd9d836f56d7288308847c256"
 
 [[package]]
 name = "sketches-ddsketch"
@@ -4565,4 +4651,4 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 [[patch.unused]]
 name = "mysql_common"
 version = "0.35.5"
-source = "git+https://github.com/GetBusbar/busbar-store-mysql?rev=ca43abdfd2dec0842872f8d7612a4f3f4237cb54#ca43abdfd2dec0842872f8d7612a4f3f4237cb54"
+source = "git+https://github.com/MattJackson/rust_mysql_common?rev=f8e1d4f6dbb61ed46e0cae1f1c451f9ffadded39#f8e1d4f6dbb61ed46e0cae1f1c451f9ffadded39"

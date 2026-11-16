@@ -6,11 +6,11 @@
 
 use busbar_contract::caps::{Abort, MeterClassId, Outcome, ReasonCode, StepName, UnitKey};
 
-use crate::journal::{JOURNAL_TAG, JOURNAL_TAG_V4, JOURNAL_TAG_V6};
+use crate::journal::{JOURNAL_TAG, JOURNAL_TAG_V4, JOURNAL_TAG_V6, JOURNAL_TAG_V7};
 use crate::record::{
-    direction_tag, displays_as, finish_tag, step_tag, AbortTag, AuditRecord, Controls, FinishClass,
-    HookApplied, HookHead, OpClassId, OutcomeFacts, OutcomeTag, QuantitySource, ReasonTag, Subject,
-    Usage, UsageLine, What,
+    direction_tag, displays_as, finish_tag, step_tag, AbortTag, Attempt, AttemptOutcome,
+    AuditRecord, Controls, FinishClass, HookApplied, HookHead, OpClassId, OutcomeFacts, OutcomeTag,
+    QuantitySource, ReasonTag, Subject, UnitFacts, Usage, UsageLine, What, ATTEMPT_SLOTS,
 };
 
 /// Read a journal body back into the record it keeps.
@@ -45,6 +45,7 @@ pub fn head_from_journal_body(bytes: &[u8]) -> Result<Option<JournalHead>, Strin
     match r.text().as_deref().ok_or_else(bad)? {
         crate::recipe::DIGEST_RECIPE if keyed == 5 => {}
         crate::recipe::DIGEST_RECIPE_V6 if keyed == 6 => {}
+        crate::recipe::DIGEST_RECIPE_V7 if keyed == 7 => {}
         crate::recipe::DIGEST_RECIPE_V4 if keyed == 4 => {}
         crate::recipe::DIGEST_RECIPE_V2 if keyed == 4 => {
             r.skip_text().ok_or_else(bad)?;
@@ -88,6 +89,7 @@ fn journal_kind(r: &mut Reader<'_>) -> Option<u8> {
     match r.text().as_deref()? {
         JOURNAL_TAG => Some(5),
         JOURNAL_TAG_V6 => Some(6),
+        JOURNAL_TAG_V7 => Some(7),
         JOURNAL_TAG_V4 => Some(4),
         _ => None,
     }
@@ -102,6 +104,7 @@ fn decode(
     let mut recipe = match r.text().ok_or_else(|| bad("recipe"))?.as_str() {
         crate::recipe::DIGEST_RECIPE if keyed == 5 => crate::recipe::Recipe::V5,
         crate::recipe::DIGEST_RECIPE_V6 if keyed == 6 => crate::recipe::Recipe::V6,
+        crate::recipe::DIGEST_RECIPE_V7 if keyed == 7 => crate::recipe::Recipe::V7,
         crate::recipe::DIGEST_RECIPE_V4 if keyed == 4 => crate::recipe::Recipe::V4 {
             legacy_rate_card_version: 0,
         },
@@ -168,7 +171,7 @@ fn decode(
         })?;
         lines.push(UsageLine {
             class: resolved,
-            quantity: if matches!(recipe, crate::recipe::Recipe::V6) {
+            quantity: if recipe.exact_quantities() {
                 let raw = r.text().ok_or_else(|| bad("line quantity"))?;
                 let count =
                     busbar_contract::count::read_count(&raw).map_err(|_| bad("line quantity"))?;
@@ -188,7 +191,7 @@ fn decode(
     let fee_count =
         u32::try_from(r.num().ok_or_else(|| bad("fee_count"))?).map_err(|_| bad("fee_count"))?;
     let rate_card_version = match &mut recipe {
-        crate::recipe::Recipe::V5 | crate::recipe::Recipe::V6 => {
+        crate::recipe::Recipe::V5 | crate::recipe::Recipe::V6 | crate::recipe::Recipe::V7 => {
             if r.flag().ok_or_else(|| bad("rate_card_key_present"))? {
                 Some(
                     r.bytes()
@@ -244,6 +247,11 @@ fn decode(
             .push(UnitKey::new(r.num().ok_or_else(|| bad("child"))?));
     }
     let correlation_hash = r.opt_text().ok_or_else(|| bad("correlation_hash"))?;
+    let unit = if matches!(recipe, crate::recipe::Recipe::V7) {
+        read_unit_facts(r).ok_or_else(|| bad("unit facts"))?
+    } else {
+        UnitFacts::default()
+    };
     if r.at != r.bytes.len() {
         return Err(bad("tail"));
     }
@@ -258,6 +266,7 @@ fn decode(
         usage,
         controls,
         correlation_hash,
+        unit,
         seq,
         prev_hash,
         recipe,
@@ -265,6 +274,34 @@ fn decode(
         signature,
         key_id,
     })
+}
+
+/// The `v7` tail, as [`crate::journal::journal_body`] writes it. More attempts than there are
+/// slots, an unknown outcome or a nonce that is not 16 bytes refuses the record.
+fn read_unit_facts(r: &mut Reader<'_>) -> Option<UnitFacts> {
+    let mut unit = UnitFacts {
+        wall_ms: r.num()?,
+        attribution: r.text()?,
+        boot_nonce: r.bytes()?.try_into().ok()?,
+        status: u16::try_from(r.num()?).ok()?,
+        ttft_us: r.num()?,
+        total_us: r.num()?,
+        ..UnitFacts::default()
+    };
+    let used = usize::try_from(r.num()?).ok()?;
+    if used > ATTEMPT_SLOTS {
+        return None;
+    }
+    for slot in unit.attempts.iter_mut().take(used) {
+        *slot = Some(Attempt {
+            outcome: AttemptOutcome::from_tag(&r.text()?)?,
+            target: r.text()?,
+            reason: r.text()?,
+            us: r.num()?,
+        });
+    }
+    unit.attempts_total = u32::try_from(r.num()?).ok()?;
+    Some(unit)
 }
 
 fn read_source(r: &mut Reader<'_>) -> Option<QuantitySource> {
