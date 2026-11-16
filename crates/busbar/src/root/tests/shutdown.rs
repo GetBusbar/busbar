@@ -113,6 +113,73 @@ async fn a_cut_settled_during_shutdown_allows_exit_zero() {
     assert_eq!(drain.detached(), 0);
 }
 
+/// SF-6 test 30(c): real governance holds a streamed checkpoint and a usage write across cuts.
+#[tokio::test]
+async fn governed_checkpoint_and_usage_originals_survive_retention_pressure() {
+    use busbar_kernel::persistence::journal::{CutProgress, RETAIN_TAIL};
+    let fixture = Fixture::with_ephemeral(8192, true).await;
+    fixture.attach_sinks().await;
+    let mut unit = fixture.unit();
+    fixture.seen.gov.stage_unit_checkpoint(unit.clone());
+    fixture.seen.gov.flush_unit_checkpoints().await.unwrap();
+    let budget_gate = Arc::new(FlushGate::default());
+    *fixture.seen.backend.budget.lock().unwrap() = Some(budget_gate.clone());
+    fixture.accrue();
+    let gov = fixture.seen.gov.clone();
+    let flushing = tokio::spawn(async move { gov.flush_budgets().await });
+    budget_gate.entered().await;
+    let journal = fixture.seen.journal.clone();
+    for _ in 0..(3 * RETAIN_TAIL) {
+        let run = journal
+            .stage_run(&[Entry::new(RecordClass::Load, vec![4])])
+            .unwrap();
+        journal.confirm(&run).await.unwrap();
+    }
+    let mut cut = journal.cutter().unwrap();
+    assert_eq!(
+        cut.truncate_through(u64::MAX).await,
+        CutProgress::Idle,
+        "live checkpoint and usage ancestry keep their original rows"
+    );
+    unit.units.insert(
+        "work".into(),
+        busbar_contract::Count::parse("0.250").unwrap(),
+    );
+    fixture.seen.gov.stage_unit_checkpoint(unit.clone());
+    fixture.seen.gov.flush_unit_checkpoints().await.unwrap();
+    budget_gate.release();
+    assert_eq!(
+        tokio::time::timeout(WAIT, flushing).await.unwrap().unwrap(),
+        0
+    );
+    assert!(fixture.seen.gov.finish_unit_checkpoint(unit));
+    fixture.seen.gov.flush_unit_checkpoints().await.unwrap();
+    assert_eq!(
+        journal.locate_truncated(),
+        0,
+        "persist, usage settlement and checkpoint removal never lose carried originals"
+    );
+    assert!(
+        matches!(
+            cut.truncate_through(u64::MAX).await,
+            CutProgress::Cut { .. }
+        ),
+        "settled governance releases its old pins"
+    );
+    assert!(
+        matches!(
+            RuntimeJournal::open(
+                fixture.seen.core.clone(),
+                journal.node(),
+                fixture.seen.budget
+            )
+            .await,
+            Err(RuntimeError::Truncated)
+        ),
+        "a same-holder retake after a cut is refused"
+    );
+}
+
 pub(super) struct FlushGate {
     entered: Notify,
     released: Semaphore,
