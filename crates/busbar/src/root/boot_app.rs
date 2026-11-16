@@ -65,6 +65,7 @@ pub(crate) fn store_bootstrap(deploy: &DeployCfg) -> Result<RootCfg, Vec<String>
 }
 
 pub(crate) struct Preparation {
+    pub secret_resolver: Arc<config::secret::SecretResolver>,
     pub startup: Startup,
     pub config: RootCfg,
     /// The semantic pass's one result when boot already judged `config` (the fresh-instance
@@ -161,6 +162,7 @@ pub(crate) async fn prepare(input: Preparation) -> Result<ReadyCandidate, Box<Pr
 
 async fn prepare_inner(input: Preparation) -> Result<ReadyCandidate, Box<PreparationFailure>> {
     let Preparation {
+        secret_resolver,
         startup,
         config,
         judged,
@@ -212,6 +214,7 @@ async fn prepare_inner(input: Preparation) -> Result<ReadyCandidate, Box<Prepara
     let store_module = store.module.clone();
     let (mut app, rotation, limits) =
         match Box::pin(appbuild::build_boot_app(appbuild::BootBuild {
+            secret_resolver,
             cfg: config,
             judged,
             plugins_cfg: plugins,

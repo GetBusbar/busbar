@@ -87,10 +87,10 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
                 revoked: false,
             }],
         });
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
+    let anchor = crate::root::boot::store::bootstrap_config_store(
         &config,
         &plugin_config,
-        &busbar_kernel::preflight::Unopened,
+        &crate::root::boot::store::Unopened,
     )
     .await
     .expect("the actual Store opens the configuration authority");

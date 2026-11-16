@@ -155,3 +155,25 @@ async fn a_module_that_is_not_open_is_refused_without_a_name() {
     );
     assert_eq!(env.seen().len(), 1);
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn synchronous_config_resolution_progresses_on_the_owned_io_executor() {
+    use busbar_contract::secret::SecretResolve;
+    let io = crate::root::boot::process::ProcessIo::new().unwrap();
+    let secrets = Box::leak(Box::new(secrets()));
+    secrets.table().opened(
+        "configured-source",
+        SecretSource {
+            instance: 41,
+            port: Port::new("owned-source-material"),
+        },
+    );
+    let resolver = secrets.resolver(io.handle(), Default::default());
+    let held = resolver
+        .resolve(&source("configured-source", "{}"))
+        .unwrap();
+    assert_eq!(
+        held.expose(&busbar_kernel::seal::lend()),
+        b"owned-source-material"
+    );
+}

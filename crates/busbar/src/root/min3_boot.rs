@@ -70,7 +70,7 @@ pub(crate) type Needs = HostNeeds<BootCustody, Records, Directory>;
 pub(crate) type MinRegistry = Registry;
 
 /// How long a core-internal secret may take to resolve at boot.
-const CORE_SECRET_DEADLINE: Duration = Duration::from_secs(30);
+pub(crate) const CORE_SECRET_DEADLINE: Duration = Duration::from_secs(30);
 /// Core's own secrets, resolved at boot through the secret kind into owned values (IF §11.2: the admin token,
 /// the signing key, the at-rest keys). `None` = the config states no such reference.
 #[derive(Default)]
@@ -240,6 +240,7 @@ pub(crate) struct Booted {
     pub(crate) core: CoreSecrets,
     /// The secret kind the boot opened its secret instances into (webhook secrets resolve through it).
     pub(crate) secrets: &'static BootSecrets,
+    pub(crate) resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     pub(crate) deployment: [u8; 16],
     /// The format admission the walk attached the store through.
     pub(crate) startup: Mutex<Option<Startup>>,
@@ -980,6 +981,7 @@ where
 /// order, core's own secrets are resolved and the process holds the registry ([`registry`], [`seats`]).
 pub(crate) async fn run(
     process: &busbar_plugin_loader::process::ProcessResources,
+    reactor: tokio::runtime::Handle,
     file_images: super::boot::images::FileImages,
     cfg: &RootCfg,
     guard: Guard,
@@ -1235,6 +1237,7 @@ pub(crate) async fn run(
     // The admin listener serves the planes' ROUTE_ADMIN routes from here on.
     busbar_kernel::plane_driver::port_admin::install(seats.clone());
     let installed = BOOTED.set(Booted {
+        resolver: built.secrets.resolver(reactor, built.sugars.clone()),
         registry: built.registry,
         seats,
         core,

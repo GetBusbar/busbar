@@ -113,6 +113,39 @@ pub(crate) struct BootSecrets {
 }
 
 impl BootSecrets {
+    /// Synchronous configuration readers dispatch resolution onto the owned I/O executor,
+    /// which keeps progressing even when the reader runs on a current-thread runtime.
+    pub(crate) fn resolver(
+        &'static self,
+        runtime: tokio::runtime::Handle,
+        sugars: busbar_contract::secret_ref::Sugars,
+    ) -> Arc<busbar_kernel::config::secret::SecretResolver> {
+        let resolver = busbar_kernel::config::secret::SecretResolver::with_scoped_plugin(Box::new(
+            move |module, settings, _scope| {
+                let reference = SecretRef::Source(busbar_contract::secret_ref::SourceReference {
+                    module: module.to_owned(),
+                    settings: settings.clone(),
+                });
+                let (send, receive) = std::sync::mpsc::sync_channel(1);
+                let deadline = Instant::now() + super::min3_boot::CORE_SECRET_DEADLINE;
+                let task = runtime.spawn(async move {
+                    let result = self.resolve_ref(deadline, &reference).await;
+                    let _ = send.send(result);
+                });
+                let result = receive.recv_timeout(super::min3_boot::CORE_SECRET_DEADLINE);
+                task.abort();
+                match result {
+                    Ok(Ok(value)) => Ok(busbar_contract::redacted::Secret::new(value.into_vec())),
+                    _ => Err(busbar_kernel::config::secret::SecretRefused {
+                        error_kind: busbar_contract::abi::secret::ERROR_KIND_INTERNAL,
+                        text: "the configured secret source did not resolve".to_owned(),
+                    }),
+                }
+            },
+        ));
+        Arc::new(resolver.with_sources(sugars))
+    }
+
     /// The secret kind over `binder`, which custody reads plugin-facing bindings through (the binder does not
     /// depend on custody, so it exists first and is handed over here).
     pub(crate) fn new(
@@ -225,8 +258,9 @@ pub(crate) async fn open_secret_steps<N: busbar_plugin_abi::host_side::needs::Ne
         if *kind != busbar_plugin_abi::types::KindCode::Secret {
             continue;
         }
-        let port = registry.open_secret(spec, needs).await?;
-        let instance = next_instance_id();
+        let prepared = registry.reserve(spec)?;
+        let instance = prepared.id();
+        let port = registry.open_secret_reserved(prepared, needs).await?;
         if let Some(old) = secrets
             .table()
             .opened(spec.name, SecretSource { instance, port })
@@ -236,12 +270,6 @@ pub(crate) async fn open_secret_steps<N: busbar_plugin_abi::host_side::needs::Ne
         opened += 1;
     }
     Ok(opened)
-}
-
-/// A process-unique, non-zero runtime id for an opened secret instance.
-fn next_instance_id() -> u64 {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 #[cfg(test)]

@@ -54,10 +54,10 @@ async fn test_admin_v1_put_auth_refused_on_locked_config() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
+    let anchor = crate::root::boot::store::bootstrap_config_store(
         &config,
         &plugin_config,
-        &busbar_kernel::preflight::Unopened,
+        &crate::root::boot::store::Unopened,
     )
     .await
     .expect("the actual Store opens the configuration authority");
@@ -186,10 +186,10 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
+    let anchor = crate::root::boot::store::bootstrap_config_store(
         &config,
         &plugin_config,
-        &busbar_kernel::preflight::Unopened,
+        &crate::root::boot::store::Unopened,
     )
     .await
     .expect("the actual Store opens the configuration authority");
@@ -313,10 +313,10 @@ async fn test_admin_v1_config_settings_put_on_locked_config_is_refused() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
+    let anchor = crate::root::boot::store::bootstrap_config_store(
         &config,
         &plugin_config,
-        &busbar_kernel::preflight::Unopened,
+        &crate::root::boot::store::Unopened,
     )
     .await
     .expect("the actual Store opens the configuration authority");
@@ -426,10 +426,10 @@ async fn test_admin_v1_config_settings_put_refuses_locked_store_mutation() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
+    let anchor = crate::root::boot::store::bootstrap_config_store(
         &config,
         &plugin_config,
-        &busbar_kernel::preflight::Unopened,
+        &crate::root::boot::store::Unopened,
     )
     .await
     .expect("the actual Store opens the configuration authority");
@@ -545,10 +545,10 @@ async fn test_admin_v1_config_settings_put_rejects_retired_persist() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
+    let anchor = crate::root::boot::store::bootstrap_config_store(
         &config,
         &plugin_config,
-        &busbar_kernel::preflight::Unopened,
+        &crate::root::boot::store::Unopened,
     )
     .await
     .expect("the actual Store opens the configuration authority");
@@ -655,10 +655,10 @@ async fn test_admin_v1_config_settings_put_still_rejects_an_unknown_field_includ
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
+    let anchor = crate::root::boot::store::bootstrap_config_store(
         &config,
         &plugin_config,
-        &busbar_kernel::preflight::Unopened,
+        &crate::root::boot::store::Unopened,
     )
     .await
     .expect("the actual Store opens the configuration authority");

@@ -81,10 +81,10 @@ async fn actual_inbound_keys_preserve_resolution_revocation_rotation_and_carrier
     let native_config = config;
     let native_plugins = plugin_config;
     let native_core = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(
+        crate::root::boot::store::bootstrap_config_store(
             &native_config,
             &native_plugins,
-            &busbar_kernel::preflight::Unopened,
+            &crate::root::boot::store::Unopened,
         )
         .await
         .expect("actual Store opens for native startup"),

@@ -532,8 +532,8 @@ pub(crate) fn owned_anchors_refusal<P: AsRef<str>>(
 /// configuration whose anchor the boot would refuse never goes live through an apply, and the
 /// running generation (its declared trust among it) is untouched. They also hold the deployment's
 /// one destination guard, which hears each committed configuration's destinations through them.
-#[derive(Default)]
 pub(crate) struct Rules {
+    reader: Arc<dyn busbar_kernel::appbuild::RootRules>,
     pub(crate) member_tls_sections: Mutex<Vec<&'static str>>,
     pub(crate) listeners: std::sync::OnceLock<Arc<crate::root::serve::ListenerPlan>>,
     /// The owned trust anchors the composed door planes name, held as each plane is composed.
@@ -544,7 +544,7 @@ pub(crate) struct Rules {
     /// writes one of these is restart-to-apply ([`Rules::planes_awaiting_restart`]).
     pub(crate) unopened: Mutex<Vec<&'static str>>,
     /// The deployment's one destination guard (`root::connector::dest_judge`), told each committed
-    /// configuration's destinations ([`Rules::hearing`]). `None`: no guard hears a commit.
+    /// configuration's destinations ([`Rules::with_reader`]). `None`: no guard hears a commit.
     pub(crate) guard: Option<Arc<dyn busbar_kernel::host_services::DestJudge>>,
     /// The discovered plane doors the boot's configuration did not use, so the boot never loaded
     /// them (Law 7), held from the boot plan ([`Rules::hold_unloaded`]). A running process cannot
@@ -563,7 +563,30 @@ impl std::fmt::Debug for Rules {
     }
 }
 
+#[cfg(test)]
+impl Default for Rules {
+    fn default() -> Self {
+        Self::with_reader(None, Arc::new(busbar_kernel::appbuild::AcceptAll))
+    }
+}
+
 impl Rules {
+    /// Keep the exact reader and bootstrap owners through every serving candidate read.
+    pub(crate) fn with_reader(
+        guard: Option<Arc<dyn busbar_kernel::host_services::DestJudge>>,
+        reader: Arc<dyn busbar_kernel::appbuild::RootRules>,
+    ) -> Self {
+        Self {
+            reader,
+            member_tls_sections: Mutex::new(Vec::new()),
+            listeners: std::sync::OnceLock::new(),
+            owned_anchors: Mutex::new(Vec::new()),
+            unopened: Mutex::new(Vec::new()),
+            guard,
+            unloaded: Mutex::new(Vec::new()),
+        }
+    }
+
     pub(crate) fn hold_listeners(
         &self,
         listeners: Arc<crate::root::serve::ListenerPlan>,
@@ -574,12 +597,10 @@ impl Rules {
     }
 
     /// Rules whose destination guard hears each committed configuration's destinations.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn hearing(guard: Arc<dyn busbar_kernel::host_services::DestJudge>) -> Self {
-        Self {
-            guard: Some(guard),
-            ..Self::default()
-        }
+        Self::with_reader(Some(guard), Arc::new(busbar_kernel::appbuild::AcceptAll))
     }
 
     pub(crate) fn hold_member_tls_sections(&self, sections: &[&'static str]) {
@@ -669,13 +690,31 @@ pub(crate) fn unloaded_plane_refusal(
 }
 
 impl busbar_kernel::appbuild::RootRules for Rules {
+    fn grammar(
+        &self,
+        input: &busbar_kernel::config::grammar::PhaseOneIn<'_>,
+    ) -> Result<busbar_kernel::config::Grammar, busbar_kernel::config::GrammarRefusal> {
+        self.reader.grammar(input)
+    }
+
+    fn secret_resolver<'a>(
+        &'a self,
+        cfg: &'a busbar_kernel::config::RootCfg,
+        plugins: &'a busbar_kernel::config::PluginsCfg,
+    ) -> busbar_plugin_abi::host_side::caller::BoxFut<
+        'a,
+        Result<Arc<busbar_kernel::config::secret::SecretResolver>, String>,
+    > {
+        self.reader.secret_resolver(cfg, plugins)
+    }
+
     /// An unstamped boot runs the planned document, not the 1.5.5 bytes on disk (MIGRATE-ON-BOOT
     /// r42 §3 step 2).
     fn held_document(
         &self,
         path: &std::path::Path,
     ) -> Option<busbar_contract::secure::SecureString> {
-        crate::root::migrate::held(path)
+        self.reader.held_document(path)
     }
     fn claim_ticket_admission(
         &self,
@@ -725,6 +764,7 @@ impl busbar_kernel::appbuild::RootRules for Rules {
     }
 
     fn check(&self, cfg: &busbar_kernel::config::RootCfg) -> Result<(), String> {
+        self.reader.check(cfg)?;
         offline_root_rules(cfg).map_err(|e| e.join("\n"))?;
         let anchors = self
             .owned_anchors
@@ -3121,5 +3161,68 @@ impl std::fmt::Debug for StyleParams {
             .field("scope", &self.scope)
             .field("subject", &self.subject)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod owned_reader_tests {
+    use super::Rules;
+    use busbar_kernel::{appbuild::RootRules, config};
+    use std::sync::Arc;
+
+    struct Reader;
+    impl RootRules for Reader {
+        fn grammar(
+            &self,
+            _: &config::grammar::PhaseOneIn<'_>,
+        ) -> Result<config::Grammar, config::GrammarRefusal> {
+            Err(config::GrammarRefusal("candidate image refused".into()))
+        }
+        fn check(&self, _: &config::RootCfg) -> Result<(), String> {
+            Ok(())
+        }
+        fn held_document(
+            &self,
+            _: &std::path::Path,
+        ) -> Option<busbar_contract::secure::SecureString> {
+            Some("held candidate".into())
+        }
+        fn secret_resolver<'a>(
+            &'a self,
+            _: &'a config::RootCfg,
+            _: &'a config::PluginsCfg,
+        ) -> busbar_plugin_abi::host_side::caller::BoxFut<
+            'a,
+            Result<Arc<config::secret::SecretResolver>, String>,
+        > {
+            Box::pin(async { Err("candidate boot projection refused".into()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn serving_rules_preserve_the_owned_reader_refusals() {
+        let rules = Rules::with_reader(None, Arc::new(Reader));
+        let plugins = config::PluginsCfg::default();
+        assert_eq!(
+            rules
+                .grammar(&config::grammar::PhaseOneIn::of(&plugins))
+                .err()
+                .unwrap()
+                .0,
+            "candidate image refused"
+        );
+        assert_eq!(
+            rules
+                .held_document(std::path::Path::new("config.yaml"))
+                .unwrap()
+                .as_str(),
+            "held candidate"
+        );
+        let deploy = busbar_contract::yaml::from_str("{}").unwrap();
+        let cfg = config::resolve(&deploy, &Default::default()).unwrap();
+        assert_eq!(
+            rules.secret_resolver(&cfg, &plugins).await.err().unwrap(),
+            "candidate boot projection refused"
+        );
     }
 }

@@ -2295,11 +2295,10 @@ pub(crate) async fn reload_config(
             installed.record_version(&actor, "config.reload (from disk)");
             let mut body = json!({ "reloaded": true, "config_version": installed.config_version });
 
-            if let Some(note) =
-                super::named_map::restart_note(&[], &installed.planes_awaiting_restart)
-            {
-                body["reload_to_apply"] = json!(installed.planes_awaiting_restart);
-                body["note"] = json!(note);
+            let pending = super::config_document::configuration_and_restart(&installed).1;
+            if !pending.is_empty() {
+                body["reload_to_apply"] = json!(pending);
+                body["note"] = json!("configuration installed; reload_to_apply entries require a process restart before they take effect");
             }
             with_config_etag(ok_json(StatusCode::OK, &body), installed.config_version)
         }
@@ -2606,14 +2605,10 @@ pub(crate) async fn apply_config(
                          by updating config.yaml",
             });
 
-            if let Some(pending) =
-                super::named_map::restart_note(&[], &installed.planes_awaiting_restart)
-            {
-                body["reload_to_apply"] = json!(installed.planes_awaiting_restart);
-                body["note"] = json!(format!(
-                    "live until the next reload/restart returns to disk truth; persist by \
-                     updating config.yaml; {pending}"
-                ));
+            let pending = super::config_document::configuration_and_restart(&installed).1;
+            if !pending.is_empty() {
+                body["reload_to_apply"] = json!(pending);
+                body["note"] = json!("configuration installed; reload_to_apply entries require a process restart before they take effect. Persist by updating config.yaml before restarting; reload/restart returns to disk truth");
             }
             with_config_etag(ok_json(StatusCode::OK, &body), installed.config_version)
         }

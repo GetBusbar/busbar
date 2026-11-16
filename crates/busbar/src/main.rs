@@ -92,9 +92,7 @@ fn ignore_overlay_requested(mut args: impl Iterator<Item = String>) -> bool {
     args.any(|a| a == OPTION_IGNORE_OVERLAY)
 }
 
-/// The boot refusal for a `prepare_config_store` error. Under a principal transition only the
-/// context is printed; on an ordinary boot the inner error, which already names its own subject
-/// (`plugins.fetch failed: ...`, `store '<m>' settings: ...`), is printed.
+/// A store refusal preserves ordinary boot detail and redacts principal transitions.
 fn store_boot_refusal(transition: bool, error: String) -> String {
     if transition {
         "principal transition base Store opening refused".to_owned()
@@ -575,6 +573,7 @@ async fn run(
     catalogue: busbar_kernel::diagnostics::Catalogue,
     control_work: ControlWork,
 ) {
+    let process_io = root::boot::process::ProcessIo::new().unwrap_or_else(|error| die(error));
     let plugin_process = std::sync::Arc::new(
         busbar_plugin_loader::process::ProcessResources::new().unwrap_or_else(|error| die(error)),
     );
@@ -722,6 +721,7 @@ async fn run(
     // native Store/Transport call inherit it before the durable measurement runtime exists.
     let bootstrap = Box::pin(root::measurements::maintenance(async {
         let _connector = root::connector::boot(
+            process_io.handle(),
             LINKED_TRANSPORT_DOORS,
             &root::policy::client_settings(&base_cfg.limits),
             dest.clone(),
@@ -732,6 +732,7 @@ async fn run(
         // kernel's sides, then 2a, 2b, the deployment point, 2c. Without a MIN-3 store image the old path boots.
         let walked = root::min3_boot::run(
             &plugin_process,
+            process_io.handle(),
             file_images,
             &base_cfg,
             boot_guard,
@@ -746,34 +747,8 @@ async fn run(
         let walk_admission = root::boot::walk_admission(walked, || {
             root::min3_boot::booted().and_then(|booted| booted.startup.lock().ok()?.take())
         })
-        .unwrap_or_else(|error| die(boot_error("MIN-3 store admission refused", error)));
-        // The old ABI store's prepared session is held with the boot's owners until serving (or the
-        // step-5 restart) so its native instance outlives the admission built over it.
-        let (old_store, store_admission) = match walk_admission {
-            Some(store_admission) => (None, store_admission),
-            None => {
-                let prepared_store =
-                    busbar_kernel::appbuild::prepare_config_store(&base_cfg, &deploy.plugins)
-                        .await
-                        .unwrap_or_else(|error| {
-                            die(store_boot_refusal(principal_transition.is_some(), error))
-                        });
-                let store_admission = root::boot::open_current_store(
-                    &prepared_store,
-                    busbar_contract::persistence::lifecycle::Bounds {
-                        items: 4096,
-                        bytes: u32::try_from(base_cfg.limits.migration_value_bytes)
-                            .unwrap_or_else(|_| {
-                                die("limits.migration_value_bytes exceeds native frame capacity")
-                            }),
-                    },
-                    &control_work.shutdown_rx,
-                )
-                .await
-                .unwrap_or_else(|error| die(error));
-                (Some(prepared_store), store_admission)
-            }
-        };
+        .unwrap_or_else(|error| die(store_boot_refusal(principal_transition.is_some(), error)));
+        let store_admission = walk_admission.unwrap_or_else(|| die("the configured store has no admitted MIN-3 instance"));
         let anchor_store = store_admission.store().expect("confirmed Store admission");
         root::exit::arm(&anchor_store);
         // Migrate-on-boot step 4 (MIGRATE-ON-BOOT r42 §3 4a, 4b): the 1.5.5 rows a store's data step
@@ -946,7 +921,6 @@ async fn run(
         }
 
         Some((
-            old_store,
             store_admission,
             anchor_store,
             deploy,
@@ -963,7 +937,6 @@ async fn run(
     }))
     .await;
     let Some((
-        old_store,
         store_admission,
         anchor_store,
         deploy,
@@ -1142,7 +1115,10 @@ async fn run(
 
     let door_pools = root::serve::door_pools(&cfg.plane_pools);
 
-    let root_rules = Arc::new(root::door_steps::Rules::hearing(commit_guard));
+    let root_rules = Arc::new(root::door_steps::Rules::with_reader(
+        Some(commit_guard),
+        Arc::new(config_rules),
+    ));
 
     root_rules.hold_unloaded(root::door_steps::unloaded_doors());
     let listener_plan = Arc::new(root::serve::ListenerPlan::new(
@@ -1183,6 +1159,9 @@ async fn run(
 
     let _boot_store_binding = boot_store;
     let preparation = root::boot_app::Preparation {
+        secret_resolver: root::min3_boot::booted()
+            .map(|booted| std::sync::Arc::clone(&booted.resolver))
+            .unwrap_or_else(|| die("no complete MIN-3 secret generation was prepared")),
         startup: store_admission,
         config: cfg,
         judged,
@@ -1235,7 +1214,7 @@ async fn run(
         .await
         .unwrap_or_else(|error| die(error))
     {
-        let owners = (ready, boot_app, old_store, _boot_store_binding);
+        let owners = (ready, boot_app, _boot_store_binding);
         die(root::migrate::restart(
             written,
             owners,
@@ -1964,7 +1943,7 @@ async fn refresh_node_lease(
 
 #[cfg(unix)]
 const ROOT_BIND_LIMITS: AcceptLimits = AcceptLimits {
-    max_conns: usize::MAX,
+    max_conns: busbar_core_connector::listen::DEFAULT_MAX_CONNS,
     handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
 };
 
@@ -2378,3 +2357,13 @@ mod dist_root_install;
 #[cfg(all(test, distribution_root))]
 #[path = "tests/distribution.rs"]
 mod distribution;
+
+#[cfg(all(test, unix))]
+#[test]
+fn root_listeners_keep_the_connector_connection_bound() {
+    assert_eq!(
+        ROOT_BIND_LIMITS.max_conns,
+        busbar_core_connector::listen::DEFAULT_MAX_CONNS,
+        "root data and admin binds must not disable connection admission"
+    );
+}

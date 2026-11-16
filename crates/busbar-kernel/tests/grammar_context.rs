@@ -84,3 +84,19 @@ fn an_admission_with_no_secret_images_refuses_explicit_instances() {
     .expect_err("an empty admitted image set cannot supply a configured secret");
     assert!(refused.to_string().contains("not an admitted secret image"));
 }
+
+#[tokio::test]
+async fn a_reader_without_boot_owners_cannot_open_configured_secrets() {
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        "providers: {}\nmodels: {}\nauth:\n  admin_auth: []\nsecrets:\n  selected:\n    module: fixture-secret\n    settings: {}\n",
+        &Grammar::empty(),
+    ).expect("fixture configuration");
+    let root =
+        busbar_kernel::config::resolve(&deploy, &Default::default()).expect("fixture projection");
+    let result = busbar_kernel::appbuild::AcceptAll
+        .secret_resolver(&root, &deploy.plugins)
+        .await;
+    assert!(
+        matches!(result, Err(ref error) if error.contains("no composition root supplied the candidate secret plan"))
+    );
+}

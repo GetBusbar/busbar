@@ -45,10 +45,10 @@ async fn test_delete_existing_key_returns_200() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
+    let anchor = crate::root::boot::store::bootstrap_config_store(
         &config,
         &plugin_config,
-        &busbar_kernel::preflight::Unopened,
+        &crate::root::boot::store::Unopened,
     )
     .await
     .expect("the actual Store opens the configuration authority");
@@ -203,10 +203,10 @@ async fn test_delete_key_is_not_idempotent_204() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
+    let anchor = crate::root::boot::store::bootstrap_config_store(
         &config,
         &plugin_config,
-        &busbar_kernel::preflight::Unopened,
+        &crate::root::boot::store::Unopened,
     )
     .await
     .expect("the actual Store opens the configuration authority");
@@ -317,10 +317,10 @@ async fn test_concurrent_delete_returns_exactly_one_204() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
+    let anchor = crate::root::boot::store::bootstrap_config_store(
         &config,
         &plugin_config,
-        &busbar_kernel::preflight::Unopened,
+        &crate::root::boot::store::Unopened,
     )
     .await
     .expect("the actual Store opens the configuration authority");
@@ -449,10 +449,10 @@ async fn test_patch_after_delete_404s_and_does_not_recreate_key() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
+    let anchor = crate::root::boot::store::bootstrap_config_store(
         &config,
         &plugin_config,
-        &busbar_kernel::preflight::Unopened,
+        &crate::root::boot::store::Unopened,
     )
     .await
     .expect("the actual Store opens the configuration authority");

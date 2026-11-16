@@ -47,10 +47,10 @@ async fn test_admin_v1_auth_read_keys_chain_reports_closed() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
+    let anchor = crate::root::boot::store::bootstrap_config_store(
         &config,
         &plugin_config,
-        &busbar_kernel::preflight::Unopened,
+        &crate::root::boot::store::Unopened,
     )
     .await
     .expect("the actual Store opens the configuration authority");
@@ -143,10 +143,10 @@ async fn test_admin_v1_get_single_key() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
+    let anchor = crate::root::boot::store::bootstrap_config_store(
         &config,
         &plugin_config,
-        &busbar_kernel::preflight::Unopened,
+        &crate::root::boot::store::Unopened,
     )
     .await
     .expect("the actual Store opens the configuration authority");
@@ -277,10 +277,10 @@ async fn minting_a_recoverable_credential_without_an_at_rest_key_is_refused_and_
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
+    let anchor = crate::root::boot::store::bootstrap_config_store(
         &config,
         &plugin_config,
-        &busbar_kernel::preflight::Unopened,
+        &crate::root::boot::store::Unopened,
     )
     .await
     .expect("the actual Store opens the configuration authority");
