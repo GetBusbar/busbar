@@ -67,7 +67,9 @@ pub mod node {
     #[cfg(test)]
     pub type Lent = (Resolve, u64);
 
-    pub type Reported = (busbar_contract::billing::ExactUsage, u32, String);
+    /// What a unit consumed: its usage, its fee count, its serving lane and its sealed
+    /// attribution (`group`, `pool`, `provider`; ADMIN-API-1.6 §3.2).
+    pub type Reported = (busbar_contract::billing::ExactUsage, u32, String, String);
 
     pub type Late = Box<dyn FnOnce() -> Option<Reported> + Send>;
 

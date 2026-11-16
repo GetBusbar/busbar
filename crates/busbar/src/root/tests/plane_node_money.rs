@@ -823,7 +823,14 @@ fn no_late() -> Late {
 }
 
 fn late_of(report: Report) -> Late {
-    Box::new(move || Some((report.usage, report.fee_count, report.lane)))
+    Box::new(move || {
+        Some((
+            report.usage,
+            report.fee_count,
+            report.lane,
+            report.attribution,
+        ))
+    })
 }
 
 async fn drive_to_end(node: &Node, post: &NodeEndPost, reported: Option<u64>) -> Ended {

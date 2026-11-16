@@ -192,6 +192,7 @@ pub(crate) fn audit_inputs(unit: u64) -> AuditInputs {
             ..Controls::default()
         },
         correlation_label: Some("customer-order-99".into()),
+        unit: busbar_kernel_audit::UnitFacts::default(),
     }
 }
 
@@ -230,7 +231,7 @@ async fn a_sealed_audit_record_goes_on_the_journal_whole() {
     let book = Arc::new(Mutex::new(fixture.book().await));
     let sealed = seal(&book, 11).await;
     assert_eq!(sealed.what.incarnation, book.lock().unwrap().incarnation);
-    assert_eq!(sealed.recipe, Recipe::V5);
+    assert_eq!(sealed.recipe, Recipe::V7);
     let records = fixture.journal.read_records(BUDGET).await.unwrap();
     let audits: Vec<_> = records
         .iter()

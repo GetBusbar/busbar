@@ -5,6 +5,7 @@ use busbar_kernel_audit::digest::{Digest, Framing};
 use busbar_kernel_audit::sign::{SIGNATURE_ALGORITHM, SIGNATURE_DOMAIN};
 use busbar_kernel_audit::{
     AuditVerifyingKey, DIGEST_RECIPE, DIGEST_RECIPE_V2, DIGEST_RECIPE_V4, DIGEST_RECIPE_V6,
+    DIGEST_RECIPE_V7,
 };
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -13,6 +14,7 @@ const V2: &str = include_str!("../../../../../docs/audit-chain-digest-v2.md");
 const V4: &str = include_str!("../../../../../docs/audit-chain-digest-v4.md");
 const V5: &str = include_str!("../../../../../docs/audit-chain-digest-v5.md");
 const V6: &str = include_str!("../../../../../docs/audit-chain-digest-v6.md");
+const V7: &str = include_str!("../../../../../docs/audit-chain-digest-v7.md");
 type Result<T> = std::result::Result<T, &'static str>;
 
 #[derive(Clone, Copy)]
@@ -56,6 +58,7 @@ fn recipe(name: &str) -> Result<&'static str> {
         DIGEST_RECIPE_V4 => Ok(V4),
         DIGEST_RECIPE => Ok(V5),
         DIGEST_RECIPE_V6 => Ok(V6),
+        DIGEST_RECIPE_V7 => Ok(V7),
         _ => Err("unsupported audit digest recipe"),
     }
 }
@@ -125,7 +128,7 @@ fn record_digest(record: &Value, default_recipe: &str) -> Result<String> {
         None if default_recipe == DIGEST_RECIPE_V2 => DIGEST_RECIPE_V2,
         None => return Err("a record recipe is absent"),
     };
-    if name == DIGEST_RECIPE || name == DIGEST_RECIPE_V6 {
+    if name == DIGEST_RECIPE || name == DIGEST_RECIPE_V6 || name == DIGEST_RECIPE_V7 {
         let present = text(record, "rate_card_key_present")?;
         let key = text(record, "rate_card_version")?;
         let valid_key = key.len() == 40
@@ -141,7 +144,7 @@ fn record_digest(record: &Value, default_recipe: &str) -> Result<String> {
             return Err("a keyed rate-card boundary has invalid presence or spelling");
         }
     }
-    if name == DIGEST_RECIPE_V6 {
+    if name == DIGEST_RECIPE_V6 || name == DIGEST_RECIPE_V7 {
         for line in record
             .get("lines")
             .and_then(Value::as_array)

@@ -38,7 +38,7 @@ pub enum Class {
     New,
     /// One of the five 1.6.0 ledger views.
     Ledger,
-    /// One of the three 1.6.0 audit-chain reads.
+    /// One of the 1.6.0 audit-chain reads, and `/records`, the per-unit projection of the chain.
     Audit,
     /// A named non-admin surface.
     Named,
@@ -222,6 +222,7 @@ pub enum KernelVerb {
     GetAuditHead,
     GetAuditRange,
     GetAuditKeys,
+    GetRecords,
 
     PostAuthToken,
     GetAuthToken,
@@ -332,6 +333,7 @@ pub const TABLE: &[VerbRow] = table! {
     Audit GetAuditHead "GET" "/api/v1/admin/audit/head" "get_audit_head";
     Audit GetAuditRange "GET" "/api/v1/admin/audit/range" "get_audit_range";
     Audit GetAuditKeys "GET" "/api/v1/admin/audit/keys" "get_audit_keys";
+    Audit GetRecords "GET" "/api/v1/admin/records" "get_records";
     Named PostAuthToken "POST" "/auth/token" "post_auth_token";
     Named GetAuthToken "GET" "/auth/token" "get_auth_token";
     Named GetV1Models "GET" "/v1/models" "get_v1_models";

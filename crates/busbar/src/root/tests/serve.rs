@@ -912,3 +912,73 @@ fn a_planes_inbound_need_binds_at_the_listen_its_block_states() {
             .contains("names no settings block")
     );
 }
+
+/// THE UNIT ID IS THE REQUEST ID (ADMIN-API-1.6 §3.4, C5): the data plane stamps every answer,
+/// whole, streamed or refused, with the node-qualified id its sealed record carries as `unit`;
+/// an upstream `x-request-id` a plane forwards is replaced, and two nodes or a restart never
+/// share one id.
+#[tokio::test]
+async fn record_unit_is_request_id() {
+    let id = busbar_kernel_audit::UnitId::of(0x0123_4567_89ab_cdef, [0x5f; 16], 42).unwrap();
+    let canonical = format!("node_0123456789abcdef.{}.42", "5f".repeat(16));
+    assert_eq!(id.to_string(), canonical);
+
+    for streamed in [false, true] {
+        let (caller, reply) = IngressCaller::new();
+        caller.minted(id);
+        let caller = Arc::new(caller);
+        let writer = Arc::clone(&caller);
+        let content_type: &[u8] = if streamed {
+            b"text/event-stream"
+        } else {
+            b"application/json"
+        };
+        let unit: DrivenUnit = Box::pin(async move {
+            writer.head(
+                200,
+                vec![
+                    (b"content-type".to_vec(), content_type.to_vec()),
+                    (b"x-request-id".to_vec(), b"upstream-forwarded".to_vec()),
+                ],
+            );
+            assert!(writer.write(b"ok").await);
+            None
+        });
+        drop(caller);
+        let response = reply.answer(unit).await;
+        let stamped: Vec<_> = response.headers().get_all("x-request-id").iter().collect();
+        assert_eq!(stamped, vec![canonical.as_str()], "streamed: {streamed}");
+    }
+
+    let (caller, reply) = IngressCaller::new();
+    caller.minted(id);
+    let refused: DrivenUnit = Box::pin(async move {
+        drop(caller);
+        Some(Rendered {
+            status: 429,
+            fields: Vec::new(),
+            body: b"refused".to_vec(),
+        })
+    });
+    let response = reply.answer(refused).await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(response.headers()["x-request-id"], canonical.as_str());
+
+    let (_, unminted) = IngressCaller::new();
+    let quiet: DrivenUnit = Box::pin(async { None });
+    assert!(
+        unminted
+            .answer(quiet)
+            .await
+            .headers()
+            .get("x-request-id")
+            .is_none(),
+        "no id is stamped for a unit that was never minted"
+    );
+
+    let other_node = busbar_kernel_audit::UnitId::of(0x0123_4567_89ab_cdee, [0x5f; 16], 42);
+    let restarted = busbar_kernel_audit::UnitId::of(0x0123_4567_89ab_cdef, [0x60; 16], 42);
+    for other in [other_node, restarted] {
+        assert_ne!(other.map(|o| o.to_string()), Some(canonical.clone()));
+    }
+}

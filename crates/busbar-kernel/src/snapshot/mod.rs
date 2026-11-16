@@ -12,7 +12,7 @@ pub(crate) mod hooks;
 
 mod source;
 
-pub use source::{process_generation, RequestIdentity, RequestSnapshot};
+pub use source::{boot_nonce, process_generation, RequestIdentity, RequestSnapshot};
 
 #[cfg(test)]
 pub use source::Source;

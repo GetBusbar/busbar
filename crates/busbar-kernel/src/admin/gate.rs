@@ -216,6 +216,28 @@ pub fn admin_envelope_body(code: &str, message: &str) -> String {
     )
 }
 
+/// [`admin_envelope_body`] with the raiser's `reason` and at most one text member of `details`,
+/// for an answer a handler returns as bytes (`/records`' `cursor_mismatch`, `cursor_expired`).
+#[must_use]
+pub fn admin_envelope_body_with(
+    code: &str,
+    reason: Option<&str>,
+    message: &str,
+    detail: Option<(&str, &str)>,
+) -> String {
+    let mut details = serde_json::Map::new();
+    if let Some((name, value)) = detail {
+        details.insert(name.to_owned(), serde_json::Value::from(value));
+    }
+    envelope_text(
+        code,
+        reason,
+        message,
+        &serde_json::Value::Object(details),
+        &current_request_id(),
+    )
+}
+
 /// The admin error envelope response, with the reason `code` defaults to and empty `details`.
 pub fn admin_error_envelope(status: u16, code: &str, message: &str) -> Response {
     admin_error_envelope_with(status, code, None, message, &serde_json::json!({}))

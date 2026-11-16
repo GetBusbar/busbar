@@ -4707,6 +4707,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         "components": {
             "x-busbar-reasons": reasons_component(),
             "x-busbar-plugin-refusals": busbar_kernel::admin::reasons::PLUGIN_REFUSALS,
+            "x-busbar-unit-reasons": unit_reasons_component(),
             "securitySchemes": {
                 "adminToken": {"type": "apiKey", "in": "header", "name": OPENAPI_ADMIN_TOKEN_HEADER},
                 "bearerAuth": {"type": "http", "scheme": "bearer",
@@ -4741,6 +4742,17 @@ fn reasons_component() -> serde_json::Value {
                 .collect();
         }
         table.insert(row.reason.to_string(), entry);
+    }
+    serde_json::Value::Object(table)
+}
+
+/// `components.x-busbar-unit-reasons` (ADMIN-API-1.6 §3.4): every code a `UnitRecord.reason`
+/// can carry, with its `class` and the `steps` it can end a unit at.
+#[cfg(feature = "openapi-schema")]
+fn unit_reasons_component() -> serde_json::Value {
+    let mut table = serde_json::Map::new();
+    for (code, (class, steps)) in crate::v1::records::unit_reasons() {
+        table.insert(code.to_string(), json!({"class": class, "steps": steps}));
     }
     serde_json::Value::Object(table)
 }

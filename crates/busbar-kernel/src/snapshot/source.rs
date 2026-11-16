@@ -251,6 +251,8 @@ impl RequestDistributions {
 
 struct ProcessEpoch {
     nonce: Option<String>,
+    /// The nonce's 16 bytes, all zero when the fill failed.
+    bytes: [u8; 16],
     started: Instant,
 }
 
@@ -258,13 +260,26 @@ fn process_epoch() -> &'static ProcessEpoch {
     static EPOCH: OnceLock<ProcessEpoch> = OnceLock::new();
     EPOCH.get_or_init(|| {
         let mut bytes = [0u8; 16];
+        let nonce = busbar_contract::crypto::fill(&mut bytes)
+            .ok()
+            .map(|()| hex::encode(bytes));
+        if nonce.is_none() {
+            bytes = [0; 16];
+        }
         ProcessEpoch {
-            nonce: busbar_contract::crypto::fill(&mut bytes)
-                .ok()
-                .map(|()| hex::encode(bytes)),
+            nonce,
+            bytes,
             started: Instant::now(),
         }
     })
+}
+
+/// The process boot nonce's 16 random bytes, all zero when the RNG fill failed: what a sealed
+/// unit record carries as its incarnation (ADMIN-API-1.6 §3.4), and the bytes whose hex is
+/// `process_boot_nonce`.
+#[must_use]
+pub fn boot_nonce() -> [u8; 16] {
+    process_epoch().bytes
 }
 
 fn process_boot_nonce() -> Option<&'static str> {
