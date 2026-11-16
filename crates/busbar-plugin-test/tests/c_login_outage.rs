@@ -70,7 +70,7 @@ fn login_failures_map_to_outage_security_check_and_declined() {
 }
 
 #[test]
-#[ignore = "owner: W2-SW-AUTH (the hosted page driven through a login port)"]
+#[ignore = "owner: W2-SW-AUTH; re-checked 2026-11-16: the hosted page driven through a login port (draft MR !2481, IF gap in OUTSTANDING section B; the auth port needs the redesign ruled 2026-11-16 ~21:30Z)"]
 fn login_outage_pages() {
     todo!("owner: W2-SW-AUTH (C-LOGIN-OUTAGE end-to-end arm)")
 }

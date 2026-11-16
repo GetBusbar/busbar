@@ -7,4 +7,4 @@
 # -std=c11 -Wall -Werror, and the fixture driven by its C host against the Rust shim's bytes.
 set -eu
 exec cargo nextest run --locked -p busbar-plugin-test --test cases --no-tests=fail \
-  -E 'test(=c_header::the_static_asserts_compile_with_the_header) | test(=c_error_records::the_c_helpers_write_the_same_bytes_and_arguments_as_the_rust_shim)'
+  -E 'test(=c_header::the_static_asserts_compile_with_the_header) | test(=c_error_records::the_c_helpers_write_the_same_bytes_and_arguments_as_the_rust_shim) | test(=c_scrub_cut::bb_fail_cuts_at_a_char_boundary_and_masks_the_same)'

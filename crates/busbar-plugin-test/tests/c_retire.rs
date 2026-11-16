@@ -101,7 +101,7 @@ fn no_retired_carrier_literal_in_the_migration_crates_and_no_retire_constant_in_
 }
 
 #[test]
-#[ignore = "owner: W1-K9 (blocked: the two behavioural arms need the unstamped-config boot path (busbar-migrate's config chain over a real config.yaml, byte-compared after the refusal) and a fixture `migrate` that answers CORE_CFG section 5; busbar-migrate is not a dev-dependency of this crate and the cells wait on S2-MOB-C3 / QM1; the source-scan arm runs as `no_retired_carrier_literal_in_the_migration_crates_and_no_retire_constant_in_the_abi`)"]
+#[ignore = "owner: W1-K9; re-checked 2026-11-16: the two behavioural arms need the unstamped-config boot path (busbar-migrate's config chain over a real config.yaml, byte-compared after the refusal; migrate-on-boot is open MR !2404) and a fixture migrate answering CORE_CFG section 5; busbar-migrate is not a dev-dependency of this crate (HOST-LAYERING: boot wiring and crate layering); the source-scan arm runs as no_retired_carrier_literal_in_the_migration_crates_and_no_retire_constant_in_the_abi"]
 fn retired_carrier_words() {
     todo!("owner: W1-K9 (C-RETIRE)")
 }

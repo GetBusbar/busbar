@@ -49,7 +49,7 @@ fn one_host_callback_panic_row_and_metric_within_a_tick() {
 }
 
 #[test]
-#[ignore = "blocked: needs the connector ports and RefusalMap crypto path (W1-K8D), not reachable from this crate"]
+#[ignore = "owner: W1-K8D; blocked (re-checked on dev 2026-11-16): needs an auth fixture's verify through the MIN-3 auth port (plugin-loader adapters/auth.rs chain_req is todo!(), OUTSTANDING row 1) with busbar-plugin-abi's conformance crypto injection armed (no such dev edge here), and a store fixture through the store adapter (adapters/store.rs request todo!()); RefusalMap::from_port's 502 then runs beside the kernel's refusal map"]
 fn a_crypto_panic_reaches_the_port_as_failed_unavailable() {
     todo!("owner: W1-K8D (C-PANIC-HOST)")
 }

@@ -61,7 +61,7 @@ fn a_step_the_kind_does_not_offer_is_never_sent() {
 }
 
 #[test]
-#[ignore = "owner: W2-SW-AUTH (the hosted page over auth-ldap, auth-oidc and auth-github images)"]
+#[ignore = "owner: W2-SW-AUTH; re-checked 2026-11-16: the hosted page over the auth-ldap, auth-oidc and auth-github images (draft MR !2481, IF gap in OUTSTANDING section B; the auth port needs the redesign ruled 2026-11-16 ~21:30Z)"]
 fn login_kind_images() {
     todo!("owner: W2-SW-AUTH (C-LOGIN-KIND image arm)")
 }
