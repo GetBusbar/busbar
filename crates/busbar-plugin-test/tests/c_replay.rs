@@ -111,7 +111,7 @@ fn a_byte_identical_signed_ingress_delivery_is_refused_on_another_replica() {
 }
 
 #[test]
-#[ignore = "owner: W1-K10 follow-up (an auth fixture image answering REPLAY through the adapter; see the K10 handoff issue)"]
+#[ignore = "owner: #275 (an auth fixture image answering REPLAY through the adapter)"]
 fn a_replay_answer_is_never_served_from_the_verdict_cache() {
-    todo!("owner: W1-K10 follow-up (C-REPLAY verdict-cache arm)")
+    todo!("owner: #275 (C-REPLAY verdict-cache arm)")
 }

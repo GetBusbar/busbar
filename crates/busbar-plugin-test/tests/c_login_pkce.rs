@@ -120,7 +120,7 @@ fn core_mints_pkce_in_exactly_one_place() {
 }
 
 #[test]
-#[ignore = "owner: W2-SW-AUTH (the hosted REDIRECT login BEGIN/COMPLETE through an auth port)"]
+#[ignore = "owner: W2-SW-AUTH, #275 (the hosted REDIRECT login BEGIN/COMPLETE through an auth port)"]
 fn hosted_redirect_login_arms() {
     todo!("owner: W2-SW-AUTH (C-LOGIN-PKCE hosted login arm)")
 }

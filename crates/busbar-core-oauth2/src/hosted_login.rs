@@ -22,6 +22,8 @@ use busbar_kernel::auth::login_limits::{
 };
 use busbar_kernel::state::{App, AppHandle};
 
+use crate::pkce;
+
 /// The login-state cookie. `__Host-`: Secure, `Path=/`, no `Domain`, so a sibling subdomain cannot
 /// plant ("toss") one; its value is MACed and single-use (see [`LoginCookie`]).
 const LOGIN_COOKIE: &str = "__Host-busbar_login";
@@ -101,10 +103,10 @@ async fn begin(app: &App, method: &str, refresh: bool) -> Response {
         );
     }
     let redirect_uri = format!("{}/auth/token", app.public_url.as_deref().unwrap_or(""));
-    let code_verifier = random_b64url(32);
-    let code_challenge = code_challenge_s256(&code_verifier);
-    let state = random_b64url(24);
-    let nonce = random_b64url(24);
+    let code_verifier = mint(pkce::VERIFIER_BYTES);
+    let code_challenge = pkce::code_challenge_s256(&code_verifier);
+    let state = mint(pkce::STATE_BYTES);
+    let nonce = mint(pkce::STATE_BYTES);
 
     let begin = BeginLogin {
         redirect_uri,
@@ -571,15 +573,9 @@ fn clear_and(mut resp: Response) -> Response {
     resp
 }
 
-fn random_b64url(n_bytes: usize) -> String {
-    let mut buf = vec![0u8; n_bytes];
-    busbar_contract::crypto::fill(&mut buf).expect("OS randomness for PKCE/state/nonce");
-    B64.encode(buf)
-}
-
-fn code_challenge_s256(code_verifier: &str) -> String {
-    let digest = busbar_contract::crypto::sha256(code_verifier.as_bytes());
-    B64.encode(digest)
+// The verifier, state and nonce come from core's one minting module (`crate::pkce`, IF §12.12 round 22).
+fn mint(n_bytes: usize) -> String {
+    pkce::random_b64url(n_bytes).expect("OS randomness for PKCE/state/nonce")
 }
 
 fn parse_query(q: &str) -> Vec<(String, String)> {
