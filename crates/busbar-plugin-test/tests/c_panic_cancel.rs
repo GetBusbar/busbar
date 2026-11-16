@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-L2"]
+#[ignore = "blocked: needs a fixture whose future/session Drop panics, plus registry quarantine (W1-L2); no such fixture in bridge_fixture.rs"]
 fn drop_panic_in_cancel_or_close_faults_and_quarantines() {
     todo!("owner: W1-L2 (C-PANIC-CANCEL)")
 }

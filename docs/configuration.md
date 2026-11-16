@@ -583,7 +583,7 @@ groups:
 |---|---|---|---|
 | `parent` | string | none | The parent group; must exist; the chain must be acyclic (validated with paste-ready fixes). Any depth. |
 | `enabled` | bool | `true` | `false` FREEZES the group: every request charging through it (its own keys and every descendant's) is rejected with a 403 naming the group, while its usage history is kept. |
-| `limits` | list | `[]` | Each entry has exactly ONE metric key: `requests`, `tokens`, `budget`, or `tokens_input` / `tokens_output` / `tokens_cache_read` / `tokens_cache_write` (per-class token counts) with a required `per:` window (`minute` \| `hour` \| `day` \| `month` \| `total`), or `concurrent` with NO `per:` (instantaneous). An optional `pool: <name>` on a windowed metric scopes the limit to that pool's traffic (see below); the pool must exist. A metric repeated for the same window + pool scope keeps the most restrictive amount. |
+| `limits` | list | `[]` | Each entry has exactly ONE metric key: `requests`, `tokens`, or `budget` with a required `per:` window (`minute` \| `hour` \| `day` \| `month` \| `total`), or `concurrent` with NO `per:` (instantaneous). An optional `pool: <name>` on a windowed metric scopes the limit to that pool's traffic (see below); the pool must exist. A metric repeated for the same window + pool scope keeps the most restrictive amount. |
 | `child_default` | `{ limits: [...] }` | none | The limit template stamped onto any CHILD group auto-provisioned under this one (see below). Provisioning-time only: it never affects THIS group's own enforcement. |
 
 **Metric semantics:**
@@ -1391,7 +1391,6 @@ limits:
   default_max_tokens: 4096
   max_keys_per_principal: 0       # 0 = unlimited; >0 caps LIVE keys bound to one group (per-user anti-sprawl)
   max_auto_provisioned_groups: 0  # 0 = unlimited; >0 caps how many groups a mint may auto-provision
-  hook_content_max_bytes: 0       # 0 = unlimited (default); >0 opts in to a ceiling on the content a `prompt: ro|rw` hook is shown
 ```
 
 | Field | Type | Default | Notes |
@@ -1410,7 +1409,6 @@ limits:
 | `default_max_tokens` | integer | `4096` | Gateway-wide default injected on cross-protocol hops to Anthropic when the caller omitted `max_tokens`. Overridden by a per-model `default_max_tokens` when set. |
 | `max_keys_per_principal` | integer | `0` | Anti-sprawl cap: the maximum number of **live** keys (enabled and not revoked) that may be bound to one group, the unbound bucket included. `0` = unlimited. Enforced on `POST /keys` **and** on a `PATCH /keys/{id}` rebind; over cap is a terminal `409 conflict`. |
 | `max_auto_provisioned_groups` | integer | `0` | Anti-sprawl cap on the SHAPE of the limit tree: the maximum size of the runtime group set that `POST /keys` may grow by auto-provisioning (`parent:`). `0` = unlimited. Over ceiling is a terminal `409 conflict`; binding to an existing group is unaffected. |
-| `hook_content_max_bytes` | integer | `0` | Ceiling on the request CONTENT a hook holding a `prompt: ro`/`rw` grant is shown in one projection. `0` = **unlimited (the default)**: the projection is sent uncapped. A non-zero value is an **opt-in** ceiling — when set, over-cap content is omitted **whole** — never truncated mid-value, because a guardrail that screens half a payload and passes it is worse than one that refuses — and the hook receives a present-but-empty content projection, which the wire distinguishes from the absent one an ungranted hook sees; the always-present size fields still report the real totals, so an omission is visible in the payload rather than silent. `busbar_hook_content_truncated_total` counts it. Leaving it at the `0` default keeps a `prompt: rw` redaction gate from being fail-open no-op'd by a blanked projection. Live: a `PUT` takes effect on the next request. This bounds the tool-argument and tool-result content a hook now sees, which on an agent request is limited by neither a context window nor a token count. |
 
 `datagram_line_memory_bytes` allocates on demand. It reserves conservatively before each framer
 crossing, including independent overlapping-span copies, and counts accepted application input,
