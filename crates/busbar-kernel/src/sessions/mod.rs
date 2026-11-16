@@ -9,6 +9,10 @@ use std::sync::Arc;
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
 
 use crate::persistence::facade::CoreStore;
+use crate::persistence::scoped::{Expected, Mutation, Predicate, Request, ScopedStore};
+use crate::plugin_records::store::{
+    denied, envelope, expiry, label, live, opened, operation, sweep, InDoubt,
+};
 use crate::plugin_records::RecordsDenied;
 
 /// Auth login STATE custody. Core generates state_key (32 random bytes, base64url) per BEGIN, stores the STATE
@@ -35,11 +39,19 @@ pub trait LoginStates: Send + Sync + 'static {
 pub const STATE_TTL_S: u64 = 600;
 /// The largest STATE blob kept (`RecordsDenied::TooLarge` above it).
 pub const MAX_STATE: usize = 64 * 1024;
+/// A state key: 32 random bytes, base64url without padding.
+const KEY_BYTES: usize = 32;
+const KEY_LEN: usize = 43;
+const SCHEMA: &str = "busbar.login-states.v1";
 
-/// Login states over the configured store (CoreStore). W1-K5 red: held as `todo!()`.
+/// Login states over the configured store (CoreStore), so the callback may land on any replica. Keyed by
+/// (auth stamp name, auth instance name, state key) in a host-private scope of their own; each value is held
+/// until `STATE_TTL_S` after its `put`, and `take` removes it under an exact predicate, so of two callbacks
+/// presenting one key (on one replica or two) exactly one gets the state.
 pub struct StoreLoginStates {
     store: Arc<CoreStore>,
     clock: fn() -> u64,
+    in_doubt: InDoubt,
 }
 
 impl StoreLoginStates {
@@ -52,19 +64,54 @@ impl StoreLoginStates {
     /// Login states over `store`; `clock` answers UNIX seconds.
     #[must_use]
     pub fn with_clock(store: Arc<CoreStore>, clock: fn() -> u64) -> Self {
-        Self { store, clock }
+        Self {
+            store,
+            clock,
+            in_doubt: InDoubt::default(),
+        }
     }
 
-    /// Delete expired (abandoned) login states of `auth`, at most one batch.
+    /// Delete expired (abandoned) login states of `auth`, at most one batch. Ok(n) = deleted. A `take` never
+    /// answers an expired state; this only returns its space.
     pub async fn sweep_expired(&self, auth: &Caller<'_>) -> Result<u32, RecordsDenied> {
-        let _ = (auth, &self.store, self.clock);
-        todo!("W1-K5")
+        let records = self.scoped(auth)?;
+        sweep(
+            &self.store,
+            &self.in_doubt,
+            &records,
+            SCHEMA,
+            (self.clock)(),
+        )
+        .await
     }
+
+    fn scoped(&self, auth: &Caller<'_>) -> Result<ScopedStore, RecordsDenied> {
+        ScopedStore::host_private(Arc::clone(&self.store), &label(auth), [SCHEMA.to_string()])
+            .map_err(denied)
+    }
+}
+
+/// A key `new_key` could have minted: exactly 43 base64url characters.
+fn minted(key: &str) -> bool {
+    key.len() == KEY_LEN
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 impl LoginStates for StoreLoginStates {
     fn new_key(&self) -> Box<str> {
-        todo!("W1-K5")
+        use base64::Engine as _;
+        use zeroize::Zeroize as _;
+        let mut bytes = [0u8; KEY_BYTES];
+        if busbar_contract::crypto::fill(&mut bytes).is_err() {
+            // No key without randomness: the empty key is refused by `put`, so the BEGIN fails closed.
+            tracing::error!("the OS randomness source failed: no login state key was minted");
+            return Box::from("");
+        }
+        let key = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+        bytes.zeroize();
+        key.into_boxed_str()
     }
 
     fn put<'a>(
@@ -73,8 +120,23 @@ impl LoginStates for StoreLoginStates {
         key: &'a str,
         state: &'a [u8],
     ) -> BoxFut<'a, Result<(), RecordsDenied>> {
-        let _ = (auth, key, state);
-        Box::pin(async move { held::<Result<(), RecordsDenied>>() })
+        Box::pin(async move {
+            if !minted(key) {
+                return Err(RecordsDenied::Invalid);
+            }
+            if state.len() > MAX_STATE {
+                return Err(RecordsDenied::TooLarge);
+            }
+            let records = self.scoped(auth)?;
+            self.in_doubt.settle_one(&self.store).await;
+            let value = envelope(expiry((self.clock)(), STATE_TTL_S), state);
+            let first = records.put(SCHEMA, key.as_bytes(), value).await;
+            if self.in_doubt.decided(&records, first).await? {
+                Ok(())
+            } else {
+                Err(RecordsDenied::Unavailable)
+            }
+        })
     }
 
     fn take<'a>(
@@ -82,14 +144,41 @@ impl LoginStates for StoreLoginStates {
         auth: &'a Caller<'_>,
         key: &'a str,
     ) -> BoxFut<'a, Option<busbar_contract::secure::SecureVec>> {
-        let _ = (auth, key);
-        Box::pin(async move { held::<Option<busbar_contract::secure::SecureVec>>() })
+        Box::pin(async move {
+            if !minted(key) {
+                return None;
+            }
+            let records = self.scoped(auth).ok()?;
+            self.in_doubt.settle_one(&self.store).await;
+            let raw = records.get(SCHEMA, key.as_bytes()).await.ok()??;
+            let request = Request {
+                op_id: operation(&self.store).ok()?,
+                predicates: vec![Predicate {
+                    schema: SCHEMA.to_string(),
+                    key: key.as_bytes().to_vec(),
+                    expected: Expected::Exact(raw.clone()),
+                }],
+                mutations: vec![Mutation::Delete {
+                    schema: SCHEMA.to_string(),
+                    key: key.as_bytes().to_vec(),
+                }],
+            };
+            let first = records.conditional_native(&request).await;
+            // false: another callback took this state first.
+            if !self.in_doubt.decided(&records, first).await.ok()? {
+                return None;
+            }
+            let now = (self.clock)();
+            let seal = crate::seal::lend();
+            let (expires_at, state) = opened(raw.expose(&seal))?;
+            if !live(expires_at, now) {
+                return None;
+            }
+            let mut out = busbar_contract::secure::SecureVec::with_capacity(state.len()).ok()?;
+            out.extend(state).ok()?;
+            Some(out)
+        })
     }
-}
-
-/// W1-K5 red: an operation not written yet.
-fn held<T>() -> T {
-    todo!("W1-K5")
 }
 
 /// Every consumer that holds the one login-state owner by `Arc` (hosted login on every listener) reaches it
