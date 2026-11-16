@@ -45,13 +45,13 @@ pub(crate) fn unreached(f: &Failure, proxy: bool) -> NeedRefusal {
 /// A plan's refusal, naming what refused it.
 #[cold]
 pub(crate) fn refused(e: &impl Display) -> Failure {
-    Failure::Refused(e.to_string())
+    Failure::Refused(format!("{e}"))
 }
 
 /// Audit a dial of `target` the trust store refused.
 #[cold]
 pub(crate) fn trust_refused(target: &str, refusal: &impl Display) {
-    crate::conns::egress_audit::dial_refused(target, None, &refusal.to_string(), None);
+    crate::conns::egress_audit::dial_refused(target, None, &format!("{refusal}"), None);
 }
 
 /// A dial that failed at the operator's egress proxy, as its reason: the line's own cause.
@@ -116,5 +116,5 @@ pub(crate) fn no_host(target: &str) -> EndpointRefusal {
 /// Protocol bytes that are not UTF-8, as text (each bad sequence replaced).
 #[cold]
 pub(crate) fn lossy(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).into_owned()
+    format!("{}", String::from_utf8_lossy(bytes))
 }

@@ -18,7 +18,7 @@ use busbar_plugin_abi::plane::{
 use busbar_plugin_loader::ports::plane::{PlaneIn, PlaneOut, TargetIn};
 use busbar_plugin_loader::ports::{FactRef, PortError};
 
-use super::{run_session, Books, Drive, TicketGate, UnitBooks};
+use super::{run_session, Books, Drive, LateDoor, TicketGate, UnitBooks};
 use crate::plane_driver::cancel::{CancelBill, Checkpoint, MoneySeam};
 use crate::plane_driver::port_auth::TicketDoor;
 use crate::plane_driver::port_intents::{
@@ -604,4 +604,35 @@ fn the_unit_books_post_the_end_through_the_unit_and_write_audit_rows_under_the_p
         .last()
         .unwrap()
         .starts_with("cancelled"));
+}
+
+#[tokio::test]
+async fn a_late_door_refuses_every_ticket_until_the_host_key_is_installed() {
+    let late = LateDoor::default();
+    let door: &dyn TicketDoor = &late;
+    // Before the install nothing is a ticket and nothing is admitted: the door fails closed.
+    assert!(!door.is_ticket("bbt1.abc"));
+    assert!(matches!(
+        door.admit("aud", "bbt1.abc", 100).await,
+        Err(TicketDenied::Unavailable)
+    ));
+    let press = Arc::new(Press::default());
+    let gate = TicketGate::new(
+        Arc::clone(&press) as Arc<dyn Tickets>,
+        Namespace {
+            plugin: "plane-x".into(),
+            name: "front".into(),
+            instance: 3,
+            slot: 0,
+        },
+    );
+    assert!(late.install(Arc::new(gate)));
+    // Every clone of the door is the installed one; the first install stays.
+    let clone = late.clone();
+    assert!(clone.is_ticket("bbt1.abc"));
+    assert!(matches!(
+        clone.admit("aud", "bbt1.abc", 100).await,
+        Err(TicketDenied::Expired)
+    ));
+    assert!(!late.install(Arc::new(crate::plane_driver::port_auth::NoTickets)));
 }

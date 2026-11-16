@@ -50,6 +50,7 @@ pub struct CostTermIn<'a> {
     pub expected_units: f64,
 }
 
+#[derive(Clone, Debug, PartialEq)]
 pub struct HookAnswer {
     pub verb: u32,
     pub reject_status: Option<u16>,

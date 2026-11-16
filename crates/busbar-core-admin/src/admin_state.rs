@@ -5,11 +5,18 @@ use busbar_kernel::state::App;
 
 use crate::versions::VersionLog;
 
-/// Everything the admin API keeps on the process: today the config version history.
+/// Everything the admin API keeps on the process: the config version history, and the
+/// `kinds_revision` of the generation it was last computed for.
 #[derive(Default)]
 pub struct AdminState {
     pub versions: VersionLog,
+    /// `((config_generation, config_version), kinds_revision)`: computed once per generation
+    /// (ADMIN-API-1.6 §5.1).
+    pub kinds_revision: KindsRevision,
 }
+
+/// The kept `kinds_revision` and the generation it belongs to.
+pub type KindsRevision = std::sync::Mutex<Option<((u64, u64), String)>>;
 
 pub trait AppAdmin {
     fn admin_state(&self) -> &AdminState;

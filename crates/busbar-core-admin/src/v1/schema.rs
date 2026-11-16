@@ -6,16 +6,6 @@ use serde::Serialize;
 
 use crate::v1::contract::{AdminError, HookView};
 
-/// `GET /pools`: summary pages by default or with `detail=false`; live member-status pages with
-/// `detail=true`. Untagged because both branches retain the existing `{items, next_cursor}` envelope.
-/// Use an inclusive union: empty pages (and permissive summary schemas) can match both branches.
-#[derive(Serialize, JsonSchema)]
-#[serde(untagged)]
-pub enum PoolListView {
-    Summary(crate::v1::contract::Page<crate::v1::contract::PoolView>),
-    Detailed(crate::v1::contract::Page<crate::v1::contract::PoolDetailView>),
-}
-
 /// Virtual-key metadata: the `key_meta()` shape returned by `GET /keys/{id}`, `PATCH /keys/{id}`,
 /// and as each item of `GET /keys`. Never the secret or its hash. 1.5.0: keys are PURE AUTH, no
 /// inline limits; `allowed_pools` is `null` = all pools, `[]` = no pools; `group` names the

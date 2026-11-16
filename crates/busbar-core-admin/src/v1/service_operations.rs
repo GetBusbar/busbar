@@ -91,6 +91,7 @@ impl AdminService {
             },
             config_persistence: self.app.overlay_path.is_some(),
             config_version: self.app.config_version,
+            kinds_revision: crate::v1::json::kinds::kinds_revision(&self.app),
             config_generation: self
                 .app
                 .config_generation
@@ -121,16 +122,6 @@ impl AdminService {
             .collect();
         pool_views.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(Page::single(pool_views))
-    }
-
-    pub(crate) async fn get_pool(&self, name: &str) -> Result<PoolDetailView, AdminError> {
-        let view = self.app.engine_tables_view();
-
-        if !view.pools().iter().any(|(n, _)| *n == name) {
-            return Err(AdminError::not_found(format!("pool `{name}`")));
-        }
-        let members = view.pool_members(name);
-        Ok(self.pool_detail(name, &members))
     }
 
     fn pool_detail(&self, name: &str, members: &[(usize, u32)]) -> PoolDetailView {
@@ -1697,6 +1688,9 @@ fn fold_series(
     Ok(())
 }
 
+/// One day of usage: its start, its fetched counts and its observations.
+type UsageDay = (u64, (FetchedUsage<Count>, Vec<ObservationRecord>));
+
 /// The whole range, priced row by row exactly as the single-day read prices, then summed per
 /// requested dimension tuple. An unpriced lane or class makes its cell `priced: false` with a null
 /// spend; it never refuses the read.
@@ -1705,7 +1699,7 @@ pub(super) fn project_usage_series(
     history: Option<Arc<busbar_kernel::cost::History>>,
     snapshot: Option<busbar_kernel::cost::EntryKey>,
     now: u64,
-    days: Vec<(u64, (FetchedUsage<Count>, Vec<ObservationRecord>))>,
+    days: Vec<UsageDay>,
     spec: &SeriesSpec,
 ) -> Result<crate::v1::contract::UsageSeries, AdminError> {
     use crate::v1::contract::{SeriesUsage, UsageSeries, UsageSeriesRow};

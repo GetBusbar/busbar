@@ -15,7 +15,7 @@ use crate::framer::Refused;
 /// An error's own text, kept owned by the failure that carries it.
 #[cold]
 pub(crate) fn display(e: &dyn fmt::Display) -> String {
-    e.to_string()
+    format!("{e}")
 }
 
 /// A framer answer refused with `outcome` and the text `args`.
@@ -48,7 +48,7 @@ pub(crate) fn failed(args: fmt::Arguments<'_>) -> Failure {
 /// `bytes` that are not UTF-8, as text with each bad sequence replaced (a refusal's text).
 #[cold]
 pub(crate) fn lossy(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).into_owned()
+    format!("{}", String::from_utf8_lossy(bytes))
 }
 
 /// A failed handshake or record: the text connection security keeps (a dialled refusal explained,

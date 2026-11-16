@@ -679,7 +679,7 @@ async fn the_two_read_only_new_verbs_answer_a_read_only_credential() {
     let log: SeamLog = std::sync::Arc::new(Mutex::new(Vec::new()));
     let verbs = make_verbs(RoutingGovernance(std::sync::Arc::clone(&log)));
 
-    for verb in [KernelVerb::Verify, KernelVerb::PlaneFacts] {
+    for verb in [KernelVerb::Verify, KernelVerb::GetKinds] {
         assert_eq!(
             crate::verbs::required_scope(verb),
             VerbScope::ReadOnly,
@@ -845,7 +845,7 @@ async fn a_new_verb_budget_recovers_after_a_corrected_forward_clock_step() {
 fn the_two_read_only_new_verbs_never_spend_a_mutation_slot() {
     use busbar_kernel::ratelimit::MutationClass;
     let verbs = make_verbs(FakeGovernance::new());
-    for verb in [KernelVerb::Verify, KernelVerb::PlaneFacts] {
+    for verb in [KernelVerb::Verify, KernelVerb::GetKinds] {
         for i in 0..=MutationClass::Crud.limit() {
             assert!(
                 matches!(

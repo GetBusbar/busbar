@@ -102,7 +102,7 @@ pub struct DialPolicy {
 
 /// The dial policy of an egress class (the judged one).
 #[must_use]
-pub fn dial_policy(class: u32) -> DialPolicy {
+fn dial_policy(class: u32) -> DialPolicy {
     DialPolicy {
         connect_timeout: Duration::from_secs(10),
         io_timeout: Duration::from_secs(30),
@@ -326,8 +326,11 @@ where
     ids: PooledIds,
     certs: CertDigests,
     reported: Reported,
-    configured: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
+    configured: Option<ConfiguredFn>,
 }
+
+/// A test of whether a destination is one the operator configured.
+type ConfiguredFn = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// Idle conns kept per key.
 const POOL_PER_KEY: usize = 8;
@@ -394,14 +397,6 @@ where
             reported: Reported::default(),
             configured: None,
         }
-    }
-
-    /// Say which destinations are configured ones (a destination or upstream the operator named):
-    /// `guard::judged_class` lifts the default class to operator infrastructure for those.
-    #[must_use]
-    pub fn with_configured(mut self, configured: Arc<dyn Fn(&str) -> bool + Send + Sync>) -> Self {
-        self.configured = Some(configured);
-        self
     }
 
     /// The instance is unbound: drop what core keeps for it.

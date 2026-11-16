@@ -67,6 +67,11 @@ pub struct MemberPermits {
     pub(crate) limits: HashMap<DestinationId, Arc<Semaphore>>,
 }
 
+/// A pending slot acquisition of a wait-for-any.
+pub(crate) type Wait = std::pin::Pin<
+    Box<dyn Future<Output = Result<OwnedSemaphorePermit, tokio::sync::AcquireError>> + Send>,
+>;
+
 /// One slot, freed when the attempt that holds it drops it.
 #[derive(Debug)]
 struct Slot {
@@ -114,18 +119,7 @@ impl Capacity for MemberPermits {
             let free = *free;
             return Box::pin(std::future::ready(Some((free, Self::slot(free, None)))));
         }
-        type Wait = std::pin::Pin<
-            Box<
-                dyn Future<Output = Result<OwnedSemaphorePermit, tokio::sync::AcquireError>> + Send,
-            >,
-        >;
-        let mut waits: Vec<(DestinationId, Wait)> = destinations
-            .iter()
-            .filter_map(|d| {
-                let slots = Arc::clone(self.limits.get(d)?);
-                Some((*d, Box::pin(slots.acquire_owned()) as Wait))
-            })
-            .collect();
+        let mut waits = self.waits(destinations);
         Box::pin(std::future::poll_fn(move |cx| {
             let mut i = 0;
             while i < waits.len() {

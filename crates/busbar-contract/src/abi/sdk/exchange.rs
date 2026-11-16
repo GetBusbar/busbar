@@ -1625,9 +1625,9 @@ impl<'a, K: KindMarker> Op<'a, K> {
         &self,
         need: u32,
         target: Option<&str>,
-        request: impl FnOnce() -> Result<Request, String>,
+        build: impl FnOnce() -> Result<Request, String>,
     ) -> Poll<Result<ExchangeResponse, OpFailure>> {
-        self.exchange_sealed(need, target, || request().map(|r| (r, Vec::new())))
+        self.exchange_sealed(need, target, || build().map(|r| (r, Vec::new())))
     }
 
     /// [`Op::exchange`] for a request with sealed fields ([`Exchange::request_sealed`]).
@@ -1646,10 +1646,10 @@ impl<'a, K: KindMarker> Op<'a, K> {
         need: u32,
         target: Option<&str>,
         reply_limit: usize,
-        request: impl FnOnce() -> Result<Request, String>,
+        build: impl FnOnce() -> Result<Request, String>,
     ) -> Poll<Result<ExchangeResponse, OpFailure>> {
         self.exchange_sealed_bounded(need, target, reply_limit, || {
-            request().map(|r| (r, Vec::new()))
+            build().map(|r| (r, Vec::new()))
         })
     }
 
@@ -1686,7 +1686,7 @@ impl<'a, K: KindMarker> Op<'a, K> {
         target: Option<&str>,
         reply_limit: usize,
         head_only: bool,
-        request: impl FnOnce() -> Result<(Request, Vec<SealedField>), String>,
+        build: impl FnOnce() -> Result<(Request, Vec<SealedField>), String>,
     ) -> Poll<Result<ExchangeResponse, ExchangeFailure>> {
         let Some(host) = self.host else {
             return Poll::Ready(Err(ExchangeFailure::without_head(
@@ -1695,7 +1695,7 @@ impl<'a, K: KindMarker> Op<'a, K> {
         };
         let mut state = match self.on.resume() {
             Some(parked) => *parked,
-            None => match request() {
+            None => match build() {
                 Err(why) => {
                     return Poll::Ready(Err(ExchangeFailure::without_head(OpFailure::Unbuilt(why))))
                 }

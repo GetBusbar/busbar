@@ -218,8 +218,8 @@ pub struct Guard {
 /// listener and media listener) and the addresses those listeners are bound to.
 #[derive(Debug, Default)]
 pub(crate) struct OwnNode {
-    ports: Vec<u16>,
-    ips: Vec<IpAddr>,
+    pub(crate) ports: Vec<u16>,
+    pub(crate) ips: foldhash::HashSet<IpAddr>,
 }
 
 impl Default for Guard {
@@ -248,10 +248,10 @@ impl Guard {
     /// Publish the node's own listen ports and the addresses its listeners are bound to (boot
     /// metadata, IF 12.1): what [`Guard::not_the_node`] refuses. Replaces the set whole.
     pub fn publish_own(&self, ports: &[u16], bound: &[IpAddr]) {
-        self.node.store(Arc::new(OwnNode {
-            ports: ports.to_vec(),
-            ips: bound.iter().copied().map(canonical).collect(),
-        }));
+        self.node
+            .store(Arc::new(crate::off_path::egress::guard::own_node(
+                ports, bound,
+            )));
     }
 
     /// The node's own ports (IF 12.1): `addr` is refused `DEST_INTERNAL` when its port is one of
@@ -274,11 +274,7 @@ impl Guard {
         let own_front_door = node.ports.contains(&addr.port())
             && (is_loopback(ip) || ip.is_unspecified() || node.ips.contains(&ip));
         if own_front_door {
-            return Err(crate::cold::egress::refusal(
-                DEST_INTERNAL,
-                &addr.to_string(),
-                Some(addr.ip()),
-            ));
+            return Err(crate::cold::egress::own_door_refusal(DEST_INTERNAL, addr));
         }
         Ok(())
     }

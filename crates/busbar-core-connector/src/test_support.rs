@@ -13,17 +13,6 @@ use rustls::pki_types::CertificateDer;
 mod adoption;
 pub use adoption::observe_adoption;
 
-/// The default association's actual conservative pre-crossing reservation, including lease
-#[must_use]
-pub fn datagram_output_reservation_bytes() -> usize {
-    let copied = crate::framer::Buffers::default()
-        .retention_bound()
-        .expect("default copied-output layout fits usize");
-    let routed = crate::datagram::ROUTES_CAP * crate::framer::WIRE_CAP * 3;
-    crate::publication::Memory::reservation_size(copied + routed)
-        .expect("default reservation layout fits usize")
-}
-
 /// A private test CA and a `localhost` leaf it signed: the CA's certificate as PEM (what a suite's
 /// test trust anchors are), the leaf's certificate and its private key, DER (what a test far
 /// end serves).

@@ -17,6 +17,10 @@ use crate::root::model_egress::{
     ModelSignals, ModelTelemetry, WalkCells,
 };
 
+/// The member facts by model, in the map type the kernel's far end takes them as.
+pub(crate) type MemberFactsByModel =
+    std::collections::HashMap<String, busbar_kernel::plane_driver::MemberFacts>;
+
 impl ModelPools {
     #[must_use]
     pub(crate) fn of(cfg: &busbar_kernel::config::RootCfg) -> Self {

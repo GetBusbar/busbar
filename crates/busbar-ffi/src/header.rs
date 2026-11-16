@@ -75,6 +75,11 @@ impl LinkedPlugin {
     pub const fn as_ptr(&self) -> *const Plugin {
         &self.0
     }
+    /// The header of a `'static` image, for a caller that holds a `&'static Plugin` API (the SDK suites' frozen
+    /// signatures, IF §14). Safe and additive: it only reads the field `as_ptr` already exposes.
+    pub const fn plugin(&'static self) -> &'static Plugin {
+        &self.0
+    }
     #[cfg(any(test, feature = "host"))]
     pub(crate) const fn header(&self) -> &Plugin {
         &self.0

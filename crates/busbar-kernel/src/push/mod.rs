@@ -3,7 +3,7 @@
 
 //! The durable push queue behind plane PUSH intents (IF §12.9).
 //!
-//! Layout. One host-private scope per (stamp name, configured instance name), schema [`PUSHES`]; one row per
+//! Layout. One host-private scope per (stamp name, configured instance name), schema `PUSHES`; one row per
 //! queued push, keyed by a CoreStore operation id (unique, never the runtime instance id). A row's stored
 //! value is `1 ‖ expires_at (u64 BE, UNIX s) ‖ next_at (u64 BE, UNIX s) ‖ attempt (u32 BE) ‖ recs`, `recs` the
 //! PUSH tail as the plane wrote it (nested H_METHOD, PUSH_URL, PAIR*, BODY), copied and owned by core.
@@ -43,13 +43,13 @@ pub trait PushQueue: Send + Sync + 'static {
 }
 
 /// The queued pushes.
-pub const PUSHES: &str = "busbar.plane-push.v1";
+pub(crate) const PUSHES: &str = "busbar.plane-push.v1";
 
 /// The largest PUSH tail core queues.
 pub const MAX_PUSH: usize = crate::plugin_records::MAX_VALUE;
 
 /// The longest a push is kept (the record horizon, §12.5).
-pub const MAX_PUSH_TTL_S: u64 = crate::plugin_records::MAX_TTL_S;
+pub(crate) const MAX_PUSH_TTL_S: u64 = crate::plugin_records::MAX_TTL_S;
 
 /// The most rows one [`StorePushQueue::deliver_due`] round attempts.
 pub const ROUND: usize = 64;

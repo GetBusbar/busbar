@@ -236,6 +236,43 @@ pub(crate) async fn get(
     }
 }
 
+/// Run `read` under the secret rule of `app`'s generation: the shorthand it admits and the plugin
+/// settings each module declares public.
+pub(super) fn under_rule<R>(app: &App, read: impl FnOnce(&Rule<'_>) -> R) -> R {
+    let sugars = app
+        .grammar
+        .get()
+        .map(|grammar| grammar.sugars.clone())
+        .unwrap_or_default();
+    let public = busbar_kernel::config::settings_public::public;
+    read(&Rule {
+        sugars: &sugars,
+        public: &public,
+    })
+}
+
+/// The resolved generation's sections under the secret rule, `process` among them: what the
+/// effective tree serves and what `/kinds` describes every instance's `config` from.
+pub(super) fn projected_sections(app: &App, rule: &Rule<'_>) -> Map {
+    let (configuration, _) = super::config_document::configuration_and_restart(app);
+    let mut configuration = foreign(&configuration);
+    rule.project(&mut configuration);
+    let mut sections = Map::new();
+    if let Some(read) = configuration
+        .get("values")
+        .and_then(|values| values.get("sections"))
+        .and_then(|s| s.as_object())
+    {
+        for (name, member) in read.iter() {
+            sections.insert(name, member.clone());
+        }
+    }
+    let mut process = process(app);
+    rule.project(&mut process);
+    sections.insert("process", process);
+    sections
+}
+
 /// The resolved generation: the kernel's readback sections and `process`.
 fn effective(
     app: &App,
@@ -549,7 +586,7 @@ fn select(sections: Map, section: Option<&[String]>) -> Result<Value, String> {
 }
 
 /// The kernel's readback value as this crate's JSON tree.
-fn foreign<T: serde::Serialize>(value: &T) -> Value {
+pub(super) fn foreign<T: serde::Serialize>(value: &T) -> Value {
     busbar_contract::json::to_vec(value)
         .ok()
         .and_then(|bytes| busbar_contract::json::parse_value(&bytes).ok())

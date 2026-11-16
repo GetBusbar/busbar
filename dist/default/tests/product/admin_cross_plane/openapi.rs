@@ -206,8 +206,6 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         ("delete", "/api/v1/admin/keys/{id}"),
         ("delete", "/api/v1/admin/overlay/{section}"),
         ("delete", "/api/v1/admin/plugins/{file}"),
-        ("delete", "/api/v1/admin/identity-providers/{name}"),
-        ("delete", "/api/v1/admin/export/{name}"),
         ("delete", "/api/v1/admin/tools/{name}"),
         ("delete", "/api/v1/admin/agents/{name}"),
         ("post", "/api/v1/admin/tools/{name}/connect"),
@@ -258,9 +256,10 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         "every BODYLESS entry must name a real operation; saw {bodyless_seen:?}"
     );
     assert_eq!(
-        declared, 36,
-        "36 mutating operations take a body; a change here is a deliberate API change. 36 = 22 \
-         + each plane section's PUT and PATCH-settings (both DELETEs are bodyless, above) + the \
+        declared, 32,
+        "32 mutating operations take a body; a change here is a deliberate API change. 32 = 18 \
+         (22 less the `/identity-providers` and `/export` PUT and PATCH-settings, removed in \
+         1.6.0 by ADMIN-API-1.6 §0.2) + each plane section's PUT and PATCH-settings (both DELETEs are bodyless, above) + the \
          agents plane's approve verb, whose body carries the fingerprint the \
          operator is attesting they read + the seven 1.6.0 kernel verbs that read one \
          (`store-restore`, `adjust`, `ledger/amend-rate-history`, since owner answer Q71(2) \

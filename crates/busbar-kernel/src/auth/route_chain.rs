@@ -25,7 +25,7 @@ const CLASSES: [(u32, &str); 6] = [
 
 /// The class word of one class bit, as `routes.<id>.auth` writes it.
 #[must_use]
-pub fn class_word(class: u32) -> Option<&'static str> {
+pub(crate) fn class_word(class: u32) -> Option<&'static str> {
     CLASSES
         .iter()
         .find(|(bit, _)| *bit == class)

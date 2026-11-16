@@ -289,7 +289,10 @@ pub fn scope_details(needed_scope: &str) -> serde_json::Value {
 
 /// [`scope_details`] naming the verb the refused call needed (per-verb authorization, MR2).
 #[must_use]
-pub fn scope_details_for(needed_scope: &str, needed_verb: Option<&str>) -> serde_json::Value {
+pub(crate) fn scope_details_for(
+    needed_scope: &str,
+    needed_verb: Option<&str>,
+) -> serde_json::Value {
     serde_json::json!({ "needed_scope": needed_scope, "needed_verb": needed_verb })
 }
 

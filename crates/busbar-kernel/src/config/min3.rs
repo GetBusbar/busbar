@@ -161,11 +161,11 @@ pub fn check_upstream_credentials(min3: &Min3Config) -> Result<(), Vec<String>> 
 }
 
 /// The longest any `limits` duration may be (IF §12.22).
-pub const MAX_LIMIT_MS: u64 = 600_000;
+pub(crate) const MAX_LIMIT_MS: u64 = 600_000;
 /// The most concurrent port calls `limits.max_inflight` may name (IF §12.22).
 pub const MAX_INFLIGHT: u64 = 65_535;
 /// The longest a reason may be (TRANSPORT-SECURITY-POLICY §4).
-pub const MAX_REASON_CHARS: usize = 256;
+pub(crate) const MAX_REASON_CHARS: usize = 256;
 
 /// `<kind>.<name>.limits` as written: the grammar of the object, before validation. A key outside these four
 /// (`plaintext` included: the row is deleted) is refused as unknown.

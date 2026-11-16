@@ -55,15 +55,15 @@ pub trait RetryPolicy: Send + Sync + 'static {
 }
 
 /// The longest any one wait is (IF §12.3: the Retry-After clamp and the AuthOutbound window ceiling).
-pub const MAX_WAIT: Duration = Duration::from_secs(300);
+pub(crate) const MAX_WAIT: Duration = Duration::from_secs(300);
 /// The first `AuthOutbound` failure window; it doubles per further failure (IF §12.3 round 23).
-pub const AUTH_WINDOW: Duration = Duration::from_secs(30);
+pub(crate) const AUTH_WINDOW: Duration = Duration::from_secs(30);
 /// Attempts a non-content export delivery gets (dev's `MAX_ATTEMPTS`).
-pub const EXPORT_ATTEMPTS: u32 = 3;
+pub(crate) const EXPORT_ATTEMPTS: u32 = 3;
 /// Attempts a store, secret, auth-refresh or admin call gets (one call plus two retries).
-pub const CALL_ATTEMPTS: u32 = 3;
+pub(crate) const CALL_ATTEMPTS: u32 = 3;
 /// Attempts a queued push gets before it is dropped.
-pub const PUSH_ATTEMPTS: u32 = 8;
+pub(crate) const PUSH_ATTEMPTS: u32 = 8;
 /// The `STREAM_CONTENT` id (IF §8.5): bounded by the redelivery horizon, not by a count.
 const STREAM_CONTENT: u32 = 9;
 

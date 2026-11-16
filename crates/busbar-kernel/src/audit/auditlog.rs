@@ -506,7 +506,7 @@ pub struct AuditQuery<'a> {
 
 /// Whether `action` is admitted by an `action=` filter: an entry with a dot is an exact action name,
 /// a dot-free entry is a noun and admits its whole family.
-pub fn action_admitted(filter: &[&str], action: &str) -> bool {
+pub(crate) fn action_admitted(filter: &[&str], action: &str) -> bool {
     filter.is_empty()
         || filter.iter().any(|f| {
             if f.contains('.') {

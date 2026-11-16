@@ -45,6 +45,23 @@ fn fixture_ops() -> Vec<FixtureOp> {
     ops
 }
 
+/// The 1.5.5 per-kind roots 1.6.0 removes in favour of `/kinds` (ADMIN-API-1.6 §0.2, CON-6).
+const REMOVED_IN_1_6: [&str; 5] = [
+    "/api/v1/admin/models",
+    "/api/v1/admin/providers",
+    "/api/v1/admin/pools",
+    "/api/v1/admin/export",
+    "/api/v1/admin/identity-providers",
+];
+
+fn removed_in_1_6(op: &FixtureOp) -> bool {
+    REMOVED_IN_1_6.iter().any(|root| {
+        op.path
+            .strip_prefix(root)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    })
+}
+
 fn table_ops() -> Vec<FixtureOp> {
     LEGACY_VERBS
         .iter()
@@ -91,11 +108,25 @@ fn every_fixture_operation_is_in_the_table_with_the_same_scope() {
     let fixture: BTreeSet<_> = fixture_ops().into_iter().collect();
     let table: BTreeSet<_> = table_ops().into_iter().collect();
 
+    // Every 1.5.5 operation is in the table with its scope, except the per-kind operations 1.6.0
+    // removes, which are all absent.
     let missing: Vec<_> = fixture.difference(&table).collect();
+    let unexpected: Vec<_> = missing.iter().filter(|op| !removed_in_1_6(op)).collect();
     assert!(
-        missing.is_empty(),
+        unexpected.is_empty(),
         "openapi-1.5.5.json names an operation the table is missing (or whose scope the table \
-         gets wrong): {missing:?}"
+         gets wrong): {unexpected:?}"
+    );
+    let removed: Vec<_> = fixture.iter().filter(|op| removed_in_1_6(op)).collect();
+    assert_eq!(
+        removed.len(),
+        14,
+        "the fourteen per-kind operations: {removed:?}"
+    );
+    assert_eq!(
+        missing.len(),
+        removed.len(),
+        "every removed per-kind operation is absent from the table"
     );
     let extra: Vec<_> = table.difference(&fixture).collect();
     assert!(
@@ -142,12 +173,25 @@ fn scope_split_is_34_read_only_32_full() {
         .iter()
         .filter(|r| r.scope == VerbScope::Full)
         .count();
+    // The architecture document's 34 read-only / 32 full, less the per-kind operations removed in
+    // 1.6.0 (ADMIN-API-1.6 §0.2): eight reads and six writes.
+    let removed = fixture_ops()
+        .into_iter()
+        .filter(removed_in_1_6)
+        .collect::<Vec<_>>();
+    let removed_read_only = removed.iter().filter(|op| op.scope == "read-only").count();
     assert_eq!(
-        read_only, 34,
+        (removed_read_only, removed.len() - removed_read_only),
+        (8, 6)
+    );
+    assert_eq!(
+        read_only + removed_read_only,
+        34,
         "34 read-only operations, per the architecture document"
     );
     assert_eq!(
-        full, 32,
+        full + removed.len() - removed_read_only,
+        32,
         "32 full operations, per the architecture document"
     );
 }
