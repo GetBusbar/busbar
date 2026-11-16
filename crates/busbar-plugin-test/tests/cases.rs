@@ -348,6 +348,8 @@ mod min3_endpoints;
 mod min3_export;
 #[path = "fixtures/min3_export_fail.rs"]
 mod min3_export_fail;
+#[path = "fixtures/min3_export_metrics.rs"]
+mod min3_export_metrics;
 #[path = "fixtures/min3_second.rs"]
 mod min3_second;
 #[path = "fixtures/min3_secret.rs"]
