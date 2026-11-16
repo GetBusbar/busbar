@@ -12,7 +12,7 @@
 //! consumed; growth copies only `[head, end)` into a fresh zeroed block. (3) The read surface is
 //! `[head, end)` only ([`SecureVec::as_slice`], `Deref` to `[u8]`); `Clone` copies the live bytes into a new
 //! `SecureVec`; no `PartialEq`, and `Debug` prints the length. (4) No `realloc` of live bytes. (5) Hot wipes are a plain fill; the
-//! volatile wipe runs only on the free path.
+//! volatile wipe runs on the free path and when a read loan is abandoned.
 //!
 //! SECURE-TYPES (core #164): the zeroize crate's wiping wrapper is banned in our code (LR-094). Secret memory
 //! lives in one of three types, each built on the `zeroize` crate (`Zeroize` does the volatile
@@ -42,6 +42,21 @@ pub struct SecureVec {
     v: Vec<u8>,
     head: usize,
     end: usize,
+}
+
+/// An uncommitted read owns its whole loan, including bytes outside the live extent.
+/// Abandoning it must use a volatile wipe: the buffer may itself drop during unwind.
+struct ReadLoan<'a> {
+    bytes: &'a mut [u8],
+    committed: bool,
+}
+
+impl Drop for ReadLoan<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.bytes.zeroize();
+        }
+    }
 }
 
 /// A [`SecureVec`] could not get the memory it needed; nothing was written.
@@ -210,6 +225,8 @@ impl SecureVec {
     /// Lend `[end, end + max)` (already zero) to `read` and keep the `k` bytes it reports. With
     /// [`Tail::Wipe`], whatever `read` wrote past `k` is wiped. A reader reporting `k > max` broke
     /// its contract: nothing is kept, the lent region is wiped and the answer is `InvalidData`.
+    /// An error or unwind wipes the entire lent region under either tail mode, preserving the
+    /// prior live bytes. The reader's panic propagates after cleanup.
     ///
     /// # Errors
     /// [`Overflow`] when the lent region cannot be allocated.
@@ -221,21 +238,24 @@ impl SecureVec {
     ) -> Result<io::Result<usize>, Overflow> {
         self.room(max)?;
         let lent = self.end..self.end + max;
-        let r = read(&mut self.v[lent.clone()]);
-        let overlong = matches!(r, Ok(k) if k > max);
-        let k = match r {
-            Ok(k) if k <= max => k,
-            _ => 0,
+        let mut loan = ReadLoan {
+            bytes: &mut self.v[lent],
+            committed: false,
         };
-        if tail == Tail::Wipe || overlong {
-            fill_wipe(&mut self.v[self.end + k..lent.end]);
+        match read(loan.bytes) {
+            Ok(k) if k <= max => {
+                if tail == Tail::Wipe {
+                    fill_wipe(&mut loan.bytes[k..]);
+                }
+                // `room` already checked end + max; no user code or fallible step separates
+                // advancing the live extent from committing the loan.
+                self.end += k;
+                loan.committed = true;
+                Ok(Ok(k))
+            }
+            Ok(_) => Ok(Err(io::ErrorKind::InvalidData.into())),
+            Err(error) => Ok(Err(error)),
         }
-        self.end += k;
-        Ok(if overlong {
-            Err(io::ErrorKind::InvalidData.into())
-        } else {
-            r
-        })
     }
 
     /// Make room for `add` more bytes after `end`: compact when at least half the used span is
@@ -618,12 +638,13 @@ impl<const N: usize> Drop for SecureArray<N> {
 
 impl<const N: usize> ZeroizeOnDrop for SecureArray<N> {}
 /// Whether a reader lent a region by [`SecureVec::read_into`] is trusted to have written nothing
-/// past the count it reports. Every carrier read on dev is [`Tail::Wipe`]: the carrier is a plugin
+/// past the count it reports on success. Errors, excessive counts and unwinds always wipe the
+/// entire loan. Every carrier read on dev is [`Tail::Wipe`]: the carrier is a plugin
 /// door, and core never names a plugin as trusted (TRANSPORT-TLS §2.0 rule 6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tail {
     /// The reader copies exactly the count it returns: only rustls' plaintext `Reader::read`
-    /// into a region sized to that count (T6).
+    /// into a region sized to that count (T6), on successful return only.
     Trusted,
     /// Wipe `[k, max)` after the read.
     Wipe,
