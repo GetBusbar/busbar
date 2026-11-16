@@ -436,6 +436,7 @@ dependencies = [
  "http",
  "idna",
  "indexmap",
+ "jsonschema",
  "libc",
  "memchr",
  "percent-encoding",
@@ -482,6 +483,7 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "busbar-kernel-egress",
+ "busbar-plugin-abi",
  "busbar-plugin-loader",
  "crc32fast",
  "dimpl",
@@ -774,6 +776,7 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "axum",
+ "backon",
  "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel-audit",
@@ -794,6 +797,7 @@ dependencies = [
  "loom",
  "metrics",
  "metrics-util",
+ "rustls-pki-types",
  "schemars",
  "serde",
  "serde_json",
@@ -836,6 +840,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-kernel-breaker",
+ "busbar-plugin-abi",
  "foldhash 0.2.0",
  "futures",
 ]
@@ -998,6 +1003,7 @@ version = "1.6.0"
 dependencies = [
  "arc-swap",
  "busbar-contract",
+ "busbar-ffi",
  "busbar-plugin-abi",
  "flate2",
  "foldhash 0.2.0",

@@ -75,6 +75,9 @@ path = "tests/cases.rs"
 # no direct h2, no tonic. Every crate here is already in core's lock.
 target = ["dep:sonic-rs"]
 target-http = ["target", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio"]
+# STH-ROWS D-7: the contract's caller seal for a plugin repository's test host, a loud dev-only opt-in on
+# its `busbar-plugin-test` DEV edge (the guard `test_seal_is_dev_only` allows this forward, never a normal edge).
+test-seal = ["busbar-contract/test-seal"]
 
 [dependencies]
 zeroize = { workspace = true }
@@ -92,6 +95,8 @@ tokio = { workspace = true, optional = true, features = ["rt", "net", "time", "s
 tikv-jemallocator = { workspace = true }
 
 [dev-dependencies]
+# W1-K8B: the head-authority and card-redirect arms build URLs.
+url = { workspace = true }
 # The bridge fixture image (W1-A3, `tests/bridge_fixture.rs`) is wired by hand over busbar-ffi's safe adapter and host
 # API, as `plugin!` wires an image; never `host` here (the loader side reaches it through busbar-plugin-abi).
 busbar-ffi = { path = "../busbar-ffi" }
@@ -100,7 +105,7 @@ busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 # probe (IF §14 round 19). A dev edge only: a plugin repository resolving this facade never sees it.
 busbar-kernel = { path = "../busbar-kernel", features = ["conformance"] }
 # The facade's own tests drive its targets; CI's test and red-proof jobs pass none of its features.
-busbar-plugin-test = { path = ".", features = ["target-http"] }
+busbar-plugin-test = { path = ".", features = ["target-http", "test-seal"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
 # W1-A12: the case files drive MemIo (IF §9, feature `memio`).
 busbar-plugin-abi = { path = "../busbar-plugin-abi", features = ["memio"] }

@@ -430,6 +430,7 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "busbar-kernel-egress",
+ "busbar-plugin-abi",
  "busbar-plugin-loader",
  "crc32fast",
  "dimpl",
@@ -530,6 +531,7 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "axum",
+ "backon",
  "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel-audit",
@@ -553,6 +555,7 @@ dependencies = [
  "metrics-util",
  "proc-macro2",
  "reqwest",
+ "rustls-pki-types",
  "schemars",
  "serde",
  "serde_json",
@@ -599,6 +602,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-kernel-breaker",
+ "busbar-plugin-abi",
  "foldhash",
  "futures",
 ]
@@ -673,6 +677,7 @@ name = "busbar-plugin-bench"
 version = "1.6.0"
 dependencies = [
  "busbar-plugin-abi",
+ "busbar-plugin-loader",
  "sharded-slab",
 ]
 
@@ -683,6 +688,7 @@ dependencies = [
  "arc-swap",
  "base64 0.22.1",
  "busbar-contract",
+ "busbar-ffi",
  "busbar-plugin-abi",
  "flate2",
  "foldhash",
@@ -726,6 +732,7 @@ dependencies = [
  "sonic-rs",
  "tikv-jemallocator",
  "tokio",
+ "url",
  "zeroize",
 ]
 

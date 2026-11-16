@@ -62,8 +62,58 @@ fn unsupported_algs_through_host_vt_on_the_stub_backend() {
     todo!("owner: busbar#262 (C-UNAVAILABLE)")
 }
 
+/// W1-L1, C-FIPS-GATE's admit arm: admit's step 6 decides from the facade's two answers and nothing else. With a
+/// deny-list stub backend stating `EXTERNAL_PLUGINS = false`, a `crypto = "external"` image is refused `Crypto`,
+/// and a stamp naming a backend other than `BACKEND` is refused `Crypto`; on the linked facade, "external" admits
+/// exactly when `busbar_crypto::EXTERNAL_PLUGINS` says so.
 #[test]
-#[ignore = "owner: W1-L1"]
 fn admit_refuses_external_without_external_plugins_and_a_foreign_backend() {
-    todo!("owner: W1-L1 (C-UNAVAILABLE)")
+    use busbar_plugin_loader::admit::{crypto_gate, CryptoFacts};
+    use busbar_plugin_loader::refusal::RefusalCode;
+
+    let stub = CryptoFacts {
+        external_plugins: false,
+        backend: "fips-stub",
+        plugin_host: false,
+    };
+    let refused = crypto_gate("external", false, &stub).expect_err("EXTERNAL_PLUGINS = false");
+    assert_eq!(
+        (
+            refused.code,
+            refused.field,
+            refused.have.as_str(),
+            refused.want.as_str()
+        ),
+        (RefusalCode::Crypto, "crypto", "external", "fips-stub")
+    );
+    assert!(refused
+        .named("busbar-secret-c")
+        .to_string()
+        .contains("is a non-Rust plugin (crypto: external)"));
+    let with_host = CryptoFacts {
+        plugin_host: true,
+        ..stub
+    };
+    let foreign = crypto_gate("aws-lc", true, &with_host).expect_err("not BACKEND");
+    assert_eq!(
+        (foreign.code, foreign.have.as_str(), foreign.want.as_str()),
+        (RefusalCode::Crypto, "aws-lc", "fips-stub")
+    );
+    assert!(crypto_gate("fips-stub", true, &with_host).is_ok());
+    assert!(crypto_gate("host", false, &stub).is_ok());
+
+    assert_eq!(
+        (
+            CryptoFacts::FACADE.external_plugins,
+            CryptoFacts::FACADE.backend
+        ),
+        (
+            busbar_contract::crypto::EXTERNAL_PLUGINS,
+            busbar_contract::crypto::BACKEND
+        )
+    );
+    assert_eq!(
+        crypto_gate("external", false, &CryptoFacts::FACADE).is_ok(),
+        busbar_contract::crypto::EXTERNAL_PLUGINS
+    );
 }

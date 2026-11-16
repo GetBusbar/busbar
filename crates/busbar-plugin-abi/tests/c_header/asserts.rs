@@ -18,7 +18,7 @@ use busbar_plugin_abi as abi;
 
 use abi::fail::{failed, refused, FAIL_TEXT_WIRE_MAX};
 use abi::host::{level, CryptoReq, CryptoRet, DeploymentId};
-use abi::plugin::{Plugin, OPEN_DRY_RUN};
+use abi::plugin::OPEN_DRY_RUN;
 use abi::records::{tag, EndpointRec, FailRec, InstanceRec, MaskRec, RecHead, U32Rec};
 use abi::stamp::Stamp;
 use abi::types::{Bytes, KindCode, RawOut, Status, Str, Token};
@@ -44,7 +44,19 @@ pub fn generate() -> String {
     }
     layout!("bb_bytes" = Bytes<'static> {});
     layout!("bb_str" = Str<'static> {});
-    layout!("bb_raw_out" = RawOut { ptr = ptr, len = len, cap = cap });
+    layout!("bb_raw_out" = RawOut {});
+    eq(
+        "offsetof(bb_raw_out, ptr)",
+        abi::types::RAW_OUT_PTR_AT as u64,
+    );
+    eq(
+        "offsetof(bb_raw_out, len)",
+        abi::types::RAW_OUT_LEN_AT as u64,
+    );
+    eq(
+        "offsetof(bb_raw_out, cap)",
+        abi::types::RAW_OUT_CAP_AT as u64,
+    );
     layout!("bb_status" = Status {});
     layout!("bb_token" = Token {});
     layout!("bb_crypto_req" = CryptoReq<'static> {
@@ -70,11 +82,11 @@ pub fn generate() -> String {
     });
     eq(
         "offsetof(bb_plugin, stamp)",
-        offset_of!(Plugin, stamp) as u64,
+        abi::plugin::PLUGIN_STAMP_AT as u64,
     );
     eq(
         "offsetof(bb_plugin, kind_vt)",
-        offset_of!(Plugin, kind_vt) as u64,
+        abi::plugin::PLUGIN_KIND_VT_AT as u64,
     );
     // The hold above: the frozen order, in pointer words.
     let host = [

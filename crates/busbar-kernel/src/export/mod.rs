@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+pub mod delivery;
 pub mod plugin;
 pub(crate) mod projection;
 pub(crate) mod scrape;

@@ -26,7 +26,7 @@ use crate::types::{Bytes, Status};
 /// The plugin header, `OPEN_DRY_RUN` and the exported symbol name are busbar-ffi's (UNSAFE-MIN r3.1): the header
 /// holds `unsafe extern "C"` entries and raw table pointers, and only `plugin()` builds one. Re-exported here
 /// under their frozen paths; their `mechanism!` block is busbar-ffi's, folded into `CORE_FP` after this crate's.
-pub use busbar_ffi::header::{OPEN_DRY_RUN, Plugin, SYMBOL};
+pub use busbar_ffi::header::{OPEN_DRY_RUN, PLUGIN_KIND_VT_AT, PLUGIN_STAMP_AT, Plugin, SYMBOL};
 
 /// The type of the one exported symbol, `busbar_plugin` (IF §7.1). UNSAFE-MIN r3.1: `export!` emits it as a
 /// safe `extern "C" fn` (it only returns the address of a `'static` header), so the pointer type is safe too.
@@ -426,7 +426,7 @@ fn check<T: Open>(h: &Host, config: &[u8], out: &mut busbar_ffi::Out<'_>) -> Sta
             count: 0,
             bad: None,
         };
-        let checked = T::check(h, config, &mut ends);
+        let checked = crate::fail::in_check(|| T::check(h, config, &mut ends));
         (checked, ends.bad)
     };
     let answer = match (checked, bad) {

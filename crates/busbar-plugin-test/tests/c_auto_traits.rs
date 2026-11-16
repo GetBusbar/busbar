@@ -105,8 +105,10 @@ fn chain_guard_is_send_for_a_needs_fake() {
     sent(&fut);
 }
 
+/// W1-L1: `Admitted` holds busbar-ffi's checked header address (UNSAFE-MIN r3.1), its verified stamp and the
+/// `Arc<Image>` that keeps it mapped, so it is `Send + Sync` with no `unsafe impl`; the registry holds one across
+/// the awaits of its describe and open futures.
 #[test]
-#[ignore = "owner: W1-L1"]
 fn admitted_is_send_and_sync() {
-    todo!("owner: W1-L1 (C-AUTO-TRAITS)")
+    send_sync::<busbar_plugin_loader::admit::Admitted>();
 }

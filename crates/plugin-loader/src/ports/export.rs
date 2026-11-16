@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The export port (IF §11.3, round 33 §49). W0-ABI stub: frozen signatures, `todo!()` bodies; L7 fills it.
+//! The export port (IF §11.3, round 33 §49); `adapters::export::ExportAdapter` is its one implementation.
 
 use busbar_plugin_abi::host_side::caller::BoxFut;
 
