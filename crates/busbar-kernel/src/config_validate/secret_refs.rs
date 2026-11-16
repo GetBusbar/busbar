@@ -259,6 +259,7 @@ fn walk_secret_refs_with_boot_token<'a>(
             settings: _,
             limits: _,
             insecure_transport: _,
+            provisioning: _,
         } = def;
 
         if let (Some(tok), TokenRefs::Every) = (token, tokens) {

@@ -22,6 +22,7 @@ struct Fake {
     creds: Vec<HeaderName>,
     served: Mutex<Vec<(String, HeaderMap)>>,
     verified: AtomicUsize,
+    request_seen: Mutex<Option<(String, String, Vec<u8>)>>,
 }
 
 impl Fake {
@@ -32,6 +33,7 @@ impl Fake {
             creds: vec![HeaderName::from_static("x-api-key")],
             served: Mutex::new(Vec::new()),
             verified: AtomicUsize::new(0),
+            request_seen: Mutex::new(None),
         }
     }
 }
@@ -46,7 +48,12 @@ impl ProvisionInstance for Fake {
     fn cred_headers(&self) -> &[HeaderName] {
         &self.creds
     }
-    async fn verify(&self, _head: &HeaderMap, _path: &str) -> Verified {
+    async fn verify(&self, request: &Request<Bytes>) -> Verified {
+        *self.request_seen.lock().unwrap() = Some((
+            request.method().to_string(),
+            request.uri().to_string(),
+            request.body().to_vec(),
+        ));
         self.verified.fetch_add(1, Ordering::SeqCst);
         self.verdict.clone()
     }
@@ -167,4 +174,25 @@ fn client_match_is_exact_bytes_and_strip_removes_only_credentials() {
     h.insert("x-other", HeaderValue::from_static("y"));
     strip_credentials(&mut h, &[]);
     assert!(h.get("authorization").is_none() && h.get("x-other").is_some());
+}
+
+#[tokio::test]
+async fn own_instance_verify_receives_the_complete_original_request() {
+    let instance = Fake::new(Verified::Principal("scim-client".into()));
+    let request = Request::builder()
+        .method("PATCH")
+        .uri("/provision/scim/Groups/g?version=2")
+        .header("authorization", "Bearer original")
+        .body(Body::from("patch body"))
+        .unwrap();
+    let response = mount(&instance, &clients(), request).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        *instance.request_seen.lock().unwrap(),
+        Some((
+            "PATCH".into(),
+            "/provision/scim/Groups/g?version=2".into(),
+            b"patch body".to_vec()
+        ))
+    );
 }

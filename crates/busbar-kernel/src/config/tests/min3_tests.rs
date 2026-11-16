@@ -394,3 +394,74 @@ hooks:
         "0 is the kind's default in every number"
     );
 }
+
+fn provisioning_deploy(block: &str) -> crate::config::DeployCfg {
+    deploy(&format!(
+        "identity-providers:\n  scim:\n    module: directory\n    provisioning: {block}\n"
+    ))
+}
+
+#[test]
+fn provisioning_reads_clients_link_and_guard_outside_plugin_settings() {
+    let deploy = provisioning_deploy("{clients: ['Client A'], link: {index: email, auth: [corp], refresh_ms: 1000}, guard: {max: 50, window_s: 3600}}");
+    let parsed = parse_provisioning(&deploy).expect("approved provisioning grammar");
+    assert_eq!(parsed.len(), 1);
+    let cfg = parsed.get("scim").expect("configured instance");
+    assert_eq!(cfg.clients, vec![Box::<str>::from("Client A")]);
+    assert_eq!(
+        cfg.guard,
+        ProvisioningGuard {
+            max: 50,
+            window_s: 3600
+        }
+    );
+    assert_eq!(
+        cfg.link,
+        Some(ProvisioningLink {
+            index: "email".into(),
+            auth: vec!["corp".into()],
+            refresh_ms: 1000
+        })
+    );
+    assert!(deploy.identity_providers["scim"].settings.is_empty());
+}
+
+#[test]
+fn provisioning_without_link_is_explicitly_unlinked() {
+    let parsed = parse_provisioning(&provisioning_deploy(
+        "{clients: [client], guard: {max: 1, window_s: 60}}",
+    ))
+    .expect("link is optional");
+    assert!(parsed["scim"].link.is_none());
+}
+
+#[test]
+fn provisioning_refuses_invalid_policy_with_the_configured_key() {
+    for (block, key) in [
+        ("{clients: [], guard: {max: 1, window_s: 60}}", "clients"),
+        ("{clients: [''], guard: {max: 1, window_s: 60}}", "clients[0]"),
+        ("{clients: [client], guard: {max: 0, window_s: 60}}", "guard.max"),
+        ("{clients: [client], guard: {max: 1, window_s: 59}}", "guard.window_s"),
+        ("{clients: [client], link: {index: email, auth: [], refresh_ms: 1000}, guard: {max: 1, window_s: 60}}", "link.auth"),
+        ("{clients: [client], link: {index: email, auth: [corp], refresh_ms: 249}, guard: {max: 1, window_s: 60}}", "link.refresh_ms"),
+    ] {
+        let why = parse_provisioning(&provisioning_deploy(block)).expect_err("invalid policy");
+        let path = format!("identity-providers.scim.provisioning.{key}");
+        assert!(why.iter().any(|reason| reason.contains(&path)), "{why:?}");
+    }
+}
+
+#[test]
+fn provisioning_rejects_unknown_keys_and_missing_required_fields() {
+    for block in [
+        "{clients: [client], surprise: true, guard: {max: 1, window_s: 60}}",
+        "{clients: [client], guard: {max: 1, window_s: 60, enabled: false}}",
+        "{clients: [client], link: {index: email, auth: [corp], refresh_ms: 1000, extra: true}, guard: {max: 1, window_s: 60}}",
+        "{guard: {max: 1, window_s: 60}}",
+        "{clients: [client]}",
+        "null",
+    ] {
+        let why = parse_provisioning(&provisioning_deploy(block)).expect_err("invalid grammar");
+        assert!(why.iter().all(|reason| reason.contains("identity-providers.scim.provisioning")), "{why:?}");
+    }
+}

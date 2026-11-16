@@ -6,7 +6,7 @@
 //! TRANSPORT-SECURITY-POLICY §4). Every key is additive (PRD-4: a 1.5.5 config parses unchanged). W1-K7 parses the
 //! upstreams section and `insecure_transport` into [`RootCfg::min3`](super::RootCfg::min3) at load
 //! ([`parse_min3`], called by `config::resolve`, which also calls W1-K6's [`check_upstream_credentials`] hook);
-//! `provisioning` is still the W0 stub. There is no per-instance `limits` key and no `routes` section: an instance
+//! There is no per-instance `limits` key and no `routes` section: an instance
 //! runs at its kind's defaults, and the plugin's settled LIMITS answer is applied in memory at its open.
 
 use std::collections::BTreeMap;
@@ -25,7 +25,7 @@ use super::DeployCfg;
 /// for a config that writes none of them.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Min3Config {
-    /// `auth.<name>.provisioning`, by configured auth instance name (IF §12.29).
+    /// `identity-providers.<name>.provisioning`, by configured auth instance name (IF §12.29).
     pub provisioning: BTreeMap<Box<str>, ProvisioningCfg>,
     /// `<kind>.<name>.insecure_transport`, by (kind section, configured instance name) (TRANSPORT-SECURITY-POLICY
     /// §4); absent = verified TLS only. Read into `InstanceLimits.accept` by `appbuild::instance_limits`.
@@ -81,8 +81,9 @@ pub enum UpstreamAuthForm {
     },
 }
 
-/// `auth.<name>.provisioning` (IF §12.29).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// `identity-providers.<name>.provisioning` (IF §12.29).
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProvisioningCfg {
     pub clients: Vec<Box<str>>,
     /// Absent = no CA-5 hold.
@@ -91,7 +92,8 @@ pub struct ProvisioningCfg {
 }
 
 /// `provisioning.link`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProvisioningLink {
     pub index: Box<str>,
     pub auth: Vec<Box<str>>,
@@ -99,7 +101,8 @@ pub struct ProvisioningLink {
 }
 
 /// `provisioning.guard`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProvisioningGuard {
     pub max: u32,
     pub window_s: u64,
@@ -514,12 +517,36 @@ fn insecure_transport_of(path: &str, value: &YamlValue) -> Result<InsecureTransp
     doc.resolve(path)
 }
 
-/// Parses every auth instance's `provisioning:` block (consumer W1-K6P). W0-ABI stub: none.
+/// Parses every auth instance's core-owned provisioning policy. Image capabilities and
+/// inbound link references are checked after the boot walk by `directory::check_provisioning`.
 pub fn parse_provisioning(
     deploy: &DeployCfg,
 ) -> Result<BTreeMap<Box<str>, ProvisioningCfg>, Vec<String>> {
-    let _ = deploy;
-    Ok(BTreeMap::new())
+    let mut out = BTreeMap::new();
+    let mut refused = Vec::new();
+    for (name, def) in &deploy.identity_providers {
+        let Some(value) = &def.provisioning else {
+            continue;
+        };
+        let cfg = match busbar_contract::yaml::from_value::<ProvisioningCfg>(value.clone()) {
+            Ok(cfg) => cfg,
+            Err(error) => {
+                refused.push(format!("identity-providers.{name}.provisioning: {error}"));
+                continue;
+            }
+        };
+        match crate::directory::check_provisioning_shape(name, &cfg) {
+            Ok(()) => {
+                out.insert(name.as_str().into(), cfg);
+            }
+            Err(mut reasons) => refused.append(&mut reasons),
+        }
+    }
+    if refused.is_empty() {
+        Ok(out)
+    } else {
+        Err(refused)
+    }
 }
 
 /// The `upstream_credentials` refusals (IF §12.18 round 22, (i)-(iii)), run at config load once the bindings are

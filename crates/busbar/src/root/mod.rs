@@ -46,6 +46,8 @@ pub mod cli;
 pub(crate) mod cold;
 pub mod connector;
 pub mod credentials;
+pub(crate) mod provisioning;
+pub(crate) mod provisioning_mount;
 // busbar:request-path
 #[cfg_attr(
     not(test),
