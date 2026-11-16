@@ -1040,3 +1040,87 @@ async fn a_unit_that_wrote_nothing_has_no_ttft() {
         "a unit that dialled made no attempt"
     );
 }
+
+#[tokio::test]
+async fn a_terminal_stage_refusal_is_not_success_after_the_unit_has_completed() {
+    for closed in [false, true] {
+        let node = Arc::new(Node::new());
+        let fixture = crate::root::durability::tests::NativeFixture::new(7).await;
+        let durability = fixture.book().await;
+        let book = Arc::new(Mutex::new(durability));
+        node.bind_book(Arc::clone(&book));
+        let post = NodeEndPost::new(Arc::clone(&node));
+        let key = node.mint();
+        let arrived = node.arrived();
+        let who = PrincipalId::new("acct:seal");
+        let ctx = UnitCtx {
+            call: node.kernel.next_call(),
+            key,
+            origin: OriginKind::Client,
+            session: None,
+            generation: busbar_kernel::registry::Generation::FIRST,
+            admin_listener: false,
+            kernel_verb_only: false,
+        };
+        let cell = busbar_contract::caps::HoldCell::new(busbar_kernel::inflight::arrival_hold(
+            &node.kernel,
+            &node.door,
+            who.clone(),
+            ctx.call,
+        ));
+        let leases = busbar_kernel::slice::LeaseCell::new();
+        let meter = AccrualMeter::new();
+        post.open(key, who.clone(), arrived, None);
+        let ended = busbar_kernel::teller::run_unit_async(
+            &node.kernel,
+            &ToDestination,
+            &ctx,
+            busbar_kernel::teller::Run {
+                cell: &cell,
+                parent: None,
+                leases: &leases,
+                gauge: &node.gauge,
+                canary: &node.canary,
+                meter: &meter,
+                taps: Some(&post),
+            },
+            &ToDestination,
+        )
+        .await;
+        assert!(matches!(&ended, Ended::Settled { end, .. } if end.outcome().is_completed()));
+        let open = post
+            .take(key)
+            .expect("the actual completed unit retained its audit facts");
+        let seal = open
+            .sealing
+            .into_seal(key, node.kernel.origin(OriginKind::Client), None)
+            .unwrap();
+        let journal = book.lock().unwrap().journal.clone();
+        if closed {
+            journal.stop_staging().unwrap();
+        } else {
+            let entry =
+                busbar_kernel_wal::Entry::new(busbar_kernel_wal::RecordClass::Load, Vec::new());
+            for _ in 0..crate::root::durability::tests::BUDGET.records {
+                journal.stage_run(&[entry.clone()]).unwrap();
+            }
+        }
+        assert!(
+            node.journal_failed().is_ok(),
+            "stage refusal does not latch failure"
+        );
+        let before = journal.next_seq();
+        let confirmation = node.seal_end_task(&who, arrived, None, ended, Some(seal), Vec::new());
+        assert!(
+            await_terminal(confirmation).await.is_err(),
+            "a refused terminal audit must fail the request"
+        );
+        assert_eq!(
+            journal.next_seq(),
+            before,
+            "refusal must not advance the journal"
+        );
+        assert!(book.lock().unwrap().audit_records().is_empty());
+        assert_eq!(post.open_units(), 0);
+    }
+}
