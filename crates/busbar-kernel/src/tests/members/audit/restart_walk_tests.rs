@@ -201,6 +201,68 @@ fn a_clean_tail_after_a_live_page_is_sealed() {
     }
 }
 
+/// Certificates occupy the same linked chain as units. A restart page must include a
+/// certificate in its tail instead of treating the next unit as a sequence/link gap.
+#[test]
+fn a_certificate_in_the_crash_tail_is_walked_as_a_linked_record() {
+    use busbar_contract::crypto::{LocalSigner, Signer};
+    use busbar_kernel_audit::notary_key::NotaryKeyRecord;
+    let (_, mut all) = lines(3);
+    let (_, bootstrap) = signers(SEED);
+    let delegated = LocalSigner::from_seed(&[0x65; 32]).unwrap();
+    let prev = Fingerprint::from_hex(&all[0].hash).unwrap();
+    let mut certificate = NotaryKeyRecord {
+        node: NODE,
+        seq: 2,
+        linked_ms: T0 + 2,
+        prev_link: prev,
+        fingerprint: Fingerprint::ZERO,
+        certificate: bootstrap
+            .sign_notary_key(NODE, 2, prev, delegated.public_key())
+            .unwrap(),
+    };
+    certificate.fingerprint = certificate.recompute_fingerprint();
+    all[2].prev_hash = certificate.fingerprint.to_string();
+    all[2].hash = AuditChain::digest_of(&all[2]);
+    let items = vec![
+        TailItem::Line {
+            record: all[0].clone(),
+            node_seq: 1,
+        },
+        TailItem::Stamp {
+            stamp: stamp(&all[..1], StampKind::Live, HOST, T0 + 1),
+            node_seq: 2,
+        },
+        TailItem::Certificate {
+            record: certificate,
+            node_seq: 3,
+        },
+        TailItem::Line {
+            record: all[2].clone(),
+            node_seq: 4,
+        },
+    ];
+    let key = public();
+    assert!(matches!(
+        walk_tail(
+            &items,
+            &WalkContext {
+                node: NODE,
+                host: HOST,
+                key: &key,
+                complete: true
+            }
+        ),
+        WalkOutcome::Clean {
+            from: 2,
+            to: 3,
+            from_node_seq: 3,
+            to_node_seq: 4,
+            ..
+        }
+    ));
+}
+
 /// M == T: a chain whose last page covers its tail needs no signature (after a clean shutdown
 /// the final page is the anchor and the walk ends at once).
 #[test]
