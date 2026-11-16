@@ -413,3 +413,101 @@ async fn a_flush_pass_keeps_each_recovery_phase_in_one_batch() {
         "no event is kept outside its phase's batch"
     );
 }
+
+/// Signs unit checkpoints and confirms every audit line (the line is not under test here).
+struct Signer(busbar_kernel_audit::AuditSigningKey);
+#[async_trait::async_trait]
+impl crate::governance::unit_checkpoint_store::UnitCheckpointAudit for Signer {
+    fn keys(&self) -> busbar_kernel_audit::AuditKeySet {
+        let mut keys = busbar_kernel_audit::AuditKeySet::new();
+        keys.insert(
+            busbar_kernel_audit::AuditVerifyingKey::from_hex(&self.0.public_key_hex()).unwrap(),
+        );
+        keys
+    }
+    fn sign_checkpoint(&self, body: &[u8]) -> RecordStoreResult<Vec<u8>> {
+        Ok(self.0.sign_checkpoint_body(body))
+    }
+    async fn confirm(
+        &self,
+        _: &UnitCheckpoint,
+        _: Option<crate::persistence::journal::runtime::Carried>,
+    ) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    async fn recover(&self, _: &UnitCheckpoint) -> RecordStoreResult<()> {
+        Ok(())
+    }
+}
+
+/// WHO: the settlement flusher draining one pass of finished units with no handoffs, over the
+/// store-backed recovery and unit checkpoint sinks, with no concurrent appender.
+/// DOES: (SHUTDOWN-HANG F3.3, 8.3) the whole pass holds the node journal's lane exactly nine
+/// times, whatever the batch size: P 2 (append, select), T 2, K1 2, K2 2, R 1 (delete); V, A and
+/// every custody confirmation are lane-free (no fallback).
+/// WHY: per-item lane holds capped settlement at about one item per store round trip and queued
+/// every request-path append behind the flusher.
+#[tokio::test]
+async fn a_flush_pass_holds_the_journal_lane_nine_times() {
+    let store = crate::real_store::core().await;
+    let cm = grouped_cost();
+    let key = key("vk_lane_holds", Some("g"));
+    store.identity().put_key(&key).await.unwrap();
+    let now = crate::store::now();
+    let journal = crate::persistence::journal::runtime::RuntimeJournal::open(
+        store.core(),
+        7,
+        crate::persistence::journal::runtime::BufferBudget {
+            records: 1024,
+            bytes: 4 * 1024 * 1024,
+        },
+    )
+    .await
+    .unwrap();
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
+    gov.attach_recovery_sink(Arc::new(
+        crate::governance::persistence::recovery::StoreRecovery::new(
+            journal.clone(),
+            crate::teller::Kernel::new().durability_token(),
+        )
+        .unwrap(),
+    ))
+    .await
+    .unwrap();
+    let evidence = Arc::new(
+        crate::governance::unit_checkpoint_store::UnitCheckpointEvidence::new(
+            journal.clone(),
+            crate::teller::Kernel::new().durability_token(),
+        ),
+    );
+    gov.attach_unit_checkpoint_sink(Arc::new(
+        crate::governance::unit_checkpoint_store::StoreUnitCheckpoints::new(
+            evidence,
+            Arc::new(Signer(busbar_kernel_audit::AuditSigningKey::from_seed(
+                &[0x39; 32],
+            ))),
+        ),
+    ))
+    .await
+    .unwrap();
+    assert!(gov.unit_checkpoints_enabled());
+    for id in 0x71..=0x74u8 {
+        let grant = gov.try_admit(&cm, &key, "", now).expect("admitted");
+        let mut unit = laneless_unit(&cm, &key, now, id);
+        unit.metered = true;
+        unit.provider = Some("lane-holds".into());
+        unit.audit = Some(b"{}".to_vec());
+        assert!(gov.finish_unit_checkpoint(unit));
+        drop(grant);
+    }
+    let before = journal.lane_holds();
+    gov.flush_unit_checkpoints().await.unwrap();
+    assert_eq!(
+        journal.lane_holds() - before,
+        9,
+        "one pass: P 2, T 2, K1 2, K2 2, R 1"
+    );
+    assert_eq!(journal.lane_fallbacks(), 0, "no confirmation took the lane");
+}

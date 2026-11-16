@@ -180,6 +180,9 @@ pub struct RuntimeJournal {
     progress: tokio::sync::watch::Sender<Progress>,
     /// Confirmations that fell back to the publication driver (SHUTDOWN-HANG F1, counted).
     lane_fallbacks: std::sync::atomic::AtomicU64,
+    /// Test probe: acquisitions of the publication driver, the journal lane (SHUTDOWN-HANG 8.3).
+    #[cfg(test)]
+    lane_holds: std::sync::atomic::AtomicU64,
 }
 impl RuntimeJournal {
     /// Root constructs exactly one shared owner and passes this same Arc to
@@ -234,6 +237,8 @@ impl RuntimeJournal {
             driving: tokio::sync::Mutex::new(()),
             progress: tokio::sync::watch::Sender::new(Progress::default()),
             lane_fallbacks: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(test)]
+            lane_holds: std::sync::atomic::AtomicU64::new(0),
         }))
     }
 
@@ -516,7 +521,7 @@ impl RuntimeJournal {
                     None => self.confirm_completed(run),
                 }
             }
-            driver = self.driving.lock() => self.drive_locked(&driver, target).await,
+            driver = self.lane() => self.drive_locked(&driver, target).await,
         }
     }
 
@@ -620,7 +625,7 @@ impl RuntimeJournal {
             }
             None => None,
         };
-        let _driver = self.driving.lock().await;
+        let _driver = self.lane().await;
         let verified = self.live_head()?;
         // Anything after `checked` is this owner's own Applied appends, each
         // verified as it was applied: the one writer vouches for them.
@@ -696,7 +701,7 @@ impl RuntimeJournal {
     /// head was built by the opening replay and extended only by this owner's
     /// Applied appends, so no history is replayed here.
     pub(crate) async fn live_proof(&self) -> std::result::Result<Arc<VerifiedHead>, RuntimeError> {
-        let driver = self.driving.lock().await;
+        let driver = self.lane().await;
         self.drive_locked(&driver, self.staged_target()?).await?;
         let verified = self.live_head()?;
         StoreJournal::new(&self.store, self.node)
@@ -727,7 +732,7 @@ impl RuntimeJournal {
     ) -> std::result::Result<(Arc<VerifiedHead>, WriteResult), RuntimeError> {
         let journal = StoreJournal::new(&self.store, self.node).map_err(RuntimeError::from)?;
         let pre = self.live_head()?;
-        let driver = self.driving.lock().await;
+        let driver = self.lane().await;
         self.drive_locked(&driver, self.staged_target()?).await?;
         let proof = match retained {
             Some(proof) => proof,
@@ -778,7 +783,7 @@ impl RuntimeJournal {
     ) -> std::result::Result<(Arc<VerifiedHead>, WriteResult), RuntimeError> {
         let journal = StoreJournal::new(&self.store, self.node).map_err(RuntimeError::from)?;
         let pre = self.live_head()?;
-        let driver = self.driving.lock().await;
+        let driver = self.lane().await;
         self.drive_locked(&driver, self.staged_target()?).await?;
         let proof = match retained {
             Some(proof) => proof,
@@ -845,7 +850,7 @@ impl RuntimeJournal {
         }
         self.lane_fallbacks
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let _driver = self.driving.lock().await;
+        let _driver = self.lane().await;
         // Under the driver nothing moves H; a pinned group whose reply was lost may still have
         // applied, so its `next` stays a known own head.
         let (verified, next) = self.head_window()?;
@@ -944,6 +949,22 @@ impl RuntimeJournal {
             .saturating_sub(1))
     }
 
+    /// The publication driver: the journal lane. Every append, every selection CAS and every
+    /// confirmation that falls back to the driver holds it once (counted in tests, 8.3).
+    async fn lane(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        let driver = self.driving.lock().await;
+        #[cfg(test)]
+        self.lane_holds
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        driver
+    }
+
+    /// Test probe: how many times the journal lane was held (SHUTDOWN-HANG 8.3).
+    #[cfg(test)]
+    pub(crate) fn lane_holds(&self) -> u64 {
+        self.lane_holds.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Test probe: whether the publication driver is free right now.
     #[cfg(test)]
     pub(crate) fn driver_is_free(&self) -> bool {
@@ -954,7 +975,7 @@ impl RuntimeJournal {
     /// store limits) in one store append, so concurrent waiters share one round
     /// trip instead of queueing one append each behind the driver lock.
     async fn drive_through(&self, target: u64) -> std::result::Result<(), RuntimeError> {
-        let driver = self.driving.lock().await;
+        let driver = self.lane().await;
         self.drive_locked(&driver, target).await
     }
 
