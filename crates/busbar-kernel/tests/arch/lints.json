@@ -90,12 +90,12 @@
       "crates/plugin-loader/src/export_door/port.rs": ["DestAppend"],
       "crates/plugin-loader/src/hook_door/port.rs": ["HookOpener"],
       "crates/plugin-loader/src/observe.rs": ["PluginObserver"],
-      "crates/plugin-loader/src/ports/auth.rs": ["AuthPort"],
-      "crates/plugin-loader/src/ports/export.rs": ["ExportPort"],
-      "crates/plugin-loader/src/ports/hook.rs": ["HookPort"],
-      "crates/plugin-loader/src/ports/plane.rs": ["PlanePort"],
-      "crates/plugin-loader/src/ports/secret.rs": ["SecretPort"],
-      "crates/plugin-loader/src/ports/transport.rs": ["TransportPort"]
+      "crates/busbar-ports/src/auth.rs": ["AuthPort"],
+      "crates/busbar-ports/src/export.rs": ["ExportPort"],
+      "crates/busbar-ports/src/hook.rs": ["HookPort"],
+      "crates/busbar-ports/src/plane.rs": ["PlanePort"],
+      "crates/busbar-ports/src/secret.rs": ["SecretPort"],
+      "crates/busbar-ports/src/transport.rs": ["TransportPort"]
     },
     "macro_implemented": {
       "crates/busbar-contract/src/caps/capability.rs": ["Capability", "Sealed"],

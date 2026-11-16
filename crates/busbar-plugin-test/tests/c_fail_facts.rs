@@ -121,8 +121,8 @@ fn hand_written_bad_fact_answers_fault() {
 fn store_adapter_maps_the_facts() {
     use busbar_contract::persistence::Failure;
     use busbar_plugin_abi::fail::failed;
-    use busbar_plugin_loader::ports::PortError;
     use busbar_plugin_test::fake_needs::FakeNeeds;
+    use busbar_ports::PortError;
 
     use crate::min3_store::{booted, inline, read_one, Capture, NOT_ANSWERED_OK};
 
@@ -184,7 +184,7 @@ fn store_adapter_maps_the_facts() {
 fn secret_adapter_maps_the_facts() {
     use busbar_plugin_abi::host_side::scrub::Scrub;
     use busbar_plugin_loader::adapters::secret::port_failure;
-    use busbar_plugin_loader::ports::PortError;
+    use busbar_ports::PortError;
 
     let scrub = Scrub::new();
     assert_eq!(
@@ -230,8 +230,8 @@ fn auth_adapter_maps_the_facts() {
     use busbar_plugin_abi::host_side::scrub::Scrub;
     use busbar_plugin_abi::types::Status;
     use busbar_plugin_loader::adapters::auth::plugin_error;
-    use busbar_plugin_loader::instance::PluginCode;
-    use busbar_plugin_loader::ports::PortError;
+    use busbar_ports::PluginCode;
+    use busbar_ports::PortError;
 
     let scrub = Scrub::new();
     let code = PluginCode {
@@ -301,7 +301,7 @@ fn hook_adapter_maps_the_facts() {
     use busbar_plugin_abi::fail::failed;
     use busbar_plugin_abi::host_side::scrub::Scrub;
     use busbar_plugin_loader::adapters::hook::port_error;
-    use busbar_plugin_loader::ports::PortError;
+    use busbar_ports::PortError;
 
     let scrub = Scrub::new();
     assert_eq!(
@@ -346,8 +346,8 @@ fn export_adapter_maps_the_facts() {
     use busbar_plugin_abi::export::STREAM_LOGS;
     use busbar_plugin_abi::fail::failed;
     use busbar_plugin_abi::host_side::caller::CallStack;
-    use busbar_plugin_loader::ports::{CallCx, PortError};
     use busbar_plugin_test::fake_needs::FakeNeeds;
+    use busbar_ports::{CallCx, PortError};
 
     use crate::min3_store::booted;
 
@@ -408,7 +408,7 @@ fn plane_admin_maps_the_facts() {
     use busbar_plugin_abi::fail::failed;
     use busbar_plugin_abi::host_side::scrub::Scrub;
     use busbar_plugin_loader::adapters::plane::port_error;
-    use busbar_plugin_loader::ports::PortError;
+    use busbar_ports::PortError;
 
     let scrub = Scrub::new();
     assert_eq!(
@@ -450,7 +450,7 @@ fn retry_policy_honours_retry_after() {
 
     use busbar_kernel::retry::{Policy, Retry, RetryPolicy, RetrySite};
     use busbar_plugin_abi::fail::failed;
-    use busbar_plugin_loader::ports::PortError;
+    use busbar_ports::PortError;
 
     let err = PortError::Failed {
         code: failed::F_UNAVAILABLE,

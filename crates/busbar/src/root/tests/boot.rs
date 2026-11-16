@@ -761,7 +761,7 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
         serde_json::json!({
             "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
             "store": {"module": module, "settings": settings},
-            "advanced": {"allow_destinations": ["127.0.0.1"]}
+            "advanced": {}
         }),
         &crate::root::boot::axis_test_grammar(),
     )

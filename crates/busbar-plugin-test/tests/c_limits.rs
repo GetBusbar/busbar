@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use busbar_kernel::port_call::PortGate;
 use busbar_plugin_abi::fail::CallError;
 use busbar_plugin_abi::host_side::caller::{CallStack, InstanceLimits};
-use busbar_plugin_loader::ports::{CallCx, PortError};
+use busbar_ports::{CallCx, PortError};
 use tokio::sync::Notify;
 
 fn cx(within: Duration) -> CallCx {

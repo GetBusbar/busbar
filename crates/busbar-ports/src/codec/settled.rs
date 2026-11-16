@@ -9,7 +9,7 @@ use busbar_plugin_abi::host_side::answer::Answer;
 use busbar_plugin_abi::kinds::export::export::tag::CUSTODY;
 use busbar_plugin_abi::records::{core_cfg, tag, CoreCfgRec, Rec, RecErr, Records};
 
-use crate::ports::SettledOut;
+use crate::SettledOut;
 
 pub fn decode_settled<'o>(a: &Answer<'o>) -> Result<Option<SettledOut<'o>>, RecErr> {
     settled_records(a.records())
@@ -79,15 +79,14 @@ fn settled_records(mut recs: Records<'_>) -> Result<Option<SettledOut<'_>>, RecE
     }))
 }
 
-pub(crate) fn for_purpose<'a>(
+pub fn for_purpose<'a>(
     recs: Records<'a>,
-    purpose: crate::instance::OpenPurpose,
+    converting: bool,
 ) -> Result<Option<SettledOut<'a>>, RecErr> {
-    use crate::instance::OpenPurpose;
     let out = settled_records(recs)?;
-    match (&out, purpose) {
-        (None, OpenPurpose::ConvertUnstamped) => Err(RecErr::Truncated),
-        (Some(out), OpenPurpose::Canonical) if !out.core_cfg.rest().is_empty() => {
+    match (&out, converting) {
+        (None, true) => Err(RecErr::Truncated),
+        (Some(out), false) if !out.core_cfg.rest().is_empty() => {
             Err(RecErr::Unknown(tag::CORE_CFG))
         }
         _ => Ok(out),

@@ -38,7 +38,7 @@ async fn an_open_chain_admits_a_session_anonymous_and_ungoverned() {
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -135,7 +135,7 @@ async fn a_configured_chain_denies_a_session_with_no_credential() {
             "models": {},
             "auth": { "chain": ["keys"], "admin_auth": [], "signing_key": { "file": signing_key } },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )

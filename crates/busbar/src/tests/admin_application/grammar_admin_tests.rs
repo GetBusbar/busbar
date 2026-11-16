@@ -57,7 +57,7 @@ async fn served(tag: &str) -> Served {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
         "plugins": crate::root::test_plugins::config_document(&plugin_config),
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -259,7 +259,7 @@ async fn admin_validate_answers_needs_full_operator_where_apply_forbids() {
         "validate names the cause class and the field class: {view}"
     );
     assert!(
-        !errors.contains(".tar.gz") && !errors.contains("allow_unsigned"),
+        !errors.contains(".tar.gz") && !errors.contains("allow_untrusted"),
         "the answer carries no file name and no trust setting: {view}"
     );
 

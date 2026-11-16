@@ -103,7 +103,7 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -163,7 +163,11 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
         .publishers
         .push(busbar_kernel::config::PluginPublisher {
             name: "third-party".into(),
-            public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
+            plugins: vec![module.clone()],
+            keys: vec![busbar_kernel::config::PluginPublisherKey {
+                public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
+                revoked: false,
+            }],
         });
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");

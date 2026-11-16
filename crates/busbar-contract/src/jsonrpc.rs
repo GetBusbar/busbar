@@ -52,7 +52,7 @@
 //! code that built the outbound request, and is gone when that code returns: nothing is remembered
 //! between two calls, so there is nothing to invalidate.
 
-use crate::json::{JsonValueTrait as _, Value};
+use crate::json::{JsonContainerTrait as _, JsonValueTrait as _, Value};
 
 /// The JSON-RPC 2.0 standard error codes this module can produce.
 pub const PARSE_ERROR: i64 = -32700;

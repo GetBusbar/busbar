@@ -28,6 +28,66 @@ fn consumed_core_prefixes_exclude_plugin_lift_authority() {
 }
 use crate::plugin_config::TrustAnchor;
 
+#[test]
+fn binding_resolution_updates_only_the_instances_own_caller_list() {
+    use crate::auth_bindings::OperatorAuth;
+    let config = json!({"servers": {
+        "own": {"url":"https://a.test", "auth":"own-auth"},
+        "caller": {"url":"https://b.test", "auth":"caller-auth"}
+    }});
+    let mut split = declared("p", &config, &["/servers/*"], &anchor).unwrap();
+    assert!(split.caller_upstreams().is_empty());
+    let operator = [
+        OperatorAuth {
+            name: "own-auth",
+            module: "auth-image",
+            style: Some("bearer"),
+            settings_keys: Vec::new(),
+        },
+        OperatorAuth {
+            name: "caller-auth",
+            module: "auth-image",
+            style: Some("oauth-connection"),
+            settings_keys: Vec::new(),
+        },
+    ];
+    let implicit = split
+        .resolve_bindings(
+            &[("auth-image", vec!["bearer", "oauth-connection"])],
+            &operator,
+            &|_, style| {
+                if style == "oauth-connection" {
+                    busbar_plugin_abi::auth::STYLE_CALLER
+                } else {
+                    0
+                }
+            },
+        )
+        .unwrap();
+    assert!(implicit.is_empty());
+    assert_eq!(split.caller_upstreams(), vec![Box::<str>::from("caller")]);
+    assert!(
+        !split
+            .definitions
+            .get("own")
+            .unwrap()
+            .auth
+            .as_ref()
+            .unwrap()
+            .caller
+    );
+    assert!(
+        split
+            .definitions
+            .get("caller")
+            .unwrap()
+            .auth
+            .as_ref()
+            .unwrap()
+            .caller
+    );
+}
+
 fn anchor(_: &str) -> Result<Arc<TrustAnchor>, String> {
     Err("fixture has no trust anchor".into())
 }
@@ -55,8 +115,7 @@ fn declared_registrations_keep_private_reach_and_auth_isolated() {
     let other = declared("plane-b", &json!({}), &[], &anchor).unwrap();
     assert!(other.definitions.is_empty());
 
-    let config =
-        json!({"servers": {"c": {"url": "https://private.test", "auth": {"bearer": "none"}}}});
+    let config = json!({"servers": {"c": {"url": "https://private.test", "auth": {"bearer": {"module":"file", "settings":{"path":"/run/token"}}}}}});
     let a = declared("a-b", &config, &["/servers/*"], &anchor).unwrap();
     let b = declared(
         "a",

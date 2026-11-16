@@ -63,7 +63,7 @@ use busbar_kernel::upstreams::{ConfiguredUpstreams, UpstreamDef, Upstreams};
 use busbar_kernel_egress::ports::{Dispatched, DurabilityUnavailable, Journal};
 use busbar_plugin_abi::host_side::caller::{transport_verdict, Accept, BoxFut, Verdict};
 use busbar_plugin_abi::need::need_flag::{TLS_NONE, TLS_REQUIRED};
-use busbar_plugin_loader::ports::plane::PlanePort;
+use busbar_ports::plane::PlanePort;
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio::process::Command;
 use tokio::runtime::Handle;

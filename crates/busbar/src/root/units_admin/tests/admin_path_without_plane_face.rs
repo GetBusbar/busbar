@@ -184,7 +184,7 @@ async fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
             "providers": {}, "models": {},
             "auth": {"chain": [], "admin_auth": []},
             "store": {"module": module, "settings": settings},
-            "advanced": {"allow_destinations": ["127.0.0.1"]},
+            "advanced": {},
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -386,7 +386,7 @@ async fn the_mounted_live_admin_door_keeps_no_verdict_apart_from_bad_credentials
                 "providers": {}, "models": {},
                 "auth": {"chain": [], "admin_auth": []},
                 "store": {"module": module, "settings": settings},
-                "advanced": {"allow_destinations": ["127.0.0.1"]},
+                "advanced": {},
             }),
             &crate::root::boot::axis_test_grammar(),
         )
@@ -705,7 +705,7 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
             "providers": {}, "models": {},
             "auth": {"chain": [], "admin_auth": []},
             "store": {"module": module, "settings": settings},
-            "advanced": {"allow_destinations": ["127.0.0.1"]},
+            "advanced": {},
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -851,7 +851,7 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
             "providers": {}, "models": {},
             "auth": {"chain": [], "admin_auth": []},
             "store": {"module": module, "settings": settings},
-            "advanced": {"allow_destinations": ["127.0.0.1"]},
+            "advanced": {},
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -984,7 +984,7 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
             "providers": {}, "models": {},
             "auth": {"chain": [], "admin_auth": []},
             "store": {"module": module, "settings": settings},
-            "advanced": {"allow_destinations": ["127.0.0.1"]},
+            "advanced": {},
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -1208,7 +1208,7 @@ async fn a_q71_node_trusting(
             "providers": {}, "models": {},
             "auth": {"chain": [], "admin_auth": []},
             "store": {"module": module, "settings": settings},
-            "advanced": {"allow_destinations": ["127.0.0.1"]},
+            "advanced": {},
         }),
         &crate::root::boot::axis_test_grammar(),
     )

@@ -63,7 +63,7 @@ async fn hosted_with_secret(
         serde_json::json!({
             "providers":{},"models":{},"public_url":"https://busbar.example.com",
             "identity-providers":definitions,"auth":{"chain":[],"admin_auth":[]},
-            "advanced":{"allow_destinations":["127.0.0.1"]},
+            "advanced":{},
         }),
         &library,
     )

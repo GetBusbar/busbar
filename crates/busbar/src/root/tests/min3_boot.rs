@@ -224,23 +224,21 @@ fn two_plane_images_answering_one_instance_name_are_refused() {
 /// K7: the boot's one upstream table is the config's `upstreams:` section, each entry typed with its binding
 /// (IF §12.1), so every plane seat's walk and carrier compose over what the operator configured.
 #[test]
-fn the_boot_s_upstream_table_is_the_configured_upstreams_section() {
+fn the_boot_types_only_the_declared_registration_table() {
     use busbar_kernel::upstreams::Upstreams;
-    let deploy = busbar_kernel::config::deploy_from_deserializer(
-        serde_json::json!({
-            "providers": {},
-            "models": {},
-            "upstreams": {
+    let split = busbar_kernel::upstreams::declared(
+        "plane",
+        &busbar_contract::json::json!({
+            "servers": {
                 "docs": {"url": "https://docs.example/mcp", "auth": "corp-outbound"},
                 "local": {"command": {"argv": ["/opt/mcp/server"]}},
             },
         }),
-        &busbar_kernel::config::Grammar::empty(),
+        &["/servers/*"],
+        &busbar_kernel::plugin_config::upstream_anchor,
     )
-    .expect("a config with an upstreams section parses");
-    let cfg =
-        busbar_kernel::config::resolve(&deploy, &Default::default()).expect("the config resolves");
-    let table = configured_upstreams(&cfg).expect("the table types");
+    .expect("declared registrations parse");
+    let table = split.definitions;
     assert_eq!(table.names().collect::<Vec<_>>(), ["docs", "local"]);
     let docs = table.get("docs").expect("docs is configured");
     assert_eq!(docs.url.as_deref(), Some("https://docs.example/mcp"));

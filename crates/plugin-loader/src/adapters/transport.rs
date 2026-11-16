@@ -27,12 +27,13 @@ use busbar_plugin_abi::transport::{
 };
 use busbar_plugin_abi::types::{Bytes, Status, Str};
 
-use crate::encode::transport::{decode_offer, encode_keying, encode_path, Offer};
-use crate::instance::{ErrorBook, PluginCode};
-use crate::ports::transport::{
+use crate::instance::ErrorBook;
+use busbar_ports::codec::transport::{decode_offer, encode_keying, encode_path, Offer};
+use busbar_ports::transport::{
     ConnIn, TransportEvent, TransportOut, TransportPort, TransportSession,
 };
-use crate::ports::PortError;
+use busbar_ports::PluginCode;
+use busbar_ports::PortError;
 
 /// The HTTP status of the one head an UPGRADE may answer (RFC 9110 §15.2.2).
 const SWITCHING_PROTOCOLS: u32 = 101;

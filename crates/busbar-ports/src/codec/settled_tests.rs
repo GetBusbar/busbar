@@ -37,20 +37,21 @@ fn an_open_answer_with_only_an_instance_has_no_settled_part() {
 
 #[test]
 fn converting_open_requires_config_and_canonical_open_refuses_core_fragments() {
-    use crate::instance::OpenPurpose::{Canonical, ConvertUnstamped};
+    const CONVERT_UNSTAMPED: bool = true;
+    const CANONICAL: bool = false;
     let empty = open();
-    assert!(for_purpose(Records::new(empty.as_bytes()), ConvertUnstamped).is_err());
-    assert!(for_purpose(Records::new(empty.as_bytes()), Canonical)
+    assert!(for_purpose(Records::new(empty.as_bytes()), CONVERT_UNSTAMPED).is_err());
+    assert!(for_purpose(Records::new(empty.as_bytes()), CANONICAL)
         .unwrap()
         .is_none());
     let mut w = open();
     w.put(tag::CONFIG, b"{}").unwrap();
-    assert!(for_purpose(Records::new(w.as_bytes()), ConvertUnstamped)
+    assert!(for_purpose(Records::new(w.as_bytes()), CONVERT_UNSTAMPED)
         .unwrap()
         .is_some());
     cfg(&mut w, core_cfg::LIFT, "", br#""/token""#);
-    assert!(for_purpose(Records::new(w.as_bytes()), Canonical).is_err());
-    assert!(for_purpose(Records::new(w.as_bytes()), ConvertUnstamped)
+    assert!(for_purpose(Records::new(w.as_bytes()), CANONICAL).is_err());
+    assert!(for_purpose(Records::new(w.as_bytes()), CONVERT_UNSTAMPED)
         .unwrap()
         .is_some());
 }

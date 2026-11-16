@@ -18,8 +18,8 @@ use busbar_kernel::custody::{
 use busbar_kernel::plugin_config::{ConfigBinder, RefSource};
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
 use busbar_plugin_abi::host_side::scrub::Scrub;
-use busbar_plugin_loader::ports::secret::SecretPort;
-use busbar_plugin_loader::ports::CallCx;
+use busbar_ports::secret::SecretPort;
+use busbar_ports::CallCx;
 use foldhash::HashMap;
 
 /// The open secret instances, by the operator's configured instance name. Copied on write: an instance opens

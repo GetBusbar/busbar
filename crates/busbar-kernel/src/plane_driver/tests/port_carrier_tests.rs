@@ -17,8 +17,8 @@ use busbar_plugin_abi::plane::{
     P_SIGNAL, P_TEXT, P_TIMER,
 };
 use busbar_plugin_abi::records::Records;
-use busbar_plugin_loader::ports::plane::{PlaneIn, PlaneOut, TargetIn};
-use busbar_plugin_loader::ports::PortError;
+use busbar_ports::plane::{PlaneIn, PlaneOut, TargetIn};
+use busbar_ports::PortError;
 use tokio::sync::mpsc;
 
 use super::{ExchangeUpstreams, Mapped, PortCarrier};
@@ -41,6 +41,7 @@ const INSTANCE: u64 = 7;
 
 fn def(name: &str) -> Arc<UpstreamDef> {
     Arc::new(UpstreamDef {
+        allow_private: false,
         name: name.into(),
         url: None,
         command: Some(StdioCommand {

@@ -5,7 +5,7 @@
 
 use busbar_plugin_abi::host_side::caller::BoxFut;
 
-use crate::ports::{CallCx, PortError};
+use crate::{CallCx, PortError};
 
 pub struct FamilyIn<'a> {
     pub kind: u32,

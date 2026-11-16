@@ -79,10 +79,7 @@ pub trait StoreOpener: Send + Sync {
         spec: &'a busbar_plugin_loader::instance::InstanceSpec<'a>,
     ) -> busbar_plugin_abi::host_side::caller::BoxFut<
         'a,
-        Result<
-            busbar_plugin_loader::ports::store::StoreHandle,
-            busbar_plugin_loader::instance::OpenError,
-        >,
+        Result<busbar_ports::store::StoreHandle, busbar_plugin_loader::instance::OpenError>,
     >;
 }
 
@@ -94,10 +91,7 @@ impl<N: busbar_plugin_abi::host_side::needs::Needs> StoreOpener
         spec: &'a busbar_plugin_loader::instance::InstanceSpec<'a>,
     ) -> busbar_plugin_abi::host_side::caller::BoxFut<
         'a,
-        Result<
-            busbar_plugin_loader::ports::store::StoreHandle,
-            busbar_plugin_loader::instance::OpenError,
-        >,
+        Result<busbar_ports::store::StoreHandle, busbar_plugin_loader::instance::OpenError>,
     > {
         busbar_plugin_loader::instance::Registry::open_store(self, spec)
     }
@@ -113,10 +107,7 @@ impl StoreOpener for Unopened {
         _spec: &'a busbar_plugin_loader::instance::InstanceSpec<'a>,
     ) -> busbar_plugin_abi::host_side::caller::BoxFut<
         'a,
-        Result<
-            busbar_plugin_loader::ports::store::StoreHandle,
-            busbar_plugin_loader::instance::OpenError,
-        >,
+        Result<busbar_ports::store::StoreHandle, busbar_plugin_loader::instance::OpenError>,
     > {
         Box::pin(core::future::ready(Err(
             busbar_plugin_loader::instance::OpenError::Unknown(

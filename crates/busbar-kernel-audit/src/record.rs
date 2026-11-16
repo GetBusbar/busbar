@@ -268,6 +268,33 @@ pub struct UnitFacts {
     pub attempts: [Option<Attempt>; ATTEMPT_SLOTS],
     /// How many attempts were made in all, including those beyond the slots.
     pub attempts_total: u32,
+    /// What `records.user` and `records.labels` keep (§3.5): empty unless the operator switched
+    /// them on, and then sealed as the optional records tail after `attempts_total`.
+    pub records: RecordFacts,
+}
+
+/// How many request labels a record keeps at most (`records.labels`, ADMIN-API-1.6 §3.5).
+pub const LABEL_SLOTS: usize = 8;
+
+/// WHAT `records.user` AND `records.labels` KEEP OF A UNIT (ADMIN-API-1.6 §3.5).
+///
+/// Empty (the default, and everything a record sealed before §3.5 holds) frames nothing: the
+/// recipe and the journal add the records tail only when [`RecordFacts::is_empty`] is false, so
+/// every `v7` record sealed without it keeps its bytes and its digest. Empty costs no allocation.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RecordFacts {
+    /// The end user as `records.user` keeps it: a pseudonym or the cut plain value.
+    pub user: Option<String>,
+    /// The allow-listed request headers, `(lower-case name, value)`, in the allow-list's order.
+    pub labels: Vec<(std::sync::Arc<str>, String)>,
+}
+
+impl RecordFacts {
+    /// Whether nothing is kept, so the record frames no records tail.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.user.is_none() && self.labels.is_empty()
+    }
 }
 
 /// The separator inside [`UnitFacts::attribution`].
@@ -593,6 +620,13 @@ impl AuditChain {
     #[must_use]
     pub fn derived_secret(&self, label: &[u8]) -> Option<[u8; 32]> {
         self.signer.as_ref().map(|k| k.derived_secret(label))
+    }
+
+    /// A key derived from the deployment keyset seed this chain signs with, by HKDF-SHA256 under
+    /// `salt` and `info` ([`crate::sign::AuditSigningKey::derived_key`]); `None` unsigned.
+    #[must_use]
+    pub fn derived_key(&self, salt: &[u8], info: &[u8]) -> Option<[u8; 32]> {
+        self.signer.as_ref().map(|k| k.derived_key(salt, info))
     }
 
     /// SEAL AS THIS NODE from here on: every record names `node` ([`AuditRecord::node`]).

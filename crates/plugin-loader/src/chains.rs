@@ -32,14 +32,14 @@ use busbar_plugin_abi::records::{
 };
 use busbar_plugin_abi::types::{KindCode, Status};
 
-use crate::binder::{BindError, ConfigBinder};
-use crate::encode::settled::for_purpose;
+use crate::answer::{open_error, port_error};
 use crate::instance::{
     BootPhase, CoreCfg, Described, ErrorBook, InstanceSpec, MetricInfo, OpenError, OpenPurpose,
     Registry, Settled, SlotLease, SlotRecord,
 };
-use crate::ports::{open_error, port_error};
 use crate::refusal::{Refusal, RefusalCode};
+use busbar_ports::binder::{BindError, ConfigBinder};
+use busbar_ports::codec::settled::for_purpose;
 
 /// An `open` chain may run this long end to end (its NEEDs included): the first poll is bounded by the §10.6
 /// ceiling, the rest by the Need handlers' own timeouts and the step cap.
@@ -735,7 +735,8 @@ impl<N: Needs> Registry<N> {
     /// kept for `take_settled`. A refused inverse mapping is CONFIG and the instance never serves.
     fn settle(&self, s: &InstanceSpec<'_>, id: u64, answer: &Answer<'_>) -> Result<(), OpenError> {
         let fault = |e: RecErr| OpenError::Call(CallError::Fault(FaultReason::BadRecords(e)));
-        let Some(out) = for_purpose(answer.records(), s.purpose).map_err(|_| {
+        let Some(out) = for_purpose(answer.records(), s.purpose == OpenPurpose::ConvertUnstamped)
+            .map_err(|_| {
             plan_error(format!(
                 "{}: open CONFIG or CORE_CFG violates its purpose",
                 s.name

@@ -647,8 +647,8 @@ pub(crate) fn unit_checkpoint_store_prefix(family: &[u8], node: u64) -> Vec<u8> 
 /// `unit_checkpoint_store`: a checkpoint head or body, encoded once per persisted revision.
 pub(crate) fn unit_checkpoint_store_encode<T: serde::Serialize>(
     value: &T,
-) -> serde_json::Result<Vec<u8>> {
-    serde_json::to_vec(value)
+) -> Result<Vec<u8>, json::Error> {
+    json::to_vec(value)
 }
 
 /// `unit_checkpoint_store`: the replayed checkpoints in id order (boot, when the sink attaches).

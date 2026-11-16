@@ -14,12 +14,11 @@ use std::sync::{
 
 pub(super) fn trust_document(config: &PluginsCfg) -> serde_json::Value {
     let publishers: Vec<_> = config.trust.publishers.iter().map(|publisher| {
-        serde_json::json!({"name": publisher.name, "public_key": publisher.public_key})
+        serde_json::json!({"name": publisher.name, "plugins": publisher.plugins, "keys": publisher.keys.iter().map(|key| serde_json::json!({"public_key": key.public_key, "revoked": key.revoked})).collect::<Vec<_>>()})
     }).collect();
     serde_json::json!({
         "publishers": publishers,
-        "allow_unsigned": config.trust.allow_unsigned,
-        "allow_third_party": config.trust.allow_third_party,
+        "allow_untrusted": config.trust.allow_untrusted,
     })
 }
 
@@ -156,7 +155,7 @@ async fn install_answers_the_admissions_refusals_in_their_classes() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -278,7 +277,7 @@ async fn install_catalog_remove_roundtrip() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -313,7 +312,7 @@ async fn install_catalog_remove_roundtrip() {
         rotate.await;
     }
     std::fs::remove_file(directory.join("store.tar.gz")).unwrap();
-    app.plugins_cfg.trust.allow_unsigned = true;
+    app.plugins_cfg.trust.allow_untrusted = true;
     let router =
         busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -350,7 +349,7 @@ async fn install_catalog_remove_roundtrip() {
     let response = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&json::json!({"file":"junk.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
     assert_eq!(response.status().as_u16(), 201);
     let view = json::parse_value(&response.bytes().await.unwrap()).unwrap();
-    assert_eq!(view["trust"], "unverified");
+    assert_eq!(view["trust"]["verdict"], "unverified");
     assert_eq!(view["name"], upload_name);
     assert!(directory.join("junk.tar.gz").exists(), "tarball published");
     let response = client
@@ -370,7 +369,7 @@ async fn install_catalog_remove_roundtrip() {
     assert_eq!(row["valid"], true);
     assert_eq!(row["name"], upload_name);
     assert_eq!(row["target"], "junk.tar.gz");
-    assert_eq!(row["trust"], "unverified");
+    assert_eq!(row["trust"]["verdict"], "unverified");
     let reloaded = client
         .post(format!("http://{addr}/api/v1/admin/plugins/reload"))
         .header("x-admin-token", "admintok")
@@ -450,7 +449,7 @@ async fn remove_filesystem_failure_is_internal_error() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -583,7 +582,7 @@ async fn catalog_repeat_gets_reuse_the_cached_scan() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -761,7 +760,7 @@ async fn catalog_unreadable_dir_does_not_serve_stale_cache() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -914,7 +913,7 @@ async fn list_plugins_store_single_flights_concurrent_misses() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -1052,7 +1051,7 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -1192,7 +1191,7 @@ async fn list_plugins_store_scan_does_not_park_the_reactor() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -1343,7 +1342,7 @@ async fn store_plugin_catalog_async_times_out_when_gate_is_held() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -1510,7 +1509,7 @@ async fn the_store_catalog_heads_with_the_linked_store_rows() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -1636,7 +1635,7 @@ async fn validate_config_pins_the_scan_to_the_running_plugins_dir() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -1752,7 +1751,7 @@ async fn validate_config_waits_on_the_plugin_scan_gate_and_runs_off_the_reactor(
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -1909,7 +1908,7 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -1957,7 +1956,11 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
         .publishers
         .push(busbar_kernel::config::PluginPublisher {
             name: "acme".into(),
-            public_key: "not-an-ed25519-public-key".into(),
+            plugins: vec!["invalid-publisher-fixture".into()],
+            keys: vec![busbar_kernel::config::PluginPublisherKey {
+                public_key: "not-an-ed25519-public-key".into(),
+                revoked: false,
+            }],
         });
     let refusal = app
         .plugin_admission
@@ -2094,7 +2097,7 @@ async fn rollback_reads_the_target_and_merges_pins() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -2132,7 +2135,11 @@ async fn rollback_reads_the_target_and_merges_pins() {
     let publisher_key = plugins::key(67);
     let publisher = busbar_kernel::config::PluginPublisher {
         name: "acme".into(),
-        public_key: hex::encode(publisher_key.verifying_key().to_bytes()),
+        plugins: vec![manifest.name.clone()],
+        keys: vec![busbar_kernel::config::PluginPublisherKey {
+            public_key: hex::encode(publisher_key.verifying_key().to_bytes()),
+            revoked: false,
+        }],
     };
     app.plugins_cfg.trust.publishers.push(publisher);
     document["plugins"] = serde_json::json!({"enabled":true, "dir":directory, "trust":trust_document(&app.plugins_cfg)});
@@ -2292,7 +2299,7 @@ async fn install_filesystem_failures_are_internal_errors() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
