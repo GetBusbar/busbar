@@ -72,9 +72,10 @@
 /// Two departures from the IF text, both forced (MIN3-RULINGS-COORD, W1-A4): `macro_rules` cannot change an
 /// identifier's case and the owner bans `paste` (UNSAFE-MIN E8), so a kind block states its `M_<METHOD>: u64 =
 /// 1 << i;` lines in `consts` and `kind!` emits `ALL` (and checks `REQUIRED` against it); and the `Proxy` and
-/// `SessionHandle` of §10.4 are not emitted here: busbar-ffi's `Instance`, `Session` and `Chain` are the host
-/// handles (UNSAFE-MIN §4.5, "9 `unsafe impl`s deleted"), and the typed proxies over them land with the host
-/// driver (W1-H1).
+/// `SessionHandle` of §10.4 are not templated here: busbar-ffi's `Instance`, `Session` and `Chain` are the host
+/// handles (UNSAFE-MIN §4.5, "9 `unsafe impl`s deleted"), so each kind states its typed proxy by hand over them
+/// (W1-A4b, `host_side/proxy.rs` holds the shared halves). A kind block may end with `extras { items }`, hand-written
+/// module items (typed helpers, those proxies, unit tests) that sit in the module and are not in `FP`.
 ///
 /// `REQUIRED` is not emitted by `kind!`. Each kind declares it in `consts` (§8). The default `Describe` uses it.
 #[macro_export]
@@ -245,6 +246,15 @@ macro_rules! kind {
         /// The kind fingerprint (IF §7.5): the header, docs, the four blocks and every method signature;
         /// default bodies are not hashed.
         pub const FP: u64 = $crate::fp::fp_parts(&[FP_HEAD.as_bytes(), stringify!($($sigs)*).as_bytes()]);
+    };
+    // ---- `extras { items }`, after the last method: hand-written module items (the typed helpers, the host-side
+    // proxies, unit tests). They sit in the kind's module beside the emitted ones and are not in the FP text
+    // (IF §8: helpers are "outside the `kind!` block, so they are not hashed") ----
+    (@methods $ctx:tt $slot:tt $items:tt $sigs:tt
+        extras { $($extra:item)* }
+    ) => {
+        $($extra)*
+        $crate::kind! { @methods $ctx $slot $items $sigs }
     };
     (@methods $ctx:tt $slot:tt $items:tt $sigs:tt
         $(#[$md:meta])* sync open fn $name:ident ( & $slf:ident , $h:ident : &Host $($args:tt)* )
@@ -664,14 +674,6 @@ macro_rules! kind {
             [$($views)*] [$($pods)*] [$($tags)*] [$($consts)*] [$($methods)*] }
     };
 }
-
-/// Wave-0 pass-through for `kinds/*.rs`: emits its items unchanged, so each kind trait is written inside
-/// `crate::kind::kind_stub! { .. }` where its `kind!` invocation will stand (round 35, R1: W1-A4 converts all
-/// seven by serial handoff once A5-A11 and the R6a/R6b follow-ups have merged). Nothing else uses it.
-macro_rules! kind_stub {
-    ($($item:item)*) => { $($item)* };
-}
-pub(crate) use kind_stub;
 
 /// `kind!` and `plugin!` over every one of busbar-ffi's seven layouts: each test kind states its kind's full
 /// method list (its table needs every slot), a fixture plugin implements it, and `plugin!` builds the header.

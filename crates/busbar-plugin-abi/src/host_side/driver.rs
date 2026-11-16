@@ -15,7 +15,9 @@
 //! The decode table (§10.3) is `decode_need`: a Need that breaks a row is answered INVALID with no handler run;
 //! an op outside the chain's `NeedRow` is FAULT NeedNotAllowed for the whole chain (§6.1 "Allowed Needs").
 
+use core::any::Any;
 use core::marker::PhantomData;
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
@@ -57,12 +59,88 @@ pub struct LoadedImage {
     _stub: PhantomData<()>,
 }
 
+/// Round 14: one slot's state word and ceiling row (IF §11.2 `SlotCell`), the watchdog's whole view of an owner.
+/// `state` is `(epoch << 32) | st`: the registry's `alloc` bumps the epoch and stores LIVE; quarantine is a CAS from
+/// `(epoch, LIVE)`; `is_live` is one Acquire load. `ceilings_us` is the §10.6 row, written by `alloc` (Relaxed,
+/// before any lease exists) and read by `watch::scan`. The registry owns the table of cells and hands each
+/// instance an `Arc` of its own; this crate owns the cell type because `Instance` (here) reaches it and the
+/// loader depends on this crate, not the other way round.
+pub struct SlotCell {
+    state: AtomicU64,
+    ceilings_us: [AtomicU32; 64],
+}
+impl SlotCell {
+    /// st: the slot is serving.
+    pub const LIVE: u64 = 0;
+    /// st: the watchdog (or the entry guard's FAULT path) took the slot out of service.
+    pub const QUARANTINED: u64 = 1;
+    /// st: the lease is being released.
+    pub const CLOSING: u64 = 2;
+
+    /// A cell in `epoch`, LIVE, with `ceilings` as its row (what `alloc` writes).
+    pub fn new(epoch: u32, ceilings: &[u32; 64]) -> SlotCell {
+        SlotCell {
+            state: AtomicU64::new((u64::from(epoch) << 32) | Self::LIVE),
+            ceilings_us: core::array::from_fn(|i| {
+                AtomicU32::new(ceilings.get(i).copied().unwrap_or(0))
+            }),
+        }
+    }
+    /// `(epoch, LIVE)` is the state word (one Acquire load).
+    pub fn is_live(&self, epoch: u32) -> bool {
+        self.state.load(Ordering::Acquire) == ((u64::from(epoch) << 32) | Self::LIVE)
+    }
+    /// CAS `(epoch, LIVE)` to `(epoch, QUARANTINED)`; true when this call made the change. A slot already
+    /// quarantined, closing, or re-allocated to a later epoch is left alone.
+    pub fn quarantine(&self, epoch: u32) -> bool {
+        let live = (u64::from(epoch) << 32) | Self::LIVE;
+        self.state
+            .compare_exchange(
+                live,
+                (u64::from(epoch) << 32) | Self::QUARANTINED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+    /// The slot's current epoch (Acquire).
+    pub fn epoch(&self) -> u32 {
+        (self.state.load(Ordering::Acquire) >> 32) as u32
+    }
+    /// The §10.6 row.
+    pub fn ceilings_us(&self) -> &[AtomicU32; 64] {
+        &self.ceilings_us
+    }
+}
+
+/// What the registry knows about an instance it is about to build (everything but the live plugin instance).
+pub struct InstanceParts {
+    /// The image the instance runs in; kept mapped until the instance is gone.
+    pub image: Arc<Image>,
+    pub identity: Arc<str>,
+    pub name: Arc<str>,
+    pub id: u64,
+    /// Watchdog slot (index into the registry's slot table, < 2^24) and the slot's cell and epoch.
+    pub slot: u32,
+    pub cell: Arc<SlotCell>,
+    pub epoch: u32,
+    pub limits: InstanceLimits,
+    pub max_out: usize,
+    pub methods: u64,
+    pub facts: u64,
+    pub scrub: Arc<Scrub>,
+}
+
+/// One live plugin instance as the host holds it (IF §10.4): kind-erased, shared by an `Arc` with every proxy and
+/// session handle. UNSAFE-MIN r3.1 moved the instance pointer, the kind table and `close` into busbar-ffi's
+/// `Instance<K>` (`Drop` is the only `close`), so this holds that value, erased, and the kind modules' proxies
+/// take it back by marker. Field order is drop order: the live instance (which runs `close`) goes before the image
+/// that keeps its code mapped, and the slot's cell after both.
 pub struct Instance {
-    // W0-ABI: the private fields `image: Arc<Image>` (keeps the image mapped; dropped after `close` returns),
-    // `plugin: NonNull<Plugin>` (points into `image`), `lease: SlotLease` (the slot record's lease, §11.2; a
-    // plugin-loader type) and `inst: *const c_void` are one `_stub` here; they land with W1-H1 together with
-    // the IF's `Send`/`Sync` impls for `Instance` (omitted: rule 2).
-    _stub: PhantomData<Arc<Image>>,
+    live: Arc<dyn Any + Send + Sync>,
+    image: Arc<Image>,
+    cell: Arc<SlotCell>,
+    epoch: u32,
     pub kind: KindCode,
     /// The verified stamp name.
     pub identity: Arc<str>,
@@ -78,36 +156,64 @@ pub struct Instance {
     pub facts: u64,
     /// This instance's scrub set (§12.16), filled by custody as it resolves secrets for it.
     pub scrub: Arc<Scrub>,
-    // Round 14: `ceilings_us` and `state` moved into the slot's `SlotCell` (§11.2), reached through `lease`
-    // (`SlotLease::cell()`, one pointer, cells never move), so the watchdog reads ceilings and quarantines through
-    // the slot alone and Image-owned entries have the same row and target.
 }
 impl Instance {
+    /// Built by the registry in the same poll that read the INSTANCE record of an `open` answer (§10.4), from
+    /// busbar-ffi's `Instance<K>` of that answer. The kind comes from `K`, never from the caller.
+    pub fn new<K: Kind>(parts: InstanceParts, live: LiveInstance<K>) -> Arc<Instance> {
+        let InstanceParts {
+            image,
+            identity,
+            name,
+            id,
+            slot,
+            cell,
+            epoch,
+            limits,
+            max_out,
+            methods,
+            facts,
+            scrub,
+        } = parts;
+        Arc::new(Instance {
+            live: Arc::new(live),
+            image,
+            cell,
+            epoch,
+            kind: K::CODE,
+            identity,
+            name,
+            id,
+            slot,
+            limits,
+            max_out,
+            methods,
+            facts,
+            scrub,
+        })
+    }
+    /// The live instance of kind `K`, shared; None when this instance is another kind. The proxies of kind `K`
+    /// are the only callers.
+    pub(crate) fn live<K: Kind>(&self) -> Option<Arc<LiveInstance<K>>> {
+        Arc::clone(&self.live).downcast::<LiveInstance<K>>().ok()
+    }
     /// One Acquire load of the slot's state word (LIVE in this lease's epoch).
     pub fn is_live(&self) -> bool {
-        todo!()
+        self.cell.is_live(self.epoch)
     }
     /// CAS (epoch, LIVE) → (epoch, QUARANTINED) on the slot's state word; the watchdog's `SlotTable::hung` and the
     /// entry guard's FAULT path both land here.
     pub fn quarantine(&self) {
-        todo!()
+        self.cell.quarantine(self.epoch);
     }
     /// The slot's ceiling row (µs; index = kind method bit 0..=55 or ENTRY_*, §10.6).
-    pub fn ceilings_us(&self) -> &[core::sync::atomic::AtomicU32; 64] {
-        todo!()
+    pub fn ceilings_us(&self) -> &[AtomicU32; 64] {
+        self.cell.ceilings_us()
     }
     pub fn image(&self) -> &Arc<Image> {
-        todo!()
+        &self.image
     }
 }
-// W0-ABI: `impl Drop for Instance` (IF §10.4: `close` runs inline under `entry::guard` with the Image owner,
-// then the lease is released, `Arc<Image>` last) lands with W1-H1.
-
-//
-// W1-H1: `Image`, `LoadedImage` and this `Instance` stay W0's stubs. Under UNSAFE-MIN r3.1 the live instance is
-// busbar-ffi's `Instance<K>` (the instance pointer, the kind table and `close` on Drop) and the slot lease is
-// the registry's (`SlotLease`, W1-L2); neither can be named from here. They are deleted with their last user,
-// the kind proxies in `kinds/*.rs` (W1-A4), per WBS rule 16.
 
 /// Round 14: built by the adapter per async call (plain stores: `Caller<'a>` is Copy and borrows, §10.3) and
 /// borrowed by the proxy future for its whole life (round 15: `drv: &'a mut Driver<'a, N>`, §10.4, exclusive, so
@@ -292,10 +398,7 @@ impl<'a, N: Needs> Driver<'a, N> {
     /// A FAULT this chain met: reported to the fault sink (Instance owner: quarantine + audit `plugin_fault`;
     /// Image owner: audit, the instance-to-be refused) and returned.
     fn fault(&self, reason: FaultReason) -> CallError {
-        if let Some(sink) = FAULT_SINK.get() {
-            sink(self.caller.slot, self.open, reason);
-        }
-        CallError::Fault(reason)
+        report_fault(self.caller.slot, self.open, reason)
     }
 }
 
@@ -307,6 +410,15 @@ impl<'a, N: Needs> Driver<'a, N> {
 /// registry's `SlotLease`, which this crate cannot name.)
 pub fn set_fault_sink(sink: fn(slot: u32, image_owned: bool, reason: FaultReason)) {
     let _ = FAULT_SINK.set(sink);
+}
+
+/// Reports a FAULT to the sink (when one is installed) and returns it as the call's error: the one path every
+/// proxy and the driver take.
+pub(crate) fn report_fault(slot: u32, image_owned: bool, reason: FaultReason) -> CallError {
+    if let Some(sink) = FAULT_SINK.get() {
+        sink(slot, image_owned, reason);
+    }
+    CallError::Fault(reason)
 }
 
 static FAULT_SINK: OnceLock<fn(u32, bool, FaultReason)> = OnceLock::new();
@@ -417,7 +529,7 @@ impl Drop for Watched {
 /// W1-H1: the entry guard's other duties (`DEPTH`, `OWNER` for log attribution and for the crypto arena, the
 /// outermost-exit arena reset) are `entry::guard`'s, owner H0, which the WBS gives no wave-1 owner after H0F;
 /// this is the one place the driver enters the plugin, so wrapping it in `entry::guard` is a one-line change.
-fn step<R>(
+pub(crate) fn step<R>(
     slot: u32,
     entry: u8,
     out: &mut PooledOut,
