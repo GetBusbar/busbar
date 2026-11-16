@@ -34,6 +34,7 @@ busbar-contract = { path = "../../crates/busbar-contract", features = ["test-sea
 busbar-plugin-loader = { path = "../../crates/plugin-loader", features = ["test-support"] }
 busbar-kernel = { path = "../../crates/busbar-kernel", features = ["test-support"] }
 busbar-core-connector = { path = "../../crates/busbar-core-connector", features = ["test-support"] }
+busbar-migrations = { path = "../../crates/busbar-migrations" }
 serde_json = "1"
 hex = "0.4.3"
 base64 = "0.22"
