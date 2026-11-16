@@ -20,19 +20,19 @@
 ///         consts { $( $(#[doc = $cd:literal])* $C:ident : $ct:ty = $cv:expr ; )* }
 ///         $(
 ///             $(#[doc = $md:literal])*
-///             sync fn $m:ident ( &self, h: &Host $(, $a:ident : $at:ty)* , out: &mut Out<'_> ) -> Result<(), Fail> $( $def:block )? $(;)?
+///             sync fn $m:ident ( &self, h: &Host $(, $a:ident : $at:ty)* , out: &mut Out<'_> ) -> Result<(), Fail> ($def:block | ;)
 ///         |   // session kinds only: opener (shim mints the token, §6.4 step 7)
 ///             $(#[doc = $md:literal])*
-///             sync open fn $m:ident ( &self, h: &Host $(, $a:ident : $at:ty)* , out: &mut Out<'_> ) -> Result<Session, Fail> $( $def:block )? $(;)?
+///             sync open fn $m:ident ( &self, h: &Host $(, $a:ident : $at:ty)* , out: &mut Out<'_> ) -> Result<Session, Fail> ($def:block | ;)
 ///         |   // session kinds only: method on a live session (raw arg: tok: Token)
 ///             $(#[doc = $md:literal])*
-///             sync fn $m:ident ( &self, h: &Host, s: &mut Session $(, $a:ident : $at:ty)* , out: &mut Out<'_> ) -> Result<(), Fail> $( $def:block )? $(;)?
+///             sync fn $m:ident ( &self, h: &Host, s: &mut Session $(, $a:ident : $at:ty)* , out: &mut Out<'_> ) -> Result<(), Fail> ($def:block | ;)
 ///         |   // session kinds only: consumes the session (the shim removes it before the call)
 ///             $(#[doc = $md:literal])*
 ///             sync end fn $m:ident ( &self, h: &Host, s: Session $(, $a:ident : $at:ty)* , out: &mut Out<'_> ) -> Result<(), Fail> ;
 ///         |
 ///             $(#[doc = $md:literal])*
-///             async fn $m:ident ( &self, h: &'static Host $(, $a:ident : $at:ty)* ) -> Result<Reply, Fail> $( $def:block )? $(;)?
+///             async fn $m:ident ( &self, h: &'static Host $(, $a:ident : $at:ty)* ) -> Result<Reply, Fail> ($def:block | ;)
 ///         )*
 ///     }
 /// }
@@ -248,10 +248,17 @@ macro_rules! kind {
     };
     (@methods $ctx:tt $slot:tt $items:tt $sigs:tt
         $(#[$md:meta])* sync open fn $name:ident ( & $slf:ident , $h:ident : &Host $($args:tt)* )
-            -> Result<Session, Fail> $($def:block)? $(;)?
+            -> Result<Session, Fail> $def:block
         $($rest:tt)*
     ) => {
-        $crate::kind! { @args [open $ctx $slot $items $sigs [$(#[$md])*] $name $slf $h [] [$($def)?] [$($rest)*]] [] $($args)* }
+        $crate::kind! { @args [open $ctx $slot $items $sigs [$(#[$md])*] $name $slf $h [] [$def] [$($rest)*]] [] $($args)* }
+    };
+    (@methods $ctx:tt $slot:tt $items:tt $sigs:tt
+        $(#[$md:meta])* sync open fn $name:ident ( & $slf:ident , $h:ident : &Host $($args:tt)* )
+            -> Result<Session, Fail> ;
+        $($rest:tt)*
+    ) => {
+        $crate::kind! { @args [open $ctx $slot $items $sigs [$(#[$md])*] $name $slf $h [] [] [$($rest)*]] [] $($args)* }
     };
     (@methods $ctx:tt $slot:tt $items:tt $sigs:tt
         $(#[$md:meta])* sync end fn $name:ident ( & $slf:ident , $h:ident : &Host , $s:ident : Session $($args:tt)* )
@@ -262,24 +269,45 @@ macro_rules! kind {
     };
     (@methods $ctx:tt $slot:tt $items:tt $sigs:tt
         $(#[$md:meta])* sync fn $name:ident ( & $slf:ident , $h:ident : &Host , $s:ident : &mut Session $($args:tt)* )
-            -> Result<(), Fail> $($def:block)? $(;)?
+            -> Result<(), Fail> $def:block
         $($rest:tt)*
     ) => {
-        $crate::kind! { @args [on $ctx $slot $items $sigs [$(#[$md])*] $name $slf $h [$s] [$($def)?] [$($rest)*]] [] $($args)* }
+        $crate::kind! { @args [on $ctx $slot $items $sigs [$(#[$md])*] $name $slf $h [$s] [$def] [$($rest)*]] [] $($args)* }
+    };
+    (@methods $ctx:tt $slot:tt $items:tt $sigs:tt
+        $(#[$md:meta])* sync fn $name:ident ( & $slf:ident , $h:ident : &Host , $s:ident : &mut Session $($args:tt)* )
+            -> Result<(), Fail> ;
+        $($rest:tt)*
+    ) => {
+        $crate::kind! { @args [on $ctx $slot $items $sigs [$(#[$md])*] $name $slf $h [$s] [] [$($rest)*]] [] $($args)* }
     };
     (@methods $ctx:tt $slot:tt $items:tt $sigs:tt
         $(#[$md:meta])* sync fn $name:ident ( & $slf:ident , $h:ident : &Host $($args:tt)* )
-            -> Result<(), Fail> $($def:block)? $(;)?
+            -> Result<(), Fail> $def:block
         $($rest:tt)*
     ) => {
-        $crate::kind! { @args [call $ctx $slot $items $sigs [$(#[$md])*] $name $slf $h [] [$($def)?] [$($rest)*]] [] $($args)* }
+        $crate::kind! { @args [call $ctx $slot $items $sigs [$(#[$md])*] $name $slf $h [] [$def] [$($rest)*]] [] $($args)* }
+    };
+    (@methods $ctx:tt $slot:tt $items:tt $sigs:tt
+        $(#[$md:meta])* sync fn $name:ident ( & $slf:ident , $h:ident : &Host $($args:tt)* )
+            -> Result<(), Fail> ;
+        $($rest:tt)*
+    ) => {
+        $crate::kind! { @args [call $ctx $slot $items $sigs [$(#[$md])*] $name $slf $h [] [] [$($rest)*]] [] $($args)* }
     };
     (@methods $ctx:tt $slot:tt $items:tt $sigs:tt
         $(#[$md:meta])* async fn $name:ident ( & $slf:ident , $h:ident : &'static Host $($args:tt)* )
-            -> Result<Reply, Fail> $($def:block)? $(;)?
+            -> Result<Reply, Fail> $def:block
         $($rest:tt)*
     ) => {
-        $crate::kind! { @args [start $ctx $slot $items $sigs [$(#[$md])*] $name $slf $h [] [$($def)?] [$($rest)*]] [] $($args)* }
+        $crate::kind! { @args [start $ctx $slot $items $sigs [$(#[$md])*] $name $slf $h [] [$def] [$($rest)*]] [] $($args)* }
+    };
+    (@methods $ctx:tt $slot:tt $items:tt $sigs:tt
+        $(#[$md:meta])* async fn $name:ident ( & $slf:ident , $h:ident : &'static Host $($args:tt)* )
+            -> Result<Reply, Fail> ;
+        $($rest:tt)*
+    ) => {
+        $crate::kind! { @args [start $ctx $slot $items $sigs [$(#[$md])*] $name $slf $h [] [] [$($rest)*]] [] $($args)* }
     };
 
     // ---- arguments: each FFI shape as (name [raw entry type] [plugin type]); anything else does not match ----
