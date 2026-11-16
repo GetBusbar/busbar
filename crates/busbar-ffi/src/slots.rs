@@ -248,6 +248,7 @@ impl<T: Send> Slots<T> {
         if generation == 0 || generation > GEN_MAX || slot.state.load(Ordering::Acquire) & 1 != 0 {
             return false;
         }
+        slot.state.store(generation << 1, Ordering::Release);
         true
     }
 }
@@ -413,7 +414,9 @@ pub(crate) mod counting {
         RMW.get()
     }
 
-    fn landed() {}
+    fn landed() {
+        RMW.set(RMW.get() + 1);
+    }
 
     pub(crate) struct AtomicU32(atomic::AtomicU32);
 
