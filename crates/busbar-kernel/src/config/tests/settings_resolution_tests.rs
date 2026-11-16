@@ -16,11 +16,11 @@ fn obj(pairs: &[(&str, serde_json::Value)]) -> serde_json::Map<String, serde_jso
 
 #[test]
 fn resolves_secret_ref_settings_and_passes_plain_through() {
-    let var = format!("BUSBAR_PLUGIN_LICENSE_TEST_{}", std::process::id());
-    let resolver = fixed_value(&var, "LIC-123\n".as_bytes());
+    let var = format!("BUSBAR_PLUGIN_CREDENTIAL_TEST_{}", std::process::id());
+    let resolver = fixed_value(&var, "TOKEN-123\n".as_bytes());
     let settings = obj(&[
         (
-            "licenseKey",
+            "accessToken",
             serde_json::to_value(fixed_reference(&var).authoring(&crate::seal::acquire())).unwrap(),
         ),
         ("endpoint", serde_json::json!("https://example.test")),
@@ -28,7 +28,7 @@ fn resolves_secret_ref_settings_and_passes_plain_through() {
     ]);
     let out = resolve_settings(
         &crate::config::secret::test_settings(&settings),
-        &declared(&["licenseKey"]),
+        &declared(&["accessToken"]),
         &[],
         "test-plugin",
         &resolver,
@@ -38,9 +38,9 @@ fn resolves_secret_ref_settings_and_passes_plain_through() {
 
     assert_eq!(
         crate::config::secret::test_resolved_value(&out)
-            .get("licenseKey")
+            .get("accessToken")
             .unwrap(),
-        &serde_json::json!("LIC-123")
+        &serde_json::json!("TOKEN-123")
     );
 
     assert_eq!(
@@ -80,22 +80,22 @@ fn leaves_non_ref_object_settings_untouched() {
 
 #[test]
 fn unresolvable_secret_ref_setting_fails_closed_naming_field() {
-    let var = format!("BUSBAR_PLUGIN_LICENSE_MISSING_{}", std::process::id());
+    let var = format!("BUSBAR_PLUGIN_CREDENTIAL_MISSING_{}", std::process::id());
     let resolver = SecretResolver::builtins_only();
     let settings = obj(&[(
-        "license",
+        "credential",
         serde_json::to_value(fixed_reference(&var).authoring(&crate::seal::acquire())).unwrap(),
     )]);
     let err = resolve_settings(
         &crate::config::secret::test_settings(&settings),
-        &declared(&["license"]),
+        &declared(&["credential"]),
         &[],
         "test-plugin",
         &resolver,
         &busbar_contract::config_time::ConfigScope::config_time(),
     )
     .unwrap_err();
-    assert!(err.contains("license"), "names the field: {err}");
+    assert!(err.contains("credential"), "names the field: {err}");
     assert!(err.contains("did not resolve"), "fail-closed: {err}");
 }
 
@@ -103,12 +103,12 @@ fn unresolvable_secret_ref_setting_fails_closed_naming_field() {
 fn unknown_secret_module_in_setting_fails_closed() {
     let resolver = SecretResolver::builtins_only();
     let settings = obj(&[(
-        "licenseKey",
-        serde_json::json!({ "module": "vault", "settings": { "path": "kv/license" } }),
+        "accessToken",
+        serde_json::json!({ "module": "vault", "settings": { "path": "kv/credential" } }),
     )]);
     let err = resolve_settings(
         &crate::config::secret::test_settings(&settings),
-        &declared(&["licenseKey"]),
+        &declared(&["accessToken"]),
         &[],
         "test-plugin",
         &resolver,
@@ -116,7 +116,7 @@ fn unknown_secret_module_in_setting_fails_closed() {
     )
     .unwrap_err();
     assert!(
-        err.contains("licenseKey") && err.contains("fail-closed"),
+        err.contains("accessToken") && err.contains("fail-closed"),
         "unknown module fails closed: {err}"
     );
 }
@@ -129,10 +129,10 @@ fn literal_wrapper_opts_a_setting_out_of_secret_coercion() {
     let resolver = fixed_value("literal-witness", b"THE-SECRET");
 
     let mut settings = serde_json::Map::new();
-    settings.insert("licenseKey".to_string(), reference.clone());
+    settings.insert("accessToken".to_string(), reference.clone());
     let out = resolve_settings(
         &crate::config::secret::test_settings(&settings),
-        &declared(&["licenseKey"]),
+        &declared(&["accessToken"]),
         &[],
         "test-plugin",
         &resolver,
@@ -140,7 +140,7 @@ fn literal_wrapper_opts_a_setting_out_of_secret_coercion() {
     )
     .expect("resolves");
     assert_eq!(
-        crate::config::secret::test_resolved_value(&out)["licenseKey"],
+        crate::config::secret::test_resolved_value(&out)["accessToken"],
         serde_json::json!("THE-SECRET")
     );
 
@@ -227,13 +227,13 @@ impl busbar_contract::secret::SecretResolve for ConfigTimeOnly {
 #[test]
 fn settings_resolve_through_the_config_time_form_with_the_proof() {
     let settings = obj(&[(
-        "licenseKey",
+        "accessToken",
         serde_json::to_value(fixed_reference("unused-source").authoring(&crate::seal::acquire()))
             .unwrap(),
     )]);
     let out = resolve_settings(
         &crate::config::secret::test_settings(&settings),
-        &declared(&["licenseKey"]),
+        &declared(&["accessToken"]),
         &[],
         "test-plugin",
         &ConfigTimeOnly,
@@ -241,7 +241,7 @@ fn settings_resolve_through_the_config_time_form_with_the_proof() {
     )
     .expect("a config-time resolution answers");
     assert_eq!(
-        crate::config::secret::test_resolved_value(&out)["licenseKey"],
+        crate::config::secret::test_resolved_value(&out)["accessToken"],
         serde_json::json!("AT-CONFIG")
     );
 }

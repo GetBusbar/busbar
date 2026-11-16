@@ -66,7 +66,7 @@ pub struct HookEnv {
     /// Declared paths read once outside cache admission. Reading a linked row's Statement may
     /// invoke its door, so the cache key must consult this snapshot instead of the registry.
     pub(crate) resolution_paths: Arc<resolution::Paths>,
-    /// The secret resolver turns typed hook references, such as a `licenseKey`, into their raw values before settings cross the ABI at open/configure. It is the same fail-closed resolver shared with store and auth opens, held through the neutral [`busbar_contract::secret::SecretResolve`] trait rather than the concrete engine resolver. Wiring supplies the identical resolver instance; only the static type at the hook boundary is narrowed.
+    /// The secret resolver turns typed hook references, such as a `accessToken`, into their raw values before settings cross the ABI at open/configure. It is the same fail-closed resolver shared with store and auth opens, held through the neutral [`busbar_contract::secret::SecretResolve`] trait rather than the concrete engine resolver. Wiring supplies the identical resolver instance; only the static type at the hook boundary is narrowed.
     ///
     ///
     ///

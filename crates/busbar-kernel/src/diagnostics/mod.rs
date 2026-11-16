@@ -972,10 +972,10 @@ diagnostics! {
         "RETIRED. Nothing emits this code: the engine keeps no plane task store.",
         "Nothing emits this code.";
 
-    /// `entitlement.check` named a scope kind the calling plane did not declare; the answer is NOT_ENTITLED.
+    /// A scope authorization check named a scope kind the calling plane did not declare.
     ENTITLEMENT_UNDECLARED_SCOPE_KIND = 8021, Governance, BenignRecurring, "entitlement-undeclared-scope-kind", "1.6.0", false,
         "An entitlement check named a scope kind its plane did not declare",
-        "A plane asked whether the unit's principal is entitled to a target whose scope kind is not among the scope kinds the plane's tail declares. The kernel answers NOT_ENTITLED without consulting the principal's grants.",
+        "A plane asked whether the unit's principal is entitled to a target whose scope kind is not among the scope kinds the plane's tail declares. The kernel denies access without consulting the principal's grants.",
         "Declare the scope kind in the plane's tail, or correct the target the plane asks about.";
 
     ADMIN_STORE_OPERATION_FAILED = 1006, Durability, Actionable, "admin-store-operation-failed", "1.6.0", false,

@@ -2304,7 +2304,7 @@ A provider's `api_key` secret reference could not be resolved — an unset envir
 - **Since:** 1.6.0
 - **Slug:** `entitlement-undeclared-scope-kind`
 
-A plane asked whether the unit's principal is entitled to a target whose scope kind is not among the scope kinds the plane's tail declares. The kernel answers NOT_ENTITLED without consulting the principal's grants.
+A plane asked whether the unit's principal is entitled to a target whose scope kind is not among the scope kinds the plane's tail declares. The kernel denies access without consulting the principal's grants.
 
 **What to do:** Declare the scope kind in the plane's tail, or correct the target the plane asks about.
 

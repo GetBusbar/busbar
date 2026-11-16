@@ -347,7 +347,9 @@ fn counted_raw_fault_crosses_the_dispatcher_and_sets_the_generic_login_call_flag
 
 #[test]
 fn every_direct_contract_kind_refuses_the_previous_host_table_cohort_before_operations() {
-    use crate::dispatch::kinds::{auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret, store_v4::StoreV4};
+    use crate::dispatch::kinds::{
+        auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret, store_v4::StoreV4,
+    };
     use crate::dispatch::Kind;
 
     fn rejects<K: Kind>(previous: u64) {
@@ -367,9 +369,12 @@ fn every_direct_contract_kind_refuses_the_previous_host_table_cohort_before_oper
             ..real
         });
         let error = validate_door::<K>(door).err().expect("old cohort refused");
-        assert!(matches!(error, LoadError::KindLayout { kind, stated, host, .. }
+        assert!(
+            matches!(error, LoadError::KindLayout { kind, stated, host, .. }
             if kind == K::CODE && stated == previous && host == K::LAYOUT_FINGERPRINT),
-            "old {:?} cohort must fail fingerprint admission before operations: {error:?}", K::CODE);
+            "old {:?} cohort must fail fingerprint admission before operations: {error:?}",
+            K::CODE
+        );
     }
     rejects::<StoreV4>(0x5f47532174fb052b);
     rejects::<Secret>(0x305714fde3324815);

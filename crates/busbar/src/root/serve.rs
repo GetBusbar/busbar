@@ -854,10 +854,6 @@ impl HostServices for NotInstalled {
         not_installed()
     }
 
-    fn entitlement_check(&self, _: &Caller, _: Option<u64>, _: &str) -> Stored {
-        not_installed()
-    }
-
     fn random_fill(&self, _: u64) -> Stored {
         not_installed()
     }

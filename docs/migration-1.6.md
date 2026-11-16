@@ -601,3 +601,7 @@ receives identity-provider settings, not deployment credential references.
 The upgrade boot folds the 1.5.5 overlay file into config.yaml and keeps the file as
 `<overlay>.1.5.5` ([the 1.5.5 overlay file](#the-155-overlay-file)); there is no separate import
 step, and a stamped boot never reads an overlay file.
+
+Direct contract plugins must rebuild against the current 1.6 SDK. The retired host policy
+callback has been removed; principal scope decisions use the plane `ENTITLE` intent. Admission
+rejects artifacts carrying an earlier common host-table layout fingerprint.

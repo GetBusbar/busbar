@@ -13,7 +13,7 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 pub const ABI_VERSION: u32 = super::versions::SECRET.raw();
 
 /// The secret kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-pub const LAYOUT_FINGERPRINT: u64 = 0x305714fde3324815;
+pub const LAYOUT_FINGERPRINT: u64 = 0x52fda1049968af93;
 
 /// The secret kind's shapes, in fold order: every `#[repr(C)]` struct crossing its table, each
 pub const LAYOUT_SHAPES: &[&[u64]] = &[
@@ -21,6 +21,7 @@ pub const LAYOUT_SHAPES: &[&[u64]] = &[
     ResolveIn::LAYOUT,
     ResolveOut::LAYOUT,
     CheckIn::LAYOUT,
+    crate::abi::host::service::HOST_SLOTS_LAYOUT,
 ];
 
 /// [`InHead::op`] values the secret kind adds after the shared lifecycle, in table order.
