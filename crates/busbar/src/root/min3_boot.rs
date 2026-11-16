@@ -17,14 +17,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
+use super::boot::registry::{boot, install_kernel_sides, KernelAuthCore};
+use super::boot::walk::{deployment_bytes, BootSteps, DeploymentRead, RegistryBoot};
 use busbar_contract::secret_ref::{SecretRef, Sugars};
 use busbar_contract::secure::SecureVec;
 use busbar_core_connector::guard::Guard;
 use busbar_core_connector::need::{HostNeeds, NeedLimits};
-use busbar_kernel::appbuild::boot_registry::{boot, install_kernel_sides, KernelAuthCore};
-use busbar_kernel::appbuild::boot_walk::{
-    deployment_bytes, BootSteps, DeploymentRead, RegistryBoot,
-};
 use busbar_kernel::channels::signals::SignalRegistry;
 use busbar_kernel::channels::SessionSignals;
 use busbar_kernel::config::{AtRestCfg, PluginsCfg, RootCfg};

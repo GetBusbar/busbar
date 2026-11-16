@@ -15,7 +15,7 @@ use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::adapters::auth::AuthCore;
 use busbar_plugin_loader::instance::{BootPlan, InstanceSpec, OpenError, Registry, StoreSeal};
 
-use super::boot_walk::{walk, BootRefused, BootSteps, Booted};
+use super::walk::{walk, BootRefused, BootSteps, Booted};
 
 /// Installs the kernel's sides on `registry`. Called once, before the first `open_store`.
 pub fn install_kernel_sides<N: Needs + 'static>(
@@ -44,13 +44,15 @@ pub async fn boot<N: Needs, S: BootSteps>(
 
 /// The kernel's side of the auth adapter (IF §12.8, §12.11): the issued-credential lookup over `I` and the replay
 /// claim over `G`. A claim the guard cannot answer is `None`, which the adapter treats as unavailable (fail closed).
-pub struct KernelAuthCore<I: crate::issued::IssuedCredentials, G: crate::plane_grants::ReplayGuard>
-{
+pub struct KernelAuthCore<
+    I: busbar_kernel::issued::IssuedCredentials,
+    G: busbar_kernel::plane_grants::ReplayGuard,
+> {
     issued: I,
     replay: G,
 }
 
-impl<I: crate::issued::IssuedCredentials, G: crate::plane_grants::ReplayGuard>
+impl<I: busbar_kernel::issued::IssuedCredentials, G: busbar_kernel::plane_grants::ReplayGuard>
     KernelAuthCore<I, G>
 {
     pub fn new(issued: I, replay: G) -> Self {
@@ -58,8 +60,8 @@ impl<I: crate::issued::IssuedCredentials, G: crate::plane_grants::ReplayGuard>
     }
 }
 
-impl<I: crate::issued::IssuedCredentials, G: crate::plane_grants::ReplayGuard> AuthCore
-    for KernelAuthCore<I, G>
+impl<I: busbar_kernel::issued::IssuedCredentials, G: busbar_kernel::plane_grants::ReplayGuard>
+    AuthCore for KernelAuthCore<I, G>
 {
     fn issued<'a>(
         &'a self,

@@ -2583,3 +2583,8 @@ pub(crate) fn walk_admission<T>(
 #[cfg(test)]
 #[path = "tests/boot_walk.rs"]
 mod boot_walk_tests;
+
+/// Root-owned registry opening and boot planning.
+pub(crate) mod registry;
+/// Root-owned deployment ordering and instance opening.
+pub(crate) mod walk;
