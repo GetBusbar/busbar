@@ -34,6 +34,7 @@ fn store(index: u32, settings: Option<&str>, core_cfg: Vec<CoreCfg>) -> Settled 
         path: vec!["store".to_owned()],
         settings: settings.map(busbar_contract::secure::SecureString::from),
         core_cfg,
+        allowed_lifts: Default::default(),
     }
 }
 
@@ -160,10 +161,11 @@ fn a_current_config_moves_nothing() {
 #[test]
 fn a_named_section_is_one_entry_when_two_instances_state_it_identically_else_refused() {
     let same = |index| Settled {
+        allowed_lifts: Default::default(),
         index,
         path: vec!["auth".to_owned(), "ldap".to_owned()],
         settings: None,
-        core_cfg: vec![cfg(section::UPSTREAM, "dc1", r#"{"url": "https://dc1"}"#)],
+        core_cfg: vec![cfg(section::ROUTE_MEDIA, "12", r#"{"url": "https://dc1"}"#)],
     };
     let applied = apply(
         STAMPED,
@@ -171,7 +173,7 @@ fn a_named_section_is_one_entry_when_two_instances_state_it_identically_else_ref
             store(
                 0,
                 None,
-                vec![cfg(section::UPSTREAM, "dc1", r#"{"url": "https://dc1"}"#)],
+                vec![cfg(section::ROUTE_MEDIA, "12", r#"{"url": "https://dc1"}"#)],
             ),
             same(1),
         ],
@@ -179,11 +181,20 @@ fn a_named_section_is_one_entry_when_two_instances_state_it_identically_else_ref
     )
     .unwrap();
     assert_eq!(
-        tree(&applied).at("upstreams").at("dc1").at("url").as_str(),
+        tree(&applied)
+            .at("routes")
+            .at("12")
+            .at("media")
+            .at("url")
+            .as_str(),
         Some("https://dc1")
     );
     let differs = Settled {
-        core_cfg: vec![cfg(section::UPSTREAM, "dc1", r#"{"url": "https://other"}"#)],
+        core_cfg: vec![cfg(
+            section::ROUTE_MEDIA,
+            "12",
+            r#"{"url": "https://other"}"#,
+        )],
         ..same(1)
     };
     let refused = apply(
@@ -192,7 +203,7 @@ fn a_named_section_is_one_entry_when_two_instances_state_it_identically_else_ref
             store(
                 0,
                 None,
-                vec![cfg(section::UPSTREAM, "dc1", r#"{"url": "https://dc1"}"#)],
+                vec![cfg(section::ROUTE_MEDIA, "12", r#"{"url": "https://dc1"}"#)],
             ),
             differs,
         ],
@@ -205,13 +216,13 @@ fn a_named_section_is_one_entry_when_two_instances_state_it_identically_else_ref
         "{text}"
     );
     let operator =
-        "config_version: 1\nupstreams: {dc1: {url: 'https://mine'}}\nstore: {module: m}\n";
+        "config_version: 1\nroutes: {'12': {media: {url: 'https://mine'}}}\nstore: {module: m}\n";
     let clash = apply(
         operator,
         &[store(
             0,
             None,
-            vec![cfg(section::UPSTREAM, "dc1", r#"{"url": "https://dc1"}"#)],
+            vec![cfg(section::ROUTE_MEDIA, "12", r#"{"url": "https://dc1"}"#)],
         )],
         false,
     )
@@ -244,6 +255,7 @@ fn trust_and_route_media_go_where_their_sections_say() {
 #[test]
 fn a_lifted_literal_becomes_a_secret_file_reference_and_never_a_report_line() {
     let settled = Settled {
+        allowed_lifts: ["/bind_service_password".to_owned()].into_iter().collect(),
         index: 2,
         path: vec!["auth".to_owned(), "ldap".to_owned()],
         settings: Some(busbar_contract::secure::SecureString::from(
@@ -286,8 +298,12 @@ fn a_lifted_literal_becomes_a_secret_file_reference_and_never_a_report_line() {
 fn a_lift_names_a_string_slot_once_with_an_empty_name() {
     let lift = |name: &str, pointer: &str| cfg(section::LIFT, name, pointer);
     let with = |frags: Vec<CoreCfg>, settings: &str| {
-        apply(STAMPED, &[store(1, Some(settings), frags)], false)
-            .map(|applied| applied.text().to_owned())
+        let mut answer = store(1, Some(settings), frags);
+        answer.allowed_lifts = ["/token", "/missing", "/a/0/b", "/a~1b"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        apply(STAMPED, &[answer], false).map(|applied| applied.text().to_owned())
     };
     assert_eq!(
         with(vec![lift("x", "\"/token\"")], r#"{"token": "t"}"#)
@@ -365,4 +381,27 @@ fn a_literal_string_does_not_authorize_its_own_lift() {
         .expect_err("no described secret path authorizes this slot");
     assert_eq!(refused.word(), "CONFIG");
     assert!(!refused.to_string().contains("not a secret"));
+}
+
+#[test]
+fn authorized_lifts_still_require_exact_rfc6901_pointers_and_existing_strings() {
+    for (pointer, bag) in [
+        ("/bad~2", r#"{"bad~2":"secret"}"#),
+        ("/bad~", r#"{"bad~":"secret"}"#),
+        ("/items/01", r#"{"items":["first","secret"]}"#),
+        ("/items/+1", r#"{"items":["first","secret"]}"#),
+        ("/missing", r#"{}"#),
+        ("/value", r#"{"value":{"file":"already-a-reference"}}"#),
+    ] {
+        let mut answer = store(
+            8,
+            Some(bag),
+            vec![cfg(section::LIFT, "", &format!("\"{pointer}\""))],
+        );
+        answer.allowed_lifts.insert(pointer.to_owned());
+        let refused = apply(STAMPED, &[answer], false)
+            .expect_err("authorization does not relax pointer or value grammar");
+        assert_eq!(refused.word(), "CONFIG");
+        assert!(!refused.to_string().contains("secret"));
+    }
 }
