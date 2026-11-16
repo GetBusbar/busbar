@@ -21,8 +21,10 @@ busbar-kernel-audit = { path = "../busbar-kernel-audit" }
 busbar-kernel-breaker = { path = "../busbar-kernel-breaker" }
 busbar-kernel-identity = { path = "../busbar-kernel-identity" }
 # The MIN-3 plugin interface, core side: `Caller`, `BoxFut`, the Need types the §12 kernel contracts name
-# (ABI-MIN3-INTERFACE §10, §12). A leaf crate; never plugin-loader here (wave 0).
+# (ABI-MIN3-INTERFACE §10, §12). A leaf crate.
 busbar-plugin-abi = { path = "../busbar-plugin-abi", features = ["host"] }
+# `PortError`, the fact-carrying error `RetryPolicy` reads (IF §11.3, §12.3; W1-K3). The loader never depends on the kernel.
+busbar-plugin-loader = { path = "../plugin-loader" }
 # Only under the non-default `timing` feature.
 libc = { workspace = true, optional = true }
 axum = { workspace = true }
