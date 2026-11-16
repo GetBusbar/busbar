@@ -50,6 +50,14 @@ name = "r131_core_3b"
 path = "tests/r131_core_3b.rs"
 
 [[test]]
+name = "r131_core_6"
+path = "tests/r131_core_6.rs"
+
+[[test]]
+name = "r131_core_7"
+path = "tests/r131_core_7.rs"
+
+[[test]]
 name = "store_no_growth_case"
 path = "tests/store_no_growth_case.rs"
 

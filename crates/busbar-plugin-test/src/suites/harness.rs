@@ -743,10 +743,9 @@ mod tests {
         assert_eq!(handle_of(&["list", "1", "v", "$secret"]), Some(3));
         assert_eq!(doc.get("keep").and_then(|v| v.as_str()), Some("x"));
         let back = binder.unbind_refs(7, &bound).unwrap();
-        assert_eq!(
-            back,
-            facade::to_vec(&facade::parse_value(config).unwrap()).unwrap()
-        );
+        // Unbinding restores the config byte for byte, in its own member order (a re-serialised tree need not
+        // keep it).
+        assert_eq!(back, config.to_vec());
     }
 
     #[test]

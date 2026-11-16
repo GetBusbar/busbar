@@ -268,19 +268,7 @@ fn a_destination_entry_shape_is_validated() {
     refused_with("destinations: [{ match: 'not a host!' }]\n", "BUSBAR-3148");
     refused_with("destinations: [{ match: '*.internal' }]\n", "BUSBAR-3145");
     refused_with(
-        "destinations: [{ match: \x310.0.0.0/8, plaintext: true }]\n",
-        "BUSBAR-3144",
-    );
-    refused_with(
-        "destinations: [{ match: '*.corp.example', plaintext: true }]\n",
-        "BUSBAR-3144",
-    );
-    refused_with(
         "destinations: [{ match: db.internal, pin_spki_sha256: [nope] }]\n",
-        "BUSBAR-3148",
-    );
-    refused_with(
-        "destinations: [{ match: db.internal, plaintext: true, include_roots: true }]\n",
         "BUSBAR-3148",
     );
 }
@@ -471,17 +459,6 @@ fn pem_of(label: &str, der: &[u8]) -> String {
         "-----BEGIN {label}-----\n{}\n-----END {label}-----\n",
         lines.join("\n")
     )
-}
-
-#[test]
-fn plaintext_is_admitted_only_to_an_exact_entry() {
-    let s = build("destinations:\n  - { match: db.internal, plaintext: true }\n  - { match: \x310.0.0.5, plaintext: true }\n")
-        .expect("store");
-    assert!(s.plaintext_admitted("db.internal:5432"));
-    assert!(s.plaintext_admitted("DB.Internal."));
-    assert!(s.plaintext_admitted("\x310.0.0.5:6379"));
-    assert!(!s.plaintext_admitted("other.internal:5432"));
-    assert!(!s.plaintext_admitted("\x310.0.0.6"));
 }
 
 // ---- runtime: the hourly sweep ----------------------------------------------------------------

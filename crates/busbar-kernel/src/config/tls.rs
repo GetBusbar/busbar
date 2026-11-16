@@ -211,7 +211,7 @@ struct RawTlsDestinationCfg {
     #[serde(default)]
     client_identity: Option<TlsClientIdentityCfg>,
     /// Parsed only to refuse `plaintext: true` with the replacement named; never carried into the config.
-    #[serde(default, deserialize_with = "plaintext_refused")]
+    #[serde(rename = "plaintext", default, deserialize_with = "plaintext_refused")]
     _plaintext: bool,
 }
 
