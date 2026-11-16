@@ -492,3 +492,48 @@ async fn kept_rows_and_the_audit_tail_enter_the_base() {
     assert_eq!(walked.kept[0].node_seq, boot_seq);
     assert_eq!(walked.rows.first().map(|row| row.node_seq), Some(base + 1));
 }
+
+/// Checkpoint recovery completes and verifies its entire own-journal walk before reporting an
+/// absent terminal audit. A cut after its base read must restart that proof, never return corruption.
+#[tokio::test]
+async fn checkpoint_audit_lookup_restarts_when_its_prefix_is_cut() {
+    let backend = ephemeral();
+    let (_store, owner) = owner_on(&backend).await;
+    for _ in 0..((RETAIN_TAIL + 3 * CUT_BATCH) / 4) {
+        let run = owner
+            .stage_run(&[
+                Entry::new(RecordClass::Checkpoint, vec![1]),
+                Entry::new(RecordClass::Checkpoint, vec![2]),
+                Entry::new(RecordClass::Checkpoint, vec![3]),
+                Entry::new(RecordClass::Checkpoint, vec![4]),
+            ])
+            .unwrap();
+        owner.confirm(&run).await.unwrap();
+    }
+    let before = backend.state.lock().unwrap().rows.clone();
+    let mut cut = owner.cutter().unwrap();
+    assert!(matches!(
+        cut.truncate_through(u64::MAX).await,
+        CutProgress::Cut { .. }
+    ));
+    let after = backend.state.lock().unwrap().rows.clone();
+    assert!(
+        crate::off_path::governance::runtime::unit_checkpoint_store_find_audit(&owner, 17, 1)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    backend.state.lock().unwrap().rows = before;
+    cut_during_next_walk(&backend, after);
+    let restarts = journal_walk_restarts();
+    assert!(
+        crate::off_path::governance::runtime::unit_checkpoint_store_find_audit(&owner, 17, 1)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        journal_walk_restarts() > restarts,
+        "checkpoint lookup restarted its complete proof"
+    );
+}
