@@ -8,6 +8,7 @@ use std::sync::Arc;
 pub(crate) struct RegistryStore<N: busbar_plugin_abi::host_side::needs::Needs> {
     pub(crate) registry: Arc<busbar_plugin_loader::instance::Registry>,
     pub(crate) needs: Arc<N>,
+    pub(crate) refs: Arc<dyn busbar_ports::binder::RefSource>,
     pub(crate) seal: busbar_plugin_loader::instance::StoreSeal,
 }
 
@@ -20,7 +21,7 @@ impl<N: busbar_plugin_abi::host_side::needs::Needs> StoreOpener for RegistryStor
         Result<busbar_ports::store::StoreHandle, busbar_plugin_loader::instance::OpenError>,
     > {
         self.registry
-            .open_store(spec, &self.needs, Arc::clone(&self.seal))
+            .open_store(spec, &self.needs, &self.refs, Arc::clone(&self.seal))
     }
 }
 

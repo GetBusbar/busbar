@@ -59,7 +59,7 @@ use busbar_kernel::teller::Kernel;
 
 use super::plane_seats::{compose as compose_seat, ConnTable, SeatShared, SpawnCustody};
 use super::port_mount::Ingress;
-use super::secret_custody::{BootCustody, BootRefs, BootSecrets};
+use super::secret_custody::{BootCustody, BootSecrets};
 
 /// The records every Need handler, the replay guard and the plane driver share: filled once the store is open.
 pub(crate) type Records = LateRecords<Arc<StoreRecords>>;
@@ -654,11 +654,8 @@ fn build(
     images: busbar_plugin_loader::instance::Images,
 ) -> Result<Built, String> {
     let sugars = cfg.grammar().map_err(|error| error.0)?.sugars.clone();
-    let binder: Arc<dyn ConfigBinder> = Arc::new(Binder::new(
-        Arc::new(BootRefs),
-        Arc::new(sugars.clone()),
-        ref_schemas(cfg)?,
-    ));
+    let binder: Arc<dyn ConfigBinder> =
+        Arc::new(Binder::new(Arc::new(sugars.clone()), ref_schemas(cfg)?));
     // The process's one secret kind, built over the binder and kept for the life of the process.
     let secrets = BootSecrets::empty(Arc::clone(&binder), Arc::clone(process.slots()));
     let records = Records::default();
@@ -707,10 +704,13 @@ impl Steps<'_> {
     }
 
     async fn open_port(&self, index: u32) -> Result<OpenedPort, OpenError> {
-        let needs = self.built.needs_for(self.prefix());
+        let prefix = self.prefix();
+        let refs = prefix.refs();
+        let needs = self.built.needs_for(prefix);
         RegistryBoot {
             registry: self.registry,
             needs: &needs,
+            refs: &refs,
             store_seal: Arc::clone(&self.store_seal),
             instances: self.instances,
             deployment: self.deployment,
@@ -738,7 +738,10 @@ impl Steps<'_> {
         };
         let prefix = self.prefix();
         let needs = self.built.needs_for(Arc::clone(&prefix));
-        let port = self.registry.open_plane_reserved(prepared, &needs).await?;
+        let port = self
+            .registry
+            .open_plane_reserved(prepared, &needs, &prefix.refs())
+            .await?;
         let driver = PortDriver::new(
             port,
             services,
@@ -858,7 +861,10 @@ impl BootSteps for Steps<'_> {
                 let needs = self.built.bootstrap_needs_for(Arc::clone(&prefix));
                 let prepared = self.registry.reserve(spec)?;
                 let id = prepared.id();
-                let port = self.registry.open_secret_reserved(prepared, &needs).await?;
+                let port = self
+                    .registry
+                    .open_secret_reserved(prepared, &needs, &prefix.refs())
+                    .await?;
                 let next = prefix
                     .with_opened(
                         spec.name,
@@ -893,7 +899,7 @@ impl BootSteps for Steps<'_> {
                 .await;
                 let needs = self.built.bootstrap_needs_for(self.prefix());
                 self.registry
-                    .open_store(spec, &needs, Arc::clone(&self.store_seal))
+                    .open_store(spec, &needs, &secrets.refs(), Arc::clone(&self.store_seal))
                     .await
                     .map(OpenedPort::Store)
                     .map(Some)
@@ -1190,7 +1196,9 @@ pub(crate) async fn run(
         let core = admission
             .store()
             .ok_or("CONFIG: conversion has no admitted core store")?;
-        super::migrate::records(Arc::clone(&core)).await?;
+        let core_secrets = core_secrets_of(cfg, &steps.prefix()).await?;
+        let keys = super::migrate_records::Keys::from_core(&core_secrets)?;
+        super::migrate::records_with_keys(Arc::clone(&core), keys).await?;
         let written = super::migrate::finish_settled_checked(
             settled,
             Some(Arc::clone(&core)),

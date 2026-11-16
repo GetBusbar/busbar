@@ -292,6 +292,7 @@ pub type DeploymentRead =
 pub struct RegistryBoot<'r, N: Needs> {
     pub registry: &'r Registry,
     pub needs: &'r std::sync::Arc<N>,
+    pub refs: &'r std::sync::Arc<dyn busbar_ports::binder::RefSource>,
     pub store_seal: busbar_plugin_loader::instance::StoreSeal,
     pub instances: &'r [(KindCode, InstanceSpec<'r>)],
     /// Reads or writes the deployment row through the opened store (the root's `BootIdentity` over that store,
@@ -331,20 +332,36 @@ impl<N: Needs> BootSteps for RegistryBoot<'_, N> {
         let registry = self.registry;
         match kind {
             KindCode::Store => wrap_open(
-                registry.open_store(spec, self.needs, std::sync::Arc::clone(&self.store_seal)),
+                registry.open_store(
+                    spec,
+                    self.needs,
+                    self.refs,
+                    std::sync::Arc::clone(&self.store_seal),
+                ),
                 OpenedPort::Store,
             ),
-            KindCode::Secret => {
-                wrap_open(registry.open_secret(spec, self.needs), OpenedPort::Secret)
-            }
-            KindCode::Auth => wrap_open(registry.open_auth(spec, self.needs), OpenedPort::Auth),
-            KindCode::Hook => wrap_open(registry.open_hook(spec, self.needs), OpenedPort::Hook),
-            KindCode::Export => {
-                wrap_open(registry.open_export(spec, self.needs), OpenedPort::Export)
-            }
-            KindCode::Plane => wrap_open(registry.open_plane(spec, self.needs), OpenedPort::Plane),
+            KindCode::Secret => wrap_open(
+                registry.open_secret(spec, self.needs, self.refs),
+                OpenedPort::Secret,
+            ),
+            KindCode::Auth => wrap_open(
+                registry.open_auth(spec, self.needs, self.refs),
+                OpenedPort::Auth,
+            ),
+            KindCode::Hook => wrap_open(
+                registry.open_hook(spec, self.needs, self.refs),
+                OpenedPort::Hook,
+            ),
+            KindCode::Export => wrap_open(
+                registry.open_export(spec, self.needs, self.refs),
+                OpenedPort::Export,
+            ),
+            KindCode::Plane => wrap_open(
+                registry.open_plane(spec, self.needs, self.refs),
+                OpenedPort::Plane,
+            ),
             KindCode::Transport => wrap_open(
-                registry.open_transport(spec, self.needs),
+                registry.open_transport(spec, self.needs, self.refs),
                 OpenedPort::Transport,
             ),
         }

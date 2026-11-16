@@ -769,7 +769,11 @@ async fn run(
         // Migrate-on-boot step 4 (MIGRATE-ON-BOOT r42 §3 4a, 4b): the 1.5.5 rows a store's data step
         // left under IMPORT become native records under this admission, sealed and verified, before
         // anything reads them. An empty IMPORT costs one one-row scan.
-        root::migrate::records(anchor_store.clone())
+        let booted = root::min3_boot::booted()
+            .unwrap_or_else(|| die("the admitted MIN-3 boot owner is unavailable"));
+        let keys = root::migrate_records::Keys::from_core(&booted.core)
+            .unwrap_or_else(|error| die(error));
+        root::migrate::records_with_keys(anchor_store.clone(), keys)
             .await
             .unwrap_or_else(|error| die(error));
         // config.yaml's operator definitions as read, before any stored document patch: the operator

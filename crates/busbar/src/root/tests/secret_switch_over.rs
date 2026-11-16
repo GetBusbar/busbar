@@ -15,16 +15,13 @@ use busbar_kernel::custody::{CustodyDenied, SecretSource};
 use busbar_ports::secret::{SecretAnswer, SecretPort};
 use busbar_ports::{CallCx, PortError};
 
-use super::{BootRefs, BootSecrets};
+use super::BootSecrets;
 use busbar_kernel::plugin_config::{Binder, ConfigBinder};
 
 /// A secret kind over the boot's own binder.
 fn secrets() -> Arc<BootSecrets> {
-    let binder: Arc<dyn ConfigBinder> = Arc::new(Binder::new(
-        Arc::new(BootRefs),
-        Arc::new(Default::default()),
-        Vec::new(),
-    ));
+    let binder: Arc<dyn ConfigBinder> =
+        Arc::new(Binder::new(Arc::new(Default::default()), Vec::new()));
     BootSecrets::empty(
         binder,
         Arc::new(busbar_plugin_loader::instance::SlotTable::new()),
@@ -190,11 +187,8 @@ async fn synchronous_config_resolution_progresses_on_the_owned_io_executor() {
 
 #[tokio::test]
 async fn a_later_open_does_not_change_the_prefix_captured_by_an_existing_need() {
-    let binder: Arc<dyn ConfigBinder> = Arc::new(Binder::new(
-        Arc::new(BootRefs),
-        Arc::new(Default::default()),
-        Vec::new(),
-    ));
+    let binder: Arc<dyn ConfigBinder> =
+        Arc::new(Binder::new(Arc::new(Default::default()), Vec::new()));
     let before = BootSecrets::empty(
         binder,
         Arc::new(busbar_plugin_loader::instance::SlotTable::new()),
@@ -246,11 +240,8 @@ async fn a_later_open_does_not_change_the_prefix_captured_by_an_existing_need() 
 async fn an_immutable_prefix_keeps_cycle_refusal_and_releases_its_ports_on_drop() {
     use busbar_kernel::custody::SecretCustody;
     use busbar_plugin_abi::host_side::caller::CallStack;
-    let binder: Arc<dyn ConfigBinder> = Arc::new(Binder::new(
-        Arc::new(BootRefs),
-        Arc::new(Default::default()),
-        Vec::new(),
-    ));
+    let binder: Arc<dyn ConfigBinder> =
+        Arc::new(Binder::new(Arc::new(Default::default()), Vec::new()));
     let before = BootSecrets::empty(
         binder,
         Arc::new(busbar_plugin_loader::instance::SlotTable::new()),
@@ -296,7 +287,7 @@ async fn reference_config_is_scrubbed_per_binding_before_it_is_returned() {
     let scrub = Arc::new(Scrub::new());
     let lease = slots.alloc(
         SlotRecord {
-            kind: busbar_plugin_abi::KindCode::Plane,
+            kind: busbar_plugin_abi::types::KindCode::Plane,
             name: Arc::from("consumer"),
             scrub: Arc::clone(&scrub),
             errors: &ErrorBook::None,

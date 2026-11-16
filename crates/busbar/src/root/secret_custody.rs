@@ -246,19 +246,41 @@ impl SecretCustody for BootCustody {
     }
 }
 
-/// The binder's source for references at a D_REF_PATH node (IF §12.7 `resolve_refs`). Such a value is written
-/// into the instance's bound config, and registering it in the instance's scrub set needs the instance's slot,
-/// which the binder's `instance` id does not name; so core refuses the reference (no text, the binder writes
-/// core's own) rather than hand a plugin a value its log lines are not masked for.
-pub(crate) struct BootRefs;
+/// Complete reference authority for one open: the immutable secret prefix and process slot table.
+pub(crate) struct BootRefs(pub(crate) Arc<BootSecrets>);
+
+impl BootSecrets {
+    pub(crate) fn refs(self: &Arc<Self>) -> Arc<dyn RefSource> {
+        Arc::new(BootRefs(Arc::clone(self)))
+    }
+}
 
 impl RefSource for BootRefs {
     fn resolve<'a>(
         &'a self,
-        _instance: u64,
-        _reference: &'a SecretRef,
+        instance: u64,
+        slot: u32,
+        binding: u32,
+        reference: &'a SecretRef,
     ) -> BoxFut<'a, Option<SecureVec>> {
-        Box::pin(core::future::ready(None))
+        Box::pin(async move {
+            if instance == 0 {
+                return None;
+            }
+            let scrub_handle = binding.checked_add(0x8000_0000)?;
+            let scrub = self.0.slots.scrub_of(slot)?;
+            let value = self
+                .0
+                .resolve_ref(
+                    Instant::now() + super::min3_boot::CORE_SECRET_DEADLINE,
+                    reference,
+                )
+                .await
+                .ok()?;
+            // Reference bindings cannot overwrite the ordinary SECRET handles or each other.
+            scrub.register(scrub_handle, &[value.as_slice()]);
+            Some(value)
+        })
     }
 }
 
