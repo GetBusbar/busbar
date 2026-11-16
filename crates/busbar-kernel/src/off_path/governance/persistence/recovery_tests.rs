@@ -1912,7 +1912,9 @@ async fn recovery_history_restarts_from_the_cut_base() {
     let recovery = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
     let journal = recovery.journal.clone();
     for _ in 0..(RETAIN_TAIL + 3 * CUT_BATCH) {
-        let run = journal.stage_run(&[Entry::new(RecordClass::Transaction, vec![2])]).unwrap();
+        let run = journal
+            .stage_run(&[Entry::new(RecordClass::Transaction, vec![2])])
+            .unwrap();
         journal.confirm(&run).await.unwrap();
     }
     let before = backend.state.lock().unwrap().rows.clone();
@@ -1922,7 +1924,11 @@ async fn recovery_history_restarts_from_the_cut_base() {
     let expected = fresh.proof(journal.node()).await.unwrap();
     backend.state.lock().unwrap().rows = before;
     *backend.after_read.lock().unwrap() = Some(Arc::new(move |backend, read| {
-        if read.addresses.iter().any(|address| address.key.get(24) == Some(&b'B')) {
+        if read
+            .addresses
+            .iter()
+            .any(|address| address.key.get(24) == Some(&b'B'))
+        {
             if let Some(rows) = after.lock().unwrap().take() {
                 backend.state.lock().unwrap().rows = rows;
             }
@@ -1931,9 +1937,12 @@ async fn recovery_history_restarts_from_the_cut_base() {
     let restarts = journal_walk_restarts();
     let mut racing = History::observing(&recovery.store, &journal);
     let actual = racing.proof(journal.node()).await.unwrap();
-    assert_eq!(actual.head, expected.head);
+    assert!(actual.head == expected.head);
     assert_eq!(actual.records_seal, expected.records_seal);
-    assert!(journal_walk_restarts() > restarts, "recovery uses the shared journal restart accounting");
+    assert!(
+        journal_walk_restarts() > restarts,
+        "recovery uses the shared journal restart accounting"
+    );
     *backend.after_read.lock().unwrap() = None;
 }
 

@@ -42,6 +42,7 @@ mod recovery_hooks;
 pub(crate) use recovery_hooks::{RowChange, Selection};
 mod base;
 pub(crate) use base::Base;
+pub(crate) use base::{count_walk_restart, WALK_RESTART_LIMIT};
 pub use base::{
     journal_walk_restarts, AuditTail, NodeRecords, Pin, CUT_BATCH, KEEP_MAX, RETAIN_TAIL,
 };

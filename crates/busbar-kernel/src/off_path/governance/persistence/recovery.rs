@@ -642,8 +642,11 @@ impl<'a> History<'a> {
                 .walk_from(&journal, base.as_deref(), local, &mut staged)
                 .await
             {
-                Err(JournalError::Rebased) if restarts < 3 => {
+                Err(JournalError::Rebased)
+                    if restarts < crate::persistence::journal::WALK_RESTART_LIMIT =>
+                {
                     restarts += 1;
+                    crate::persistence::journal::count_walk_restart();
                     staged = HistoryRecords::default();
                     base = None;
                 }

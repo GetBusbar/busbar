@@ -250,9 +250,9 @@ static WALK_RESTARTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 
 /// A walk restarts from a new base at most this many times, then answers `Busy` (§3.9 "One
 /// walker").
-pub(super) const WALK_RESTART_LIMIT: u32 = 3;
+pub(crate) const WALK_RESTART_LIMIT: u32 = 3;
 
-pub(super) fn count_walk_restart() {
+pub(crate) fn count_walk_restart() {
     WALK_RESTARTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
