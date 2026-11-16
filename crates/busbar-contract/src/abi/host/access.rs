@@ -249,7 +249,6 @@ services! {
     TRUST_DUE: Trust, Active => [PlaneKind];
     VERIFY_LOOKUP: Records, Active => [PlaneKind, AuthKind, HookKind];
     VERIFY_STORE: Records, Active => [PlaneKind, AuthKind, HookKind];
-    ENTITLEMENT_CHECK: Unit, Active => [PlaneKind];
     CONTENT_SCAN: Unit, Active => [PlaneKind];
     HOOK_CALL: Unit, Active => [PlaneKind];
     RANDOM_FILL: Lifecycle, Lifecycle => [all];

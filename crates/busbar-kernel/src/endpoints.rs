@@ -186,6 +186,83 @@ pub fn catalog_names(
     names.into_iter().map(str::to_string).collect()
 }
 
+/// Root-owned probe inputs, constructed with the completed durability service before serving.
+pub struct ProbeState {
+    journal: Option<std::sync::Arc<crate::persistence::journal::runtime::RuntimeJournal>>,
+    stopping: std::sync::atomic::AtomicBool,
+}
+
+impl ProbeState {
+    #[must_use]
+    pub fn new(
+        journal: Option<std::sync::Arc<crate::persistence::journal::runtime::RuntimeJournal>>,
+    ) -> Self {
+        Self {
+            journal,
+            stopping: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Readiness closes immediately; this does not stop listeners or acquire admission.
+    pub fn begin_stopping(&self) {
+        self.stopping
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    fn permits(&self, app: &App) -> bool {
+        if self.stopping.load(std::sync::atomic::Ordering::Acquire) {
+            return false;
+        }
+        if let Some(governance) = &app.governance {
+            let gate = governance.admissions();
+            if self.journal.is_none() || gate.is_closed() || gate.terminal() >= gate.cap() {
+                return false;
+            }
+        }
+        self.journal
+            .as_ref()
+            .is_none_or(|journal| journal.refuses_money().is_none())
+    }
+}
+
+fn dispatch_halted() -> bool {
+    crate::preflight::root_rows()
+        .dispatch_latched
+        .is_some_and(|latched| latched())
+}
+
+/// Process liveness is independent of downstream readiness and shutdown deregistration.
+pub async fn livez() -> Response {
+    plugin_dispatch_halted(dispatch_halted())
+        .unwrap_or_else(|| (StatusCode::OK, "ok").into_response())
+}
+
+/// A side-effect-free snapshot of this process's current admission eligibility.
+pub async fn readyz(
+    crate::state::CurrentApp(app): crate::state::CurrentApp,
+    probes: Option<axum::Extension<std::sync::Arc<ProbeState>>>,
+) -> Response {
+    let ready = probes.is_some_and(|axum::Extension(probes)| probes.permits(&app))
+        && !dispatch_halted()
+        && crate::plane_driver::registry::plane_decls()
+            .iter()
+            .filter(|decl| !decl.fallback && app.plane_configured(decl))
+            .all(|decl| {
+                app.plane_slot(decl.key)
+                    .is_some_and(|slot| crate::plane_driver::door::opened(slot.as_ref()))
+            })
+        && {
+            let lanes = app.engine_tables_view().lane_count();
+            let at = now();
+            lanes == 0 || (0..lanes).any(|i| app.store.is_ready_any_cell(i, at))
+        };
+    if ready {
+        (StatusCode::OK, "ok").into_response()
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "not ready").into_response()
+    }
+}
+
 pub async fn healthz(crate::state::CurrentApp(app): crate::state::CurrentApp) -> Response {
     let latched = crate::preflight::root_rows()
         .dispatch_latched

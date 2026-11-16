@@ -113,7 +113,7 @@ fn a_candidate_digests_its_security_fields_as_its_build_does() {
         ("fetch", serde_json::json!([]), "plugins.fetch"),
         (
             "trust",
-            serde_json::json!({ "allow_unsigned": true }),
+            serde_json::json!({ "allow_untrusted": true }),
             "plugins.trust",
         ),
     ] {
@@ -146,4 +146,22 @@ fn a_candidate_unreadable_under_the_running_grammar_counts_as_changed() {
         "a word the running generation does not know leaves the fields unread"
     );
     assert!(candidate.plugins.enabled);
+}
+
+#[test]
+fn publisher_scope_key_rotation_and_revocation_change_security_policy() {
+    let deploy: super::super::DeployCfg =
+        busbar_contract::yaml::from_str("providers: {}\nmodels: {}\n").unwrap();
+    let cfg = super::super::resolve(&deploy, &std::collections::HashMap::new()).unwrap();
+    let policy = |scope: &str, key: &str, revoked: bool| -> super::super::PluginsCfg {
+        busbar_contract::yaml::from_str(&format!("trust: {{publishers: [{{name: vendor, plugins: [{scope}], keys: [{{public_key: '{key}', revoked: {revoked}}}]}}]}}")).unwrap()
+    };
+    let base = policy("example", "aa", false);
+    for changed in [
+        policy("other", "aa", false),
+        policy("example", "bb", false),
+        policy("example", "aa", true),
+    ] {
+        assert_ne!(root_digest(&cfg, &base), root_digest(&cfg, &changed));
+    }
 }
