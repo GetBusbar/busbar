@@ -349,7 +349,7 @@ async fn install_catalog_remove_roundtrip() {
     let response = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&json::json!({"file":"junk.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
     assert_eq!(response.status().as_u16(), 201);
     let view = json::parse_value(&response.bytes().await.unwrap()).unwrap();
-    assert_eq!(view["trust"], "unverified");
+    assert_eq!(view["trust"]["verdict"], "unverified");
     assert_eq!(view["name"], upload_name);
     assert!(directory.join("junk.tar.gz").exists(), "tarball published");
     let response = client
@@ -369,7 +369,7 @@ async fn install_catalog_remove_roundtrip() {
     assert_eq!(row["valid"], true);
     assert_eq!(row["name"], upload_name);
     assert_eq!(row["target"], "junk.tar.gz");
-    assert_eq!(row["trust"], "unverified");
+    assert_eq!(row["trust"]["verdict"], "unverified");
     let reloaded = client
         .post(format!("http://{addr}/api/v1/admin/plugins/reload"))
         .header("x-admin-token", "admintok")

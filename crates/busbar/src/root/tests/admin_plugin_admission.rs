@@ -437,7 +437,7 @@ async fn inspect_previews_a_trusted_candidate_without_installing() {
     assert_eq!(v["name"], "acme-store-preview");
     assert_eq!(v["version"], "1.0.0");
     assert_eq!(v["kind"], "secret");
-    assert_eq!(v["trust"], "unverified");
+    assert_eq!(v["trust"]["verdict"], "unverified");
     assert_eq!(v["source"], "manifest");
     assert_eq!(v["schema_error"], serde_json::Value::Null);
     assert!(
@@ -471,7 +471,7 @@ async fn inspect_reports_rejected_trust_rather_than_erroring() {
 
     let (status, v) = inspect(addr, &tarball).await;
     assert_eq!(status, 200, "inspect still succeeds: {v}");
-    assert_eq!(v["trust"], "rejected");
+    assert_eq!(v["trust"]["verdict"], "rejected");
     assert_eq!(v["name"], "acme-store-untrusted");
     handle.abort();
 }
@@ -830,7 +830,7 @@ async fn catalog_does_not_dlopen_an_untrusted_plugin() {
         .find(|p| p["target"] == "evil.tar.gz")
         .expect("the untrusted plugin is listed in the catalog");
     assert_eq!(
-        row["trust"], "rejected",
+        row["trust"]["verdict"], "rejected",
         "an unsigned plugin under the strict default posture is reported rejected"
     );
     assert_eq!(row["valid"], false, "and it is not loadable");
@@ -863,7 +863,15 @@ async fn install_signed_is_trusted() {
         status, 201,
         "a signed, allowlisted upload installs under the strict posture: {view}"
     );
-    assert_eq!(view["trust"], "trusted");
+    assert_eq!(view["trust"]["verdict"], "trusted");
+    assert_eq!(view["trust"]["signature_present"], true);
+    assert_eq!(
+        view["trust"]["key_fingerprint"],
+        crate::root::loader::release_trust::wire::key_id(
+            &crate::root::loader::sign::ReleaseKey::Ed25519(key.verifying_key())
+        )
+    );
+    assert!(view["trust"]["keys_doc_version"].is_null());
     assert_eq!(view["publisher"], "acme");
     assert_eq!(view["version"], "2.1.0");
     assert_eq!(view["name"], "acme-store-disk");
@@ -873,7 +881,7 @@ async fn install_signed_is_trusted() {
         .iter()
         .find(|p| p["loader"] == "dynamic-library")
         .expect("dynamic plugin");
-    assert_eq!(row["trust"], "trusted");
+    assert_eq!(row["trust"]["verdict"], "trusted");
     assert_eq!(row["publisher"], "acme");
     assert_eq!(row["version"], "2.1.0");
     assert_eq!(row["name"], "acme-store-disk");
@@ -916,7 +924,7 @@ async fn install_downgraded_version_is_rejected_by_floor() {
         status, 201,
         "a signed release at/above the floor installs: {view}"
     );
-    assert_eq!(view["trust"], "trusted");
+    assert_eq!(view["trust"]["verdict"], "trusted");
     assert_eq!(view["version"], "2.1.0");
     handle.abort();
 }
@@ -1079,7 +1087,7 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
     assert_eq!(resp.status().as_u16(), 201, "install returns 201 Created");
     let v: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(file_of(&v).as_deref(), Some(file));
-    assert_eq!(v["trust"], "unverified");
+    assert_eq!(v["trust"]["verdict"], "unverified");
     assert_eq!(
         v["name"], "acme-store-junk",
         "identity from the signed manifest"
@@ -1476,7 +1484,7 @@ async fn test_admin_v1_plugins_inspect_previews_without_installing() {
     assert_eq!(v["version"], "1.0.0");
     assert_eq!(v["kind"], "store");
     assert_eq!(v["source"], "manifest");
-    assert_eq!(v["trust"], "unverified");
+    assert_eq!(v["trust"]["verdict"], "unverified");
 
     assert_eq!(
         std::fs::read_dir(&dir).unwrap().count(),
@@ -1577,7 +1585,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     assert_eq!(got["schema_error"], serde_json::Value::Null);
     assert_eq!(got["source"], "manifest");
 
-    assert_eq!(got["trust"], "unverified");
+    assert_eq!(got["trust"]["verdict"], "unverified");
 
     handle.abort();
 
