@@ -392,6 +392,47 @@ async fn assert_recovered_audit(book: &TestBook, report: &UnitCheckpoint) {
     .unwrap();
 }
 
+#[tokio::test]
+async fn recovered_audit_reappend_preserves_wal_custody_position() {
+    let fixture = ActualStore::new();
+    let store = fixture.open().await;
+    let host = format!(
+        "unit-checkpoint-position-{}",
+        hex::encode(busbar_kernel::door::op_id().0)
+    );
+    let book = opened(store, &host).await;
+    let report = unit();
+    unit_checkpoint_sink(&book).persist(&report).await.unwrap();
+    unit_checkpoint_sink(&book)
+        .recover_audit(&report)
+        .await
+        .unwrap();
+    let audit = book
+        .evidence
+        .find_audit(report.unit, 7)
+        .await
+        .unwrap()
+        .unwrap();
+    let node_seq = book.evidence.append_audit(audit.clone()).await.unwrap();
+    assert_ne!(
+        node_seq, 0,
+        "an existing original must retain its WAL position"
+    );
+    assert_ne!(
+        node_seq, audit.seq,
+        "checkpoint records separate WAL and audit positions"
+    );
+    let carried = Carried {
+        seq: node_seq,
+        hash: busbar_kernel_audit::Fingerprint::from_hex(&audit.hash)
+            .unwrap()
+            .0,
+    };
+    assert_eq!(book.evidence.find_audit_at(carried).await.unwrap(), audit);
+    assert_eq!(book.evidence.append_audit(audit).await.unwrap(), node_seq);
+    stop(&book);
+}
+
 struct LoseAppliedAck {
     inner: Arc<dyn RecoverySink>,
     armed: AtomicBool,
