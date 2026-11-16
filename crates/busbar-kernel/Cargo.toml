@@ -13,7 +13,8 @@ path = "src/lib.rs"
 
 [dependencies]
 foldhash = { workspace = true }
-busbar-contract = { path = "../busbar-contract" }
+# `schema`: the binder compiles each secret instance's D_REF_SCHEMA once (IF §12.7, plugin_config).
+busbar-contract = { path = "../busbar-contract", features = ["schema"] }
 busbar-kernel-egress = { path = "../busbar-kernel-egress" }
 busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
 busbar-kernel-wal = { path = "../busbar-kernel-wal" }
@@ -54,6 +55,8 @@ tracing-log = { workspace = true }
 hex = { workspace = true }
 async-trait = { workspace = true }
 arc-swap = { workspace = true }
+# PEM CAs at D_TRUST_PATH nodes (plugin_config/pem.rs).
+rustls-pki-types = { workspace = true }
 
 [features]
 openapi-schema = ["dep:schemars"]
