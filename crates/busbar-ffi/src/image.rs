@@ -224,6 +224,13 @@ impl Admitted {
         unsafe { &*p }
     }
 
+    /// `former_names` as checked UTF-8 (`add` and the admit path compared it with the signed manifest already);
+    /// empty when the header states bytes that are not UTF-8.
+    pub fn former_names(&self) -> &'static str {
+        let names: Bytes<'static> = self.header().former_names_raw().bytes();
+        core::str::from_utf8(names.get()).unwrap_or("")
+    }
+
     /// The stamp bytes.
     pub fn stamp(&self) -> &'static StampBytes {
         stamp_of(self.header())
