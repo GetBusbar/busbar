@@ -19,22 +19,100 @@ use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
 use busbar_kernel::auth::chain_run::{
-    credential_hash, refreshed, run_chain, verify_cached, ChainEnd, ChainInstance,
+    credential_hash, refreshed, AuthServices, ChainEnd, ChainInstance, IdentityPolicy, Verdict,
 };
 use busbar_kernel::auth::verdicts::{VerdictPolicy, Verdicts};
-use busbar_plugin_abi::auth::{BAD_CREDENTIAL, FB_NEEDS_BODY, KEYS_STALE};
+use busbar_plugin_abi::auth::{BAD_CREDENTIAL, FB_NEEDS_BODY};
 use busbar_plugin_abi::fail::refused::R_UNSUPPORTED;
 use busbar_plugin_abi::host_side::caller::{BoxFut, CallStack};
 use busbar_plugin_abi::types::{Bytes, Pair, Str};
 use busbar_ports::auth::{
     AuthIn, AuthPort, Identity, LoginAnswer, LoginIn, OutboundAnswer, ServeIn, ServeOut,
-    UpstreamIn, Verdict, Verify,
+    UpstreamIn, Verify, VerifyAnswer,
 };
 use busbar_ports::{CallCx, PortError};
 
+// This cache fixture supplies complete host policy explicitly. Live serving constructs these services
+// from its actual issued grants, replay store and route policy; this fixture accepts identities.
+struct Checks;
+impl IdentityPolicy for Checks {
+    fn epoch(&self) -> u64 {
+        1
+    }
+    fn authorize(&self, _: u64, _: &Identity, _: &AuthIn<'_>) -> Result<(), u32> {
+        Ok(())
+    }
+}
+impl busbar_kernel::issued::IssuedCredentials for Checks {
+    fn lookup<'a>(
+        &'a self,
+        _: u64,
+        _: &'a str,
+        _: &'a str,
+    ) -> BoxFut<'a, busbar_contract::secure::SecureVec> {
+        Box::pin(async { busbar_contract::secure::SecureVec::new() })
+    }
+}
+impl busbar_kernel::plane_grants::ReplayGuard for Checks {
+    fn claim<'a>(
+        &'a self,
+        _: &'a busbar_plugin_abi::host_side::caller::Caller<'_>,
+        _: &'a [u8],
+        _: u64,
+    ) -> BoxFut<'a, Result<bool, busbar_kernel::plugin_records::RecordsDenied>> {
+        Box::pin(async { Ok(true) })
+    }
+}
+static CHECKS: Checks = Checks;
+static SERVICES: AuthServices<'static> = AuthServices {
+    issued: &CHECKS,
+    replay: &CHECKS,
+    policy: &CHECKS,
+};
+fn instance(id: u64, port: &dyn AuthPort) -> ChainInstance<'_> {
+    let caller = Box::leak(Box::new(busbar_plugin_abi::host_side::caller::Caller {
+        plugin: "fixture",
+        kind: busbar_plugin_abi::types::KindCode::Auth,
+        name: "auth",
+        instance: id,
+        slot: 0,
+        chain: 0,
+        deadline: cx().deadline,
+        stack: CallStack::default(),
+        out_of_process: false,
+        limits: Default::default(),
+    }));
+    let keys = Box::leak(Box::new(busbar_kernel::plane_grants::KeyRefresh::new(
+        Duration::from_secs(30),
+    )));
+    ChainInstance {
+        id,
+        port,
+        caller,
+        keys,
+        holds: &[],
+    }
+}
+async fn verify_cached(
+    cache: &dyn busbar_kernel::auth::verdicts::VerdictCache,
+    instance: ChainInstance<'_>,
+    cx: CallCx,
+    req: &AuthIn<'_>,
+) -> Result<Verdict, PortError> {
+    busbar_kernel::auth::chain_run::verify_cached(&SERVICES, cache, instance, cx, req).await
+}
+async fn run_chain(
+    cache: &dyn busbar_kernel::auth::verdicts::VerdictCache,
+    chain: &[ChainInstance<'_>],
+    cx: CallCx,
+    req: &AuthIn<'_>,
+) -> ChainEnd {
+    busbar_kernel::auth::chain_run::run_chain(&SERVICES, cache, chain, cx, req).await
+}
+
 /// What the fake answers on every verify.
 #[derive(Clone)]
-enum Answer {
+pub(super) enum Answer {
     NotMine,
     Rejected,
     /// An identity for this subject (`Identity::from_ticket`: core-built, no F_CACHE_S, no F_EXPIRES_AT_S).
@@ -43,25 +121,31 @@ enum Answer {
     KeysStale,
 }
 
-struct Fake {
+pub(super) struct Fake {
     facts: u64,
     cred_headers: Vec<Box<str>>,
     answer: Answer,
     verifies: Arc<AtomicUsize>,
+    refreshes: AtomicUsize,
 }
 
 impl Fake {
-    fn new(facts: u64, answer: Answer) -> Self {
+    pub(super) fn new(facts: u64, answer: Answer) -> Self {
         Self {
             facts,
             cred_headers: vec!["authorization".into()],
             answer,
             verifies: Arc::new(AtomicUsize::new(0)),
+            refreshes: AtomicUsize::new(0),
         }
     }
 
     fn verifies(&self) -> usize {
         self.verifies.load(Ordering::SeqCst)
+    }
+
+    pub(super) fn refreshes(&self) -> usize {
+        self.refreshes.load(Ordering::SeqCst)
     }
 }
 
@@ -88,7 +172,7 @@ impl AuthPort for Fake {
         None
     }
 
-    fn verify<'a>(&'a self, _cx: CallCx, _req: &'a AuthIn<'a>) -> Verify<'a> {
+    fn verify<'a>(&'a self, _cx: CallCx, _req: &AuthIn<'_>, _issued: Option<&[u8]>) -> Verify<'a> {
         let verifies = Arc::clone(&self.verifies);
         let answer = self.answer.clone();
         // A verify_io-style answer: it yields before it answers, so a burst overlaps one standing lead.
@@ -98,18 +182,15 @@ impl AuthPort for Fake {
                 tokio::task::yield_now().await;
             }
             Ok(match answer {
-                Answer::NotMine => Verdict::NotMine,
-                Answer::Rejected => Verdict::Rejected {
+                Answer::NotMine => VerifyAnswer::NotMine,
+                Answer::Rejected => VerifyAnswer::Refused {
                     code: BAD_CREDENTIAL,
                     text: "wrong password".into(),
                 },
                 Answer::Admit(subject) => {
-                    Verdict::Identity(Identity::from_ticket(&subject, "chat"))
+                    VerifyAnswer::Identity(Identity::from_ticket(&subject, "chat"))
                 }
-                Answer::KeysStale => Verdict::Rejected {
-                    code: KEYS_STALE,
-                    text: "unknown key id".into(),
-                },
+                Answer::KeysStale => VerifyAnswer::KeysStale,
             })
         }))
     }
@@ -131,7 +212,10 @@ impl AuthPort for Fake {
     }
 
     fn refresh<'a>(&'a self, _cx: CallCx) -> BoxFut<'a, Result<Option<u32>, PortError>> {
-        unsupported()
+        Box::pin(async {
+            self.refreshes.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        })
     }
 
     fn serve<'a>(
@@ -143,7 +227,7 @@ impl AuthPort for Fake {
     }
 }
 
-fn cx() -> CallCx {
+pub(super) fn cx() -> CallCx {
     CallCx {
         deadline: Instant::now() + Duration::from_secs(5),
         request_id: 1,
@@ -177,7 +261,7 @@ fn request_at<'a>(headers: &'a [Pair<'a>], now_s: u64) -> AuthIn<'a> {
 }
 
 /// Polls every future to completion on this task, so they overlap like concurrent requests.
-async fn join_all<F: Future>(futures: Vec<F>) -> Vec<F::Output> {
+pub(super) async fn join_all<F: Future>(futures: Vec<F>) -> Vec<F::Output> {
     let mut futures: Vec<Pin<Box<F>>> = futures.into_iter().map(Box::pin).collect();
     let mut done: Vec<Option<F::Output>> = futures.iter().map(|_| None).collect();
     std::future::poll_fn(move |cx| {
@@ -209,7 +293,7 @@ async fn a_wrong_password_burst_of_64_makes_one_verify_and_64_rejections() {
     let port = Fake::new(0, Answer::Rejected);
     let headers = [pair("authorization", "Basic YWxpY2U6d3Jvbmc=")];
     let req = request(&headers);
-    let instance = ChainInstance { id: 7, port: &port };
+    let instance = instance(7, &port);
     let outcomes = join_all(
         (0..64)
             .map(|_| verify_cached(&cache, instance, cx(), &req))
@@ -233,7 +317,7 @@ async fn a_leader_dropped_mid_verify_hands_the_lead_to_the_first_follower_at_onc
     let port = Fake::new(0, Answer::Rejected);
     let headers = [pair("authorization", "Bearer cold")];
     let req = request(&headers);
-    let instance = ChainInstance { id: 7, port: &port };
+    let instance = instance(7, &port);
     let mut leader = Box::pin(verify_cached(&cache, instance, cx(), &req));
     let mut follower = Box::pin(verify_cached(&cache, instance, cx(), &req));
     let mut noop = Context::from_waker(Waker::noop());
@@ -261,7 +345,7 @@ async fn not_mine_is_never_cached() {
     let port = Fake::new(0, Answer::NotMine);
     let headers = [pair("authorization", "Bearer someone-elses")];
     let req = request(&headers);
-    let instance = ChainInstance { id: 3, port: &port };
+    let instance = instance(3, &port);
     for _ in 0..2 {
         assert!(matches!(
             verify_cached(&cache, instance, cx(), &req).await,
@@ -277,7 +361,7 @@ async fn a_body_bound_instance_bypasses_the_cache_and_its_leads() {
     let port = Fake::new(FB_NEEDS_BODY, Answer::Rejected);
     let headers = [pair("authorization", "Bearer signed")];
     let req = request(&headers);
-    let instance = ChainInstance { id: 4, port: &port };
+    let instance = instance(4, &port);
     join_all(
         (0..16)
             .map(|_| verify_cached(&cache, instance, cx(), &req))
@@ -298,8 +382,8 @@ async fn two_instances_given_the_same_credential_never_share() {
     let port = Fake::new(0, Answer::Rejected);
     let headers = [pair("authorization", "Bearer same-bytes")];
     let req = request(&headers);
-    let a = ChainInstance { id: 1, port: &port };
-    let b = ChainInstance { id: 2, port: &port };
+    let a = instance(1, &port);
+    let b = instance(2, &port);
     join_all(vec![
         verify_cached(&cache, a, cx(), &req),
         verify_cached(&cache, b, cx(), &req),
@@ -317,18 +401,9 @@ async fn the_chain_moves_past_not_mine_and_stops_at_a_rejection() {
     let headers = [pair("authorization", "Bearer x")];
     let req = request(&headers);
     let chain = [
-        ChainInstance {
-            id: 1,
-            port: &first,
-        },
-        ChainInstance {
-            id: 2,
-            port: &second,
-        },
-        ChainInstance {
-            id: 3,
-            port: &third,
-        },
+        instance(1, &first),
+        instance(2, &second),
+        instance(3, &third),
     ];
     let end = run_chain(&cache, &chain, cx(), &req).await;
     assert!(matches!(end, ChainEnd::Rejected { instance: 2, code, .. } if code == BAD_CREDENTIAL));
@@ -425,7 +500,7 @@ async fn the_same_bearer_twice_verifies_once_and_the_entry_lives_300_s_by_defaul
     let cache = cache();
     let port = admit("alice");
     let headers = [pair("authorization", "Bearer cold")];
-    let instance = ChainInstance { id: 7, port: &port };
+    let instance = instance(7, &port);
     let first = verify_cached(&cache, instance, cx(), &request_at(&headers, 1_000)).await;
     let second = verify_cached(&cache, instance, cx(), &request_at(&headers, 1_100)).await;
     assert_eq!(
@@ -457,7 +532,7 @@ async fn at_capacity_the_idle_entry_with_the_soonest_expiry_goes_first() {
         [pair("authorization", "Bearer b")],
         [pair("authorization", "Bearer c")],
     );
-    let instance = ChainInstance { id: 7, port: &port };
+    let instance = instance(7, &port);
     for (headers, at) in [(&a, 1_000), (&b, 1_010), (&c, 1_020)] {
         let outcome = verify_cached(&cache, instance, cx(), &request_at(headers, at)).await;
         assert_eq!(subject_of(&outcome).as_deref(), Some("alice"));
@@ -483,7 +558,7 @@ async fn with_every_entry_leading_the_next_request_bypasses_and_is_never_refused
         [pair("authorization", "Bearer b")],
         [pair("authorization", "Bearer c")],
     );
-    let instance = ChainInstance { id: 7, port: &port };
+    let instance = instance(7, &port);
     let (req_a, req_b, req_c) = (
         request_at(&a, 1_000),
         request_at(&b, 1_000),
@@ -509,7 +584,7 @@ async fn an_identity_over_8_kib_is_verified_afresh_every_time() {
     let cache = cache();
     let port = admit(&"x".repeat(9_000));
     let headers = [pair("authorization", "Bearer big")];
-    let instance = ChainInstance { id: 7, port: &port };
+    let instance = instance(7, &port);
     for _ in 0..2 {
         let outcome = verify_cached(&cache, instance, cx(), &request_at(&headers, 1_000)).await;
         assert!(matches!(outcome, Ok(Verdict::Identity(_))));
@@ -526,7 +601,7 @@ async fn a_completed_refresh_flushes_the_instance_and_a_failed_one_does_not() {
     let cache = cache();
     let port = admit("alice");
     let headers = [pair("authorization", "Bearer cold")];
-    let instance = ChainInstance { id: 7, port: &port };
+    let instance = instance(7, &port);
     let req = request_at(&headers, 1_000);
     verify_cached(&cache, instance, cx(), &req).await.ok();
     let failed: Result<Option<u32>, PortError> = Err(PortError::Refused {
@@ -556,7 +631,7 @@ async fn a_keys_stale_answer_flushes_the_instance() {
     let id = 7;
     verify_cached(
         &cache,
-        ChainInstance { id, port: &good },
+        instance(id, &good),
         cx(),
         &request_at(&known, 1_000),
     )
@@ -564,15 +639,15 @@ async fn a_keys_stale_answer_flushes_the_instance() {
     .ok();
     let refused = verify_cached(
         &cache,
-        ChainInstance { id, port: &stale },
+        instance(id, &stale),
         cx(),
         &request_at(&unknown_key, 1_001),
     )
     .await;
-    assert!(matches!(refused, Ok(Verdict::Rejected { code, .. }) if code == KEYS_STALE));
+    assert!(matches!(refused, Ok(Verdict::Rejected { code, .. }) if code == BAD_CREDENTIAL));
     verify_cached(
         &cache,
-        ChainInstance { id, port: &good },
+        instance(id, &good),
         cx(),
         &request_at(&known, 1_002),
     )
@@ -590,7 +665,7 @@ async fn a_verify_that_began_before_a_flush_does_not_fill() {
     let cache = cache();
     let port = admit("alice");
     let headers = [pair("authorization", "Bearer racing")];
-    let instance = ChainInstance { id: 7, port: &port };
+    let instance = instance(7, &port);
     let req = request_at(&headers, 1_000);
     let mut leader = Box::pin(verify_cached(&cache, instance, cx(), &req));
     let mut noop = Context::from_waker(Waker::noop());

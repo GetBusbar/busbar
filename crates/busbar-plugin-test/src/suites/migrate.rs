@@ -19,8 +19,6 @@
 //!    version elsewhere (in its data, not its settings) has no settings-level case here and its own crate test
 //!    covers it.
 
-use std::sync::Arc;
-
 use busbar_contract::json::{
     self as facade, JsonContainerTrait, JsonValueMutTrait, JsonValueTrait, Value,
 };
@@ -73,31 +71,6 @@ fn install_kernel_sides(harness: &Harness) {
     harness.registry().set_store_seal(Box::new(|| {
         Box::new(busbar_contract::plugin::TestKernelSeal)
     }));
-    harness
-        .registry()
-        .set_auth_core(Arc::new(AuthCore), std::time::Duration::from_secs(1));
-}
-
-struct AuthCore;
-
-impl busbar_plugin_loader::adapters::auth::AuthCore for AuthCore {
-    fn issued<'a>(
-        &'a self,
-        _auth_instance: u64,
-        _kind: &'a str,
-        _id: &'a str,
-    ) -> busbar_plugin_abi::host_side::caller::BoxFut<'a, busbar_contract::secure::SecureVec> {
-        Box::pin(async { busbar_contract::secure::SecureVec::new() })
-    }
-
-    fn claim<'a>(
-        &'a self,
-        _who: &'a busbar_plugin_abi::host_side::caller::Caller<'_>,
-        _key: &'a [u8],
-        _ttl_s: u64,
-    ) -> busbar_plugin_abi::host_side::caller::BoxFut<'a, Option<bool>> {
-        Box::pin(async { Some(true) })
-    }
 }
 
 /// `bytes` as JSON in a canonical text (object members sorted by key), so two documents compare as the tree

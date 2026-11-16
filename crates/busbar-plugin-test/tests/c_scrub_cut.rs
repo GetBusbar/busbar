@@ -175,7 +175,7 @@ fn the_auth_adapters_port_error_log_line_and_audit_row_hold() {
     use busbar_plugin_abi::auth::BAD_CREDENTIAL;
     use busbar_plugin_abi::types::Status;
     use busbar_plugin_loader::adapters::auth::{plugin_error, rejected};
-    use busbar_ports::auth::Verdict;
+    use busbar_ports::auth::VerifyAnswer;
     use busbar_ports::PortError;
 
     let scrub = Scrub::new();
@@ -193,7 +193,8 @@ fn the_auth_adapters_port_error_log_line_and_audit_row_hold() {
             assert!(shown.len() <= FAIL_TEXT_SHOWN);
             assert!(!leaks(&shown, form.as_bytes()), "{form}");
         }
-        let Verdict::Rejected { text: shown, .. } = rejected(BAD_CREDENTIAL, &text, &scrub) else {
+        let VerifyAnswer::Refused { text: shown, .. } = rejected(BAD_CREDENTIAL, &text, &scrub)
+        else {
             panic!("not Rejected")
         };
         assert!(shown.len() <= FAIL_TEXT_SHOWN);

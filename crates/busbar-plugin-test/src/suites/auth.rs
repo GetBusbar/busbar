@@ -18,18 +18,14 @@
 //! 6. a config that is not JSON is refused by `check` (never an instance, never a fault);
 //! 7. the instance closes (drops) and nothing the harness collected is a refusal the suite did not expect.
 
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::auth as abi;
 use busbar_plugin_abi::fail::refused::R_UNSUPPORTED;
-use busbar_plugin_abi::host_side::caller::{BoxFut, CallStack, Caller};
+use busbar_plugin_abi::host_side::caller::CallStack;
 use busbar_plugin_abi::plugin::Plugin;
 use busbar_plugin_abi::types::KindCode;
-use busbar_plugin_loader::adapters::auth::AuthCore;
-use busbar_ports::auth::{ServeIn, Verdict, Verify};
+use busbar_ports::auth::{ServeIn, Verify, VerifyAnswer};
 use busbar_ports::{CallCx, PortError};
 
 use super::harness::Harness;
@@ -38,46 +34,6 @@ use crate::fake_needs::FakeNeeds;
 
 /// The instance name every suite instance opens under.
 const NAME: &str = "suite";
-
-/// `auth.unknown_key_refresh_s` the suite installs (the adapter's floor).
-const KEY_REFRESH: Duration = Duration::from_secs(30);
-
-/// The kernel's side of the auth adapter, over what the suite's `FakeNeeds` scripted: `issued` answers from
-/// `FakeNeeds::issued` (empty when the id is unknown, the same answer an ungranted kind gets), and `claim` is a
-/// replay guard that admits the first sighting of a key and declines every later one.
-struct SuiteCore {
-    issued: Vec<(String, String, Vec<u8>)>,
-    seen: Mutex<HashSet<Vec<u8>>>,
-}
-
-impl AuthCore for SuiteCore {
-    fn issued<'a>(
-        &'a self,
-        _auth_instance: u64,
-        kind: &'a str,
-        id: &'a str,
-    ) -> BoxFut<'a, SecureVec> {
-        let mut out = SecureVec::new();
-        if let Some((_, _, value)) = self.issued.iter().find(|(k, i, _)| k == kind && i == id) {
-            out.extend_from_slice(value);
-        }
-        Box::pin(core::future::ready(out))
-    }
-
-    fn claim<'a>(
-        &'a self,
-        _who: &'a Caller<'_>,
-        key: &'a [u8],
-        _ttl_s: u64,
-    ) -> BoxFut<'a, Option<bool>> {
-        let first = self
-            .seen
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(key.to_vec());
-        Box::pin(core::future::ready(Some(first)))
-    }
-}
 
 fn cx(n: u64) -> CallCx {
     CallCx {
@@ -88,11 +44,13 @@ fn cx(n: u64) -> CallCx {
 }
 
 /// What a verdict says, for failure messages. Never prints secret bytes: identity records stay out.
-fn describe(verdict: &Result<Verdict, PortError>) -> String {
+fn describe(verdict: &Result<VerifyAnswer, PortError>) -> String {
     match verdict {
-        Ok(Verdict::Identity(id)) => format!("identity (subject {:?})", id.subject()),
-        Ok(Verdict::NotMine) => "not mine".to_owned(),
-        Ok(Verdict::Rejected { code, text }) => format!("rejected (code {code}, {text:?})"),
+        Ok(VerifyAnswer::Identity(id)) => format!("identity (subject {:?})", id.subject()),
+        Ok(VerifyAnswer::NotMine) => "not mine".to_owned(),
+        Ok(VerifyAnswer::Refused { code, text }) => format!("rejected (code {code}, {text:?})"),
+        Ok(VerifyAnswer::IssuedWanted(id)) => format!("issued wanted {id:?}"),
+        Ok(VerifyAnswer::KeysStale) => "keys stale".to_owned(),
         Err(e) => format!("port error {e:?}"),
     }
 }
@@ -100,16 +58,20 @@ fn describe(verdict: &Result<Verdict, PortError>) -> String {
 fn expected(expect: &Expect<'_>) -> String {
     match expect {
         Expect::Subject(s) => format!("identity (subject {s:?})"),
+        Expect::IssuedWanted(id) => format!("issued wanted {id:?}"),
+        Expect::KeysStale => "keys stale".to_owned(),
         Expect::NotMine => "not mine".to_owned(),
         Expect::Rejected(code) => format!("rejected (code {code})"),
     }
 }
 
-fn matches(expect: &Expect<'_>, verdict: &Result<Verdict, PortError>) -> bool {
+fn matches(expect: &Expect<'_>, verdict: &Result<VerifyAnswer, PortError>) -> bool {
     match (expect, verdict) {
-        (Expect::Subject(want), Ok(Verdict::Identity(id))) => id.subject() == *want,
-        (Expect::NotMine, Ok(Verdict::NotMine)) => true,
-        (Expect::Rejected(want), Ok(Verdict::Rejected { code, .. })) => code == want,
+        (Expect::Subject(want), Ok(VerifyAnswer::Identity(id))) => id.subject() == *want,
+        (Expect::IssuedWanted(want), Ok(VerifyAnswer::IssuedWanted(id))) => id.as_ref() == *want,
+        (Expect::KeysStale, Ok(VerifyAnswer::KeysStale)) => true,
+        (Expect::NotMine, Ok(VerifyAnswer::NotMine)) => true,
+        (Expect::Rejected(want), Ok(VerifyAnswer::Refused { code, .. })) => code == want,
         _ => false,
     }
 }
@@ -120,10 +82,6 @@ pub(super) fn run(
     needs: FakeNeeds,
     cases: &[AuthCase<'_>],
 ) {
-    let core = Arc::new(SuiteCore {
-        issued: needs.kernel().issued,
-        seen: Mutex::new(HashSet::new()),
-    });
     let harness = match Harness::admit(plugin, needs) {
         Ok(h) => h,
         Err(refusal) => panic!("auth suite: admit refused the image: {refusal:?}"),
@@ -135,7 +93,6 @@ pub(super) fn run(
         harness.identity(),
         harness.kind()
     );
-    harness.registry().set_auth_core(core, KEY_REFRESH);
 
     // check (DRY_RUN) and open of the operator config.
     if let Err(e) = harness.check(NAME, config) {
@@ -163,7 +120,7 @@ pub(super) fn run(
     // Every case through verify.
     for (n, case) in cases.iter().enumerate() {
         let request_id = u64::try_from(n).unwrap_or(u64::MAX).saturating_add(1);
-        let verdict = match port.verify(cx(request_id), &case.req) {
+        let verdict = match port.verify(cx(request_id), &case.req, None) {
             Verify::Done(done) => done,
             Verify::Io(chain) => harness.block_on(chain),
         };

@@ -10,9 +10,10 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+use super::chain_run::Verdict;
 use busbar_plugin_abi::auth::{FB_NEEDS_BODY, FB_NEEDS_BODY_HASH};
 use busbar_plugin_abi::host_side::caller::BoxFut;
-use busbar_ports::auth::{Identity, Verdict};
+use busbar_ports::auth::Identity;
 use busbar_ports::PortError;
 use foldhash::HashMap;
 use tokio::sync::oneshot;
@@ -30,6 +31,7 @@ const SHARDS: usize = 16;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct VerdictKey {
     pub auth_instance: u64,
+    pub policy_epoch: u64,
     pub credential: CredentialHash,
 }
 
@@ -167,7 +169,10 @@ impl<V, O: Clone> VerdictLead<'_, V, O> {
                 return;
             };
             let current = keys.epoch.load(Ordering::Relaxed) == self.epoch;
-            let Some(slot) = keys.keys.get_mut(&self.key.credential.0) else {
+            let Some(slot) = keys
+                .keys
+                .get_mut(&(self.key.policy_epoch, self.key.credential.0))
+            else {
                 return;
             };
             if let Some((value, ttl)) = fill.filter(|_| current) {
@@ -191,10 +196,10 @@ impl<V, O> Drop for VerdictLead<'_, V, O> {
             return;
         }
         let mut book = self.cache.write(self.key.auth_instance);
-        if let Some(slot) = book
-            .get_mut(&self.key.auth_instance)
-            .and_then(|keys| keys.keys.get_mut(&self.key.credential.0))
-        {
+        if let Some(slot) = book.get_mut(&self.key.auth_instance).and_then(|keys| {
+            keys.keys
+                .get_mut(&(self.key.policy_epoch, self.key.credential.0))
+        }) {
             hand(slot);
         }
     }
@@ -274,7 +279,7 @@ impl<V, O> Slot<V, O> {
 /// One instance's keys and its flush epoch (rule 6).
 pub(crate) struct Keys<V, O> {
     pub(crate) epoch: AtomicU64,
-    pub(crate) keys: HashMap<[u8; 32], Slot<V, O>>,
+    pub(crate) keys: HashMap<(u64, [u8; 32]), Slot<V, O>>,
 }
 
 impl<V, O> Default for Keys<V, O> {
@@ -342,7 +347,7 @@ impl<V: Clone + Send + Sync + 'static, O: Clone + Send + Sync + 'static> Verdict
             let book = self.read(key.auth_instance);
             let hit = book
                 .get(&key.auth_instance)
-                .and_then(|keys| keys.keys.get(&key.credential.0))
+                .and_then(|keys| keys.keys.get(&(key.policy_epoch, key.credential.0)))
                 .and_then(|slot| slot.fresh(now_s));
             if let Some(value) = hit {
                 return VerdictGet::Hit(value.clone());
@@ -350,11 +355,18 @@ impl<V: Clone + Send + Sync + 'static, O: Clone + Send + Sync + 'static> Verdict
         }
         let mut book = self.write(key.auth_instance);
         let keys = book.entry(key.auth_instance).or_default();
-        if !keys.keys.contains_key(&key.credential.0) && !room(&mut keys.keys, now_s, max) {
+        if !keys
+            .keys
+            .contains_key(&(key.policy_epoch, key.credential.0))
+            && !room(&mut keys.keys, now_s, max)
+        {
             return VerdictGet::Bypass;
         }
         let epoch = keys.epoch.load(Ordering::Relaxed);
-        let slot = keys.keys.entry(key.credential.0).or_default();
+        let slot = keys
+            .keys
+            .entry((key.policy_epoch, key.credential.0))
+            .or_default();
         if let Some(value) = slot.fresh(now_s) {
             return VerdictGet::Hit(value.clone());
         }
@@ -431,7 +443,7 @@ pub(crate) fn hand<V, O>(slot: &mut Slot<V, O>) -> bool {
 
 /// Rule 5 (VerifyBook's `room`, kept): at `max` keys, drop the idle stale keys, then the idle key with the soonest
 /// expiry; false when every key is leading or followed.
-fn room<V, O>(keys: &mut HashMap<[u8; 32], Slot<V, O>>, now_s: u64, max: usize) -> bool {
+fn room<V, O>(keys: &mut HashMap<(u64, [u8; 32]), Slot<V, O>>, now_s: u64, max: usize) -> bool {
     if keys.len() < max {
         return true;
     }
@@ -475,6 +487,7 @@ mod tests {
     fn key(instance: u64, byte: u8) -> VerdictKey {
         VerdictKey {
             auth_instance: instance,
+            policy_epoch: 0,
             credential: CredentialHash([byte; 32]),
         }
     }

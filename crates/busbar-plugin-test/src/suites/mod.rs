@@ -123,6 +123,10 @@ impl<'a> From<TransportCase<'a>> for TransportConnCase<'a> {
 }
 
 pub enum Expect<'a> {
+    /// Raw one-call ISSUED_WANTED; host lookup is tested in kernel.
+    IssuedWanted(&'a str),
+    /// Raw one-call KEYS_STALE; host refresh is tested in kernel.
+    KeysStale,
     Subject(&'a str),
     NotMine,
     Rejected(u32),
