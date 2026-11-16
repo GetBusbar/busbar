@@ -394,6 +394,10 @@ criteria = "safe-to-deploy"
 version = "0.2.191"
 criteria = "safe-to-deploy"
 
+[[exemptions.linux-raw-sys]]
+version = "0.12.1"
+criteria = "safe-to-deploy"
+
 [[exemptions.lock_api]]
 version = "0.4.14"
 criteria = "safe-to-deploy"
@@ -635,6 +639,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.rustc_version]]
 version = "0.4.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.rustix]]
+version = "1.1.6"
 criteria = "safe-to-deploy"
 
 [[exemptions.rustls]]

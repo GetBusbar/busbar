@@ -3,12 +3,14 @@
 
 //! The host's OS sockets: a non-blocking dial (TCP, or a unix-domain stream for an
 
-use std::io::{self, Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::io;
+use std::net::{SocketAddr, TcpListener, TcpStream};
 #[cfg(unix)]
 use std::os::fd::{AsFd, BorrowedFd};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
+#[cfg(windows)]
+use std::os::windows::io::{AsSocket, BorrowedSocket};
 use std::task::{Context, Poll};
 
 use socket2::{Domain, Protocol, Socket, Type};
@@ -54,112 +56,45 @@ pub enum Sock {
     Unix(UnixStream),
 }
 
-/// The stream's own descriptor, lent for the borrow: what [`crate::io::register`] watches.
+/// The stream's own descriptor, lent for the borrow (a [`socket2::SockRef`] of it).
 #[cfg(unix)]
 impl AsFd for Sock {
     fn as_fd(&self) -> BorrowedFd<'_> {
         match self {
             Self::Tcp(s) => s.as_fd(),
-            #[cfg(unix)]
             Self::Unix(s) => s.as_fd(),
         }
     }
 }
 
-impl Read for &Sock {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+/// The stream's own socket, lent for the borrow (a [`socket2::SockRef`] of it).
+#[cfg(windows)]
+impl AsSocket for Sock {
+    fn as_socket(&self) -> BorrowedSocket<'_> {
         match self {
-            Sock::Tcp(s) => (&*s).read(buf),
-            #[cfg(unix)]
-            Sock::Unix(s) => (&*s).read(buf),
+            Self::Tcp(s) => s.as_socket(),
         }
     }
 }
 
-impl Write for &Sock {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        match self {
-            Sock::Tcp(s) => (&*s).write(buf),
-            #[cfg(unix)]
-            Sock::Unix(s) => (&*s).write(buf),
-        }
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        match self {
-            Sock::Tcp(s) => (&*s).flush(),
-            #[cfg(unix)]
-            Sock::Unix(s) => (&*s).flush(),
-        }
-    }
+/// The far end's IP address, when `socket` is a connected TCP stream (a unix-domain stream's
+/// peer is a path: none).
+#[must_use]
+pub fn peer_ip(socket: &Socket) -> Option<std::net::IpAddr> {
+    socket
+        .peer_addr()
+        .ok()
+        .and_then(|a| a.as_socket())
+        .map(|a| a.ip())
 }
 
-impl Sock {
-    /// The far end's IP address, when this is a TCP stream that is connected.
-    #[must_use]
-    pub fn peer_ip(&self) -> Option<std::net::IpAddr> {
-        match self {
-            Self::Tcp(s) => s.peer_addr().ok().map(|a| a.ip()),
-            #[cfg(unix)]
-            Self::Unix(_) => None,
-        }
-    }
-
-    /// Whether the socket is idle and open: nothing to read, no error, not closed by the far end.
-    /// A look at the kernel's buffer (`MSG_PEEK`) that consumes nothing; anything else than "would
-    /// block" (data waiting, EOF, an error) is not idle.
-    #[must_use]
-    pub fn idle_and_open(&self) -> bool {
-        let mut byte = [std::mem::MaybeUninit::<u8>::uninit(); 1];
-        let peeked = match self {
-            Self::Tcp(s) => socket2::SockRef::from(s).peek(&mut byte),
-            #[cfg(unix)]
-            Self::Unix(s) => socket2::SockRef::from(s).peek(&mut byte),
-        };
-        matches!(peeked, Err(e) if e.kind() == io::ErrorKind::WouldBlock)
-    }
-
-    /// Shut down `how`.
-    pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
-        match self {
-            Self::Tcp(s) => s.shutdown(how),
-            #[cfg(unix)]
-            Self::Unix(s) => s.shutdown(how),
-        }
-    }
-}
-
-/// A connecting stream socket whose connect [`poll_connected`] can settle.
-pub trait Connecting: Source {
-    /// The socket's pending error (`SO_ERROR`).
-    fn pending_error(&self) -> io::Result<Option<io::Error>>;
-    /// `Ok` once connected; `NotConnected` while the connect is in flight.
-    fn connected(&self) -> io::Result<()>;
-}
-
-impl Connecting for TcpStream {
-    fn pending_error(&self) -> io::Result<Option<io::Error>> {
-        self.take_error()
-    }
-    fn connected(&self) -> io::Result<()> {
-        self.peer_addr().map(|_| ())
-    }
-}
-
-impl Connecting for Sock {
-    fn pending_error(&self) -> io::Result<Option<io::Error>> {
-        match self {
-            Self::Tcp(s) => s.take_error(),
-            #[cfg(unix)]
-            Self::Unix(s) => s.take_error(),
-        }
-    }
-    fn connected(&self) -> io::Result<()> {
-        match self {
-            Self::Tcp(s) => s.peer_addr().map(|_| ()),
-            #[cfg(unix)]
-            Self::Unix(s) => s.peer_addr().map(|_| ()),
-        }
-    }
+/// Whether `socket` is idle and open: nothing to read, no error, not closed by the far end.
+/// A look at the kernel's buffer (`MSG_PEEK`) that consumes nothing; anything else than "would
+/// block" (data waiting, EOF, an error) is not idle.
+#[must_use]
+pub fn idle_and_open(socket: &Socket) -> bool {
+    let mut byte = [std::mem::MaybeUninit::<u8>::uninit(); 1];
+    matches!(socket.peek(&mut byte), Err(e) if e.kind() == io::ErrorKind::WouldBlock)
 }
 
 /// Begin a non-blocking connect to the unix-domain socket at `path`: the socket comes back at once,
@@ -201,15 +136,15 @@ fn in_progress(e: &io::Error) -> bool {
 }
 
 /// Whether the connect [`connect`] began has completed: Ready(Ok) connected, Ready(Err) refused,
-pub fn poll_connected<T: Connecting>(
+pub fn poll_connected<T: Source>(
     sock: &Registered<T>,
     cx: &mut Context<'_>,
 ) -> Poll<io::Result<()>> {
     sock.poll_io(Direction::Write, cx, |socket| {
-        if let Some(error) = socket.pending_error()? {
+        if let Some(error) = socket.take_error()? {
             return Err(error);
         }
-        match socket.connected() {
+        match socket.peer_addr().map(|_| ()) {
             Err(error) if error.kind() == io::ErrorKind::NotConnected => {
                 Err(io::ErrorKind::WouldBlock.into())
             }
