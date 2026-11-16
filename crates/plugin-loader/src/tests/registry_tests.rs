@@ -1608,14 +1608,11 @@ fn a_skip_line_names_the_file_and_a_fixed_class() {
         skipped(
             "plane",
             "busbar-plane-decisions.tar.gz",
-            RejectKind::EgressGrant
+            RejectKind::Tampered
         )
         .skip_line()
         .as_deref(),
-        Some(
-            "\"busbar-plane-decisions.tar.gz\" (kind plane) was not admitted: provider egress \
-             refused: not first-party"
-        )
+        Some("\"busbar-plane-decisions.tar.gz\" (kind plane) was not admitted: tampered")
     );
     let line = skipped("secret", "s.tar.gz", RejectKind::Unsigned)
         .skip_line()
@@ -1686,4 +1683,58 @@ fn a_dropped_in_plane_is_the_module_its_statement_names() {
     assert_eq!(reg.dropped_image("auth", crate::neutral_plane::NAME), None);
     assert_eq!(reg.dropped_image("plane", "no-such-plane"), None);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Publisher trust decides admission, never which egress intent an admitted image may state.
+#[test]
+fn provider_intent_has_no_publisher_specific_admission_gate() {
+    use busbar_contract::abi::host::conn::connector::{Need, EGRESS_PROVIDER};
+    use busbar_contract::abi::mechanism::door::Door;
+    use busbar_contract::abi::sdk::door::abi_str;
+    use std::sync::atomic::AtomicPtr;
+
+    extern "C" fn provider_door() -> *const Door {
+        static SLOT: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
+        const NEEDS: [Need; 1] = [Need {
+            egress_class: EGRESS_PROVIDER,
+            ..crate::needs_restated::need(abi_str("tcp"))
+        }];
+        crate::needs_restated::restate(&SLOT, crate::neutral_store::door, &NEEDS)
+    }
+    let rendering = crate::dispatch::load::rendering_of_raw(provider_door).unwrap();
+    let facts = busbar_contract::abi::mechanism::rendering::read(&rendering).unwrap();
+    assert_eq!(facts.needs[0].egress_class, EGRESS_PROVIDER);
+    let signer = key(62);
+    for trusted in [false, true] {
+        let dir = tmpdir(if trusted {
+            "provider-trusted"
+        } else {
+            "provider-allowed"
+        });
+        let lib = b"provider intent fixture; never loaded";
+        let mut m = manifest(&facts.name, "provider-intent", "operator-publisher");
+        m.version = facts.version.clone();
+        m.statement = Some(hex::encode(&rendering));
+        let m = sign(&signer, m, lib);
+        write_tarball(&dir, "provider.tar.gz", &m, lib);
+        let mut p = TrustPolicy::default();
+        if trusted {
+            p.publishers
+                .insert("operator-publisher".into(), signer.verifying_key());
+        } else {
+            p.allow_third_party = true;
+        }
+        let reg =
+            scan_and_validate(&dir, &p).expect("admitted packages share egress intent syntax");
+        let admitted = reg
+            .resolve(&facts.name)
+            .expect("the provider intent is retained");
+        assert!(!admitted.first_party());
+        assert_eq!(
+            admitted.manifest.stated().unwrap().unwrap().needs[0].egress_class,
+            EGRESS_PROVIDER
+        );
+        assert_eq!(reg.loadable().len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

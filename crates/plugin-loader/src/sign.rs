@@ -865,9 +865,6 @@ pub enum RejectKind {
     Tampered,
     /// Validly signed but by a publisher NOT in the allowlist, and `allow_third_party` is off.
     UnknownPublisher,
-    /// Admitted on trust, but NOT first-party, and its Statement declares a connection need in an
-    /// egress class the host grants to a first-party plugin only ([`egress_grant`]).
-    EgressGrant,
     /// An older build of a plugin whose newer build is in the same directory (the registry's
     /// supersede pass): not loaded, the newer build is.
     Superseded,
@@ -891,37 +888,12 @@ impl RejectKind {
             Self::Unsigned => "unsigned",
             Self::Tampered => "tampered",
             Self::UnknownPublisher => "unknown_publisher",
-            Self::EgressGrant => "egress_grant",
             Self::Superseded => "superseded",
             Self::RetiredKey => "retired_key",
             Self::Revoked => "revoked",
             Self::ExternalCrypto => "external_crypto",
         }
     }
-}
-
-pub const FIRST_PARTY_EGRESS: [(u32, &str); 1] = [(
-    busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER,
-    "provider",
-)];
-
-pub fn egress_grant(manifest: &Manifest) -> Result<(), String> {
-    let Some(stated) = manifest.stated()? else {
-        return Ok(());
-    };
-    for need in &stated.needs {
-        if let Some((_, class)) = FIRST_PARTY_EGRESS
-            .iter()
-            .find(|(c, _)| *c == need.egress_class)
-        {
-            return Err(format!(
-                "plugin '{}' declares a `{}` need in the `{class}` egress class, which the host \
-                 grants to a first-party plugin only",
-                manifest.name, need.transport
-            ));
-        }
-    }
-    Ok(())
 }
 
 /// Trust failure. The posture forbids loading this plugin; the message is safe to surface. `kind` is
