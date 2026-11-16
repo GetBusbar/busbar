@@ -1320,7 +1320,15 @@ impl KernelServices {
             permit: Some(permit),
             done: Some(done),
         };
-        route.nest(context, nest, Box::new(move |answer| held.answer(answer)));
+        let retained = context.clone();
+        route.nest(
+            context,
+            nest,
+            Box::new(move |answer| {
+                let _context = retained;
+                held.answer(answer);
+            }),
+        );
     }
 
     pub fn attach_standing(&self, standing: Standing) -> bool {
