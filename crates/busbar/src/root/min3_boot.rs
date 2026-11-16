@@ -17,7 +17,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use super::boot::registry::boot;
 use super::boot::restricted::{BootstrapDirectory, BootstrapRecords};
 use super::boot::walk::{deployment_bytes, BootSteps, DeploymentRead, RegistryBoot};
 use busbar_contract::secret_ref::{SecretRef, Sugars};
@@ -81,39 +80,10 @@ pub(crate) struct CoreSecrets {
     pub(crate) signing_key: Option<SecureVec>,
 }
 
-/// The push queue the plane instances' PUSH intents and ticks enqueue into: filled once the store is open (the
-/// queue is rows in the core store), `Unavailable` until then. Clones share the one slot.
-#[derive(Clone, Default)]
-pub(crate) struct LatePush {
-    slot: Arc<OnceLock<StorePushQueue>>,
-}
-
-impl LatePush {
-    /// The queue every clone enqueues into from now on (the first install stays).
-    fn install(&self, queue: StorePushQueue) {
-        let _ = self.slot.set(queue);
-    }
-}
-
-impl PushQueue for LatePush {
-    fn enqueue<'a>(
-        &'a self,
-        who: &'a LoaderCaller<'_>,
-        ttl_s: u64,
-        recs: &'a [u8],
-    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
-        match self.slot.get() {
-            Some(queue) => queue.enqueue(who, ttl_s, recs),
-            None => Box::pin(core::future::ready(Err(RecordsDenied::Unavailable))),
-        }
-    }
-}
-
-/// What the plane instances' intents, tickets and tick share, built before any instance opens and filled as the
-/// boot proceeds: the records and push queue are filled at the deployment point.
+/// The serving instances' shared owners, constructed after the Store deployment checks.
 struct Shared {
     records: Records,
-    push: LatePush,
+    push: Arc<StorePushQueue>,
     signals: Arc<SignalRegistry>,
     /// The observation custody every seat's OBS_SCOPE and OBSERVE run on (units register as requests bill).
     observations: ObsCustody,
@@ -212,7 +182,7 @@ fn recovery_matcher(patterns: Vec<Box<str>>) -> Box<dyn Fn(&str) -> bool + Send 
 }
 
 impl Shared {
-    fn new(records: Records, push: LatePush) -> Self {
+    fn new(records: Records, push: Arc<StorePushQueue>) -> Self {
         let work_store = LateStore::default();
         let work_binder = LateBinder::default();
         Self {
@@ -674,8 +644,100 @@ fn build(
     })
 }
 
-/// Root's sequential opening plan. Every open captures the completed secret prefix;
-/// a successful secret open extends only the prefix used for subsequent instances.
+/// S5/S6-only authority. No serving service or worker exists in this step owner.
+struct BootstrapSteps<'r> {
+    registry: &'r MinRegistry,
+    instances: &'r [(KindCode, InstanceSpec<'r>)],
+    deployment: &'r DeploymentRead,
+    store_seal: busbar_plugin_loader::instance::StoreSeal,
+    secrets: Mutex<Arc<BootSecrets>>,
+    built: &'r Built,
+    at_rest: Option<SecretRef>,
+}
+
+impl BootstrapSteps<'_> {
+    fn prefix(&self) -> Arc<BootSecrets> {
+        Arc::clone(&self.secrets.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+}
+
+impl BootSteps for BootstrapSteps<'_> {
+    type Opened = Option<OpenedPort>;
+
+    fn open(&self, index: u32) -> BoxFut<'_, Result<Self::Opened, OpenError>> {
+        let Some((kind, spec)) = self.instances.get(index as usize) else {
+            return Box::pin(async {
+                Err(OpenError::Unknown("unconfigured bootstrap step".into()))
+            });
+        };
+        match kind {
+            KindCode::Secret => Box::pin(async move {
+                let prefix = self.prefix();
+                let needs = self.built.bootstrap_needs_for(Arc::clone(&prefix));
+                let prepared = self.registry.reserve(spec)?;
+                let id = prepared.id();
+                let port = self
+                    .registry
+                    .open_secret_reserved(prepared, &needs, &prefix.refs())
+                    .await?;
+                let next = prefix
+                    .with_opened(
+                        spec.name,
+                        busbar_kernel::custody::SecretSource {
+                            instance: id,
+                            port: Arc::clone(&port),
+                        },
+                    )
+                    .map_err(|_| OpenError::Unknown("secret prefix extension refused".into()))?;
+                *self.secrets.lock().unwrap_or_else(PoisonError::into_inner) = next;
+                Ok(Some(OpenedPort::Secret(port)))
+            }),
+            KindCode::Store => Box::pin(async move {
+                // The secret instances are open (2a): the gate's key is published before the store's open asks.
+                let secrets = self.prefix();
+                publish_at_rest(self.at_rest.as_ref(), |what, reference| {
+                    let secrets = Arc::clone(&secrets);
+                    async move {
+                        secrets
+                            .resolve_ref(Instant::now() + CORE_SECRET_DEADLINE, &reference)
+                            .await
+                            .map_err(|denied| format!("{what} could not be resolved ({denied:?})"))
+                    }
+                })
+                .await;
+                let needs = self.built.bootstrap_needs_for(self.prefix());
+                self.registry
+                    .open_store(spec, &needs, &secrets.refs(), Arc::clone(&self.store_seal))
+                    .await
+                    .map(OpenedPort::Store)
+                    .map(Some)
+            }),
+            _ => Box::pin(async {
+                Err(OpenError::Unknown(
+                    "serving instance requested before S7".into(),
+                ))
+            }),
+        }
+    }
+
+    fn check(&self, index: u32) -> BoxFut<'_, Result<(), OpenError>> {
+        match self.instances.get(index as usize) {
+            Some((_, spec)) => self.registry.check(spec),
+            None => {
+                Box::pin(async { Err(OpenError::Unknown("unconfigured bootstrap step".into())) })
+            }
+        }
+    }
+
+    fn deployment<'a>(&'a self, store: &'a Self::Opened) -> BoxFut<'a, Result<[u8; 16], String>> {
+        match store {
+            Some(OpenedPort::Store(port)) => (self.deployment)(port),
+            _ => Box::pin(async { Err("bootstrap did not open the Store".into()) }),
+        }
+    }
+}
+
+/// S8 steps hold the completed S5 secret prefix. They cannot extend or replace it.
 struct Steps<'r> {
     registry: &'r MinRegistry,
     instances: &'r [(KindCode, InstanceSpec<'r>)],
@@ -687,11 +749,8 @@ struct Steps<'r> {
     /// `auth.signing_key`: the reference the ticket host key is derived from (IF §12.11).
     signing_key: Option<SecretRef>,
     /// The process's secret kind: the open secret instances and the custody that resolves through them.
-    // Orchestration state only: every opened instance receives an immutable prefix.
-    secrets: Mutex<Arc<BootSecrets>>,
+    secrets: Arc<BootSecrets>,
     built: &'r Built,
-    /// `credentials.at_rest`: what the recoverable gate seals with, resolved before the store opens (2b).
-    at_rest: Option<SecretRef>,
     /// K9: what every seat's egress walk and carrier are composed over (the boot's one upstream table).
     seat: SeatShared,
     /// The seats' probe targets, held for their probers.
@@ -700,7 +759,7 @@ struct Steps<'r> {
 
 impl Steps<'_> {
     fn prefix(&self) -> Arc<BootSecrets> {
-        Arc::clone(&self.secrets.lock().unwrap_or_else(PoisonError::into_inner))
+        Arc::clone(&self.secrets)
     }
 
     async fn open_port(&self, index: u32) -> Result<OpenedPort, OpenError> {
@@ -810,7 +869,7 @@ impl Steps<'_> {
             .and_then(|s| s.installed_dest_judge());
         let intents = KernelIntents::new(
             Arc::new(self.shared.records.clone()),
-            Arc::new(self.shared.push.clone()),
+            self.shared.push.clone(),
             Arc::clone(&self.shared.signals) as Arc<dyn SessionSignals>,
             who.clone(),
             rt.clone(),
@@ -856,26 +915,10 @@ impl BootSteps for Steps<'_> {
             )))));
         };
         match kind {
-            KindCode::Secret => Box::pin(async move {
-                let prefix = self.prefix();
-                let needs = self.built.bootstrap_needs_for(Arc::clone(&prefix));
-                let prepared = self.registry.reserve(spec)?;
-                let id = prepared.id();
-                let port = self
-                    .registry
-                    .open_secret_reserved(prepared, &needs, &prefix.refs())
-                    .await?;
-                let next = prefix
-                    .with_opened(
-                        spec.name,
-                        busbar_kernel::custody::SecretSource {
-                            instance: id,
-                            port: Arc::clone(&port),
-                        },
-                    )
-                    .map_err(|_| OpenError::Unknown("secret prefix extension refused".into()))?;
-                *self.secrets.lock().unwrap_or_else(PoisonError::into_inner) = next;
-                Ok(Some(OpenedPort::Secret(port)))
+            KindCode::Secret | KindCode::Store => Box::pin(async {
+                Err(OpenError::Unknown(
+                    "bootstrap instances cannot reopen in the serving stage".into(),
+                ))
             }),
             KindCode::Plane
                 if spec.purpose
@@ -884,26 +927,6 @@ impl BootSteps for Steps<'_> {
                 Box::pin(async move { self.open_port(index).await.map(Some) })
             }
             KindCode::Plane => Box::pin(async move { self.open_plane(spec).await.map(|()| None) }),
-            KindCode::Store => Box::pin(async move {
-                // The secret instances are open (2a): the gate's key is published before the store's open asks.
-                let secrets = self.prefix();
-                publish_at_rest(self.at_rest.as_ref(), |what, reference| {
-                    let secrets = Arc::clone(&secrets);
-                    async move {
-                        secrets
-                            .resolve_ref(Instant::now() + CORE_SECRET_DEADLINE, &reference)
-                            .await
-                            .map_err(|denied| format!("{what} could not be resolved ({denied:?})"))
-                    }
-                })
-                .await;
-                let needs = self.built.bootstrap_needs_for(self.prefix());
-                self.registry
-                    .open_store(spec, &needs, &secrets.refs(), Arc::clone(&self.store_seal))
-                    .await
-                    .map(OpenedPort::Store)
-                    .map(Some)
-            }),
             _ => {
                 let opened = self.open_port(index);
                 Box::pin(async move { opened.await.map(Some) })
@@ -936,39 +959,17 @@ impl BootSteps for Steps<'_> {
     }
 }
 
-/// The deployment point (IF §11.2 round 29): the store just opened is attached to the kernel's core store, the
-/// records and directory handles the Need handlers hold are filled from it, and the deployment id is read or kept
-/// through it. The attached format admission is parked in `startup`.
-fn deployment_read(
-    records: Records,
-    directory: Directory,
-    startup: Arc<Mutex<Option<Startup>>>,
-    push: LatePush,
-    work_store: LateStore,
-) -> Box<DeploymentRead> {
+/// S6 attaches the Store and establishes its deployment identity without constructing serving dependencies.
+fn deployment_read(startup: Arc<Mutex<Option<Startup>>>) -> Box<DeploymentRead> {
     Box::new(
         move |handle: &StoreHandle| -> BoxFut<'static, Result<[u8; 16], String>> {
             let backend = handle.backend.clone();
-            let records = records.clone();
-            let directory = directory.clone();
             let startup = Arc::clone(&startup);
-            let push = push.clone();
-            let work_store = work_store.clone();
             Box::pin(async move {
                 let admitted = super::boot::admit_format(backend, true).await?;
                 let core = admitted
                     .store()
-                    .ok_or_else(|| "the store format admission left no core store".to_owned())?;
-                records.install(Arc::new(StoreRecords::new(Arc::clone(&core))));
-                work_store.install(Arc::clone(&core));
-                push.install(StorePushQueue::new(
-                    Arc::clone(&core),
-                    Arc::new(RetryPolicyImpl::default()),
-                ));
-                let (served, _holds) =
-                    KernelDirectory::build(Arc::clone(&core), Arc::new(LogEvents), Vec::new())
-                        .await?;
-                directory.install(served);
+                    .ok_or("the Store admission has no core store")?;
                 let kept = BootIdentity::new(core)?.keep_deployment_id().await?;
                 *startup.lock().unwrap_or_else(PoisonError::into_inner) = Some(admitted);
                 deployment_bytes(&kept)
@@ -1105,23 +1106,61 @@ pub(crate) async fn run(
             )
         })
         .collect();
-    let startup: Arc<Mutex<Option<Startup>>> = Arc::default();
-    let push = LatePush::default();
-    let shared = Arc::new(Shared::new(built.records.clone(), push.clone()));
-    let reader = deployment_read(
-        built.records.clone(),
-        built.directory.clone(),
-        Arc::clone(&startup),
-        push,
-        shared.work_store.clone(),
+    let mut core_modules = busbar_kernel::appbuild::core_secret_modules(cfg);
+    core_modules.extend(
+        instances
+            .iter()
+            .filter(|instance| instance.kind == KindCode::Secret)
+            .map(|instance| instance.name.clone()),
     );
+    core_modules.sort();
+    core_modules.dedup();
+    let core_refs: Vec<&str> = core_modules.iter().map(String::as_str).collect();
+    let startup: Arc<Mutex<Option<Startup>>> = Arc::default();
+    let reader = deployment_read(Arc::clone(&startup));
+    let bootstrap_steps = BootstrapSteps {
+        registry: &built.registry,
+        instances: &specs,
+        deployment: &*reader,
+        store_seal: Arc::new(|| Box::new(busbar_kernel::seal::lend())),
+        secrets: Mutex::new(Arc::clone(&built.secrets)),
+        built: &built,
+        at_rest: cfg.auth.as_ref().and_then(|a| a.signing_key.clone()),
+    };
+    let plan = built
+        .registry
+        .boot_plan_with_core(&specs, &built.sugars, &core_refs)
+        .map_err(|error| format!("{error:?}"))?;
+    let bootstrap = super::boot::walk::bootstrap(&plan, &bootstrap_steps)
+        .await
+        .map_err(|refused| refused.to_string())?;
+    let prefix = bootstrap_steps.prefix();
+    drop(bootstrap_steps);
+    let core = startup
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .and_then(Startup::store)
+        .ok_or("S6 did not retain the admitted Store")?;
+    built
+        .records
+        .install(Arc::new(StoreRecords::new(Arc::clone(&core))));
+    let (directory, _holds) =
+        KernelDirectory::build(Arc::clone(&core), Arc::new(LogEvents), Vec::new()).await?;
+    built.directory.install(directory);
+    let push = Arc::new(StorePushQueue::new(
+        Arc::clone(&core),
+        Arc::new(RetryPolicyImpl::default()),
+    ));
+    let shared = Arc::new(Shared::new(built.records.clone(), push));
+    shared.work_store.install(core);
     let seat = SeatShared {
         upstreams: declared
             .iter()
             .map(|(name, split)| (name.clone(), Arc::new(split.definitions.clone())))
             .collect(),
         signals: Arc::clone(&shared.signals),
-        secrets: Arc::new(SpawnCustody(Arc::clone(&built.secrets))),
+        secrets: Arc::new(SpawnCustody(Arc::clone(&prefix))),
         kernel: Arc::new(Kernel::new()),
         table: ConnTable::installed(),
     };
@@ -1134,23 +1173,13 @@ pub(crate) async fn run(
         seats: Mutex::default(),
         shared: Arc::clone(&shared),
         signing_key: cfg.auth.as_ref().and_then(|auth| auth.signing_key.clone()),
-        secrets: Mutex::new(Arc::clone(&built.secrets)),
+        secrets: prefix,
         built: &built,
-        at_rest: cfg.auth.as_ref().and_then(|a| a.signing_key.clone()),
         seat,
         probes: Mutex::default(),
     };
-    let mut core_modules = busbar_kernel::appbuild::core_secret_modules(cfg);
-    core_modules.extend(
-        instances
-            .iter()
-            .filter(|instance| instance.kind == KindCode::Secret)
-            .map(|instance| instance.name.clone()),
-    );
-    core_modules.sort();
-    core_modules.dedup();
-    let core_refs: Vec<&str> = core_modules.iter().map(String::as_str).collect();
-    let walked = boot(&*built.registry, &specs, &built.sugars, &core_refs, &steps)
+    let walked = bootstrap
+        .finish(&steps)
         .await
         .map_err(|refused| refused.to_string())?;
     if converting {
@@ -1310,7 +1339,7 @@ pub(crate) async fn run(
     }
     // The tick timer task of every seat whose plane states a period (§8.6 `tick_s`): its PUSHes queue under the
     // instance's namespace, its EMITs go to their carriers.
-    let queue: Arc<dyn PushQueue> = Arc::new(shared.push.clone());
+    let queue: Arc<dyn PushQueue> = shared.push.clone();
     for seat in &ticking {
         tokio::spawn(seat.clone().tick_task(Arc::clone(&queue)));
     }
