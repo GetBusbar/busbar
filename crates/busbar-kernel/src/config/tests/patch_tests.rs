@@ -135,7 +135,9 @@ fn merge_accumulates_across_puts() {
 
 #[test]
 fn an_unknown_field_is_refused() {
-    assert!(busbar_contract::json::parse_str::<LimitsPatch>(r#"{"max_inbound_concurent": 5}"#).is_err());
+    assert!(
+        busbar_contract::json::parse_str::<LimitsPatch>(r#"{"max_inbound_concurent": 5}"#).is_err()
+    );
 }
 
 #[test]
@@ -144,12 +146,14 @@ fn datagram_line_memory_patch_distinguishes_omission_set_and_disable() {
         datagram_line_memory_bytes: Some(12345),
         ..Default::default()
     };
-    let omitted: LimitsPatch = busbar_contract::json::parse_str(r#"{"max_inbound_concurrent":7}"#).unwrap();
+    let omitted: LimitsPatch =
+        busbar_contract::json::parse_str(r#"{"max_inbound_concurrent":7}"#).unwrap();
     assert_eq!(omitted.datagram_line_memory_bytes, None);
     omitted.apply(&mut base);
     assert_eq!(base.datagram_line_memory_bytes, Some(12345));
 
-    let set: LimitsPatch = busbar_contract::json::parse_str(r#"{"datagram_line_memory_bytes":54321}"#).unwrap();
+    let set: LimitsPatch =
+        busbar_contract::json::parse_str(r#"{"datagram_line_memory_bytes":54321}"#).unwrap();
     assert_eq!(set.datagram_line_memory_bytes, Some(Some(54321)));
     set.apply(&mut base);
     assert_eq!(base.datagram_line_memory_bytes, Some(54321));

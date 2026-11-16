@@ -78,11 +78,7 @@ fn the_host_seam_holds_the_shared_floor_and_every_shared_verdict() {
                     accepted,
                     "{case}"
                 );
-                assert_eq!(
-                    parse_str::<json::Value>(&text).is_ok(),
-                    accepted,
-                    "{case}"
-                );
+                assert_eq!(parse_str::<json::Value>(&text).is_ok(), accepted, "{case}");
             }
         })
         .expect("spawn")

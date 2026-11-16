@@ -2,10 +2,10 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::json;
 use crate::governance::recovery::{
     tests::Journal, RecoveryKind, RecoveryResolution, RecoveryState, RecoveryVerdict,
 };
+use busbar_contract::json;
 
 const MODEL: &str = "m";
 const INITIAL_INPUT: u64 = 100;
@@ -1253,8 +1253,7 @@ async fn checkpointed_common_positive_survives_lost_handoff_ack_and_posts_once_b
     );
     let checkpoint = journal.selected.lock().unwrap().last().unwrap().clone();
     let payload: json::Value = json::parse_value(&checkpoint.payload).unwrap();
-    let child_id: [u8; 16] =
-        json::from_value(&payload["handoffs"][0]["operation_id"]).unwrap();
+    let child_id: [u8; 16] = json::from_value(&payload["handoffs"][0]["operation_id"]).unwrap();
     assert_eq!(payload["targets"][0]["accepted"]["billable_requests"], 0);
     assert_eq!(
         payload["targets"][0]["accepted"]["flushed_billable_requests"], 1,

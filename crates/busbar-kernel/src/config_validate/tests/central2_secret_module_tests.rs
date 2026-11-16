@@ -56,11 +56,12 @@ fn secrets_block_rejects_non_secret_kind() {
 }
 
 fn host_reference_input(reference: crate::config::SecretRef) -> crate::config::RootCfg {
-    let deploy: crate::config::DeployCfg = busbar_contract::json::from_value(&busbar_contract::json::json!({
-        "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
-        "store": {"module": "inert-store-metadata"},
-    }))
-    .expect("host policy input parses");
+    let deploy: crate::config::DeployCfg =
+        busbar_contract::json::from_value(&busbar_contract::json::json!({
+            "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+            "store": {"module": "inert-store-metadata"},
+        }))
+        .expect("host policy input parses");
     let mut cfg =
         crate::config::resolve(&deploy, &Default::default()).expect("host policy input resolves");
     cfg.grammar = crate::config::GrammarField::bound(crate::config::Grammar::empty());

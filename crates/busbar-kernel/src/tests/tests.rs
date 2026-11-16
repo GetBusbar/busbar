@@ -443,8 +443,7 @@ async fn test_oversized_body_413_reshaped_to_json_not_plain_text() {
     );
     let bytes = reshaped.into_body().collect().await.unwrap().to_bytes();
 
-    let v: json::Value =
-        json::parse_value(&bytes).expect("reshaped 413 body must be valid JSON");
+    let v: json::Value = json::parse_value(&bytes).expect("reshaped 413 body must be valid JSON");
     assert!(
         v.get("error").is_some(),
         "a chat-completions-path 413 must carry an `error` envelope; got {v}"
@@ -591,8 +590,7 @@ async fn test_axum_marker_413_is_reshaped_even_as_plain_text() {
         "axum's own body-limit 413 (sentinel body) must be reshaped to JSON"
     );
     let bytes = reshaped.into_body().collect().await.unwrap().to_bytes();
-    let v: json::Value =
-        json::parse_value(&bytes).expect("reshaped 413 body must be valid JSON");
+    let v: json::Value = json::parse_value(&bytes).expect("reshaped 413 body must be valid JSON");
     assert!(v.get("error").is_some());
 }
 

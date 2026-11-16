@@ -1067,8 +1067,7 @@ async fn every_served_audit_record_recomputes_by_the_published_recipe() {
             Some(published.as_str()),
             "the served hash is the published recipe's: {e}"
         );
-        let entry: AuditEntry =
-            json::from_value(e).expect("a served entry reads back");
+        let entry: AuditEntry = json::from_value(e).expect("a served entry reads back");
         assert_eq!(
             digest(&entry),
             published,
@@ -1306,8 +1305,8 @@ async fn a_1_5_5_audit_table_reads_back_whole_and_the_next_record_continues_its_
         let json = format!(
             r#"{{"seq":{seq},"ts":{ts},"action":"{act}","resource":"{res}","outcome":"{out}","principal":"{pr}","prev_hash":"{prev}","hash":"{hash}"}}"#
         );
-        let row: busbar_contract::records::AuditRecord =
-            busbar_contract::json::parse_str(&json).expect("a 1.5.5 row decodes as this build's record");
+        let row: busbar_contract::records::AuditRecord = busbar_contract::json::parse_str(&json)
+            .expect("a 1.5.5 row decodes as this build's record");
         seed_legacy(&store, &row).await;
         legacy.push(row);
         prev = hash;

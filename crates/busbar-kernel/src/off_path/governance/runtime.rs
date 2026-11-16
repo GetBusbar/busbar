@@ -3,10 +3,10 @@
 
 //! `governance::runtime` off-path code (see `crate::off_path::governance`).
 
-use busbar_contract::json::{self, JsonValueMutTrait as _, JsonValueTrait as _};
 use crate::governance::recovery::{
     RecoveryError, RecoveryEvent, RecoveryItem, RecoverySelection, RecoveryState,
 };
+use busbar_contract::json::{self, JsonValueMutTrait as _, JsonValueTrait as _};
 
 /// `recovery`: summarize a replayed recovery Store into one verified selection per operation
 /// (boot attach and recovery checks).
@@ -145,8 +145,7 @@ pub(crate) fn raw_recovery_same_child<E>(
         .as_object_mut()
         .ok_or_else(|| invalid(&"child payload is not an object"))?
         .remove(&"origin");
-    let mut expected: json::Value =
-        json::parse_value(expected).map_err(|e| invalid(&e))?;
+    let mut expected: json::Value = json::parse_value(expected).map_err(|e| invalid(&e))?;
     expected
         .as_object_mut()
         .ok_or_else(|| invalid(&"child template is not an object"))?
@@ -247,12 +246,14 @@ pub(crate) fn raw_recovery_stamp_origin<E>(
     origin: &crate::governance::recovery::RecoveryOrigin,
     invalid: impl Fn(&dyn std::fmt::Display) -> E,
 ) -> Result<Vec<u8>, E> {
-    let mut payload: json::Value =
-        json::parse_value(template).map_err(|e| invalid(&e))?;
+    let mut payload: json::Value = json::parse_value(template).map_err(|e| invalid(&e))?;
     let object = payload
         .as_object_mut()
         .ok_or_else(|| invalid(&"child template is not an object"))?;
-    if object.get(&"origin").is_some_and(|origin| !origin.is_null()) {
+    if object
+        .get(&"origin")
+        .is_some_and(|origin| !origin.is_null())
+    {
         return Err(invalid(&"child template already has an origin"));
     }
     let origin = json::to_value(origin).map_err(|e| invalid(&e))?;

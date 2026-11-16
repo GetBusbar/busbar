@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_contract::caps::Pass;
+use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
 use busbar_contract::{
     caps::{
         Audit as AuditStep, KernelSeal, LocatorPtr, MeterClassId, Origin, OriginKind, Outcome,
@@ -9,7 +10,6 @@ use busbar_contract::{
     },
     ClassDirection,
 };
-use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
 
 use super::digest_fields;
 use busbar_kernel_audit::expose;

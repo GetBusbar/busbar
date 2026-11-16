@@ -128,7 +128,8 @@ impl PlaneMoney {
             return;
         };
         for budget in binding.budgets {
-            let Ok((id, window)) = busbar_contract::json::parse_str::<(String, u64)>(&budget.id) else {
+            let Ok((id, window)) = busbar_contract::json::parse_str::<(String, u64)>(&budget.id)
+            else {
                 continue;
             };
             let total = store.budget(&budget.id).await.unwrap_or_else(|_| {

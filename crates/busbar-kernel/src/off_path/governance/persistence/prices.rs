@@ -395,9 +395,7 @@ fn at(tag: u8, key: Option<EntryKey>) -> Address {
     }
 }
 fn encode<T: Serialize>(v: &T) -> Result<Secret<Vec<u8>>> {
-    json::to_vec(v)
-        .map(Secret::new)
-        .map_err(|_| Error::Invalid)
+    json::to_vec(v).map(Secret::new).map_err(|_| Error::Invalid)
 }
 fn decode<T: serde::de::DeserializeOwned>(v: &Secret<Vec<u8>>) -> Result<T> {
     json::parse(v.expose(&crate::seal::lend())).map_err(|_| Error::Corrupt)

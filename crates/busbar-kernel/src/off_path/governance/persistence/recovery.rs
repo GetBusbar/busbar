@@ -238,9 +238,7 @@ fn candidate(record: &JournalRecord) -> Result<Option<Candidate>, RecoveryError>
     if !reader.is_done() {
         return Err(invalid("trailing recovery candidate bytes"));
     }
-    json::parse(encoded)
-        .map(Some)
-        .map_err(|e| invalid_from(&e))
+    json::parse(encoded).map(Some).map_err(|e| invalid_from(&e))
 }
 
 /// Historical schema_records used the original full operation16 directly as
@@ -252,8 +250,7 @@ pub(crate) fn legacy_head_address(
     let operation: &[u8; 16] = operation
         .try_into()
         .map_err(|_| invalid("invalid historical recovery operation identity"))?;
-    let head: Head =
-        json::parse(value).map_err(|_| invalid("invalid historical recovery head"))?;
+    let head: Head = json::parse(value).map_err(|_| invalid("invalid historical recovery head"))?;
     if head.version != 1 || head.node == 0 || head.sequence == 0 {
         return Err(invalid("invalid historical recovery head"));
     }
@@ -382,8 +379,8 @@ async fn bucket_heads(
                 return Err(invalid("invalid recovery head identity"));
             }
             let operation = at.key[16..].try_into().map_err(|e| invalid_from(&e))?;
-            let tip: Head = json::parse(value.expose(&crate::seal::lend()))
-                .map_err(|e| invalid_from(&e))?;
+            let tip: Head =
+                json::parse(value.expose(&crate::seal::lend())).map_err(|e| invalid_from(&e))?;
             if tip.version != 1 || tip.node == 0 || tip.sequence == 0 {
                 return Err(invalid("invalid recovery head"));
             }

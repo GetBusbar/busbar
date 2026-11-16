@@ -118,8 +118,10 @@ fn common_rates_are_a_host_root_setting_and_overlay_replaces_the_map() {
         CardFields::of_deploy(&deploy).plugin_rate_cards["hook"]["gate"]["calls"].nanos_per_unit(),
         125
     );
-    let overlay: RootSettings =
-        busbar_contract::json::parse_foreign(br#"{"plugin_rate_cards":{"export":{"log":{"records":0}}}}"#).unwrap();
+    let overlay: RootSettings = busbar_contract::json::parse_foreign(
+        br#"{"plugin_rate_cards":{"export":{"log":{"records":0}}}}"#,
+    )
+    .unwrap();
     overlay.apply_to_deploy(&mut deploy);
     assert!(!deploy.plugin_rate_cards.contains_key("hook"));
     assert_eq!(

@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::json::{self, JsonValueMutTrait as _};
 use crate::persistence::facade::{Limits, WriterAuthority};
+use busbar_contract::json::{self, JsonValueMutTrait as _};
 use busbar_contract::persistence::{
     control, BackendInfo, Call, ClockObservation, DatasetId, Durability, Page, PersistenceBackend,
     Scan,

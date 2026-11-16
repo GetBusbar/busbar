@@ -2619,7 +2619,8 @@ pub fn service_account_token_uri(credential: &str) -> Result<String, String> {
         _private_key: serde::de::IgnoredAny,
         token_uri: Option<String>,
     }
-    let parsed: TokenUri = busbar_contract::json::parse_str(credential).map_err(|e| e.to_string())?;
+    let parsed: TokenUri =
+        busbar_contract::json::parse_str(credential).map_err(|e| e.to_string())?;
     Ok(parsed
         .token_uri
         .unwrap_or_else(|| "https://oauth2.googleapis.com/token".to_string()))

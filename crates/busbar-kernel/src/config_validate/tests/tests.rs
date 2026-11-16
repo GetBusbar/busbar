@@ -1507,7 +1507,10 @@ fn a_non_fallback_planes_card_is_checked_per_lane_including_absent_cards() {
 
 #[test]
 fn a_model_lane_the_card_leaves_out_is_refused_while_no_card_only_warns() {
-    let model = || busbar_contract::json::from_value(&busbar_contract::json::json!({"provider": "standin"})).unwrap();
+    let model = || {
+        busbar_contract::json::from_value(&busbar_contract::json::json!({"provider": "standin"}))
+            .unwrap()
+    };
     let mut cfg = make_root_cfg(
         HashMap::new(),
         [("m1".into(), model())].into(),
@@ -1537,7 +1540,10 @@ fn a_model_lane_the_card_leaves_out_is_refused_while_no_card_only_warns() {
 
 #[test]
 fn a_present_card_refuses_every_configured_lane_it_does_not_name() {
-    let model = || busbar_contract::json::from_value(&busbar_contract::json::json!({"provider": "standin"})).unwrap();
+    let model = || {
+        busbar_contract::json::from_value(&busbar_contract::json::json!({"provider": "standin"}))
+            .unwrap()
+    };
     let mut cfg = make_root_cfg(
         HashMap::new(),
         [
@@ -1626,7 +1632,10 @@ fn a_present_card_refuses_every_configured_lane_it_does_not_name() {
 
 #[test]
 fn a_named_lane_without_token_rates_is_accepted_as_in_1_5_5() {
-    let model = || busbar_contract::json::from_value(&busbar_contract::json::json!({"provider": "standin"})).unwrap();
+    let model = || {
+        busbar_contract::json::from_value(&busbar_contract::json::json!({"provider": "standin"}))
+            .unwrap()
+    };
     let mut cfg = make_root_cfg(
         HashMap::new(),
         [("a".into(), model()), ("b".into(), model())].into(),
@@ -1646,11 +1655,17 @@ fn missing_model_entries_refuse_while_unknown_models_and_invalid_rates_still_fai
         [
             (
                 "a".into(),
-                busbar_contract::json::from_value(&busbar_contract::json::json!({"provider": "standin"})).unwrap(),
+                busbar_contract::json::from_value(
+                    &busbar_contract::json::json!({"provider": "standin"}),
+                )
+                .unwrap(),
             ),
             (
                 "b".into(),
-                busbar_contract::json::from_value(&busbar_contract::json::json!({"provider": "standin"})).unwrap(),
+                busbar_contract::json::from_value(
+                    &busbar_contract::json::json!({"provider": "standin"}),
+                )
+                .unwrap(),
             ),
         ]
         .into(),
@@ -1723,11 +1738,12 @@ fn missing_rate_diagnostic_matches_published_docs() {
         diagnostic.severity,
         crate::diagnostics::Severity::Actionable
     );
-    let published: Vec<busbar_contract::json::Value> = busbar_contract::json::parse_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/diagnostics.json"
-    )))
-    .unwrap();
+    let published: Vec<busbar_contract::json::Value> =
+        busbar_contract::json::parse_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/diagnostics.json"
+        )))
+        .unwrap();
     let rendered: Vec<busbar_contract::json::Value> =
         busbar_contract::json::parse_str(&render_json_for(&[diagnostic])).unwrap();
     assert_eq!(

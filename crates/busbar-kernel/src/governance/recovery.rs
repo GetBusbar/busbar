@@ -229,12 +229,14 @@ impl RecoveryEvent {
     pub fn fingerprint(&self) -> Result<[u8; 32], RecoveryError> {
         let mut digest = crate::hashing::Sha256::new();
         digest.update(b"busbar.usage-recovery.event.v1\0");
-        busbar_contract::json::to_writer(super::DigestWriter(&mut digest), self).map_err(|error| {
-            super::rendered_error(
-                RecoveryError::Invalid,
-                format_args!("invalid recovery event: {error}"),
-            )
-        })?;
+        busbar_contract::json::to_writer(super::DigestWriter(&mut digest), self).map_err(
+            |error| {
+                super::rendered_error(
+                    RecoveryError::Invalid,
+                    format_args!("invalid recovery event: {error}"),
+                )
+            },
+        )?;
         Ok(digest.finalize())
     }
 

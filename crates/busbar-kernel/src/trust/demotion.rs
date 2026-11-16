@@ -245,7 +245,8 @@ impl DemotionRecord {
                 let value = value.expose(&seal);
                 match key.first() {
                     Some(b'D') => {
-                        let row: DemotionRow = busbar_contract::json::parse(value).map_err(error)?;
+                        let row: DemotionRow =
+                            busbar_contract::json::parse(value).map_err(error)?;
                         if key != demotion_key(&row.upstream) {
                             return Err("trust persistence: demotion identity mismatch".into());
                         }

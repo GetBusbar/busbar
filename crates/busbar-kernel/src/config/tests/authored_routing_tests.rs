@@ -69,15 +69,17 @@ pools:
 #[test]
 fn authored_routing_distinguishes_absent_null_and_empty_lists() {
     let text = "pools:\n  absent: {}\n  nulls: {members: null, hooks: null}\n  empty: {members: [], hooks: []}\n  null_pool: null\n";
-    let raw = busbar_contract::json::to_value(&capture(text, &parsed_pools(text)).unwrap()).unwrap();
+    let raw =
+        busbar_contract::json::to_value(&capture(text, &parsed_pools(text)).unwrap()).unwrap();
     for (pool, state) in [("absent", "absent"), ("nulls", "null"), ("empty", "list")] {
         assert_eq!(raw["definitions"][pool]["members"]["state"], state);
         assert_eq!(raw["definitions"][pool]["hooks"]["state"], state);
     }
     assert_eq!(raw["definitions"]["null_pool"]["state"], "null");
-    let absent =
-        busbar_contract::json::to_value(&capture("providers: {}\nmodels: {}\n", &PoolsCfg::default()).unwrap())
-            .unwrap();
+    let absent = busbar_contract::json::to_value(
+        &capture("providers: {}\nmodels: {}\n", &PoolsCfg::default()).unwrap(),
+    )
+    .unwrap();
     assert_eq!(absent["section_state"], "absent");
 }
 

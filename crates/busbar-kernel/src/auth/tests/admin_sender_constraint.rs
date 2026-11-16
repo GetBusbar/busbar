@@ -40,10 +40,7 @@ fn every_admin_bearer_occurrence_requires_its_sender_proof() {
 
 #[test]
 fn opaque_service_bearers_and_unbound_jwts_are_not_sender_downgrades() {
-    for token in [
-        "opaque-service-token".to_owned(),
-        jwt(json::json!({})),
-    ] {
+    for token in ["opaque-service-token".to_owned(), jwt(json::json!({}))] {
         let mut headers = HeaderMap::new();
         headers.insert(AUTHORIZATION, format!("Bearer {token}").parse().unwrap());
         headers.insert("x-admin-token", token.parse().unwrap());

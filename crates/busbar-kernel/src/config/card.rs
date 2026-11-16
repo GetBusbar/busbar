@@ -254,8 +254,8 @@ impl CardFields {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
-        let stored: StoredCard =
-            busbar_contract::json::parse_foreign(bytes).map_err(|e| format!("not a stored rate card: {e}"))?;
+        let stored: StoredCard = busbar_contract::json::parse_foreign(bytes)
+            .map_err(|e| format!("not a stored rate card: {e}"))?;
         let mut card = CardFields {
             rate_card: stored.rate_card,
             per_request_fee: stored.per_request_fee,

@@ -1086,8 +1086,7 @@ async fn heads_refuse_invalid_or_failed_pages_without_partial_results() {
                         5 => page.rows[0].0.key[16] ^= 1,
                         6..=8 => {
                             let mut head: Head =
-                                json::parse(page.rows[0].1.expose(&crate::seal::lend()))
-                                    .unwrap();
+                                json::parse(page.rows[0].1.expose(&crate::seal::lend())).unwrap();
                             match fault {
                                 6 => head.version = 2,
                                 7 => head.node = 0,

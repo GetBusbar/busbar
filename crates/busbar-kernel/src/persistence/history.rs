@@ -101,8 +101,8 @@ fn encode<T: Serialize>(record: &T) -> Result<Secret<Vec<u8>>> {
         .map_err(|_| Error::Invalid)
 }
 fn decode<T: DeserializeOwned>(bytes: &Secret<Vec<u8>>) -> Result<T> {
-    let row: Versioned<T> =
-        busbar_contract::json::parse(bytes.expose(&crate::seal::lend())).map_err(|_| Error::Corrupt)?;
+    let row: Versioned<T> = busbar_contract::json::parse(bytes.expose(&crate::seal::lend()))
+        .map_err(|_| Error::Corrupt)?;
     if row.version != 1 {
         return Err(Error::Corrupt);
     }

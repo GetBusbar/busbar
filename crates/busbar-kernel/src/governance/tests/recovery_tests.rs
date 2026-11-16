@@ -1645,8 +1645,7 @@ async fn new_child_still_selected_after_fast_exit() {
     let store = crate::real_store::core().await;
     let sink = Arc::new(Journal::default());
     let (gov, parent) = settled_parent_with_handoffs(&store, &sink, 1, false).await;
-    let custody: super::super::raw_recovery::UsageCustody =
-        json::parse(&parent.payload).unwrap();
+    let custody: super::super::raw_recovery::UsageCustody = json::parse(&parent.payload).unwrap();
     let child = custody.handoffs[0].clone();
     assert!(gov.recovery_event(child.operation_id).is_none());
     sink.persisted_ops.lock().unwrap().clear();

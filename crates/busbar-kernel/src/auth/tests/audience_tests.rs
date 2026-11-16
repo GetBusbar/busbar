@@ -55,10 +55,7 @@ fn a_token_minted_for_somebody_else_is_refused() {
             json::json!({ "aud": ["https://wiki.example.com", "https://ci.example.com"] }),
         ),
         ("no aud claim at all", json::json!({ "sub": "alice" })),
-        (
-            "an aud of the wrong JSON type",
-            json::json!({ "aud": 42 }),
-        ),
+        ("an aud of the wrong JSON type", json::json!({ "aud": 42 })),
         (
             "an empty aud array",
             json::json!({ "aud": Vec::<String>::new() }),

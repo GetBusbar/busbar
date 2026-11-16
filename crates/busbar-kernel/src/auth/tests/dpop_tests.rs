@@ -36,9 +36,7 @@ fn a_malformed_jkt_is_bound() {
         json::json!(null),
     ] {
         assert!(
-            is_dpop_bound(&jwt(
-                json::json!({ "sub": "a", "cnf": { "jkt": jkt } })
-            )),
+            is_dpop_bound(&jwt(json::json!({ "sub": "a", "cnf": { "jkt": jkt } }))),
             "cnf.jkt {jkt} is bound"
         );
     }

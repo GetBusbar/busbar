@@ -94,7 +94,8 @@ fn a_traces_record_is_built_to_the_sinks_projection() {
         &mut errors,
     );
     assert!(errors.is_empty(), "{errors:?}");
-    let granted: Value = busbar_contract::json::parse_value(&record(sub, &facts, None).line).unwrap();
+    let granted: Value =
+        busbar_contract::json::parse_value(&record(sub, &facts, None).line).unwrap();
     assert_eq!(
         granted,
         busbar_contract::json::json!({"trace_id": "01", "model": "m1"})
@@ -103,7 +104,8 @@ fn a_traces_record_is_built_to_the_sinks_projection() {
         &[ExportStream::Logs],
         ExportStream::Logs.default_fields(),
     );
-    let ungranted: Value = busbar_contract::json::parse_value(&record(logs_only, &facts, None).line).unwrap();
+    let ungranted: Value =
+        busbar_contract::json::parse_value(&record(logs_only, &facts, None).line).unwrap();
     assert_eq!(ungranted, busbar_contract::json::json!({}));
 }
 
@@ -326,14 +328,20 @@ fn trace_wire_keeps_last_attributes_and_typed_nonfinite_floats() {
     assert_eq!(get("repeated"), 2);
     assert_eq!(get("literal"), "NaN");
     for (key, value) in [("nan", "NaN"), ("positive", "inf"), ("negative", "-inf")] {
-        assert_eq!(get(key), busbar_contract::json::json!({"$busbar_f64": value}));
+        assert_eq!(
+            get(key),
+            busbar_contract::json::json!({"$busbar_f64": value})
+        );
     }
     let event = seen[0]["events"][0]["attributes"].as_array().unwrap();
     assert_eq!(
         event.iter().find(|a| a["key"] == "positive").unwrap()["value"],
         busbar_contract::json::json!({"$busbar_f64": "inf"})
     );
-    assert_eq!(json(FieldValue::F64(1.25)), busbar_contract::json::json!(1.25));
+    assert_eq!(
+        json(FieldValue::F64(1.25)),
+        busbar_contract::json::json!(1.25)
+    );
 }
 
 #[test]

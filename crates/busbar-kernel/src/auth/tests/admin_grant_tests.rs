@@ -127,7 +127,8 @@ fn admin_auth_absent_defaults_to_tokens_and_keys() {
         names.iter().all(|n| !n.trim().is_empty()),
         "never the empty word: {names:?}"
     );
-    let absent: crate::config::auth::AuthDeployCfg = busbar_contract::json::parse_str("{}").unwrap();
+    let absent: crate::config::auth::AuthDeployCfg =
+        busbar_contract::json::parse_str("{}").unwrap();
     assert_eq!(absent.admin_auth, names);
 }
 

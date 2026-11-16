@@ -126,10 +126,7 @@ fn operations_1_5_5() -> Vec<(String, String, Scope)> {
     let mut ops = Vec::new();
     for (path, item) in paths {
         for (method, op) in item.as_object().expect("a path item is an object") {
-            if !matches!(
-                method,
-                "get" | "head" | "post" | "put" | "patch" | "delete"
-            ) {
+            if !matches!(method, "get" | "head" | "post" | "put" | "patch" | "delete") {
                 continue;
             }
             let scope = match op["x-busbar-required-scope"].as_str() {

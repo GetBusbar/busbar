@@ -726,7 +726,8 @@ async fn operator_answer_response_projection_preserves_503_and_legacy_401() {
         (503, Some("1")),
         "a verdict-less answer projects503+Retry-After (SIGN-auth-kind 2026-10-30)"
     );
-    let body: json::Value = json::parse_value(failed.2.as_bytes()).expect("the real admin envelope");
+    let body: json::Value =
+        json::parse_value(failed.2.as_bytes()).expect("the real admin envelope");
     assert_eq!(body["error"]["code"], "unavailable", "{failed:?}");
 }
 
