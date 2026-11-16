@@ -652,3 +652,19 @@ fn seal_every_ms<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u6
     }
     deserializer.deserialize_any(Ms)
 }
+
+#[cfg(test)]
+mod secret_instance_shape_tests {
+    use super::SecretModuleCfg;
+    #[test]
+    fn a_secret_instance_requires_its_image_separately_from_its_name() {
+        let configured: SecretModuleCfg =
+            busbar_contract::yaml::from_str("module: source-image\nsettings: {}\n").unwrap();
+        assert_eq!(configured.module, "source-image");
+        assert!(busbar_contract::yaml::from_str::<SecretModuleCfg>("settings: {}\n").is_err());
+        assert!(busbar_contract::yaml::from_str::<SecretModuleCfg>(
+            "module: source-image\nunknown: true\n"
+        )
+        .is_err());
+    }
+}
