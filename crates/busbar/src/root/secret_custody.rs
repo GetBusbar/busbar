@@ -144,8 +144,7 @@ impl BootSecrets {
             request_id: 0,
             stack: Default::default(),
         };
-        let _ = (&self.custody, cx, reference);
-        todo!("W2-SW-SECRET: resolve through custody")
+        self.custody.resolve_ref(cx, reference).await
     }
 }
 
