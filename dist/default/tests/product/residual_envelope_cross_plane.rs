@@ -64,7 +64,7 @@ async fn an_unmounted_plane_claims_no_path_by_url_shape() {
                 .expect("the concrete product deployment is valid YAML");
             document["store"] = serde_json::json!({"module": module, "settings": settings});
             document["auth"] = serde_json::json!({"chain": [], "admin_auth": []});
-            document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+            document["advanced"] = serde_json::json!({});
             let deploy = busbar_kernel::config::deploy_from_deserializer(
                 document,
                 &crate::root::boot::axis_test_grammar(),

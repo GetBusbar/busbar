@@ -173,7 +173,6 @@ impl ConfiguredView {
                 "upstream_http1_only": l.upstream_http1_only,
                 "upstream_h2_prior_knowledge": l.upstream_h2_prior_knowledge,
                 "block_private_addresses": cfg.guard.block_private_addresses,
-                "allow_destinations": presence(!cfg.guard.allow.is_empty()),
             })
         );
         put!(

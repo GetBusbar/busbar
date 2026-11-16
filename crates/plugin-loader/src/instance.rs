@@ -515,7 +515,15 @@ impl PreparedInstance {
 /// identity = which admitted plugin (verified stamp name); name = the operator's instance name (the config
 /// key, e.g. `planes.mcp-main`, `auth.openai-outbound`), stable across restart, reconfigure and replicas, unique
 /// per kind; every durable core state for the instance is keyed by (identity, name) (§10.3).
+/// Trusted host intent, never inferred from plugin data or represented as an ABI flag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpenPurpose {
+    Canonical,
+    ConvertUnstamped,
+}
+
 pub struct InstanceSpec<'a> {
+    pub purpose: OpenPurpose,
     pub identity: &'a str,
     pub name: &'a str,
     pub config_json: &'a [u8],
@@ -1155,32 +1163,29 @@ impl Registry {
         let kinds: Vec<KindCode> = instances.iter().map(|(kind, _)| *kind).collect();
         let roots: Vec<usize> = core_modules
             .iter()
-            .filter_map(|module| self.secret_index(module, instances, sugars))
-            .collect();
+            .map(|module| {
+                self.secret_index(module, instances, sugars).ok_or_else(|| {
+                    OpenError::Unknown(format!(
+                        "core secret reference names no configured instance '{module}'"
+                    ))
+                })
+            })
+            .collect::<Result<_, _>>()?;
         let mut deps = |at: usize| self.secret_deps(at, instances, sugars);
         let steps = chains::plan_order(&kinds, &roots, &mut deps)?;
         Ok(BootPlan { steps })
     }
 
-    /// The configured secret instance a `module` word names: by configured name, else by identity (a
-    /// `former_names` word resolves to its identity), after a sugar word is replaced by its module.
+    /// References have already been bound under this read's grammar; only the exact configured name routes.
     fn secret_index(
         &self,
         module: &str,
         instances: &[(KindCode, InstanceSpec<'_>)],
-        sugars: &busbar_contract::secret_ref::Sugars,
+        _sugars: &busbar_contract::secret_ref::Sugars,
     ) -> Option<usize> {
-        let module = sugars.get(module).map_or(module, |sugar| sugar.module());
-        let same = |a: &str, b: &str| {
-            let canon = |m: &str| {
-                self.resolve_module(m)
-                    .map_or_else(|| m.to_owned(), |(i, _, _)| i.to_owned())
-            };
-            canon(a) == canon(b)
-        };
-        instances.iter().position(|(kind, spec)| {
-            *kind == KindCode::Secret && (spec.name == module || same(spec.identity, module))
-        })
+        instances
+            .iter()
+            .position(|(kind, spec)| *kind == KindCode::Secret && spec.name == module)
     }
 
     /// A pushed desired state (today's hook/plane `configure`): merge `patch` (a JSON object) into the stored
@@ -1218,6 +1223,7 @@ impl Registry {
                     error: None,
                 })?;
             let spec = InstanceSpec {
+                purpose: OpenPurpose::Canonical,
                 identity: &stored.identity,
                 name: &name,
                 config_json: &merged,
@@ -1263,6 +1269,7 @@ impl Registry {
                 OpenError::Unknown(format!("{name}: no open {kind:?} instance by that name"))
             })?;
             let spec = InstanceSpec {
+                purpose: OpenPurpose::Canonical,
                 identity: &stored.identity,
                 name: &name,
                 config_json: &stored.config,
@@ -1375,10 +1382,16 @@ impl Registry {
             else {
                 continue;
             };
-            if let Some(index) = self.secret_index(&module, instances, sugars) {
-                if !out.contains(&index) {
-                    out.push(index);
-                }
+            let index = self
+                .secret_index(&module, instances, sugars)
+                .ok_or_else(|| {
+                    OpenError::Unknown(format!(
+                        "{}: secret reference names no configured instance '{module}'",
+                        s.name
+                    ))
+                })?;
+            if !out.contains(&index) {
+                out.push(index);
             }
         }
         Ok(out)
@@ -1470,7 +1483,7 @@ pub enum BootPhase {
 /// `core_cfg` fragments are filed by `config::file_core_cfg` into core's own sections (§12.10); `config_json`
 /// replaces the bag. Taken once by the write-back (`take_settled`); core stores no version with it.
 pub struct Settled {
-    pub config_json: Vec<u8>,
+    pub config_json: busbar_contract::secure::SecureVec,
     pub core_cfg: Vec<CoreCfg>,
 }
 
@@ -1478,7 +1491,7 @@ pub struct Settled {
 pub struct CoreCfg {
     pub section: u32,
     pub name: Box<str>,
-    pub value_json: Vec<u8>,
+    pub value_json: busbar_contract::secure::SecureVec,
 }
 
 #[derive(Clone)]

@@ -43,7 +43,6 @@ impl SecretTable {
     }
 
     /// `name`'s instance closed; the returned source is the one that was open.
-    #[cfg(test)]
     fn closed(&self, name: &str) -> Option<SecretSource> {
         let _grow = self.grow.lock().unwrap_or_else(PoisonError::into_inner);
         let current = self.open.load_full();
@@ -139,7 +138,6 @@ impl BootSecrets {
     }
 
     /// `name`'s instance closed (reload, admin uninstall, shutdown): custody forgets its per-instance entries.
-    #[cfg(test)]
     pub(crate) fn closed(&self, name: &str) {
         if let Some(old) = self.table.closed(name) {
             self.custody.drop_instance(old.instance);

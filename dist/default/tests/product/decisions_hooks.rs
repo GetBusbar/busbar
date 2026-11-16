@@ -250,7 +250,7 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
             "ingress":{"listen":"127.0.0.1:0"}
         },
         "auth":{"chain":["keys"],"signing_key":{"file":signing_key},"admin_auth":[]},
-        "advanced":{"allow_destinations":["127.0.0.1"]},
+        "advanced":{},
     });
     if attach {
         document["hooks"] = json!({"cell":{

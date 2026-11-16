@@ -2217,3 +2217,5 @@ This changelog begins at 0.14.0; earlier history is not recorded here.
 
 Project scaffolding for the open-source release. The project is licensed under the Apache License 2.0 as of
 1.2.0.
+
+- 1.6.0 config rulings: planes declare registration maps; core dial/auth/TLS fields and private reach remain scoped to each registration. Retire flat `upstreams` and global `advanced.allow_destinations`. Split A2A cert/key references require an explicit bundled PEM reference; migration refuses and preserves the source rather than guessing.

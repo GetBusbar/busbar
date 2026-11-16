@@ -37,6 +37,7 @@ fn upstream(
     pin: ProgramPin,
 ) -> UpstreamDef {
     UpstreamDef {
+        allow_private: false,
         name: "member".into(),
         url: None,
         command: Some(StdioCommand {

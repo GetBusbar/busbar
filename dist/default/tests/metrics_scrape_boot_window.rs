@@ -61,8 +61,6 @@ store: {{module: memory}}
 admin_require_mtls: false
 auth:
   chain: []
-advanced:
-  allow_destinations: ["127.0.0.1"]
   worker_threads: {WORKER_THREADS}
 export:
   metrics: {{ module: prometheus, settings: {{ buffer_seconds: 60 }} }}

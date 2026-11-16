@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use busbar_contract::config::UpstreamCreds;
+use busbar_contract::json::{json, JsonContainerTrait as _, Value};
 use busbar_contract::secret_ref::SecretRef;
-use serde_json::{json, Value};
 
 use super::{
     implicit_instance, ConfiguredUpstreams, ProgramPin, UpstreamAuth, UpstreamDef, Upstreams,

@@ -1440,6 +1440,7 @@ async fn open_config_store(
         .map_err(|error| failed(error.to_string()))?
         .into_exposed(&crate::seal::lend());
     let spec = busbar_plugin_loader::instance::InstanceSpec {
+        purpose: busbar_plugin_loader::instance::OpenPurpose::Canonical,
         identity: &store.module,
         name: STORE_INSTANCE,
         config_json: &config_json,

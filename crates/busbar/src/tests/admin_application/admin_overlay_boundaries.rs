@@ -44,7 +44,7 @@ async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["plugins"] = crate::root::test_plugins::config_document(
@@ -284,7 +284,7 @@ async fn test_admin_v1_overlay_reset_stale_if_match_conflicts() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["plugins"] = crate::root::test_plugins::config_document(
@@ -414,7 +414,7 @@ async fn test_admin_v1_overlay_reset_empty_section_is_idempotent_noop() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["plugins"] = crate::root::test_plugins::config_document(
@@ -547,7 +547,7 @@ async fn test_admin_v1_overlay_reset_requires_full_scope() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["plugins"] = crate::root::test_plugins::config_document(
@@ -656,7 +656,7 @@ async fn test_admin_v1_config_settings_survives_a_real_store_reload() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["plugins"] = crate::root::test_plugins::config_document(
@@ -788,7 +788,7 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["plugins"] = crate::root::test_plugins::config_document(
@@ -941,7 +941,7 @@ async fn test_admin_v1_config_settings_reset_reverts_to_base() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["plugins"] = crate::root::test_plugins::config_document(

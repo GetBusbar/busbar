@@ -400,13 +400,10 @@ pub(crate) mod fetch {
 pub(crate) mod guard {
     use std::net::IpAddr;
 
-    use busbar_contract::net::{
-        host_ip, ip_is_cloud_metadata, is_alternate_ipv4_encoding, is_link_local_v6, IpNet,
-        IpNetError, METADATA_HOSTS,
-    };
+    use busbar_contract::net::{host_ip, IpNet};
     use busbar_kernel::config::Destinations;
 
-    use crate::guard::{canonical, norm, Allow, Entry, Metadata, ALLOW_KEY};
+    use crate::guard::{canonical, norm, Entry, Metadata};
 
     /// The node's own front door as the guard keeps it: the listen ports and the canonical
     /// addresses the listeners are bound to, built once per configuration commit.
@@ -415,12 +412,6 @@ pub(crate) mod guard {
         node.ports.extend_from_slice(ports);
         node.ips.extend(bound.iter().copied().map(canonical));
         node
-    }
-
-    /// An `advanced.allow_destinations` entry as [`strict`] reads it: unbracketed, lowercased, one
-    fn fold(entry: &str) -> String {
-        let h = entry.trim_start_matches('[').trim_end_matches(']');
-        h.strip_suffix('.').unwrap_or(h).to_ascii_lowercase()
     }
 
     /// A 1.5.5 list entry (`allow_metadata_hosts`, `blocked_metadata_hosts`), read as 1.5.5 read it:
@@ -435,127 +426,12 @@ pub(crate) mod guard {
         })
     }
 
-    /// A name label the allowlist accepts: letters, digits, `-` and `_`, never empty.
-    fn is_name(n: &str) -> bool {
-        !n.is_empty()
-            && n.len() <= 253
-            && n.split('.').all(|l| {
-                !l.is_empty()
-                    && l.bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-            })
-            && !is_alternate_ipv4_encoding(n)
-    }
-
-    /// An entry as a refusal shows it: userinfo before an `@` redacted.
-    fn shown(entry: &str) -> String {
-        match entry.rfind('@') {
-            Some(at) => format!("<redacted>@{}", &entry[at + 1..]),
-            None => entry.to_owned(),
-        }
-    }
-
-    /// One `advanced.allow_destinations` entry, or the boot refusal naming it: a malformed entry, or one
-    /// naming a cloud-metadata destination ([`refuse_metadata_entry`], BUSBAR-3134).
-    fn strict(i: usize, written: &str) -> Result<Entry, String> {
-        let e = entry(i, written)?;
-        refuse_metadata_entry(i, written, &e)?;
-        Ok(e)
-    }
-
-    /// Whether `addr` is a cloud-metadata destination the guard refuses in every class: a metadata
-    /// address (link-local IPv4 included) or IPv6 link-local `fe80::/10`, in any embedded form.
-    fn is_metadata_address(addr: IpAddr) -> bool {
-        ip_is_cloud_metadata(&addr)
-            || matches!(canonical(addr), IpAddr::V6(v6) if is_link_local_v6(&v6))
-    }
-
-    /// BUSBAR-3134: an allowlist entry that NAMES a cloud-metadata destination (a built-in metadata host
-    /// name, a metadata literal, or a /32 or /128 equal to a metadata address) is refused at boot rather
-    /// than silently ignored: no configuration ever admits metadata. A wider network that merely covers a
-    /// metadata address loads, and never admits it.
-    fn refuse_metadata_entry(i: usize, written: &str, e: &Entry) -> Result<(), String> {
-        let names_metadata = match e {
-            Entry::Host(h) => METADATA_HOSTS.contains(&h.as_str()),
-            Entry::Net(net) => net.is_host() && is_metadata_address(net.addr()),
-            Entry::Under(_) => false,
-        };
-        if !names_metadata {
-            return Ok(());
-        }
-        let code = busbar_kernel::diagnostics::CONFIG_DESTINATION_NAMES_METADATA.banner();
-        Err(format!(
-            "{ALLOW_KEY}[{i}]: `{}` names a cloud-metadata destination, which is refused \
-             unconditionally ({code}); no configuration admits it. Remove the entry; an instance \
-             credential comes from workload-identity federation, never from the metadata endpoint",
-            shown(written)
-        ))
-    }
-
-    /// One `advanced.allow_destinations` entry parsed, or the refusal naming a malformed one.
-    pub(crate) fn entry(i: usize, entry: &str) -> Result<Entry, String> {
-        let shown = shown(entry);
-        let bad = || {
-            format!(
-                "{ALLOW_KEY}[{i}]: `{shown}` is not a host, a `*.domain` wildcard, an IP or a CIDR"
-            )
-        };
-        let e = fold(entry.trim());
-        let e = e.as_str();
-        match IpNet::read(e) {
-            Ok(Some(net)) => return Ok(Entry::Net(net)),
-            Ok(None) => {}
-            Err(IpNetError::HostBitsSet) => {
-                return Err(format!(
-                "{ALLOW_KEY}[{i}]: `{shown}` sets address bits past its prefix length; write the \
-                     network address"
-            ))
-            }
-            Err(IpNetError::NotNetwork) if e.contains('/') => return Err(bad()),
-            Err(IpNetError::NotNetwork) => {}
-        }
-        match e.strip_prefix("*.") {
-            Some(domain) if is_name(domain) => Ok(Entry::Under(format!(".{domain}"))),
-            None if is_name(e) => Ok(Entry::Host(e.to_owned())),
-            _ => Err(bad()),
-        }
-    }
-
-    /// `advanced.allow_destinations`, every entry read strictly ([`strict`]) into the indexed
-    /// allowlist, or the boot refusal naming the first bad entry.
-    pub(crate) fn allow_list(d: &Destinations) -> Result<Allow, String> {
-        d.allow
-            .iter()
-            .enumerate()
-            .map(|(i, e)| strict(i, e))
-            .collect()
-    }
-
     impl Metadata {
         /// The 1.5.5 metadata lists `d` states.
         pub(crate) fn from_config(d: &Destinations) -> Metadata {
             Metadata {
                 blocked: d.blocked.iter().filter_map(|e| legacy(e)).collect(),
             }
-        }
-    }
-
-    impl FromIterator<Entry> for Allow {
-        /// The allowlist indexed: an exact host and a `*.domain` suffix by key, a network as held.
-        fn from_iter<I: IntoIterator<Item = Entry>>(entries: I) -> Self {
-            let mut allow = Allow::default();
-            for e in entries {
-                match e {
-                    Entry::Host(h) => {
-                        allow.hosts.insert(h);
-                    }
-                    Entry::Under(suffix) => {
-                        allow.under.insert(suffix);
-                    }
-                    net @ Entry::Net(_) => allow.nets.push(net),
-                }
-            }
-            allow
         }
     }
 }

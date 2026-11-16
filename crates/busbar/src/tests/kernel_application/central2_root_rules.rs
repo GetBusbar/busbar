@@ -45,7 +45,7 @@ async fn boot_builds_a_pool_of_nine_unbounded_lanes_without_overflowing_its_bann
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let mut cfg = busbar_kernel::config::resolve(&deploy, &provider_defs)

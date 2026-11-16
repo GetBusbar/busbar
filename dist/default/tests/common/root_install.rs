@@ -74,7 +74,7 @@ pub fn install() {
         crate::root::doors::install_plugin_logs(crate::root::boot::plugin_logs());
         crate::register_diagnostics();
         let deploy = busbar_kernel::config::deploy_from_yaml_str(
-            "providers: {}\nmodels: {}\nadvanced:\n  allow_destinations: [127.0.0.1]\n",
+            "providers: {}\nmodels: {}\n",
             &crate::root::boot::axis_test_grammar(),
         )
         .expect("the loopback IdP deployment");

@@ -104,7 +104,7 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         });
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             document.clone(),

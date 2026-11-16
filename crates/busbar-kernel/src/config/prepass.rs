@@ -199,6 +199,9 @@ impl<'de, S: DeserializeSeed<'de>> Visitor<'de> for KeySeed<'_, S> {
     }
 
     fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+        if v == "upstreams" {
+            return Err(E::custom("unknown field `upstreams`: move each entry's dial settings into the registration that uses it, under that plane's declared registration path"));
+        }
         if let Some(entry) = self.lift.iter().find(|(k, _)| *k == v) {
             *self.lifted = Some(*entry);
             return Ok(KeyOutcome::Lift(self.inner));

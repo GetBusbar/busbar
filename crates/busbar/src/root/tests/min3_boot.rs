@@ -224,23 +224,21 @@ fn two_plane_images_answering_one_instance_name_are_refused() {
 /// K7: the boot's one upstream table is the config's `upstreams:` section, each entry typed with its binding
 /// (IF §12.1), so every plane seat's walk and carrier compose over what the operator configured.
 #[test]
-fn the_boot_s_upstream_table_is_the_configured_upstreams_section() {
+fn the_boot_types_only_the_declared_registration_table() {
     use busbar_kernel::upstreams::Upstreams;
-    let deploy = busbar_kernel::config::deploy_from_deserializer(
-        serde_json::json!({
-            "providers": {},
-            "models": {},
-            "upstreams": {
+    let split = busbar_kernel::upstreams::declared(
+        "plane",
+        &busbar_contract::json::json!({
+            "servers": {
                 "docs": {"url": "https://docs.example/mcp", "auth": "corp-outbound"},
                 "local": {"command": {"argv": ["/opt/mcp/server"]}},
             },
         }),
-        &busbar_kernel::config::Grammar::empty(),
+        &["/servers/*"],
+        &busbar_kernel::plugin_config::upstream_anchor,
     )
-    .expect("a config with an upstreams section parses");
-    let cfg =
-        busbar_kernel::config::resolve(&deploy, &Default::default()).expect("the config resolves");
-    let table = configured_upstreams(&cfg).expect("the table types");
+    .expect("declared registrations parse");
+    let table = split.definitions;
     assert_eq!(table.names().collect::<Vec<_>>(), ["docs", "local"]);
     let docs = table.get("docs").expect("docs is configured");
     assert_eq!(docs.url.as_deref(), Some("https://docs.example/mcp"));
@@ -330,4 +328,82 @@ fn configured_secret_instances_use_bound_image_and_implicit_empty_settings() {
     assert_eq!(secret.identity, "fixture-secret");
     assert_eq!(secret.config, b"{}");
     assert_eq!(ref_schemas(&cfg).unwrap()[0].0.as_ref(), "probe");
+}
+
+#[test]
+fn actual_plane_settlement_has_its_core_owned_block_and_described_lift_authority() {
+    let instance = Configured {
+        kind: KindCode::Plane,
+        identity: "image".to_owned(),
+        name: "plane".to_owned(),
+        config: b"{}".to_vec(),
+        limits: Default::default(),
+    };
+    let described = busbar_plugin_loader::instance::Described {
+        kind: KindCode::Plane,
+        methods: 0,
+        facts: 0,
+        items: vec![(
+            busbar_plugin_abi::records::tag::D_SECRET_PATH,
+            b"/token".to_vec(),
+        )],
+        schema: None,
+        metrics: Vec::new(),
+        error_codes_refused: None,
+    };
+    let raw = busbar_plugin_loader::instance::Settled {
+        config_json: SecureVec::from(&br#"{"token":"literal","display":"public"}"#[..]),
+        core_cfg: Vec::new(),
+    };
+    let answer = settlement::answer(7, &instance, &described, raw).unwrap();
+    assert_eq!(answer.index, 7);
+    assert_eq!(answer.path, ["plane"]);
+    assert_eq!(answer.placement, busbar_migrate::BagPlacement::Block);
+    assert_eq!(
+        answer.allowed_lifts.into_iter().collect::<Vec<_>>(),
+        ["/token"]
+    );
+    assert!(answer.settings.unwrap().as_str().contains("literal"));
+}
+
+#[test]
+fn plugin_secret_paths_cannot_authorize_consumed_core_nonsecret_fields() {
+    let instance = Configured {
+        kind: KindCode::Plane,
+        identity: "image".to_owned(),
+        name: "plane".to_owned(),
+        config: b"{}".to_vec(),
+        limits: Default::default(),
+    };
+    let described = busbar_plugin_loader::instance::Described {
+        kind: KindCode::Plane,
+        methods: 0,
+        facts: 0,
+        items: vec![
+            (
+                busbar_plugin_abi::records::tag::D_UPSTREAM_PATH,
+                b"/members/*".to_vec(),
+            ),
+            (
+                busbar_plugin_abi::records::tag::D_SECRET_PATH,
+                b"/members/x/url".to_vec(),
+            ),
+            (
+                busbar_plugin_abi::records::tag::D_SECRET_PATH,
+                b"/members/x/opaque".to_vec(),
+            ),
+        ],
+        schema: None,
+        metrics: Vec::new(),
+        error_codes_refused: None,
+    };
+    let raw = busbar_plugin_loader::instance::Settled {
+        config_json: SecureVec::from(&br#"{"members":{"x":{"url":"https://public","opaque":"plugin-secret","auth":{"bearer":"core-secret"}}}}"#[..]),
+        core_cfg: Vec::new(),
+    };
+    let answer = settlement::answer(7, &instance, &described, raw).unwrap();
+    assert_eq!(
+        answer.allowed_lifts.into_iter().collect::<Vec<_>>(),
+        ["/members/x/auth/bearer", "/members/x/opaque"]
+    );
 }
