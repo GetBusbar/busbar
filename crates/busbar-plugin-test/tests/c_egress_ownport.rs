@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-C1A"]
+#[ignore = "owner: W1-C1A; blocked (re-checked on dev 2026-11-16): the connector still drives framers over the old FramerDoor (OUTSTANDING row 6)"]
 fn the_nodes_own_ports_are_denied_for_every_class() {
     todo!("owner: W1-C1A (C-EGRESS-OWNPORT)")
 }

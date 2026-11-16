@@ -148,13 +148,13 @@ fn custody_answer_rules() {
 }
 
 #[test]
-#[ignore = "owner: W1-K8C"]
+#[ignore = "owner: W1-K8C; blocked (re-checked on dev 2026-11-16): the kernel export pump, DiskSink and stream routing are not on dev (OUTSTANDING row 4)"]
 fn delivery_ids_resends_and_acks() {
     todo!("owner: W1-K8C (C-EXPORT-DELIVERY)")
 }
 
 #[test]
-#[ignore = "owner: W1-K3"]
+#[ignore = "owner: W1-K3; blocked (re-checked on dev 2026-11-16): the export breaker lives in the export pump, which is not on dev (OUTSTANDING row 4); the backoff schedule itself is covered by busbar-kernel retry tests"]
 fn backoff_waits_and_breaker() {
     todo!("owner: W1-K3 (C-EXPORT-DELIVERY)")
 }
