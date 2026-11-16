@@ -360,6 +360,22 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
             Conflict / BaseDefined,
             VersionConflict / StaleIfMatch,
         ],
+        (Put, "/hooks/{name}/attachments/{target}") => de![
+            Validation / MalformedBody,
+            Validation / MalformedIfMatch,
+            NotFound / UnknownResource,
+            Conflict / BaseDefined,
+            Validation / InvalidConfig,
+            VersionConflict / StaleIfMatch,
+        ],
+        (Delete, "/hooks/{name}/attachments/{target}") => de![
+            Validation / MalformedBody,
+            Validation / MalformedIfMatch,
+            NotFound / UnknownResource,
+            Conflict / BaseDefined,
+            Validation / InvalidConfig,
+            VersionConflict / StaleIfMatch,
+        ],
         (Patch, "/hooks/{name}/settings") => de![
             Validation / MalformedBody,
             Validation / MalformedIfMatch,
@@ -515,7 +531,11 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
         ],
         (Get, "/plugins") => de![Validation / MissingRequiredQuery],
         (Get, "/pools") => de![Validation / InvalidQueryValue],
-        (Get, "/usage") => de![Validation / InvalidQueryValue, UnpricedClass / Unpriced],
+        (Get, "/usage") => de![
+            Validation / InvalidQueryValue,
+            Validation / MalformedCursor,
+            UnpricedClass / Unpriced
+        ],
         (Get, "/groups/{name}/usage") => {
             de![NotFound / UnknownResource, UnpricedClass / Unpriced]
         }

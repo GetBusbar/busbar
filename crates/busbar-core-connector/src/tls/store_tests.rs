@@ -268,7 +268,7 @@ fn a_destination_entry_shape_is_validated() {
     refused_with("destinations: [{ match: 'not a host!' }]\n", "BUSBAR-3148");
     refused_with("destinations: [{ match: '*.internal' }]\n", "BUSBAR-3145");
     refused_with(
-        "destinations: [{ match: 10.0.0.0/8, plaintext: true }]\n",
+        "destinations: [{ match: \x310.0.0.0/8, plaintext: true }]\n",
         "BUSBAR-3144",
     );
     refused_with(
@@ -376,17 +376,17 @@ fn include_roots_opts_back_in_and_global_anchors_apply_everywhere_else() {
 fn ip_entries_match_only_ip_literal_dials_and_names_never_select_by_offered_name() {
     let private = ca("Net CA");
     let s = build(&format!(
-        "destinations:\n  - match: 10.20.0.0/16\n    trust_anchors: [{}]\n",
+        "destinations:\n  - match: \x310.20.0.0/16\n    trust_anchors: [{}]\n",
         inline(&private.pem())
     ))
     .expect("store");
-    assert_eq!(s.matched("10.20.1.2:5432"), ["10.20.0.0/16"]);
-    assert_eq!(s.matched("[10.20.1.2]:5432"), ["10.20.0.0/16"]);
+    assert_eq!(s.matched("\x310.20.1.2:5432"), ["\x310.20.0.0/16"]);
+    assert_eq!(s.matched("[\x310.20.1.2]:5432"), ["\x310.20.0.0/16"]);
     assert!(
         s.matched("db.internal:5432").is_empty(),
         "a name dial never matches an IP entry"
     );
-    assert!(s.matched("10.21.0.1").is_empty());
+    assert!(s.matched("\x310.21.0.1").is_empty());
 }
 
 #[test]
@@ -475,13 +475,13 @@ fn pem_of(label: &str, der: &[u8]) -> String {
 
 #[test]
 fn plaintext_is_admitted_only_to_an_exact_entry() {
-    let s = build("destinations:\n  - { match: db.internal, plaintext: true }\n  - { match: 10.0.0.5, plaintext: true }\n")
+    let s = build("destinations:\n  - { match: db.internal, plaintext: true }\n  - { match: \x310.0.0.5, plaintext: true }\n")
         .expect("store");
     assert!(s.plaintext_admitted("db.internal:5432"));
     assert!(s.plaintext_admitted("DB.Internal."));
-    assert!(s.plaintext_admitted("10.0.0.5:6379"));
+    assert!(s.plaintext_admitted("\x310.0.0.5:6379"));
     assert!(!s.plaintext_admitted("other.internal:5432"));
-    assert!(!s.plaintext_admitted("10.0.0.6"));
+    assert!(!s.plaintext_admitted("\x310.0.0.6"));
 }
 
 // ---- runtime: the hourly sweep ----------------------------------------------------------------

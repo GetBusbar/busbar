@@ -3,7 +3,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::*;
 
@@ -65,14 +65,8 @@ fn oversize_snapshot_lengths_child() {
     );
 }
 
-/// One wait step of a [`Gate`]: the waits below count naps, not clock readings.
-const NAP: Duration = Duration::from_millis(1);
-
-/// The naps a parked bind waits for its release (about thirty seconds).
-const PARK_NAPS: u32 = 30_000;
-
-/// A probe door double's park: armed, the next bind notes it entered and waits for the release (for
-/// about thirty seconds of naps, so a test that never releases fails rather than hangs).
+/// A probe door double's park: armed, the next bind notes it entered and waits for the release (at
+/// most thirty seconds, so a test that never releases fails rather than hangs).
 #[derive(Default)]
 struct Gate {
     armed: AtomicBool,
@@ -86,24 +80,21 @@ impl Gate {
             return;
         }
         self.entered.store(true, Ordering::SeqCst);
-        for _ in 0..PARK_NAPS {
-            if self.released.load(Ordering::SeqCst) {
-                return;
-            }
-            std::thread::sleep(NAP);
+        let since = Instant::now();
+        while !self.released.load(Ordering::SeqCst) && since.elapsed() < Duration::from_secs(30) {
+            std::thread::sleep(Duration::from_millis(1));
         }
     }
 
-    /// Whether the bind entered within `wait`, counted in naps (each at least [`NAP`] long, so
-    /// the wait is never shorter than `wait`).
     fn entered_within(&self, wait: Duration) -> bool {
-        for _ in 0..wait.as_millis() {
-            if self.entered.load(Ordering::SeqCst) {
-                return true;
+        let since = Instant::now();
+        while !self.entered.load(Ordering::SeqCst) {
+            if since.elapsed() > wait {
+                return false;
             }
-            std::thread::sleep(NAP);
+            std::thread::sleep(Duration::from_millis(1));
         }
-        self.entered.load(Ordering::SeqCst)
+        true
     }
 }
 
@@ -401,7 +392,7 @@ fn copied_declaration(blob: &[u8], token: &str, flags: u32) -> PlaneFacts {
 fn repeated_declarations_share_host_owned_blobs_and_mechanisms() {
     use busbar_contract::abi::plane::{MECHANISM_PEER_KEY, MECHANISM_ROOT};
     let mut bytes = br#"{"paths":{}}"#.to_vec();
-    let mut token = "retained-anchor".to_owned();
+    let mut token = String::from("retained-anchor");
     let first = copied_declaration(&bytes, &token, MECHANISM_ROOT);
     let second = copied_declaration(&bytes, &token, MECHANISM_ROOT);
     let a = first.served.admin_openapi.unwrap();

@@ -8,7 +8,7 @@
       "date": "2026-10-27",
       "page_sha256": "a7deac7f68f83664ec833279c75057a6e0164925e2ca68d1f59aaabd362b4dd9",
       "evidence_test_id": "jFnWYg5j4rzIKCV",
-      "record": "~/Developer/tmp/cleanup/audits/ORACLE-SIGNOFF.md, 'Owner-signed 2026-10-27: OIDF FAPI2 REVIEW modules (4)'"
+      "record": "the owner sign-off record, 'Owner-signed 2026-10-27: OIDF FAPI2 REVIEW modules (4)'"
     },
     {
       "module": "fapi2-security-profile-final-par-attempt-reuse-request_uri",
@@ -17,7 +17,7 @@
       "date": "2026-10-27",
       "page_sha256": "9f70fcfb94172bbcb925e474267bc77fd04f8d6a00f107408ce0ac577209b9a9",
       "evidence_test_id": "s0CpTmuPMUwj0Hi",
-      "record": "~/Developer/tmp/cleanup/audits/ORACLE-SIGNOFF.md, 'Owner-signed 2026-10-27: OIDF FAPI2 REVIEW modules (4)'"
+      "record": "the owner sign-off record, 'Owner-signed 2026-10-27: OIDF FAPI2 REVIEW modules (4)'"
     },
     {
       "module": "fapi2-security-profile-final-par-attempt-to-use-expired-request_uri",
@@ -26,7 +26,7 @@
       "date": "2026-10-27",
       "page_sha256": "7631ccd261784c0df73265b0918f0438c22dc603dffc7b3629ff75d23ee2a089",
       "evidence_test_id": "I5CUClchIXgqiZ8",
-      "record": "~/Developer/tmp/cleanup/audits/ORACLE-SIGNOFF.md, 'Owner-signed 2026-10-27: OIDF FAPI2 REVIEW modules (4)'"
+      "record": "the owner sign-off record, 'Owner-signed 2026-10-27: OIDF FAPI2 REVIEW modules (4)'"
     },
     {
       "module": "fapi2-security-profile-final-par-attempt-to-use-request_uri-for-different-client",
@@ -35,7 +35,7 @@
       "date": "2026-10-27",
       "page_sha256": "cc0a979822403b186fb698a45788970143ab04e6ec8e6a08ac236b9d733ad655",
       "evidence_test_id": "j8PBa9wAi2sn9Zk",
-      "record": "~/Developer/tmp/cleanup/audits/ORACLE-SIGNOFF.md, 'Owner-signed 2026-10-27: OIDF FAPI2 REVIEW modules (4)'"
+      "record": "the owner sign-off record, 'Owner-signed 2026-10-27: OIDF FAPI2 REVIEW modules (4)'"
     }
   ]
 }

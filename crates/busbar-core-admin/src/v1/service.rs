@@ -1235,6 +1235,7 @@ pub(crate) struct AdminService {
 
 #[path = "service_operations.rs"]
 mod operations;
+pub(crate) use operations::{parse_utc_day, SeriesSpec, UsageDim};
 
 pub(crate) fn project_hook_view(name: &str, cfg: &HookCfg, global_hooks: &[String]) -> HookView {
     {
@@ -1282,6 +1283,7 @@ pub(crate) fn project_hook_view(name: &str, cfg: &HookCfg, global_hooks: &[Strin
             global: cfg.global || global_hooks.iter().any(|n| n == name),
             default: cfg.default,
             groups: cfg.groups.clone(),
+            attachments: Vec::new(),
         }
     }
 }
@@ -1413,3 +1415,7 @@ mod filename_policy_order_tests {
             if message == "no plugin trust policy is installed (the composition root's)"));
     }
 }
+
+#[cfg(test)]
+#[path = "tests/usage_series_tests.rs"]
+mod usage_series_tests;

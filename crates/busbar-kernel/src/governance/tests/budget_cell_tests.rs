@@ -60,8 +60,7 @@ fn prune_dead_models_drops_only_zero_token_fully_flushed_entries() {
 #[test]
 fn a_segment_pruned_mid_flush_still_flushes_its_refund() {
     let unit = "per_request";
-    let one: std::collections::BTreeMap<String, u64> =
-        [(unit.to_string(), 1)].into_iter().collect();
+    let one: std::collections::BTreeMap<String, u64> = [(unit.to_string(), 1)].into();
     let mut cell = BudgetCell::fresh(0);
     cell.accrue("fee-lane-double", 7, &one);
 
@@ -107,9 +106,7 @@ fn a_segment_pruned_mid_flush_still_flushes_its_refund() {
 fn fractional_counts_remain_exact_through_debt_and_mixed_scale_hydration() {
     use std::collections::BTreeMap;
     let era = RawRateEra::entry(7, EntryId([3; 12]));
-    let units = [("input".into(), Count::parse("1.000001").unwrap())]
-        .into_iter()
-        .collect::<std::collections::BTreeMap<_, _>>();
+    let units = BTreeMap::from([("input".into(), Count::parse("1.000001").unwrap())]);
     let mut cell = BudgetCell::fresh(0);
     cell.accrue_raw("model", era, &units).unwrap();
     cell.accrue_raw("model", era, &units).unwrap();
@@ -160,19 +157,16 @@ fn fractional_counts_remain_exact_through_debt_and_mixed_scale_hydration() {
 
 #[test]
 fn exact_count_overflow_refuses_without_partial_model_update() {
+    use std::collections::BTreeMap;
     let era = RawRateEra::legacy(1);
     let mut cell = BudgetCell::fresh(0);
     cell.accrue_raw(
         "model",
         era,
-        &[("z".into(), busbar_contract::count::MAX)]
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>(),
+        &BTreeMap::from([("z".into(), busbar_contract::count::MAX)]),
     )
     .unwrap();
-    let rejected = [("a".into(), Count::ONE), ("z".into(), Count::EPSILON)]
-        .into_iter()
-        .collect::<std::collections::BTreeMap<_, _>>();
+    let rejected = BTreeMap::from([("a".into(), Count::ONE), ("z".into(), Count::EPSILON)]);
     assert_eq!(
         cell.accrue_raw("model", era, &rejected),
         Err(CountError::Overflow)
@@ -246,9 +240,10 @@ fn model_cell_new_refuses_only_an_unnamed_lane_with_no_count() {
     let era = RawRateEra::legacy(0);
     let none = std::collections::BTreeMap::new;
     let one = || {
-        [(busbar_contract::records::UNIT_INPUT.to_string(), Count::ONE)]
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>()
+        std::collections::BTreeMap::from([(
+            busbar_contract::records::UNIT_INPUT.to_string(),
+            Count::ONE,
+        )])
     };
     assert!(
         ModelCell::new("".into(), era, none(), none(), none()).is_none(),
@@ -274,12 +269,10 @@ fn model_cell_new_refuses_only_an_unnamed_lane_with_no_count() {
 #[test]
 fn an_all_zero_accrual_interns_no_row() {
     let mut cell = BudgetCell::fresh(0);
-    let zero = [(
+    let zero = std::collections::BTreeMap::from([(
         busbar_contract::records::UNIT_INPUT.to_string(),
         Count::ZERO,
-    )]
-    .into_iter()
-    .collect::<std::collections::BTreeMap<_, _>>();
+    )]);
     cell.accrue_raw("", RawRateEra::legacy(0), &zero).unwrap();
     cell.accrue_raw("", RawRateEra::legacy(0), &Default::default())
         .unwrap();
@@ -298,36 +291,18 @@ fn a_zero_only_accrual_creates_no_lane_row() {
     let era = RawRateEra::legacy(0);
     let mut cell = BudgetCell::fresh(0);
     cell.accrue_raw("", era, &BTreeMap::new()).unwrap();
-    cell.accrue_raw(
-        "m",
-        era,
-        &[("input".into(), Count::ZERO)]
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>(),
-    )
-    .unwrap();
+    cell.accrue_raw("m", era, &BTreeMap::from([("input".into(), Count::ZERO)]))
+        .unwrap();
     assert!(
         cell.models.is_empty(),
         "no counts, no row: {:?}",
         cell.models.iter().map(|m| &*m.model).collect::<Vec<_>>()
     );
 
-    cell.accrue_raw(
-        "m",
-        era,
-        &[("input".into(), Count::ONE)]
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>(),
-    )
-    .unwrap();
-    cell.accrue_raw(
-        "m",
-        era,
-        &[("input".into(), Count::ZERO)]
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>(),
-    )
-    .unwrap();
+    cell.accrue_raw("m", era, &BTreeMap::from([("input".into(), Count::ONE)]))
+        .unwrap();
+    cell.accrue_raw("m", era, &BTreeMap::from([("input".into(), Count::ZERO)]))
+        .unwrap();
     assert_eq!(cell.models.len(), 1, "a counted lane keeps its one row");
     assert_eq!(cell.models[0].cur["input"], Count::ONE);
 }

@@ -411,13 +411,13 @@ fn fixed_finite_publication_frontiers_preserve_exact_paths_counts_and_quiescent_
         b"10010", b"10011", b"10100", b"10101", b"10110", b"10111", b"11000", b"11001", b"11010",
         b"11011", b"11100", b"11101", b"11110", b"11111",
     ];
-    let now = Instant::now();
     for (edges, leaves, depth) in [(EDGES4, LEAVES4, 4_u32), (EDGES5, LEAVES5, 5)] {
         for large_inputs in [false, true] {
             let caller = Arc::new(Script::default());
             let upstream = Arc::new(Script::default());
             let limit = large_inputs.then_some(128 * crate::framer::FRAME_CAP);
             let pairing = pairing_over(&caller, limit);
+            let now = Instant::now();
             pairing.sort(Leg::Caller, vec![got(10, b"kind: opaque\r\n", true)], now);
             pairing.sort(Leg::Upstream, vec![got(20, b"kind: opaque\r\n", true)], now);
             pairing
@@ -1126,7 +1126,6 @@ fn a_real_credit_refusal_cancels_a_partial_frontier_instead_of_waiting_on_queued
 fn caller_opening_recall_progresses_before_queued_audio_has_an_upstream() {
     use std::task::Waker;
 
-    let now = std::time::Instant::now();
     for late_recall in [false, true] {
         for attach in [false, true] {
             let caller = Arc::new(Script::default());
@@ -1152,7 +1151,7 @@ fn caller_opening_recall_progresses_before_queued_audio_has_an_upstream() {
                 got(10, b"early-two", false),
             ];
             yielded.continuing = !late_recall;
-            drop(pairing.publish(Leg::Caller, yielded, now));
+            drop(pairing.publish(Leg::Caller, yielded, Instant::now()));
             let mut task = caller.task.lock().unwrap().take().unwrap();
             let mut cx = Context::from_waker(Waker::noop());
             if late_recall {
@@ -1192,7 +1191,11 @@ fn caller_opening_recall_progresses_before_queued_audio_has_an_upstream() {
                         }
                     });
                 }
-                pairing.sort(Leg::Upstream, vec![got(20, b"kind: audio\r\n", true)], now);
+                pairing.sort(
+                    Leg::Upstream,
+                    vec![got(20, b"kind: audio\r\n", true)],
+                    Instant::now(),
+                );
                 pairing
                     .attach(Arc::clone(&upstream) as Arc<dyn LegSink>)
                     .unwrap();

@@ -123,6 +123,10 @@ version = "1.8.3"
 criteria = "safe-to-deploy"
 notes = "spki's optional constant-time Base64 (not enabled in busbar's build; cargo-vet resolves all features); no imported audit from the trusted registries covers it."
 
+[[exemptions.block-buffer]]
+version = "0.12.1"
+criteria = "safe-to-deploy"
+
 [[exemptions.borrow-or-share]]
 version = "0.2.4"
 criteria = "safe-to-deploy"
@@ -174,6 +178,20 @@ criteria = "safe-to-deploy"
 version = "0.8.21"
 criteria = "safe-to-deploy"
 
+[[exemptions.crypto-common]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.curve25519-dalek]]
+version = "4.1.3"
+criteria = "safe-to-deploy"
+notes = "QE-BOOT-KEYCHECK (owner-approved): busbar-crypto-backend only, point decompress for pinned-key validation, no signing; zcash crypto-reviewed deltas 4.1.0->4.1.3 imported, no trusted safe-to-deploy base."
+
+[[exemptions.curve25519-dalek-derive]]
+version = "0.1.1"
+criteria = "safe-to-deploy"
+notes = "QE-BOOT-KEYCHECK: curve25519-dalek 4.1.3's x86_64 SIMD-backend proc macro (no runtime code); zcash delta 0.1.0->0.1.1 imported, google base is ub-risk-3 only."
+
 [[exemptions.data-encoding]]
 version = "2.11.0"
 criteria = "safe-to-deploy"
@@ -187,6 +205,10 @@ notes = "RustCrypto DER codec under x509-cert (CA certificate decoding); no impo
 version = "0.8.0"
 criteria = "safe-to-deploy"
 notes = "Proc-macro derives for der (x509-cert's ASN.1 types); no imported audit from the trusted registries covers it."
+
+[[exemptions.digest]]
+version = "0.11.3"
+criteria = "safe-to-deploy"
 
 [[exemptions.dimpl]]
 version = "0.7.4"
@@ -303,6 +325,10 @@ criteria = "safe-to-deploy"
 version = "1.10.1"
 criteria = "safe-to-deploy"
 
+[[exemptions.hybrid-array]]
+version = "0.4.15"
+criteria = "safe-to-deploy"
+
 [[exemptions.hyper]]
 version = "1.11.1"
 criteria = "safe-to-deploy"
@@ -369,6 +395,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.matchit]]
 version = "0.8.4"
+criteria = "safe-to-deploy"
+
+[[exemptions.md-5]]
+version = "0.11.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.memchr]]
@@ -444,6 +474,11 @@ version = "1.1.0"
 criteria = "safe-to-deploy"
 notes = "CryptoProvider release (decision 228), used with default-features = false and busbar's FacadeCrypto. Exempted, not audited: a 1.0.1 -> 1.1.0 delta review is outstanding."
 
+[[exemptions.object]]
+version = "0.37.3"
+criteria = "safe-to-deploy"
+notes = "Read-only object-file parser. Used by busbar-ffi (feature host) for the image bounds check, read feature only, and with default-features = false (read, std) by tools/ci-checks no-host-link to scan a release cdylib for host symbols. Exempted, not audited (DEP-5): no imported audit set covers 0.37.3."
+
 [[exemptions.olpc-cjson]]
 version = "0.1.4@git:0a96a65b1122a2bbb93fd36cae3b36dd2b045c7e"
 criteria = "safe-to-deploy"
@@ -463,6 +498,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.parking_lot_core]]
 version = "0.9.12"
+criteria = "safe-to-deploy"
+
+[[exemptions.paste]]
+version = "1.0.15"
 criteria = "safe-to-deploy"
 
 [[exemptions.pem]]
@@ -687,6 +726,10 @@ version = "0.8.1"
 criteria = "safe-to-deploy"
 notes = "SubjectPublicKeyInfo types under x509-cert (decoding only, no fingerprint/digest features); no imported audit from the trusted registries covers it."
 
+[[exemptions.stats_alloc]]
+version = "0.1.10"
+criteria = "safe-to-deploy"
+
 [[exemptions.strum]]
 version = "0.28.0"
 criteria = "safe-to-deploy"
@@ -723,6 +766,10 @@ notes = "The proc-macro half of thiserror 2.0.21 (exempted beside it); no import
 
 [[exemptions.thread_local]]
 version = "1.1.10"
+criteria = "safe-to-deploy"
+
+[[exemptions.tikv-jemalloc-ctl]]
+version = "0.6.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.tikv-jemalloc-sys]]
@@ -788,6 +835,10 @@ criteria = "safe-to-deploy"
 [[exemptions.tungstenite]]
 version = "0.29.0"
 criteria = "safe-to-run"
+
+[[exemptions.typenum]]
+version = "1.20.1"
+criteria = "safe-to-deploy"
 
 [[exemptions.unicode-general-category]]
 version = "1.1.0"

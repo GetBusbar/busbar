@@ -129,6 +129,12 @@ pub mod hook {
         pub _r: u32,
     }
 
+    impl crate::records::Pod for CandidateRec {}
+    impl crate::records::Pod for BudgetRec {}
+    impl crate::records::Pod for CostTermRec {}
+    impl crate::records::Pod for Verdict {}
+    impl crate::records::Pod for Points {}
+
     pub mod tag {
         /// view (core-built): FACT/FACT_TEXT signals (generic PJ_* request projection copied from the plane,
         /// plus the S_* keys below), CANDIDATE*, generic CONVERSATION (only if FB_WANTS_PROMPT),

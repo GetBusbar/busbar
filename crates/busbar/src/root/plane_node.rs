@@ -1416,6 +1416,13 @@ impl SessionSlot<'_> {
             .unwrap_or(Outcome::Aborted(busbar_contract::caps::Abort::Kernel {
                 reason: busbar_contract::caps::ReasonCode::ClientGone,
             }));
+        if let Some(reason) = refusal_reason(outcome) {
+            let instance: &str = match self.money.as_ref() {
+                Some((_, facts)) => facts.plane.plane_key(),
+                None => busbar_kernel::plane_driver::dispatch::fallback_key(),
+            };
+            busbar_kernel::telemetry::unit_refusal_on(instance, reason.as_str());
+        }
         let ended = self.own.take().map(|own| {
             own.finish(
                 &node.kernel,
@@ -1444,13 +1451,23 @@ impl SessionSlot<'_> {
     }
 }
 
+/// The closed reason a unit that did not complete ended under; `None` for a completed unit.
+fn refusal_reason(outcome: Outcome) -> Option<busbar_contract::caps::ReasonCode> {
+    match outcome {
+        Outcome::Completed => None,
+        Outcome::Refused(_, reason) | Outcome::Failed(_, reason) => Some(reason),
+        Outcome::Aborted(abort) => Some(abort.reason()),
+        Outcome::TimedOut(_) => Some(busbar_contract::caps::ReasonCode::DeadlineExceeded),
+    }
+}
+
 impl Drop for SessionSlot<'_> {
     fn drop(&mut self) {
         if self.own.is_some() {
             if let Some(post) = self.occupied.post {
                 let evidence = self
                     .money_report()
-                    .map(|(_, fee_units, _)| Evidence {
+                    .map(|(_, fee_units, _, _)| Evidence {
                         fee_units,
                         ..Evidence::default()
                     })

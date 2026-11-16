@@ -1595,14 +1595,12 @@ fn assert_runtime_still_polls(
     msg: &str,
 ) {
     let canary = rt.spawn(async {});
-    // Poll every 5 ms for the whole budget: each sleep lasts at least its 5 ms, so the polls span
-    // at least `budget` without reading the clock per poll.
-    let tick = std::time::Duration::from_millis(5);
-    for _ in 0..=budget.as_millis().div_ceil(tick.as_millis()) {
+    let deadline = std::time::Instant::now() + budget;
+    while std::time::Instant::now() < deadline {
         if canary.is_finished() {
             return;
         }
-        std::thread::sleep(tick);
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
     panic!("{msg}");
 }

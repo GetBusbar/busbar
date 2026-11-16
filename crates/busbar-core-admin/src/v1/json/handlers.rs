@@ -38,9 +38,18 @@ pub(crate) async fn list_pools(
     State(handle): State<Arc<AppHandle>>,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
+    let w = ok_or_respond!(boxed cursor::window(&q, "pools", "", crate::v1::contract::LIST_LIMIT_DEFAULT));
     match q.get("detail").map(String::as_str) {
         Some("true") => {
-            return respond(StatusCode::OK, service(&handle).list_pools_detailed().await)
+            return respond(
+                StatusCode::OK,
+                cursor::paged(
+                    service(&handle).list_pools_detailed().await,
+                    &w,
+                    "pools",
+                    |p| p.name.clone(),
+                ),
+            )
         }
 
         Some(other) if other != "false" => {
@@ -50,7 +59,12 @@ pub(crate) async fn list_pools(
         }
         _ => {}
     }
-    respond(StatusCode::OK, service(&handle).list_pools().await)
+    respond(
+        StatusCode::OK,
+        cursor::paged(service(&handle).list_pools().await, &w, "pools", |p| {
+            p.name.clone()
+        }),
+    )
 }
 
 pub(crate) async fn get_pool(
@@ -60,21 +74,51 @@ pub(crate) async fn get_pool(
     respond(StatusCode::OK, service(&handle).get_pool(&name).await)
 }
 
-pub(crate) async fn list_models(State(handle): State<Arc<AppHandle>>) -> Response {
-    respond(StatusCode::OK, service(&handle).list_models().await)
+pub(crate) async fn list_models(
+    State(handle): State<Arc<AppHandle>>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let w = ok_or_respond!(boxed cursor::window(&q, "models", "", crate::v1::contract::LIST_LIMIT_DEFAULT));
+    respond(
+        StatusCode::OK,
+        cursor::paged(service(&handle).list_models().await, &w, "models", |m| {
+            m.model.clone()
+        }),
+    )
 }
 
-pub(crate) async fn list_providers(State(handle): State<Arc<AppHandle>>) -> Response {
-    respond(StatusCode::OK, service(&handle).list_providers().await)
+pub(crate) async fn list_providers(
+    State(handle): State<Arc<AppHandle>>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let w = ok_or_respond!(boxed cursor::window(&q, "providers", "", crate::v1::contract::LIST_LIMIT_DEFAULT));
+    respond(
+        StatusCode::OK,
+        cursor::paged(
+            service(&handle).list_providers().await,
+            &w,
+            "providers",
+            |p| p.upstream.clone(),
+        ),
+    )
 }
 
-pub(crate) async fn list_hooks(State(handle): State<Arc<AppHandle>>) -> Response {
+pub(crate) async fn list_hooks(
+    State(handle): State<Arc<AppHandle>>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let w = ok_or_respond!(boxed cursor::window(&q, "hooks", "", crate::v1::contract::LIST_LIMIT_DEFAULT));
     let current = response_snapshot(handle.load()).await;
     let version = current.config_version;
     with_config_etag(
         respond(
             StatusCode::OK,
-            AdminService::new(current).list_hooks().await,
+            cursor::paged(
+                AdminService::new(current).list_hooks().await,
+                &w,
+                "hooks",
+                |h| h.name.clone(),
+            ),
         ),
         version,
     )
@@ -99,14 +143,23 @@ pub(crate) async fn list_groups(
     State(handle): State<Arc<AppHandle>>,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let (start, limit) =
-        ok_or_respond!(boxed page_window(&q, crate::v1::contract::LIST_LIMIT_DEFAULT));
+    let w = ok_or_respond!(boxed cursor::window(
+        &q,
+        "groups",
+        "",
+        crate::v1::contract::LIST_LIMIT_DEFAULT
+    ));
     let current = response_snapshot(handle.load()).await;
     let version = current.config_version;
     with_config_etag(
         respond(
             StatusCode::OK,
-            AdminService::new(current).list_groups(start, limit).await,
+            cursor::paged(
+                AdminService::new(current).list_groups().await,
+                &w,
+                "groups",
+                |g| g.name.clone(),
+            ),
         ),
         version,
     )
@@ -149,6 +202,13 @@ pub(crate) async fn list_plugins(
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     let ptype = q.get("type").cloned().unwrap_or_default();
+    let filter = cursor::filter_digest(&q, &["type"]);
+    let w = ok_or_respond!(boxed cursor::window(
+        &q,
+        "plugins",
+        &filter,
+        crate::v1::contract::LIST_LIMIT_DEFAULT
+    ));
     let (entered, started) = tokio::sync::oneshot::channel();
     let scan = busbar_kernel::config::transaction::config_reload_transaction(&handle, move |txn| {
         // Bound waiting for the mutation fence, not the scan that owns it. The
@@ -174,7 +234,19 @@ pub(crate) async fn list_plugins(
             ))
         }
     };
-    respond(StatusCode::OK, out)
+    respond(
+        StatusCode::OK,
+        out.map(|page| {
+            cursor::keyset(
+                page.items,
+                &w,
+                "plugins",
+                &filter,
+                |p| format!("{}:{}", p.r#type, p.name),
+                false,
+            )
+        }),
+    )
 }
 
 /// The `POST /api/v1/admin/plugins` request body: install a SIGNED plugin tarball. The tarball
@@ -599,6 +671,125 @@ pub(crate) async fn get_admin_auth(State(handle): State<Arc<AppHandle>>) -> Resp
     )
 }
 
+/// The query parameters that select a usage SERIES (range mode). With none of them, `/usage` is the
+/// single-day read.
+const USAGE_SERIES_PARAMS: [&str; 11] = [
+    "from", "to", "group_by", "key", "group", "model", "provider", "kind", "instance", "cursor",
+    "limit",
+];
+
+/// The most UTC-day buckets one series read may span.
+const USAGE_MAX_BUCKETS: u64 = 366;
+
+/// `GET /usage` in range mode (ADMIN-API-1.6 section 11).
+async fn get_usage_series(
+    handle: &Arc<AppHandle>,
+    q: &std::collections::HashMap<String, String>,
+    window: Option<u64>,
+    as_of: Option<busbar_kernel::cost::EntryKey>,
+) -> Response {
+    use crate::v1::service::{parse_utc_day, SeriesSpec, UsageDim};
+    let bad =
+        |message: String| err_json_cond(&AdminError::Validation(message), Cond::InvalidQueryValue);
+    let day = |name: &str| -> Result<Option<u64>, Response> {
+        q.get(name).map_or(Ok(None), |v| {
+            parse_utc_day(v)
+                .map(Some)
+                .ok_or_else(|| bad(format!("invalid `{name}`: expected a UTC day, YYYY-MM-DD")))
+        })
+    };
+    let step = busbar_kernel::governance::METERING_BUCKET_SECS;
+    let current = busbar_kernel::governance::metering_bucket(busbar_kernel::store::now());
+    let (from, to) = match (
+        ok_or_respond!(day("from")),
+        ok_or_respond!(day("to")),
+        window,
+    ) {
+        (None, None, Some(w)) if w % step == 0 => (w, w),
+        (None, None, Some(w)) => {
+            return bad(format!(
+                "window must be a UTC-day bucket start (a multiple of {step}); got {w}"
+            ))
+        }
+        (from, to, _) => {
+            let to = to.unwrap_or(current);
+            (from.unwrap_or(to), to)
+        }
+    };
+    if from > to {
+        return bad("`from` is after `to`".into());
+    }
+    if to > current {
+        return bad("the range is in the future".into());
+    }
+    if (to - from) / step + 1 > USAGE_MAX_BUCKETS {
+        return busbar_kernel::admin::gate::admin_error_envelope_with(
+            400,
+            "invalid_request",
+            Some("range_too_large"),
+            "the range spans more UTC-day buckets than one read may",
+            &serde_json::json!({ "max_buckets": USAGE_MAX_BUCKETS }),
+        );
+    }
+    let mut group_by = Vec::new();
+    if let Some(list) = q.get("group_by") {
+        for name in list.split(',').filter(|n| !n.is_empty()) {
+            match UsageDim::parse(name) {
+                Some(dim) => group_by.push(dim),
+                None => {
+                    return bad(format!(
+                        "invalid `group_by`: `{name}` is not one of key, group, model, provider, kind, instance, bucket"
+                    ))
+                }
+            }
+        }
+    }
+    group_by.sort_unstable();
+    group_by.dedup();
+    let filters = [
+        ("key", UsageDim::Key),
+        ("group", UsageDim::Group),
+        ("model", UsageDim::Model),
+        ("provider", UsageDim::Provider),
+        ("kind", UsageDim::Kind),
+        ("instance", UsageDim::Instance),
+    ]
+    .into_iter()
+    .filter_map(|(name, dim)| q.get(name).map(|v| (dim, v.clone())))
+    .collect();
+    let digest = cursor::filter_digest(
+        q,
+        &[
+            "from", "to", "window", "group_by", "key", "group", "model", "provider", "kind",
+            "instance", "as_of",
+        ],
+    );
+    let w = ok_or_respond!(boxed cursor::window(q, "usage", &digest, crate::v1::contract::LIST_LIMIT_DEFAULT));
+    let spec = SeriesSpec {
+        from,
+        to,
+        group_by,
+        filters,
+        as_of,
+    };
+    match service(handle).get_usage_series(&spec).await {
+        Ok(mut series) => {
+            let page = cursor::keyset(
+                std::mem::take(&mut series.items),
+                &w,
+                "usage",
+                &digest,
+                |row| row.sort.clone(),
+                false,
+            );
+            series.items = page.items;
+            series.next_cursor = page.next_cursor;
+            respond(StatusCode::OK, Ok(series))
+        }
+        Err(e) => err_json(&e),
+    }
+}
+
 pub(crate) async fn get_usage(
     State(handle): State<Arc<AppHandle>>,
     Query(q): Query<std::collections::HashMap<String, String>>,
@@ -626,6 +817,9 @@ pub(crate) async fn get_usage(
             }
         },
     };
+    if USAGE_SERIES_PARAMS.iter().any(|p| q.contains_key(*p)) {
+        return get_usage_series(&handle, &q, window, as_of).await;
+    }
     respond(
         StatusCode::OK,
         service(&handle).get_usage(window, as_of).await,
@@ -1518,15 +1712,107 @@ fn record_group_version(installed: &Arc<busbar_kernel::state::App>, actor: &str,
 pub(crate) async fn get_audit(
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let (start, limit) =
-        ok_or_respond!(boxed page_window(&q, crate::v1::contract::LIST_LIMIT_DEFAULT));
-    let action = q.get("action").map(String::as_str);
-    let resource = q.get("resource").map(String::as_str);
-
-    let page = busbar_kernel::audit::auditlog::AUDIT_LOG.list_page(start, limit, action, resource);
-    let next_cursor = page
-        .truncated
-        .then(|| crate::v1::contract::encode_offset_cursor(start.saturating_add(limit)));
+    use busbar_kernel::audit::auditlog::{AuditQuery, AUDIT_LOG};
+    let filter = cursor::filter_digest(
+        &q,
+        &[
+            "action", "resource", "order", "severity", "kind", "instance",
+        ],
+    );
+    let w = ok_or_respond!(boxed cursor::window(
+        &q,
+        "audit",
+        &filter,
+        crate::v1::contract::LIST_LIMIT_DEFAULT
+    ));
+    let invalid = |what: &str| {
+        err_json_cond(
+            &AdminError::Validation(format!("invalid `{what}`")),
+            Cond::InvalidQueryValue,
+        )
+    };
+    let descending = match q.get("order").map(String::as_str) {
+        None | Some("desc") => true,
+        Some("asc") => false,
+        Some(_) => return invalid("order: expected asc|desc"),
+    };
+    let wait = match q.get("wait") {
+        None => 0,
+        Some(v) => match v.parse::<u64>() {
+            Ok(n) if n <= 30 => n,
+            _ => return invalid("wait: expected 0..30 seconds"),
+        },
+    };
+    let after = match &w.after {
+        None => None,
+        Some(key) => match key.parse::<u64>() {
+            Ok(seq) => Some(seq),
+            Err(_) => {
+                return err_json_cond(
+                    &AdminError::Validation("invalid pagination cursor".into()),
+                    Cond::MalformedCursor,
+                )
+            }
+        },
+    };
+    let actions: Vec<&str> = q
+        .get("action")
+        .map(|csv| {
+            csv.split(',')
+                .map(str::trim)
+                .filter(|a| !a.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let read = AuditQuery {
+        after,
+        descending,
+        limit: w.limit,
+        actions: &actions,
+        resource: q.get("resource").map(String::as_str),
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait);
+    let page = loop {
+        // Armed before the read, so an append between the read and the await still wakes it.
+        let notified = AUDIT_LOG.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        match AUDIT_LOG.list_after(&read) {
+            Err(oldest) => {
+                return cursor::expired(cursor::encode(
+                    "audit",
+                    &filter,
+                    &cursor::numeric_key(oldest),
+                ))
+            }
+            Ok(page) if !page.items.is_empty() || descending || wait == 0 => break page,
+            Ok(page) => {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() || tokio::time::timeout(left, notified).await.is_err() {
+                    break page;
+                }
+            }
+        }
+    };
+    // A list ends with a null cursor. A feed always carries one: past the last row served, or, when
+    // nothing matched, past everything scanned, so the next read neither repeats nor misses a row.
+    let next_cursor = if descending {
+        page.truncated
+            .then(|| page.items.last())
+            .flatten()
+            .map(|e| cursor::encode("audit", &filter, &cursor::numeric_key(e.seq)))
+    } else {
+        let past = match page.items.last() {
+            Some(e) => e.seq,
+            None => page
+                .retained_to
+                .as_deref()
+                .and_then(|seq| seq.parse::<u64>().ok())
+                .or(after)
+                .unwrap_or(0),
+        };
+        Some(cursor::encode("audit", &filter, &cursor::numeric_key(past)))
+    };
     let mut body = json!(page);
     body["next_cursor"] = json!(next_cursor);
     ok_json(StatusCode::OK, &body)
@@ -1536,13 +1822,24 @@ pub(crate) async fn list_config_versions(
     State(handle): State<Arc<AppHandle>>,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let (start, limit) =
-        ok_or_respond!(boxed page_window(&q, crate::v1::contract::VERSIONS_LIMIT_DEFAULT));
-    let mut versions = handle.load().versions().list(start, limit + 1);
-    let next_cursor = page_cursor(&mut versions, start, limit);
+    let w = ok_or_respond!(boxed cursor::window(
+        &q,
+        "config_versions",
+        "",
+        crate::v1::contract::VERSIONS_LIMIT_DEFAULT
+    ));
+    let versions = handle.load().versions().list(0, usize::MAX);
+    let page = cursor::keyset(
+        versions,
+        &w,
+        "config_versions",
+        "",
+        |v| cursor::numeric_key(v.version),
+        true,
+    );
     ok_json(
         StatusCode::OK,
-        &json!({ "items": versions, "next_cursor": next_cursor }),
+        &json!({ "items": page.items, "next_cursor": page.next_cursor }),
     )
 }
 
@@ -1794,7 +2091,8 @@ pub(crate) async fn put_auth(
         let operator = busbar_kernel::config::operator_provider();
         let in_process = busbar_kernel::preflight::root_rows().in_process_auth;
         for name in &req.admin_auth {
-            let known = current.admin_modules.operator.is(name)
+            let known = name == busbar_kernel::config::KEYS_MODULE
+                || current.admin_modules.operator.is(name)
                 || current.admin_modules.modules.contains_key(name)
                 || in_process.is_some_and(|answers| answers(name));
             if !known {
@@ -3988,6 +4286,9 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 if let Some(op) = op.as_object_mut() {
                     let scope = crate::v1::contract::required_scope(&m, path);
                     op.insert("x-busbar-required-scope".to_string(), json!(scope.as_str()));
+                    if let Some(verb) = crate::admin_codec::verbs::name_at(m.as_str(), path) {
+                        op.insert("x-busbar-verb".to_string(), json!(verb));
+                    }
 
                     op.insert(
                         "security".to_string(),
@@ -4023,6 +4324,14 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     }
 
     type QueryParam = (&'static str, &'static str, bool);
+    const PAGE_PARAMS: &[QueryParam] = &[
+        ("limit", "Page size (default 200, max 1000)", false),
+        (
+            "cursor",
+            "Opaque continuation cursor from `next_cursor`",
+            false,
+        ),
+    ];
     const QUERY_PARAMS: &[(&str, &[QueryParam])] = &[
         (
             "/keys",
@@ -4053,7 +4362,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             &[
                 (
                     "action",
-                    "Filter by exact action (e.g. `hook.register`)",
+                    "Filter by action, a comma-separated list. Each entry is an exact action (`hook.register`) or a bare noun (`hook`), which matches every `hook.*`",
                     false,
                 ),
                 (
@@ -4065,6 +4374,16 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 (
                     "cursor",
                     "Opaque continuation cursor from `next_cursor`",
+                    false,
+                ),
+                (
+                    "order",
+                    "`desc` (default, a finite list) or `asc` (a feed: `next_cursor` is always set and `complete` means caught up)",
+                    false,
+                ),
+                (
+                    "wait",
+                    "Seconds (0..30) to hold an `order=asc` read open for the next row when none is ready",
                     false,
                 ),
             ],
@@ -4082,11 +4401,19 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ),
         (
             "/plugins",
-            &[(
-                "type",
+            &[
+                (
+                    "type",
                 "Plugin type: `auth` | `hooks` | `secret` | `store` | `export` | `plane` | `transport` (required)",
-                true,
-            )],
+                    true,
+                ),
+                ("limit", "Page size (default 200, max 1000)", false),
+                (
+                    "cursor",
+                    "Opaque continuation cursor from `next_cursor`",
+                    false,
+                ),
+            ],
         ),
         (
             "/usage",
@@ -4109,11 +4436,43 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ),
         (
             "/pools",
-            &[(
-                "detail",
-                "`true` inlines each member's live status (same row shape as /pools/{name})",
-                false,
-            )],
+            &[
+                (
+                    "detail",
+                    "`true` inlines each member's live status (same row shape as /pools/{name})",
+                    false,
+                ),
+                ("limit", "Page size (default 200, max 1000)", false),
+                (
+                    "cursor",
+                    "Opaque continuation cursor from `next_cursor`",
+                    false,
+                ),
+            ],
+        ),
+        (
+            "/groups",
+            PAGE_PARAMS,
+        ),
+        (
+            "/models",
+            PAGE_PARAMS,
+        ),
+        (
+            "/providers",
+            PAGE_PARAMS,
+        ),
+        (
+            "/hooks",
+            PAGE_PARAMS,
+        ),
+        (
+            "/identity-providers",
+            PAGE_PARAMS,
+        ),
+        (
+            "/export",
+            PAGE_PARAMS,
         ),
     ];
     for (path, params) in QUERY_PARAMS {

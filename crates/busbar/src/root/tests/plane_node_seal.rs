@@ -148,7 +148,7 @@ impl busbar_kernel::teller::UnitEnds for ToDestination {
             Frame {
                 direction: busbar_contract::Direction::Outbound,
                 stream: busbar_contract::StreamId(0),
-                bytes: busbar_contract::SlabBytes::new(<Arc<[u8]>>::from(&b""[..])),
+                bytes: busbar_contract::SlabBytes::new(Arc::from(&b""[..])),
                 meta: busbar_contract::FrameMeta::default(),
             },
         )

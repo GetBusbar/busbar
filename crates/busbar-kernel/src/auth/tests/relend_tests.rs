@@ -196,13 +196,12 @@ fn a_refused_rotation_keeps_the_auth_instance_and_reports_8028() {
 
 #[test]
 fn an_unresolvable_or_unopenable_rotation_keeps_the_instance() {
-    let now = Instant::now();
     let axis = Axis::new(Ok(AuthRelent::Unchanged));
     let (auth, report) = relending(
         &axis,
         Box::new(|| Err("file: /var/run/secrets/token: not found".into())),
     );
-    auth.relend_now(now);
+    auth.relend_now(Instant::now());
     let lines = report.lines.lock().unwrap().clone();
     assert_eq!(lines[0].1, tracing::Level::WARN);
     assert!(lines[0].2.contains(&("cause", "unresolvable".to_string())));
@@ -210,7 +209,7 @@ fn an_unresolvable_or_unopenable_rotation_keeps_the_instance() {
     let axis = Axis::new(Ok(AuthRelent::NotRefreshed));
     let (auth, report) = relending(&axis, settled());
     *axis.refuse_open.lock().unwrap() = true;
-    auth.relend_now(now);
+    auth.relend_now(Instant::now());
     assert_eq!(auth.now().name(), "wif-1", "the running instance is kept");
     let lines = report.lines.lock().unwrap().clone();
     assert!(lines[0].2.contains(&("cause", "reopen-failed".to_string())));

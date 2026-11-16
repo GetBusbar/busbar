@@ -283,6 +283,11 @@ pub mod aes_ctr {
 pub mod ed25519 {
     use super::{R, REFUSED};
 
+    /// Refused.
+    pub fn validate_public_key(_raw: &[u8; 32]) -> R<()> {
+        Err(REFUSED)
+    }
+
     /// Not a key.
     #[derive(Debug)]
     pub struct SigningKey([u8; 32]);

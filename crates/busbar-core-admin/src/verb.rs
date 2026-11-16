@@ -34,7 +34,7 @@ impl VerbScope {
 pub enum Class {
     /// One of the 66 operations of 1.5.5's `openapi.json`.
     Legacy,
-    /// One of the 14 new 1.6.0 verbs.
+    /// One of the 15 new 1.6.0 verbs.
     New,
     /// One of the five 1.6.0 ledger views.
     Ledger,
@@ -65,6 +65,9 @@ pub struct VerbRow {
     /// SERVED: the mount hands it to the surface's own fallback (the unmounted `404`, no audit
     /// row) and the generated document does not describe it.
     pub bound: bool,
+    /// The verb keeps its own `Idempotency-Key` semantics (ADMIN-API-1.6 6.3), so the router layer
+    /// leaves the header to it: key mint and rotate, `adjust`, `plane-record-write`, `commit-upgrade`.
+    pub self_idempotent: bool,
 }
 
 const fn scope_for(method: &str, path: &str) -> VerbScope {
@@ -96,6 +99,15 @@ const fn row(
         class,
         scope,
         bound: true,
+        self_idempotent: matches!(
+            verb,
+            KernelVerb::PostKeys
+                | KernelVerb::PostKeysIdRotate
+                | KernelVerb::PostSigningKeyRotate
+                | KernelVerb::Adjust
+                | KernelVerb::PlaneRecordWrite
+                | KernelVerb::CommitUpgrade
+        ),
     }
 }
 
@@ -124,6 +136,8 @@ pub enum KernelVerb {
     GetModels,
     GetInfo,
     GetTelemetry,
+    GetOperationsKey,
+    GetWhoami,
     GetUsage,
     GetOpenapiJson,
 
@@ -150,6 +164,8 @@ pub enum KernelVerb {
     GetHooksNameSchema,
     PatchHooksNameSettings,
     GetHooksNameStatus,
+    PutHooksNameAttachmentsTarget,
+    DeleteHooksNameAttachmentsTarget,
 
     GetIdentityProviders,
     DeleteIdentityProvidersName,
@@ -302,6 +318,10 @@ pub const TABLE: &[VerbRow] = table! {
     New RecoveryList "POST" "/api/v1/admin/ledger/recovery/list" "recovery_list";
     New RecoveryResolve "POST" "/api/v1/admin/ledger/recovery/resolve" "recovery_resolve";
     New GetTelemetry "GET" "/api/v1/admin/telemetry" "get_telemetry";
+    New GetOperationsKey "GET" "/api/v1/admin/operations/{key}" "get_operations_key";
+    New GetWhoami "GET" "/api/v1/admin/whoami" "get_whoami";
+    New PutHooksNameAttachmentsTarget "PUT" "/api/v1/admin/hooks/{name}/attachments/{target}" "put_hooks_name_attachments_target";
+    New DeleteHooksNameAttachmentsTarget "DELETE" "/api/v1/admin/hooks/{name}/attachments/{target}" "delete_hooks_name_attachments_target";
     New GetTrust "GET" "/api/v1/admin/trust" "get_trust";
     New TrustApprove "POST" "/api/v1/admin/trust/approve" "trust_approve";
     New TrustRevoke "POST" "/api/v1/admin/trust/revoke" "trust_revoke";

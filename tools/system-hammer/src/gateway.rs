@@ -185,8 +185,12 @@ impl Gateway {
         if !self.alive() {
             return;
         }
-        // SAFETY: signalling our own child.
-        unsafe { libc::kill(self.pid as libc::pid_t, libc::SIGTERM) };
+        if let Some(pid) = i32::try_from(self.pid)
+            .ok()
+            .and_then(rustix::process::Pid::from_raw)
+        {
+            let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
+        }
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
             if !self.alive() {

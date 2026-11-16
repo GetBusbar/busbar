@@ -47,7 +47,7 @@ fn sealing_plane_where(trust_is: impl Fn(&str) -> bool) -> (ServedFacts, NeedId)
             let served = load_linked::<Plane>(
                 &row,
                 Bind {
-                    instance: <Arc<str>>::from("registration-pin-probe"),
+                    instance: Arc::from("registration-pin-probe"),
                     max_inflight_cap: 64,
                     sink: Arc::new(NoSink),
                     dispatcher: probe.adopter(),

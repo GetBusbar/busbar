@@ -1,12 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::abi::sdk::test_support::watch::Watch;
+use std::sync::Mutex;
 
-/// The reviewed allocator probe: unarmed it is the system allocator; `armed_here` counts this
-/// thread's allocations and the largest single one.
+use stats_alloc::StatsAlloc;
+#[cfg(target_env = "msvc")]
+use std::alloc::System as Base;
+#[cfg(not(target_env = "msvc"))]
+use tikv_jemallocator::Jemalloc as Base;
+
+/// The shipped allocator (jemalloc), counted process-wide by `stats_alloc` (UNSAFE-MIN §4.4).
 #[global_allocator]
-static ALLOC: Watch = Watch::new();
+static ALLOC: StatsAlloc<Base> = StatsAlloc::new(Base);
+
+/// One test at a time: the counts are process-wide, and the other test allocates 6 MiB.
+static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
 fn raw_header(name: &str, size: u64) -> [u8; 512] {
     let mut h = tar::Header::new_gnu();
@@ -50,17 +58,14 @@ fn lying_size_tarball() -> Vec<u8> {
 
 #[test]
 fn truncated_lying_header_does_not_force_a_large_reservation() {
+    let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(|p| p.into_inner());
     let bytes = lying_size_tarball();
 
-    let mut caught = None;
-    let freed = ALLOC.armed_here(b"", || {
-        caught = Some(std::panic::catch_unwind(|| {
-            busbar_plugin_loader::tarball::unpack(&bytes)
-        }));
-    });
-    let result = caught
-        .expect("the armed scope ran")
-        .expect("unpack must not panic on a truncated/lying entry");
+    let before = ALLOC.stats();
+    let caught = std::panic::catch_unwind(|| busbar_plugin_loader::tarball::unpack(&bytes));
+    let after = ALLOC.stats();
+    let allocated = after.bytes_allocated - before.bytes_allocated;
+    let result = caught.expect("unpack must not panic on a truncated/lying entry");
 
     if let Ok(unpacked) = &result {
         assert!(
@@ -70,17 +75,19 @@ fn truncated_lying_header_does_not_force_a_large_reservation() {
         );
     }
 
-    let peak = freed.largest_alloc;
+    // TEST-CHANGE (pending-owner, QA): `stats_alloc` has no "largest single allocation", so the bound
+    // is now on the TOTAL bytes allocated while unpacking, which is never smaller than the largest one.
     assert!(
-        peak < 4 * 1024 * 1024,
-        "peak single allocation was {peak} bytes (~{} MiB) — the reservation was sized off the \
+        allocated < 4 * 1024 * 1024,
+        "unpacking allocated {allocated} bytes (~{} MiB) — the reservation was sized off the \
          header's declared (unverified) size instead of being ceilinged",
-        peak / (1024 * 1024)
+        allocated / (1024 * 1024)
     );
 }
 
 #[test]
 fn real_multi_mb_library_round_trips_byte_for_byte() {
+    let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(|p| p.into_inner());
     use busbar_plugin_loader::sign::{sign, SigningKey};
 
     let key = SigningKey::from_bytes(&[9u8; 32]);
