@@ -1830,142 +1830,6 @@
           },
           {
             "additionalProperties": false,
-            "properties": {
-              "per": {
-                "enum": [
-                  "minute",
-                  "hour",
-                  "day",
-                  "month",
-                  "total"
-                ]
-              },
-              "pool": {
-                "type": "string"
-              },
-              "tokens_input": {
-                "format": "uint64",
-                "maximum": 18446744073709551615,
-                "minimum": 0,
-                "type": "integer",
-                "x-busbar-exact-number": {
-                  "bits": 64,
-                  "representation": "json-integer-token",
-                  "signed": false
-                },
-                "x-busbar-integer-token": "unsigned"
-              }
-            },
-            "required": [
-              "tokens_input",
-              "per"
-            ],
-            "type": "object"
-          },
-          {
-            "additionalProperties": false,
-            "properties": {
-              "per": {
-                "enum": [
-                  "minute",
-                  "hour",
-                  "day",
-                  "month",
-                  "total"
-                ]
-              },
-              "pool": {
-                "type": "string"
-              },
-              "tokens_output": {
-                "format": "uint64",
-                "maximum": 18446744073709551615,
-                "minimum": 0,
-                "type": "integer",
-                "x-busbar-exact-number": {
-                  "bits": 64,
-                  "representation": "json-integer-token",
-                  "signed": false
-                },
-                "x-busbar-integer-token": "unsigned"
-              }
-            },
-            "required": [
-              "tokens_output",
-              "per"
-            ],
-            "type": "object"
-          },
-          {
-            "additionalProperties": false,
-            "properties": {
-              "per": {
-                "enum": [
-                  "minute",
-                  "hour",
-                  "day",
-                  "month",
-                  "total"
-                ]
-              },
-              "pool": {
-                "type": "string"
-              },
-              "tokens_cache_read": {
-                "format": "uint64",
-                "maximum": 18446744073709551615,
-                "minimum": 0,
-                "type": "integer",
-                "x-busbar-exact-number": {
-                  "bits": 64,
-                  "representation": "json-integer-token",
-                  "signed": false
-                },
-                "x-busbar-integer-token": "unsigned"
-              }
-            },
-            "required": [
-              "tokens_cache_read",
-              "per"
-            ],
-            "type": "object"
-          },
-          {
-            "additionalProperties": false,
-            "properties": {
-              "per": {
-                "enum": [
-                  "minute",
-                  "hour",
-                  "day",
-                  "month",
-                  "total"
-                ]
-              },
-              "pool": {
-                "type": "string"
-              },
-              "tokens_cache_write": {
-                "format": "uint64",
-                "maximum": 18446744073709551615,
-                "minimum": 0,
-                "type": "integer",
-                "x-busbar-exact-number": {
-                  "bits": 64,
-                  "representation": "json-integer-token",
-                  "signed": false
-                },
-                "x-busbar-integer-token": "unsigned"
-              }
-            },
-            "required": [
-              "tokens_cache_write",
-              "per"
-            ],
-            "type": "object"
-          },
-          {
-            "additionalProperties": false,
             "allOf": [
               {
                 "if": {
@@ -2004,13 +1868,6 @@
               }
             ],
             "properties": {
-              "admission": {
-                "description": "Omitted means exact; authored presence is retained in readback.",
-                "enum": [
-                  "exact",
-                  "estimate"
-                ]
-              },
               "budget": {
                 "format": "uint64",
                 "maximum": 18446744073709551615,
@@ -2030,13 +1887,6 @@
                 "enum": [
                   "block",
                   "downgrade"
-                ]
-              },
-              "on_exhaustion": {
-                "description": "In-flight behavior; omitted means finish-unit. Distinct from admission-time on_exhaust.",
-                "enum": [
-                  "finish-unit",
-                  "cut-stream"
                 ]
               },
               "per": {
@@ -3175,72 +3025,6 @@
               "scale": 6,
               "signed": true,
               "unit": "field-defined usage units"
-            }
-          },
-          "tokens_cache_read_cap": {
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ],
-            "x-busbar-exact-number": {
-              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
-              "integer_format": "uint64",
-              "representation": "json-integer-token"
-            }
-          },
-          "tokens_cache_write_cap": {
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ],
-            "x-busbar-exact-number": {
-              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
-              "integer_format": "uint64",
-              "representation": "json-integer-token"
-            }
-          },
-          "tokens_cap": {
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ],
-            "x-busbar-exact-number": {
-              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
-              "integer_format": "uint64",
-              "representation": "json-integer-token"
-            }
-          },
-          "tokens_input_cap": {
-            "description": "Per-tier token caps mirroring the cost tiers, when configured (absent = uncapped on that\ntier): `tokens_input` = uncached input, `tokens_output` = output, `tokens_cache_read`,\n`tokens_cache_write` = cache creation.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ],
-            "x-busbar-exact-number": {
-              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
-              "integer_format": "uint64",
-              "representation": "json-integer-token"
-            }
-          },
-          "tokens_output_cap": {
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ],
-            "x-busbar-exact-number": {
-              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
-              "integer_format": "uint64",
-              "representation": "json-integer-token"
             }
           },
           "window": {
@@ -5247,17 +5031,6 @@
       "LimitView": {
         "description": "One limit inside a `GroupView`: an explicit `{ metric, amount, per, pool }` projection of a\nconfig `LimitCfg`. The config file's compact `{ budget: 3000, per: month }` form is\ndeserialize-only sugar; the read API projects it explicitly so a consumer never has to know\nthe metric is the map key. `per` is `None` only for `concurrent` (an instantaneous gauge, no\nwindow); `pool` is present only on a pool-scoped limit.",
         "properties": {
-          "admission": {
-            "description": "Authored budget admission policy: exact (default when absent) or estimate.",
-            "enum": [
-              "exact",
-              "estimate"
-            ],
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "amount": {
             "description": "The cap amount (requests/tokens/cents, or the in-flight gauge for `concurrent`).",
             "format": "uint64",
@@ -5282,17 +5055,6 @@
           },
           "on_exhaust": {
             "description": "The budget-exhaustion behavior: `block` or `downgrade`. Absent = block (the default).",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "on_exhaustion": {
-            "description": "Authored in-flight exhaustion policy: finish-unit (default when absent) or cut-stream.",
-            "enum": [
-              "finish-unit",
-              "cut-stream"
-            ],
             "type": [
               "string",
               "null"
@@ -29925,142 +29687,6 @@
             },
             {
               "additionalProperties": false,
-              "properties": {
-                "per": {
-                  "enum": [
-                    "minute",
-                    "hour",
-                    "day",
-                    "month",
-                    "total"
-                  ]
-                },
-                "pool": {
-                  "type": "string"
-                },
-                "tokens_input": {
-                  "format": "uint64",
-                  "maximum": 18446744073709551615,
-                  "minimum": 0,
-                  "type": "integer",
-                  "x-busbar-exact-number": {
-                    "bits": 64,
-                    "representation": "json-integer-token",
-                    "signed": false
-                  },
-                  "x-busbar-integer-token": "unsigned"
-                }
-              },
-              "required": [
-                "tokens_input",
-                "per"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "per": {
-                  "enum": [
-                    "minute",
-                    "hour",
-                    "day",
-                    "month",
-                    "total"
-                  ]
-                },
-                "pool": {
-                  "type": "string"
-                },
-                "tokens_output": {
-                  "format": "uint64",
-                  "maximum": 18446744073709551615,
-                  "minimum": 0,
-                  "type": "integer",
-                  "x-busbar-exact-number": {
-                    "bits": 64,
-                    "representation": "json-integer-token",
-                    "signed": false
-                  },
-                  "x-busbar-integer-token": "unsigned"
-                }
-              },
-              "required": [
-                "tokens_output",
-                "per"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "per": {
-                  "enum": [
-                    "minute",
-                    "hour",
-                    "day",
-                    "month",
-                    "total"
-                  ]
-                },
-                "pool": {
-                  "type": "string"
-                },
-                "tokens_cache_read": {
-                  "format": "uint64",
-                  "maximum": 18446744073709551615,
-                  "minimum": 0,
-                  "type": "integer",
-                  "x-busbar-exact-number": {
-                    "bits": 64,
-                    "representation": "json-integer-token",
-                    "signed": false
-                  },
-                  "x-busbar-integer-token": "unsigned"
-                }
-              },
-              "required": [
-                "tokens_cache_read",
-                "per"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "per": {
-                  "enum": [
-                    "minute",
-                    "hour",
-                    "day",
-                    "month",
-                    "total"
-                  ]
-                },
-                "pool": {
-                  "type": "string"
-                },
-                "tokens_cache_write": {
-                  "format": "uint64",
-                  "maximum": 18446744073709551615,
-                  "minimum": 0,
-                  "type": "integer",
-                  "x-busbar-exact-number": {
-                    "bits": 64,
-                    "representation": "json-integer-token",
-                    "signed": false
-                  },
-                  "x-busbar-integer-token": "unsigned"
-                }
-              },
-              "required": [
-                "tokens_cache_write",
-                "per"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
               "allOf": [
                 {
                   "if": {
@@ -30099,13 +29725,6 @@
                 }
               ],
               "properties": {
-                "admission": {
-                  "description": "Omitted means exact; authored presence is retained in readback.",
-                  "enum": [
-                    "exact",
-                    "estimate"
-                  ]
-                },
                 "budget": {
                   "format": "uint64",
                   "maximum": 18446744073709551615,
@@ -30125,13 +29744,6 @@
                   "enum": [
                     "block",
                     "downgrade"
-                  ]
-                },
-                "on_exhaustion": {
-                  "description": "In-flight behavior; omitted means finish-unit. Distinct from admission-time on_exhaust.",
-                  "enum": [
-                    "finish-unit",
-                    "cut-stream"
                   ]
                 },
                 "per": {
