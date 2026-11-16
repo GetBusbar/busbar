@@ -311,9 +311,10 @@ See the [1.6.0 advisories](advisories/1.6.0/README.md) for the full disclosures.
 
 ## Rate cards
 
-**Every billable unit must have a rate.** A `rate_card:` must price every unit its plane counts
-(`0` is a rate), or startup refuses and names the missing units. The migration adds these at `0`,
-which is what 1.5.5 billed:
+**Price every billable unit deliberately.** With a rate card present, a missing required lane
+is a validation error; missing billable classes produce unpriced warnings. A deployment with no
+rate card has usage pricing disabled. Do not treat successful startup as proof that every unit
+is priced. The migration adds the following units at `0`, which is what 1.5.5 billed:
 
 **This is the one edit a 1.5.5 config with a `rate_card:` needs.** Every count a provider reports
 is a ledger line under its own unit (owner ruling LEDGER-100). The LLM plane counts `input`,
@@ -353,7 +354,7 @@ rate_card:
                             guardrail_topic_policy_units: 0, guardrail_word_policy_units: 0 } }
 ```
 
-Put the map on every entry: an entry silent about a unit refuses that traffic. Set a real rate when
+Put the map on every entry and resolve unpriced warnings. Set a real rate when
 you want to bill a unit. These units do not count toward `tokens:` caps.
 
 **Rate cards are a dated history.** Changing a card prices only what comes after the change; past

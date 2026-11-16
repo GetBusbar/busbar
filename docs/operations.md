@@ -447,8 +447,8 @@ The canonical Closed/Open/HalfOpen transition graph (the FSM itself) lives on
 the lane's spare capacity, each exposed as its own field and never collapsed into one. The matrix
 below reads them together, so a saturated Open lane shows up as **both** open **and** at capacity.
 
-<svg viewBox="0 0 720 470" role="img" aria-label="Observability matrix for a lane. Columns are the breaker axis, the busbar_lane_state gauge: 0 Closed, 1 HalfOpen, 2 Open. Rows are the capacity axis, at_capacity and busbar_lane_available_permits: top row at_capacity false with free permits, bottom row at_capacity true with zero permits. The two axes are exposed independently, so each of the six cells reports a breaker value and a capacity value at once. The bottom-right cell, lane_state 2 and at_capacity true, shows a saturated Open lane reading both open and at capacity, whose recovery probe can never win a dispatch. Each cell also emits busbar_lane_recovery_hint_ms: 0 when serving, the breaker cooldown for an Open lane, a 2000ms floor for a saturated one." style="width:100%;height:auto;max-width:720px;font-family:ui-sans-serif,system-ui,sans-serif;">
-  <rect x="0" y="0" width="720" height="470" fill="#111a2e"/>
+<svg viewBox="0 0 720 500" role="img" aria-label="Observability matrix for a lane. Columns are the breaker axis, the busbar_lane_state gauge: 0 Closed, 1 HalfOpen, 2 Open. Rows are the capacity axis, at_capacity and busbar_lane_available_permits: top row at_capacity false with free permits, bottom row at_capacity true with zero permits. The two axes are exposed independently, so each of the six cells reports a breaker value and a capacity value at once. The bottom-right cell, lane_state 2 and at_capacity true, shows a saturated Open lane reading both open and at capacity, whose recovery probe can never win a dispatch. Each cell also emits busbar_lane_recovery_hint_ms: 0 when serving, the breaker cooldown for an Open lane, a 2000ms floor for a saturated one." style="width:100%;height:auto;max-width:720px;font-family:ui-sans-serif,system-ui,sans-serif;">
+  <rect x="0" y="0" width="720" height="500" fill="#111a2e"/>
 
   <!-- Title -->
   <text x="360" y="30" text-anchor="middle" fill="#e6edf7" font-size="16" font-weight="700">What an operator sees: two independent axes</text>
@@ -471,7 +471,7 @@ below reads them together, so a saturated Open lane shows up as **both** open **
   <text x="610" y="128" text-anchor="middle" fill="#fca5a5" font-size="14" font-weight="700">Open</text>
 
   <!-- Left axis label (capacity), rotated -->
-  <text x="16" y="312" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600" transform="rotate(-90 16 312)">at_capacity / busbar_lane_available_permits (capacity axis)</text>
+  <text x="16" y="312" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600" transform="rotate(-90 16 312)">Capacity axis</text>
 
   <!-- Row header: at_capacity false -->
   <rect x="34" y="152" width="130" height="120" rx="8" fill="#16210b" stroke="#a3e635" stroke-opacity="0.5"/>
@@ -520,7 +520,8 @@ below reads them together, so a saturated Open lane shows up as **both** open **
 
   <!-- Footer legend -->
   <text x="360" y="440" text-anchor="middle" fill="#94a3b8" font-size="11">Read the column and the row together: each lane reports its breaker value and its capacity value independently.</text>
-  <text x="360" y="458" text-anchor="middle" fill="#94a3b8" font-size="10">/metrics: busbar_lane_state, busbar_lane_available_permits, busbar_lane_recovery_hint_ms   /   /stats: breaker_state, at_capacity, available, recovery_hint_ms</text>
+  <text x="360" y="458" text-anchor="middle" fill="#94a3b8" font-size="10">/metrics: busbar_lane_state · busbar_lane_available_permits · busbar_lane_recovery_hint_ms</text>
+  <text x="360" y="480" text-anchor="middle" fill="#94a3b8" font-size="10">/stats: breaker_state · at_capacity · available · recovery_hint_ms</text>
 </svg>
 
 - **Closed**: the lane serves traffic. A single upstream failure that does **not**

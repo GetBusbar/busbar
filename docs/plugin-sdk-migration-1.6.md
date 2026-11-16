@@ -57,7 +57,9 @@ and linked/dropped loading, wrong-kind and refusal checks. There is no second en
 | Transport | `abi::sdk::life`, typed transport slots | Frame or carry bytes using the host's granted I/O facilities. |
 
 The kind's `Ops` and its `ABI_VERSION` live under `abi::<kind>`; the current store wire is
-`abi::store::v4`. Use SDK constants and generated headers rather than copying numeric versions.
+`abi::store::v4`. That Rust module name is not the numeric wire version: the 1.6 store wire
+version is **3**, from `abi::versions::STORE`; the shared mechanism version is **2**. Use SDK
+constants and generated headers rather than copying numeric versions.
 
 ## Kind-bound access
 

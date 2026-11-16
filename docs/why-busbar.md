@@ -2,7 +2,7 @@
 
 Busbar is the **reliability layer for your AI traffic**: the breaker-and-failover control plane that sits between your application and every provider it calls. This page is for the person deciding whether to adopt it: the specific problems it solves, what it *enables* that you would otherwise have to build yourself, and an honest comparison with the tools you are probably weighing it against.
 
-It shares an arena with multi-provider proxies and hosted routers, but the priorities are different. Where those forward requests and list models, Busbar is built reliability-first. It knows whose fault a failure is. It fails over inside the request, before your user sees a byte. And it translates across six wire protocols through a superset intermediate representation rather than an OpenAI-shaped lowest common denominator, so a provider's native features are carried, not flattened, wherever the target has a shape for them ([what that covers, and what it does not yet](https://getbusbar.com/docs/protocols/#what-lossless-means-here)).
+It shares an arena with multi-provider proxies and hosted routers, but the priorities are different. Where those forward requests and list models, Busbar is built reliability-first. It knows whose fault a failure is. It fails over inside the request, before your user sees a byte. And it translates across six wire protocols through a superset intermediate representation rather than an OpenAI-shaped lowest common denominator, so a provider's native features are carried, not flattened, wherever the target has a shape for them ([what that covers, and what it does not yet](/docs/protocols/#what-lossless-means-here)).
 
 ---
 
@@ -48,7 +48,17 @@ Then the constraint moves. A team whose compliance posture locks them to one pro
 
 The detailed comparisons live on their own pages, with every claim about the other tools cited to their own documentation and re-checked against it: **[Busbar vs LiteLLM](https://getbusbar.com/vs/litellm/)** and **[Busbar vs OpenRouter](https://getbusbar.com/vs/openrouter/)**.
 
-The short version. LiteLLM is a Python-native router with a big preconfigured catalog; if you want an in-process Python library, it's the right call. Busbar is a different kind of tool: no privileged protocol (all six first-class, in both directions), a fault-attributed circuit breaker rather than a cooldown timer, and a gateway whose own cost is measured in microseconds and megabytes. OpenRouter is a hosted service, and the deciding question is whether prompts passing through a third party is acceptable for your application: if it is, OpenRouter is excellent; if it isn't, Busbar runs in your infrastructure and nothing enters the data path but the providers you configure.
+Busbar gives your platform team three concrete advantages: keep native model clients while
+changing providers, make tool-contract approval an execution requirement, and recover according
+to the failure instead of repeating recovery code in every application. The business payoff is
+fewer integration rewrites, reviewable upstream changes and consistent operation across teams.
+
+LiteLLM offers a Python SDK and gateway, with routing in Rust since v1.110.0. The meaningful
+comparison is the client-to-backend protocol path, the dispatch decision after a tool changes,
+and the recovery workflow. [Compare Busbar and LiteLLM](/vs/litellm/) for the documented
+technical differences and versioned measurements. OpenRouter is a hosted service; choose a
+self-hosted Busbar deployment when you need to operate the gateway inside your infrastructure
+and select the upstream providers yourself.
 
 ---
 
@@ -64,7 +74,7 @@ There is no Python environment to manage, no Node runtime, and no database to pr
 
 **Observability is built in.** Prometheus metrics are exposed at `/metrics` with bounded cardinality: metric labels use configured pool names and fixed enumerations, never raw model strings from client requests. OTLP trace export and a request-log webhook are both optional and configurable. The `/healthz` endpoint is side-effect-free (it never steals a recovery probe) and safe for high-frequency load balancer probing. Note that `/metrics` and `/stats` are not auth-exempt, they go through the same auth check as request traffic, since telemetry is itself a fingerprinting surface.
 
-**Security defaults are strict.** Provider `base_url` values are guarded against cloud-metadata/IMDS endpoints (including alternate IP encodings). Loopback, RFC-1918, CGNAT and other private addresses are refused for providers by default (`advanced.block_private_addresses: true`); a local-model upstream (e.g. Ollama/vLLM) is admitted by naming it in `advanced.allow_destinations`. Plain `http://` is only allowed for those private/loopback hosts: public hosts must use `https://`. Observability sink URLs (OTLP endpoint, request-log webhook) apply a stricter guard that additionally blocks loopback, link-local, RFC-1918, and broadcast addresses. Auth failures return native-protocol error envelopes with no Busbar vocabulary, an Anthropic SDK sees an Anthropic 401, an OpenAI SDK sees `invalid_api_key`, a Gemini SDK sees a 400 `INVALID_ARGUMENT`, and a Bedrock SDK sees a 403 `AccessDeniedException`. Admin endpoints are separately guarded by an admin token and disabled entirely if none is configured.
+**Security defaults are strict.** Provider `base_url` values are guarded against cloud-metadata/IMDS endpoints (including alternate IP encodings). Loopback, RFC-1918, CGNAT and other private addresses are refused for providers by default (`advanced.block_private_addresses: true`); a local-model upstream (e.g. Ollama/vLLM) is admitted by naming it in `advanced.allow_destinations`. Plain `http://` is only allowed for those private/loopback hosts: public hosts must use `https://`. Observability sink URLs (OTLP endpoint, request-log webhook) apply a stricter guard that additionally blocks loopback, link-local, RFC-1918, and broadcast addresses. Auth failures return native-protocol error envelopes with no Busbar vocabulary, an Anthropic SDK sees an Anthropic 401, an OpenAI SDK sees `invalid_api_key`, a Gemini SDK sees a 400 `INVALID_ARGUMENT`, and a Bedrock SDK sees a 403 `AccessDeniedException`. Admin authentication is a separate configured chain. An explicitly empty admin chain permits open access; configure authentication and any required listener or mTLS restrictions before exposing management routes.
 
 **The request body cap is 32 MiB** (`DefaultBodyLimit`), enforced before handler code runs, with protocol-native 413 responses (not bare text).
 

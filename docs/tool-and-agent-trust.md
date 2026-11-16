@@ -15,6 +15,31 @@ Cross-references: [MCP](/docs/mcp/) (the tool plane) · [A2A](/docs/a2a/) (the a
 
 ---
 
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 340" role="img" aria-label="Approval is checked before execution. Per-tool contract drift stays refused until explicit reapproval; registration recovery is separate." style="width:100%;height:auto;font-family:ui-sans-serif,system-ui,sans-serif">
+<title>Approval is checked before execution</title><defs><marker id="trust-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#a3e635"/></marker></defs>
+<rect width="960" height="340" rx="12" fill="#111a2e"/><text x="32" y="38" fill="#e6edf7" font-size="20" font-weight="700">Approval is checked before execution</text>
+<rect x="32.0" y="76" width="197.0" height="108" rx="10" fill="#1a2740" stroke="#2c3a52" stroke-width="2"/>
+<text x="130.5" y="105" text-anchor="middle" fill="#e6edf7" font-size="17" font-weight="700">Discover</text>
+<text x="130.5" y="133" text-anchor="middle" fill="#94a3b8" font-size="14">Read tool or agent</text>
+<text x="130.5" y="154" text-anchor="middle" fill="#94a3b8" font-size="14">Compute fingerprint</text>
+<path d="M234.0 130 H258.0" stroke="#a3e635" stroke-width="2" marker-end="url(#trust-arrow)"/>
+<rect x="265.0" y="76" width="197.0" height="108" rx="10" fill="#1a2740" stroke="#a3e635" stroke-width="2"/>
+<text x="363.5" y="105" text-anchor="middle" fill="#e6edf7" font-size="17" font-weight="700">Approve + pin</text>
+<text x="363.5" y="133" text-anchor="middle" fill="#94a3b8" font-size="14">Operator review</text>
+<text x="363.5" y="154" text-anchor="middle" fill="#94a3b8" font-size="14">Record contract</text>
+<path d="M467.0 130 H491.0" stroke="#a3e635" stroke-width="2" marker-end="url(#trust-arrow)"/>
+<rect x="498.0" y="76" width="197.0" height="108" rx="10" fill="#1a2740" stroke="#2c3a52" stroke-width="2"/>
+<text x="596.5" y="105" text-anchor="middle" fill="#e6edf7" font-size="17" font-weight="700">Verify on call</text>
+<text x="596.5" y="133" text-anchor="middle" fill="#94a3b8" font-size="14">Freshness policy</text>
+<text x="596.5" y="154" text-anchor="middle" fill="#94a3b8" font-size="14">Compare fingerprint</text>
+<path d="M700.0 130 H724.0" stroke="#a3e635" stroke-width="2" marker-end="url(#trust-arrow)"/>
+<rect x="731.0" y="76" width="197.0" height="108" rx="10" fill="#1a2740" stroke="#2c3a52" stroke-width="2"/>
+<text x="829.5" y="105" text-anchor="middle" fill="#e6edf7" font-size="17" font-weight="700">Dispatch</text>
+<text x="829.5" y="133" text-anchor="middle" fill="#94a3b8" font-size="14">Approved contract</text>
+<text x="829.5" y="154" text-anchor="middle" fill="#94a3b8" font-size="14">Caller grant</text>
+<path d="M596.5 184 V226" stroke="#f87171" stroke-width="2"/><rect x="451.5" y="226" width="290" height="54" rx="8" fill="#271e2a" stroke="#f87171"/><text x="596.5" y="259" text-anchor="middle" fill="#fca5a5" font-size="15" font-weight="600">Changed approved tool: refuse</text>
+<text x="32" y="318" fill="#94a3b8" font-size="14">Per-tool contract drift stays refused until explicit reapproval; registration recovery is separate.</text></svg>
+
 ## The fingerprint: name + args + description
 
 A remote tool is a function the model calls, and an agent is a card that advertises skills. What the

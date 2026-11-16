@@ -295,41 +295,19 @@ This is the section to read before you point a real caller at this plane. The do
 governed on every route; what is left honestly incomplete is narrower than it was, and is stated here
 precisely.
 
-- **The provider credential is threaded per dialect, when your config names one.** At boot the
-  composition root resolves the provider serving `streams.session.model` out of your ordinary
-  `models:` / `providers:` catalog and composes it onto BOTH dialect endpoints — the OpenAI one
-  (`Authorization: Bearer`) and the Gemini one (`x-goog-api-key`) — each its own set-once slot (see
-  [Configuration](#the-streams-section) above). With a provider composed, `POST
-  /v1/realtime/client_secrets` mints the browser's `ek_` secret and `POST /v1/realtime/calls` brokers
-  the SDP offer, both under busbar's own server-side key; the telephony and Gemini Live WS accepts
-  DIAL their composed provider (see the next bullet). With **no** provider composed — no
-  `streams.session.model`, no matching `models:` entry, or a secret reference that does not resolve —
-  the one-shot passes answer **`501 Not Implemented`** and the WS legs serve the client socket only
-  (see below), after running the full hooks-gate → hooks-tap → governed-open sequence above. A
-  reference that fails to resolve is fail-closed: it composes nothing and logs a warning rather than
-  dialing with an empty credential. **Today `streams:` names ONE model**, so both dialect endpoints are
-  composed from the SAME resolved (origin, reference) pair; fronting Gemini Live through a genuinely
-  distinct provider entry needs a second `streams:` knob this cycle does not add.
-- **The telephony and Gemini Live WS legs DIAL the composed provider.** Once one of these WS accepts
-  clears the gauntlet, lease and durable open, it dials the composed provider through
-  `topology::dial_provider` — the same net-guarded, breaker-admitted path every other plane's egress
-  uses, keyed `stream:<dialect>` — and proxies BOTH sockets through
-  `topology::telephony::TelephonyProxy::run` (barge-in, tool correlation and metering all still run
-  over the relayed frames). With **no** provider composed, both legs fall back to serving the
-  client-facing socket only: uplink frames are decoded and metered but the upstream sink is a channel
-  with no receiver, so sends fail fast and every frame is discarded with zero buffering rather than an
-  unbounded queue growing for the session's life (`crates/busbar-voice/src/mount.rs`, `ws_accept`).
-- **The browser-WebRTC sideband dials nothing, by design.** Topology A's media path is peer-to-peer
-  (the browser talks to the provider directly once minted); Busbar's own socket is control-only, so
-  there is no provider leg for it to dial.
-- **One stated limit in the WS dial itself:** the shared substrate WS dialer
-  (`busbar_substrate::egress::duplex_ws::dial`) opens the socket with no custom-header hook, so
-  OpenAI Realtime's native `Authorization: Bearer` scheme cannot ride the WS handshake yet — a real
-  OpenAI provider dial needs that hook to land. Gemini's `?key=` query form does not have this
-  problem. This is a substrate-level gap outside this plane's own files, not something the mount
-  papers over; the voice conformance battery's `provider-dial` leg proves the wiring end to end
-  against a loopback provider that does not check auth, precisely because that is the seam being
-  proven, not vendor fidelity.
+- **Provider selection and authentication are dialect-specific.** The streaming plane resolves
+  the model and provider configuration for the requested session and refuses an incompatible
+  provider dialect. OpenAI uses a bearer credential; Gemini Live uses `x-goog-api-key`.
+- **The WebSocket transport supports handshake headers.** The transport builds the outbound
+  request with the fields supplied by the plane, including provider authentication. The former
+  statement that OpenAI Realtime could not authenticate a WebSocket dial described a retired
+  substrate path; it is not a limitation of the current `transport-ws` plugin.
+- **Configure and verify each advertised provider path.** A transport's ability to frame or
+  authenticate a connection does not by itself establish provider interoperability. Qualify the
+  dialect, transport, provider, credential mode and usage accounting together. A loopback
+  conformance result is distinct from a real-provider smoke result.
+- **Browser WebRTC has a separate media path.** In topology A, the browser talks directly to the
+  provider after credential minting; Busbar's sideband carries control rather than proxying media.
 
 None of this is a defect in what is documented above: the routes, the audience, the hooks seam, the
 gauntlet, the durable session model and the provider dial are all real and exercised by the crate's
@@ -458,7 +436,7 @@ bash testing/voice-conformance/voice-conformance.sh --list       # what is decla
 ```
 
 If you are evaluating this plane for a production workload, read this section together with [What
-is structural and what is live](#what-is-structural-and-what-is-live): the verdict now covers both
-dialects' mounted routes and a live (loopback) provider dial end to end, and the one stated gap left
-is vendor header-auth fidelity for a real OpenAI Realtime WS dial (see the last bullet there) — not
-whether a session can dial a provider at all.
+is structural and what is live](#what-is-structural-and-what-is-live): qualify each configured
+provider and transport against the release candidate. The current WebSocket transport can send
+provider authentication headers; a loopback result alone does not establish real-provider
+interoperability.

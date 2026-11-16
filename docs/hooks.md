@@ -1,8 +1,33 @@
 # Hooks: your logic on the request path
 
-Busbar owns the request path. Hooks are the sanctioned attachment points on it: the places where your own code sees what Busbar sees and steers what Busbar does. Every hook follows one design rule, enforced structurally rather than by convention: **a hook can steer, observe, or rewrite, but a hook can never break the request path.** A slow, crashed, or wrong hook degrades to a safe default; it never blocks, hangs, or fails a request on its own.
+Hooks let your policy inspect, steer, or rewrite a request before it reaches an upstream. A **gate** can affect execution; a **tap** observes without deciding. Busbar bounds hook execution and applies the configured `on_error` behavior when a gate fails. Use `on_error: reject` when a request must not continue without its required check.
 
 A hook is a **`kind: hook` plugin**: the same signed-tarball, in-process plugin ABI that store, secret, and auth plugins use. There is no other hook transport: the built-in out-of-process `socket` and `webhook` transports were retired in 1.5.0. Out-of-process isolation is available through the first-party **`busbar-hook-webrequest`** plugin, which forwards each per-request hook call to an HTTPS sidecar. Write a hook once and it runs against all six LLM protocols and every provider, with failover and circuit breaking underneath it, in one hop.
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 340" role="img" aria-label="A gate controls execution; a tap observes it. Taps run at their configured stages. The diagram shows a response-stage tap." style="width:100%;height:auto;font-family:ui-sans-serif,system-ui,sans-serif">
+<title>A gate controls execution; a tap observes it</title><defs><marker id="hook-path-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#a3e635"/></marker></defs>
+<rect width="960" height="340" rx="12" fill="#111a2e"/><text x="32" y="38" fill="#e6edf7" font-size="20" font-weight="700">A gate controls execution; a tap observes it</text>
+<rect x="32.0" y="76" width="197.0" height="108" rx="10" fill="#1a2740" stroke="#2c3a52" stroke-width="2"/>
+<text x="130.5" y="105" text-anchor="middle" fill="#e6edf7" font-size="17" font-weight="700">Request</text>
+<text x="130.5" y="133" text-anchor="middle" fill="#94a3b8" font-size="14">Caller and grant</text>
+<text x="130.5" y="154" text-anchor="middle" fill="#94a3b8" font-size="14">Permitted input</text>
+<path d="M234.0 130 H258.0" stroke="#a3e635" stroke-width="2" marker-end="url(#hook-path-arrow)"/>
+<rect x="265.0" y="76" width="197.0" height="108" rx="10" fill="#1a2740" stroke="#a3e635" stroke-width="2"/>
+<text x="363.5" y="105" text-anchor="middle" fill="#e6edf7" font-size="17" font-weight="700">Gate</text>
+<text x="363.5" y="133" text-anchor="middle" fill="#94a3b8" font-size="14">Inspect · restrict</text>
+<text x="363.5" y="154" text-anchor="middle" fill="#94a3b8" font-size="14">Order · rewrite</text>
+<path d="M467.0 130 H491.0" stroke="#a3e635" stroke-width="2" marker-end="url(#hook-path-arrow)"/>
+<rect x="498.0" y="76" width="197.0" height="108" rx="10" fill="#1a2740" stroke="#2c3a52" stroke-width="2"/>
+<text x="596.5" y="105" text-anchor="middle" fill="#e6edf7" font-size="17" font-weight="700">Dispatch</text>
+<text x="596.5" y="133" text-anchor="middle" fill="#94a3b8" font-size="14">Eligible upstream</text>
+<text x="596.5" y="154" text-anchor="middle" fill="#94a3b8" font-size="14">Within policy</text>
+<path d="M700.0 130 H724.0" stroke="#a3e635" stroke-width="2" marker-end="url(#hook-path-arrow)"/>
+<rect x="731.0" y="76" width="197.0" height="108" rx="10" fill="#1a2740" stroke="#2c3a52" stroke-width="2"/>
+<text x="829.5" y="105" text-anchor="middle" fill="#e6edf7" font-size="17" font-weight="700">Tap</text>
+<text x="829.5" y="133" text-anchor="middle" fill="#94a3b8" font-size="14">Observe stage</text>
+<text x="829.5" y="154" text-anchor="middle" fill="#94a3b8" font-size="14">No reply required</text>
+<path d="M363.5 184 V226" stroke="#f87171" stroke-width="2"/><rect x="218.5" y="226" width="290" height="54" rx="8" fill="#271e2a" stroke="#f87171"/><text x="363.5" y="259" text-anchor="middle" fill="#fca5a5" font-size="15" font-weight="600">Reject: no upstream dispatch</text>
+<text x="32" y="318" fill="#94a3b8" font-size="14">Taps run at their configured stages. The diagram shows a response-stage tap.</text></svg>
 
 ## How a hook attaches
 
@@ -247,6 +272,26 @@ A gate answers with exactly one of:
 
 - **`priority: <n>`** is the one ordering knob: it orders the rewrite transform chain (each rewrite sees the prior's output) and tie-breaks the concurrent decision reconcile: which reject's message surfaces, and which `order` counts as "last". Ties keep the all-pools `pools.hooks:` attaches first, then config order.
 - A pool that names no strategy gets the zero-cost inline `weighted` backstop. (The 1.4.x `default: true` registry flag is gone: name the base strategy per pool.)
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 340" role="img" aria-label="Choose what a failed check means. Required security checks: on_error: reject. Optional checks may continue or use a fallback." style="width:100%;height:auto;font-family:ui-sans-serif,system-ui,sans-serif">
+<title>Choose what a failed check means</title><defs><marker id="hook-failure-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#a3e635"/></marker></defs>
+<rect width="960" height="340" rx="12" fill="#111a2e"/><text x="32" y="38" fill="#e6edf7" font-size="20" font-weight="700">Choose what a failed check means</text>
+<rect x="32.0" y="76" width="274.6666666666667" height="108" rx="10" fill="#1a2740" stroke="#2c3a52" stroke-width="2"/>
+<text x="169.33333333333334" y="105" text-anchor="middle" fill="#e6edf7" font-size="17" font-weight="700">Gate call</text>
+<text x="169.33333333333334" y="133" text-anchor="middle" fill="#94a3b8" font-size="14">Bounded timeout</text>
+<text x="169.33333333333334" y="154" text-anchor="middle" fill="#94a3b8" font-size="14">Permitted projection</text>
+<path d="M311.6666666666667 130 H335.6666666666667" stroke="#a3e635" stroke-width="2" marker-end="url(#hook-failure-arrow)"/>
+<rect x="342.6666666666667" y="76" width="274.6666666666667" height="108" rx="10" fill="#1a2740" stroke="#a3e635" stroke-width="2"/>
+<text x="480.0" y="105" text-anchor="middle" fill="#e6edf7" font-size="17" font-weight="700">Failure policy</text>
+<text x="480.0" y="133" text-anchor="middle" fill="#94a3b8" font-size="14">Apply on_error</text>
+<text x="480.0" y="154" text-anchor="middle" fill="#94a3b8" font-size="14">No implicit bypass</text>
+<path d="M622.3333333333334 130 H646.3333333333334" stroke="#a3e635" stroke-width="2" marker-end="url(#hook-failure-arrow)"/>
+<rect x="653.3333333333334" y="76" width="274.6666666666667" height="108" rx="10" fill="#1a2740" stroke="#2c3a52" stroke-width="2"/>
+<text x="790.6666666666667" y="105" text-anchor="middle" fill="#e6edf7" font-size="17" font-weight="700">Continue or fallback</text>
+<text x="790.6666666666667" y="133" text-anchor="middle" fill="#94a3b8" font-size="14">Optional policy only</text>
+<text x="790.6666666666667" y="154" text-anchor="middle" fill="#94a3b8" font-size="14">Configured behavior</text>
+<path d="M480.0 184 V226" stroke="#f87171" stroke-width="2"/><rect x="335.0" y="226" width="290" height="54" rx="8" fill="#271e2a" stroke="#f87171"/><text x="480.0" y="259" text-anchor="middle" fill="#fca5a5" font-size="15" font-weight="600">Required check: refuse with 503</text>
+<text x="32" y="318" fill="#94a3b8" font-size="14">Required security checks: on_error: reject. Optional checks may continue or use a fallback.</text></svg>
 
 ## What Busbar guarantees when a hook misbehaves
 
