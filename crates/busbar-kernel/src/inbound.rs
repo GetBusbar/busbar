@@ -14,7 +14,7 @@ use busbar_contract::abi::host::service::{
     REFUSE_OVER_GATE, REFUSE_STOPPED,
 };
 use busbar_contract::auth_calls::{
-    AuthCalls, Decision, Strip, StripPlace, Verified, VerifiedIdentity, VerifyAnswer, VerifyRequest,
+    AuthCalls, Strip, StripPlace, Verified, VerifiedIdentity, VerifyAnswer, VerifyRequest,
 };
 use busbar_contract::redacted::Secret;
 
@@ -1503,20 +1503,9 @@ fn build_header_map(head: &Head) -> axum::http::HeaderMap {
     headers
 }
 
-/// A verdict as the kernel acts on it. `DECISION_STOP` stops the request whatever the verdict beside
-/// it (abi/auth: "the transport stops the request"), so an identity or a pass with it is a
-/// rejection and keeps no identity (Aikido 1074606963); an overload keeps its own answer.
-fn honour_stop(verified: Verified, decision: Decision) -> Verified {
-    match (verified, decision) {
-        (Verified::Overloaded, _) => Verified::Overloaded,
-        (verified, Decision::Continue) => verified,
-        (_, Decision::Stop) => Verified::Reject,
-    }
-}
-
 /// A plugin's `verify` answer as one position's judgement, its identity and its strips.
 fn judged_answer(a: VerifyAnswer) -> (Judged, Option<VerifiedIdentity>, Vec<Strip>) {
-    let (judged, identity) = match honour_stop(a.verified, a.decision) {
+    let (judged, identity) = match a.verified {
         Verified::Identity(id) => (Judged::Identity, Some(id)),
         Verified::Pass => (Judged::Pass, None),
         Verified::Reject | Verified::Failed => (Judged::Denied, None),
@@ -1545,7 +1534,7 @@ fn signed_then_keys(
             let verified = if s.faulted {
                 Verified::Failed
             } else {
-                honour_stop(s.answer.verified, s.answer.decision)
+                s.answer.verified
             };
             match verified {
                 Verified::Identity(id) => {

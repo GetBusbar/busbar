@@ -573,4 +573,13 @@ fn a_stop_decision_denies_the_request_whatever_the_verdict() {
     assert_eq!(judged, Judged::Pass);
     let (judged, _, _) = judged_answer(answer(Verified::Overloaded, Decision::Stop));
     assert_eq!(judged, Judged::Overloaded);
+    // The signed reader's pass with a stop is final, so it never moves on to the keys arm.
+    assert!(matches!(
+        signed_reader_step(Some(answer(Verified::Pass, Decision::Stop)), false),
+        SignedReaderStep::Final(_)
+    ));
+    assert!(matches!(
+        signed_reader_step(Some(answer(Verified::Pass, Decision::Continue)), false),
+        SignedReaderStep::Pass(_)
+    ));
 }
