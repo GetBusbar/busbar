@@ -13,13 +13,13 @@ fn zero_rmw_per_piece_ingest_and_resume_two_per_opener_and_end() {
 }
 
 #[test]
-#[ignore = "owner: W1-H1"]
+#[ignore = "owner: W1-H1 (blocked: the counting allocator, W1-U1, and the EC2 bench)"]
 fn zero_refcount_and_four_pool_cas_per_never_need_chain() {
     todo!("owner: W1-H1 (C-RMW)")
 }
 
 #[test]
-#[ignore = "owner: W1-H1"]
+#[ignore = "owner: W1-H1 (blocked: the counting allocator, W1-U1, and the EC2 bench)"]
 fn two_rmw_per_scrubbed_text_and_none_per_clean_sync_answer() {
     todo!("owner: W1-H1 (C-RMW)")
 }

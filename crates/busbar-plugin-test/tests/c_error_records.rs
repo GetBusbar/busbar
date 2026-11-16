@@ -137,10 +137,86 @@ fn the_c_helpers_write_the_same_bytes_and_arguments_as_the_rust_shim() {
     assert_eq!(declared, [7071u16.to_le_bytes().as_slice()]);
 }
 
+/// The answer parse's position arm (round 34): the tail is FAIL, at most one ERROR directly after it (REFUSED or
+/// FAILED), then the FAILED-only FACTs. A second ERROR, an ERROR after a FACT, a FACT on a REFUSED answer and an
+/// ERROR in an OK answer FAULT; the accepted forms read back, the number raw (never narrowed).
 #[test]
-#[ignore = "owner: W1-H1"]
 fn an_error_record_out_of_place_faults_and_the_accepted_forms_pass() {
-    todo!("owner: W1-H1 (C-ERROR-RECORDS)")
+    use busbar_plugin_abi::fail::{refused, FaultReason};
+    use busbar_plugin_abi::host::Answer;
+    use busbar_plugin_abi::records::RecErr;
+    use busbar_plugin_abi::types::Status;
+
+    let answer = |status: Status, tail: &[(u16, Vec<u8>)]| {
+        let mut r = Reply::new();
+        let head = FailRec {
+            status: status.0,
+            code: refused::R_DENIED,
+        };
+        r.put_pod_tail(tag::FAIL, &head, b"denied").expect("fail");
+        for (t, body) in tail {
+            r.put(*t, body).expect("tail");
+        }
+        r.as_bytes().to_vec()
+    };
+    let error = |n: u32| {
+        let mut body = n.to_ne_bytes().to_vec();
+        body.extend_from_slice(&0u32.to_ne_bytes());
+        (tag::ERROR, body)
+    };
+    let fact = |key: u32, value: u64| {
+        let mut body = key.to_ne_bytes().to_vec();
+        body.extend_from_slice(&0u32.to_ne_bytes());
+        body.extend_from_slice(&value.to_ne_bytes());
+        (tag::FACT, body)
+    };
+    // Accepted.
+    let bytes = answer(Status::REFUSED, &[error(7070)]);
+    let a = Answer::parse(Status::REFUSED, &bytes).expect("FAIL, ERROR");
+    assert_eq!(
+        (a.fail_error(), a.fail().map(|(code, _)| code)),
+        (7070, Some(refused::R_DENIED))
+    );
+    let bytes = answer(Status::FAILED, &[error(65_607), fact(1, 30), fact(2, 503)]);
+    let a = Answer::parse(Status::FAILED, &bytes).expect("FAIL, ERROR, FACT, FACT");
+    assert_eq!(a.fail_error(), 65_607, "raw, never narrowed to 16 bits");
+    assert_eq!((a.fail_fact(1), a.fail_fact(2)), (Some(30), Some(503)));
+    let bytes = answer(Status::REFUSED, &[]);
+    assert_eq!(
+        Answer::parse(Status::REFUSED, &bytes)
+            .expect("FAIL")
+            .fail_error(),
+        0
+    );
+    // Out of place.
+    let bad = FaultReason::BadRecords(RecErr::Unknown(tag::ERROR));
+    let bytes = answer(Status::FAILED, &[error(1), error(2)]);
+    assert_eq!(
+        Answer::parse(Status::FAILED, &bytes).err(),
+        Some(bad),
+        "a second ERROR"
+    );
+    let bytes = answer(Status::FAILED, &[fact(1, 30), error(1)]);
+    assert_eq!(
+        Answer::parse(Status::FAILED, &bytes).err(),
+        Some(bad),
+        "ERROR after a FACT"
+    );
+    let bytes = answer(Status::REFUSED, &[error(1), fact(1, 30)]);
+    assert_eq!(
+        Answer::parse(Status::REFUSED, &bytes).err(),
+        Some(FaultReason::BadRecords(RecErr::Unknown(tag::FACT))),
+        "a FACT on REFUSED"
+    );
+    let mut ok = Reply::new();
+    ok.put(tag::TEXT, b"x").expect("text");
+    ok.put_pod(tag::ERROR, &U32Rec { value: 5, _r: 0 })
+        .expect("error");
+    assert_eq!(
+        Answer::parse(Status::OK, ok.as_bytes()).err(),
+        Some(FaultReason::UnknownTag(tag::ERROR)),
+        "ERROR in an OK answer"
+    );
 }
 
 #[test]

@@ -994,6 +994,9 @@ pub enum PluginRefusal {
     /// Another op of the instance answered with a diagnostic its Statement declares, at error: a
     /// refusal it met while serving (an IdP destination it refused, say).
     Op,
+    /// The image's D_ERRORS declaration was malformed (PLUGIN-ERROR-CODES §2.4): it loaded without error codes,
+    /// flagged.
+    ErrorCodes,
 }
 
 impl PluginRefusal {
@@ -1004,6 +1007,7 @@ impl PluginRefusal {
             Self::Need => "plugin.need",
             Self::Open => "plugin.open",
             Self::Op => "plugin.op",
+            Self::ErrorCodes => "plugin.error_codes_refused",
         }
     }
 
@@ -1011,9 +1015,43 @@ impl PluginRefusal {
     pub const fn outcome(self) -> &'static str {
         match self {
             Self::Trust | Self::Need | Self::Op => busbar_contract::vocab::OUTCOME_REJECTED,
-            Self::Open | Self::Unverified => busbar_contract::vocab::OUTCOME_DEGRADED,
+            Self::Open | Self::Unverified | Self::ErrorCodes => {
+                busbar_contract::vocab::OUTCOME_DEGRADED
+            }
         }
     }
+}
+
+/// The fixed `want` of every refused D_ERRORS declaration (PLUGIN-ERROR-CODES §2.4).
+pub const ERROR_CODES_WANT: &str = "1..=256 numbers, each 1..=9999, strictly ascending; name ^[a-z][a-z0-9-]{0,63}$ not ending '-'";
+
+/// A malformed D_ERRORS declaration (IF §50, PLUGIN-ERROR-CODES §2.4): the image is admitted without codes. One
+/// WARN line (BUSBAR-6018, `field`, `have`, `want`) and one `plugin.error_codes_refused` row (outcome `degraded`),
+/// held like every plugin refusal until the audit chain opens. `have` is the registry's fault text (counts,
+/// numbers and positions only, never a plugin byte); `file` and `library_sha256` name the image.
+pub fn record_error_codes_refused(kind: &str, file: &str, library_sha256: &str, have: &str) {
+    let diag = crate::diagnostics::PLUGIN_ERROR_CODES_REFUSED.banner();
+    tracing::warn!(
+        diag = diag.as_str(),
+        kind,
+        file,
+        library_sha256,
+        field = "errors",
+        have,
+        want = ERROR_CODES_WANT,
+        "plugin error numbers refused; the plugin is admitted and runs without error codes"
+    );
+    let refusal = PluginRefusal::ErrorCodes;
+    PLUGIN_REFUSALS.raise(
+        HeldRefusal {
+            ts: busbar_kernel::store::now(),
+            action: refusal.action(),
+            outcome: refusal.outcome(),
+            resource: plugin_refusal_resource(kind, file, have),
+            origin: EventOrigin::for_plugin_refusal(refusal, kind),
+        },
+        seal_refusal,
+    );
 }
 
 pub const PLUGIN_REFUSAL_PRINCIPAL: &str = "host";

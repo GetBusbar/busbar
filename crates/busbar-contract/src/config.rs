@@ -102,3 +102,82 @@ pub enum UpstreamCreds {
     /// Require a host-held connection belonging to this authenticated caller.
     Connection,
 }
+
+pub mod dialect_styles;
+
+/// Why [`outbound_owner`] found no single owner for an outbound style word (IF §12.10 item 3, §12.18).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OwnerRefusal {
+    /// No admitted auth plugin declares the word as a D_OUTBOUND_STYLE item.
+    None,
+    /// Several do, in admission order.
+    Several(Vec<Box<str>>),
+}
+
+impl OwnerRefusal {
+    /// Core's CONFIG text for the binding `binding` (operator vocabulary, e.g. `auth.<p>-outbound`).
+    #[must_use]
+    pub fn text(&self, binding: &str, word: &str) -> String {
+        match self {
+            Self::None => format!(
+                "`{binding}`: no admitted auth plugin implements the outbound style `{word}`; write `module:`"
+            ),
+            Self::Several(owners) => format!(
+                "`{binding}`: several admitted auth plugins implement the outbound style `{word}`: {}; write `module:`",
+                owners.join(", ")
+            ),
+        }
+    }
+}
+
+/// The owner of an outbound style word: the unique admitted auth plugin (identity, in admission order) whose
+/// D_OUTBOUND_STYLE items contain `word`. The one pure function K9's `resolve_styles` and K6's implicit
+/// bindings share (IF §12.18); core keeps no style-to-plugin table.
+pub fn outbound_owner<'s, 'w, S: AsRef<[&'w str]>>(
+    styles: &[(&'s str, S)],
+    word: &str,
+) -> Result<&'s str, OwnerRefusal> {
+    let mut owners = styles
+        .iter()
+        .filter(|(_, words)| words.as_ref().iter().any(|w| *w == word))
+        .map(|(identity, _)| *identity);
+    match (owners.next(), owners.next()) {
+        (Some(only), None) => Ok(only),
+        (None, _) => Err(OwnerRefusal::None),
+        (Some(first), Some(second)) => Err(OwnerRefusal::Several(
+            [first, second]
+                .into_iter()
+                .chain(owners)
+                .map(Box::from)
+                .collect(),
+        )),
+    }
+}
+
+#[cfg(test)]
+mod outbound_owner_tests {
+    use super::{outbound_owner, OwnerRefusal};
+
+    /// Guards the unique-owner rule K9 and K6 share: zero or several owners refuse with core's text.
+    #[test]
+    fn the_owner_is_the_unique_declaring_plugin() {
+        let styles: [(&str, &[&str]); 2] =
+            [("a", &["bearer", "api-key"]), ("b", &["oauth-connection"])];
+        assert_eq!(outbound_owner(&styles, "api-key"), Ok("a"));
+        assert_eq!(
+            outbound_owner(&styles, "jwt-bearer"),
+            Err(OwnerRefusal::None)
+        );
+        let twice: [(&str, &[&str]); 2] = [("a", &["bearer"]), ("b", &["bearer"])];
+        let refused = outbound_owner(&twice, "bearer").unwrap_err();
+        assert_eq!(refused, OwnerRefusal::Several(vec!["a".into(), "b".into()]));
+        assert_eq!(
+            refused.text("auth.p-outbound", "bearer"),
+            "`auth.p-outbound`: several admitted auth plugins implement the outbound style `bearer`: a, b; write `module:`"
+        );
+        assert_eq!(
+            OwnerRefusal::None.text("auth.p-outbound", "jwt-bearer"),
+            "`auth.p-outbound`: no admitted auth plugin implements the outbound style `jwt-bearer`; write `module:`"
+        );
+    }
+}

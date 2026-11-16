@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-H1"]
+#[ignore = "owner: W1-H1 (blocked: a plugin that rewrites out.ptr or cap, W1-A13 C fixture)"]
 fn a_rewritten_out_ptr_or_cap_is_ignored() {
     todo!("owner: W1-H1 (C-OUT-REWRITE)")
 }

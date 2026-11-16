@@ -71,20 +71,15 @@ pub fn split_url(url: &str) -> Result<(bool, String, u16, String), AddressRefusa
     Ok((https, parts.host, port, parts.path))
 }
 
-// A refusal's repeat of the URL is spelled out of line, in the cold module.
-pub use crate::cold::redact_userinfo;
-
-/// A provider BASE URL with its authority's userinfo removed: `scheme://user:pass@host:port/path`
-pub fn strip_userinfo(url: &str) -> std::borrow::Cow<'_, str> {
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return std::borrow::Cow::Borrowed(url);
-    };
-    let authority_end = rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len());
-    match rest[..authority_end].rfind('@') {
-        Some(at) => std::borrow::Cow::Owned(crate::cold::without_userinfo(scheme, &rest[at + 1..])),
-        None => std::borrow::Cow::Borrowed(url),
-    }
+/// The URL as a refusal may repeat it, through core's one redactor (`abi::host::scrub::mask_url`, IF §12.16):
+/// everything an authority put before its last `@` replaced by the scrub mask.
+pub fn redact_userinfo(url: &str) -> String {
+    busbar_plugin_abi::host_side::scrub::mask_url(url).into_owned()
 }
+
+/// A provider BASE URL with its authority's userinfo removed (`scheme://user:pass@host:port/path` ->
+/// `scheme://host:port/path`), through core's one redactor (IF §12.16).
+pub use busbar_plugin_abi::host_side::scrub::strip_userinfo;
 
 /// The port a scheme implies when the authority names none.
 pub fn default_port(https: bool) -> u16 {

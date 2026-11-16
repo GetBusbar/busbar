@@ -50,6 +50,8 @@ base64 = "0.22"
 bytes = "1"
 core_affinity = "0.8"
 crc32fast = "1"
+# The host buffer pool's per-class bounded MPMC queues (busbar-plugin-abi[host], IF §10.1, AGREED 209).
+crossbeam-queue = { version = "0.3", default-features = false, features = ["std"] }
 # The DTLS protocol engine only, no default features: its crypto provider is the backend's.
 dimpl = { version = "=0.7.4", default-features = false }
 # 3.x dropped its `std` feature (core::error::Error); no default features keeps pkcs8/pem, rand_core and zeroize out.

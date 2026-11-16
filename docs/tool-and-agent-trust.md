@@ -15,6 +15,31 @@ Cross-references: [MCP](/docs/mcp/) (the tool plane) · [A2A](/docs/a2a/) (the a
 
 ---
 
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 340" role="img" aria-label="Approval is checked before execution. Per-tool contract drift stays refused until explicit reapproval; registration recovery is separate." style="width:100%;height:auto;font-family:ui-sans-serif,system-ui,sans-serif">
+<title>Approval is checked before execution</title><defs><marker id="trust-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#a3e635"/></marker></defs>
+<rect width="960" height="340" rx="12" fill="#111a2e"/><text x="32" y="38" fill="#e6edf7" font-size="20" font-weight="700">Approval is checked before execution</text>
+<rect x="32.0" y="76" width="197.0" height="108" rx="10" fill="#1a2740" stroke="#2c3a52" stroke-width="2"/>
+<text x="130.5" y="105" text-anchor="middle" fill="#e6edf7" font-size="17" font-weight="700">Discover</text>
+<text x="130.5" y="133" text-anchor="middle" fill="#94a3b8" font-size="14">Read tool or agent</text>
+<text x="130.5" y="154" text-anchor="middle" fill="#94a3b8" font-size="14">Compute fingerprint</text>
+<path d="M234.0 130 H258.0" stroke="#a3e635" stroke-width="2" marker-end="url(#trust-arrow)"/>
+<rect x="265.0" y="76" width="197.0" height="108" rx="10" fill="#1a2740" stroke="#a3e635" stroke-width="2"/>
+<text x="363.5" y="105" text-anchor="middle" fill="#e6edf7" font-size="17" font-weight="700">Approve + pin</text>
+<text x="363.5" y="133" text-anchor="middle" fill="#94a3b8" font-size="14">Operator review</text>
+<text x="363.5" y="154" text-anchor="middle" fill="#94a3b8" font-size="14">Record contract</text>
+<path d="M467.0 130 H491.0" stroke="#a3e635" stroke-width="2" marker-end="url(#trust-arrow)"/>
+<rect x="498.0" y="76" width="197.0" height="108" rx="10" fill="#1a2740" stroke="#2c3a52" stroke-width="2"/>
+<text x="596.5" y="105" text-anchor="middle" fill="#e6edf7" font-size="17" font-weight="700">Verify on call</text>
+<text x="596.5" y="133" text-anchor="middle" fill="#94a3b8" font-size="14">Freshness policy</text>
+<text x="596.5" y="154" text-anchor="middle" fill="#94a3b8" font-size="14">Compare fingerprint</text>
+<path d="M700.0 130 H724.0" stroke="#a3e635" stroke-width="2" marker-end="url(#trust-arrow)"/>
+<rect x="731.0" y="76" width="197.0" height="108" rx="10" fill="#1a2740" stroke="#2c3a52" stroke-width="2"/>
+<text x="829.5" y="105" text-anchor="middle" fill="#e6edf7" font-size="17" font-weight="700">Dispatch</text>
+<text x="829.5" y="133" text-anchor="middle" fill="#94a3b8" font-size="14">Approved contract</text>
+<text x="829.5" y="154" text-anchor="middle" fill="#94a3b8" font-size="14">Caller grant</text>
+<path d="M596.5 184 V226" stroke="#f87171" stroke-width="2"/><rect x="451.5" y="226" width="290" height="54" rx="8" fill="#271e2a" stroke="#f87171"/><text x="596.5" y="259" text-anchor="middle" fill="#fca5a5" font-size="15" font-weight="600">Changed approved tool: refuse</text>
+<text x="32" y="318" fill="#94a3b8" font-size="14">Per-tool contract drift stays refused until explicit reapproval; registration recovery is separate.</text></svg>
+
 ## The fingerprint: name + args + description
 
 A remote tool is a function the model calls, and an agent is a card that advertises skills. What the
@@ -71,7 +96,7 @@ The config keys:
 (The two keys keep their plane-native spellings; the admin API projects both under one view field, so
 the concept is one across the planes.)
 
-### Single-flight coalescing (A2A)
+### Single-flight coalescing
 
 On the A2A plane, when many delegations hit a stale card at the same instant, exactly **one** look
 runs per agent and every other caller waits for its verdict rather than fetching again; a look
@@ -79,10 +104,7 @@ abandoned before it lands releases its waiters to look again (`busbar-plane-a2a`
 `verify_agent_on_call`). Upstream load is then held to about one card fetch per `reverify_ttl` per
 agent regardless of caller count.
 
-The MCP plane does **not** coalesce in this release: each `tools/call` that finds its server's last
-fetch older than `verify_ttl` fetches `tools/list` itself, so a burst of calls against a stale server
-can produce one fetch per call. Each fetch is bounded by the server's `timeout:`. Size `verify_ttl`
-with that in mind for high-fan-in tools.
+The MCP plane also shares an in-flight `tools/list` fetch among concurrent calls to the same server and catalogue generation. The fetch lease is bounded by the server's `timeout:`; callers join the result instead of issuing a fetch each. `verify_ttl: 0s` still shares concurrent in-flight work. This is process-local coordination, not one fetch across the fleet. A failed verification does not authorize dispatch.
 
 A clock that moved backwards, or a clock read that fails, is treated as stale, never as fresh, so a
 corrected or tampered clock cannot make an observation permanently fresh
@@ -118,11 +140,18 @@ all in the fingerprint. It cannot check what a server *does* when invoked. A ser
 identical surface and changes its behaviour on the backend is invisible to any proxy that sits in
 front of it, Busbar included.
 
-That residual risk is bounded by the other controls, not by the fingerprint: per-backend credential
-scoping (a `token_exchange:` registration spends a credential minted for *this* tool under *this*
-caller's grant; under the default `upstream_credentials: own`, the upstream sees the operator's
-per-server credential, never the caller's), egress/SSRF policy (where a call may go), and the audit
-chain (what happened). The maximally true claim is
+That residual risk is bounded by per-backend credential scoping, egress/SSRF policy (where a call
+may go), and the audit chain (what happened). The credential choices differ by plane:
+
+- **MCP:** `token_exchange:` obtains a target-scoped token narrowed to the caller's tool grants;
+  `upstream_credentials: connection` uses that caller's separately consented upstream OAuth
+  connection. With neither configured, no upstream credential is sent. Connection mode requires
+  HTTPS and host connection services, excludes stdio, and cannot be combined with token exchange.
+- **A2A:** `upstream_credentials: own` uses the operator-configured `upstream_credential:` for the
+  target agent, leased for the hop. Without that configuration, the hop carries no credential.
+
+Both planes refuse caller-credential passthrough: the caller's Busbar credential stays at Busbar.
+The maximally true claim is
 **"verified against the surface you approved, before every call"** — not a guarantee about the
 upstream's runtime behaviour.
 

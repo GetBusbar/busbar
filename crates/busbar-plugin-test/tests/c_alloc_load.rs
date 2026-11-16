@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-H1"]
+#[ignore = "owner: W1-H1 (blocked: the counting allocator, W1-U1, and the EC2 bench)"]
 fn parked_chains_keep_pool_misses_flat() {
     todo!("owner: W1-H1 (C-ALLOC-LOAD)")
 }
