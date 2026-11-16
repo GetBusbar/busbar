@@ -580,7 +580,12 @@ get code executed, and a compromised or replayed plugin must not load.
    explicitly allowlisted by key. Unsigned or unknown-publisher plugins are logged and skipped
    unless the operator sets the matching explicit opt-in (`allow_unsigned` / `allow_third_party`),
    and a skipped plugin is never `dlopen`ed: its initialization code never runs, not at boot, not
-   from the admin catalog, not from `--list-plugins`.
+   from the admin catalog, not from `--list-plugins`. A build whose crypto backend admits no
+   external plugin (`EXTERNAL_PLUGINS = false`, a FIPS build) loads only a dropped-in plugin that
+   verifies against busbar's embedded release key. It refuses everything else (code
+   `external_crypto`, BUSBAR-6002, a rejected `plugin.trust` audit record) whatever `publishers`,
+   `allow_unsigned` or `allow_third_party` say. Compiled-in plugins are built in the same build and
+   are unaffected.
 3. **Anti-downgrade.** A validly-signed but OLD release is still a signed artifact an attacker can
    replay. First-party plugins are automatically floored at the **highest version of that plugin
    this deployment has already seen and loaded** — a per-plugin-name high-water mark, raised only by

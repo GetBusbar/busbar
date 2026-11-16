@@ -529,6 +529,7 @@ impl SkippedPlugin {
             RejectKind::AntiDowngrade => "below its version floor (anti-downgrade)",
             RejectKind::UntrustedFloored => "untrusted below floor",
             RejectKind::EgressGrant => "provider egress refused: not first-party",
+            RejectKind::ExternalCrypto => "not busbar's own release, on a FIPS crypto backend",
         };
         let escaped = self.file.escape_debug().to_string();
         let mut file: String = escaped.chars().take(SKIP_LINE_FILE_CHARS).collect();
@@ -1426,13 +1427,17 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                     RejectKind::Tampered => "tampered",
                     RejectKind::Unsigned => "unsigned",
                     RejectKind::EgressGrant => "third-party (egress grant)",
+                    RejectKind::ExternalCrypto => "not first-party (FIPS backend)",
                     RejectKind::Superseded => "superseded",
                     RejectKind::RetiredKey => "retired-key",
                     RejectKind::Revoked => "revoked",
                 }
                 .to_string();
                 let status = match s.kind {
-                    RejectKind::AntiDowngrade | RejectKind::EgressGrant | RejectKind::Revoked => {
+                    RejectKind::AntiDowngrade
+                    | RejectKind::EgressGrant
+                    | RejectKind::Revoked
+                    | RejectKind::ExternalCrypto => {
                         format!("REJECTED: {}", s.reason)
                     }
                     _ => format!("SKIPPED: {}", s.reason),
@@ -1471,3 +1476,7 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
 #[cfg(test)]
 #[path = "tests/registry_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/fips_external_plugins_tests.rs"]
+mod fips_external_plugins_tests;
