@@ -108,6 +108,8 @@ async fn a_saturated_key_is_refused_before_its_ticket_record_is_written() {
     let cost = unlimited();
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::clone(&g.app)));
     let press = crate::root::serve::LiveTickets(Arc::downgrade(&handle));
+    // The retained generation owns its mint inputs even after the outer AppHandle drops.
+    drop(handle);
     let caller = busbar_contract::services::Caller::for_test(
         Arc::from(g.served.planes[0].instance.as_str()),
         busbar_contract::abi::mechanism::KindCode::Plane,
