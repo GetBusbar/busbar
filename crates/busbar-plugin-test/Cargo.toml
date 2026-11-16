@@ -107,6 +107,8 @@ busbar-kernel = { path = "../busbar-kernel", features = ["conformance"] }
 # The facade's own tests drive its targets; CI's test and red-proof jobs pass none of its features.
 busbar-plugin-test = { path = ".", features = ["target-http", "test-seal"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
+# W1-A12: the case files drive MemIo (IF §9, feature `memio`).
+busbar-plugin-abi = { path = "../busbar-plugin-abi", features = ["memio"] }
 
 [lints]
 workspace = true
