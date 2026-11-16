@@ -5,8 +5,8 @@
 //!
 //! `entry::guard` is the only entry path and is always called inline, on the thread that runs the plugin. A
 //! syn scan of the MIN-3 entry machinery (`busbar-plugin-abi[host]` and plugin-loader's MIN-3 files) refuses:
-//! - a call of `on_plugin_thread` anywhere but stage.rs's `dlopen_on_worker`, `dlclose_on_worker` and
-//!   `name_still_loaded` probe, and one call in admit.rs (admit's `dlopen` with the `busbar_plugin()` call):
+//! - a call of `on_plugin_thread` anywhere but stage.rs's `dlopen_on_worker`, `dlclose_on_worker`,
+//!   `open_on_worker` and `close_on_worker` (busbar-ffi's dlopen/dlclose, W1-L1) and `name_still_loaded` probe, and one call in admit.rs (admit's `dlopen` with the `busbar_plugin()` call):
 //!   none is a plugin entry;
 //! - a raw vtable call (a call through a fn-pointer field, `(vt.f)(..)`) outside a closure passed to `guard`;
 //! - a `guard` call inside a closure passed to `spawn_blocking`, `on_plugin_thread` or `std::thread::spawn`,
@@ -44,7 +44,13 @@ const SCOPE: [&str; 9] = [
 const STAGE: &str = "crates/plugin-loader/src/stage.rs";
 /// stage.rs's dlopen and dlclose on the worker and its RTLD_NOLOAD probe (§11.1): no plugin code runs there
 /// beyond the image's constructors.
-const STAGE_HOPS: [&str; 3] = ["dlopen_on_worker", "dlclose_on_worker", "name_still_loaded"];
+const STAGE_HOPS: [&str; 5] = [
+    "dlopen_on_worker",
+    "dlclose_on_worker",
+    "open_on_worker",
+    "close_on_worker",
+    "name_still_loaded",
+];
 const ADMIT: &str = "crates/plugin-loader/src/admit.rs";
 const STORE_ADAPTER: &str = "crates/plugin-loader/src/adapters/store.rs";
 
@@ -323,7 +329,9 @@ mod tests {
     #[test]
     fn on_plugin_thread_is_allowed_only_at_the_named_sites() {
         let probe = "fn name_still_loaded(n: &str) -> bool { crate::ffi_thread::on_plugin_thread(|| true).is_ok() }
-                     fn dlopen_on_worker() { on_plugin_thread(|| ()); }";
+                     fn dlopen_on_worker() { on_plugin_thread(|| ()); }
+                     fn open_on_worker() { on_plugin_thread(|| ()); }
+                     fn close_on_worker() { on_plugin_thread(|| ()); }";
         assert!(scan_source(STAGE, probe).is_empty());
         let other = "fn sweep() { crate::ffi_thread::on_plugin_thread(|| ()); }";
         assert_eq!(scan_source(STAGE, other).len(), 1);
@@ -355,13 +363,11 @@ mod tests {
         let not_run = "impl StoreLane { fn other(&self) { tokio::task::spawn_blocking(move || guard(o, 1, None, |out| 0)); } }";
         assert_eq!(scan_source(STORE_ADAPTER, not_run).len(), 1);
         assert_eq!(scan_source(HOST, lane).len(), 1);
-        assert!(
-            scan_source(
-                HOST,
-                "fn f() { pool.spawn(|| guard(o, 1, None, |out| 0)); }"
-            )
-            .is_empty()
-        );
+        assert!(scan_source(
+            HOST,
+            "fn f() { pool.spawn(|| guard(o, 1, None, |out| 0)); }"
+        )
+        .is_empty());
     }
 
     #[test]
