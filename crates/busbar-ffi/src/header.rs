@@ -75,6 +75,19 @@ impl LinkedPlugin {
     pub const fn as_ptr(&self) -> *const Plugin {
         &self.0
     }
+    /// The header of a `'static` image, for a caller that holds a `&'static Plugin` API (the SDK suites' frozen
+    /// signatures, IF §14). Safe and additive: it only reads the field `as_ptr` already exposes.
+    pub const fn plugin(&'static self) -> &'static Plugin {
+        &self.0
+    }
+    /// The image a `'static` header belongs to: the inverse of [`LinkedPlugin::plugin`], for the SDK suites'
+    /// `&'static Plugin` signatures. `Admitted::linked` still runs every null and stamp check on the result, so
+    /// a hand-built header is refused exactly as before (A1 is kept at admission, not by the type).
+    pub fn of_header(plugin: &'static Plugin) -> &'static LinkedPlugin {
+        // SAFETY: `LinkedPlugin` is `repr(transparent)` over `Plugin`, so the two have one layout, and the
+        // reference is `'static` and shared; nothing writes through either.
+        unsafe { &*core::ptr::from_ref(plugin).cast::<LinkedPlugin>() }
+    }
     #[cfg(any(test, feature = "host"))]
     pub(crate) const fn header(&self) -> &Plugin {
         &self.0

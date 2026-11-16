@@ -6,14 +6,25 @@
 //! (`BUSBAR_PLUGIN_CDYLIB=<path>`, built in its own `cargo build --release --lib` step). `config` is the operator
 //! form (with secret references); the suite binds it.
 //!
-//! W1-T1 lands the frozen signatures and types. The bodies wait for the pieces a suite drives a plugin through:
-//! `admit_linked`/`admit` (W1-L1), `Registry::new`, which needs the `ConfigBinder` trait homed where the loader
-//! can name it (W1-L2; W0-ABI left it out, see instance.rs), the `HOST` static and its raw entries (W1-A2,
-//! UNSAFE-MIN), the `kind!`/`plugin!` shims (W1-A4) and the step driver (W1-H1). Until then every suite stops
-//! with a message naming them, and no plugin port can run one (the ports start after W1-L2, WBS §3).
+//! W1-T1 landed the frozen signatures and types; this module keeps them. The shared [`harness`] admits the
+//! plugin image into a `Registry<FakeNeeds>` over the real `HOST` static and a `MemBinder`, opens instances,
+//! drives them through the kind's port and collects what the plugin did. Each kind's suite body is its own file
+//! (`store.rs`, `secret.rs`, `auth.rs`, `hook.rs`, `export.rs`, `plane.rs`, `transport.rs`, `migrate.rs`), so
+//! the per-kind work never touches a shared file. No `unsafe` here: the plugin runs in-process on the SDK safe
+//! test host.
+
+pub mod harness;
+
+mod auth;
+mod export;
+mod hook;
+mod migrate;
+mod plane;
+mod secret;
+mod store;
+mod transport;
 
 use busbar_plugin_abi::plugin::Plugin;
-use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::ports::auth::AuthIn;
 use busbar_plugin_loader::ports::plane::PlaneIn;
 
@@ -56,46 +67,34 @@ pub enum Expect<'a> {
     Rejected(u32),
 }
 
-/// Where every suite stops until its registry exists (module doc).
-fn unbuilt(kind: Option<KindCode>, plugin: &'static Plugin, config: &[u8], needs: &FakeNeeds) {
-    let _ = (plugin, config, needs);
-    todo!(
-        "suites ({kind:?}): needs admit_linked (W1-L1), Registry::new with a homed ConfigBinder (W1-L2), the HOST \
-         static (W1-A2, UNSAFE-MIN), the kind!/plugin! shims (W1-A4) and the driver (W1-H1)"
-    )
-}
-
-// Every suite runs describe/open/close through the registry (round 10: inline under entry::guard, I10).
+// Every suite runs describe/open/close through the registry (round 10: inline under entry::guard, I10). Each
+// body lives in `suites/<kind>.rs`; the signatures below are frozen (IF §14).
 pub fn store(plugin: &'static Plugin, config: &[u8], needs: FakeNeeds) {
-    unbuilt(Some(KindCode::Store), plugin, config, &needs);
+    store::run(plugin, config, needs);
 }
 
 pub fn secret(plugin: &'static Plugin, config: &[u8], needs: FakeNeeds, known: &[(&[u8], &[u8])]) {
-    let _ = known;
-    unbuilt(Some(KindCode::Secret), plugin, config, &needs);
+    secret::run(plugin, config, needs, known);
 }
 
 pub fn auth(plugin: &'static Plugin, config: &[u8], needs: FakeNeeds, cases: &[AuthCase<'_>]) {
-    let _ = cases;
-    unbuilt(Some(KindCode::Auth), plugin, config, &needs);
+    auth::run(plugin, config, needs, cases);
 }
 
 pub fn hook(plugin: &'static Plugin, config: &[u8], needs: FakeNeeds) {
-    unbuilt(Some(KindCode::Hook), plugin, config, &needs);
+    hook::run(plugin, config, needs);
 }
 
 pub fn export(plugin: &'static Plugin, config: &[u8], needs: FakeNeeds) {
-    unbuilt(Some(KindCode::Export), plugin, config, &needs);
+    export::run(plugin, config, needs);
 }
 
 pub fn plane(plugin: &'static Plugin, config: &[u8], needs: FakeNeeds, cases: &[PlaneCase<'_>]) {
-    let _ = cases;
-    unbuilt(Some(KindCode::Plane), plugin, config, &needs);
+    plane::run(plugin, config, needs, cases);
 }
 
 pub fn transport(plugin: &'static Plugin, config: &[u8], cases: &[TransportCase<'_>]) {
-    let _ = cases;
-    unbuilt(Some(KindCode::Transport), plugin, config, &FakeNeeds::new());
+    transport::run(plugin, config, cases);
 }
 
 /// Round 31, any kind: `open` an older `bag` (operator form) through the registry's `open_<kind>` (bind, inline
@@ -103,6 +102,5 @@ pub fn transport(plugin: &'static Plugin, config: &[u8], cases: &[TransportCase<
 /// require no CONFIG back (canonical is a fixed point) and, for a store, one marker read and no write; then data
 /// marked newer than the plugin must give REFUSED R_VERSION (NEWER).
 pub fn migrate(plugin: &'static Plugin, bag: &[u8], needs: FakeNeeds, expect: MigrateExpect<'_>) {
-    let _ = expect;
-    unbuilt(None, plugin, bag, &needs);
+    migrate::run(plugin, bag, needs, expect);
 }
