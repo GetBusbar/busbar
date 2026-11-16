@@ -457,18 +457,6 @@ fn document_replace(
     })
 }
 
-pub fn plugin_logs(cfg: &PluginsCfg) -> Result<(), String> {
-    let l = &cfg.logs;
-    crate::root::loader::dispatch::PluginLogConfig::from_words(
-        l.dir.as_deref(),
-        l.level.as_deref(),
-        &l.levels,
-        l.rotate_mb,
-        l.keep,
-    )
-    .map(|_| ())
-}
-
 pub(crate) fn hook_answers(
     rows: &dyn busbar_contract::plugin_rows::PluginRows,
     module: &str,

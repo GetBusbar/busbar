@@ -11,9 +11,9 @@ use std::sync::{Arc, Mutex};
 
 use busbar_contract::caps::OpClassId;
 use busbar_contract::section::{
-    MODEL_PROTOCOL_KEYS, MODEL_PROVIDER_KEY, POOL_MEMBERS_KEY, POOL_MEMBER_MODEL_KEY,
-    POOL_MEMBER_NAME_KEY, POOL_MEMBER_TIER_KEY, RESERVED_MODELS_KEY, RESERVED_POOLS_KEY,
-    RESERVED_SECTION_KEYS, RESERVED_WORK_KEY,
+    MODEL_PROVIDER_KEY, POOL_MEMBERS_KEY, POOL_MEMBER_MODEL_KEY, POOL_MEMBER_NAME_KEY,
+    POOL_MEMBER_TIER_KEY, RESERVED_MODELS_KEY, RESERVED_POOLS_KEY, RESERVED_SECTION_KEYS,
+    RESERVED_WORK_KEY,
 };
 use busbar_contract::yaml::{MappingExt, ValueExt};
 use busbar_contract::MeterClassId;
@@ -832,11 +832,6 @@ pub(crate) fn kernel_sections(
             &mut m,
             "prompt_caching",
             model.prompt_caching.map(Value::from),
-        );
-        opt(
-            &mut m,
-            MODEL_PROTOCOL_KEYS[0],
-            model.protocol.clone().map(Value::from),
         );
         models.insert_key(Value::from(name.clone()), Value::Map(m));
     }
@@ -2638,10 +2633,7 @@ pub(crate) fn member_routes(
         let provider = reach.providers.get(name).ok_or_else(|| {
             format!("member '{entry}' names provider '{name}', which is not configured")
         })?;
-        let dialect = MODEL_PROTOCOL_KEYS
-            .iter()
-            .find_map(|k| entry_text(member, k))
-            .unwrap_or(&provider.protocol);
+        let dialect: &str = &provider.protocol;
         let default_of = |dialect: &str| {
             let at = served.dialects.iter().position(|d| *d == dialect)?;
             let at = u32::try_from(at).ok()?;

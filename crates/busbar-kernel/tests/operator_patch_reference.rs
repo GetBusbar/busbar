@@ -133,13 +133,6 @@ fn a_stored_patch_that_moves_the_operator_credential_refuses_boot_by_path() {
         refusal.contains("/plugins/dir") && refusal.contains("reset_document_paths"),
         "{refusal}"
     );
-
-    let stored = patch("/plugins/logs/level", "debug");
-    let loaded = load(&dir, &stored);
-    assert!(
-        stored_document_patch(&stored, &loaded).is_ok(),
-        "plugins.logs has no admission effect"
-    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

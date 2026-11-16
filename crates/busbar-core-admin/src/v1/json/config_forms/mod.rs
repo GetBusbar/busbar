@@ -250,7 +250,7 @@ pub(super) fn extension() -> Value {
         "declared_plane_scope_kinds":scope_kinds,
         "admin_verbs":crate::verb::admin_rows().map(|row|json!({"name":row.name,"scope":row.scope.as_str(),"bound":row.bound})).collect::<Vec<_>>(),
         "ownership":{
-            "plugins":"host PluginsCfg loader, trust/fetch/logs policy; runtime-only first_party_floors excluded",
+            "plugins":"host PluginsCfg loader, trust/fetch policy; runtime-only first_party_floors excluded",
             "oauth_as":"installed authorization-server owner input_schema; absence is explicitly unsupported",
             "groups":"host GroupCfg, compact LimitCfg and ChildDefault; runtime validation owns tree and pool references",
             "hooks":"deploy HookDefCfg; admin POST/PUT use distinct HookCfg schema",

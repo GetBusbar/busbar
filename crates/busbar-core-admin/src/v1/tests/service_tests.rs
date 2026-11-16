@@ -9,7 +9,6 @@ mod usage_adjustment_range;
 
 pub(crate) fn hook(kind: HookKind, global: bool) -> HookCfg {
     HookCfg {
-        child_dispatch: None,
         kind,
         plugin: "test-hook".to_string(),
         timeout_ms: 5,

@@ -122,8 +122,7 @@ pub(super) fn definitions() -> Map<String, Value> {
             "upstream_model":nullable(string.clone()),
             "attempt_timeout_ms":nullable(u64_value.clone()),
             "reasoning":nullable(boolean.clone()),
-            "prompt_caching":nullable(boolean.clone()),
-            "protocol":nullable(string.clone())
+            "prompt_caching":nullable(boolean.clone())
         }),
         &["provider"],
     );

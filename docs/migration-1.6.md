@@ -372,7 +372,7 @@ None of these need action.
 - **Diagnostic codes.** `[error]`, `[warn]` and `warning:` lines start with `BUSBAR-NNNN:`, and boot
   log lines carry `diag=BUSBAR-NNNN`. If a log pipeline matches the start of those lines, allow for
   the code. See [diagnostics](diagnostics.md).
-- **Plugin logs** go to each plugin's own file under `plugins.logs.dir` (default `logs/plugins/`).
+- **Plugin logs** go to each plugin's own file under `logs/plugins/` (not configurable).
 - **`/metrics`.** One new series on an unchanged config, `busbar_metering_pending_coalesced_total`.
   `busbar_lane_state` now reads each pool's own breaker: a pool whose breaker tripped reads `2`
   even if another pool can still reach the same lane. See [observability](observability.md).
@@ -601,3 +601,9 @@ receives identity-provider settings, not deployment credential references.
 The upgrade boot folds the 1.5.5 overlay file into config.yaml and keeps the file as
 `<overlay>.1.5.5` ([the 1.5.5 overlay file](#the-155-overlay-file)); there is no separate import
 step, and a stamped boot never reads an overlay file.
+
+### Removed pre-release keys
+
+- `plugins.logs.dir`, `plugins.logs.keep`, `plugins.logs.level`, `plugins.logs.levels`, `plugins.logs.rotate_mb`: removed; plugin log records keep their fixed defaults (level `info`, directory `logs/plugins`, 5 archives, no size rotation) and the host's WARN and ERROR mirror into the core log. A config that sets any of them is refused as an unknown key.
+- `models.<m>.protocol`: removed; a model speaks its provider's protocol, so a model that needs another protocol uses a second `providers:` entry with that protocol. A config that sets it is refused as an unknown key.
+- `hooks.<h>.child_dispatch`: removed; no hook is granted child dispatch. A config that sets it is refused as an unknown key.

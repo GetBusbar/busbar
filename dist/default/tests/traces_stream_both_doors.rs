@@ -25,8 +25,7 @@ const LINKED_PATH: &str = "/linked/v1/traces";
 const DROPPED_PATH: &str = "/dropped/v1/traces";
 
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16, collector: u16, name_dropped: bool) {
-    let mut plugins = common::plugins::trusted_config_document(&dir.join("plugins"));
-    plugins["logs"] = serde_json::json!({ "dir": dir.join("plugin-logs") });
+    let plugins = common::plugins::trusted_config_document(&dir.join("plugins"));
     let dropped = if name_dropped {
         format!(
             "  dropped: {{ module: {DROPPED}, settings: {{ url: \"http://127.0.0.1:{collector}{DROPPED_PATH}\" }} }}\n"

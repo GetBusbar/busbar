@@ -239,7 +239,6 @@ impl ConfiguredView {
             "max_concurrent": m.max_concurrent, "default_max_tokens": m.default_max_tokens,
             "upstream_model": m.upstream_model, "attempt_timeout_ms": m.attempt_timeout_ms,
             "reasoning": m.reasoning, "prompt_caching": m.prompt_caching,
-            "protocol": m.protocol,
         }))).collect();
         put!("models", models);
         put!(
@@ -268,11 +267,6 @@ impl ConfiguredView {
                     })).collect::<Vec<_>>(),
                 },
                 "fetch": {"count": plugins.fetch.len(), "values": "hidden"},
-                "logs": {
-                    "dir": plugins.logs.dir, "level": plugins.logs.level,
-                    "levels": plugins.logs.levels, "rotate_mb": plugins.logs.rotate_mb,
-                    "keep": plugins.logs.keep,
-                },
             })
         );
         Self {
