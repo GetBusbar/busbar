@@ -174,8 +174,6 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, json::Value)> {
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
-                admission: None,
-                on_exhaustion: None,
             }],
             ..Default::default()
         },
@@ -667,8 +665,6 @@ fn budget_limit(cents: u64) -> busbar_kernel::config::groups::LimitCfg {
         scope: None,
         on_exhaust: None,
         downgrade_to: None,
-        admission: None,
-        on_exhaustion: None,
     }
 }
 

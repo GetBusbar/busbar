@@ -5,7 +5,6 @@ use super::*;
 use crate::v1::contract::ObservationUsageView;
 use busbar_contract::confined_path::{ConfinedPathError, ConfinedRoot};
 use busbar_kernel::admission::{Judged, PluginAdmission, Refusal, Stated};
-use busbar_kernel::config::groups::LimitMetric;
 
 pub(crate) fn admission(app: &App) -> Result<&'static dyn PluginAdmission, String> {
     resolve_admission(&app.plugins_cfg, app.plugin_admission)
@@ -360,10 +359,6 @@ impl AdminService {
                 spend_cents: usage.spend_cents,
                 requests_cap: b.requests_cap,
                 tokens_cap: b.tokens_cap,
-                tokens_input_cap: b.class_cap(LimitMetric::TokensInput),
-                tokens_output_cap: b.class_cap(LimitMetric::TokensOutput),
-                tokens_cache_read_cap: b.class_cap(LimitMetric::TokensCacheRead),
-                tokens_cache_write_cap: b.class_cap(LimitMetric::TokensCacheWrite),
                 budget_cap: b.budget_cap,
 
                 budget_remaining_cents: b
