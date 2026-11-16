@@ -240,6 +240,21 @@ impl HookOpener for Opener {
     }
 }
 
+/// Test driver: one open chain on a scoped thread with its own current-thread runtime.
+fn drive_open(fut: BoxFut<'_, TimedOpen>) -> Result<TimedOpen, String> {
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .map(|rt| rt.block_on(fut))
+                .map_err(|e| e.to_string())
+        })
+        .join()
+        .unwrap_or_else(|_| Err("panicked".into()))
+    })
+}
+
 fn rows(open: fn() -> Result<Arc<dyn HookPort>, OpenError>) -> PortRows {
     PortRows::new(
         Arc::new(Opener { open }),
@@ -247,6 +262,7 @@ fn rows(open: fn() -> Result<Arc<dyn HookPort>, OpenError>) -> PortRows {
         vec!["hook-ranking".into()],
         Duration::from_secs(5),
         Arc::new(TestKernelSeal),
+        Arc::new(drive_open),
     )
 }
 

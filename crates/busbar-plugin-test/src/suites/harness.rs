@@ -456,7 +456,7 @@ pub struct Harness {
     identity: String,
     kind: KindCode,
     refusals: Mutex<Vec<String>>,
-    rt: tokio::runtime::Runtime,
+    rt: crate::test_rt::TestRuntime,
     logs: Arc<LogBook>,
     _tap: tracing::subscriber::DefaultGuard,
 }
@@ -485,17 +485,14 @@ impl Harness {
     ) -> Result<Harness, Refusal> {
         let logs = Arc::new(LogBook::default());
         let tap = tracing::subscriber::set_default(Tap(Arc::clone(&logs)));
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| {
-                Refusal::new(
-                    RefusalCode::Integrity,
-                    "runtime",
-                    e.to_string(),
-                    "a test runtime",
-                )
-            })?;
+        let rt = crate::test_rt::TestRuntime::new().map_err(|e| {
+            Refusal::new(
+                RefusalCode::Integrity,
+                "runtime",
+                e.to_string(),
+                "a test runtime",
+            )
+        })?;
         let needs = Arc::new(needs);
         let binder = Arc::new(MemBinder::new());
         let mut registry = Registry::new(

@@ -17,7 +17,7 @@ use busbar_plugin_loader::ports::auth::Identity;
 
 use super::{
     admit, bearer, classify, effective_classes, plain_refusal, subject_identity, Credentials,
-    Principal, TicketDoor,
+    Presented, Principal, TicketDoor,
 };
 use crate::plane_driver::port_session::ToClient;
 use crate::plane_grants::{TicketAdmitted, TicketDenied};
@@ -174,7 +174,7 @@ async fn optional_refuses_a_credential_that_was_presented_and_rejected() {
 async fn a_ticket_admits_with_its_subject_and_record() {
     let d = door(Ok(("sess-1", Some(b"state"))));
     let creds = Credentials {
-        bearer: Some(TICKET),
+        bearer: Some(Presented::new(TICKET)),
         ..anonymous()
     };
     let a = run(AUTH_TICKET, creds, &d).await.unwrap();
@@ -202,7 +202,7 @@ async fn a_ticket_denial_is_final_and_maps_to_the_generic_codes() {
         let d = door(Err(denied));
         // The same request also carries a verified principal: it is never tried after a ticket refusal.
         let creds = Credentials {
-            bearer: Some(TICKET),
+            bearer: Some(Presented::new(TICKET)),
             principal: Principal::Verified(&id),
             ..anonymous()
         };
@@ -218,7 +218,7 @@ async fn a_key_on_a_principal_and_ticket_route_runs_principal() {
     let d = door(Err(TicketDenied::Invalid));
     let id = subject_identity("ada");
     let creds = Credentials {
-        bearer: Some("sk-key"),
+        bearer: Some(Presented::new("sk-key")),
         principal: Principal::Verified(&id),
         ..anonymous()
     };

@@ -24,6 +24,10 @@ pub mod suites;
 #[path = "host_target/mod.rs"]
 pub mod target;
 
+/// The harness runtime (R40: built under `host_target/`, the facade's exempt directory).
+#[path = "host_target/test_rt.rs"]
+pub(crate) mod test_rt;
+
 /// The Q24 wipe proof: plant a canary, drop it, scan `/proc/self/mem`, assert it is absent.
 pub use busbar_contract::abi::sdk::test_support::canary;
 pub use busbar_contract::abi::sdk::test_support::cpu;

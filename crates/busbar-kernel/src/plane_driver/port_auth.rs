@@ -129,10 +129,33 @@ pub enum Principal<'a> {
     Rejected(u32),
 }
 
+/// The credential a request presented, borrowed from its header for the length of one admission: it owns no
+/// allocation to wipe and prints as nothing.
+#[derive(Clone, Copy)]
+pub struct Presented<'a>(&'a str);
+
+impl<'a> Presented<'a> {
+    #[must_use]
+    pub fn new(credential: &'a str) -> Self {
+        Self(credential)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &'a str {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for Presented<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Presented(..)")
+    }
+}
+
 /// What the request carries into admission.
 #[derive(Clone, Copy, Debug)]
 pub struct Credentials<'a> {
-    pub bearer: Option<&'a str>,
+    pub bearer: Option<Presented<'a>>,
     pub principal: Principal<'a>,
     /// An operator principal is present (AUTH_OPERATOR).
     pub operator: bool,
@@ -206,7 +229,7 @@ pub async fn admit(
     audience: &str,
     now_s: u64,
 ) -> Result<Admitted, ClientRefusal> {
-    let class = classify(effective, creds.bearer, tickets);
+    let class = classify(effective, creds.bearer.map(|b| b.as_str()), tickets);
     let admitted = |identity: Vec<u8>| Admitted {
         auth: class,
         identity,
@@ -228,7 +251,7 @@ pub async fn admit(
             let Some(credential) = creds.bearer else {
                 return Err(refusals.for_core(route, R_AUTH_REQUIRED));
             };
-            match tickets.admit(audience, credential, now_s).await {
+            match tickets.admit(audience, credential.as_str(), now_s).await {
                 Ok(t) => Ok(Admitted {
                     auth: class,
                     identity: t.identity.identity_records().to_vec(),

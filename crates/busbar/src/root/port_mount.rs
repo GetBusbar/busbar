@@ -40,7 +40,7 @@ use busbar_kernel::ingress::signed_ingress;
 use busbar_kernel::plane_driver::dispatch::LaneQualifier;
 use busbar_kernel::plane_driver::port::{HttpIn, PortSeat, ServeError, ServeIn, Served, Unit};
 use busbar_kernel::plane_driver::port_admin;
-use busbar_kernel::plane_driver::port_auth::{subject_identity, Credentials, Principal};
+use busbar_kernel::plane_driver::port_auth::{subject_identity, Credentials, Presented, Principal};
 use busbar_kernel::plane_driver::port_billing::{end_of, Admit, PortBilling};
 use busbar_kernel::plane_driver::port_intents::Namespace;
 use busbar_kernel::plane_driver::port_routes::Mounted;
@@ -482,7 +482,7 @@ async fn answer(
     // The session outlives this call when its reply streams, so it owns everything it borrows.
     let mut session = tokio::spawn(async move {
         let creds = Credentials {
-            bearer: bearer.as_deref(),
+            bearer: bearer.as_deref().map(Presented::new),
             principal: match (&seen, &identity) {
                 (Seen::Verified(_), Some(records)) => Principal::Verified(records),
                 (Seen::Rejected, _) => Principal::Rejected(R_BAD_CREDENTIAL),

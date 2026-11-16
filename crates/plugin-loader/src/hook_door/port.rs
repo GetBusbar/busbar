@@ -88,9 +88,18 @@ where
     }
 }
 
+/// What an open chain answers: the opener's result, or the elapsed budget.
+pub type TimedOpen = Result<Result<Arc<dyn HookPort>, OpenError>, tokio::time::error::Elapsed>;
+
+/// Runs one open chain to its end on a runtime the caller built (the kernel builds it through
+/// `busbar_kernel::rt`, R40; this crate sits below the kernel and builds none).
+pub type OpenDriver =
+    Arc<dyn for<'a> Fn(BoxFut<'a, TimedOpen>) -> Result<TimedOpen, String> + Send + Sync>;
+
 /// THE HOOK AXIS OVER THE PORT: what the kernel's `HookAxis` seam asks, answered from an opener.
 pub struct PortRows {
     opener: Arc<dyn HookOpener>,
+    driver: OpenDriver,
     linked: Vec<Box<str>>,
     first_party: Vec<Box<str>>,
     call_budget: Duration,
@@ -116,31 +125,17 @@ impl PortRows {
         first_party: Vec<Box<str>>,
         call_budget: Duration,
         seal: Arc<dyn KernelSeal + Send + Sync>,
+        driver: OpenDriver,
     ) -> Self {
         Self {
             opener,
+            driver,
             linked,
             first_party,
             call_budget,
             seal,
         }
     }
-}
-
-/// Run one open chain to its end from the kernel's synchronous `HookAxis::open`, on a scoped thread with
-/// its own current-thread runtime (works on or off a runtime; the caller never blocks a runtime worker).
-fn drive<T: Send>(fut: BoxFut<'_, T>) -> Result<T, String> {
-    std::thread::scope(|s| {
-        s.spawn(move || {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_time()
-                .build()
-                .map(|rt| rt.block_on(fut))
-                .map_err(|e| format!("hook open runtime: {e}"))
-        })
-        .join()
-        .unwrap_or_else(|_| Err("hook open thread panicked".into()))
-    })
 }
 
 fn open_error(module: &str, label: &str, e: &OpenError) -> String {
@@ -188,7 +183,7 @@ impl HookAxis for PortRows {
             .expose(&*self.seal)
             .clone();
         let opener = Arc::clone(&self.opener);
-        let opened = drive(Box::pin(async move {
+        let opened = (self.driver)(Box::pin(async move {
             tokio::time::timeout(budget, opener.open(module, label, &config)).await
         }))?;
         let port = match opened {

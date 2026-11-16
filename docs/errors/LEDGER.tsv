@@ -285,3 +285,5 @@ BUSBAR-3170	config-grammar-changed	1.6.0
 BUSBAR-8031	unit-flush-batch-reduced	1.6.0
 BUSBAR-7110	plane-usage-undeclared	1.6.0
 BUSBAR-7111	plane-usage-rounded	1.6.0
+BUSBAR-6018	plugin-error-codes-refused	1.6.0
+BUSBAR-6019	plugin-error-number-undeclared	1.6.0
