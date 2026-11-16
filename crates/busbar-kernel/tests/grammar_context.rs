@@ -73,3 +73,14 @@ fn named_secret_is_bound_before_the_document_reads_shorthand() {
     assert!(!bound.secret_instances.contains_key("fixture-word"));
     assert_eq!(bound.sugars.iter().next().unwrap().module, "selected");
 }
+
+#[test]
+fn an_admission_with_no_secret_images_refuses_explicit_instances() {
+    let grammar = Grammar::empty().with_secret_sources(Default::default());
+    let refused = busbar_kernel::config::deploy_from_yaml_str(
+        "secrets:\n  selected:\n    module: missing-secret\n    settings: {}\n",
+        &grammar,
+    )
+    .expect_err("an empty admitted image set cannot supply a configured secret");
+    assert!(refused.to_string().contains("not an admitted secret image"));
+}
