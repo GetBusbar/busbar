@@ -9,8 +9,8 @@
 //! `take_settled`, `ephemeral_stores`, `described`, the `SlotTable`/`SlotLease` slot records (safe Rust: an
 //! `ArcSwapOption` holds the record and the lease holds its table, so no `UnsafeCell` and no `unsafe impl`), the
 //! ENDPOINT decode and the check-time transport verdict (BUSBAR-3160/3163, R7a `check_endpoints`). The entries
-//! themselves (describe, the open and DRY_RUN chains, close) run through `entry::guard` and the driver, which are
-//! W1-H1's (not landed); those bodies stay `todo!()` and name the gap.
+//! themselves run through `entry::guard` (describe) and the driver (every open step takes the same guard); the
+//! chains are in `chains.rs`, the kind ports built over them are the `open_<kind>` methods here.
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::collections::HashMap;
@@ -19,17 +19,24 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use arc_swap::ArcSwapOption;
 use busbar_plugin_abi::fail::{refused, CallError};
 use busbar_plugin_abi::host::Host;
+use busbar_plugin_abi::host_side::answer::Answer;
 use busbar_plugin_abi::host_side::caller::{
     transport_verdict, Accept, BoxFut, InstanceLimits, Verdict,
 };
+use busbar_plugin_abi::host_side::driver::Image;
+use busbar_plugin_abi::host_side::entry;
 use busbar_plugin_abi::host_side::needs::Needs;
+use busbar_plugin_abi::host_side::pool::Pool;
 use busbar_plugin_abi::host_side::scrub::Scrub;
+use busbar_plugin_abi::host_side::watch::ENTRY_DESCRIBE;
 use busbar_plugin_abi::need::{egress, need_flag, op};
 use busbar_plugin_abi::records::{tag, CeilingRec, EndpointRec, Records};
 use busbar_plugin_abi::types::KindCode;
 
+use crate::adapters::auth::AuthCore;
 use crate::admit::Admitted;
 use crate::binder::ConfigBinder;
+use crate::chains::{self, OwnedSpec};
 use crate::encode::plane;
 use crate::ports::auth::{AuthPort, IssuedShape};
 use crate::ports::export::ExportPort;
@@ -39,15 +46,28 @@ use crate::ports::secret::{SecretPort, SugarDecl};
 use crate::ports::store::StoreHandle;
 use crate::ports::transport::TransportPort;
 use crate::refusal::{Refusal, RefusalCode};
+use busbar_ffi::kind as k;
 
 pub struct Registry<N: Needs> {
-    host: &'static Host,
-    needs: Arc<N>,
-    binder: Arc<dyn ConfigBinder>,
-    ceilings: Ceilings,
-    slots: Arc<SlotTable>,
+    pub(crate) host: &'static Host,
+    pub(crate) needs: Arc<N>,
+    pub(crate) binder: Arc<dyn ConfigBinder>,
+    pub(crate) ceilings: Ceilings,
+    pub(crate) slots: Arc<SlotTable>,
     /// Admitted images in admission order (identity unique, `former_names` words unique across all of them).
-    images: Vec<ImageEntry>,
+    pub(crate) images: Vec<ImageEntry>,
+    /// Runtime instance ids (never 0, never reused).
+    pub(crate) next_id: AtomicU64,
+    /// Every admitted secret image's D_SUGAR rows, in admission order, tagged with the verified identity.
+    sugars: Vec<SugarDecl>,
+    /// Every issued-credential kind an admitted auth image declared, with its shape.
+    issued: Vec<(Box<str>, IssuedShape)>,
+    /// The config each open instance was last opened with, by (kind, configured name), for `reconfigure`.
+    applied: Mutex<HashMap<(KindCode, Box<str>), Applied>>,
+    /// What the store and auth adapters need from core and the kernel installs once (`set_store_seal`,
+    /// `set_auth_core`).
+    store_seal: OnceLock<StoreSeal>,
+    auth_core: OnceLock<(Arc<dyn AuthCore>, std::time::Duration)>,
     /// Round 31: each instance's settled answer from its last `open`, by configured name, until taken once.
     settled: Mutex<HashMap<Box<str>, Settled>>,
     watchdog: OnceLock<std::thread::JoinHandle<()>>,
@@ -55,13 +75,33 @@ pub struct Registry<N: Needs> {
 
 /// One admitted image as `add` left it: the verified identity, its `former_names` words, whether it is
 /// compiled in, the describe facts, its leaked error book and the §10.6 ceiling row every slot of it gets.
-struct ImageEntry {
-    identity: Arc<str>,
+pub(crate) struct ImageEntry {
+    pub(crate) identity: Arc<str>,
     former_names: Vec<Box<str>>,
     linked: bool,
-    described: Described,
-    errors: &'static ErrorBook,
-    ceilings: [u32; 64],
+    pub(crate) described: Described,
+    pub(crate) errors: &'static ErrorBook,
+    pub(crate) ceilings: [u32; 64],
+    /// The header and image `add` admitted (None only for an entry a unit test built by hand).
+    pub(crate) header: Option<busbar_ffi::image::Admitted>,
+    pub(crate) image: Option<Arc<Image>>,
+    /// D_DIALECT_AUTH rows of a plane image, decoded and copied at `add`.
+    dialect_auth: Vec<plane::DialectAuthOwned>,
+}
+
+/// The factory of the kernel seal the store adapter installs (one seal per `StoreAdapter::new`).
+pub type StoreSeal =
+    Box<dyn Fn() -> Box<dyn busbar_contract::plugin::KernelSeal + Send + Sync> + Send + Sync>;
+
+/// What `reconfigure` merges a push into: the config an instance was opened with and the last applied version.
+#[derive(Clone)]
+struct Applied {
+    identity: Box<str>,
+    config: Vec<u8>,
+    limits: InstanceLimits,
+    public_url: Option<String>,
+    caller_upstreams: Vec<Box<str>>,
+    version: u64,
 }
 
 /// `config_json` is the operator's config for this instance as core holds it (secret references with their
@@ -95,20 +135,29 @@ pub struct Ceilings {
 
 impl<N: Needs> Registry<N> {
     /// Round 35 (R7b): `ConfigBinder` is the loader's own trait (`crate::binder`), so `new` names it here.
-    /// `watch::init` (§10.6) and the log sink belong to the entry machinery (W1-H1) and are installed with it.
+    /// The first registry in the process also starts the §10.6 watch table and installs the entry fault sink and the
+    /// log sink (`install_sinks`); a later one shares them.
     pub fn new(
         host: &'static Host,
         needs: Arc<N>,
         binder: Arc<dyn ConfigBinder>,
         ceilings: Ceilings,
     ) -> Self {
+        let slots = Arc::new(SlotTable::new());
+        install_sinks(&slots);
         Registry {
             host,
             needs,
             binder,
             ceilings,
-            slots: Arc::new(SlotTable::new()),
+            slots,
             images: Vec::new(),
+            next_id: AtomicU64::new(0),
+            sugars: Vec::new(),
+            issued: Vec::new(),
+            applied: Mutex::new(HashMap::new()),
+            store_seal: OnceLock::new(),
+            auth_core: OnceLock::new(),
             settled: Mutex::new(HashMap::new()),
             watchdog: OnceLock::new(),
         }
@@ -195,6 +244,9 @@ impl<N: Needs> Registry<N> {
             described,
             errors,
             ceilings: row.row,
+            header: None,
+            image: None,
+            dialect_auth: Vec::new(),
         });
         Ok(())
     }
@@ -263,18 +315,81 @@ impl<N: Needs> Registry<N> {
     /// ending '-'". A malformed describe frame stays DescribeInvalid. An image without D_ERRORS gets
     /// `ErrorBook::None` and no identity check.
     pub fn add(&mut self, admitted: Admitted) -> Result<(), Refusal> {
-        // Gap (W1-H1, W1-L1): describe runs inline under `entry::guard` on a leased describe slot
-        // (`watchdog::describe_row`), through the driver; neither the guard nor `Admitted`'s plugin pointer has
-        // landed. Once they have, this decodes the describe frame into `Described` and calls `admit_described`.
-        let _ = admitted;
-        todo!("W1-H1: describe under entry::guard")
+        let identity = admitted.identity().to_owned();
+        let (header, kind) = (admitted.plugin(), admitted.kind());
+        let named = |r: Refusal| r.named(&identity);
+        let lease = self.slots.alloc(
+            SlotRecord {
+                kind,
+                name: Arc::from(identity.as_str()),
+                scrub: Arc::new(Scrub::new()),
+                errors: &ErrorBook::None,
+                undeclared_warned: AtomicBool::new(false),
+            },
+            &crate::watchdog::describe_row(),
+        );
+        let mut buf = Pool::global().acquire(self.ceilings.max_out);
+        let host = self.host;
+        let status = entry::guard(lease.slot(), ENTRY_DESCRIBE, &mut buf, |out| {
+            header.describe(host, out)
+        })
+        .ok_or_else(|| {
+            named(Refusal::new(
+                RefusalCode::DescribeInvalid,
+                "describe",
+                "the entry stack is full",
+                "a describe entry",
+            ))
+        })?;
+        if !lease.is_live() {
+            return Err(named(Refusal::new(
+                RefusalCode::DescribeInvalid,
+                "describe.ceiling",
+                "the describe entry passed its ceiling",
+                "an answer within 5 s",
+            )));
+        }
+        let answer = Answer::parse(status, buf.bytes()).map_err(|reason| {
+            named(Refusal::new(
+                RefusalCode::DescribeInvalid,
+                "describe",
+                format!("{reason:?}"),
+                "a well-formed describe answer",
+            ))
+        })?;
+        if !answer.is_ok() {
+            return Err(named(Refusal::new(
+                RefusalCode::DescribeInvalid,
+                "describe",
+                format!("status {}", status.0),
+                "OK",
+            )));
+        }
+        let described = chains::decode_described(kind, answer.records()).map_err(named)?;
+        let kind_items =
+            decode_kind_items(&described, answer.records(), &identity).map_err(named)?;
+        let former: Vec<&str> = header
+            .former_names()
+            .split(',')
+            .filter(|w| !w.is_empty())
+            .collect();
+        let linked = matches!(*admitted.image, Image::Linked);
+        self.admit_described(&identity, &admitted.stamp.name, &former, linked, described)?;
+        if let Some(entry) = self.images.last_mut() {
+            entry.header = Some(header);
+            entry.image = Some(Arc::clone(&admitted.image));
+            entry.dialect_auth = kind_items.dialect_auth;
+        }
+        self.sugars.extend(kind_items.sugars);
+        self.issued.extend(kind_items.issued);
+        Ok(())
     }
 
     /// Round 6: every admitted secret plugin's declared shorthands, in admission order. The kernel feeds them to
     /// `busbar_contract::secret_ref::Sugars::declare` (which refuses core words, duplicate words and duplicate
     /// roles) and hands the resulting `Sugars` to the binder (§12.7) and to its own config-section parsing.
     pub fn sugars(&self) -> &[SugarDecl] {
-        todo!("W1-A6: D_SUGAR items are decoded by encode::secret::decode_sugars at add")
+        &self.sugars
     }
 
     /// Round 11: per admitted auth image, its identity and its D_OUTBOUND_STYLE words (decoded at `add`), in
@@ -335,7 +450,10 @@ impl<N: Needs> Registry<N> {
     /// Round 12: per issued-credential kind any admitted auth image declares (D_ISSUED_KIND), the shape its
     /// D_ISSUED_SHAPE item states (§8.3), decoded at `add`. Read only by issued credentials (§12.8).
     pub fn issued_shapes(&self) -> Vec<(&str /* issued kind */, IssuedShape)> {
-        todo!("W1-A7: D_ISSUED_SHAPE is decoded by encode::auth at add")
+        self.issued
+            .iter()
+            .map(|(kind, shape)| (&**kind, shape.clone()))
+            .collect()
     }
 
     /// Round 13: per admitted plane image, its identity and its D_PROVIDER_SCHEMA text (§8.6 provider keys),
@@ -353,7 +471,11 @@ impl<N: Needs> Registry<N> {
     /// Round 14 (round 15: typed): per admitted plane image, its identity and its D_DIALECT_AUTH rows, decoded at
     /// `add` (`plane::decode_dialect_auth`, owned copies). Read only by K6's binding materialisation (§12.18).
     pub fn dialect_auth(&self) -> Vec<(&str, Vec<plane::DialectAuthOwned>)> {
-        todo!("W1-A10: D_DIALECT_AUTH is decoded by plane::decode_dialect_auth at add")
+        self.images
+            .iter()
+            .filter(|e| e.described.kind == KindCode::Plane)
+            .map(|e| (&*e.identity, e.dialect_auth.clone()))
+            .collect()
     }
 
     /// Allocate the instance id and watchdog slot (the slot record carries (kind, configured name, a fresh
@@ -376,56 +498,192 @@ impl<N: Needs> Registry<N> {
     /// The store adapter is the kernel's existing `PersistenceBackend` (busbar-contract persistence.rs:534),
     /// implemented directly over the proxy. There is no other store port.
     pub fn open_store(&self, s: &InstanceSpec<'_>) -> BoxFut<'_, Result<StoreHandle, OpenError>> {
-        let _ = s;
-        todo!()
+        let owned = OwnedSpec::new(s);
+        Box::pin(async move {
+            let spec = owned.spec();
+            let opened = self.open_instance::<k::Store>(&spec).await?;
+            let proxy =
+                busbar_plugin_abi::store::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
+            let seal = self.store_seal.get().ok_or_else(|| {
+                OpenError::Unknown("no store seal installed (Registry::set_store_seal)".to_owned())
+            })?;
+            let adapter = crate::adapters::store::StoreAdapter::new(
+                proxy,
+                Arc::clone(&self.needs),
+                &tokio::runtime::Handle::current(),
+                seal(),
+            )?;
+            self.remember(&spec, KindCode::Store);
+            Ok(StoreHandle {
+                backend: Arc::new(adapter),
+            })
+        })
     }
 
     pub fn open_secret(
         &self,
         s: &InstanceSpec<'_>,
     ) -> BoxFut<'_, Result<Arc<dyn SecretPort>, OpenError>> {
-        let _ = s;
-        todo!()
+        let owned = OwnedSpec::new(s);
+        Box::pin(async move {
+            let spec = owned.spec();
+            let opened = self.open_instance::<k::Secret>(&spec).await?;
+            let proxy = busbar_plugin_abi::secret::Proxy::bind(opened.instance)
+                .ok_or_else(not_this_kind)?;
+            self.remember(&spec, KindCode::Secret);
+            let port: Arc<dyn SecretPort> = Arc::new(crate::adapters::secret::SecretAdapter::new(
+                proxy,
+                Arc::clone(&self.needs),
+            ));
+            Ok(port)
+        })
     }
 
     pub fn open_auth(
         &self,
         s: &InstanceSpec<'_>,
     ) -> BoxFut<'_, Result<Arc<dyn AuthPort>, OpenError>> {
-        let _ = s;
-        todo!()
+        let owned = OwnedSpec::new(s);
+        Box::pin(async move {
+            let spec = owned.spec();
+            let opened = self.open_instance::<k::Auth>(&spec).await?;
+            let proxy =
+                busbar_plugin_abi::auth::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
+            let (core, refresh) = self.auth_core.get().ok_or_else(|| {
+                OpenError::Unknown("no auth core installed (Registry::set_auth_core)".to_owned())
+            })?;
+            let frame = chains::frame(&opened.described.items);
+            let adapter = crate::adapters::auth::AuthAdapter::new(
+                proxy,
+                Arc::clone(&self.needs),
+                Arc::clone(core),
+                Records::new(&frame),
+                opened.errors,
+                *refresh,
+            )
+            .map_err(|e| {
+                OpenError::Call(CallError::Fault(
+                    busbar_plugin_abi::fail::FaultReason::BadRecords(e),
+                ))
+            })?;
+            self.remember(&spec, KindCode::Auth);
+            let port: Arc<dyn AuthPort> = Arc::new(adapter);
+            Ok(port)
+        })
     }
 
     pub fn open_hook(
         &self,
         s: &InstanceSpec<'_>,
     ) -> BoxFut<'_, Result<Arc<dyn HookPort>, OpenError>> {
-        let _ = s;
-        todo!()
+        let owned = OwnedSpec::new(s);
+        Box::pin(async move {
+            let spec = owned.spec();
+            let opened = self.open_instance::<k::Hook>(&spec).await?;
+            let proxy =
+                busbar_plugin_abi::hook::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
+            let points = opened
+                .described
+                .items
+                .iter()
+                .find(|(t, _)| *t == busbar_plugin_abi::hook::tag::D_POINTS)
+                .and_then(|(t, b)| {
+                    busbar_plugin_abi::records::Rec { tag: *t, body: b }
+                        .pod::<busbar_plugin_abi::hook::Points>()
+                        .ok()
+                })
+                .map_or(0, |p| p.mask);
+            self.remember(&spec, KindCode::Hook);
+            let port: Arc<dyn HookPort> = Arc::new(crate::adapters::hook::HookAdapter::new(
+                proxy,
+                Arc::clone(&self.needs),
+                points,
+                opened.errors,
+            ));
+            Ok(port)
+        })
     }
 
     pub fn open_export(
         &self,
         s: &InstanceSpec<'_>,
     ) -> BoxFut<'_, Result<Arc<dyn ExportPort>, OpenError>> {
-        let _ = s;
-        todo!()
+        let owned = OwnedSpec::new(s);
+        Box::pin(async move {
+            let spec = owned.spec();
+            let opened = self.open_instance::<k::Export>(&spec).await?;
+            let proxy = busbar_plugin_abi::export::Proxy::bind(Arc::clone(&opened.instance))
+                .ok_or_else(not_this_kind)?;
+            let adapter = crate::adapters::export::ExportAdapter::open(
+                proxy,
+                Arc::clone(&self.needs),
+                opened.errors,
+                opened.described.clone(),
+                opened.dests,
+                &opened.answer.answer(),
+            )
+            .map_err(OpenError::Call)?;
+            self.remember(&spec, KindCode::Export);
+            let port: Arc<dyn ExportPort> = Arc::new(adapter);
+            Ok(port)
+        })
     }
 
     pub fn open_plane(
         &self,
         s: &InstanceSpec<'_>,
     ) -> BoxFut<'_, Result<Arc<dyn PlanePort>, OpenError>> {
-        let _ = s;
-        todo!()
+        let owned = OwnedSpec::new(s);
+        Box::pin(async move {
+            let spec = owned.spec();
+            let opened = self.open_instance::<k::Plane>(&spec).await?;
+            let proxy =
+                busbar_plugin_abi::plane::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
+            let frame = chains::frame(&opened.described.items);
+            let describe = crate::adapters::plane::decode_describe(
+                Records::new(&frame),
+                opened.described.methods,
+                opened.described.facts,
+            )
+            .map_err(|e| {
+                OpenError::Unknown(format!("{}: the plane's describe: {}", spec.name, e.0))
+            })?;
+            self.remember(&spec, KindCode::Plane);
+            let port: Arc<dyn PlanePort> = Arc::new(crate::adapters::plane::PlaneAdapter::new(
+                proxy,
+                Arc::clone(&self.needs),
+                describe,
+                opened.errors,
+            ));
+            Ok(port)
+        })
     }
 
     pub fn open_transport(
         &self,
         s: &InstanceSpec<'_>,
     ) -> BoxFut<'_, Result<Arc<dyn TransportPort>, OpenError>> {
-        let _ = s;
-        todo!()
+        let owned = OwnedSpec::new(s);
+        Box::pin(async move {
+            let spec = owned.spec();
+            let opened = self.open_instance::<k::Transport>(&spec).await?;
+            let proxy = busbar_plugin_abi::transport::Proxy::bind(opened.instance)
+                .ok_or_else(not_this_kind)?;
+            let protocols: Box<[Box<str>]> = opened
+                .described
+                .items
+                .iter()
+                .filter(|(t, _)| *t == busbar_plugin_abi::transport::tag::D_PROTOCOL)
+                .filter_map(|(_, b)| core::str::from_utf8(b).ok())
+                .map(Box::from)
+                .collect();
+            let adapter =
+                crate::adapters::transport::TransportAdapter::open(proxy, opened.errors, protocols)
+                    .map_err(crate::ports::open_error)?;
+            self.remember(&spec, KindCode::Transport);
+            let port: Arc<dyn TransportPort> = Arc::new(adapter);
+            Ok(port)
+        })
     }
 
     /// DRY_RUN open (`--validate`, admin config check). Async because it drives an open chain whose NEEDs await
@@ -441,11 +699,23 @@ impl<N: Needs> Registry<N> {
         &self,
         s: &InstanceSpec<'_>,
     ) -> BoxFut<'_, Result<Vec<DeclaredEndpoint>, OpenError>> {
-        // Gap (W1-H1): the DRY_RUN chain (bind, resolve_refs, core values, D_SCHEMA, the open entry with
-        // BB_OPEN_DRY_RUN under entry::guard, through the driver) needs the guard and the driver. Its answer goes
-        // to `judge_check_answer`, which is landed and tested.
-        let _ = s;
-        todo!("W1-H1: the DRY_RUN chain under entry::guard")
+        let owned = OwnedSpec::new(s);
+        Box::pin(async move {
+            let spec = owned.spec();
+            match self.entry_of(spec.identity).map(|e| e.described.kind) {
+                Some(KindCode::Store) => self.dry_run::<k::Store>(&spec).await,
+                Some(KindCode::Secret) => self.dry_run::<k::Secret>(&spec).await,
+                Some(KindCode::Auth) => self.dry_run::<k::Auth>(&spec).await,
+                Some(KindCode::Hook) => self.dry_run::<k::Hook>(&spec).await,
+                Some(KindCode::Export) => self.dry_run::<k::Export>(&spec).await,
+                Some(KindCode::Plane) => self.dry_run::<k::Plane>(&spec).await,
+                Some(KindCode::Transport) => self.dry_run::<k::Transport>(&spec).await,
+                None => Err(OpenError::Unknown(format!(
+                    "{}: no admitted plugin answers to module {}",
+                    spec.name, spec.identity
+                ))),
+            }
+        })
     }
 
     /// Round 31 (owner ruling, §47): there is no `Registry::migrate`. The boot caller walks `BootPlan` (below) —
@@ -481,8 +751,10 @@ impl<N: Needs> Registry<N> {
         instances: &[(KindCode, InstanceSpec<'_>)],
         sugars: &busbar_contract::secret_ref::Sugars,
     ) -> Result<BootPlan, OpenError> {
-        let _ = (instances, sugars);
-        todo!()
+        let kinds: Vec<KindCode> = instances.iter().map(|(kind, _)| *kind).collect();
+        let mut deps = |at: usize| self.secret_deps(at, instances, sugars);
+        let steps = chains::plan_order(&kinds, &mut deps)?;
+        Ok(BootPlan { steps })
     }
 
     /// A pushed desired state (today's hook/plane `configure`): merge `patch` (a JSON object) into the stored
@@ -497,8 +769,172 @@ impl<N: Needs> Registry<N> {
         patch: &[u8],
         version: u64,
     ) -> BoxFut<'_, Result<Reconfigured, OpenError>> {
-        let _ = (kind, name, patch, version);
-        todo!()
+        let (name, patch) = (name.to_owned(), patch.to_vec());
+        Box::pin(async move {
+            let stored = self
+                .applied
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&(kind, Box::from(name.as_str())))
+                .cloned();
+            let Some(stored) = stored else {
+                return Err(OpenError::Unknown(format!(
+                    "{name}: no open {kind:?} instance by that name"
+                )));
+            };
+            if version < stored.version {
+                return Ok(Reconfigured::Stale);
+            }
+            let merged =
+                chains::merge_patch(&stored.config, &patch).map_err(|text| OpenError::Config {
+                    code: refused::R_CONFIG,
+                    text: format!("{name}: {text}"),
+                    error: None,
+                })?;
+            let spec = InstanceSpec {
+                identity: &stored.identity,
+                name: &name,
+                config_json: &merged,
+                limits: stored.limits,
+                public_url: stored.public_url.as_deref(),
+                caller_upstreams: &stored.caller_upstreams,
+            };
+            self.check(&spec).await?;
+            let port = match kind {
+                KindCode::Store => OpenedPort::Store(self.open_store(&spec).await?),
+                KindCode::Secret => OpenedPort::Secret(self.open_secret(&spec).await?),
+                KindCode::Auth => OpenedPort::Auth(self.open_auth(&spec).await?),
+                KindCode::Hook => OpenedPort::Hook(self.open_hook(&spec).await?),
+                KindCode::Export => OpenedPort::Export(self.open_export(&spec).await?),
+                KindCode::Plane => OpenedPort::Plane(self.open_plane(&spec).await?),
+                KindCode::Transport => OpenedPort::Transport(self.open_transport(&spec).await?),
+            };
+            if let Some(held) = self
+                .applied
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get_mut(&(kind, Box::from(name.as_str())))
+            {
+                held.version = version;
+            }
+            Ok(Reconfigured::Opened(port))
+        })
+    }
+
+    /// The image entry the generic `module:` match resolves (identity first, then `former_names` words).
+    pub(crate) fn entry_of(&self, module: &str) -> Option<&ImageEntry> {
+        self.images
+            .iter()
+            .find(|e| &*e.identity == module)
+            .or_else(|| {
+                self.images
+                    .iter()
+                    .find(|e| e.former_names.iter().any(|w| &**w == module))
+            })
+    }
+
+    /// The kernel's seal factory the store adapter installs from (`StoreAdapter::new`, once per store open).
+    /// Set once, before the first `open_store`; a second call is ignored.
+    pub fn set_store_seal(&self, seal: StoreSeal) {
+        let _ = self.store_seal.set(seal);
+    }
+
+    /// The kernel's side of the auth adapter (issued-credential lookup, replay guard) and `auth.unknown_key_refresh_s`.
+    /// Set once, before the first `open_auth`; a second call is ignored.
+    pub fn set_auth_core(&self, core: Arc<dyn AuthCore>, unknown_key_refresh: std::time::Duration) {
+        let _ = self.auth_core.set((core, unknown_key_refresh));
+    }
+
+    /// Records the config an instance opened with, for `reconfigure` (the last applied version is kept).
+    pub(crate) fn remember(&self, s: &InstanceSpec<'_>, kind: KindCode) {
+        let mut applied = self.applied.lock().unwrap_or_else(PoisonError::into_inner);
+        let key = (kind, Box::from(s.name));
+        let version = applied.get(&key).map_or(0, |a| a.version);
+        applied.insert(
+            key,
+            Applied {
+                identity: Box::from(s.identity),
+                config: s.config_json.to_vec(),
+                limits: s.limits,
+                public_url: s.public_url.map(str::to_owned),
+                caller_upstreams: s.caller_upstreams.to_vec(),
+                version,
+            },
+        );
+    }
+
+    /// The configured secret instances `instances[at]`'s bag references at any position (`bind_any`: a 1.x bag's
+    /// older positions are undeclared on an unstamped boot), by index. Reads only kinds, configured names and
+    /// SecretRefs (no plugin name, §15.8). A module the registry does not know has no dependencies here: its
+    /// own open refuses it.
+    fn secret_deps(
+        &self,
+        at: usize,
+        instances: &[(KindCode, InstanceSpec<'_>)],
+        sugars: &busbar_contract::secret_ref::Sugars,
+    ) -> Result<Vec<usize>, OpenError> {
+        let s = &instances[at].1;
+        let Some(entry) = self.entry_of(s.identity) else {
+            return Ok(Vec::new());
+        };
+        let paths = |wanted: u16| -> Vec<&str> {
+            entry
+                .described
+                .items
+                .iter()
+                .filter(|(t, _)| *t == wanted)
+                .filter_map(|(_, b)| core::str::from_utf8(b).ok())
+                .collect()
+        };
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+        let bound = self
+            .binder
+            .bind_any(
+                id,
+                s.config_json,
+                &paths(tag::D_SECRET_PATH),
+                &paths(tag::D_TRUST_PATH),
+                &paths(tag::D_DEST_PATH),
+                &paths(tag::D_REF_PATH),
+            )
+            .map_err(|e| OpenError::Config {
+                code: refused::R_CONFIG,
+                text: format!("{}: {e:?}", s.name),
+                error: None,
+            })?;
+        let _unbound = chains::Unbind::new(Arc::clone(&self.binder), id);
+        let config: serde_json::Value = serde_json::from_slice(&bound).unwrap_or_default();
+        let mut handles = Vec::new();
+        secret_handles(&config, &mut handles);
+        let same = |a: &str, b: &str| {
+            let canon = |m: &str| {
+                self.resolve_module(m)
+                    .map_or_else(|| m.to_owned(), |(i, _, _)| i.to_owned())
+            };
+            canon(a) == canon(b)
+        };
+        let mut out = Vec::new();
+        for handle in handles {
+            let Some(module) = self
+                .binder
+                .secret(id, handle)
+                .and_then(|r| r.source_module().map(str::to_owned))
+            else {
+                continue;
+            };
+            let module = sugars
+                .get(&module)
+                .map_or(module.clone(), |sugar| sugar.module().to_owned());
+            let hit = instances.iter().position(|(kind, spec)| {
+                *kind == KindCode::Secret && (spec.name == module || same(spec.identity, &module))
+            });
+            if let Some(index) = hit {
+                if !out.contains(&index) {
+                    out.push(index);
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Plugin describe facts for admin/health (never shown to another plugin).
@@ -1213,5 +1649,151 @@ mod l2_tests {
         assert_eq!(table.alloc(rec(), &row).slot(), slot + 1);
         drop(inert);
         assert_eq!(table.alloc(rec(), &row).slot(), slot);
+    }
+}
+
+/// What `add` decodes from the kind's own describe items (validated: a bad item is `DescribeInvalid`), kept only
+/// once the image is admitted.
+struct KindItems {
+    sugars: Vec<SugarDecl>,
+    issued: Vec<(Box<str>, IssuedShape)>,
+    dialect_auth: Vec<plane::DialectAuthOwned>,
+}
+
+fn decode_kind_items(
+    described: &Described,
+    describe: busbar_plugin_abi::records::Records<'_>,
+    identity: &str,
+) -> Result<KindItems, Refusal> {
+    let bad = |field: &'static str, e: busbar_plugin_abi::records::RecErr| {
+        Refusal::new(
+            RefusalCode::DescribeInvalid,
+            field,
+            format!("{e:?}"),
+            "the item grammar of the kind's describe",
+        )
+    };
+    let mut out = KindItems {
+        sugars: Vec::new(),
+        issued: Vec::new(),
+        dialect_auth: Vec::new(),
+    };
+    match described.kind {
+        KindCode::Secret => {
+            let who: Arc<str> = Arc::from(identity);
+            out.sugars = crate::encode::secret::decode_sugars(describe)
+                .map_err(|e| bad("describe.sugar", e))?
+                .into_iter()
+                .map(|mut sugar| {
+                    sugar.identity = Arc::clone(&who);
+                    sugar
+                })
+                .collect();
+        }
+        KindCode::Auth => {
+            out.issued = crate::encode::auth::decode_issued_shape(describe)
+                .map_err(|e| bad("describe.issued_shape", e))?
+                .into_iter()
+                .collect();
+        }
+        KindCode::Plane => {
+            crate::adapters::plane::decode_describe(describe, described.methods, described.facts)
+                .map_err(|e| {
+                Refusal::new(
+                    RefusalCode::DescribeInvalid,
+                    e.0,
+                    "a describe the plane rules refuse",
+                    "the plane describe grammar",
+                )
+            })?;
+            out.dialect_auth = plane::decode_dialect_auth(describe)
+                .map_err(|e| bad("describe.dialect_auth", e))?
+                .iter()
+                .map(plane::DialectAuth::to_owned)
+                .collect();
+        }
+        KindCode::Hook => {
+            crate::encode::hook::decode_words(describe).map_err(|e| bad("describe.word", e))?;
+        }
+        KindCode::Export => {
+            crate::encode::export::decode_delivery(describe, described.methods)
+                .map_err(|e| bad("describe.delivery", e))?;
+        }
+        KindCode::Store | KindCode::Transport => {}
+    }
+    Ok(out)
+}
+
+/// The slot table the process-wide sinks read: the first registry's (a process has one; a second registry, which
+/// only tests build, shares the sinks and is not attributed).
+static ACTIVE: OnceLock<Arc<SlotTable>> = OnceLock::new();
+
+/// Once per process: the watch table, the entry fault sink (`driver::set_fault_sink`: quarantine the slot's
+/// instance when the entry was an instance's, audit either way) and the log sink (`host_vt::set_log_sink`: every
+/// plugin line attributed by the entry's slot and scrubbed with that slot's set, I14).
+fn install_sinks(slots: &Arc<SlotTable>) {
+    if ACTIVE.set(Arc::clone(slots)).is_err() {
+        return;
+    }
+    busbar_plugin_abi::host_side::watch::init();
+    busbar_plugin_abi::host_side::driver::set_fault_sink(|slot, image_owned, reason| {
+        if let Some(table) = ACTIVE.get() {
+            table.fault(slot, image_owned, reason);
+        }
+    });
+    busbar_plugin_abi::host_side::host_vt::set_log_sink(log_sink);
+    busbar_plugin_abi::host_side::host_vt::set_log_level(
+        match tracing::level_filters::LevelFilter::current() {
+            tracing::level_filters::LevelFilter::OFF => 0,
+            tracing::level_filters::LevelFilter::ERROR => 1,
+            tracing::level_filters::LevelFilter::WARN => 2,
+            tracing::level_filters::LevelFilter::INFO => 3,
+            tracing::level_filters::LevelFilter::DEBUG => 4,
+            _ => 5,
+        },
+    );
+}
+
+fn log_sink(slot: Option<u32>, level: u32, error: u32, msg: &str) {
+    let Some(rec) = slot
+        .zip(ACTIVE.get())
+        .and_then(|(slot, table)| table.record(slot))
+    else {
+        return;
+    };
+    let shown = busbar_plugin_abi::host_side::scrub::fail_text(&rec.scrub, msg);
+    let code = rec
+        .errors
+        .resolve(error, &rec.undeclared_warned)
+        .map(|c| c.to_string());
+    let (kind, instance, code) = (rec.kind as u32, &*rec.name, code.as_deref().unwrap_or(""));
+    match level {
+        1 => tracing::error!(kind, instance, code, "{shown}"),
+        2 => tracing::warn!(kind, instance, code, "{shown}"),
+        3 => tracing::info!(kind, instance, code, "{shown}"),
+        4 => tracing::debug!(kind, instance, code, "{shown}"),
+        _ => tracing::trace!(kind, instance, code, "{shown}"),
+    }
+}
+
+/// The proxy of a kind refused an instance of another kind: a registry bug, never a plugin's.
+fn not_this_kind() -> OpenError {
+    OpenError::Call(CallError::Fault(
+        busbar_plugin_abi::fail::FaultReason::BadInstance,
+    ))
+}
+
+/// Every `{"$secret": n}` handle in a bound config.
+fn secret_handles(v: &serde_json::Value, out: &mut Vec<u32>) {
+    match v {
+        serde_json::Value::Object(map) => {
+            if let Some(n) = map.get("$secret").and_then(serde_json::Value::as_u64) {
+                out.extend(u32::try_from(n));
+            } else {
+                map.values().for_each(|v| secret_handles(v, out));
+            }
+        }
+        serde_json::Value::Array(items) => items.iter().for_each(|v| secret_handles(v, out)),
+        _ => {}
     }
 }

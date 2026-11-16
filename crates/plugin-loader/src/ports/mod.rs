@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The ports: the adapter trait per kind, consumed by the kernel, and their shared types (IF §11.3). W0-ABI
-//! stub: frozen signatures, `todo!()` bodies; L2 fills the shared part, L3-L9 their kind's file.
+//! shared part (L2): the one `PortError`/`OpenError` builder; each kind's adapter is its own file under `adapters/`.
 //!
 //! Every port is dyn-compatible and boxes **once** per async call (the adapter's `async` body, which contains
 //! the proxy's unboxed step loop). Sync port methods never box. Header lists cross as `&[abi::Pair<'_>]`, which
@@ -89,15 +89,51 @@ pub fn port_error(
     latch: &core::sync::atomic::AtomicBool,
     answer: &busbar_plugin_abi::host_side::answer::Answer<'_>,
 ) -> Option<PortError> {
-    let _ = (scrub, errors, latch, answer);
-    todo!("W1-L2: the shared PortError builder")
+    use busbar_plugin_abi::fail::fact::{FACT_BACKEND_STATUS, FACT_RETRY_AFTER_S};
+    use busbar_plugin_abi::types::Status;
+
+    let refused = answer.status == Status::REFUSED;
+    if !refused && answer.status != Status::FAILED {
+        return None;
+    }
+    let (code, text) = answer.fail()?;
+    let text: Box<str> = busbar_plugin_abi::host_side::scrub::fail_text(scrub, text)
+        .as_ref()
+        .into();
+    let error = errors.resolve(answer.fail_error(), latch);
+    Some(if refused {
+        PortError::Refused { code, text, error }
+    } else {
+        PortError::Failed {
+            code,
+            text,
+            retry_after_s: answer.fail_fact(FACT_RETRY_AFTER_S),
+            backend_status: answer.fail_fact(FACT_BACKEND_STATUS),
+            error,
+        }
+    })
 }
 
 /// A refused or failed port answer as the open's error: REFUSED is `Config` (the instance's own settings were
 /// refused), FAILED is `Failed`, a call error stays one.
 pub fn open_error(error: PortError) -> crate::instance::OpenError {
-    let _ = error;
-    todo!("W1-L2: the shared OpenError builder")
+    use crate::instance::OpenError;
+
+    match error {
+        PortError::Refused { code, text, error } => OpenError::Config {
+            code,
+            text: text.into(),
+            error,
+        },
+        PortError::Failed {
+            code, text, error, ..
+        } => OpenError::Failed {
+            code,
+            text: text.into(),
+            error,
+        },
+        PortError::Call(e) => OpenError::Call(e),
+    }
 }
 
 #[cfg(test)]
