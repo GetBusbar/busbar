@@ -23,8 +23,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use busbar_kernel::persistence::boot_identity::{
-    HostNode, HostNodes, ObservedBy, PredecessorFence, PredecessorRetire, SealOutcome, SealRow,
-    SealState, TailView, UndrainedWriter,
+    HostNode, HostNodes, ObservedBy, PredecessorFence, PredecessorRetire, RetireError, SealOutcome,
+    SealRow, SealState, TailView, UndrainedWriter,
 };
 use busbar_kernel_audit::{
     break_body, break_from_journal_body, stamp_body, stamp_from_journal_body, AuditVerifyingKey,
@@ -44,9 +44,6 @@ const STEP_ALERT: Duration = Duration::from_secs(1);
 /// The capped retry backoff (50 ms, 100 ms, … 1 s).
 const FIRST_BACKOFF: Duration = Duration::from_millis(50);
 const MAX_BACKOFF: Duration = Duration::from_secs(1);
-
-/// Consecutive failures of one step before it is treated as permanent for this process.
-const PERMANENT_AFTER: u32 = 30;
 
 /// Journal records read per backward batch (§3.6.2 step 2).
 const BATCH: u64 = 256;
@@ -308,7 +305,6 @@ impl Sealer {
             observed_by: ObservedBy::Successor,
         };
         let fence = Arc::clone(&self.fence);
-        let mut failures = 0u32;
         let mut backoff = FIRST_BACKOFF;
         loop {
             if self.stopped() {
@@ -344,12 +340,11 @@ impl Sealer {
                     self.nap(wait).await?;
                 }
                 Ok(PredecessorRetire::Pending) => self.nap(FIRST_BACKOFF).await?,
-                Err(error) => {
-                    failures += 1;
-                    if failures >= PERMANENT_AFTER {
-                        self.refuse(id, "permanent", &error);
-                        return Err(Stop::Skip);
-                    }
+                Err(RetireError::Permanent(error)) => {
+                    self.refuse(id, "permanent", &error);
+                    return Err(Stop::Skip);
+                }
+                Err(RetireError::Transient(error)) => {
                     self.alert(id, "fence", &error);
                     self.nap(backoff).await?;
                     backoff = (backoff * 2).min(MAX_BACKOFF);
@@ -576,7 +571,6 @@ impl Sealer {
         let id = node.id;
         let fence = Arc::clone(&self.fence);
         let mut backoff = FIRST_BACKOFF;
-        let mut failures = 0u32;
         loop {
             // Never raced with the stop flag: a seal write is awaited to its result.
             let answer = self
@@ -607,12 +601,11 @@ impl Sealer {
                         LostSeal::Restart => return Err(Stop::Restart),
                     }
                 }
-                Err(error) => {
-                    failures += 1;
-                    if failures >= PERMANENT_AFTER {
-                        self.refuse(id, "permanent", &error);
-                        return Err(Stop::Skip);
-                    }
+                Err(RetireError::Permanent(error)) => {
+                    self.refuse(id, "permanent", &error);
+                    return Err(Stop::Skip);
+                }
+                Err(RetireError::Transient(error)) => {
                     self.alert(id, "seal", &error);
                     self.nap(backoff).await?;
                     backoff = (backoff * 2).min(MAX_BACKOFF);
@@ -703,10 +696,9 @@ impl Sealer {
     async fn read<T, F, Fut>(&mut self, id: u64, step: &'static str, mut f: F) -> Result<T, Stop>
     where
         F: FnMut() -> Fut,
-        Fut: Future<Output = Result<T, String>>,
+        Fut: Future<Output = Result<T, RetireError>>,
     {
         let mut backoff = FIRST_BACKOFF;
-        let mut failures = 0u32;
         loop {
             let mut stop = self.stop.clone();
             let answer = tokio::select! {
@@ -716,12 +708,11 @@ impl Sealer {
             };
             match answer {
                 Ok(value) => return Ok(value),
-                Err(error) => {
-                    failures += 1;
-                    if failures >= PERMANENT_AFTER {
-                        self.refuse(id, "permanent", &error);
-                        return Err(Stop::Skip);
-                    }
+                Err(RetireError::Permanent(error)) => {
+                    self.refuse(id, "permanent", &error);
+                    return Err(Stop::Skip);
+                }
+                Err(RetireError::Transient(error)) => {
                     self.alert(id, step, &error);
                     self.nap(backoff).await?;
                     backoff = (backoff * 2).min(MAX_BACKOFF);

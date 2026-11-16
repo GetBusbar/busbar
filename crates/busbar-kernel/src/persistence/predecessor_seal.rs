@@ -18,8 +18,8 @@ use busbar_contract::Secret;
 use busbar_kernel_wal::JournalRecord;
 
 use super::{
-    error, predicate, put, Assignment, BootRecords, LeaseRow, PredecessorFence, UndrainedWriter,
-    WriterRetirement, LEASE_TTL_MS, NODE_SCHEMA,
+    error, predicate, put, Assignment, BootRecords, LeaseRow, PredecessorFence, RetireError,
+    UndrainedWriter, WriterRetirement, LEASE_TTL_MS, NODE_SCHEMA,
 };
 
 const FENCE_MAGIC: &[u8; 8] = b"BBFENCE1";
@@ -238,11 +238,15 @@ pub use super::super::journal::TailView;
 impl PredecessorFence {
     /// THE HOST SCAN: the `host:<host>` row and every `host:<host>\0…` archive row, each checked
     /// against its `id:` reservation, and each writer's lease row; `own` is left out.
-    pub async fn host_nodes(&self, own: u64) -> Result<HostNodes, String> {
+    pub async fn host_nodes(&self, own: u64) -> Result<HostNodes, RetireError> {
         let records = &self.seals.records;
         let host_key = super::host_key(&self.host);
         let mut rows: Vec<(Vec<u8>, Secret<Vec<u8>>)> = Vec::new();
-        if let Some(value) = records.get(NODE_SCHEMA, &host_key).await.map_err(error)? {
+        if let Some(value) = records
+            .get(NODE_SCHEMA, &host_key)
+            .await
+            .map_err(RetireError::from)?
+        {
             rows.push((host_key.clone(), value));
         }
         let mut prefix = host_key;
@@ -252,7 +256,7 @@ impl PredecessorFence {
             let page = records
                 .page(NODE_SCHEMA, &prefix, cursor.as_ref())
                 .await
-                .map_err(error)?;
+                .map_err(RetireError::from)?;
             rows.extend(page.rows);
             match page.next {
                 Some(next) => cursor = Some(next),
@@ -281,7 +285,7 @@ impl PredecessorFence {
             let reserved = records
                 .get(NODE_SCHEMA, &super::id_key(assignment.id))
                 .await
-                .map_err(error)?;
+                .map_err(RetireError::from)?;
             if reserved
                 .as_ref()
                 .map(|v| v.expose(&crate::seal::lend()).to_vec())
@@ -299,7 +303,7 @@ impl PredecessorFence {
                     &super::writer_lease_key(assignment.epoch, assignment.writer),
                 )
                 .await
-                .map_err(error)?;
+                .map_err(RetireError::from)?;
             let lease_expires_ms = match lease {
                 Some(v) => Some(LeaseRow::parse(v.expose(&crate::seal::lend()))?.expires_ms),
                 None => None,
@@ -311,7 +315,19 @@ impl PredecessorFence {
                 lease_expires_ms,
             });
         }
-        out.listed_ms = self.identity.now_ms().await?;
+        let clock = self
+            .core
+            .backend()
+            .clock(self.core.info().dataset)
+            .await
+            .map_err(RetireError::from)?;
+        if clock.authority != self.core.info().clock_authority {
+            return Err("node lease clock authority changed".into());
+        }
+        out.listed_ms = clock
+            .unix_seconds
+            .checked_mul(1_000)
+            .ok_or("node lease clock overflow")?;
         Ok(out)
     }
 
@@ -322,7 +338,7 @@ impl PredecessorFence {
         epoch: u64,
         writer: [u8; 16],
         seen: UndrainedWriter,
-    ) -> Result<PredecessorRetire, String> {
+    ) -> Result<PredecessorRetire, RetireError> {
         match self
             .retirements
             .retire_after(&self.core, epoch, writer, 0, Some(seen))
@@ -342,7 +358,7 @@ impl PredecessorFence {
         id: u64,
         epoch: u64,
         writer: [u8; 16],
-    ) -> Result<SealState, String> {
+    ) -> Result<SealState, RetireError> {
         let mut values = self
             .seals
             .records
@@ -351,7 +367,7 @@ impl PredecessorFence {
                 (NODE_SCHEMA, &fenced_key(epoch, writer)),
             ])
             .await
-            .map_err(error)?
+            .map_err(RetireError::from)?
             .into_iter();
         let row = values.next().ok_or("seal row observation missing")?;
         let mark_raw = values.next().ok_or("fence mark observation missing")?;
@@ -377,7 +393,7 @@ impl PredecessorFence {
         row: &SealRow,
         state: &SealState,
         add_to_mark: bool,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, RetireError> {
         let _gate = self.seals.gate.lock().await;
         self.seals.resume().await?;
         let mark_key = fenced_key(epoch, writer);
@@ -392,7 +408,10 @@ impl PredecessorFence {
             };
             mutations.push(put(NODE_SCHEMA, mark_key, mark.with_sealed(id).bytes()));
         }
-        self.seals.decide(predicates, mutations).await
+        self.seals
+            .decide(predicates, mutations)
+            .await
+            .map_err(RetireError::from)
     }
 
     /// Settle a seal write this task left retained (one round trip on a store that answers).
@@ -402,12 +421,12 @@ impl PredecessorFence {
     }
 
     /// The predecessor's journal head and owner (`None`: it never wrote a record).
-    pub async fn journal_tail(&self, node: u64) -> Result<Option<TailView>, String> {
+    pub async fn journal_tail(&self, node: u64) -> Result<Option<TailView>, RetireError> {
         super::super::journal::StoreJournal::new(&self.core, node)
-            .map_err(error)?
+            .map_err(RetireError::from)?
             .tail_view()
             .await
-            .map_err(error)
+            .map_err(RetireError::from)
     }
 
     /// Original frames `from..=to` (ordinals) of the predecessor's journal, oldest first.
@@ -416,12 +435,12 @@ impl PredecessorFence {
         node: u64,
         from: u64,
         to: u64,
-    ) -> Result<Vec<JournalRecord>, String> {
+    ) -> Result<Vec<JournalRecord>, RetireError> {
         super::super::journal::StoreJournal::new(&self.core, node)
-            .map_err(error)?
+            .map_err(RetireError::from)?
             .read_back(from, to)
             .await
-            .map_err(error)
+            .map_err(RetireError::from)
     }
 
     /// This host's identity (may be empty).

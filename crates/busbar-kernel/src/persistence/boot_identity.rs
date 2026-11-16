@@ -170,7 +170,7 @@ impl WriterRetirements {
         core: &CoreStore,
         epoch: u64,
         writer: [u8; 16],
-    ) -> Result<WriterRetirement, String> {
+    ) -> Result<WriterRetirement, RetireError> {
         self.retire_after(core, epoch, writer, 0, None).await
     }
 
@@ -185,7 +185,7 @@ impl WriterRetirements {
         writer: [u8; 16],
         grace_ms: u64,
         seen: Option<UndrainedWriter>,
-    ) -> Result<WriterRetirement, String> {
+    ) -> Result<WriterRetirement, RetireError> {
         use super::{commit::SubmitResult, facade::PendingId};
         use busbar_contract::persistence::{self as native, control};
         let _gate = self.gate.lock().await;
@@ -199,7 +199,7 @@ impl WriterRetirements {
             let submission = core
                 .retry(PendingId(candidate.candidate().id.operation))
                 .await
-                .map_err(error)?;
+                .map_err(RetireError::from)?;
             match submission.result {
                 SubmitResult::Decided(decision) => {
                     self.take_decided(target, matches!(*decision, native::Decision::Applied(_)));
@@ -240,7 +240,7 @@ impl WriterRetirements {
                 time: None,
             }))
             .await
-            .map_err(error)?;
+            .map_err(RetireError::from)?;
         let native::ReadResult::Values {
             observed_at,
             mut values,
@@ -382,7 +382,7 @@ impl WriterRetirements {
             Err(cause) => {
                 // Nothing crossed: drop the target with no record.
                 self.take_decided(target, false);
-                return Err(error(cause));
+                return Err(cause.into());
             }
         };
         #[cfg(test)]
@@ -1514,10 +1514,13 @@ impl PredecessorFence {
 
 #[path = "predecessor_seal.rs"]
 mod predecessor_seal;
+#[path = "retire_error.rs"]
+mod retire_error;
 pub use predecessor_seal::{
     FenceMark, HostNode, HostNodes, PredecessorRetire, RefusedNode, SealOutcome, SealRow,
     SealState, TailView,
 };
+pub use retire_error::RetireError;
 
 pub struct TakenNode {
     pub id: u64,
