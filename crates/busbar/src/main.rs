@@ -748,7 +748,10 @@ async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: Con
             let conversion = root::min3_boot::prepare_serving(
                 bootstrap_ready, &plugin_process, conversion_images, &base_cfg, boot_guard,
             ).unwrap_or_else(|error| die(error));
-            let _ = root::min3_boot::finish(conversion, process_io.handle(), store_admission, None)
+            let _ = root::min3_boot::finish(
+                conversion, process_io.handle(), store_admission, None,
+                busbar_kernel::plane_driver::port_work::governed_binder(None, Default::default()),
+            )
                 .await.unwrap_or_else(|error| die(error));
             die("unstamped conversion returned without its required restart");
         }
@@ -1325,6 +1328,10 @@ async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: Con
         process_io.handle(),
         store_admission,
         services.kernel(),
+        busbar_kernel::plane_driver::port_work::governed_binder(
+            app.governance.clone(),
+            app.role_bindings.clone(),
+        ),
     )
     .await
     .unwrap_or_else(|error| die(error));
@@ -1401,22 +1408,11 @@ async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: Con
                 .chain(root::boot::unbound_sections()),
         );
     }
-    served.spawn_ticks();
 
     tracing::info!(
         "reliability state (breakers, cooldowns, latency, hard-down) starts fresh on boot and is \
          re-learned from live traffic"
     );
-
-    export::plugin::start().unwrap_or_else(|e| die_list("config errors", [e]));
-
-    let on_host = LINKED.on_host;
-    let boot_host = (!on_host.is_empty()).then(|| busbar_kernel::plane_driver::engine_host(&app));
-    if let Some(host) = &boot_host {
-        for spawn in on_host {
-            spawn(host);
-        }
-    }
 
     let tls_secret_resolver = app.secret_resolver.clone();
 
@@ -1481,8 +1477,19 @@ async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: Con
         root::inbound::stage(guests, refusals);
     }
     let _ = root::inbound::publish(&app_handle.load());
-    let generation_workers = generation_workers.start();
+    // Start serving maintenance only after the physical routes and application owner exist.
+    recovery_served.spawn_ticks();
+    export::plugin::start().unwrap_or_else(|e| die_list("config errors", [e]));
     exports.start().unwrap_or_else(|error| die(error));
+    let on_host = LINKED.on_host;
+    let boot_host =
+        (!on_host.is_empty()).then(|| busbar_kernel::plane_driver::engine_host(&app_handle.load()));
+    if let Some(host) = &boot_host {
+        for spawn in on_host {
+            spawn(host);
+        }
+    }
+    let generation_workers = generation_workers.start();
     app_handle.on_apply(Box::new({
         let plan = Arc::clone(&listener_plan);
         move |app| {
@@ -1555,9 +1562,6 @@ async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: Con
             tracing::warn!(error = %why, "a transport kept its settings across a config apply");
         }
     }));
-
-    // Durable plane WORK binds a principal's recovery standing through governance from here on.
-    root::min3_boot::attach_governance(app_handle.clone());
 
     #[cfg(distribution_root)]
     if let Some(book) = &book {

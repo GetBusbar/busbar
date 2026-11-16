@@ -34,7 +34,7 @@ use busbar_kernel::plane_driver::port_intents::{
 use busbar_kernel::plane_driver::port_observations::ObsCustody;
 use busbar_kernel::plane_driver::port_serve::TicketGate;
 use busbar_kernel::plane_driver::port_services::Services;
-use busbar_kernel::plane_driver::port_work::{governed_binder, LateBinder, LateStore, StoreWork};
+use busbar_kernel::plane_driver::port_work::{Binder as WorkBinder, StoreWork};
 use busbar_kernel::plane_grants::{
     SealedTickets, TicketAdmitted, TicketDenied, TicketMint, Tickets,
 };
@@ -83,10 +83,6 @@ struct Shared {
     signals: Arc<SignalRegistry>,
     /// The observation custody every seat's OBS_SCOPE and OBSERVE run on (units register as requests bill).
     observations: ObsCustody,
-    /// The core store (filled at the deployment point) and the governance binder (filled when governance
-    /// attaches): the two things durable WORK waits for.
-    work_store: LateStore,
-    work_binder: LateBinder,
     /// Durable WORK for every seat (rows are scoped by instance name).
     work: Arc<StoreWork>,
 }
@@ -181,21 +177,22 @@ fn recovery_matcher(patterns: Vec<Box<str>>) -> Box<dyn Fn(&str) -> bool + Send 
 }
 
 impl Shared {
-    fn new(records: Records, push: Arc<dyn PushQueue>) -> Self {
-        let work_store = LateStore::default();
-        let work_binder = LateBinder::default();
+    fn new(
+        records: Records,
+        push: Arc<dyn PushQueue>,
+        store: Arc<busbar_kernel::persistence::facade::CoreStore>,
+        binder: Arc<WorkBinder>,
+    ) -> Self {
         Self {
             records,
             push,
             signals: SignalRegistry::new(),
             observations: ObsCustody::new(Arc::new(busbar_kernel::store::now_ms)),
             work: Arc::new(StoreWork::new(
-                work_store.clone(),
-                work_binder.clone(),
+                store,
+                binder,
                 Arc::new(busbar_kernel::store::now_ms),
             )),
-            work_store,
-            work_binder,
         }
     }
 }
@@ -218,8 +215,6 @@ pub(crate) struct Booted {
     pub(crate) secrets: Arc<BootSecrets>,
     pub(crate) resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     pub(crate) deployment: [u8; 16],
-    /// Durable WORK: the governance binder, filled when governance attaches ([`attach_governance`]).
-    work_binder: LateBinder,
     /// The records the signed-ingress replay claims are written through.
     records: Records,
     /// Durable WORK of every seat: what the recovery scheduler scans ([`recover_ports`]).
@@ -258,15 +253,6 @@ pub(crate) fn booted() -> Option<&'static Booted> {
 /// The MIN-3 plane instances the boot opened, for `Served.ports`.
 pub(crate) fn seats() -> Vec<PortSeat> {
     booted().map(|b| b.seats.clone()).unwrap_or_default()
-}
-
-/// Governance is attached (after the app's first build): durable WORK binds a principal's recovery standing through
-/// it from now on. Until then every WORK_OPEN answers `R_UNSUPPORTED` (core cannot recover), the IF's fail-closed
-/// answer. A boot that took the old path has no MIN-3 instances and nothing to attach.
-pub(crate) fn attach_governance(handle: Arc<busbar_kernel::state::AppHandle>) {
-    if let Some(booted) = booted() {
-        booted.work_binder.install(governed_binder(handle));
-    }
 }
 
 /// How long one recovery scan, and one recovery poll, may take (today's scheduler's per-poll deadline).
@@ -1350,6 +1336,7 @@ pub(crate) async fn finish(
     reactor: tokio::runtime::Handle,
     startup: Startup,
     services: Option<Arc<KernelServices>>,
+    work_binder: Arc<WorkBinder>,
 ) -> Result<
     (
         Startup,
@@ -1386,8 +1373,7 @@ pub(crate) async fn finish(
         Arc::clone(&core),
         Arc::new(RetryPolicyImpl::default()),
     ));
-    let shared = Arc::new(Shared::new(records.clone(), push));
-    shared.work_store.install(core);
+    let shared = Arc::new(Shared::new(records.clone(), push, core, work_binder));
     let seat = SeatShared {
         upstreams: declared
             .iter()
@@ -1605,7 +1591,6 @@ pub(crate) async fn finish(
         core,
         secrets,
         deployment: walked.deployment,
-        work_binder: shared.work_binder.clone(),
         work: Arc::clone(&shared.work),
         records,
     });
