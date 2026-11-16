@@ -10,7 +10,7 @@ use crate::diagnostics::{
     PLUGINS_FETCH_RELOAD_MISS, PROVIDER_API_KEY_UNRESOLVABLE, STATEFUL_PLANE_EPHEMERAL_STORE,
     STORE_SECRET_REF_UNRESOLVED,
 };
-use crate::preflight::{build_secret_resolver, resolve_at_rest_keys, resolve_signing_key};
+use crate::preflight::{resolve_at_rest_keys, resolve_signing_key};
 use crate::router::project_auth_scope_caps;
 use crate::state::App;
 use crate::store::{HealthState, LaneData};
@@ -1007,6 +1007,26 @@ pub trait RootRules: Send + Sync {
             Ok(config::Grammar::empty())
         }
     }
+    /// Open the candidate secret plan using this roots complete bootstrap owners. The root
+    /// refuses protected boot changes before opening any candidate instance.
+    fn secret_resolver<'a>(
+        &'a self,
+        cfg: &'a config::RootCfg,
+        _plugins: &'a config::PluginsCfg,
+    ) -> busbar_plugin_abi::host_side::caller::BoxFut<
+        'a,
+        Result<Arc<config::secret::SecretResolver>, String>,
+    > {
+        Box::pin(async move {
+            let sugars = generation_sugars(cfg);
+            if !cfg.secrets.is_empty() || sugars.iter().next().is_some() {
+                return Err("no composition root supplied the candidate secret plan".to_owned());
+            }
+            Ok(Arc::new(
+                config::secret::SecretResolver::builtins_only().with_sources(sugars),
+            ))
+        })
+    }
     fn check(&self, cfg: &config::RootCfg) -> Result<(), String>;
 
     /// The document this read runs in place of the file at `path`, held in memory by the
@@ -1064,9 +1084,10 @@ pub async fn bootstrap_config_store(
     cfg: &config::RootCfg,
     plugins: &config::PluginsCfg,
     opener: &dyn crate::preflight::StoreOpener,
+    resolver: &config::secret::SecretResolver,
 ) -> Result<busbar_contract::persistence::axis::OpenedBackend, String> {
-    // Validation, fetch, admission and the bootstrap secrets run as before; the open itself is the registry's.
-    bootstrap_store_inputs(cfg, plugins).await?;
+    // The root supplies its opened S5 view; this projection never opens secret instances.
+    bootstrap_store_inputs(cfg, plugins, resolver).await?;
     open_config_store(cfg, opener).await
 }
 
@@ -1075,9 +1096,10 @@ pub async fn bootstrap_config_store(
 pub async fn prepare_config_store(
     cfg: &config::RootCfg,
     plugins: &config::PluginsCfg,
+    resolver: &config::secret::SecretResolver,
 ) -> Result<busbar_contract::persistence::lifecycle::axis::Prepared, String> {
-    let (registry, resolver) = bootstrap_store_inputs(cfg, plugins).await?;
-    let (door, label, settings) = config_store_inputs(cfg.store.as_ref(), &registry, &resolver)?;
+    let registry = bootstrap_store_inputs(cfg, plugins, resolver).await?;
+    let (door, label, settings) = config_store_inputs(cfg.store.as_ref(), &registry, resolver)?;
     let axis = crate::preflight::root_rows()
         .store_axis
         .ok_or("no Store axis is installed")?;
@@ -1090,13 +1112,8 @@ pub async fn prepare_config_store(
 async fn bootstrap_store_inputs(
     cfg: &config::RootCfg,
     plugins: &config::PluginsCfg,
-) -> Result<
-    (
-        Arc<dyn busbar_contract::plugin_rows::PluginRows>,
-        config::secret::SecretResolver,
-    ),
-    String,
-> {
+    resolver: &config::secret::SecretResolver,
+) -> Result<Arc<dyn busbar_contract::plugin_rows::PluginRows>, String> {
     // This is a Store-only bootstrap projection. Overlay definitions do not exist yet;
     // the composition root validates the complete effective configuration after recovery.
     config_validate::validate_bootstrap_security(cfg).map_err(|errors| errors.join("; "))?;
@@ -1114,34 +1131,15 @@ async fn bootstrap_store_inputs(
     )?;
     let dependencies = bootstrap_dependency_names(cfg, registry.as_ref());
     validate_bootstrap_artifacts(registry.as_ref(), &dependencies, plugins)?;
-    if let Some(admit) = crate::preflight::root_rows().secret_admit {
-        admit(&registry, plugins).await?;
-    }
     admitted_pin(cfg, registry.as_ref())?;
-    let bootstrap_secrets = cfg
-        .secrets
-        .iter()
-        .filter(|(module, _)| {
-            registry
-                .resolve(module)
-                .is_some_and(|row| row.kind == "secret" && dependencies.contains(&row.name))
-        })
-        .map(|(module, settings)| (module.clone(), settings.clone()))
-        .collect();
-    let resolver = build_secret_resolver(
-        registry.clone(),
-        &bootstrap_secrets,
-        &generation_sugars(cfg),
-    )?;
-
-    let signer = resolve_signing_key(cfg.auth.as_ref(), &resolver)?;
-    let at_rest = resolve_at_rest_keys(&cfg.credentials, &resolver);
+    let signer = resolve_signing_key(cfg.auth.as_ref(), resolver)?;
+    let at_rest = resolve_at_rest_keys(&cfg.credentials, resolver);
     publish_bootstrap_at_rest(at_rest.as_ref().map(Option::is_some).map_err(Clone::clone));
     publish_records_keys(RecordsKeys {
         at_rest: at_rest?,
         signer,
     });
-    Ok((registry, resolver))
+    Ok(registry)
 }
 
 /// What core's records step (MIGRATE-ON-BOOT r42 §3 4a, §6 (2) and (4)) seals and verifies with: the
@@ -1831,9 +1829,6 @@ async fn build_app_native(
         | config_validate::Refusal::Unresolved(e) => e,
     })?;
 
-    if let Some(admit) = crate::preflight::root_rows().secret_admit {
-        admit(&plugin_registry, &plugins_cfg).await?;
-    }
     admitted_pin(&cfg, plugin_registry.as_ref())?;
 
     let transition_requirements =
@@ -1841,11 +1836,7 @@ async fn build_app_native(
 
     let secret_resolver = match opened_secrets {
         Some(resolver) => resolver,
-        None => Arc::new(build_secret_resolver(
-            plugin_registry.clone(),
-            &cfg.secrets,
-            &generation_sugars(&cfg),
-        )?),
+        None => rules.secret_resolver(&cfg, &plugins_cfg).await?,
     };
 
     let mut lanes_data = Vec::new();
