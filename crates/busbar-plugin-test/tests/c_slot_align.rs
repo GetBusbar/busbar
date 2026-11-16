@@ -7,7 +7,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-A3"]
+#[ignore = "owner: W1-A3 (needs a test hook in busbar-ffi slots.rs, owner-pinned: GetBusbar/busbar#265)"]
 fn slots_are_128_byte_aligned() {
     todo!("owner: W1-A3 (C-SLOT-ALIGN)")
 }
