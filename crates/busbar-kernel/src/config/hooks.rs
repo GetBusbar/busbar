@@ -67,6 +67,13 @@ pub struct HookDefCfg {
     /// Ordering key (default 0).
     #[serde(default)]
     pub priority: Option<u16>,
+    /// `limits` beside `module` (IF §12.22), as written: parsed and stripped by [`super::min3::parse_min3`].
+    #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
+    pub limits: Option<busbar_contract::yaml::Value>,
+    /// `insecure_transport` beside `module` (TRANSPORT-SECURITY-POLICY §4), as written: parsed and stripped by
+    /// [`super::min3::parse_min3`].
+    #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
+    pub insecure_transport: Option<busbar_contract::yaml::Value>,
 }
 
 pub type HookDefs = indexmap::IndexMap<String, HookDefCfg>;
