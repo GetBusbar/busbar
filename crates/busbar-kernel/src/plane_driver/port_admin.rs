@@ -125,6 +125,8 @@ pub async fn answer(request: AdminRequest) -> Option<AdminAnswer> {
         principal: None,
         unit: None,
         upstream: None,
+        client: None,
+        carrier: None,
         intents: std::sync::Arc::clone(&seat.intents),
         models: Vec::new(),
     };

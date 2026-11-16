@@ -627,7 +627,10 @@ impl Steps<'_> {
                 .collect(),
         );
         let work: Arc<dyn DurableWork> = Arc::clone(&self.shared.work) as Arc<dyn DurableWork>;
-        let judge = self.services.as_ref().and_then(|s| s.dest_judge());
+        let judge = self
+            .services
+            .as_ref()
+            .and_then(|s| s.installed_dest_judge());
         let intents = KernelIntents::new(
             Arc::new(self.shared.records.clone()),
             Arc::new(self.shared.push.clone()),

@@ -729,8 +729,10 @@ fn serve_blocking(
                 &http.body,
                 Drive {
                     resolver: &resolver,
-                    members,
-                    send,
+                    // The casts shorten each trait object's own lifetime bound to the borrow (the one `Drive` lifetime):
+                    // behind `&mut` the two cannot otherwise differ, and the carrier borrow below pins that lifetime.
+                    members: members.map(|m| m as &mut dyn Members),
+                    send: send.map(|s| s as &mut dyn UpSend),
                     dialect,
                     refusals,
                     effects: &effects,
