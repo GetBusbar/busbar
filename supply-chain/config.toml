@@ -447,7 +447,7 @@ notes = "CryptoProvider release (decision 228), used with default-features = fal
 [[exemptions.object]]
 version = "0.37.3"
 criteria = "safe-to-deploy"
-notes = "Used by busbar-ffi (feature host) for the image bounds check, read feature only. Exempted, not audited."
+notes = "Read-only object-file parser. Used by busbar-ffi (feature host) for the image bounds check, read feature only, and with default-features = false (read, std) by tools/ci-checks no-host-link to scan a release cdylib for host symbols. Exempted, not audited (DEP-5): no imported audit set covers 0.37.3."
 
 [[exemptions.olpc-cjson]]
 version = "0.1.4@git:0a96a65b1122a2bbb93fd36cae3b36dd2b045c7e"

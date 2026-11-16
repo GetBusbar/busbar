@@ -329,7 +329,10 @@ dependencies = [
 name = "busbar-ci-checks"
 version = "1.6.0"
 dependencies = [
+ "object",
  "proc-macro2",
+ "quote",
+ "serde_json",
  "syn 2.0.117",
 ]
 
