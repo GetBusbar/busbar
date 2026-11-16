@@ -4245,3 +4245,31 @@ async fn a_same_dialect_rerank_puts_identical_search_units_on_both_books() {
 
 #[path = "work_budget.rs"]
 mod work_budget;
+
+#[tokio::test]
+async fn a_late_body_terminal_stage_refusal_is_a_body_error() {
+    use http_body_util::BodyExt;
+    let node = Node::new();
+    let book = native_node_book().await;
+    let journal = book.durability.lock().unwrap().journal.clone();
+    journal.stop_staging().unwrap();
+    let arm = LateAccrual {
+        custody: node.ticket_custody.clone(),
+        book: book.durability.clone(),
+        line: None,
+        history: rerank_history_on(RERANK_LANE, 3, Some(2_000_000)),
+        durability_token: node.kernel.durability_token(),
+        principal: PrincipalId::new("acct:late-refused"),
+        arrived: Arrived::at(EPOCH * 1_000, 3),
+        late: Box::new(|| None),
+        posted: true,
+        outcome: Some(Outcome::Completed),
+        seal: Some(fixture_seal(1).into()),
+    };
+    let body = LateBody::new(axum::body::Body::empty(), arm);
+    assert!(
+        body.collect().await.is_err(),
+        "EOF must not hide refused audit staging"
+    );
+    assert!(book.durability.lock().unwrap().audit_records().is_empty());
+}

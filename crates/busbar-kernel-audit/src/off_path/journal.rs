@@ -38,6 +38,19 @@ pub struct JournalHead {
 
 /// Read audit head metadata without resolving the historical plane's meter vocabulary.
 pub fn head_from_journal_body(bytes: &[u8]) -> Result<Option<JournalHead>, String> {
+    if let Some(record) = crate::notary_key::notary_key_from_journal_body(bytes)? {
+        return Ok(Some(JournalHead {
+            head: crate::heads::SignedHead {
+                seq: record.seq,
+                hash: record.fingerprint.to_string(),
+                signature: None,
+                key_id: None,
+                wall: record.linked_ms / 1_000,
+            },
+            prev_hash: prev_text(record.prev_link),
+            node: record.node,
+        }));
+    }
     let mut r = Reader { bytes, at: 0 };
     let Some(keyed) = journal_kind(&mut r) else {
         return Ok(None);

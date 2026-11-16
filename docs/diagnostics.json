@@ -303,6 +303,18 @@
     "code": "BUSBAR-2051",
     "number": 2051,
     "class": "audit",
+    "slug": "terminal-audit-stage-failed",
+    "title": "A request terminal audit original could not be staged",
+    "severity": "actionable",
+    "summary": "The journal refused the terminal audit original before native confirmation. The request fails instead of reporting success without its audit evidence; an already streaming response terminates with an error. The journal and audit chain positions do not advance for the refused original. The counter busbar_audit_stage_failures_total counts these failures.",
+    "action": "Check store availability and journal custody pressure. A closed journal can also indicate shutdown. Do not assume an upstream operation was undone when its terminal audit failed.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
+    "code": "BUSBAR-2052",
+    "number": 2052,
+    "class": "audit",
     "slug": "audit-sealed-after-restart",
     "title": "An unstamped audit tail was sealed after a restart",
     "severity": "benign_recurring",
@@ -312,8 +324,8 @@
     "retired": false
   },
   {
-    "code": "BUSBAR-2052",
-    "number": 2052,
+    "code": "BUSBAR-2053",
+    "number": 2053,
     "class": "audit",
     "slug": "audit-chain-broken-at-boot",
     "title": "An audit chain is broken after its last valid stamp; the tail is recorded, never sealed",
@@ -324,8 +336,8 @@
     "retired": false
   },
   {
-    "code": "BUSBAR-2053",
-    "number": 2053,
+    "code": "BUSBAR-2054",
+    "number": 2054,
     "class": "audit",
     "slug": "audit-predecessor-refused",
     "title": "A crashed predecessor on this host was not sealed",
@@ -336,8 +348,8 @@
     "retired": false
   },
   {
-    "code": "BUSBAR-2054",
-    "number": 2054,
+    "code": "BUSBAR-2055",
+    "number": 2055,
     "class": "audit",
     "slug": "audit-predecessor-seal-failed",
     "title": "Sealing a crashed predecessor is failing and is retried",

@@ -885,7 +885,7 @@ async fn the_token_endpoint_refuses_what_the_profile_forbids() {
     let s = serve(true).await;
     let dpop = Key::new("dpop");
     let token_endpoint = format!("{}/token", s.origin);
-    let dpop_errors = &["invalid_dpop_proof", "invalid_request", "invalid_grant"];
+    let dpop_errors = &["invalid_dpop_proof"];
 
     let code = code_for(&s, &dpop).await;
     assert_token_refused(

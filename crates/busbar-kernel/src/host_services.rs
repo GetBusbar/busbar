@@ -1052,7 +1052,7 @@ fn trust_refused(why: Undecided) -> TrustRefused {
 fn trust_decision_answer(result: Result<KeyRow, TrustRefused>) -> Stored {
     Stored::ready(match result {
         Ok(row) => decided_code(row.state),
-        Err(TrustRefused::NoSuchKey) => svc::UNDECIDED_UNKNOWN,
+        Err(TrustRefused::NoSuchKey | TrustRefused::Ambiguous) => svc::UNDECIDED_UNKNOWN,
         Err(TrustRefused::NothingSighted | TrustRefused::Unverified) => svc::UNDECIDED_UNPINNED,
         Err(TrustRefused::Stale) => svc::UNDECIDED_STALE,
         Err(TrustRefused::Rootless) => svc::UNDECIDED_ROOTLESS,
@@ -1727,12 +1727,13 @@ impl KernelServices {
         ruling: Ruling,
         expected_digest: Option<&str>,
     ) -> Result<KeyRow, TrustRefused> {
-        let found = self
-            .trust
-            .rows()
-            .into_iter()
-            .find(|r| r.key() == key)
-            .ok_or(TrustRefused::NoSuchKey)?;
+        let mut matching = self.trust.rows().into_iter().filter(|r| r.key() == key);
+        let found = matching.next().ok_or(TrustRefused::NoSuchKey)?;
+        // A flattened key that names two rows (a registration name holding `/`) decides nothing:
+        // the first match would let an upstream choose the row by naming a tool.
+        if matching.next().is_some() {
+            return Err(TrustRefused::Ambiguous);
+        }
         self.decide_key(
             &found.instance,
             &found.counterparty,
@@ -2566,6 +2567,8 @@ fn span(key_off: usize, key_len: usize, value_off: usize, value_len: usize) -> I
 pub enum TrustRefused {
     /// No admitted instance has the key.
     NoSuchKey,
+    /// The flattened key names more than one row (an instance or registration name holds `/`).
+    Ambiguous,
     /// The key was never sighted (nor declared) at anything to approve.
     NothingSighted,
     /// The counterparty declares no authenticity root: nothing at it can be approved.
