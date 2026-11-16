@@ -16,6 +16,8 @@ use busbar_kernel::plane_driver::route_input::{
     LaneInput, OnExhaustedInput, PoolInput, PoolMemberInput,
 };
 
+/// The registry's kernel sides, core's own secret references, and the one plan-and-walk entry.
+pub mod boot_registry;
 /// The MIN-3 boot: one generic walk over `Registry::boot_plan` (IF §11.2, §12.10 item 4).
 pub mod boot_walk;
 
@@ -1086,8 +1088,9 @@ pub async fn bootstrap_config_store(
     cfg: &config::RootCfg,
     plugins: &config::PluginsCfg,
 ) -> Result<busbar_contract::persistence::axis::OpenedBackend, String> {
-    let (registry, resolver) = bootstrap_store_inputs(cfg, plugins).await?;
-    open_config_store(cfg.store.as_ref(), &registry, &resolver).await
+    // Validation, fetch, admission and the bootstrap secrets run as before; the open itself is the registry's.
+    bootstrap_store_inputs(cfg, plugins).await?;
+    open_config_store(cfg).await
 }
 
 /// Inspect a configured Store before ordinary OPEN can initialize or select its dataset.
@@ -1271,6 +1274,35 @@ pub fn bootstrap_dependency_names(
     })
 }
 
+/// The `module` each of core's own secret references names (IF §11.2 `boot_plan`: the admin token, the signing
+/// key, the at-rest keys), in that order, each once. This is what `Registry::boot_plan_with_core` is fed so the
+/// secret instances core itself resolves from open in 2a, before the store.
+pub fn core_secret_modules(cfg: &config::RootCfg) -> Vec<String> {
+    let mut modules: Vec<String> = Vec::new();
+    let mut add = |reference: &busbar_contract::secret_ref::SecretRef| {
+        if let Some(module) = reference.source_module() {
+            if !modules.iter().any(|seen| seen == module) {
+                modules.push(module.to_owned());
+            }
+        }
+    };
+    if let Some(auth) = &cfg.auth {
+        if let Some(reference) = auth.operator_token_ref() {
+            add(reference);
+        }
+        if let Some(reference) = &auth.signing_key {
+            add(reference);
+        }
+    }
+    if let Some(keys) = &cfg.credentials.at_rest {
+        add(&keys.key);
+        if let Some(previous) = &keys.previous {
+            add(previous);
+        }
+    }
+    modules
+}
+
 pub fn bootstrap_dependency_names_from_metadata(
     cfg: &config::RootCfg,
     fields: &[String],
@@ -1294,27 +1326,8 @@ pub fn bootstrap_dependency_names_from_metadata(
             }
         }
     }
-    if let Some(auth) = &cfg.auth {
-        if let Some(reference) = auth.operator_token_ref() {
-            if let Some(module) = reference.source_module() {
-                add(module);
-            }
-        }
-        if let Some(reference) = &auth.signing_key {
-            if let Some(module) = reference.source_module() {
-                add(module);
-            }
-        }
-    }
-    if let Some(keys) = &cfg.credentials.at_rest {
-        if let Some(module) = keys.key.source_module() {
-            add(module);
-        }
-        if let Some(previous) = &keys.previous {
-            if let Some(module) = previous.source_module() {
-                add(module);
-            }
-        }
+    for module in core_secret_modules(cfg) {
+        add(&module);
     }
     modules
 }
@@ -1368,20 +1381,63 @@ pub fn validate_bootstrap_archive(
     Ok(())
 }
 
+/// The configured store, opened through the MIN-3 registry (W2-SW-STORE; IF §11.2 `Registry::open_store`).
+/// The bag goes in operator form (secret references with their `module`): the registry's binder binds it, the
+/// store converts an older shape inside its own `open` and the registry keeps the settled bag for the boot's
+/// write-back (`Registry::take_settled`, step 5 / 5W). The instance name is the section key, `store`.
 async fn open_config_store(
-    store: Option<&config::StoreCfg>,
-    registry: &Arc<dyn busbar_contract::plugin_rows::PluginRows>,
-    resolver: &config::secret::SecretResolver,
+    cfg: &config::RootCfg,
 ) -> Result<busbar_contract::persistence::axis::OpenedBackend, String> {
-    let (door, label, settings) = config_store_inputs(store, registry, resolver)?;
-    let failed = |error: String| format!("store '{label}' plugin load failed: {error}");
-    let axis = crate::preflight::root_rows()
-        .store_axis
-        .ok_or_else(|| failed("no store axis is installed".into()))?;
-    axis()
-        .open(door, &label, settings.as_bytes())
+    let store = cfg.store.as_ref().ok_or_else(config::store_required)?;
+    let failed = |error: String| format!("store '{}' plugin load failed: {error}", store.module);
+    let opener = crate::preflight::store_opener()
+        .ok_or_else(|| failed("no store registry is installed".into()))?;
+    let config_json = store
+        .settings
+        .encode()
+        .map_err(|error| failed(error.to_string()))?
+        .into_exposed(&crate::seal::lend());
+    let limits = cfg
+        .min3
+        .limits
+        .get(&(Box::from(STORE_INSTANCE), Box::from(STORE_INSTANCE)))
+        .map_or_else(Default::default, |limits| {
+            busbar_plugin_abi::host_side::caller::InstanceLimits {
+                timeout_ms: limits.timeout_ms,
+                connect_timeout_ms: limits.connect_timeout_ms,
+                max_inflight: limits.max_inflight,
+                ..Default::default()
+            }
+        });
+    let spec = busbar_plugin_loader::instance::InstanceSpec {
+        identity: &store.module,
+        name: STORE_INSTANCE,
+        config_json: &config_json,
+        limits,
+        public_url: None,
+        caller_upstreams: &[],
+    };
+    opener
+        .open_store(&spec)
         .await
-        .map_err(failed)
+        .map(|handle| handle.backend)
+        .map_err(|error| failed(store_open_refusal(&error)))
+}
+
+/// The store's configured instance name: its config section key.
+const STORE_INSTANCE: &str = "store";
+
+/// Core's own words for a refused store open, with the code only (IF §12.16: the plugin's text is never
+/// interpolated into a core message).
+fn store_open_refusal(error: &busbar_plugin_loader::instance::OpenError) -> String {
+    use busbar_plugin_loader::instance::OpenError;
+    match error {
+        OpenError::Refused { refusal, .. } => format!("refused: {refusal}"),
+        OpenError::Config { code, .. } => format!("its settings were refused (code {code})"),
+        OpenError::Failed { code, .. } => format!("its open failed (code {code})"),
+        OpenError::Call(_) => "its open faulted".to_owned(),
+        OpenError::Unknown(what) => format!("unknown store open answer: {what}"),
+    }
 }
 
 fn config_store_inputs(

@@ -276,6 +276,7 @@ pub mod adapters;
 pub mod admit;
 #[deny(unsafe_code)]
 pub mod binder;
+mod chains;
 #[deny(unsafe_code)]
 pub mod encode;
 #[deny(unsafe_code)]

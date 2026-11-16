@@ -391,6 +391,18 @@ impl Pool {
             pool: Some(self),
         }
     }
+    /// A buffer holding `bytes` verbatim (an `open` request: the bound config is not a record frame), growing up
+    /// to `max_out`. Full when `bytes` does not fit.
+    pub fn acquire_with(
+        &'static self,
+        max_out: usize,
+        bytes: &[u8],
+    ) -> Result<PooledOut, crate::records::Full> {
+        let mut out = self.acquire(max_out);
+        out.room(bytes.len())?;
+        out.append(bytes);
+        Ok(out)
+    }
     pub fn misses(&self) -> u64 {
         self.misses.load(Ordering::Relaxed)
     }
