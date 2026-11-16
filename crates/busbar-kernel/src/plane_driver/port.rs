@@ -16,11 +16,19 @@ use busbar_plugin_abi::host_side::needs::Needs;
 use busbar_plugin_abi::plane::{ADMIN_CARRIER_END, ROUTE_LINE};
 use busbar_plugin_abi::records::{tag as g, Reply, U64Rec, Writer};
 use busbar_plugin_loader::instance::{InstanceSpec, OpenError, Registry};
-use busbar_plugin_loader::ports::plane::{PlaneIn, PlaneOut, PlanePort};
+use busbar_plugin_loader::ports::plane::{PlaneIn, PlanePort};
 use busbar_plugin_loader::ports::{CallCx, PortError};
 
 use crate::channels::line_carriers::{CarrierSink, LineCarriers};
 use crate::host_services::KernelServices;
+
+use super::port_auth::{
+    admit, effective_classes, refuse, subject_identity, Admitted, Credentials, NoTickets, Principal,
+};
+use super::port_money::write_audit;
+use super::port_session::{run_local, Effects, SessionError, ToClient};
+use super::{AuditSink, CoreAudit};
+use crate::refusal::{ClientRefusal, RefusalMap};
 
 /// How long the plane has to drop its per-carrier state at a carrier's end.
 const CARRIER_END_GRACE: Duration = Duration::from_secs(5);
@@ -30,49 +38,37 @@ const CARRIER_END_GRACE: Duration = Duration::from_secs(5);
 pub enum LineRefused {
     /// The plane declares no `ROUTE_LINE` route.
     NoLineRoute,
-    /// The route's auth mask names more than one class; per-request classification is a later slice.
-    AuthMaskNotOneClass,
-    /// The plane refused, failed or faulted.
-    Port(PortError),
-    /// The plane answered with an item this slice does not drive yet.
-    Unsupported,
+    /// The plane refused, failed or faulted, or broke a once rule, or answered with an item a later slice drives.
+    Session(SessionError),
     /// The line's task was cancelled.
     Cancelled,
 }
 
-/// One line's answer as the plane's sink sees it: the to-client BODY bytes are the response line; an `Emit` is
-/// written to its carrier at once, which is before this line's own response line (§12.23 rule 3).
-#[derive(Default)]
-pub(crate) struct LineAnswer {
-    body: Vec<u8>,
-    unsupported: bool,
+/// A line's effects outside its response line: an `Emit` is written to its carrier at once, which is before this
+/// line's own response line (§12.23 rule 3).
+struct LineEffects<'a> {
+    carriers: &'a LineCarriers,
+    owner: &'a Incarnation,
 }
 
-impl LineAnswer {
-    pub(crate) fn take(&mut self, out: PlaneOut<'_>, carriers: &LineCarriers, owner: &Incarnation) {
-        match out {
-            // RESPOND's status is not written on a line; the head and the end carry nothing either.
-            PlaneOut::Respond { .. }
-            | PlaneOut::Header(..)
-            | PlaneOut::Trailers
-            | PlaneOut::End
-            | PlaneOut::Finish => {}
-            PlaneOut::Body(bytes) => self.body.extend_from_slice(bytes),
-            PlaneOut::Emit { carrier, bytes } => {
-                carriers.emit_from_plane(owner, carrier, bytes);
-            }
-            _ => self.unsupported = true,
-        }
+impl Effects for LineEffects<'_> {
+    fn emit(&self, carrier: u64, bytes: &[u8]) {
+        self.carriers.emit_from_plane(self.owner, carrier, bytes);
     }
+}
 
-    /// The response line without its terminator; empty writes nothing.
-    pub(crate) fn into_line(self) -> Result<Vec<u8>, LineRefused> {
-        if self.unsupported {
-            Err(LineRefused::Unsupported)
-        } else {
-            Ok(self.body)
+/// The response line without its terminator: the to-client BODY bytes. RESPOND's status, the head and the end
+/// carry nothing on a line; empty writes nothing. A message item has no line form.
+fn line_of(items: Vec<ToClient>) -> Result<Vec<u8>, LineRefused> {
+    let mut line = Vec::new();
+    for item in items {
+        match item {
+            ToClient::Body(bytes) => line.extend_from_slice(&bytes),
+            ToClient::Msg { .. } => return Err(LineRefused::Session(SessionError::NotDriven)),
+            ToClient::Head { .. } | ToClient::Trailers(_) | ToClient::End => {}
         }
     }
+    Ok(line)
 }
 
 /// The argument of `admin(ADMIN_CARRIER_END)`: one `U64Rec(carrier)` (§12.23 rule 5).
@@ -104,7 +100,8 @@ impl std::fmt::Debug for PortSeat {
 #[derive(Clone)]
 struct LineRoute {
     id: u32,
-    auth: u32,
+    /// The effective class set (IF §12.11) the route runs under; a line classifies each request within it.
+    effective: u32,
     path: Box<str>,
 }
 
@@ -113,34 +110,48 @@ pub struct PortDriver {
     port: Arc<dyn PlanePort>,
     services: Arc<KernelServices>,
     caller: Caller,
+    refusals: Arc<dyn RefusalMap>,
+    audit: Arc<dyn AuditSink>,
     line: Option<LineRoute>,
 }
 
 impl PortDriver {
     /// Opens the plane instance `spec` names through the registry and binds it to the kernel's services under
-    /// `caller`, the instance's own binding.
+    /// `caller`, the instance's own binding. `refusals` is the map every refusal this driver renders goes through.
     pub async fn open<N: Needs>(
         registry: &Registry<N>,
         spec: &InstanceSpec<'_>,
         services: Arc<KernelServices>,
         caller: Caller,
+        refusals: Arc<dyn RefusalMap>,
     ) -> Result<Self, OpenError> {
         let port = registry.open_plane(spec).await?;
         let line = port
             .routes()
             .iter()
             .find(|r| r.flags & ROUTE_LINE != 0)
-            .map(|r| LineRoute {
-                id: r.route,
-                auth: r.auth,
-                path: r.pattern.clone(),
+            .and_then(|r| {
+                Some(LineRoute {
+                    id: r.route,
+                    effective: effective_classes(r.auth, None).ok()?,
+                    path: r.pattern.clone(),
+                })
             });
         Ok(Self {
             port,
             services,
             caller,
+            refusals,
+            audit: Arc::new(CoreAudit),
             line,
         })
+    }
+
+    /// The audit chain this driver writes a plane's AUDIT rows to (default: the kernel's own, [`CoreAudit`]).
+    #[must_use]
+    pub fn with_audit(mut self, audit: Arc<dyn AuditSink>) -> Self {
+        self.audit = audit;
+        self
     }
 
     /// Whether the plane declares a `ROUTE_LINE` route.
@@ -184,20 +195,26 @@ impl PortDriver {
         carrier: NonZeroU64,
         request_id: u64,
         line: Vec<u8>,
+        from: &LineCaller,
     ) -> Result<Vec<u8>, LineRefused> {
         let route = self.line.clone().ok_or(LineRefused::NoLineRoute)?;
-        if route.auth.count_ones() != 1 {
-            return Err(LineRefused::AuthMaskNotOneClass);
-        }
+        let admission = admit_line(route.id, route.effective, from, &*self.refusals).await;
+        let refusals = Arc::clone(&self.refusals);
+        let audit = Arc::clone(&self.audit);
+        let principal = Arc::clone(&from.principal);
         let port = Arc::clone(&self.port);
         let services = Arc::clone(&self.services);
         let owner = self.caller.incarnation().clone();
         tokio::task::spawn_blocking(move || {
             run_line(
                 &*port,
+                &*refusals,
+                &*audit,
+                &principal,
                 services.line_carriers(),
                 &owner,
                 &route,
+                admission,
                 carrier.get(),
                 request_id,
                 &line,
@@ -208,41 +225,103 @@ impl PortDriver {
     }
 }
 
+/// The carrier's own binding, as its lines see it: the principal its session was bound as, and whether that was a
+/// verified credential (an unbound session is anonymous).
+#[derive(Clone, Debug)]
+pub struct LineCaller {
+    pub principal: Arc<str>,
+    pub authenticated: bool,
+}
+
+/// A line's admission (IF §12.11): the carrier's principal is the one credential a line has, so a PRINCIPAL route
+/// takes it as the identity (ID_SUBJECT), OPTIONAL takes it when the carrier is authenticated, PUBLIC takes none.
+/// A line has no credential header, so a ticket never applies and PRINCIPAL beside TICKET runs PRINCIPAL.
+pub(crate) async fn admit_line(
+    route: u32,
+    effective: u32,
+    caller: &LineCaller,
+    refusals: &dyn RefusalMap,
+) -> Result<Admitted, ClientRefusal> {
+    let identity = subject_identity(&caller.principal);
+    let principal = if caller.authenticated {
+        Principal::Verified(&identity)
+    } else {
+        Principal::Anonymous
+    };
+    let creds = Credentials {
+        bearer: None,
+        principal,
+        operator: false,
+        signed: None,
+    };
+    admit(route, effective, &creds, &NoTickets, refusals, "", 0).await
+}
+
+/// What a port error becomes for the client: core's generic refusal, never the plugin's words (§12.15).
+pub(crate) fn refusal_of(
+    route: u32,
+    error: &PortError,
+    refusals: &dyn RefusalMap,
+) -> ClientRefusal {
+    refusals.for_port(route, error)
+}
+
+/// One line: admission, then `request` and `end`. A refused admission, or a `request` the plane refused or
+/// failed, is rendered by the plane (`render(RENDER_REFUSAL)`) and its body is the response line.
+#[allow(clippy::too_many_arguments)]
 fn run_line(
     port: &dyn PlanePort,
+    refusals: &dyn RefusalMap,
+    audit: &dyn AuditSink,
+    principal: &str,
     carriers: &LineCarriers,
     owner: &Incarnation,
     route: &LineRoute,
+    admission: Result<Admitted, ClientRefusal>,
     carrier: u64,
     request_id: u64,
     line: &[u8],
 ) -> Result<Vec<u8>, LineRefused> {
-    let req = PlaneIn {
+    let effects = LineEffects { carriers, owner };
+    let build = |auth: u32, identity: &'_ [u8], ticket_record: &'_ [u8]| PlaneIn {
         route: route.id,
         flags: 0,
-        auth: route.auth,
+        auth,
         method: "POST",
         path: &route.path,
         query: "",
         headers: &[],
-        identity: &[],
+        identity,
         request_id,
         carrier,
         work: "",
-        ticket_record: &[],
+        ticket_record,
     };
-    let mut answer = LineAnswer::default();
-    let session = port
-        .request(&req, line, &mut |out: PlaneOut<'_>| {
-            answer.take(out, carriers, owner);
-        })
-        .map_err(LineRefused::Port)?;
-    // A session dropped without `end` is a cancel (§10.4); the plane answered locally here, so it ends.
-    port.end(session, &mut |out: PlaneOut<'_>| {
-        answer.take(out, carriers, owner);
-    })
-    .map_err(LineRefused::Port)?;
-    answer.into_line()
+    let admitted = match admission {
+        Ok(admitted) => admitted,
+        Err(refusal) => {
+            let lowest = route.effective & route.effective.wrapping_neg();
+            let req = build(lowest, &[], &[]);
+            return line_of(refuse(port, &req, &refusal, &effects));
+        }
+    };
+    let req = build(admitted.auth, &admitted.identity, admitted.ticket_record());
+    // A session dropped without `end` is a cancel (§10.4); the plane answers locally on a line, so it ends.
+    match run_local(port, &req, line, &effects) {
+        Ok(local) => {
+            for row in &local.audits {
+                if write_audit(audit, row, Some(principal)).is_err() {
+                    tracing::warn!(action = &*row.action, "a plane audit row was not accepted");
+                }
+            }
+            line_of(local.client)
+        }
+        Err(SessionError::Port(error)) => {
+            let refusal = refusal_of(route.id, &error, refusals);
+            line_of(refuse(port, &req, &refusal, &effects))
+        }
+        Err(error) => Err(LineRefused::Session(error)),
+    }
 }
 
 #[cfg(test)]

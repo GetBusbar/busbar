@@ -11,8 +11,16 @@ use busbar_contract::services::{Caller, Incarnation};
 use busbar_plugin_abi::records::{tag as g, Records, U64Rec};
 use busbar_plugin_loader::ports::plane::PlaneOut;
 
-use super::{carrier_end_arg, LineAnswer};
+use busbar_plugin_abi::fail::refused::R_AUTH_REQUIRED;
+use busbar_plugin_abi::plane::{AUTH_OPTIONAL, AUTH_PRINCIPAL, AUTH_PUBLIC, AUTH_TICKET};
+use busbar_plugin_loader::ports::PortError;
+
+use super::{
+    admit_line, carrier_end_arg, line_of, refusal_of, LineCaller, LineEffects, LineRefused,
+};
 use crate::channels::line_carriers::{CarrierSink, LineCarriers};
+use crate::plane_driver::port_session::{Answer, Once, Origin, SessionError};
+use crate::refusal::CoreRefusals;
 
 fn owner(name: &str) -> Incarnation {
     Caller::for_test(Arc::from(name), KindCode::Plane)
@@ -30,32 +38,53 @@ fn recording() -> (CarrierSink, Arc<Mutex<Vec<Vec<u8>>>>) {
     (sink, seen)
 }
 
+/// One request answer as a line session reads it.
+fn answered(
+    items: Vec<PlaneOut<'_>>,
+    carriers: &LineCarriers,
+    me: &Incarnation,
+) -> Result<Vec<u8>, LineRefused> {
+    let effects = LineEffects {
+        carriers,
+        owner: me,
+    };
+    let mut once = Once::default();
+    let mut answer = Answer::default();
+    for item in items {
+        answer.take(item, Origin::Request, &mut once, &effects);
+    }
+    line_of(answer.seal().client)
+}
+
 #[test]
 fn body_pieces_are_one_line_and_respond_and_head_are_not_written() {
     let carriers = LineCarriers::new();
     let me = owner("mcp");
-    let mut answer = LineAnswer::default();
-    for item in [
-        PlaneOut::Respond { status: 200 },
-        PlaneOut::Header("content-type", b"application/json"),
-        PlaneOut::Body(b"{\"a\":"),
-        PlaneOut::Body(b"1}"),
-        PlaneOut::End,
-        PlaneOut::Finish,
-    ] {
-        answer.take(item, &carriers, &me);
-    }
-    assert_eq!(answer.into_line().unwrap(), b"{\"a\":1}".to_vec());
+    let line = answered(
+        vec![
+            PlaneOut::Respond { status: 200 },
+            PlaneOut::Header("content-type", b"application/json"),
+            PlaneOut::Body(b"{\"a\":"),
+            PlaneOut::Body(b"1}"),
+            PlaneOut::End,
+            PlaneOut::Finish,
+        ],
+        &carriers,
+        &me,
+    );
+    assert_eq!(line.unwrap(), b"{\"a\":1}".to_vec());
 }
 
 #[test]
 fn an_answer_with_no_body_writes_no_line() {
     let carriers = LineCarriers::new();
     let me = owner("mcp");
-    let mut answer = LineAnswer::default();
-    answer.take(PlaneOut::Respond { status: 202 }, &carriers, &me);
-    answer.take(PlaneOut::End, &carriers, &me);
-    assert!(answer.into_line().unwrap().is_empty());
+    let line = answered(
+        vec![PlaneOut::Respond { status: 202 }, PlaneOut::End],
+        &carriers,
+        &me,
+    );
+    assert!(line.unwrap().is_empty());
 }
 
 #[test]
@@ -64,18 +93,19 @@ fn an_emit_goes_to_its_carrier_at_once_not_into_the_response_line() {
     let me = owner("mcp");
     let (sink, seen) = recording();
     let id = carriers.open(&me, Arc::from("anon"), sink).get();
-    let mut answer = LineAnswer::default();
-    answer.take(
-        PlaneOut::Emit {
-            carrier: id,
-            bytes: b"{\"ask\":1}",
-        },
+    let line = answered(
+        vec![
+            PlaneOut::Emit {
+                carrier: id,
+                bytes: b"{\"ask\":1}",
+            },
+            PlaneOut::Body(b"{\"r\":1}"),
+        ],
         &carriers,
         &me,
     );
     assert_eq!(*seen.lock().unwrap(), vec![b"{\"ask\":1}".to_vec()]);
-    answer.take(PlaneOut::Body(b"{\"r\":1}"), &carriers, &me);
-    assert_eq!(answer.into_line().unwrap(), b"{\"r\":1}".to_vec());
+    assert_eq!(line.unwrap(), b"{\"r\":1}".to_vec());
     assert_eq!(carriers.dropped(), 0);
 }
 
@@ -86,27 +116,35 @@ fn an_emit_to_a_carrier_another_instance_owns_is_dropped_and_counted() {
     let id = carriers
         .open(&owner("other"), Arc::from("anon"), sink)
         .get();
-    let mut answer = LineAnswer::default();
-    answer.take(
-        PlaneOut::Emit {
+    let line = answered(
+        vec![PlaneOut::Emit {
             carrier: id,
             bytes: b"x",
-        },
+        }],
         &carriers,
         &owner("mcp"),
     );
     assert!(seen.lock().unwrap().is_empty());
     assert_eq!(carriers.dropped(), 1);
-    assert!(answer.into_line().unwrap().is_empty());
+    assert!(line.unwrap().is_empty());
 }
 
 #[test]
-fn an_intent_this_slice_does_not_drive_refuses_the_line() {
+fn a_message_item_has_no_line_form() {
     let carriers = LineCarriers::new();
     let me = owner("mcp");
-    let mut answer = LineAnswer::default();
-    answer.take(PlaneOut::Forward { stream: false }, &carriers, &me);
-    assert!(answer.into_line().is_err());
+    let line = answered(
+        vec![PlaneOut::Msg {
+            flags: 1,
+            bytes: b"x",
+        }],
+        &carriers,
+        &me,
+    );
+    assert!(matches!(
+        line,
+        Err(LineRefused::Session(SessionError::NotDriven))
+    ));
 }
 
 #[test]
@@ -117,4 +155,79 @@ fn the_carrier_end_argument_is_one_u64_record_holding_the_id() {
     assert_eq!(rec.tag, g::TEXT);
     assert_eq!(rec.pod::<U64Rec>().unwrap().value, 42);
     assert!(recs.next().is_none());
+}
+
+fn carrier(authenticated: bool) -> LineCaller {
+    LineCaller {
+        principal: Arc::from("ada"),
+        authenticated,
+    }
+}
+
+#[tokio::test]
+async fn a_line_on_a_principal_route_carries_the_carrier_principal_as_its_identity() {
+    let a = admit_line(3, AUTH_PRINCIPAL, &carrier(true), &CoreRefusals::new())
+        .await
+        .unwrap();
+    assert_eq!(a.auth, AUTH_PRINCIPAL);
+    let mut recs = Records::new(&a.identity);
+    let first = recs.next().unwrap().unwrap();
+    assert_eq!((first.tag, first.text().unwrap()), (g::ID_SUBJECT, "ada"));
+}
+
+#[tokio::test]
+async fn a_line_of_an_unauthenticated_carrier_on_a_principal_route_is_refused() {
+    let refusal = admit_line(3, AUTH_PRINCIPAL, &carrier(false), &CoreRefusals::new())
+        .await
+        .unwrap_err();
+    assert_eq!((refusal.status, refusal.code), (401, R_AUTH_REQUIRED));
+}
+
+#[tokio::test]
+async fn a_public_line_route_has_no_identity_and_an_optional_one_follows_the_carrier() {
+    let refusals = CoreRefusals::new();
+    let public = admit_line(3, AUTH_PUBLIC, &carrier(true), &refusals)
+        .await
+        .unwrap();
+    assert!(public.identity.is_empty());
+    let optional = admit_line(3, AUTH_OPTIONAL, &carrier(true), &refusals)
+        .await
+        .unwrap();
+    assert!(!optional.identity.is_empty());
+    let optional = admit_line(3, AUTH_OPTIONAL, &carrier(false), &refusals)
+        .await
+        .unwrap();
+    assert!(optional.identity.is_empty());
+}
+
+#[tokio::test]
+async fn a_mask_holding_principal_and_ticket_runs_principal_on_a_line() {
+    // No credential header exists on a line, so the ticket class never applies.
+    let a = admit_line(
+        3,
+        AUTH_PRINCIPAL | AUTH_TICKET,
+        &carrier(true),
+        &CoreRefusals::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(a.auth, AUTH_PRINCIPAL);
+}
+
+#[test]
+fn a_port_failure_on_a_line_maps_to_core_s_refusal() {
+    let refusal = refusal_of(
+        3,
+        &PortError::Failed {
+            code: 0x1234,
+            text: "backend said x".into(),
+            retry_after_s: None,
+            backend_status: None,
+            error: None,
+        },
+        &CoreRefusals::new(),
+    );
+    assert_eq!(refusal.status, 502);
+    assert!(refusal.code < 0x100);
+    assert!(!refusal.text.contains("backend said x"));
 }
