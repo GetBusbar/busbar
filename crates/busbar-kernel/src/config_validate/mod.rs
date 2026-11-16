@@ -1801,7 +1801,7 @@ fn judge_cost_model(cfg: &RootCfg, errors: &mut Vec<String>, advisories: &mut Ad
                      for a provider `api_key` (a keyless local upstream such as ollama or vLLM); \
                      {what} requires a real secret reference, e.g. \
                      {what}: {}",
-                    example_reference(&sugars, "MY_SECRET_VAR")
+                    example_reference(sugars, "MY_SECRET_VAR")
                 ))
                     .into(),
                 );
@@ -1809,7 +1809,7 @@ fn judge_cost_model(cfg: &RootCfg, errors: &mut Vec<String>, advisories: &mut Ad
 
             return;
         }
-        if let Some(refusal) = declared_setting_refusal(&sugars, &what, r) {
+        if let Some(refusal) = declared_setting_refusal(sugars, &what, r) {
             errors.push(coded::config_secret_reference_invalid(refusal).into());
         }
     };

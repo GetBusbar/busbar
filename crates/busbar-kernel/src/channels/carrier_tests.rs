@@ -152,8 +152,11 @@ impl Demuxer for Script {
     }
 }
 
+/// One recorded signal: instance, key, subject, flags, payload.
+type SignalRow = (u64, Vec<u8>, Option<[u8; 32]>, u32, Vec<u8>);
+
 #[derive(Default)]
-struct Signals(Mutex<Vec<(u64, Vec<u8>, Option<[u8; 32]>, u32, Vec<u8>)>>);
+struct Signals(Mutex<Vec<SignalRow>>);
 
 impl SessionSignals for Signals {
     fn signal(

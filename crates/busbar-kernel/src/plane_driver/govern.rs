@@ -3,8 +3,10 @@
 
 use busbar_contract::caps::{
     Admission, Admit, Admittance, Approve, Arrival, Authenticate, Authenticated, CallId, Decode,
-    Dial, Grant, KernelSeal, Pass, PrincipalId, Refusal, SeatVerdict, Step, Verify,
+    Dial, Grant, KernelSeal, Pass, PrincipalId, ReasonCode, Refusal, SeatVerdict, Step, Verify,
 };
+
+use busbar_contract::abi::plane::PRINCIPAL_REQUIRED;
 
 use super::{CallerEnd, DriverSteps, FarEnd, PlaneUnits};
 use crate::slice::GroupLeaseSlip;
@@ -39,6 +41,10 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
                 self.steps
                     .authenticate(ctx)
                     .map_err(stamped::<Authenticate>(seal, call))
+                    .and_then(|authenticated| {
+                        self.principal_needed(authenticated)
+                            .map_err(stamped::<Authenticate>(seal, call))
+                    })
             });
         let admit = Grant::<Admittance>::mint_bound(seal, call);
         match authenticated {
@@ -117,5 +123,27 @@ fn stamped<T: Step>(seal: &KernelSeal, call: CallId) -> impl Fn(Refusal) -> Refu
     {
         Err(stamped) => stamped,
         Ok(_) => refusal,
+    }
+}
+
+impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
+    /// `arrive`'s `principal_need`, enforced once Authenticate has settled (#116).
+    /// `PRINCIPAL_REQUIRED` means the kernel must verify a principal before the first piece, so the
+    /// kernel's anonymous principal (an open claim's caller with no key) is refused `Unauthenticated`
+    /// and audited, never admitted. A challenge round is how a principal gets verified, so it
+    /// proceeds. `PRINCIPAL_NONE` and `PRINCIPAL_OPTIONAL` take Authenticate's answer as it stands
+    /// (a key the caller presents is already verified there).
+    fn principal_needed(&self, authenticated: Authenticated) -> Result<Authenticated, Refusal> {
+        let required = self
+            .lock()
+            .decoded
+            .as_ref()
+            .is_some_and(|d| d.principal_need == PRINCIPAL_REQUIRED);
+        match &authenticated {
+            Authenticated::Principal(p) if required && *p == PrincipalId::anonymous() => {
+                Err(Refusal::new(ReasonCode::Unauthenticated))
+            }
+            _ => Ok(authenticated),
+        }
     }
 }
