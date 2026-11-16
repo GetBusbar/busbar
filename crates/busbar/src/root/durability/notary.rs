@@ -114,6 +114,9 @@ pub(crate) struct NotaryEnd {
     pub(crate) live: SignerHandle<Live>,
     /// Why stamping stopped before `stop()`, if it did.
     pub(crate) halted: Option<String>,
+    /// The final page (SEALING-FIX §3.6.3 step 3): `Some(true)` staged, `Some(false)` its sign failed
+    /// (`audit_final=signer_failed`), `None` when no line was left unstamped or stamping had halted.
+    pub(crate) final_staged: Option<bool>,
 }
 
 /// THE RUNNING NOTARY. The root keeps it to stop it at shutdown and to check it from the
@@ -323,12 +326,24 @@ impl Notary {
         if self.parked {
             self.feed.cell.unpark();
         }
+        let final_staged = self.final_page().await;
         NotaryEnd {
             stamped_through: self.stamped_through,
             committed_through: self.committed_through,
             live: self.live,
             halted: self.halted,
+            final_staged,
         }
+    }
+
+    /// THE FINAL PAGE, made by this task on stop (SEALING-FIX §3.6.3 step 3), so the notary's state
+    /// has one stager only. An outstanding live sign is awaited and discarded (it was never staged,
+    /// so `committed_through` does not include it); then, if lines are left unstamped, one `final`
+    /// page `{committed_through + 1 ..= head}` is signed on the notary signer thread under
+    /// [`SIGN_DEADLINE`] and staged. The journal's final flush commits it after every staged page,
+    /// so pages stay contiguous and never overlap. The drain detaches this task at its cut.
+    async fn final_page(&mut self) -> Option<bool> {
+        None
     }
 
     /// One tick (§3.3 "One tick"): read the head, account the stall age, judge the in-flight

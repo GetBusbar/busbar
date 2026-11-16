@@ -795,6 +795,7 @@ impl BootIdentity {
                     {
                         return Ok(TakenNode {
                             id: assignment.id,
+                            taken_at_ms: 0,
                             lease: Some(NodeLease {
                                 owner: self.clone(),
                                 host: host.into(),
@@ -882,6 +883,7 @@ impl BootIdentity {
             if self.records.decide(predicates, mutations).await? {
                 return Ok(TakenNode {
                     id,
+                    taken_at_ms: 0,
                     lease: Some(NodeLease {
                         owner: self.clone(),
                         host: host.into(),
@@ -1328,6 +1330,8 @@ pub struct PredecessorFence {
     identity: Arc<BootIdentity>,
     host: String,
     retirements: WriterRetirements,
+    /// Its own seal-row owner: a seal write never takes the node lease's gate or retained slot.
+    seals: BootRecords,
 }
 
 /// What one F5 pass did, for its Info line.
@@ -1344,6 +1348,7 @@ impl PredecessorFence {
     pub fn new(core: Arc<CoreStore>, host: &str) -> Result<Arc<Self>, String> {
         Ok(Arc::new(Self {
             identity: Arc::new(BootIdentity::new(core.clone())?),
+            seals: predecessor_seal::seal_records(core.clone())?,
             core,
             host: host.into(),
             retirements: WriterRetirements::default(),
@@ -1486,8 +1491,18 @@ impl PredecessorFence {
     }
 }
 
+#[path = "predecessor_seal.rs"]
+mod predecessor_seal;
+pub use predecessor_seal::{
+    FenceMark, HostNode, HostNodes, PredecessorRetire, RefusedNode, SealOutcome, SealRow,
+    SealState, TailView,
+};
+
 pub struct TakenNode {
     pub id: u64,
+    /// The store clock (ms) `take_node` read: a predecessor renewed no later than this (SEALING-FIX
+    /// §3.6.2 "Dead at start").
+    pub taken_at_ms: u64,
     pub lease: Option<NodeLease>,
 }
 #[derive(Clone)]
@@ -1627,3 +1642,7 @@ mod expired_writers_tests;
 #[cfg(test)]
 #[path = "tests/fence_settle_tests.rs"]
 mod fence_settle_tests;
+
+#[cfg(test)]
+#[path = "tests/predecessor_seal_tests.rs"]
+mod predecessor_seal_tests;

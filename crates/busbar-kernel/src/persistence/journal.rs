@@ -40,7 +40,9 @@ mod recovery_hooks;
 pub(crate) use recovery_hooks::{RowChange, Selection};
 pub mod head_cell;
 pub mod runtime;
+pub(crate) mod tail;
 pub use runtime::{BufferBudget, RuntimeError, RuntimeJournal, StagedRun};
+pub use tail::TailView;
 
 #[derive(Debug)]
 pub(crate) enum Error {
