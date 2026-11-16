@@ -10,6 +10,7 @@
 pub(crate) mod dispatch;
 pub(crate) mod door_steps;
 pub(crate) mod egress_ports;
+pub(crate) mod exports;
 pub(crate) mod inbound;
 pub(crate) mod listener;
 pub(crate) mod model_egress;

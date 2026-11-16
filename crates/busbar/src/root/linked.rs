@@ -215,10 +215,13 @@ pub struct LinkedFormer {
     pub former_names: &'static [&'static str],
 }
 
+/// A door's Statement name and the rewrites it states: each rewrite's code, from and to.
+type StatementRewrites = (String, Vec<(u32, String, String)>);
+
 /// A door's Statement name and the rewrites it states; `None` when it does not read back.
 fn door_statement(
     door: busbar_contract::abi::mechanism::door::DoorFn,
-) -> Option<(String, Vec<(u32, String, String)>)> {
+) -> Option<StatementRewrites> {
     let bytes = crate::root::loader::dispatch::rendering_of(door).ok()?;
     let statement = busbar_contract::abi::mechanism::rendering::read(&bytes).ok()?;
     Some((statement.name, statement.rewrites))

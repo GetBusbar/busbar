@@ -40,7 +40,6 @@ use busbar_core_connector::listen::DEFAULT_HANDSHAKE_TIMEOUT;
 use busbar_core_connector::listen::{AcceptLimits, Listening};
 
 #[cfg(not(target_env = "msvc"))]
-
 pub(crate) fn build_info_line() -> String {
     format!(
         "profile={profile} opt-level={opt} lto={lto} debug-assertions={da} pgo={pgo} \
