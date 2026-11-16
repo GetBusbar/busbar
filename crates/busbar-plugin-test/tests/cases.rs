@@ -10,6 +10,8 @@
 //! Rule 15: no `unsafe` in any case file.
 #![forbid(unsafe_code)]
 
+#[path = "bridge_fixture.rs"]
+mod bridge_fixture;
 #[path = "c_a2a_card_redirect.rs"]
 mod c_a2a_card_redirect;
 #[path = "c_a2a_push_url.rs"]

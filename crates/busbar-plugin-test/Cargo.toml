@@ -88,6 +88,9 @@ http-body-util = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt", "net", "time", "sync"] }
 
 [dev-dependencies]
+# The bridge fixture image (W1-A3, `tests/bridge_fixture.rs`) is wired by hand over busbar-ffi's safe adapter and host
+# API, as `plugin!` wires an image; never `host` here (the loader side reaches it through busbar-plugin-abi).
+busbar-ffi = { path = "../busbar-ffi" }
 busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 # The facade's own tests drive its targets; CI's test and red-proof jobs pass none of its features.
 busbar-plugin-test = { path = ".", features = ["target-http"] }

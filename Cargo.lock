@@ -499,6 +499,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-ffi"
+version = "1.6.0"
+dependencies = [
+ "libloading",
+ "loom",
+ "object",
+ "zerocopy",
+]
+
+[[package]]
 name = "busbar-kernel"
 version = "1.6.0"
 dependencies = [
@@ -631,6 +641,7 @@ dependencies = [
  "arc-swap",
  "base64 0.22.1",
  "busbar-crypto",
+ "busbar-ffi",
  "hex",
  "percent-encoding",
  "zerocopy",
@@ -642,6 +653,7 @@ name = "busbar-plugin-bench"
 version = "1.6.0"
 dependencies = [
  "busbar-plugin-abi",
+ "sharded-slab",
 ]
 
 [[package]]
@@ -651,6 +663,7 @@ dependencies = [
  "arc-swap",
  "base64 0.22.1",
  "busbar-contract",
+ "busbar-ffi",
  "busbar-plugin-abi",
  "flate2",
  "foldhash",
@@ -680,6 +693,7 @@ name = "busbar-plugin-test"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-ffi",
  "busbar-plugin-abi",
  "busbar-plugin-loader",
  "busbar-plugin-test",

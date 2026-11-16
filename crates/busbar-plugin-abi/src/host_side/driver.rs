@@ -25,10 +25,26 @@ pub enum Image {
 }
 
 // IF §11.1: the loaded-image payload of `Image::Loaded`.
+// W1-L1 (loader admit) fills the fields the W0 stub assigned to it. UNSAFE-MIN r3.1 moved the dl handle and the
+// H4 segment check into busbar-ffi (`image::Opened::open` checks the header against the image's segments,
+// `Opened::admit` leaks the library, so it is never unloaded), so what the image keeps here is its SHA-256 and
+// the loader's stage.rs `Staged` (the sealed memfd or the pinned temp file), held for the life of the process.
 pub struct LoadedImage {
-    // W0-ABI: private fields (stage.rs `Staged` (memfd or temp-file handle), dl handle, mapped segments
-    // (dl_iterate_phdr), sha256) land with W1 (loader admit).
-    _stub: PhantomData<()>,
+    sha256: [u8; 32],
+    _staged: Box<dyn core::any::Any + Send + Sync>,
+}
+impl LoadedImage {
+    /// A dropped-in image admit loaded: its SHA-256 and the staged handle its mapping came from.
+    pub fn new(sha256: [u8; 32], staged: Box<dyn core::any::Any + Send + Sync>) -> Self {
+        LoadedImage {
+            sha256,
+            _staged: staged,
+        }
+    }
+    /// The SHA-256 of the image's bytes (the key of the loader's resident image table).
+    pub fn sha256(&self) -> &[u8; 32] {
+        &self.sha256
+    }
 }
 
 pub struct Instance {
