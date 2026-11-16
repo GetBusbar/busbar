@@ -33,6 +33,14 @@ async fn notarised(every_ms: u64) -> (NativeFixture, Arc<Mutex<Durability>>, Not
 
 /// A running notary over `book` (`seal_every` = `every_ms`).
 fn notary_over(book: &Arc<Mutex<Durability>>, every_ms: u64) -> NotaryTask {
+    notary_over_clock(book, every_ms, None)
+}
+
+fn notary_over_clock(
+    book: &Arc<Mutex<Durability>>,
+    every_ms: u64,
+    clock: Option<Arc<busbar_kernel::governance::drain::DrainClock>>,
+) -> NotaryTask {
     let (notary, bootstrap) = AuditSigningKey::from_seed(&SEED)
         .into_grants(LiveSigner::SameAsBootstrap)
         .unwrap();
@@ -50,7 +58,7 @@ fn notary_over(book: &Arc<Mutex<Durability>>, every_ms: u64) -> NotaryTask {
             held.notary_start(),
         )
     };
-    spawn(
+    crate::root::durability::notary::spawn_with_floor(
         NotaryConfig {
             node: journal.node(),
             host: "notary-test-host".into(),
@@ -61,6 +69,8 @@ fn notary_over(book: &Arc<Mutex<Durability>>, every_ms: u64) -> NotaryTask {
         journal,
         feed,
         signers.live,
+        None,
+        clock,
     )
 }
 
@@ -340,4 +350,26 @@ async fn ephemeral_journal_is_bounded_after_n_requests() {
     }
     let end = task.stop().await.unwrap();
     assert!(end.halted.is_none(), "{:?}", end.halted);
+}
+
+/// §3.9: stamp work continues during request drain, but the first broadcast admits no new cut.
+#[tokio::test]
+async fn first_shutdown_broadcast_stops_new_cuts_before_notary_stop() {
+    use busbar_kernel::persistence::journal::{RuntimeJournal, CUT_BATCH, RETAIN_TAIL};
+    let budget = crate::root::durability::tests::BUDGET;
+    let backend = crate::root::real_store::EphemeralInfo(crate::root::real_store::native_backend().await);
+    let core = crate::root::real_store::core_over(Arc::new(backend)).await;
+    let journal = RuntimeJournal::open(core, 44, budget).await.unwrap();
+    let book = Arc::new(Mutex::new(crate::root::durability::build_on_store(
+        &crate::root::durability::DurabilityConfig::default(), 44, journal.clone(), None, budget,
+    ).await.unwrap()));
+    let clock = busbar_kernel::governance::drain::DrainClock::new(Duration::from_secs(20));
+    let task = notary_over_clock(&book, 1, Some(clock.clone()));
+    clock.arm(tokio::time::Instant::now() + clock.budget());
+    let count = RETAIN_TAIL + 3 * CUT_BATCH;
+    seal_n(&book, 1, count).await;
+    stamped_through(&task, count).await;
+    assert_eq!(journal.base_count(), 0, "stamp confirmation after the first broadcast cannot start a cut");
+    task.stop().await.unwrap();
+    assert_eq!(journal.base_count(), 0, "stop settles existing work but starts no new cut");
 }
