@@ -50,10 +50,10 @@ pub enum BootRefused {
     Open {
         index: u32,
         phase: BootPhase,
-        error: OpenError,
+        error: Box<OpenError>,
     },
     /// A 2a/2b instance's re-check after the deployment id was published refused.
-    Recheck { index: u32, error: OpenError },
+    Recheck { index: u32, error: Box<OpenError> },
     /// The deployment id could not be read or kept through the store.
     Deployment(String),
 }
@@ -146,7 +146,7 @@ pub async fn walk<S: BootSteps>(
         let port = steps.open(index).await.map_err(|error| BootRefused::Open {
             index,
             phase,
-            error,
+            error: Box::new(error),
         })?;
         opened.push((index, phase, port));
     }
@@ -184,7 +184,7 @@ async fn deployment_point<S: BootSteps>(
             .await
             .map_err(|error| BootRefused::Recheck {
                 index: *index,
-                error,
+                error: Box::new(error),
             })?;
     }
     Ok(id)
@@ -266,25 +266,26 @@ fn wrap_open<'a, T: 'a>(
 }
 
 impl<N: Needs> RegistryBoot<'_, N> {
-    fn spec(&self, index: u32) -> Result<&(KindCode, InstanceSpec<'_>), OpenError> {
+    fn spec(&self, index: u32) -> Option<&(KindCode, InstanceSpec<'_>)> {
         usize::try_from(index)
             .ok()
             .and_then(|at| self.instances.get(at))
-            .ok_or_else(|| {
-                OpenError::Unknown(format!(
-                    "the boot plan names instance {index}, which is not configured"
-                ))
-            })
     }
+}
+
+/// The refusal of a plan step that names an instance the boot was not given.
+fn unconfigured(index: u32) -> OpenError {
+    OpenError::Unknown(format!(
+        "the boot plan names instance {index}, which is not configured"
+    ))
 }
 
 impl<N: Needs> BootSteps for RegistryBoot<'_, N> {
     type Opened = OpenedPort;
 
     fn open(&self, index: u32) -> BoxFut<'_, Result<OpenedPort, OpenError>> {
-        let (kind, spec) = match self.spec(index) {
-            Ok(found) => found,
-            Err(error) => return Box::pin(core::future::ready(Err(error))),
+        let Some((kind, spec)) = self.spec(index) else {
+            return Box::pin(core::future::ready(Err(unconfigured(index))));
         };
         let registry = self.registry;
         match kind {
@@ -300,8 +301,8 @@ impl<N: Needs> BootSteps for RegistryBoot<'_, N> {
 
     fn check(&self, index: u32) -> BoxFut<'_, Result<(), OpenError>> {
         match self.spec(index) {
-            Ok((_, spec)) => self.registry.check(spec),
-            Err(error) => Box::pin(core::future::ready(Err(error))),
+            Some((_, spec)) => self.registry.check(spec),
+            None => Box::pin(core::future::ready(Err(unconfigured(index)))),
         }
     }
 

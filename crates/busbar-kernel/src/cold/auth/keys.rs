@@ -104,3 +104,16 @@ pub(crate) fn mint_store_failed(error: &dyn std::fmt::Display) -> String {
 pub(crate) fn provision_parts(leaf: &str, parent: &str, actor: &str) -> (String, String, String) {
     (leaf.to_owned(), parent.to_owned(), actor.to_owned())
 }
+
+/// The audit row of a token exchange refused because its verified principal is held (`auth:<module>`
+/// names the instance that identified it). Spelled only on that refusal.
+#[cold]
+#[inline(never)]
+pub(crate) fn exchange_principal_held(module: &str) {
+    crate::audit::auditlog::emit_admin_hostless_now(
+        "principal_held",
+        &format!("auth:{module}"),
+        busbar_contract::vocab::OUTCOME_REFUSED,
+        crate::audit::auditlog::PLUGIN_REFUSAL_PRINCIPAL,
+    );
+}

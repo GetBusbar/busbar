@@ -604,7 +604,9 @@ fn close_record<W: RawWrite + ?Sized>(w: &mut W, start: usize) -> Result<(), Ful
     Ok(())
 }
 
-fn put_nested_in(
+/// One nested record: `f` writes its body in place through a `Nested` over `w`; on Full nothing is left (the
+/// half-written record is truncated, which zeroes it). The host's `PooledOut` writes through this too (IF §10.1).
+pub(crate) fn put_nested_in(
     w: &mut dyn RawWrite,
     tag: u16,
     f: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
@@ -618,7 +620,7 @@ fn put_nested_in(
     done
 }
 
-fn put_pair_in<W: RawWrite + ?Sized>(
+pub(crate) fn put_pair_in<W: RawWrite + ?Sized>(
     w: &mut W,
     tag: u16,
     name: &str,
@@ -631,11 +633,19 @@ fn put_pair_in<W: RawWrite + ?Sized>(
     put_parts(w, tag, &[head.as_bytes(), name.as_bytes(), value])
 }
 
-fn put_fact_in<W: RawWrite + ?Sized>(w: &mut W, key: u32, value: u64) -> Result<(), Full> {
+pub(crate) fn put_fact_in<W: RawWrite + ?Sized>(
+    w: &mut W,
+    key: u32,
+    value: u64,
+) -> Result<(), Full> {
     put_parts(w, tag::FACT, &[FactRec { key, _r: 0, value }.as_bytes()])
 }
 
-fn put_fact_text_in<W: RawWrite + ?Sized>(w: &mut W, key: u32, value: &str) -> Result<(), Full> {
+pub(crate) fn put_fact_text_in<W: RawWrite + ?Sized>(
+    w: &mut W,
+    key: u32,
+    value: &str,
+) -> Result<(), Full> {
     put_parts(
         w,
         tag::FACT_TEXT,
@@ -643,7 +653,7 @@ fn put_fact_text_in<W: RawWrite + ?Sized>(w: &mut W, key: u32, value: &str) -> R
     )
 }
 
-fn put_metric_in<W: RawWrite + ?Sized>(
+pub(crate) fn put_metric_in<W: RawWrite + ?Sized>(
     w: &mut W,
     id: u32,
     op: u32,

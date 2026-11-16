@@ -289,3 +289,13 @@ impl RateCard {
         }
     }
 }
+
+/// Encode a host-bound plugin kind and configured namespace without delimiter collisions. Spelled
+/// when a card or a measurement binding is configured, never per request.
+pub fn measurement_lane(kind: &str, namespace: &str) -> String {
+    format!(
+        "{}{}:{kind}{namespace}",
+        crate::cost::MEASUREMENT_LANE_PREFIX,
+        kind.len()
+    )
+}

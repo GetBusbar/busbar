@@ -109,13 +109,12 @@ impl ReadyPort {
         cx: &mut std::task::Context<'_>,
         buf: &mut [u8],
     ) -> std::task::Poll<io::Result<(usize, SocketAddr)>> {
-        self.socket
-            .poll_io(crate::io::Direction::Read, cx, |s| s.recv_from(buf))
+        self.socket.poll_recv_from(cx, buf)
     }
 
     /// Send `datagram` to `to` now; `false` = the send buffer was full and it was dropped.
     pub fn send_to(&self, datagram: &[u8], to: SocketAddr) -> io::Result<bool> {
-        match self.socket.get_ref().send_to(datagram, to) {
+        match self.socket.socket().send_to(datagram, &to.into()) {
             Ok(n) if n == datagram.len() => Ok(true),
             Ok(_) => Err(io::Error::new(
                 io::ErrorKind::WriteZero,

@@ -136,6 +136,71 @@ fn work_is_opened_only_for_a_target_on_the_instances_recovery_routes() {
     assert!(!recovery_matcher(Vec::new())("/v1/jobs/42"));
 }
 
+fn plane(identity: &str, alias: &str) -> PlaneImage {
+    PlaneImage {
+        identity: identity.to_owned(),
+        alias: alias.to_owned(),
+    }
+}
+
+/// W2-SW-PLANE: every admitted MIN-3 plane image is one configured plane instance (the operator serves a plane by
+/// serving it, IF §12.23 rule 1), named by its manifest alias (today's plane name, IF §12.10), configured with the
+/// document's section of that name (its 1.5.x bag, which the plane's own `migrate` converts) or `{}`.
+#[test]
+fn each_admitted_plane_image_is_one_instance_named_by_its_alias_with_its_section() {
+    let mut sections = std::collections::BTreeMap::new();
+    sections.insert(
+        "mcp",
+        busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(
+            "canonical_uri: https://tools.example\n",
+        )
+        .unwrap(),
+    );
+    let limits = |_: &str| busbar_plugin_abi::host_side::caller::InstanceLimits::default();
+    let planes = plane_instances(
+        &[
+            plane("busbar-plane-mcp", "mcp"),
+            plane("busbar-plane-x", ""),
+        ],
+        &sections,
+        &limits,
+    )
+    .unwrap();
+    assert_eq!(planes.len(), 2);
+    assert!(planes.iter().all(|p| matches!(p.kind, KindCode::Plane)));
+    assert_eq!(
+        (planes[0].identity.as_str(), planes[0].name.as_str()),
+        ("busbar-plane-mcp", "mcp")
+    );
+    assert_eq!(
+        audience_of(&planes[0].config).as_deref(),
+        Some("https://tools.example"),
+        "the plane's section reaches it, so its line session binds the audience it states"
+    );
+    assert_eq!(
+        (planes[1].identity.as_str(), planes[1].name.as_str()),
+        ("busbar-plane-x", "busbar-plane-x"),
+        "an image with no alias is named by its identity"
+    );
+    assert_eq!(planes[1].config, b"{}");
+}
+
+#[test]
+fn two_plane_images_answering_one_instance_name_are_refused() {
+    let limits = |_: &str| busbar_plugin_abi::host_side::caller::InstanceLimits::default();
+    let refusal = plane_instances(
+        &[
+            plane("busbar-plane-a", "dup"),
+            plane("busbar-plane-b", "dup"),
+        ],
+        &std::collections::BTreeMap::new(),
+        &limits,
+    )
+    .err()
+    .expect("one instance name, two images");
+    assert!(refusal.contains("`dup`"), "{refusal}");
+}
+
 /// K7: the boot's one upstream table is the config's `upstreams:` section, each entry typed with its binding
 /// (IF §12.1), so every plane seat's walk and carrier compose over what the operator configured.
 #[test]

@@ -23,6 +23,7 @@ mod observations_runtime;
 #[path = "host_recovery.rs"]
 mod recovery_runtime;
 pub(crate) use recovery_runtime::recovery_binding_of;
+pub(crate) use recovery_runtime::ActiveSet;
 pub use recovery_runtime::RecoveryWork;
 
 pub const QUEUE_FULL: &str = "the record write queue is full";
