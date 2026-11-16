@@ -111,3 +111,45 @@ fn info_once_after_instance() {
     }
     assert_eq!(counts(dur).info, 1);
 }
+
+/// The public plugin-test facade installs its test-only store authority internally: a plugin's live test
+/// opens and reads a typed store without importing busbar-contract or minting a KernelSeal itself.
+#[test]
+fn public_store_host_opens_and_reads_without_a_caller_seal() {
+    use busbar_plugin_test::store::{Address, Read, ReadResult, StoreCase, StoreHarness};
+    let host =
+        StoreHarness::admit(inline::PLUGIN.plugin(), FakeNeeds::new()).expect("store admission");
+    let case = StoreCase::new(
+        "valid_schema_8_1",
+        br#"{"id":"public-store-host"}"#.to_vec(),
+    );
+    host.check(&case).expect("check");
+    let store = host
+        .open(&case)
+        .expect("test authority is installed by the facade");
+    let info = store.backend.info();
+    let answer = host
+        .block_on(store.backend.read(Read {
+            dataset: info.dataset,
+            addresses: vec![Address {
+                namespace: [7; 16],
+                key: b"absent".to_vec(),
+            }],
+            time: None,
+        }))
+        .expect("typed store read");
+    match answer {
+        ReadResult::Values {
+            observed_at,
+            values,
+        } => {
+            assert_eq!(observed_at.authority, info.clock_authority);
+            assert_eq!(values.len(), 1);
+            assert!(values[0].is_none());
+        }
+        ReadResult::TimeGuardFailed { .. } => panic!("unguarded read failed"),
+    }
+    drop(store);
+    host.finish()
+        .expect("live target completion is part of facade finish");
+}
