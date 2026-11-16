@@ -7,7 +7,7 @@ use crate::diagnostics::{
     PLUGINS_FETCH_RELOAD_MISS, PROVIDER_API_KEY_UNRESOLVABLE, STATEFUL_PLANE_EPHEMERAL_STORE,
     STORE_SECRET_REF_UNRESOLVED,
 };
-use crate::preflight::{build_secret_resolver, resolve_at_rest_keys, resolve_signing_key};
+use crate::preflight::{build_secret_resolver, resolve_signing_key};
 use crate::router::project_auth_scope_caps;
 use crate::state::App;
 use crate::store::{HealthState, LaneData};
@@ -847,15 +847,15 @@ async fn rewrap_at_rest(gs: &governance::GovState) {
             crate::diagnostics::CREDENTIAL_AT_REST_REWRAP_PENDING,
             resealed = pass.resealed,
             pending = pass.pending,
-            "{} recoverable credential(s) are still sealed under credentials.at_rest.previous (or \
-             stored in the clear): another node holds their re-wrap, or the store keeps no claims. \
-             They still authenticate; keep credentials.at_rest.previous configured until a boot \
+            "{} recoverable credential(s) are still stored in the clear (written by 1.5.5): \
+             another node holds their re-wrap, or the store keeps no claims. \
+             They still authenticate; a later boot \
              or reload re-seals them all",
             pass.pending
         ),
         Ok(pass) if pass.resealed > 0 => tracing::info!(
             resealed = pass.resealed,
-            "recoverable credentials re-sealed under credentials.at_rest.key"
+            "recoverable credentials re-sealed under the key derived from auth.signing_key"
         ),
         Ok(_) => {}
         Err(e) => diag_warn!(
@@ -1158,15 +1158,14 @@ async fn bootstrap_store_inputs(
         &generation_sugars(cfg),
     )?;
 
-    let _signer = resolve_signing_key(cfg.auth.as_ref(), &resolver)?;
-    let at_rest = resolve_at_rest_keys(&cfg.credentials, &resolver);
-    publish_bootstrap_at_rest(at_rest.as_ref().map(Option::is_some).map_err(Clone::clone));
-    let _at_rest = at_rest?;
+    let signer = resolve_signing_key(cfg.auth.as_ref(), &resolver);
+    publish_bootstrap_at_rest(signer.as_ref().map(Option::is_some).map_err(Clone::clone));
+    let _signer = signer?;
     Ok((registry, resolver))
 }
 
-/// What the latest store bootstrap resolved of `credentials.at_rest`, before the store opened:
-/// `Ok(true)` the key resolved, `Ok(false)` no `credentials.at_rest` block, `Err` the resolver's
+/// What the latest store bootstrap resolved of the at-rest key (derived from `auth.signing_key`), before the store opened:
+/// `Ok(true)` the signing key resolved, `Ok(false)` no `auth.signing_key`, `Err` the resolver's
 /// own text. The migration seam's recoverable gate reads it while the store's data step runs
 /// (MIGRATE-ON-BOOT §3 step 2 (a)); nothing else does.
 static BOOTSTRAP_AT_REST: std::sync::Mutex<Option<Result<bool, String>>> =
@@ -1276,7 +1275,7 @@ pub fn bootstrap_dependency_names(
 }
 
 /// The `module` each of core's own secret references names (IF §11.2 `boot_plan`: the admin token, the signing
-/// key, the at-rest keys), in that order, each once. This is what `Registry::boot_plan_with_core` is fed so the
+/// key), in that order, each once. This is what `Registry::boot_plan_with_core` is fed so the
 /// secret instances core itself resolves from open in 2a, before the store.
 pub fn core_secret_modules(cfg: &config::RootCfg) -> Vec<String> {
     let mut modules: Vec<String> = Vec::new();
@@ -1293,12 +1292,6 @@ pub fn core_secret_modules(cfg: &config::RootCfg) -> Vec<String> {
         }
         if let Some(reference) = &auth.signing_key {
             add(reference);
-        }
-    }
-    if let Some(keys) = &cfg.credentials.at_rest {
-        add(&keys.key);
-        if let Some(previous) = &keys.previous {
-            add(previous);
         }
     }
     modules
@@ -2096,20 +2089,14 @@ async fn build_app_native(
                 Some(_) => Some(resolve_signing_key(auth, &secret_resolver)?),
                 None => None,
             };
-
-            let at_rest = match cfg.credentials.at_rest {
-                Some(_) => resolve_at_rest_keys(&cfg.credentials, &secret_resolver)?,
-                None => None,
-            };
-            if signer.is_some() || at_rest.is_some() {
+            if signer.is_some() {
                 rotate_gov_credentials = Some(Box::pin(async move {
                     if let Some(signer) = signer {
+                        let sealed = signer.is_some();
                         gs.set_signing_key(signer);
-                    }
-                    if let Some(keys) = at_rest {
-                        gs.set_at_rest_keys(Some(keys));
-
-                        rewrap_at_rest(&gs).await;
+                        if sealed {
+                            rewrap_at_rest(&gs).await;
+                        }
                     }
                 }));
             }
@@ -2151,8 +2138,8 @@ async fn build_app_native(
         .await?;
 
         let signer = resolve_signing_key(cfg.auth.as_ref(), &secret_resolver)?;
+        let sealed = signer.is_some();
 
-        let at_rest = resolve_at_rest_keys(&cfg.credentials, &secret_resolver)?;
         // The operator credential is the operator row's own instance (OPERATOR-FROM-ADMITTED-AUTH
         // §3.8): core holds no operator token digest.
         match governance::GovState::new_with_core(core, None, signer).await {
@@ -2160,7 +2147,7 @@ async fn build_app_native(
                 gs.install_transition_self_holds(transition_holds);
                 let gs = Arc::new(gs);
 
-                if gs.set_at_rest_keys(at_rest) {
+                if sealed {
                     rewrap_at_rest(&gs).await;
                 }
 

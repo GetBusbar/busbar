@@ -593,6 +593,14 @@ This historical conversion lives in the one-shot configuration migrator because 
 OAuth plugin has no outbound-binding migration entry; its generic auth migration surface
 receives identity-provider settings, not deployment credential references.
 
+## Removed pre-release keys
+
+- `credentials.at_rest.key`, `credentials.at_rest.previous` (and the `credentials:` section):
+  removed; the at-rest key for recoverable credentials (issued signed-request secrets, AWS
+  credentials, connection grants) is derived by HKDF-SHA256 from `auth.signing_key`, so one secret
+  now covers both uses and rotating `auth.signing_key` also retires the credentials sealed under it
+  (re-mint them). A config that sets it is refused as an unknown key.
+
 ## Released 1.5.5 persistent configuration
 
 The upgrade boot folds the 1.5.5 overlay file into config.yaml and keeps the file as

@@ -306,7 +306,7 @@ pub(crate) fn plan_order(
         for dep in deps(store)? {
             visit(dep, kinds, deps, &mut path, &mut placed, &mut plan)?;
         }
-        // Core's own sections the store boot needs (admin token, signing key, at-rest keys): the secret instances
+        // Core's own sections the store boot needs (admin token, signing key): the secret instances
         // they name open in 2a too, after the store's own, each with its own dependencies first. A root that is
         // not a secret instance, or is already placed, is skipped by `visit`.
         for &root in roots {

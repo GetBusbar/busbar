@@ -214,6 +214,11 @@ impl GovState {
         let mut boot_caller_ref = busbar_contract::secure::SecureArray::<32>::zeroed();
         busbar_contract::crypto::fill(&mut boot_caller_ref[..])
             .expect("OS randomness for the per-boot caller-reference key");
+        let at_rest = signer.as_ref().map(|s| {
+            Arc::new(super::at_rest::AtRestKeys::from_signing_secret(
+                &s.secret_bytes(),
+            ))
+        });
         let unit_checkpoints = unit_checkpoint::UnitCheckpointBook::default();
         let admissions = Arc::new(super::drain::AdmissionGate::over(
             unit_checkpoints.terminal_counter(),
@@ -246,7 +251,7 @@ impl GovState {
             deployment_caller_ref: RwLock::new(None),
             boot_caller_ref,
             signing: RwLock::new(signer.map(|s| Arc::new(SigningMaterial::new(s)))),
-            at_rest: RwLock::new(None),
+            at_rest: RwLock::new(at_rest),
             denylist,
             refresh_order,
             #[cfg(test)]
@@ -1003,8 +1008,15 @@ impl GovState {
     }
 
     pub fn set_signing_key(&self, signer: Option<crate::governance::signing::TokenSigner>) {
+        // The at-rest key is derived from the signing secret, so the two move together.
+        let at_rest = signer.as_ref().map(|s| {
+            Arc::new(super::at_rest::AtRestKeys::from_signing_secret(
+                &s.secret_bytes(),
+            ))
+        });
         let next = signer.map(|s| Arc::new(SigningMaterial::new(s)));
         *self.signing.write().unwrap_or_else(|e| e.into_inner()) = next;
+        *self.at_rest.write().unwrap_or_else(|e| e.into_inner()) = at_rest;
         self.refresh_caller_refs();
     }
 

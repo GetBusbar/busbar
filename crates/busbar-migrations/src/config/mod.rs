@@ -300,7 +300,7 @@ mod normalize_tests {
 
     #[test]
     fn current_authored_references_and_locked_source_are_preserved() {
-        let raw = "# owner comment\nconfig: {locked: true}\nstore: {module: custom}\ncredentials: {at_rest: {key: {env: DO_NOT_EXPAND}}}\n";
+        let raw = "# owner comment\nconfig: {locked: true}\nstore: {module: custom}\nauth: {signing_key: {env: DO_NOT_EXPAND}}\n";
         let out = normalize_authored(raw, &migrate_plugins::NoPlugins).unwrap();
         assert_eq!(out.yaml, raw);
         assert!(out.todos.is_empty());

@@ -72,28 +72,21 @@ fn the_recoverable_gate_answers_from_the_at_rest_key() {
     );
     assert!(
         no_key.contains(
-            "`openssl rand -hex 32 > /etc/busbar/at-rest.key && chmod 600 /etc/busbar/at-rest.key`"
+            "`openssl rand -hex 32 > /etc/busbar/signing.key && chmod 600 /etc/busbar/signing.key`"
         ),
         "{no_key}"
     );
     assert!(
-        no_key.contains("`credentials: {at_rest: {key: {file: /etc/busbar/at-rest.key}}}`"),
+        no_key.contains("`auth: {signing_key: {file: /etc/busbar/signing.key}}`"),
         "{no_key}"
     );
-    assert!(no_key.contains("`config.yaml.1.5.5`"), "{no_key}");
-    assert!(no_key.contains("\"At-rest key\""), "{no_key}");
     let unresolved = admit_answer(
         2,
-        Some(Err(
-            "credentials.at_rest.key did not resolve: gone".to_owned()
-        )),
+        Some(Err("auth.signing_key did not resolve: gone".to_owned())),
         dir,
     )
     .unwrap_err();
-    assert_eq!(
-        unresolved,
-        "CONFIG: credentials.at_rest.key did not resolve: gone"
-    );
+    assert_eq!(unresolved, "CONFIG: auth.signing_key did not resolve: gone");
     let unknown = admit_answer(1, None, dir).unwrap_err();
     assert!(unknown.starts_with("CONFIG: "), "{unknown}");
     assert_ne!(unknown, text_add_key(1, dir), "no verdict is not 'no key'");

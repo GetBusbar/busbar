@@ -180,9 +180,6 @@ async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    let at_rest_key = directory.join("at-rest-key");
-    std::fs::write(&at_rest_key, hex::encode([3u8; 32])).expect("write original at-rest key input");
-    document["credentials"]["at_rest"]["key"]["file"] = serde_json::json!(at_rest_key);
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,
         &crate::root::boot::axis_test_grammar(),
@@ -394,9 +391,6 @@ async fn test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete(
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    let at_rest_key = directory.join("at-rest-key");
-    std::fs::write(&at_rest_key, hex::encode([3u8; 32])).expect("write original at-rest key input");
-    document["credentials"]["at_rest"]["key"]["file"] = serde_json::json!(at_rest_key);
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,
         &crate::root::boot::axis_test_grammar(),
@@ -542,9 +536,6 @@ async fn test_patch_interleaved_with_delete_never_resurrects_key() {
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    let at_rest_key = directory.join("at-rest-key");
-    std::fs::write(&at_rest_key, hex::encode([3u8; 32])).expect("write original at-rest key input");
-    document["credentials"]["at_rest"]["key"]["file"] = serde_json::json!(at_rest_key);
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,
         &crate::root::boot::axis_test_grammar(),
@@ -711,9 +702,6 @@ async fn test_rotate_interleaved_with_delete_never_resurrects_key() {
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    let at_rest_key = directory.join("at-rest-key");
-    std::fs::write(&at_rest_key, hex::encode([3u8; 32])).expect("write original at-rest key input");
-    document["credentials"]["at_rest"]["key"]["file"] = serde_json::json!(at_rest_key);
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,
         &crate::root::boot::axis_test_grammar(),
@@ -877,9 +865,6 @@ async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    let at_rest_key = directory.join("at-rest-key");
-    std::fs::write(&at_rest_key, hex::encode([3u8; 32])).expect("write original at-rest key input");
-    document["credentials"]["at_rest"]["key"]["file"] = serde_json::json!(at_rest_key);
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,
         &crate::root::boot::axis_test_grammar(),
@@ -1044,9 +1029,6 @@ async fn a_delete_of_another_key_is_not_held_behind_a_patch_parked_in_the_store(
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    let at_rest_key = directory.join("at-rest-key");
-    std::fs::write(&at_rest_key, hex::encode([3u8; 32])).expect("write original at-rest key input");
-    document["credentials"]["at_rest"]["key"]["file"] = serde_json::json!(at_rest_key);
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,
         &crate::root::boot::axis_test_grammar(),

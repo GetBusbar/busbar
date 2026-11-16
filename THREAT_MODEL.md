@@ -58,10 +58,10 @@ that keep keys, usage and the audit chain in a backend you run.
   service-account keys, credentials for tool servers, agents, stores and export endpoints).
 - **Recoverable credentials Busbar mints** (signed-request secrets kept so Busbar can sign on a
   caller's behalf). Newly minted recoverable credentials are sealed with AES-256-GCM before
-  storage, under the configured at-rest key. Minting refuses without that key
+  storage, under a key derived from `auth.signing_key`. Minting refuses without a signing key
   (`crates/busbar-kernel/src/governance/at_rest.rs`, `identity_runtime.rs`). Legacy `v1:plain:`
   reads remain supported; the new-write protection does not prove existing rows or backups were
-  migrated. Protect the at-rest key separately from store access. See T10.
+  migrated. Protect the signing key separately from store access. See T10.
 - **The token-signing key** (`auth.signing_key`). Virtual keys are Ed25519-signed `bbk_` tokens
   (`crates/busbar-kernel/src/governance/signing.rs`); whoever holds this key can mint them.
 - **The deployment keyset**, the Ed25519 key that signs the audit chain and ledger checkpoints. It is

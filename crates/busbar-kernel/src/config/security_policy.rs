@@ -21,7 +21,6 @@ pub struct SecurityView<'a> {
     pub auth: Option<&'a super::AuthCfg>,
     pub identity_providers: &'a super::IdentityProviders,
     pub secrets: &'a std::collections::BTreeMap<String, super::SecretModuleCfg>,
-    pub credentials: &'a super::CredentialsCfg,
     pub tls: Option<&'a super::TlsCfg>,
     pub admin_tls: Option<&'a super::TlsCfg>,
     pub admin_listen: &'a str,
@@ -39,7 +38,6 @@ impl<'a> SecurityView<'a> {
             auth: cfg.auth.as_ref(),
             identity_providers: &cfg.identity_providers,
             secrets: &cfg.secrets,
-            credentials: &cfg.credentials,
             tls: cfg.tls.as_ref(),
             admin_tls: cfg.admin_tls.as_ref(),
             admin_listen: &cfg.admin_listen,
@@ -84,7 +82,7 @@ impl SecurityDigest {
 }
 
 /// THE SECURITY DIGEST of one configuration (SECRET-SHORTHAND-BOOT §3.12): `auth`, the identity
-/// providers, `secrets`, `credentials.at_rest`, both TLS blocks, the admin listener, the metadata
+/// providers, `secrets`, both TLS blocks, the admin listener, the metadata
 /// guard, and the plugin policy (`enabled`, `dir`, trust and publishers, version floors, and
 /// `plugins.fetch`). The build stores it on the generation; the authority pre-check and the build's
 /// own check compare against it.
@@ -92,7 +90,7 @@ impl SecurityDigest {
 pub fn security_digest(view: &SecurityView<'_>) -> SecurityDigest {
     let seal = crate::seal::acquire();
     let plugins = view.plugins;
-    let classes: [(&'static str, serde_json::Value); 13] = [
+    let classes: [(&'static str, serde_json::Value); 12] = [
         ("auth", json!(view.auth.map(|value| value.authoring(&seal)))),
         (
             "identity-providers",
@@ -109,13 +107,6 @@ pub fn security_digest(view: &SecurityView<'_>) -> SecurityDigest {
                 .iter()
                 .map(|(name, value)| (name, value.authoring(&seal)))
                 .collect::<std::collections::BTreeMap<_, _>>()),
-        ),
-        (
-            "credentials.at_rest",
-            json!(view.credentials.at_rest.as_ref().map(|keys| json!({
-                "key": keys.key.authoring(&seal),
-                "previous": keys.previous.as_ref().map(|value| value.authoring(&seal)),
-            }))),
         ),
         ("tls", json!(view.tls.map(|value| value.authoring(&seal)))),
         (
@@ -168,7 +159,6 @@ const SECURITY_KEYS: &[&str] = &[
     "auth",
     "identity-providers",
     "secrets",
-    "credentials",
     "tls",
     "admin_tls",
     "admin_listen",
@@ -180,7 +170,7 @@ const SECURITY_KEYS: &[&str] = &[
 
 /// The class a candidate names when its security fields do not read under the running
 /// generation's grammar: they are treated as changed.
-const UNREAD_UNDER_RUNNING: &str = "auth, identity-providers, secrets, credentials or tls (they \
+const UNREAD_UNDER_RUNNING: &str = "auth, identity-providers, secrets or tls (they \
                                     do not read under the running configuration's grammar)";
 
 /// A CANDIDATE CONFIGURATION before its own grammar exists (SECRET-SHORTHAND-BOOT §3.12): the
@@ -279,7 +269,6 @@ impl Candidate {
                 auth: auth.as_ref(),
                 identity_providers: &deploy.identity_providers,
                 secrets: &deploy.secrets,
-                credentials: &deploy.credentials,
                 tls: deploy.tls.as_ref(),
                 admin_tls: deploy.admin_tls.as_ref(),
                 admin_listen: &deploy.admin_listen,

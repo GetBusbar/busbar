@@ -2304,9 +2304,9 @@ A unit's drained usage report named a class that no installed plane declares as 
 - **Since:** 1.6.0
 - **Slug:** `credential-at-rest-unopenable`
 
-A recoverable credential (a signed-request secret) is stored sealed under an at-rest key whose kid matches neither credentials.at_rest.key nor credentials.at_rest.previous on this node, or its row was altered. It answers as an unknown credential: requests signed with it are refused. The refusal is audited once per kid.
+A recoverable credential (a signed-request secret) is stored sealed under an at-rest key whose kid does not match the key derived from auth.signing_key on this node, or its row was altered. It answers as an unknown credential: requests signed with it are refused. The refusal is audited once per kid.
 
-**What to do:** Configure the key with the named kid as credentials.at_rest.previous (or as key) on every node that shares the store, and reload. A credential whose key is lost cannot be recovered: re-mint it.
+**What to do:** Give every node that shares the store the same auth.signing_key, and reload. Rotating auth.signing_key retires the credentials sealed under the old one: re-mint them.
 
 <a id="credential-at-rest-rewrap-pending"></a>
 ### BUSBAR-8024 — Recoverable credentials are not yet re-sealed under the current at-rest key
@@ -2315,9 +2315,9 @@ A recoverable credential (a signed-request secret) is stored sealed under an at-
 - **Since:** 1.6.0
 - **Slug:** `credential-at-rest-rewrap-pending`
 
-A boot or reload re-seals every stored recoverable credential sealed under credentials.at_rest.previous (or stored in the clear before 1.6.0) under credentials.at_rest.key. Some rows were not re-sealed on this pass: another node held their claim, the store keeps no claims, or the store refused the write. They still authenticate under the key they were sealed under.
+A boot or reload re-seals every stored recoverable credential stored in the clear before 1.6.0 under the key derived from auth.signing_key. Some rows were not re-sealed on this pass: another node held their claim, the store keeps no claims, or the store refused the write. They still authenticate.
 
-**What to do:** Keep credentials.at_rest.previous configured until a boot or reload re-seals them all (no further warning). If it persists on a single node, check that the store supports single-use claims and accepts credential writes.
+**What to do:** A later boot or reload re-seals them (no further warning). If it persists on a single node, check that the store supports single-use claims and accepts credential writes.
 
 <a id="credential-at-rest-legacy-plain"></a>
 ### BUSBAR-8025 — A recoverable credential written before 1.6.0 is stored in the clear
@@ -2326,9 +2326,9 @@ A boot or reload re-seals every stored recoverable credential sealed under crede
 - **Since:** 1.6.0
 - **Slug:** `credential-at-rest-legacy-plain`
 
-A recoverable credential (a signed-request secret) minted by 1.5.5 is stored as v1:plain. It still authenticates. A boot or reload with credentials.at_rest.key configured re-seals it under that key.
+A recoverable credential (a signed-request secret) minted by 1.5.5 is stored as v1:plain. It still authenticates. A boot or reload with auth.signing_key configured re-seals it under the key derived from it.
 
-**What to do:** Configure credentials.at_rest.key (a secret reference resolving to 32 random bytes) and reload; the row is re-sealed and no longer stored in the clear.
+**What to do:** Configure auth.signing_key and reload; the row is re-sealed and no longer stored in the clear.
 
 <a id="admin-not-found"></a>
 ### BUSBAR-8101 — The admin resource named in the request does not exist

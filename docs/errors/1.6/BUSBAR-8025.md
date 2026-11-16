@@ -8,11 +8,11 @@ slug: docs/1.6/errors/BUSBAR-8025
 
 ## What it means
 
-A recoverable credential (a signed-request secret) minted by 1.5.5 is stored as v1:plain. It still authenticates. A boot or reload with credentials.at_rest.key configured re-seals it under that key.
+A recoverable credential (a signed-request secret) minted by 1.5.5 is stored as v1:plain. It still authenticates. A boot or reload with auth.signing_key configured re-seals it under the key derived from it.
 
 ## How to fix it
 
-Configure credentials.at_rest.key (a secret reference resolving to 32 random bytes) and reload; the row is re-sealed and no longer stored in the clear.
+Configure auth.signing_key and reload; the row is re-sealed and no longer stored in the clear.
 
 ---
 

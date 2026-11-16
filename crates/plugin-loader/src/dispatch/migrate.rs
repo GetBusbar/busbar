@@ -357,7 +357,7 @@ fn settings_migration_library(
 }
 
 /// THE BOOT'S ANSWER TO `migrate.admit` (MIGRATE-ON-BOOT §3 step 2, §4): installed once by the
-/// gateway's migration seam, which decides from core's own config (`credentials.at_rest`). The
+/// gateway's migration seam, which decides from core's own config (`auth.signing_key`). The
 /// loader holds no decision of its own: with no answer installed, every call is refused.
 static ADMIT: std::sync::OnceLock<fn(u64) -> Result<(), &'static str>> = std::sync::OnceLock::new();
 

@@ -324,7 +324,7 @@ pub fn already_migrated_text(n: u64) -> String {
     format!(
         "1.5.5 stored {n} recoverable credentials in the clear; 1.6.0 stores them only sealed. \
          The store is already migrated by its plugin and IMPORT is untouched: restore \
-         `credentials.at_rest.key` and boot again, or roll back the store (docs/migration-1.6)"
+         `auth.signing_key` (the key 1.6.0 derives the at-rest key from) and boot again, or roll back the store (docs/migration-1.6)"
     )
 }
 

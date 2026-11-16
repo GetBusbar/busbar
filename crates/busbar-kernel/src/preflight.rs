@@ -1034,35 +1034,6 @@ pub(crate) fn resolve_signing_key(
     Ok(Some(TokenSigner::from_secret_bytes(&secret, DEFAULT_KID)))
 }
 
-pub(crate) fn resolve_at_rest_keys(
-    credentials: &config::CredentialsCfg,
-    resolver: &config::secret::SecretResolver,
-) -> Result<Option<governance::at_rest::AtRestKeys>, String> {
-    let Some(at_rest) = credentials.at_rest.as_ref() else {
-        return Ok(None);
-    };
-    let resolve = |path: &str, r: &config::SecretRef| {
-        let held = resolver
-            .resolve_at_config(r, &busbar_contract::config_time::ConfigScope::config_time())
-            .map_err(|e| {
-                format!(
-                    "{path} did not resolve: {e}. It is a reference to an EXISTING secret                      (env/file/plugin) holding 32 random bytes; create one with `openssl rand -hex                      32`"
-                )
-            })?;
-        governance::at_rest::parse_key(path, held.expose(&crate::seal::lend()))
-    };
-    let key = resolve("credentials.at_rest.key", &at_rest.key)?;
-    let previous = at_rest
-        .previous
-        .as_ref()
-        .map(|p| resolve("credentials.at_rest.previous", p))
-        .transpose()?;
-    Ok(Some(governance::at_rest::AtRestKeys::new(
-        &key[..],
-        previous.as_ref().map(|p| &p[..]),
-    )))
-}
-
 pub(crate) fn is_real_auth_plugin_ref(m: &str, in_process: fn(&str) -> bool) -> bool {
     m != config::KEYS_MODULE && !in_process(m)
 }

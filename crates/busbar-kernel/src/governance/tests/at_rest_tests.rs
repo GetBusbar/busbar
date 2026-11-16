@@ -111,26 +111,6 @@ fn the_previous_key_still_opens_a_row_it_sealed() {
     assert!(open(Some(&keys(3, Some(4))), &m, &sealed).is_none());
 }
 
-#[test]
-fn an_at_rest_key_is_32_bytes_or_64_hex_characters() {
-    let hex64 = hex::encode([5_u8; 32]);
-    assert_eq!(
-        &parse_key("credentials.at_rest.key", hex64.as_bytes()).unwrap()[..],
-        &[5_u8; 32]
-    );
-    assert_eq!(
-        &parse_key("credentials.at_rest.key", format!("{hex64}\n").as_bytes()).unwrap()[..],
-        &[5_u8; 32]
-    );
-    assert_eq!(
-        &parse_key("credentials.at_rest.key", &[9_u8; 32]).unwrap()[..],
-        &[9_u8; 32]
-    );
-    let e = parse_key("credentials.at_rest.previous", b"short-secret-value").unwrap_err();
-    assert!(e.contains("credentials.at_rest.previous"), "{e}");
-    assert!(!e.contains("short-secret-value"), "{e}");
-}
-
 async fn signing_gov(store: Arc<crate::persistence::facade::CoreStore>, seed: u8) -> GovState {
     let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
         &[seed; 32],
@@ -227,37 +207,6 @@ async fn a_credential_is_sealed_under_the_key_derived_from_the_signing_key() {
     assert_eq!(read(&g, &public_id), (secret.clone(), true));
     let restarted = signing_gov(store.clone(), 7).await;
     assert_eq!(read(&restarted, &public_id), (secret, true));
-}
-
-#[tokio::test]
-async fn minting_a_recoverable_credential_without_an_at_rest_key_is_refused_with_the_sentence() {
-    let store = crate::real_store::core().await;
-    let g = signing_gov(store.clone(), 7).await;
-    let e = try_mint(&g).await.unwrap_err().to_string();
-    assert!(e.contains(NO_KEY_REFUSAL), "{e}");
-    assert!(e.contains("credentials.at_rest.key"), "{e}");
-    assert!(store
-        .identity()
-        .list_credentials_since(0)
-        .await
-        .unwrap()
-        .is_empty());
-    assert!(
-        store.identity().list_keys().await.unwrap().is_empty(),
-        "a binding was written"
-    );
-
-    assert!(g
-        .mint_signed_async(
-            NewKeySpec {
-                name: "bearer".to_string(),
-                ..Default::default()
-            },
-            2_000_000_000,
-            1_700_000_000,
-        )
-        .await
-        .is_ok());
 }
 
 #[tokio::test]

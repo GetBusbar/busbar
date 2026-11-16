@@ -97,13 +97,11 @@ impl IssuedCredentials for Unissued {
 }
 
 /// Core's own secrets, resolved at boot through the secret kind into owned values (IF §11.2: the admin token,
-/// the signing key, the at-rest keys). `None` = the config states no such reference.
+/// the signing key). `None` = the config states no such reference.
 #[derive(Default)]
 pub(crate) struct CoreSecrets {
     pub(crate) operator_token: Option<SecureVec>,
     pub(crate) signing_key: Option<SecureVec>,
-    pub(crate) at_rest_key: Option<SecureVec>,
-    pub(crate) at_rest_previous: Option<SecureVec>,
 }
 
 /// The push queue the plane instances' PUSH intents and ticks enqueue into: filled once the store is open (the
@@ -297,15 +295,12 @@ impl Booted {
             .is_some();
         format!(
             "MIN-3 boot: {} planes served through ports, {} shorthands declared, deployment dep_{}, \
-             store attached: {attached}; core secrets: admin token {}, signing key {}, at-rest key {}, \
-             previous at-rest key {}",
+             store attached: {attached}; core secrets: admin token {}, signing key {}",
             self.seats.len(),
             self.registry.sugars().len(),
             hex::encode(self.deployment),
             held(&self.core.operator_token),
             held(&self.core.signing_key),
-            held(&self.core.at_rest_key),
-            held(&self.core.at_rest_previous),
         )
     }
 }
@@ -940,12 +935,6 @@ async fn core_secrets_of(cfg: &RootCfg, secrets: &BootSecrets) -> Result<CoreSec
         }
         if let Some(reference) = &auth.signing_key {
             out.signing_key = Some(resolve("the signing key", reference).await?);
-        }
-    }
-    if let Some(keys) = &cfg.credentials.at_rest {
-        out.at_rest_key = Some(resolve("the at-rest key", &keys.key).await?);
-        if let Some(previous) = &keys.previous {
-            out.at_rest_previous = Some(resolve("the previous at-rest key", previous).await?);
         }
     }
     Ok(out)

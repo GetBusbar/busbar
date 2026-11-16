@@ -282,11 +282,7 @@ fn core_secret_modules_names_each_of_cores_own_references_once_and_not_the_store
     let deploy = crate::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {}, "models": {},
-            "auth": {"chain": [], "admin_auth": []},
-            "credentials": {"at_rest": {
-                "key": {"module": "secret-a", "settings": {}},
-                "previous": {"module": "secret-a", "settings": {"name": "old"}}
-            }},
+            "auth": {"chain": [], "admin_auth": [], "signing_key": {"module": "secret-a", "settings": {}}},
             "store": {"module": "store-x", "settings": {
                 "token": {"module": "secret-store", "settings": {}}
             }}

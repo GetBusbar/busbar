@@ -6,7 +6,6 @@ use super::*;
 #[test]
 fn duplicate_lifted_sections_and_policies_are_refused_by_the_live_reader() {
     for yaml in [
-        "credentials: {}\ncredentials: {}\n",
         "oauth_as: null\noauth_as: null\n",
         "auth: {policy: {self_mint: false}, policy: {self_mint: true}}\n",
     ] {
