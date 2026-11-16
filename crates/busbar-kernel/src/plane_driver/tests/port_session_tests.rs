@@ -168,6 +168,10 @@ impl Calls for Script {
         Ok(())
     }
 
+    fn probe(&self, _: &TargetIn<'_>, _: &mut dyn FnMut(PlaneOut<'_>)) -> Result<Live, PortError> {
+        Err(refused())
+    }
+
     fn render(
         &self,
         _: &PlaneIn<'_>,

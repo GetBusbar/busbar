@@ -60,6 +60,12 @@ pub trait Calls {
 
     fn end(&self, s: Self::Session, sink: &mut dyn FnMut(PlaneOut<'_>)) -> Result<(), PortError>;
 
+    fn probe(
+        &self,
+        t: &TargetIn<'_>,
+        sink: &mut dyn FnMut(PlaneOut<'_>),
+    ) -> Result<Self::Session, PortError>;
+
     fn render(
         &self,
         req: &PlaneIn<'_>,
@@ -113,6 +119,14 @@ impl Calls for dyn PlanePort {
         PlanePort::end(self, s, sink)
     }
 
+    fn probe(
+        &self,
+        t: &TargetIn<'_>,
+        sink: &mut dyn FnMut(PlaneOut<'_>),
+    ) -> Result<PlaneSession, PortError> {
+        PlanePort::probe(self, t, sink)
+    }
+
     fn render(
         &self,
         req: &PlaneIn<'_>,
@@ -141,6 +155,7 @@ pub enum Origin {
     Upstream,
     Rewrite,
     Render,
+    Probe,
     End,
 }
 
@@ -166,6 +181,12 @@ pub enum Violation {
     BadAttempt,
     /// An AUDIT with no known verdict or no action.
     BadAudit,
+    /// An upstream exchange item (UP_*, EX_MSG) in an answer that is not an `upstream`, `piece` or `probe` answer.
+    UpstreamOutOfPlace(Origin),
+    /// UP_NEW with exchange 0 (exchange 0 is the session's first, stated by `upstream`).
+    BadExchange,
+    /// An `upstream` or `probe` answer that is neither ATT_DECLINE nor an exchange 0.
+    MissingExchange,
 }
 
 /// Why a session call produced no usable answer.
@@ -233,6 +254,33 @@ pub struct AttemptItem {
     pub reason: Box<str>,
 }
 
+/// One upstream exchange an answer asks core to send (IF §8.6): exchange 0 from `upstream`, or one UP_NEW
+/// started. `method` and `path` are states the plane gave (the adapter checks the record order).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UpExchange {
+    pub id: u32,
+    pub carrier: u32,
+    pub outbound: u32,
+    pub method: Option<Box<str>>,
+    pub path: Option<Box<str>>,
+    pub scope: Option<Box<str>>,
+    pub headers: HeadFields,
+    pub body: Vec<u8>,
+    /// UP_MSG items: (flags, bytes).
+    pub msgs: Vec<(u32, Vec<u8>)>,
+    pub end: bool,
+    pub cut: bool,
+}
+
+/// One EX_MSG: a message on exchange `exchange`, on `stream`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExMsgItem {
+    pub exchange: u32,
+    pub flags: u32,
+    pub stream: u64,
+    pub bytes: Vec<u8>,
+}
+
 /// One answer, decoded. Applied in the order the plane wrote it.
 #[derive(Debug, Default)]
 pub struct Answer {
@@ -249,7 +297,14 @@ pub struct Answer {
     pub attempt: Option<AttemptItem>,
     /// AUDIT rows in answer order.
     pub audits: Vec<AuditRow>,
+    /// The exchanges this answer asks core to send, in the order they began.
+    pub exchanges: Vec<UpExchange>,
+    pub ex_msgs: Vec<ExMsgItem>,
     pub violation: Option<Violation>,
+    /// The exchange the answer is writing now (UP_CARRIER, UP_NEW, UP_METHOD start one), until a client item.
+    up_open: Option<usize>,
+    /// The exchange a body-only answer belongs to: the one the `piece` named.
+    default_exchange: u32,
     head: Option<(u16, HeadFields)>,
     trailers: Option<HeadFields>,
 }
@@ -299,6 +354,31 @@ impl Once {
 }
 
 impl Answer {
+    /// An answer to a `piece` that named `exchange`: a body-only answer belongs to it.
+    pub(crate) fn for_exchange(exchange: u32) -> Self {
+        Self {
+            default_exchange: exchange,
+            ..Self::default()
+        }
+    }
+
+    fn begin_exchange(&mut self, id: u32) -> usize {
+        self.exchanges.push(UpExchange {
+            id,
+            ..UpExchange::default()
+        });
+        let at = self.exchanges.len() - 1;
+        self.up_open = Some(at);
+        at
+    }
+
+    fn open_exchange(&mut self) -> usize {
+        match self.up_open {
+            Some(at) => at,
+            None => self.begin_exchange(self.default_exchange),
+        }
+    }
+
     fn has_client(&self) -> bool {
         !self.client.is_empty() || self.head.is_some() || self.trailers.is_some()
     }
@@ -346,6 +426,7 @@ impl Answer {
         match out {
             PlaneOut::Respond { status } => {
                 once.respond(self)?;
+                self.up_open = None;
                 self.flush_head();
                 self.head = Some((status, Vec::new()));
             }
@@ -353,6 +434,8 @@ impl Answer {
                 let pair = (name.as_bytes().to_vec(), value.to_vec());
                 if let Some(trailers) = self.trailers.as_mut() {
                     trailers.push(pair);
+                } else if let Some(open) = self.up_open {
+                    self.exchanges[open].headers.push(pair);
                 } else if let Some((_, fields)) = self.head.as_mut() {
                     fields.push(pair);
                 } else {
@@ -363,11 +446,13 @@ impl Answer {
             }
             PlaneOut::Body(bytes) => {
                 once.respond(self)?;
+                self.up_open = None;
                 self.flush_head();
                 self.client.push(ToClient::Body(bytes.to_vec()));
             }
             PlaneOut::Msg { flags, bytes } => {
                 once.respond(self)?;
+                self.up_open = None;
                 self.flush_head();
                 self.client.push(ToClient::Msg {
                     flags,
@@ -376,11 +461,13 @@ impl Answer {
             }
             PlaneOut::Trailers => {
                 once.respond(self)?;
+                self.up_open = None;
                 self.flush_head();
                 self.trailers = Some(Vec::new());
             }
             PlaneOut::End => {
                 once.respond(self)?;
+                self.up_open = None;
                 self.flush_head();
                 self.flush_trailers();
                 self.client.push(ToClient::End);
@@ -406,6 +493,74 @@ impl Answer {
             PlaneOut::Fact(key, value) => self.facts.push((key, fact_val(value))),
             PlaneOut::Emit { carrier, bytes } => effects.emit(carrier, bytes),
             PlaneOut::Finish => self.finish = true,
+            PlaneOut::UpCarrier { carrier, outbound } => {
+                upstream_placed(origin)?;
+                let at = self.begin_exchange(self.default_exchange);
+                self.exchanges[at].carrier = carrier;
+                self.exchanges[at].outbound = outbound;
+            }
+            PlaneOut::UpNew {
+                exchange,
+                carrier,
+                outbound,
+            } => {
+                upstream_placed(origin)?;
+                if exchange == 0 {
+                    return Err(Violation::BadExchange);
+                }
+                let at = self.begin_exchange(exchange);
+                self.exchanges[at].carrier = carrier;
+                self.exchanges[at].outbound = outbound;
+            }
+            PlaneOut::UpMethod(method) => {
+                upstream_placed(origin)?;
+                let at = self.open_exchange();
+                self.exchanges[at].method = Some(method.into());
+            }
+            PlaneOut::UpPath(path) => {
+                upstream_placed(origin)?;
+                let at = self.open_exchange();
+                self.exchanges[at].path = Some(path.into());
+            }
+            PlaneOut::UpScope(scope) => {
+                upstream_placed(origin)?;
+                let at = self.open_exchange();
+                self.exchanges[at].scope = Some(scope.into());
+            }
+            PlaneOut::UpBody(bytes) => {
+                upstream_placed(origin)?;
+                let at = self.open_exchange();
+                self.exchanges[at].body.extend_from_slice(bytes);
+            }
+            PlaneOut::UpMsg { flags, bytes } => {
+                upstream_placed(origin)?;
+                let at = self.open_exchange();
+                self.exchanges[at].msgs.push((flags, bytes.to_vec()));
+            }
+            PlaneOut::UpEnd => {
+                upstream_placed(origin)?;
+                let at = self.open_exchange();
+                self.exchanges[at].end = true;
+            }
+            PlaneOut::UpCut => {
+                upstream_placed(origin)?;
+                let at = self.open_exchange();
+                self.exchanges[at].cut = true;
+            }
+            PlaneOut::ExMsg {
+                exchange,
+                flags,
+                stream,
+                bytes,
+            } => {
+                upstream_placed(origin)?;
+                self.ex_msgs.push(ExMsgItem {
+                    exchange,
+                    flags,
+                    stream,
+                    bytes: bytes.to_vec(),
+                });
+            }
             PlaneOut::Usage {
                 class,
                 amount,
@@ -441,7 +596,7 @@ impl Answer {
                     return Err(Violation::BadAttempt);
                 }
                 let placed = match origin {
-                    Origin::Upstream => true,
+                    Origin::Upstream | Origin::Probe => true,
                     Origin::Piece(FROM_UPSTREAM) => verdict != ATT_DECLINE,
                     _ => false,
                 };
@@ -487,6 +642,14 @@ impl Answer {
     }
 }
 
+/// Upstream exchange items come in `upstream`, `piece` and `probe` answers only.
+fn upstream_placed(origin: Origin) -> Result<(), Violation> {
+    match origin {
+        Origin::Upstream | Origin::Piece(_) | Origin::Probe => Ok(()),
+        _ => Err(Violation::UpstreamOutOfPlace(origin)),
+    }
+}
+
 fn fact_val(value: FactRef<'_>) -> FactVal {
     match value {
         FactRef::U(n) => FactVal::U(n),
@@ -527,6 +690,30 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         Ok((task, answer))
     }
 
+    /// `probe`: opens a health-probe session on one member; its answer is an `upstream` answer (a minimal request
+    /// in the target's dialect, or ATT_DECLINE).
+    pub fn probe(
+        calls: &'k K,
+        target: &TargetIn<'_>,
+        effects: &dyn Effects,
+    ) -> Result<(Self, Answer), SessionError> {
+        let mut once = Once::default();
+        let mut answer = Answer::default();
+        let session = calls
+            .probe(target, &mut |out| {
+                answer.take(out, Origin::Probe, &mut once, effects);
+            })
+            .map_err(SessionError::Port)?;
+        let mut task = Self {
+            calls,
+            session: Some(session),
+            once,
+            usage: SessionUsage::new(),
+        };
+        let answer = task.checked(answer)?;
+        Ok((task, answer))
+    }
+
     /// One `piece`.
     pub fn piece(
         &mut self,
@@ -540,7 +727,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         let calls = self.calls;
         let once = &mut self.once;
         let session = self.session.as_mut().ok_or(SessionError::Over)?;
-        let mut answer = Answer::default();
+        let mut answer = Answer::for_exchange(exchange);
         let called = calls.piece(session, from, exchange, flags, bytes, &mut |out| {
             answer.take(out, origin, once, effects);
         });

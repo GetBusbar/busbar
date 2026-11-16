@@ -732,7 +732,7 @@ fn an_ok_verdict_serves_and_the_plane_s_failure_is_the_error() {
         ],
     );
     let mut members = walk(&["a"]);
-    let mut far = far(vec![reply(200, b"")]);
+    let mut far = far(vec![reply(200, b"x")]);
     let mut task = begin(&plane);
     assert!(matches!(
         run_attempts(

@@ -16,6 +16,7 @@ pub mod port;
 pub mod port_auth;
 pub mod port_money;
 pub mod port_session;
+pub mod port_upstream;
 pub(crate) use money::observation_budget_id;
 pub(crate) mod needs;
 mod probe;
