@@ -156,10 +156,12 @@ pub const MAX_VALUE: usize = 64 * 1024;
 pub const MAX_CHAIN_ENTRY: usize = 64 * 1024;
 
 mod chain;
+mod late;
 #[cfg(test)]
 mod late_tests;
 pub(crate) mod store;
 
+pub use late::LateRecords;
 pub use store::StoreRecords;
 
 /// One records owner shared by every consumer of the instance's namespace: the connector's RECORD Need
