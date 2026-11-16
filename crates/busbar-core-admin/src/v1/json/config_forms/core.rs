@@ -12,16 +12,7 @@ fn unsigned() -> Value {
 
 pub(super) fn definitions(defs: &mut Map<String, Value>) {
     let mut branches = Vec::new();
-    for metric in [
-        "requests",
-        "tokens",
-        "tokens_input",
-        "tokens_output",
-        "tokens_cache_read",
-        "tokens_cache_write",
-        "budget",
-        "concurrent",
-    ] {
+    for metric in ["requests", "tokens", "budget", "concurrent"] {
         let mut properties = json!({metric:unsigned()});
         if metric != "concurrent" {
             properties["per"] = json!({"enum":["minute","hour","day","month","total"]});
@@ -30,8 +21,6 @@ pub(super) fn definitions(defs: &mut Map<String, Value>) {
         if metric == "budget" {
             properties["on_exhaust"] = json!({"enum":["block","downgrade"]});
             properties["downgrade_to"] = json!({"type":"string"});
-            properties["admission"] = json!({"enum":["exact","estimate"],"description":"Omitted means exact; authored presence is retained in readback."});
-            properties["on_exhaustion"] = json!({"enum":["finish-unit","cut-stream"],"description":"In-flight behavior; omitted means finish-unit. Distinct from admission-time on_exhaust."});
         }
         let mut branch = object(properties);
         branch["required"] = if metric == "concurrent" {
@@ -159,7 +148,7 @@ mod tests {
             json!({"child_default":{}}),
             json!({"enabled":null}),
             json!({"limits":null}),
-            json!({"limits":[{"budget":9007199254740993_u64,"per":"month","admission":"estimate","on_exhaustion":"cut-stream"}]}),
+            json!({"limits":[{"budget":9007199254740993_u64,"per":"month"}]}),
             json!({"child_default":{"limits":[]}}),
             json!({"unknown":true}),
         ] {

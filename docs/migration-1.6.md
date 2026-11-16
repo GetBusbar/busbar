@@ -206,10 +206,8 @@ the same breaker and failover you already run for models applies to them; see
 
 Validation messages keep 1.5.5's wording, but the key lists they print are not frozen: where a
 message lists what a section accepts (`expected one of …`), the list now also names what 1.6.0
-added, such as the new sections and the group-limit token sub-metrics `tokens_input`,
-`tokens_output`, `tokens_cache_read` and `tokens_cache_write` (see
-[Configuration → `groups`](configuration.md#groups)). A script that matched the exact 1.5.5 list
-needs to allow for the longer one.
+added, such as the new sections. A script that matched the exact 1.5.5 list needs to allow for
+the longer one.
 
 ## 5. Retired 1.5.x spellings, rewritten for you
 
@@ -592,6 +590,11 @@ require an explicit file reference from the operator.
 This historical conversion lives in the one-shot configuration migrator because the current
 OAuth plugin has no outbound-binding migration entry; its generic auth migration surface
 receives identity-provider settings, not deployment credential references.
+
+## Removed pre-release keys
+
+- `limits.hook_content_max_bytes`: removed; a content-granted hook always sees the whole content (the old default of unlimited). A config that sets it is refused as an unknown key.
+- `groups.<g>.limits[]` `tokens_input`, `tokens_output`, `tokens_cache_read`, `tokens_cache_write`, `admission`, `on_exhaustion`: removed; group limits are 1.5.5's `requests`, `tokens`, `budget` and `concurrent`, budget admission is always exact and a unit in flight when a budget runs dry always finishes. A config that sets one is refused as an unknown key.
 
 ## Released 1.5.5 persistent configuration
 
