@@ -341,4 +341,6 @@ fn an_unknown_upstream_credentials_mode_is_refused() {
         section(&format!("berth:\n  upstream_credentials: {mode}\n"))
             .expect("a known registration mode is accepted");
     }
+    section("berth:\n  upstream_credentials: null\n")
+        .expect("an explicit null inherits the section default, as an absent key does");
 }

@@ -277,6 +277,7 @@ fn judge_upstream_credentials(at: &str, value: &Value) -> Result<(), String> {
     let Some(mode) = value
         .as_mapping()
         .and_then(|m| m.get_key(UPSTREAM_CREDENTIALS))
+        .filter(|mode| !mode.is_null())
     else {
         return Ok(());
     };
