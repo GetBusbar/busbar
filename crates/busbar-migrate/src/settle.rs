@@ -303,6 +303,23 @@ fn settle_block(
     report: &mut Vec<String>,
     secrets: &mut Vec<SecretFile>,
 ) -> Result<(), Refusal> {
+    if answer.placement == BagPlacement::Block {
+        let mut wrapped = vec![(Value::from("settings"), Value::Map(block.clone()))];
+        let mut nested = answer.clone();
+        nested.placement = BagPlacement::Settings;
+        settle_block(&mut wrapped, &nested, dir, report, secrets)?;
+        let Some(Value::Map(bag)) = wrapped.get_key("settings") else {
+            return Err(refuse(
+                answer.index,
+                "a whole-block CONFIG must be an object",
+            ));
+        };
+        *block = bag.clone();
+        if let Some(limits) = wrapped.get_key("limits") {
+            block.insert_key("limits", limits.clone());
+        }
+        return Ok(());
+    }
     let index = answer.index;
     let shown = answer.path.join(".");
     if let Some(settings) = &answer.settings {
@@ -486,6 +503,12 @@ pub fn apply_settled(
             ));
         }
         let shown = answer.path.join(".");
+        if answer.placement == BagPlacement::Block
+            && answer.path.len() == 1
+            && root.get_key(answer.path[0].as_str()).is_none()
+        {
+            schema_insert(root, &answer.path[0], Value::Map(Vec::new()));
+        }
         let block = block_mut(root, &answer.path).ok_or_else(|| {
             refuse(
                 index,
