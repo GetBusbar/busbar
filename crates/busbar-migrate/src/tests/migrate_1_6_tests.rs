@@ -222,7 +222,10 @@ fn trust_optins_migrate_only_when_intent_is_unambiguous() {
             let source = format!("plugins: {{trust: {{allow_unsigned: {unsigned}, allow_third_party: {third_party}}}}}");
             let result = passes(&source, &facts());
             if unsigned != third_party {
-                assert!(result.is_err(), "one opt-in must require an explicit decision");
+                assert!(
+                    result.is_err(),
+                    "one opt-in must require an explicit decision"
+                );
             } else {
                 let (after, report) = result.unwrap();
                 let trust = after.at("plugins").at("trust");
@@ -244,7 +247,13 @@ fn ambiguous_trust_and_unscoped_publishers_refuse_without_mutation() {
     ] {
         let resolved = value(source);
         let mut after = resolved.clone();
-        assert!(run(after.as_mapping_mut().unwrap(), &resolved, &facts(), &mut Vec::new()).is_err());
+        assert!(run(
+            after.as_mapping_mut().unwrap(),
+            &resolved,
+            &facts(),
+            &mut Vec::new()
+        )
+        .is_err());
         assert_eq!(after, resolved, "refusal preserves input: {source}");
     }
 }

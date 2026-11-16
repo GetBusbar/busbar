@@ -3138,13 +3138,15 @@ fn audit_seal_every_is_whole_milliseconds_from_1_to_1000() {
 
 #[test]
 fn plugin_trust_has_one_explicit_unverified_optin_and_scoped_keys() {
-    let trust: super::super::PluginsTrustCfg = busbar_contract::yaml::from_str(
+    let trust: PluginsTrustCfg = busbar_contract::yaml::from_str(
         "allow_untrusted: true\npublishers:\n- name: vendor\n  plugins: [example]\n  keys:\n  - public_key: deadbeef\n    revoked: true\n",
     ).unwrap();
     assert!(trust.allow_untrusted);
     assert_eq!(trust.publishers[0].plugins, ["example"]);
     assert!(trust.publishers[0].keys[0].revoked);
     for old in ["allow_unsigned", "allow_third_party"] {
-        assert!(busbar_contract::yaml::from_str::<super::super::PluginsTrustCfg>(&format!("{old}: true")).is_err());
+        assert!(
+            busbar_contract::yaml::from_str::<PluginsTrustCfg>(&format!("{old}: true")).is_err()
+        );
     }
 }
