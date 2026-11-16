@@ -9,6 +9,7 @@
 //! order of the declared D_SECRET_PATH pointers, a `*` pointer in ascending array index, then (`bind_any` only)
 //! every other reference in document order; trust and dest handles likewise in their own declared order.
 
+use busbar_ports::binder::RefSource;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -33,21 +34,8 @@ const SECRET: &str = "$secret";
 const TRUST: &str = "$trust";
 const DEST: &str = "$dest";
 
-/// What `resolve_refs` resolves a D_REF_PATH reference through: custody (`SecretCustody`, IF §12.2), which
-/// registers the value in `instance`'s scrub set before it returns it. The registry supplies it; the binder
-/// never reaches a secret instance itself.
-pub trait RefSource: Send + Sync + 'static {
-    /// The value of `reference` for `instance`; None = the resolve failed (no text: the binder writes core's).
-    fn resolve<'a>(
-        &'a self,
-        instance: u64,
-        reference: &'a SecretRef,
-    ) -> BoxFut<'a, Option<SecureVec>>;
-}
-
 /// A generation's complete config binder; every instance opened in that generation binds through it.
 pub struct Binder {
-    source: Arc<dyn RefSource>,
     sugars: Arc<Sugars>,
     schemas: HashMap<Arc<str>, Option<SchemaCheck>>,
     instances: RwLock<HashMap<u64, Arc<Entry>>>,
@@ -79,17 +67,12 @@ struct RefEntry {
 
 impl Binder {
     #[must_use]
-    pub fn new(
-        source: Arc<dyn RefSource>,
-        sugars: Arc<Sugars>,
-        schemas: Vec<(Arc<str>, Box<str>)>,
-    ) -> Self {
+    pub fn new(sugars: Arc<Sugars>, schemas: Vec<(Arc<str>, Box<str>)>) -> Self {
         let schemas = schemas
             .into_iter()
             .map(|(name, schema)| (name, SchemaCheck::new(schema.as_bytes()).ok()))
             .collect();
         Self {
-            source,
             sugars,
             schemas,
             instances: RwLock::new(HashMap::new()),
@@ -630,7 +613,9 @@ impl ConfigBinder for Binder {
     fn resolve_refs<'a>(
         &'a self,
         instance: u64,
+        slot: u32,
         bound: Vec<u8>,
+        source: &'a dyn RefSource,
     ) -> BoxFut<'a, Result<SecureVec, BindError>> {
         Box::pin(async move {
             let Some(entry) = self.entry(instance).filter(|e| !e.refs.is_empty()) else {
@@ -656,7 +641,7 @@ impl ConfigBinder for Binder {
                         text: text.into(),
                     }
                 };
-                let Some(value) = self.source.resolve(instance, &r.reference).await else {
+                let Some(value) = source.resolve(instance, slot, &r.reference).await else {
                     result = Err(refused("could not be resolved"));
                     break;
                 };

@@ -30,6 +30,17 @@ use busbar_plugin_abi::host_side::needs::{
 
 /// DRY_RUN never receives a serving capability or performs I/O.
 pub(crate) struct DeniedNeeds;
+pub(crate) struct DeniedRefs;
+impl busbar_ports::binder::RefSource for DeniedRefs {
+    fn resolve<'a>(
+        &'a self,
+        _: u64,
+        _: u32,
+        _: &'a busbar_contract::secret_ref::SecretRef,
+    ) -> busbar_plugin_abi::host_side::caller::BoxFut<'a, Option<SecureVec>> {
+        Box::pin(async { None })
+    }
+}
 impl Needs for DeniedNeeds {
     async fn open(
         &self,
@@ -113,10 +124,10 @@ use busbar_plugin_abi::types::{KindCode, Status};
 use crate::answer::{open_error, port_error};
 use crate::instance::{
     BootPhase, CoreCfg, Described, ErrorBook, InstanceSpec, MetricInfo, OpenError, OpenPurpose,
-    Registry, Settled, SlotLease, SlotRecord,
+    Registry, Settled, SlotLease,
 };
 use crate::refusal::{Refusal, RefusalCode};
-use busbar_ports::binder::{BindError, ConfigBinder};
+use busbar_ports::binder::{BindError, ConfigBinder, RefSource};
 use busbar_ports::codec::settled::for_purpose;
 
 /// An `open` chain may run this long end to end (its NEEDs included): the first poll is bounded by the §10.6
@@ -565,19 +576,13 @@ impl Registry {
     /// Cold: the admitted image `s.identity` names, the config bound and its references resolved (§11.2 `open`:
     /// `bind`, `resolve_refs`, the core values at D_PUBLIC_URL_PATH and D_CALLER_UPSTREAMS_PATH). The D_SCHEMA
     /// check is the plugin's own `open`/`check` (the engine graph carries no JSON Schema validator).
-    pub(crate) async fn prepare(
-        &self,
-        s: &InstanceSpec<'_>,
-        kind: KindCode,
-    ) -> Result<Prepared, OpenError> {
-        self.prepare_with_id(s, kind, self.ids.next()?).await
-    }
-
     async fn prepare_with_id(
         &self,
         s: &InstanceSpec<'_>,
         kind: KindCode,
         id: u64,
+        slot: u32,
+        refs: &dyn RefSource,
     ) -> Result<Prepared, OpenError> {
         let entry = self.entry_of(s.identity).ok_or_else(|| {
             OpenError::Unknown(format!(
@@ -626,7 +631,7 @@ impl Registry {
         };
         let resolved = self
             .binder
-            .resolve_refs(id, bound)
+            .resolve_refs(id, slot, bound, refs)
             .await
             .map_err(|e| bind_error(s.name, e))?;
         let (urls, ups) = (
@@ -740,19 +745,6 @@ impl Registry {
         .map_err(OpenError::Call)
     }
 
-    fn lease_for(&self, s: &InstanceSpec<'_>, p: &Prepared, kind: KindCode) -> SlotLease {
-        self.slots.alloc(
-            SlotRecord {
-                kind,
-                name: Arc::from(s.name),
-                scrub: Arc::new(Scrub::new()),
-                errors: p.errors,
-                undeclared_warned: AtomicBool::new(false),
-            },
-            &p.ceilings,
-        )
-    }
-
     /// The generic open (§11.2): prepare, run the `open` chain under a leased slot, and on OK + INSTANCE build the
     /// `Instance` in the same poll (§10.4), keep the settled answer for the write-back (round 31) and tether the
     /// binding and the lease to the instance. A REFUSED or FAILED answer is the open's error.
@@ -760,6 +752,7 @@ impl Registry {
         &self,
         reserved: crate::instance::PreparedInstance,
         needs: &Arc<N>,
+        refs: &dyn RefSource,
     ) -> Result<Opened, OpenError> {
         let crate::instance::PreparedInstance {
             owner,
@@ -778,7 +771,9 @@ impl Registry {
                 "reserved instance belongs to another process".into(),
             ));
         }
-        let p = self.prepare_with_id(s, kind, id).await?;
+        let p = self
+            .prepare_with_id(s, kind, id, lease.slot(), refs)
+            .await?;
         let finished = self.run_open::<K, N>(s, &p, &lease, 0, &**needs).await?;
         let Finished { answer, instance } = finished;
         let (status, scrub, errors) = (
@@ -895,10 +890,14 @@ impl Registry {
     pub(crate) async fn dry_run<K: Kind>(
         &self,
         s: &InstanceSpec<'_>,
+        refs: &dyn RefSource,
     ) -> Result<Vec<crate::instance::DeclaredEndpoint>, OpenError> {
         let kind = K::CODE;
-        let p = self.prepare(s, kind).await?;
-        let lease = self.lease_for(s, &p, kind);
+        let reserved = self.reserve(s)?;
+        let lease = reserved.lease;
+        let p = self
+            .prepare_with_id(s, kind, reserved.id, lease.slot(), refs)
+            .await?;
         let finished = self
             .run_open::<K, DeniedNeeds>(
                 s,

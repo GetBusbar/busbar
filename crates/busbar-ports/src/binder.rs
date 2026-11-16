@@ -5,6 +5,8 @@
 //! names it; `busbar_kernel::plugin_config` re-exports it and W1-K7 implements `ConfigBinder` there. `Bindings`
 //! stays in the kernel. Every path and signature is the §12.7 text; only the home moved.
 
+use busbar_contract::secret_ref::SecretRef;
+use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::host_side::caller::BoxFut;
 
 /// Round 7. A file-sink destination bound at a D_DEST_PATH node (operator grammar, unchanged from 1.5.x
@@ -44,6 +46,19 @@ pub enum BindError {
     },
     TooMany,
 }
+/// What `resolve_refs` resolves a D_REF_PATH reference through: custody (`SecretCustody`, IF §12.2), which
+/// registers the value in `instance`'s scrub set before it returns it. The registry supplies it; the binder
+/// never reaches a secret instance itself.
+pub trait RefSource: Send + Sync + 'static {
+    /// The value of `reference` for `instance`; None = the resolve failed (no text: the binder writes core's).
+    fn resolve<'a>(
+        &'a self,
+        instance: u64,
+        slot: u32,
+        reference: &'a SecretRef,
+    ) -> BoxFut<'a, Option<SecureVec>>;
+}
+
 pub trait ConfigBinder: Send + Sync + 'static {
     /// Walk `config` (the operator's JSON for this instance). At every node matched by a D_SECRET_PATH
     /// pointer: parse it with busbar-contract's SecretRef parser in the admitted-source context with the
@@ -78,7 +93,9 @@ pub trait ConfigBinder: Send + Sync + 'static {
     fn resolve_refs<'a>(
         &'a self,
         instance: u64,
+        slot: u32,
         bound: Vec<u8>,
+        source: &'a dyn RefSource,
     ) -> BoxFut<'a, Result<busbar_contract::secure::SecureVec, BindError>>;
     fn unbind(&self, instance: u64);
     /// Round 31: `open` on an **unstamped boot only** (§7.2, §11.2), where the plugin may receive a 1.x bag

@@ -32,7 +32,9 @@ impl ConfigBinder for Binder {
     fn resolve_refs<'a>(
         &'a self,
         _: u64,
+        _: u32,
         bound: Vec<u8>,
+        _: &'a dyn RefSource,
     ) -> BoxFut<'a, Result<SecureVec, BindError>> {
         Box::pin(async move { Ok(SecureVec::from(bound)) })
     }
@@ -122,7 +124,13 @@ async fn failed_reopen_preserves_version_and_bound_needs_lifetime() {
     );
     let needs = Arc::new(crate::chains::DeniedNeeds);
     let weak = Arc::downgrade(&needs);
-    registry.remember(&spec("bound"), KindCode::Secret, &needs, None);
+    registry.remember(
+        &spec("bound"),
+        KindCode::Secret,
+        &needs,
+        &(Arc::new(crate::chains::DeniedRefs) as Arc<dyn RefSource>),
+        None,
+    );
     registry
         .applied
         .lock()

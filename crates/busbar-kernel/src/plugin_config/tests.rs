@@ -16,7 +16,7 @@ use super::{BindError, Binder, BoxFut, ConfigBinder, RefSource, MAX_BINDINGS};
 /// Resolves every reference to one fixed value (custody's part, §12.2, is K2's).
 struct Fixed(&'static str);
 impl RefSource for Fixed {
-    fn resolve<'a>(&'a self, _: u64, _: &'a SecretRef) -> BoxFut<'a, Option<SecureVec>> {
+    fn resolve<'a>(&'a self, _: u64, _: u32, _: &'a SecretRef) -> BoxFut<'a, Option<SecureVec>> {
         let v = self.0;
         Box::pin(async move { Some(SecureVec::from(v.as_bytes())) })
     }
@@ -32,8 +32,8 @@ fn sugars() -> Arc<Sugars> {
     Arc::new(s)
 }
 
-fn binder(value: &'static str) -> Binder {
-    Binder::new(Arc::new(Fixed(value)), sugars(), Vec::new())
+fn binder(_value: &'static str) -> Binder {
+    Binder::new(sugars(), Vec::new())
 }
 
 fn bytes(v: &Value) -> Vec<u8> {
@@ -130,7 +130,7 @@ fn a_ref_path_reference_resolves_before_open_and_unbinds_to_its_text() {
         cfg,
         "the reference stays in place until resolve_refs"
     );
-    let resolved = run(b.resolve_refs(3, bound)).expect("resolves");
+    let resolved = run(b.resolve_refs(3, 0, bound, &Fixed("/tmp/x.db"))).expect("resolves");
     assert_eq!(
         read(resolved.as_slice()),
         json!({"db_path": "/tmp/x.db", "busy_timeout_ms": 5000})
@@ -155,7 +155,7 @@ fn a_plain_string_at_a_ref_path_is_left_and_no_refs_means_no_io() {
     let bound = b
         .bind(4, &bytes(&cfg), &[], &[], &[], &["/url"])
         .expect("binds");
-    let resolved = run(b.resolve_refs(4, bound.clone())).expect("no refs");
+    let resolved = run(b.resolve_refs(4, 0, bound.clone(), &Fixed("never"))).expect("no refs");
     assert_eq!(resolved.as_slice(), bound.as_slice());
 }
 
@@ -172,7 +172,6 @@ fn an_undeclared_shorthand_at_a_ref_path_refuses() {
 #[test]
 fn a_reference_failing_its_secret_instances_ref_schema_is_bad_reference() {
     let b = Binder::new(
-        Arc::new(Fixed("unused")),
         sugars(),
         vec![(
             Arc::from("env"),
