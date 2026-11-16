@@ -73,8 +73,8 @@ use crate::dispatch::plugin::str_bytes;
 use crate::dispatch::Done as Settled;
 use crate::dispatch::{
     in_head, lifecycle, load_dropped_bytes, load_linked, out_head, rendering_of, Bind, ConnTable,
-    DispatchConfig, Dispatcher, Frame, InFrame, Kind, LinkedRow, LoadError, NoSink, OutFrame,
-    Plugin, Recall, Reply,
+    Diagnostic, DispatchConfig, Dispatcher, Dropped, EnvelopeSink, Frame, InFrame, Kind, LinkedRow,
+    LoadError, Metric, NoSink, OutFrame, Plugin, Recall, Reply,
 };
 
 /// Why a host refused to load or open an image.
@@ -242,6 +242,7 @@ pub struct Host {
     conns: ConnTable,
     config: DispatchConfig,
     services: Option<Arc<dyn HostServices>>,
+    sink: Arc<dyn EnvelopeSink>,
 }
 
 impl Host {
@@ -256,6 +257,7 @@ impl Host {
             conns: ConnTable::Probe,
             config,
             services: None,
+            sink: Arc::new(NoSink),
         }
     }
 
@@ -273,6 +275,14 @@ impl Host {
     pub fn config(mut self, config: DispatchConfig) -> Self {
         self.config = config;
         self.rebuild();
+        self
+    }
+
+    /// Where every image this host binds sends its envelope (STH-ROWS D-5): what production's sink
+    /// sees, nothing raw. A test passes a recording sink (the facade's `Envelopes`).
+    #[must_use]
+    pub fn sink(mut self, sink: Arc<dyn EnvelopeSink>) -> Self {
+        self.sink = sink;
         self
     }
 
@@ -299,10 +309,19 @@ impl Host {
     }
 
     fn bind<K: Kind>(&self, img: &Image<K>, name: &str) -> Result<Plugin<K>, Refused> {
+        self.bind_with(img, name, Arc::new(NoSink))
+    }
+
+    fn bind_with<K: Kind>(
+        &self,
+        img: &Image<K>,
+        name: &str,
+        sink: Arc<dyn EnvelopeSink>,
+    ) -> Result<Plugin<K>, Refused> {
         img.load(Bind {
             instance: Arc::from(name),
             max_inflight_cap: 64,
-            sink: Arc::new(NoSink),
+            sink,
             dispatcher: self.dispatcher.adopter(),
             conns: self.conns.clone(),
         })
@@ -420,8 +439,9 @@ impl Host {
         name: &str,
         settings: &[u8],
     ) -> Result<crate::auth_door::AuthInstance, Refused> {
-        let plugin = self.bind(&img, name)?;
         let sink = crate::auth_door::AuthSink::new(name);
+        let tee: Arc<dyn EnvelopeSink> = Arc::new(Tee(sink.bind(), Arc::clone(&self.sink)));
+        let plugin = self.bind_with(&img, name, tee)?;
         crate::auth_door::AuthInstance::open(
             plugin,
             sink,
@@ -1258,5 +1278,26 @@ impl<In, Out> Drop for Done<'_, In, Out> {
         };
         (lane.release)(std::mem::take(&mut self.lease));
         lane.settle();
+    }
+}
+
+/// Forwards each envelope entry to two sinks: an auth instance binds production's own flush sink
+/// and the host's, so the flushed count moves as it does in production.
+struct Tee(Arc<dyn EnvelopeSink>, Arc<dyn EnvelopeSink>);
+
+impl EnvelopeSink for Tee {
+    fn metric(&self, m: Metric<'_>) {
+        self.0.metric(m);
+        self.1.metric(m);
+    }
+
+    fn diag(&self, d: Diagnostic<'_>) {
+        self.0.diag(d);
+        self.1.diag(d);
+    }
+
+    fn dropped(&self, why: Dropped) {
+        self.0.dropped(why);
+        self.1.dropped(why);
     }
 }

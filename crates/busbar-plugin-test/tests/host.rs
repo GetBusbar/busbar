@@ -896,3 +896,22 @@ fn a_tail_row_never_grows_a_tail() {
 fn the_media_row_refuses_a_transport_s_door() {
     let _ = Mutant::of(transport_door::door).no_streaming_types();
 }
+
+#[test]
+fn an_images_declared_diagnostic_reaches_the_hosts_sink_once() {
+    let env = busbar_plugin_test::Envelopes::new();
+    let h = host().sink(env.clone());
+    let mut t = open_secret(&h, secret_door::NOTES);
+    assert_eq!(resolved(&mut t), secret_door::NOTES, "RESOLVE answers");
+    assert_eq!(
+        env.diags(),
+        vec![busbar_plugin_test::DiagRecord {
+            id: 0,
+            name: b"fixture-note".to_vec(),
+            severity: 1,
+            text: b"the fixture was asked to note".to_vec(),
+        }],
+        "the declared diagnostic is recorded once, as production's sink sees it"
+    );
+    assert!(env.metrics().is_empty() && env.dropped().is_empty());
+}

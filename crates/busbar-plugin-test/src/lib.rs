@@ -10,6 +10,7 @@
 #![doc(test(attr(forbid(unsafe_code))))]
 
 pub mod canary_scan;
+pub mod envelopes;
 pub mod errors;
 pub mod fake_needs;
 pub mod services;
@@ -39,10 +40,13 @@ pub use busbar_plugin_loader::dispatch::kinds::{
     auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret, store_v4::StoreV4,
     transport::Transport,
 };
-pub use busbar_plugin_loader::dispatch::{rendering_of, ConnTable, LoadError};
+pub use busbar_plugin_loader::dispatch::{
+    rendering_of, ConnTable, Diagnostic, DispatchConfig, Dropped, EnvelopeSink, LoadError, Metric,
+};
 pub use busbar_plugin_loader::test_host::{
     both, rendering, Answer, Called, Done, Host, Image, Life, Loaded, Opened, Opening, Pending,
     Refused, Submitted, TimedOut,
 };
+pub use envelopes::{DiagRecord, Envelopes, MetricRecord};
 pub use fake_needs::{ConnScript, FakeNeeds};
 pub use services::Services;
