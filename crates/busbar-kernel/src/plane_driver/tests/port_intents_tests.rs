@@ -10,7 +10,8 @@ use std::sync::Mutex;
 
 use busbar_plugin_abi::fail::refused::{R_DENIED, R_UNSUPPORTED};
 use busbar_plugin_abi::plane::{
-    CommittedRec, LookupHit, WorkAns, FROM_CORE, LK_CALLER, LK_PREFIX, P_COMMITTED, P_LOOKUP,
+    CommittedRec, LookupHit, WorkAns, DEST_INTERNAL, FROM_CORE, JUDGE_REFUSE_PRIVATE,
+    JUDGE_RESOLVE, LK_CALLER, LK_PREFIX, P_COMMITTED, P_ENTITLE, P_JUDGED, P_LOOKUP,
     P_STORE_FAILED, P_WORK, WORK_OPEN,
 };
 use busbar_plugin_abi::records::{commit, tag as g, RecPredRec, RecPutRec, Records, Reply, Writer};
@@ -18,7 +19,7 @@ use busbar_plugin_loader::ports::plane::{PlaneIn, PlaneOut, TargetIn};
 use busbar_plugin_loader::ports::PortError;
 
 use super::{Hit, IntentHost, Looked, Resolver, WorkIntent, WorkOutcome};
-use crate::plane_driver::port_session::{Calls, Effects, SessionError, Task, ToClient};
+use crate::plane_driver::port_session::{Calls, Effects, SessionError, Task, ToClient, Violation};
 use crate::plugin_records::{CommitOp, CommitOutcome, RecordsDenied, Scope};
 
 /// One scripted sink item, owned.
@@ -59,6 +60,12 @@ enum It {
     Signal {
         flags: u32,
         key: Vec<u8>,
+    },
+    Entitle(&'static str),
+    Judge {
+        dest: &'static str,
+        class: u32,
+        flags: u32,
     },
 }
 
@@ -104,6 +111,13 @@ fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
                 key,
             }),
             It::Signal { flags, key } => sink(PlaneOut::Signal { flags: *flags, key }),
+            It::Entitle(grant) => sink(PlaneOut::Entitle { check: 3, grant }),
+            It::Judge { dest, class, flags } => sink(PlaneOut::Judge {
+                check: 4,
+                class: *class,
+                flags: *flags,
+                dest,
+            }),
         }
     }
 }
@@ -221,6 +235,8 @@ struct Host {
     conflict_at: Option<u32>,
     commit_denied: bool,
     work: Option<WorkOutcome>,
+    granted: Vec<&'static str>,
+    verdict: u32,
 }
 
 impl Host {
@@ -316,6 +332,19 @@ impl IntentHost for Host {
             String::from_utf8_lossy(key),
             subject.is_some()
         ));
+    }
+
+    fn entitle(&self, identity: &[u8], grant: &str) -> bool {
+        self.note(format!(
+            "entitle {grant} identity={}",
+            String::from_utf8_lossy(identity)
+        ));
+        self.granted.contains(&grant)
+    }
+
+    fn judge(&self, dest: &str, class: u32, flags: u32) -> u32 {
+        self.note(format!("judge {dest} class={class} flags={flags}"));
+        self.verdict
     }
 }
 
@@ -765,4 +794,137 @@ fn an_intent_loop_that_never_settles_is_a_violation_not_a_hang() {
         err,
         SessionError::Violation(crate::plane_driver::port_session::Violation::IntentStorm)
     ));
+}
+
+/// Runs the request answer's intents for a request with a verified principal: its ID_SUBJECT text and the
+/// identity records the route admitted it with.
+fn run_as(
+    script: &Script,
+    host: &Host,
+    identity: &[u8],
+) -> Result<Vec<crate::plane_driver::port_session::Answer>, SessionError> {
+    let (mut task, first) = Task::begin(script, &req(), b"", &Quiet)?;
+    let resolver = Resolver::new(host, None).with_principal("alice", identity);
+    task.resolve(first, &resolver, &Quiet)
+}
+
+fn entitle_answers(bytes: &[u8]) -> Vec<(u32, u32)> {
+    Records::new(bytes)
+        .map(|rec| {
+            let rec = rec.unwrap();
+            assert_eq!(rec.tag, busbar_plugin_abi::plane::tag::ENTITLE_ANS);
+            let ans = rec.pod::<busbar_plugin_abi::plane::EntitleAns>().unwrap();
+            (ans.check, ans.granted)
+        })
+        .collect()
+}
+
+#[test]
+fn entitle_asks_the_host_with_the_requests_identity_and_answers_one_ans_per_intent() {
+    let script = Script {
+        request: vec![It::Entitle("mcp_tool:search"), It::Entitle("pool:realtime")],
+        ..Script::default()
+    };
+    let host = Host {
+        granted: vec!["pool:realtime"],
+        ..Host::default()
+    };
+    run_as(&script, &host, b"ID").unwrap();
+    assert_eq!(
+        host.seen(),
+        [
+            "entitle mcp_tool:search identity=ID",
+            "entitle pool:realtime identity=ID"
+        ]
+    );
+    let got = script.got();
+    assert_eq!(got.len(), 1, "one piece for the whole kind");
+    assert_eq!((got[0].0, got[0].1), (FROM_CORE, P_ENTITLE));
+    assert_eq!(entitle_answers(&got[0].2), [(3, 0), (3, 1)]);
+}
+
+#[test]
+fn entitle_with_no_verified_principal_is_not_granted_and_the_host_is_never_asked() {
+    let script = Script {
+        request: vec![It::Entitle("pool:realtime")],
+        ..Script::default()
+    };
+    let host = Host {
+        granted: vec!["pool:realtime"],
+        ..Host::default()
+    };
+    run(&script, &host, None).unwrap();
+    assert!(host.seen().is_empty());
+    let got = script.got();
+    assert_eq!(got[0].1, P_ENTITLE);
+    assert_eq!(entitle_answers(&got[0].2), [(3, 0)]);
+}
+
+#[test]
+fn judge_hands_the_destination_to_the_host_and_answers_the_verdict_as_p_judged() {
+    let script = Script {
+        request: vec![It::Judge {
+            dest: "http://10.0.0.1/x",
+            class: 1,
+            flags: JUDGE_REFUSE_PRIVATE,
+        }],
+        ..Script::default()
+    };
+    let host = Host {
+        verdict: DEST_INTERNAL,
+        ..Host::default()
+    };
+    run(&script, &host, None).unwrap();
+    assert_eq!(
+        host.seen(),
+        [format!(
+            "judge http://10.0.0.1/x class=1 flags={JUDGE_REFUSE_PRIVATE}"
+        )]
+    );
+    let got = script.got();
+    assert_eq!((got[0].0, got[0].1), (FROM_CORE, P_JUDGED));
+    let rec = Records::new(&got[0].2).next().unwrap().unwrap();
+    assert_eq!(rec.tag, busbar_plugin_abi::plane::tag::JUDGE_ANS);
+    let ans = rec.pod::<busbar_plugin_abi::plane::JudgeAns>().unwrap();
+    assert_eq!((ans.check, ans.verdict), (4, DEST_INTERNAL));
+}
+
+#[test]
+fn judge_with_a_class_past_four_or_an_unknown_flag_is_the_planes_fault_and_asks_nothing() {
+    for (class, flags) in [(5, 0), (0, 4), (0, JUDGE_RESOLVE | 8)] {
+        let script = Script {
+            request: vec![It::Judge {
+                dest: "example.com",
+                class,
+                flags,
+            }],
+            ..Script::default()
+        };
+        let host = Host::default();
+        let err = run(&script, &host, None).unwrap_err();
+        assert!(
+            matches!(err, SessionError::Violation(Violation::BadJudge)),
+            "class {class} flags {flags}: {err:?}"
+        );
+        assert!(host.seen().is_empty());
+    }
+}
+
+#[test]
+fn entitle_and_judge_pieces_follow_the_lookup_piece_in_the_if_order() {
+    let script = Script {
+        request: vec![
+            It::Judge {
+                dest: "example.com",
+                class: 0,
+                flags: 0,
+            },
+            It::Entitle("g"),
+            lookup(b"k"),
+        ],
+        ..Script::default()
+    };
+    run_as(&script, &Host::default(), b"ID").unwrap();
+    let kinds: Vec<u32> = script.got().iter().map(|p| p.1).collect();
+    assert_eq!(kinds, [P_LOOKUP, P_ENTITLE, P_JUDGED]);
 }
