@@ -42,6 +42,24 @@ async fn run_for(secs: u64) {
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn candidate_probe_future_does_not_start_a_schedule_before_publication() {
+    let target = Arc::new(Double::default());
+    let schedule = Arc::new(ProbeSchedule::new(1));
+    let prepared = crate::probe::run_probers(
+        Arc::clone(&target),
+        Arc::clone(&schedule),
+        member(HealthMode::Active, 1),
+    );
+    run_for(10).await;
+    assert_eq!(schedule.generation(), 0);
+    assert_eq!(target.probed.load(Ordering::Relaxed), 0);
+    drop(prepared);
+    run_for(10).await;
+    assert_eq!(schedule.generation(), 0);
+    assert_eq!(target.probed.load(Ordering::Relaxed), 0);
+}
+
 #[test]
 fn settings_resolve_to_the_member_then_the_default_floored_at_one_second() {
     let c = ProbeCfg::resolve(HealthMode::Active, None, None, 30, 5);
