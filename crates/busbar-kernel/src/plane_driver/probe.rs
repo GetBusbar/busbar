@@ -53,6 +53,7 @@ impl PlaneDriver {
             target: Vec::new(),
             fields: Vec::new(),
             body: bytes::Bytes::new(),
+            carrier: 0,
         };
 
         self.sweep();

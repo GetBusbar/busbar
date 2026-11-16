@@ -10,6 +10,7 @@ use crate::plugin_records::RecordsDenied;
 use crate::upstreams::UpstreamDef;
 
 pub mod ask_line;
+pub mod line_carriers;
 pub mod respawn;
 pub mod signals;
 #[cfg(test)]

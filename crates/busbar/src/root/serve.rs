@@ -2030,6 +2030,7 @@ impl DataRoutes {
             target: target.as_bytes().to_vec(),
             fields,
             body: body.clone(),
+            carrier: 0,
         };
         let principal = match gov.key() {
             Some(key) => PrincipalId::new(key.id.as_str()),
@@ -2069,6 +2070,7 @@ impl DataRoutes {
         session: std::num::NonZeroU64,
     ) -> (SessionDoor, Arrival, Bytes) {
         let (door, mut arrival, body) = self.arrived(plane, claim, req);
+        arrival.carrier = session.get();
         arrival.fields.push((
             busbar_contract::abi::host::service::CARRIER_SESSION_FIELD
                 .as_bytes()
@@ -2286,6 +2288,7 @@ impl DataRoutes {
             target: nest.ask.target.into_bytes(),
             fields: Vec::new(),
             body: bytes::Bytes::from(nest.ask.body),
+            carrier: 0,
         };
         let nesting = Nesting {
             parent,
