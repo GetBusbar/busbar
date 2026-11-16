@@ -220,6 +220,13 @@ fn locate(lib_name: &str) -> PathBuf {
     })
 }
 
+/// The Statement rendering a mutant states (STH-ROWS D-3): the bytes a dropped plugin's manifest
+/// would carry, rendered by the loader's own linked-row path, which checks the Statement first.
+/// It forges the mutant, so it takes one of the mutant bank's doors.
+pub fn rendering(m: Mutant) -> Result<Vec<u8>, LoadError> {
+    LinkedRow::of_raw(m.door_fn()).map(|row| row.statement)
+}
+
 /// Runs `case` on the linked door, then on the cdylib; the first argument names the image.
 pub fn both<K: Kind>(lib_name: &str, door: DoorFn, case: impl Fn(&str, Image<K>)) {
     case("linked", Image::linked(door));
