@@ -13,6 +13,16 @@ use super::{check_style, squat_text, CredentialFrom, ImplicitInstance, OperatorA
 use crate::config::min3::{UpstreamAuthCfg, UpstreamAuthForm};
 use crate::upstreams::UpstreamAuth;
 
+/// One upstream's auth, resolved: its instance, module and style, the implicit instance it adds (if
+/// any), and its connect callback (if any).
+type Resolved = (
+    Box<str>,
+    Box<str>,
+    Box<str>,
+    Option<ImplicitInstance>,
+    Option<Box<str>>,
+);
+
 /// One configured upstream, as far as bindings read it. No `Debug`: the form carries URLs.
 pub struct UpstreamView<'a> {
     pub name: &'a str,
@@ -155,13 +165,7 @@ pub fn bind_upstreams(
             ));
             continue;
         }
-        let (instance, module, style, implicit, connect_callback): (
-            Box<str>,
-            Box<str>,
-            Box<str>,
-            Option<ImplicitInstance>,
-            Option<Box<str>>,
-        ) = match &cfg.form {
+        let (instance, module, style, implicit, connect_callback): Resolved = match &cfg.form {
             UpstreamAuthForm::Instance(named) => {
                 let Some(op) = operator.iter().find(|o| o.name == &**named) else {
                     refused.push(format!(

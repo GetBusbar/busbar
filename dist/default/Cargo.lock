@@ -440,6 +440,7 @@ dependencies = [
  "libc",
  "memchr",
  "percent-encoding",
+ "rustix",
  "serde",
  "serde-saphyr",
  "serde_json",

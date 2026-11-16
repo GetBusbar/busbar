@@ -19,7 +19,7 @@ mod metering_flush;
 pub(crate) mod raw_recovery;
 pub mod unit_checkpoint;
 mod unit_checkpoint_counts;
-pub mod unit_checkpoint_store;
+pub use crate::off_path::governance::unit_checkpoint_store;
 
 use crate::diagnostics::{
     diag_debug, diag_warn, GOVERNANCE_KEY_RESERVED_NAMESPACE_COLLISION, LIMIT_WINDOW_UNRECOGNIZED,

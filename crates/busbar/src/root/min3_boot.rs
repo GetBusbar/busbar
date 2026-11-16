@@ -964,6 +964,7 @@ pub(crate) async fn run(
     if images.is_empty() {
         return Ok(false);
     }
+    let transport_images = transports::identities(images.iter().map(|(image, _)| image));
     let planes: Vec<PlaneImage> = images
         .iter()
         .filter(|(image, _)| matches!(image.kind(), KindCode::Plane))
@@ -985,7 +986,13 @@ pub(crate) async fn run(
     if built.registry.identity_of(store_module).is_none() {
         return Ok(false);
     }
-    let instances = configured(cfg, &planes)?;
+    let mut instances = configured(cfg, &planes)?;
+    // Transports have no config section: one instance per admitted image (its schema is the registry's).
+    instances.extend(transports::configured(
+        cfg,
+        &built.registry,
+        &transport_images,
+    )?);
     let specs: Vec<(KindCode, InstanceSpec<'_>)> = instances
         .iter()
         .map(|one| {
@@ -1038,6 +1045,7 @@ pub(crate) async fn run(
     let walked = boot(&*built.registry, &specs, &built.sugars, &core_refs, &steps)
         .await
         .map_err(|refused| refused.to_string())?;
+    transports::publish(transports::opened(&walked.opened, &specs))?;
     let core = core_secrets_of(cfg, built.secrets).await?;
     let seats = steps
         .seats
@@ -1085,3 +1093,8 @@ pub(crate) async fn run(
 #[cfg(test)]
 #[path = "tests/min3_boot.rs"]
 mod tests;
+
+/// The transport arm (W2-SW-TRANSPORT): every admitted MIN-3 transport image opened through
+/// `Registry::open_transport` and published for the connector.
+#[path = "min3_transports.rs"]
+pub(crate) mod transports;

@@ -187,9 +187,12 @@ async fn a_local_program_pin_is_checked_against_the_spawned_path_before_the_chil
     );
 }
 
+/// One recorded request: method, path, headers, upstream name.
+type SeenRequest = (String, String, Vec<(String, Vec<u8>)>, String);
+
 #[derive(Default)]
 struct Seen {
-    requests: Mutex<Vec<(String, String, Vec<(String, Vec<u8>)>, String)>>,
+    requests: Mutex<Vec<SeenRequest>>,
 }
 
 impl HeldHttp for Seen {

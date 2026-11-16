@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Loading the audit signing key: once, when the node is configured, never per request.
+//! Loading the audit signing key (once, when the node is configured) and signing a ledger checkpoint
+//! body for its owned row (once per checkpoint flush); never per request.
 
 use busbar_contract::crypto::ed25519::SigningKey;
 
@@ -24,5 +25,12 @@ impl AuditSigningKey {
     pub fn from_hex_seed(text: &str) -> Result<Self, KeyError> {
         let seed = from_hex_secret::<32>(text.trim())?;
         Ok(AuditSigningKey::from_seed(&seed))
+    }
+
+    /// Sign one ledger checkpoint's body: 64 raw ed25519 signature bytes over its preimage, owned for
+    /// the checkpoint row. Runs once per checkpoint the unit flusher writes, never per request.
+    #[must_use]
+    pub fn sign_checkpoint_body(&self, body: &[u8]) -> Vec<u8> {
+        self.sign_checkpoint_raw(body).to_vec()
     }
 }

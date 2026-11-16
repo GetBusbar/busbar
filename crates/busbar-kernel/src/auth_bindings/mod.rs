@@ -122,14 +122,20 @@ pub struct ProviderPlan<'a> {
     pub operator: &'a [OperatorAuth<'a>],
 }
 
+/// `(serving plane instance, provider, dialect)`: the key of one attempt's auth binding.
+pub type AttemptKey = (Box<str>, Box<str>, Box<str>);
+
+/// Core-vocabulary `settings` keys an explicit binding lacked, with the values to add in memory.
+pub type Fills = Vec<(&'static str, String)>;
+
 /// What a load's provider bindings answer.
 #[derive(Default)]
 pub struct ProviderBindings {
     pub implicit: Vec<ImplicitInstance>,
     /// `(serving plane instance, provider, dialect)` → the auth instance its attempts use (implicit or explicit).
-    pub by_attempt: BTreeMap<(Box<str>, Box<str>, Box<str>), Box<str>>,
+    pub by_attempt: BTreeMap<AttemptKey, Box<str>>,
     /// Explicit bindings' core-vocabulary keys their `settings` lacked, to add in memory before bind.
-    pub fills: BTreeMap<Box<str>, Vec<(&'static str, String)>>,
+    pub fills: BTreeMap<Box<str>, Fills>,
 }
 
 /// The dialect of a member: the model's override first, else the provider's protocol (round 15).
@@ -215,7 +221,7 @@ pub fn bind_providers(plan: &ProviderPlan<'_>) -> Result<ProviderBindings, Vec<S
     let mut implicit: BTreeMap<(&str, &str, &'static str, Settings), BTreeSet<&str>> =
         BTreeMap::new();
     // explicit instance -> (provider, fill) per (v, p, d).
-    let mut explicit: BTreeMap<&str, Vec<(&str, Vec<(&'static str, String)>)>> = BTreeMap::new();
+    let mut explicit: BTreeMap<&str, Vec<(&str, Fills)>> = BTreeMap::new();
     let mut styled: BTreeSet<&str> = BTreeSet::new();
 
     for m in plan.members {

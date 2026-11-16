@@ -137,6 +137,10 @@ impl Default for AuditEntry {
 
 /// A row's `data`: one JSON object, held in the canonical form scheme 3 digests (see
 /// `audit::canonical`). It serializes as the object itself.
+/// Why [`AuditData::from_json`] refused a text: it is not one JSON object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotAnObject;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuditData(String);
 
@@ -148,8 +152,10 @@ impl Default for AuditData {
 
 impl AuditData {
     /// Canonicalize the JSON object `text`. `Err` when it is not one JSON object.
-    pub fn from_json(text: &str) -> Result<Self, ()> {
-        crate::audit::canonical::canonical_object(text).map(Self)
+    pub fn from_json(text: &str) -> Result<Self, NotAnObject> {
+        crate::audit::canonical::canonical_object(text)
+            .map(Self)
+            .map_err(|()| NotAnObject)
     }
 
     /// The canonical bytes, as text: exactly what scheme 3 digests.

@@ -9,12 +9,13 @@
 # Now the toolchain is pinned in ONE place:
 #   * this file  — rustup honours it for EVERY `cargo`/`clippy`/`rustfmt` invocation in this repo,
 #                  so a plain `cargo build` here uses exactly the CI toolchain, no flags required;
-#   * the CI jobs — every `dtolnay/rust-toolchain@1.98.0` step names the SAME version, so the runner
-#                  installs precisely this toolchain (with the components below) rather than floating.
+#   * the CI jobs — GitLab CI (GetBusbar/busbar-release ci/common.yml and ci/core.yml, docs/ci.md) sets
+#                  `RUSTUP_TOOLCHAIN: "1.98.0"`, builds shipped artifacts in `rust:1.98.0-bookworm`
+#                  (`BUILD_IMAGE`) and keys its caches `rust-1.98.0`: the SAME version as this file.
 #
-# To move the toolchain: bump the version HERE and in the `dtolnay/rust-toolchain@<version>` action
-# refs across .github/workflows/ (they are meant to match this channel). Do it deliberately, in a PR,
-# never as a silent side effect of a new upstream release.
+# To move the toolchain: bump the version HERE and in busbar-release ci/common.yml (`RUSTUP_TOOLCHAIN`,
+# `BUILD_IMAGE`) and the `rust-<version>` cache keys of ci/common.yml and ci/core.yml.
+# Do it deliberately, in a change of its own, never as a silent side effect of a new upstream release.
 #
 # 1.98.0 == the version CI already resolved `@stable` to; pinning it changes nothing about today's
 # builds, it only stops tomorrow's from moving underneath us. (Crate `rust-version = 1.97` is the

@@ -89,7 +89,8 @@ fn a_stamp_signature_binds_every_field() {
     assert_eq!(stamp.signature.len(), 64);
     assert_eq!(stamp.verify(&public()), Ok(()));
 
-    let edits: [(&str, fn(&mut Stamp)); 13] = [
+    type Edit = (&'static str, fn(&mut Stamp));
+    let edits: [Edit; 13] = [
         ("node", |s| s.node += 1),
         ("from", |s| s.from += 1),
         ("to", |s| s.to += 1),
