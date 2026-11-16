@@ -383,3 +383,31 @@ fn reference_resolution_uses_each_opens_explicit_source_and_actual_slot() {
         read(&config)
     );
 }
+
+#[test]
+fn reference_source_receives_a_distinct_stable_binding_ordinal() {
+    struct Ordinals(std::sync::Mutex<Vec<u32>>);
+    impl RefSource for Ordinals {
+        fn resolve<'a>(
+            &'a self,
+            _: u64,
+            _: u32,
+            binding: u32,
+            _: &'a SecretRef,
+        ) -> BoxFut<'a, Option<SecureVec>> {
+            Box::pin(async move {
+                self.0.lock().expect("ordinals").push(binding);
+                Some(SecureVec::from(b"resolved".as_slice()))
+            })
+        }
+    }
+    let binder = Binder::new(sugars(), Vec::new());
+    let config = bytes(&json!({"a": {"env":"A"}, "b": {"env":"B"}, "c": {"env":"C"}}));
+    let source = Ordinals(std::sync::Mutex::new(Vec::new()));
+    let bound = binder
+        .bind(71, &config, &[], &[], &[], &["/a", "/b", "/c"])
+        .expect("bind three references");
+    run(binder.resolve_refs(71, 9, bound.clone(), &source)).expect("resolve three");
+    run(binder.resolve_refs(71, 9, bound, &source)).expect("repeat same bindings");
+    assert_eq!(*source.0.lock().expect("ordinals"), [0, 1, 2, 0, 1, 2]);
+}
