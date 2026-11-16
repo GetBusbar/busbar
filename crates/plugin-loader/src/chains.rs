@@ -838,10 +838,10 @@ mod tests {
 
     #[test]
     fn a_describe_frame_decodes_into_its_facts() {
-        let r = describe(st::REQUIRED | 1 << 5);
+        let r = describe(st::REQUIRED);
         let d = decode_described(KindCode::Store, Records::new(r.as_bytes())).unwrap();
         assert_eq!(d.kind, KindCode::Store);
-        assert_eq!(d.methods, st::REQUIRED | 1 << 5);
+        assert_eq!(d.methods, st::REQUIRED);
         assert_eq!(d.facts, 0b101);
         assert_eq!(d.schema.as_deref(), Some(r#"{"type":"object"}"#));
         assert_eq!(d.items.len(), 4);

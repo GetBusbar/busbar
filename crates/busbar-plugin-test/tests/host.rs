@@ -919,7 +919,11 @@ fn an_images_declared_diagnostic_reaches_the_hosts_sink_once() {
 
 #[test]
 fn a_linked_door_is_refused_when_it_states_another_plugins_statement() {
-    let other = busbar_plugin_test::rendering_of(store_door::door).expect("the store door renders");
+    // Another plugin of the SAME kind: a statement of another kind is refused earlier, as a manifest kind
+    // mismatch, before the statement is ever compared with the door.
+    let other =
+        busbar_plugin_test::rendering(Mutant::of(transport_door::door).version("0.0.0-other"))
+            .expect("the other transport renders");
     let wrong = host().open(
         Image::<Transport>::linked_stated(transport_door::door, &other),
         "linked-stated",

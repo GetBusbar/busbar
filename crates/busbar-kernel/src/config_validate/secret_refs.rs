@@ -546,6 +546,31 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
              config-time custody tests; a test fixture, never part of `RootCfg`.",
         ),
     ),
+    (
+        "Ingress",
+        SecretBearing::NotInResolvedConfig(
+            "the root binary's signed-route verifier bundle built at boot from process custody \
+             (`busbar::root::port_mount`); its `secrets` closure hands back the webhook secret \
+             reference the operator configured, already reported by the walk of the plane's \
+             section; a runtime carrier, never part of `RootCfg`.",
+        ),
+    ),
+    (
+        "RefEntry",
+        SecretBearing::NotInResolvedConfig(
+            "one `Bindings.refs` entry of the plugin-config binder: a runtime carrier built FROM \
+             the references the walk already reported, holding the resolved value's digest only; \
+             never part of `RootCfg`.",
+        ),
+    ),
+    (
+        "World",
+        SecretBearing::NotInResolvedConfig(
+            "the `#[cfg(test)]` registry fixture in `busbar-kernel::custody`'s own unit tests \
+             (bindings, scrub sets, secret sources, audit rows and a clock); a test fixture, \
+             never a config type and never part of `RootCfg`.",
+        ),
+    ),
 ];
 
 /// How [`secret_refs`] accounts for one secret-bearing type. See [`SECRET_BEARING_TYPES`].

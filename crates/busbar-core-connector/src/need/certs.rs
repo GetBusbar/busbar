@@ -24,13 +24,13 @@ type Shard = RwLock<HashMap<(u64, u32), (u64, [u8; 32])>>;
 /// The digests, sharded by instance.
 #[derive(Debug)]
 pub struct CertDigests {
-    shards: [Shard; SHARDS],
+    stripes: [Shard; SHARDS],
 }
 
 impl Default for CertDigests {
     fn default() -> Self {
         CertDigests {
-            shards: std::array::from_fn(|_| RwLock::new(HashMap::new())),
+            stripes: std::array::from_fn(|_| RwLock::new(HashMap::new())),
         }
     }
 }
@@ -50,7 +50,7 @@ pub fn custody_err(e: CustodyDenied) -> NeedErr {
 
 impl CertDigests {
     fn shard(&self, instance: u64) -> &Shard {
-        &self.shards[(instance % SHARDS as u64) as usize]
+        &self.stripes[(instance % SHARDS as u64) as usize]
     }
 
     fn cached(&self, instance: u64, handle: u32, generation: u64) -> Option<[u8; 32]> {
@@ -105,7 +105,7 @@ impl CertDigests {
 
     /// Entries held, over every shard.
     pub fn len(&self) -> usize {
-        self.shards
+        self.stripes
             .iter()
             .map(|s| s.read().unwrap_or_else(PoisonError::into_inner).len())
             .sum()

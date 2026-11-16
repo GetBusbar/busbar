@@ -2205,7 +2205,7 @@ fn test_caller_in_hook_groups_scope() {
 fn test_resolve_projects_admin_auth_names() {
     install_normal_root_metadata();
     let cfg = resolve(&base_deploy(), &HashMap::new()).expect("resolve");
-    assert_eq!(cfg.admin_auth, [crate::config::operator_provider()]);
+    assert_eq!(cfg.admin_auth, [crate::config::operator_provider(), "keys"]);
 
     let mut deploy = base_deploy();
     let op = crate::config::operator_provider();
@@ -2232,7 +2232,7 @@ fn test_resolve_projects_admin_auth_names() {
     let mut deploy = base_deploy();
     deploy.auth = Some(busbar_contract::yaml::from_str("chain: [keys]\n").expect("auth parses"));
     let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
-    assert_eq!(cfg.admin_auth, [crate::config::operator_provider()]);
+    assert_eq!(cfg.admin_auth, [crate::config::operator_provider(), "keys"]);
 }
 
 #[test]

@@ -1114,9 +1114,11 @@ async fn a_writer_that_rolled_its_epoch_and_died_is_recorded_as_never_retired() 
     assert_eq!(pass.closed, 1, "{pass:?}");
     assert_eq!(store.control(writer), Some(CLOSED));
     assert!(store.lease(writer).is_none());
+    // `run` itself consumes the in-RAM "closed an open writer" flag when it counts the close, so the
+    // close of an open writer is observed by its record: offered exactly once.
     assert!(
-        fence.retirements.take_closed_open(EPOCH, writer),
-        "an open writer's close"
+        !fence.retirements.take_closed_open(EPOCH, writer),
+        "the pass already took the open writer's close"
     );
     assert_offered_once(writer);
 }

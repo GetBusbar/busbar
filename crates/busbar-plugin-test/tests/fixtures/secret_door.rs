@@ -103,7 +103,7 @@ impl SafeSlot for Resolve {
 
 busbar_contract::plugin_door! {
     ops: secret::Ops,
-    statement: statement("host-fixture-secret", "0", 1).with_diag_ids(&DIAGS),
+    statement: statement("host-fixture-secret", "0", 4).with_diag_ids(&DIAGS),
     lifecycle: life(Lends),
     kind_ops: { resolve: busbar_contract::abi::sdk::Safe<Resolve> },
 }

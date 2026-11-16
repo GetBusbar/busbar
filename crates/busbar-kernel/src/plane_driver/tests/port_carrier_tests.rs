@@ -592,13 +592,25 @@ fn a_write_the_channel_refuses_ends_it_with_a_p_error_for_the_plane() {
 #[test]
 fn an_ex_msg_on_an_exchange_that_holds_nothing_is_dropped_and_the_session_ends_with_its_answer() {
     let rig = rig(FakeChannels::default(), &["member"]);
+    // An EX_MSG is an upstream exchange item: it is placed in a piece answer (here the CH_ATTACH's), never in the
+    // request answer, where it is out of place.
     let plane = plane(
-        vec![It::Respond(200), It::ExMsg(5, 0, b"x"), It::End],
-        vec![],
+        vec![It::Channel],
+        vec![vec![
+            It::Respond(200),
+            It::ExMsg(5, 0, b"x"),
+            It::End,
+            It::Finish,
+        ]],
     );
     let started = Instant::now();
     let ran = run(&rig, &plane, Some("member")).unwrap();
-    assert!(plane.log.lock().unwrap().is_empty());
+    let log = plane.log.lock().unwrap().clone();
+    assert_eq!(
+        (log.len(), log[0].0, log[0].1, log[0].2),
+        (1, FROM_CORE, 1, P_CHANNEL),
+        "the dropped message sends the plane nothing more than its attach"
+    );
     assert!(
         started.elapsed() < Duration::from_secs(1),
         "nothing is held: no wait"
