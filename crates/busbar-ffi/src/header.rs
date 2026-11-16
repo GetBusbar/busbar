@@ -11,7 +11,7 @@
 
 use core::ffi::c_void;
 
-use crate::raw::{KindCode, Str};
+use crate::raw::Str;
 use crate::shim::{self, Image};
 use crate::vt::{Built, CancelFn, CloseFn, DescribeFn, Kind, OpenFn, ResumeFn};
 
@@ -45,6 +45,11 @@ pub const OPEN_DRY_RUN: u32 = 1;
 /// The one exported symbol, emitted by `export!` only.
 pub const SYMBOL: &[u8] = b"busbar_plugin\0";
 }
+
+/// Byte offsets of `Plugin`'s private fields, for busbar-plugin-abi's C-HEADER static asserts (IF §7.8).
+pub const PLUGIN_STAMP_AT: usize = core::mem::offset_of!(Plugin, stamp);
+/// Byte offset of `Plugin::kind_vt`.
+pub const PLUGIN_KIND_VT_AT: usize = core::mem::offset_of!(Plugin, kind_vt);
 
 // SAFETY: a `Plugin` is immutable after it is built (no interior mutability, no `&mut` API), and its two
 // raw pointers point at immutable statics of the image (`STAMP`, the kind table) that live as long as the
@@ -170,6 +175,7 @@ macro_rules! export {
 #[cfg(all(test, not(loom)))]
 mod fixture {
     use super::*;
+    use crate::raw::KindCode;
     use crate::raw::{Bytes, ChainBytes, Host, Out, Status, Token};
     use crate::shim::{ChainFut, Opening, Start1, Step};
     use crate::slots::{ChainBox, ChainRef, Slots};
