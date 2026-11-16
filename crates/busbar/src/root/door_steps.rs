@@ -150,19 +150,96 @@ impl DoorPools {
             return true;
         };
 
-        if class == ROUTE_POOL && self.member_granted.contains(name) {
-            return true;
-        }
-
         if class == ROUTE_DIRECT && !entry_known.unwrap_or_else(|| self.has_entry(name)) {
             return true;
         }
-        let fallback = (class == ROUTE_POOL)
-            .then(|| self.fallbacks.get(name))
-            .flatten();
+        if class != ROUTE_POOL {
+            return key.scope_allowed(kind, name);
+        }
         std::iter::once(name)
-            .chain(fallback.map(String::as_str))
-            .all(|granted| key.scope_allowed(kind, granted))
+            .chain(self.fallbacks.get(name).map(String::as_str))
+            .all(|pool| self.pool_granted(kind, key, pool))
+    }
+
+    /// Whether `key` may route over `pool`: an ordinary pool on its name, a member-granted pool
+    /// (`member_granted`) on a member of it the key's `allowed_<kind>s` grant. A member-granted
+    /// pool's name is no grant of its own, and core, not the plane, judges its members (#108).
+    fn pool_granted(&self, kind: &str, key: &VirtualKey, pool: &str) -> bool {
+        if self.member_granted.contains(pool) {
+            return self
+                .pools
+                .get(pool)
+                .is_some_and(|members| members.iter().any(|m| key.scope_allowed(kind, m)));
+        }
+        key.scope_allowed(kind, pool)
+    }
+
+    /// The members of `pool` a keyed unit may reach: every member of an ordinary pool (its grant
+    /// is the pool's), and of a member-granted pool only those the key's `allowed_<kind>s` grant.
+    fn granted_members<'p>(
+        &'p self,
+        kind: &'p str,
+        key: &'p VirtualKey,
+        pool: &str,
+    ) -> impl Iterator<Item = &'p String> + 'p {
+        let gated = self.member_granted.contains(pool);
+        self.pools
+            .get(pool)
+            .into_iter()
+            .flatten()
+            .filter(move |m| !gated || key.scope_allowed(kind, m))
+    }
+
+    /// Narrow a resolved pool route to the members its key may reach (#108): a route over a
+    /// member-granted pool keeps only the members the key's `allowed_<kind>s` grant. An ordinary
+    /// pool, a direct route, a plane that scopes nothing and an unkeyed unit are left as they are.
+    pub(crate) fn confine(
+        &self,
+        kind: Option<&str>,
+        key: Option<&VirtualKey>,
+        routed: &mut Routed,
+    ) {
+        let (Some(kind), Some(key)) = (kind, key) else {
+            return;
+        };
+        let (label, members) = routed;
+        if self.member_granted.contains(label.as_str()) {
+            members.retain(|m| key.scope_allowed(kind, m));
+        }
+    }
+
+    /// The members a keyed unit's walk over `pool` may pick, where a member-granted pool is on its
+    /// reach (the pool and every fallback it spills into): the members of each pool on the reach
+    /// [`DoorPools::granted_members`] keeps. `None` when no pool on the reach is member-granted,
+    /// or the plane scopes nothing, or the key is unscoped (it is granted every member): the walk
+    /// is not confined.
+    #[must_use]
+    pub(crate) fn walk_members(
+        &self,
+        kind: Option<&str>,
+        key: Option<&VirtualKey>,
+        pool: &str,
+    ) -> Option<Vec<String>> {
+        let (kind, key) = (kind?, key?);
+        key.allowed_scopes.as_ref()?;
+        let mut reach: Vec<&str> = Vec::new();
+        let mut at = Some(pool);
+        while let Some(pool) = at.filter(|p| self.pools.contains_key(*p) && !reach.contains(p)) {
+            reach.push(pool);
+            at = self.fallback(pool);
+        }
+        if !reach.iter().any(|p| self.member_granted.contains(*p)) {
+            return None;
+        }
+        let mut members: Vec<String> = Vec::new();
+        for pool in reach {
+            for member in self.granted_members(kind, key, pool) {
+                if !members.contains(member) {
+                    members.push(member.clone());
+                }
+            }
+        }
+        Some(members)
     }
 }
 
@@ -194,6 +271,10 @@ impl DoorPools {
         if class != ROUTE_POOL || !self.member_granted.contains(pool) {
             return true;
         }
+        // CORE owns a member-granted pool's grants (#108): the unit is approved on the member it
+        // is addressed to, which must be one the pool lists and the key's `allowed_<kind>s` grant.
+        // No member stated, or one the pool does not list, is refused, never left to the plane;
+        // only an unscoped key, granted every member, needs none.
         let member = counterparty
             .and_then(|c| std::str::from_utf8(c).ok())
             .filter(|c| {
@@ -201,7 +282,10 @@ impl DoorPools {
                     .get(pool)
                     .is_some_and(|m| m.iter().any(|m| m == c))
             });
-        member.is_none_or(|member| key.scope_allowed(kind, member))
+        match member {
+            Some(member) => key.scope_allowed(kind, member),
+            None => key.allowed_scopes.is_none(),
+        }
     }
 }
 
