@@ -32,8 +32,6 @@ fn budget(cents: u64) -> LimitCfg {
         scope: None,
         on_exhaust: None,
         downgrade_to: None,
-        admission: None,
-        on_exhaustion: None,
     }
 }
 
@@ -164,17 +162,12 @@ fn hook_explicit_edit_preserves_private_settings_and_replacement_remains_explici
 }
 
 #[test]
-fn group_budget_readback_preserves_all_authored_policy_and_exact_u64_wire() {
+fn group_budget_readback_preserves_exact_u64_wire() {
     use crate::v1::contract::GroupView;
-    let cfg: GroupCfg = serde_json::from_str(r#"{"limits":[{"budget":9007199254740993,"per":"month","admission":"estimate","on_exhaustion":"cut-stream"}],"child_default":{"limits":[{"budget":7,"per":"day","admission":"exact","on_exhaustion":"finish-unit"}]}}"#).unwrap();
+    let cfg: GroupCfg = serde_json::from_str(r#"{"limits":[{"budget":9007199254740993,"per":"month"}],"child_default":{"limits":[{"budget":7,"per":"day"}]}}"#).unwrap();
     let view = GroupView::from_cfg("group", &cfg);
     let encoded = serde_json::to_string(&view).unwrap();
     assert!(encoded.contains("9007199254740993"));
-    assert_eq!(view.limits[0].admission, Some("estimate"));
-    assert_eq!(view.limits[0].on_exhaustion, Some("cut-stream"));
-    let template = view.child_default.unwrap();
-    assert_eq!(template[0].admission, Some("exact"));
-    assert_eq!(template[0].on_exhaustion, Some("finish-unit"));
 }
 
 #[test]

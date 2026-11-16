@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
+use busbar_contract::json::{self, JsonValueTrait};
 
 use crate::canary::{Canary, Sink};
 use crate::common;
@@ -47,7 +48,7 @@ fn far_end() -> FarEnd {
                     common::upstream::respond(
                         &mut conn,
                         200,
-                        &serde_json::json!({
+                        &json::json!({
                             "id": "msg_canary",
                             "type": "message",
                             "role": "assistant",
@@ -164,11 +165,7 @@ const ADMIN_VIEWS: &[&str] = &[
     "/api/v1/admin/hooks",
 ];
 
-const OTHER_RESPONSES: &[&str] = &[
-    "/api/v1/admin/trust",
-    "/metrics",
-    "/healthz",
-];
+const OTHER_RESPONSES: &[&str] = &["/api/v1/admin/trust", "/metrics", "/healthz"];
 
 fn write_node_config(
     dir: &Path,
@@ -449,7 +446,7 @@ pub fn node(c: &NodeCanaries) -> (Vec<Sink>, Vec<String>) {
                     .next()
                     .and_then(|line| line.split_whitespace().nth(1))
                     == Some("200")
-                    && serde_json::from_str::<serde_json::Value>(body)
+                    && json::parse_value(body.as_bytes())
                         .is_ok_and(|value| value.is_object() || value.is_array())
             });
             if !served {
@@ -745,8 +742,8 @@ fn ignore_overlay_reports_overlay_ignored_on_info() {
         "the boot warning reaches stderr exactly once:\n{log}"
     );
     let body = answer.split_once("\r\n\r\n").map_or("", |(_, body)| body);
-    let info: serde_json::Value = serde_json::from_str(body)
+    let info: json::Value = json::parse_value(body.as_bytes())
         .unwrap_or_else(|e| panic!("the /info body is JSON ({e}): {answer}"));
-    assert_eq!(info["overlay_ignored"], serde_json::json!(true), "{answer}");
+    assert_eq!(info["overlay_ignored"], json::json!(true), "{answer}");
     let _ = std::fs::remove_dir_all(&dir);
 }

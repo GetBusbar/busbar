@@ -40,8 +40,6 @@ fn rig() -> Rig {
         scope: pool.map(ScopeRef::pool),
         on_exhaust: None,
         downgrade_to: None,
-        admission: None,
-        on_exhaustion: None,
     };
     let groups = BTreeMap::from([
         (

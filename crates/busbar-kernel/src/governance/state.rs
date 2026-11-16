@@ -1135,9 +1135,8 @@ impl GovState {
         key: &VirtualKey,
         pool: &str,
         now: u64,
-        estimate_minor: Option<i64>,
     ) -> Result<(), LimitBlocked> {
-        self.check_observation_admission_on(cost, key, None, pool, now, estimate_minor)
+        self.check_observation_admission_on(cost, key, None, pool, now)
             .await
     }
 
@@ -1150,7 +1149,6 @@ impl GovState {
         chain: Option<&crate::cost::ChainPlan>,
         pool: &str,
         now: u64,
-        estimate_minor: Option<i64>,
     ) -> Result<(), LimitBlocked> {
         use crate::persistence::observations::ObservationStore;
         use busbar_kernel_ledger::cost::NANOS_PER_CENT;
@@ -1222,22 +1220,6 @@ impl GovState {
             {
                 return Err(blocked(bucket, "tokens"));
             }
-            for cap in bucket.class_caps {
-                let mut observed = Count::ZERO;
-                for (lane, units) in &total.units {
-                    observed = class_total(lane, units, cap.class)
-                        .and_then(|class| observed.checked_add(class))
-                        .map_err(|_| blocked(bucket, cap.metric.as_str()))?;
-                }
-                if !observed.is_zero()
-                    && ordinary_cell
-                        .total_tier(cap.class)
-                        .checked_add(observed)
-                        .map_or(true, |n| n >= whole_count(cap.cap))
-                {
-                    return Err(blocked(bucket, cap.metric.as_str()));
-                }
-            }
             // Let the ordinary governor retain its existing free, estimate and downgrade
             // semantics when this cell has no delayed accounting liability.
             if liability == 0 {
@@ -1246,19 +1228,14 @@ impl GovState {
             let Some(cap) = bucket.budget_cap else {
                 continue;
             };
-            let estimate = match bucket.budget_admission {
-                crate::config::groups::AdmissionMode::Exact => Some(0),
-                crate::config::groups::AdmissionMode::Estimate => estimate_minor,
-            };
             let ordinary_nanos = ordinary
                 .iter()
                 .find(|b| b.bucket_id == bucket.bucket_id)
                 .and_then(|b| u128::try_from(b.spend_micros_at_current_rate).ok())
                 .and_then(|v| v.checked_mul(1_000));
             let used = ordinary_nanos.and_then(|ordinary| liability.checked_add(ordinary));
-            let added = estimate
-                .and_then(|estimate| cost.request_fee_on(plane).checked_add(estimate))
-                .and_then(|v| u128::try_from(v).ok())
+            let added = u128::try_from(cost.request_fee_on(plane))
+                .ok()
                 .and_then(|v| v.checked_mul(NANOS_PER_CENT));
             let cap_nanos = u128::try_from(cap)
                 .ok()
@@ -1469,52 +1446,20 @@ impl GovState {
         pool: &str,
         now: u64,
     ) -> Result<AdmitGrant, LimitBlocked> {
-        self.admit_checked(cost, key, pool, now, Some(0), None)
+        self.admit_checked(cost, key, pool, now, None)
     }
 
-    pub fn try_admit_estimated(
-        &self,
-        cost: &crate::cost::CostModel,
-        key: &VirtualKey,
-        pool: &str,
-        now: u64,
-        models: &[&str],
-        expected: &BTreeMap<String, u64>,
-    ) -> Result<AdmitGrant, LimitBlocked> {
-        self.try_admit_estimated_counts(cost, key, pool, now, models, &whole_counts(expected))
-    }
-
-    pub fn try_admit_estimated_counts(
-        &self,
-        cost: &crate::cost::CostModel,
-        key: &VirtualKey,
-        pool: &str,
-        now: u64,
-        models: &[&str],
-        expected: &BTreeMap<String, Count>,
-    ) -> Result<AdmitGrant, LimitBlocked> {
-        self.admit_checked(
-            cost,
-            key,
-            pool,
-            now,
-            cost.estimate_counts_minor(models, expected),
-            None,
-        )
-    }
-
-    /// Admit a unit on the estimate and budget chain its admission already resolved
-    /// (SINGLE-PATH SP-AD1): neither is derived again. A `None` chain is resolved here.
+    /// Admit a unit on the budget chain its admission already resolved (SINGLE-PATH SP-AD1): it is
+    /// not derived again. A `None` chain is resolved here.
     pub fn try_admit_planned(
         &self,
         cost: &crate::cost::CostModel,
         key: &VirtualKey,
         pool: &str,
         now: u64,
-        estimate: Option<i64>,
         chain: Option<&crate::cost::ChainPlan>,
     ) -> Result<AdmitGrant, LimitBlocked> {
-        self.admit_checked(cost, key, pool, now, estimate, chain)
+        self.admit_checked(cost, key, pool, now, chain)
     }
 
     fn admit_checked(
@@ -1523,7 +1468,6 @@ impl GovState {
         key: &VirtualKey,
         pool: &str,
         now: u64,
-        estimate: Option<i64>,
         carried: Option<&crate::cost::ChainPlan>,
     ) -> Result<AdmitGrant, LimitBlocked> {
         let (plane, pool) = split_plane_lane(pool);
@@ -1633,7 +1577,6 @@ impl GovState {
         for (bi, bucket) in buckets.iter().enumerate() {
             if bucket.requests_cap.is_none()
                 && bucket.tokens_cap.is_none()
-                && bucket.class_caps.is_empty()
                 && bucket.budget_cap.is_none()
             {
                 continue;
@@ -1642,7 +1585,7 @@ impl GovState {
             let window = budget_window(bucket.window, now);
             let map = guards[gi].as_deref().expect("guard held");
 
-            let (requests, tokens, live, derived) = match map.get(bucket.bucket_id) {
+            let (requests, tokens, derived) = match map.get(bucket.bucket_id) {
                 Some(cell) if cell.window_start >= window => (
                     cell.correction.as_ref().map_or(cell.requests, |branch| {
                         cell.requests.max(branch.accepted.requests)
@@ -1653,7 +1596,6 @@ impl GovState {
                             |branch| cell.total_tokens().max(branch.accepted.total_tokens()),
                         )
                     }),
-                    Some(cell),
                     bucket.budget_cap.map_or(Ok(0), |_| {
                         let before = cell.spend(cost, true).and_then(Money::minor_i64)?;
                         match &cell.correction {
@@ -1667,32 +1609,14 @@ impl GovState {
                     }),
                 ),
 
-                _ => (0, Count::ZERO, None, Ok(0)),
+                _ => (0, Count::ZERO, Ok(0)),
             };
-            let class_blocked = (bucket.class_caps.iter())
-                .find(|c| {
-                    live.map_or(Count::ZERO, |cell| {
-                        cell.correction.as_ref().map_or_else(
-                            || cell.total_tier(c.class),
-                            |branch| {
-                                cell.total_tier(c.class)
-                                    .max(branch.accepted.total_tier(c.class))
-                            },
-                        )
-                    }) >= whole_count(c.cap)
-                })
-                .map(|c| c.metric.as_str());
 
             let (derived, refused) = match derived {
                 Ok(d) => (d, false),
                 Err(_) => (0, true),
             };
 
-            let (guess, refused) = match (bucket.budget_admission, estimate) {
-                (crate::config::groups::AdmissionMode::Exact, _) => (0, refused),
-                (crate::config::groups::AdmissionMode::Estimate, Some(e)) => (e, refused),
-                (crate::config::groups::AdmissionMode::Estimate, None) => (0, true),
-            };
             let blocked_metric = if bucket
                 .requests_cap
                 .is_some_and(|cap| requests.saturating_add(1) > cap)
@@ -1703,11 +1627,10 @@ impl GovState {
                 .is_some_and(|cap| tokens >= whole_count(cap))
             {
                 Some("tokens")
-            } else if class_blocked.is_some() {
-                class_blocked
-            } else if bucket.budget_cap.is_some_and(|cap| {
-                refused || derived >= cap || derived.saturating_add(fee).saturating_add(guess) > cap
-            }) {
+            } else if bucket
+                .budget_cap
+                .is_some_and(|cap| refused || derived >= cap || derived.saturating_add(fee) > cap)
+            {
                 Some("budget")
             } else {
                 None
