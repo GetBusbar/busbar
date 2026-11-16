@@ -9,15 +9,18 @@
 //!   (REFUSED R_CONFIG), a good one passes `check` (DRY_RUN) and opens, twice under two names;
 //! - resolve: every `known` (reference, value) pair answers exactly its value, repeatedly and from concurrent
 //!   tasks; the lease fact, when stated, is non-zero;
-//! - refusals (§8.2): a reference naming nothing is REFUSED R_NOT_FOUND, a malformed reference (not JSON, not
-//!   an object, an object with non-text member) is REFUSED R_INVALID, and neither refusal's text, nor any log
-//!   line, nor the harness refusal book carries a known secret value (I14);
+//! - refusals (§8.2): every `absent` reference (well-formed in the plugin's own reference grammar, naming
+//!   nothing) is REFUSED R_NOT_FOUND, a malformed reference (not JSON, not an object, an object with non-text
+//!   member) is REFUSED R_INVALID, and neither refusal's text, nor any log line, nor the harness refusal book
+//!   carries a known secret value (I14). The suite does not invent the absent reference: each source's
+//!   reference grammar is its own (`{"name":..}`, `{"key":..}`, `{"path":..}`, `{"secret_id":..}`, ...), and a
+//!   typed source rightly answers a foreign shape R_INVALID, so the plugin's suite entry supplies at least one;
 //! - the instance survives its refusals: a known pair still resolves after them;
 //! - the plugin never reaches for the network on a resolve it can answer without (no OPEN/FETCH is seen for a
 //!   plugin whose `FakeNeeds` scripted none: `seen()` is only compared to its length before the resolves, so
 //!   a vault-style plugin that Needs is not penalised).
 //!
-//! A `known` reference is the `settings` object JSON of the SourceReference, verbatim (e.g.
+//! A `known` or `absent` reference is the `settings` object JSON of the SourceReference, verbatim (e.g.
 //! `{"name":"db"}`); bytes that do not start with `{` are taken as a bare name and wrapped as `{"name": <it>}`.
 
 use std::time::{Duration, Instant};
@@ -78,7 +81,13 @@ pub(super) fn run(
     config: &[u8],
     needs: FakeNeeds,
     known: &[(&[u8], &[u8])],
+    absent: &[&[u8]],
 ) {
+    assert!(
+        !absent.is_empty(),
+        "secret suite: supply at least one absent reference (well-formed for this plugin, naming nothing) so \
+         the R_NOT_FOUND case runs"
+    );
     let harness = match Harness::admit(plugin, needs) {
         Ok(harness) => harness,
         Err(refusal) => panic!("secret suite: the image was refused at admission: {refusal:?}"),
@@ -185,18 +194,19 @@ pub(super) fn run(
 
     // ---- refusals --------------------------------------------------------------------------------------
     let mut refusal_texts = Vec::new();
-    let unknown: &[&[u8]] = &[
-        br#"{"name":"busbar-suite-no-such-secret-7f3a"}"#,
-        br#"{"name":"busbar-suite-no-such-secret-7f3a-2"}"#,
-    ];
-    for reference in unknown {
-        match harness.block_on(port.resolve(cx(next()), reference)) {
-            Ok(_) => panic!("secret suite: an unknown name resolved to a value"),
+    for raw in absent {
+        let reference = reference(raw);
+        match harness.block_on(port.resolve(cx(next()), &reference)) {
+            Ok(_) => panic!(
+                "secret suite: the absent reference {} resolved to a value",
+                String::from_utf8_lossy(&reference)
+            ),
             Err(error) => {
                 assert_eq!(
                     refused_code(&error),
                     Some(R_NOT_FOUND),
-                    "secret suite: an unknown name must be REFUSED R_NOT_FOUND, got {error:?}"
+                    "secret suite: the absent reference {} must be REFUSED R_NOT_FOUND, got {error:?}",
+                    String::from_utf8_lossy(&reference)
                 );
                 refusal_texts.push(error_text(&error));
             }
