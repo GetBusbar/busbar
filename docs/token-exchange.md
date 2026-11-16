@@ -120,9 +120,10 @@ get-access-token`, …) and get the key back as JSON:
 
 ```bash
 curl -X POST https://busbar.example.com/auth/token \
-  -H "Authorization: Bearer $OIDC_TOKEN"
+  -H "Authorization: Bearer $IDP_TOKEN"
 # → {
-#     "api_key": "sk-bb-…",     # the personal key: use as your tool's API key
+#     "api_key":  "bbk_…",      # the personal key: use as your tool's API key
+#     "base_url": "https://busbar.example.com",  # your configured public_url (empty if unset)
 #     "key_id":  "vk_…",        # its stable id
 #     "group":   "user:<sub>",  # the personal budget bucket it charges through
 #     "exp":     1754006400     # expiry, Unix seconds (now + key_ttl)
@@ -134,41 +135,37 @@ only ever mint their own key.
 
 ## Enable it
 
-1. Install an auth method plugin: [OIDC](/plugins/auth/oidc/),
-   [GitHub](/plugins/auth/github/), or [LDAP](/plugins/auth/ldap/).
+1. Install an auth plugin that declares the login capability (see [plugins.md](plugins.md#auth-plugins-kind-auth)).
 2. Set **`public_url`** to the base developers' browsers actually reach.
-3. Declare the provider under **`identity-providers:`** with a `browser_login:` block. (1.5.3: the
-   retired parallel `auth.methods:` map folded into the provider definition. A client id/secret
-   belongs to ONE IdP registration, so it belongs on that provider.)
+3. Declare the provider under **`identity-providers:`** with a `browser_login:` block. A client id/secret
+   belongs to ONE IdP registration, so it belongs on that provider.
 
 ```yaml
 public_url: "https://busbar.example.com"     # busbar builds /auth/token against this
 identity-providers:
-  oidc:
-    module: oidc
-    settings:
-      issuer:   "https://login.microsoftonline.com/<tenant>/v2.0"
+  corp-sso:                                  # the provider NAME you choose
+    module: <auth-plugin>                    # an installed auth plugin declaring login
+    settings:                                # the plugin's own settings
+      issuer:   "https://login.example.com/<tenant>/v2.0"
       audience: "<client-id>"
     browser_login:                           # presence turns on the hosted sign-in button;
-      client_secret: { env: OIDC_CLIENT_SECRET }   # omit the block for headless-only
+      client_secret: { env: SSO_CLIENT_SECRET }   # omit the block for headless-only
 auth:
   key_ttl: 90d                               # issued-key lifetime (admin-set; default 90d)
-  chain: [keys, oidc]                        # reference the provider BY BARE NAME
+  chain: [keys, corp-sso]                        # reference the provider BY BARE NAME
   role_bindings:
-    oidc:                                    # NESTED BY PROVIDER NAME
+    corp-sso:                                # NESTED BY PROVIDER NAME
       "<sso-group>": { group: engineering }  # which team's child_default budgets each dev
 ```
 
 That's the shape. The **full per-provider config** (issuer, audience, claim mapping, IdP
-walkthroughs) lives on the plugin page: [OIDC](/plugins/auth/oidc/) ·
-[GitHub](/plugins/auth/github/) · [LDAP](/plugins/auth/ldap/).
+walkthroughs) lives in the auth plugin's own documentation.
 
-> With Entra ID, `"<sso-group>"` above is **not** necessarily your security group's display
-> name. What it must be depends on `role_claim` (app role Value string vs. security group
-> Object ID GUID), and the redirect URI, client secret, and role/group setup have their own
-> gotchas too. This trips people up constantly; see
-> [the Entra ID app-roles vs. security-groups note](configuration.md#authrole_bindings-provider-scoped-role-policy) and the [OIDC auth plugin](/plugins/auth/oidc/) Entra walkthrough for the
-> full click-by-click reference before you bind a role.
+> `"<sso-group>"` above is whatever your identity provider asserts as the role or group (for
+> example, an app role value versus a group object ID, depending on the provider and the plugin's
+> claim setting). See
+> [the role-bindings note](configuration.md#authrole_bindings-provider-scoped-role-policy) and the
+> auth plugin's own documentation before you bind a role.
 
 ## Admin actions and self-service
 
@@ -204,7 +201,7 @@ See https://getbusbar.com/docs/1.6/errors/BUSBAR-4043"}`.
   exchange can only mint the caller's own `user:<sub>` key.
 - **Budget auto-provisioned.** The `user:<sub>` bucket is created on **first exchange**,
   limits stamped from the mapped team's `child_default`.
-- **Any auth method.** Works identically with `oidc`, `github`, or `ldap`.
-- **Don't want issued keys?** Put the method in `auth.chain` instead (e.g.
-  `chain: [oidc]`) to verify a live IdP token on **every** request and issue no key. The
+- **Any login-capable auth plugin.** Works identically whichever plugin backs the provider.
+- **Don't want issued keys?** Put the provider in `auth.chain` instead (e.g.
+  `chain: [corp-sso]`) to verify a live IdP token on **every** request and issue no key. The
   two compose. See [Configuration](configuration.md#auth).
